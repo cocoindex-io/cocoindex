@@ -1,10 +1,9 @@
 use super::{db_tracking_setup::TrackingTableSetupState, memoization::MemoizationInfo};
-use crate::utils::db::WriteAction;
+use crate::utils::{db::WriteAction, fingerprint::Fingerprint};
 use anyhow::Result;
 use sqlx::PgPool;
 
-pub type ValueFingerprint = String;
-pub type TrackedTargetKey = (serde_json::Value, i64, Option<ValueFingerprint>);
+pub type TrackedTargetKey = (serde_json::Value, i64, Option<Fingerprint>);
 pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKey>)>;
 
 #[derive(sqlx::FromRow, Debug)]

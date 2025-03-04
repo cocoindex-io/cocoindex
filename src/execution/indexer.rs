@@ -6,7 +6,7 @@ use log::error;
 use serde::Serialize;
 use sqlx::PgPool;
 
-use super::db_tracking::{self, read_source_tracking_info, TrackedTargetKey, ValueFingerprint};
+use super::db_tracking::{self, read_source_tracking_info, TrackedTargetKey};
 use super::db_tracking_setup;
 use super::memoization::{EvaluationCache, MemoizationInfo};
 use crate::base::schema;
@@ -15,7 +15,7 @@ use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
 use crate::ops::interface::{ExportTargetMutation, ExportTargetUpsertEntry};
 use crate::utils::db::WriteAction;
-use crate::utils::fingerprint::Fingerprinter;
+use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 
 use super::evaluator::{evaluate_source_entry, ScopeValueBuilder};
 
@@ -94,8 +94,8 @@ struct TrackingInfoForTarget<'a> {
     // Existing keys info. Keyed by target key.
     // Will be removed after new rows for the same key are added into `new_staging_keys_info` and `mutation.upserts`,
     // hence all remaining ones are to be deleted.
-    existing_staging_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<ValueFingerprint>)>>,
-    existing_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<ValueFingerprint>)>>,
+    existing_staging_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<Fingerprint>)>>,
+    existing_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<Fingerprint>)>>,
 
     // New keys info for staging.
     new_staging_keys_info: Vec<TrackedTargetKey>,
@@ -213,7 +213,11 @@ async fn precommit_source_tracking_info(
                         .fields
                         .push(value.fields[*field as usize].clone());
                 }
-                let curr_fp = Some(Fingerprinter::default().with(&field_values)?.to_base64());
+                let curr_fp = Some(
+                    Fingerprinter::default()
+                        .with(&field_values)?
+                        .to_fingerprint(),
+                );
 
                 let existing_target_keys = target_info.existing_keys_info.remove(&primary_key_json);
                 let existing_staging_target_keys = target_info

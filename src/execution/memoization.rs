@@ -1,38 +1,14 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-
-use base64::prelude::*;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
 
-use crate::base::{schema, value};
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CacheKey(Vec<u8>);
-
-impl Serialize for CacheKey {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&BASE64_STANDARD.encode(&self.0))
-    }
-}
-
-impl<'de> Deserialize<'de> for CacheKey {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let bytes = BASE64_STANDARD
-            .decode(s)
-            .map_err(serde::de::Error::custom)?;
-        Ok(CacheKey(bytes))
-    }
-}
+use crate::{
+    base::{schema, value},
+    utils::fingerprint::Fingerprint,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
@@ -41,7 +17,7 @@ pub struct CacheEntry {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoizationInfo {
-    pub cache: HashMap<CacheKey, CacheEntry>,
+    pub cache: HashMap<Fingerprint, CacheEntry>,
 }
 
 impl Default for MemoizationInfo {
@@ -66,13 +42,13 @@ enum EvaluationCacheData {
 
 pub struct EvaluationCache {
     current_time: chrono::DateTime<chrono::Utc>,
-    cache: Mutex<HashMap<CacheKey, EvaluationCacheEntry>>,
+    cache: Mutex<HashMap<Fingerprint, EvaluationCacheEntry>>,
 }
 
 impl EvaluationCache {
     pub fn new(
         current_time: chrono::DateTime<chrono::Utc>,
-        existing_cache: Option<HashMap<CacheKey, CacheEntry>>,
+        existing_cache: Option<HashMap<Fingerprint, CacheEntry>>,
     ) -> Self {
         Self {
             current_time,
@@ -96,7 +72,7 @@ impl EvaluationCache {
         }
     }
 
-    pub fn into_stored(self) -> Result<HashMap<CacheKey, CacheEntry>> {
+    pub fn into_stored(self) -> Result<HashMap<Fingerprint, CacheEntry>> {
         Ok(self
             .cache
             .into_inner()?
@@ -118,7 +94,7 @@ impl EvaluationCache {
 
     pub fn get(
         &self,
-        key: CacheKey,
+        key: Fingerprint,
         typ: &schema::ValueType,
         ttl: Option<chrono::Duration>,
     ) -> Result<Arc<async_lock::OnceCell<value::Value>>> {
