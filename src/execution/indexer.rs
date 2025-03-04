@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
-use blake2::digest::typenum;
-use blake2::{Blake2b, Digest};
 use futures::future::{join_all, try_join, try_join_all};
 use log::error;
 use serde::Serialize;
@@ -10,6 +8,7 @@ use sqlx::PgPool;
 
 use super::db_tracking::{self, read_source_tracking_info};
 use super::db_tracking_setup;
+use super::fingerprint::Fingerprinter;
 use super::memoization::{EvaluationCache, MemoizationInfo};
 use crate::base::schema;
 use crate::base::spec::FlowInstanceSpec;
@@ -83,15 +82,6 @@ fn make_primary_key(
         }
     };
     Ok(key)
-}
-
-fn fingerprint(values: &FieldValues) -> Result<String> {
-    let mut hasher = Blake2b::<typenum::consts::U16>::new();
-    for field_value in values.fields.iter() {
-        hasher.update(serde_json::to_string(field_value)?.as_bytes());
-        hasher.update(b"\n");
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 enum WithApplyStatus<T = ()> {
@@ -225,7 +215,9 @@ async fn precommit_source_tracking_info(
                         .fields
                         .push(value.fields[*field as usize].clone());
                 }
-                let curr_fp = Some(fingerprint(&field_values)?);
+                let mut fingerprinter = Fingerprinter::default();
+                field_values.serialize(&mut fingerprinter)?;
+                let curr_fp = Some(fingerprinter.to_base64());
 
                 let existing_target_keys = target_info.existing_keys_info.remove(&primary_key_json);
                 let existing_staging_target_keys = target_info
