@@ -439,9 +439,8 @@ pub async fn update_source_entry<'a>(
         .map(|info| info.memoization_info.map(|info| info.0))
         .flatten()
         .flatten();
-    let evaluation_cache = memoization_info
-        .map(|info| EvaluationCache::from_stored(info.cache))
-        .unwrap_or_default();
+    let evaluation_cache =
+        EvaluationCache::new(process_timestamp, memoization_info.map(|info| info.cache));
     let value_builder =
         evaluate_source_entry(plan, source_op_idx, schema, key, Some(&evaluation_cache)).await?;
 
