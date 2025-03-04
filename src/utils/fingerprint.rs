@@ -1,4 +1,4 @@
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use base64::prelude::*;
 use blake2::digest::typenum;
 use blake2::{Blake2b, Digest};
@@ -39,10 +39,16 @@ impl Fingerprint {
     }
 
     pub fn from_base64(s: &str) -> anyhow::Result<Self> {
-        let bytes = BASE64_STANDARD.decode(s)?;
+        let bytes = match s.len() {
+            24 => BASE64_STANDARD.decode(s)?,
+
+            // For backward compatibility. Some old version (<= v0.1.2) is using hex encoding.
+            32 => hex::decode(s)?,
+            _ => bail!("Encoded fingerprint length is unexpected: {}", s.len()),
+        };
         match bytes.try_into() {
             Ok(bytes) => Ok(Fingerprint(bytes)),
-            Err(_) => bail!("Fingerprint base64 length is unexpected"),
+            Err(e) => bail!("Fingerprint bytes length is unexpected: {}", e.len()),
         }
     }
 }
