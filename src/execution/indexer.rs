@@ -213,9 +213,7 @@ async fn precommit_source_tracking_info(
                         .fields
                         .push(value.fields[*field as usize].clone());
                 }
-                let mut fingerprinter = Fingerprinter::default();
-                field_values.serialize(&mut fingerprinter)?;
-                let curr_fp = Some(fingerprinter.to_base64());
+                let curr_fp = Some(Fingerprinter::default().with(&field_values)?.to_base64());
 
                 let existing_target_keys = target_info.existing_keys_info.remove(&primary_key_json);
                 let existing_staging_target_keys = target_info
