@@ -11,7 +11,7 @@ pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKey>)>;
 pub struct SourceTrackingInfo {
     pub max_process_ordinal: i64,
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
-    pub memoization_info: Option<sqlx::types::Json<MemoizationInfo>>,
+    pub memoization_info: Option<sqlx::types::Json<Option<MemoizationInfo>>>,
 
     pub processed_source_ordinal: Option<i64>,
     pub process_logic_fingerprint: Option<Vec<u8>>,

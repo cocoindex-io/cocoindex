@@ -445,6 +445,7 @@ pub async fn update_source_entry<'a>(
     let already_exists = existing_tracking_info.is_some();
     let memoization_info = existing_tracking_info
         .map(|info| info.memoization_info.map(|info| info.0))
+        .flatten()
         .flatten();
     let evaluation_cache = memoization_info
         .map(|info| EvaluationCache::from_stored(info.cache))
