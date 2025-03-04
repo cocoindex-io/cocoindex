@@ -62,12 +62,14 @@ class _FunctionExecutorFactory:
 
 _gpu_dispatch_lock = Lock()
 
-def executor_class(gpu: bool = False) -> Callable[[type], type]:
+def executor_class(gpu: bool = False, cache: bool = False, behavior_version: int | None = None) -> Callable[[type], type]:
     """
     Decorate a class to provide an executor for an op.
 
     Args:
         gpu: Whether the executor will be executed on GPU.
+        cache: Whether the executor will be cached.
+        behavior_version: The behavior version of the executor. Cache will be invalidated if it changes. Must be provided if `cache` is True.
     """
 
     def _inner(cls: type[Executor]) -> type:
@@ -87,7 +89,15 @@ def executor_class(gpu: bool = False) -> Callable[[type], type]:
         expected_return = sig.return_annotation
 
         cls_type: type = cls
-        class _WrappedClass(cls_type):
+
+        class _Fallback:
+            def enable_cache(self):
+                return cache
+
+            def behavior_version(self):
+                return behavior_version
+
+        class _WrappedClass(cls_type, _Fallback):
             def __init__(self, spec):
                 super().__init__()
                 self.spec = spec

@@ -149,6 +149,9 @@ struct PyFunctionExecutor {
     num_positional_args: usize,
     kw_args_names: Vec<Py<PyString>>,
     result_type: schema::EnrichedValueType,
+
+    enable_cache: bool,
+    behavior_version: Option<u32>,
 }
 
 #[async_trait]
@@ -192,6 +195,14 @@ impl SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
             })
         })
         .await
+    }
+
+    fn enable_cache(&self) -> bool {
+        self.enable_cache
+    }
+
+    fn behavior_version(&self) -> Option<u32> {
+        self.behavior_version
     }
 }
 
@@ -251,15 +262,27 @@ impl SimpleFunctionFactory for PyFunctionFactory {
 
         let executor_fut = {
             let result_type = result_type.clone();
-            async move {
-                Python::with_gil(|py| executor.call_method(py, "prepare", (), None))?;
+            unblock(move || {
+                let (enable_cache, behavior_version) =
+                    Python::with_gil(|py| -> anyhow::Result<_> {
+                        executor.call_method(py, "prepare", (), None)?;
+                        let enable_cache = executor.call_method(py, "enable_cache", (), None)?;
+                        let behavior_version =
+                            executor.call_method(py, "behavior_version", (), None)?;
+                        Ok((
+                            enable_cache.extract::<bool>(py)?,
+                            behavior_version.extract::<Option<u32>>(py)?,
+                        ))
+                    })?;
                 Ok(Box::new(Arc::new(PyFunctionExecutor {
                     py_function_executor: executor,
                     num_positional_args,
                     kw_args_names,
                     result_type,
+                    enable_cache,
+                    behavior_version,
                 })) as Box<dyn SimpleFunctionExecutor>)
-            }
+            })
         };
 
         Ok((result_type, executor_fut.boxed()))
