@@ -144,8 +144,8 @@ pub async fn evaluate_data(
         .ok_or_else(|| api_error!("field {} does not have a key", query.field))?;
     let key = value::KeyValue::from_strs(query.key, &key_field.value_type.typ)?;
 
-    let data_builder =
-        evaluator::evaluate_source_entry(&execution_plan, field_idx as u32, &schema, &key)
+    let (data_builder, _) =
+        evaluator::evaluate_source_entry(&execution_plan, field_idx as u32, &schema, &key, None)
             .await?
             .ok_or_else(|| {
                 api_error!("value not found for source at the specified key: {key:?}")

@@ -116,6 +116,10 @@ struct TrackingInfoForTarget<'a> {
     mutation: ExportTargetMutation,
 }
 
+struct PrecommitData<'a> {
+    scope_value: &'a ScopeValueBuilder,
+    memoization_info: &'a MemoizationInfo,
+}
 struct PrecommitMetadata {
     source_entry_exists: bool,
     process_ordinal: i64,
@@ -131,10 +135,9 @@ async fn precommit_source_tracking_info(
     source_id: i32,
     source_key_json: &serde_json::Value,
     source_ordinal: Option<i64>,
-    memoization_info: MemoizationInfo,
+    data: Option<PrecommitData<'_>>,
     process_timestamp: &chrono::DateTime<chrono::Utc>,
     db_setup: &db_tracking_setup::TrackingTableSetupState,
-    scope_value: &Option<ScopeValueBuilder>,
     export_ops: &[AnalyzedExportOp],
     pool: &PgPool,
 ) -> Result<WithApplyStatus<PrecommitOutput>> {
@@ -200,9 +203,9 @@ async fn precommit_source_tracking_info(
     }
 
     let mut new_target_keys_info = db_tracking::TrackedTargetKeyForSource::default();
-    if let Some(scope_value) = scope_value {
+    if let Some(data) = &data {
         for export_op in export_ops.iter() {
-            let collected_values = scope_value.collected_values
+            let collected_values = data.scope_value.collected_values
                 [export_op.input.collector_idx as usize]
                 .lock()
                 .unwrap();
@@ -305,7 +308,7 @@ async fn precommit_source_tracking_info(
         source_key_json,
         process_ordinal,
         new_staging_target_keys,
-        memoization_info,
+        data.as_ref().map(|data| data.memoization_info),
         db_setup,
         &mut *txn,
         if tracking_info_exists {
@@ -320,7 +323,7 @@ async fn precommit_source_tracking_info(
 
     Ok(WithApplyStatus::Normal(PrecommitOutput {
         metadata: PrecommitMetadata {
-            source_entry_exists: scope_value.is_some(),
+            source_entry_exists: data.is_some(),
             process_ordinal,
             existing_process_ordinal,
             new_target_keys: new_target_keys_info,
@@ -439,26 +442,45 @@ pub async fn update_source_entry<'a>(
         pool,
     )
     .await?;
-    let scope_value = evaluate_source_entry(plan, source_op_idx, schema, key).await?;
+    let already_exists = existing_tracking_info.is_some();
+    let memoization_info = existing_tracking_info
+        .map(|info| info.memoization_info.map(|info| info.0))
+        .flatten();
+    let evaluate_output =
+        evaluate_source_entry(plan, source_op_idx, schema, key, memoization_info).await?;
 
     // Didn't exist and still doesn't exist. No need to apply any changes.
-    if existing_tracking_info.is_none() && scope_value.is_none() {
+    if !already_exists && evaluate_output.is_none() {
         return Ok(());
     }
 
-    // TODO: Generate the actual source ordinal and memoization info.
-    let source_ordinal: Option<i64> = if scope_value.is_some() { Some(1) } else { None };
-    let memoization_info = MemoizationInfo::default();
+    let (source_ordinal, precommit_data) = match &evaluate_output {
+        Some((scope_value, memoization_info)) => {
+            // TODO: Generate the actual source ordinal.
+            (
+                Some(1),
+                Some(PrecommitData {
+                    scope_value,
+                    memoization_info,
+                }),
+            )
+        }
+        None => (None, None),
+    };
+    if evaluate_output.is_some() {
+        Some(1)
+    } else {
+        None
+    };
 
     // Phase 2 (precommit): Update with the memoization info and stage target keys.
     let precommit_output = precommit_source_tracking_info(
         source_id,
         &source_key_json,
         source_ordinal,
-        memoization_info,
+        precommit_data,
         &process_timestamp,
         &plan.tracking_table_setup,
-        &scope_value,
         &plan.export_ops,
         pool,
     )

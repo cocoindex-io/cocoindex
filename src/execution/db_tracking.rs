@@ -73,7 +73,7 @@ pub async fn precommit_source_tracking_info(
     source_key_json: &serde_json::Value,
     max_process_ordinal: i64,
     staging_target_keys: TrackedTargetKeyForSource,
-    memoization_info: MemoizationInfo,
+    memoization_info: Option<&MemoizationInfo>,
     db_setup: &TrackingTableSetupState,
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
     action: WriteAction,
@@ -92,7 +92,7 @@ pub async fn precommit_source_tracking_info(
         .bind(source_key_json) // $2
         .bind(max_process_ordinal) // $3
         .bind(sqlx::types::Json(staging_target_keys)) // $4
-        .bind(sqlx::types::Json(memoization_info)) // $5
+        .bind(memoization_info.map(|m| sqlx::types::Json(m))) // $5
         .execute(db_executor)
         .await?;
     Ok(())

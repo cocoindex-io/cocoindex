@@ -11,7 +11,7 @@ use crate::{
     utils::immutable::RefList,
 };
 
-use super::memoization::MemoizationInfo;
+use super::memoization::{EvaluationCache, MemoizationInfo};
 
 #[derive(Debug)]
 pub struct ScopeValueBuilder {
@@ -285,6 +285,11 @@ fn assemble_input_values(
         .collect()
 }
 
+struct CacheEntry {
+    value: serde_json::Value,
+    used: bool,
+}
+
 async fn evaluate_child_op_scope(
     op_scope: &AnalyzedOpScope,
     scoped_entries: RefList<'_, &ScopeEntry<'_>>,
@@ -390,7 +395,8 @@ pub async fn evaluate_source_entry<'a>(
     source_op_idx: u32,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
-) -> Result<Option<ScopeValueBuilder>> {
+    memoization_info: Option<MemoizationInfo>,
+) -> Result<Option<(ScopeValueBuilder, MemoizationInfo)>> {
     let root_schema = &schema.schema;
     let root_scope_value =
         ScopeValueBuilder::new(root_schema.fields.len(), schema.collectors.len());
@@ -413,6 +419,9 @@ pub async fn evaluate_source_entry<'a>(
 
     let result = match source_op.executor.get_value(&key).await? {
         Some(val) => {
+            let cache = memoization_info
+                .map(|info| EvaluationCache::from_stored(info.cache))
+                .unwrap_or_default();
             let scope_value =
                 ScopeValueBuilder::augmented_from(value::ScopeValue(val), &collection_schema)?;
             root_scope_entry.define_field_w_builder(
@@ -421,7 +430,12 @@ pub async fn evaluate_source_entry<'a>(
             );
 
             evaluate_op_scope(&plan.op_scope, RefList::Nil.prepend(&root_scope_entry)).await?;
-            Some(root_scope_value)
+            Some((
+                root_scope_value,
+                MemoizationInfo {
+                    cache: cache.into_stored()?,
+                },
+            ))
         }
         None => None,
     };
