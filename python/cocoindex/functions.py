@@ -16,7 +16,7 @@ class SentenceTransformerEmbed(op.FunctionSpec):
     """Run the sentence transformer"""
     model: str
 
-@op.executor_class(gpu=True)
+@op.executor_class(gpu=True, cache=True, behavior_version=1)
 class SentenceTransformerEmbedExecutor:
     """Executor for SentenceTransformerEmbed."""
 
