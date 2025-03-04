@@ -10,6 +10,7 @@ use sqlx::PgPool;
 
 use super::db_tracking::{self, read_source_tracking_info};
 use super::db_tracking_setup;
+use super::memoization::MemoizationInfo;
 use crate::base::schema;
 use crate::base::spec::FlowInstanceSpec;
 use crate::base::value::{self, FieldValues, KeyValue};
@@ -130,7 +131,7 @@ async fn precommit_source_tracking_info(
     source_id: i32,
     source_key_json: &serde_json::Value,
     source_ordinal: Option<i64>,
-    memoization_info: serde_json::Value,
+    memoization_info: MemoizationInfo,
     process_timestamp: &chrono::DateTime<chrono::Utc>,
     db_setup: &db_tracking_setup::TrackingTableSetupState,
     scope_value: &Option<ScopeValueBuilder>,
@@ -447,7 +448,7 @@ pub async fn update_source_entry<'a>(
 
     // TODO: Generate the actual source ordinal and memoization info.
     let source_ordinal: Option<i64> = if scope_value.is_some() { Some(1) } else { None };
-    let memoization_info = serde_json::Value::Null;
+    let memoization_info = MemoizationInfo::default();
 
     // Phase 2 (precommit): Update with the memoization info and stage target keys.
     let precommit_output = precommit_source_tracking_info(

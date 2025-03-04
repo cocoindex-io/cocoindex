@@ -1,4 +1,4 @@
-use super::db_tracking_setup::TrackingTableSetupState;
+use super::{db_tracking_setup::TrackingTableSetupState, memoization::MemoizationInfo};
 use crate::utils::db::WriteAction;
 use anyhow::Result;
 use sqlx::PgPool;
@@ -11,7 +11,7 @@ pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKey>)>;
 pub struct SourceTrackingInfo {
     pub max_process_ordinal: i64,
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
-    pub memoization_info: Option<serde_json::Value>,
+    pub memoization_info: Option<sqlx::types::Json<MemoizationInfo>>,
 
     pub processed_source_ordinal: Option<i64>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
@@ -73,7 +73,7 @@ pub async fn precommit_source_tracking_info(
     source_key_json: &serde_json::Value,
     max_process_ordinal: i64,
     staging_target_keys: TrackedTargetKeyForSource,
-    memoization_info: serde_json::Value,
+    memoization_info: MemoizationInfo,
     db_setup: &TrackingTableSetupState,
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
     action: WriteAction,
@@ -92,7 +92,7 @@ pub async fn precommit_source_tracking_info(
         .bind(source_key_json) // $2
         .bind(max_process_ordinal) // $3
         .bind(sqlx::types::Json(staging_target_keys)) // $4
-        .bind(memoization_info) // $5
+        .bind(sqlx::types::Json(memoization_info)) // $5
         .execute(db_executor)
         .await?;
     Ok(())

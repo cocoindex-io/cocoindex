@@ -11,6 +11,8 @@ use crate::{
     utils::immutable::RefList,
 };
 
+use super::memoization::MemoizationInfo;
+
 #[derive(Debug)]
 pub struct ScopeValueBuilder {
     // TODO: Share the same lock for values produced in the same execution scope, for stricter atomicity.
