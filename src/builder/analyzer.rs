@@ -716,7 +716,7 @@ impl<'a> AnalyzerContext<'a> {
                                 output_type: output_type.typ.clone(),
                             };
                             if function_exec_info.enable_cache
-                                && function_exec_info.behavior_version.is_some()
+                                && function_exec_info.behavior_version.is_none()
                             {
                                 api_bail!(
                                     "When caching is enabled, behavior version must be specified for transform op: {}",

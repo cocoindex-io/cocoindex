@@ -266,13 +266,13 @@ impl SimpleFunctionFactory for PyFunctionFactory {
                 let (enable_cache, behavior_version) =
                     Python::with_gil(|py| -> anyhow::Result<_> {
                         executor.call_method(py, "prepare", (), None)?;
-                        let enable_cache = executor.call_method(py, "enable_cache", (), None)?;
-                        let behavior_version =
-                            executor.call_method(py, "behavior_version", (), None)?;
-                        Ok((
-                            enable_cache.extract::<bool>(py)?,
-                            behavior_version.extract::<Option<u32>>(py)?,
-                        ))
+                        let enable_cache = executor
+                            .call_method(py, "enable_cache", (), None)?
+                            .extract::<bool>(py)?;
+                        let behavior_version = executor
+                            .call_method(py, "behavior_version", (), None)?
+                            .extract::<Option<u32>>(py)?;
+                        Ok((enable_cache, behavior_version))
                     })?;
                 Ok(Box::new(Arc::new(PyFunctionExecutor {
                     py_function_executor: executor,
