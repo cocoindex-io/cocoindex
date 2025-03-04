@@ -64,7 +64,7 @@ pub struct AnalyzedSourceOp {
 }
 
 pub struct AnalyzedFunctionExecInfo {
-    pub enable_caching: bool,
+    pub enable_cache: bool,
     pub behavior_version: Option<u32>,
 
     /// Fingerprinter of the function's behavior.

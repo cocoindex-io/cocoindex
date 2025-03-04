@@ -706,7 +706,7 @@ impl<'a> AnalyzerContext<'a> {
                             })?;
                             let behavior_version = executor.behavior_version();
                             let function_exec_info = AnalyzedFunctionExecInfo {
-                                enable_caching: executor.enable_caching(),
+                                enable_cache: executor.enable_cache(),
                                 behavior_version,
                                 fingerprinter: Fingerprinter::default()
                                     .with(&reactive_op.name)?
@@ -715,7 +715,7 @@ impl<'a> AnalyzerContext<'a> {
                                     .with(&output_type.without_attrs())?,
                                 output_type: output_type.typ.clone(),
                             };
-                            if function_exec_info.enable_caching
+                            if function_exec_info.enable_cache
                                 && function_exec_info.behavior_version.is_some()
                             {
                                 api_bail!(

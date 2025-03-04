@@ -40,11 +40,11 @@ pub trait SimpleFunctionExecutor: Send + Sync {
     /// Evaluate the operation.
     async fn evaluate(&self, args: Vec<Value>) -> Result<Value>;
 
-    fn enable_caching(&self) -> bool {
+    fn enable_cache(&self) -> bool {
         false
     }
 
-    /// Must be Some if `enable_caching` is true.
+    /// Must be Some if `enable_cache` is true.
     /// If it changes, the cache will be invalidated.
     fn behavior_version(&self) -> Option<u32> {
         None

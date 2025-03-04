@@ -306,7 +306,7 @@ async fn evaluate_op_scope(
                 let input_values = assemble_input_values(&op.inputs, scoped_entries);
                 let output_value = if let Some(cache) = op
                     .function_exec_info
-                    .enable_caching
+                    .enable_cache
                     .then_some(cache)
                     .flatten()
                 {
