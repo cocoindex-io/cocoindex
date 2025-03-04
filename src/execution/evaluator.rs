@@ -11,7 +11,7 @@ use crate::{
     utils::immutable::RefList,
 };
 
-use super::memoization::{EvaluationCache, MemoizationInfo};
+use super::memoization::EvaluationCache;
 
 #[derive(Debug)]
 pub struct ScopeValueBuilder {
@@ -285,22 +285,19 @@ fn assemble_input_values(
         .collect()
 }
 
-struct CacheEntry {
-    value: serde_json::Value,
-    used: bool,
-}
-
 async fn evaluate_child_op_scope(
     op_scope: &AnalyzedOpScope,
     scoped_entries: RefList<'_, &ScopeEntry<'_>>,
     child_scope_entry: ScopeEntry<'_>,
+    cache: Option<&EvaluationCache>,
 ) -> Result<()> {
-    evaluate_op_scope(op_scope, scoped_entries.prepend(&child_scope_entry)).await
+    evaluate_op_scope(op_scope, scoped_entries.prepend(&child_scope_entry), cache).await
 }
 
 async fn evaluate_op_scope(
     op_scope: &AnalyzedOpScope,
     scoped_entries: RefList<'_, &ScopeEntry<'_>>,
+    cache: Option<&EvaluationCache>,
 ) -> Result<()> {
     let head_scope = *scoped_entries.head().unwrap();
     for reactive_op in op_scope.reactive_ops.iter() {
@@ -331,6 +328,7 @@ async fn evaluate_op_scope(
                                     value: &item,
                                     schema: &collection_schema.row,
                                 },
+                                cache,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -345,6 +343,7 @@ async fn evaluate_op_scope(
                                     value: v,
                                     schema: &collection_schema.row,
                                 },
+                                cache,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -360,6 +359,7 @@ async fn evaluate_op_scope(
                                     value: item,
                                     schema: &collection_schema.row,
                                 },
+                                cache,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -395,8 +395,8 @@ pub async fn evaluate_source_entry<'a>(
     source_op_idx: u32,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
-    memoization_info: Option<MemoizationInfo>,
-) -> Result<Option<(ScopeValueBuilder, MemoizationInfo)>> {
+    cache: Option<&EvaluationCache>,
+) -> Result<Option<ScopeValueBuilder>> {
     let root_schema = &schema.schema;
     let root_scope_value =
         ScopeValueBuilder::new(root_schema.fields.len(), schema.collectors.len());
@@ -419,9 +419,6 @@ pub async fn evaluate_source_entry<'a>(
 
     let result = match source_op.executor.get_value(&key).await? {
         Some(val) => {
-            let cache = memoization_info
-                .map(|info| EvaluationCache::from_stored(info.cache))
-                .unwrap_or_default();
             let scope_value =
                 ScopeValueBuilder::augmented_from(value::ScopeValue(val), &collection_schema)?;
             root_scope_entry.define_field_w_builder(
@@ -429,13 +426,13 @@ pub async fn evaluate_source_entry<'a>(
                 value::Value::Table(BTreeMap::from([(key.clone(), scope_value)])),
             );
 
-            evaluate_op_scope(&plan.op_scope, RefList::Nil.prepend(&root_scope_entry)).await?;
-            Some((
-                root_scope_value,
-                MemoizationInfo {
-                    cache: cache.into_stored()?,
-                },
-            ))
+            evaluate_op_scope(
+                &plan.op_scope,
+                RefList::Nil.prepend(&root_scope_entry),
+                cache,
+            )
+            .await?;
+            Some(root_scope_value)
         }
         None => None,
     };
@@ -468,6 +465,7 @@ pub async fn evaluate_transient_flow(
     evaluate_op_scope(
         &flow.execution_plan.op_scope,
         RefList::Nil.prepend(&root_scope_entry),
+        None,
     )
     .await?;
     let output_value = assemble_value(

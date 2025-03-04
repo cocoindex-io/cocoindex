@@ -10,7 +10,7 @@ use sqlx::PgPool;
 
 use super::db_tracking::{self, read_source_tracking_info};
 use super::db_tracking_setup;
-use super::memoization::MemoizationInfo;
+use super::memoization::{EvaluationCache, MemoizationInfo};
 use crate::base::schema;
 use crate::base::spec::FlowInstanceSpec;
 use crate::base::value::{self, FieldValues, KeyValue};
@@ -446,28 +446,34 @@ pub async fn update_source_entry<'a>(
     let memoization_info = existing_tracking_info
         .map(|info| info.memoization_info.map(|info| info.0))
         .flatten();
-    let evaluate_output =
-        evaluate_source_entry(plan, source_op_idx, schema, key, memoization_info).await?;
+    let evaluation_cache = memoization_info
+        .map(|info| EvaluationCache::from_stored(info.cache))
+        .unwrap_or_default();
+    let value_builder =
+        evaluate_source_entry(plan, source_op_idx, schema, key, Some(&evaluation_cache)).await?;
 
     // Didn't exist and still doesn't exist. No need to apply any changes.
-    if !already_exists && evaluate_output.is_none() {
+    if !already_exists && value_builder.is_none() {
         return Ok(());
     }
 
-    let (source_ordinal, precommit_data) = match &evaluate_output {
-        Some((scope_value, memoization_info)) => {
-            // TODO: Generate the actual source ordinal.
+    let memoization_info = MemoizationInfo {
+        cache: evaluation_cache.into_stored()?,
+    };
+    let (source_ordinal, precommit_data) = match &value_builder {
+        Some(scope_value) => {
             (
+                // TODO: Generate the actual source ordinal.
                 Some(1),
                 Some(PrecommitData {
                     scope_value,
-                    memoization_info,
+                    memoization_info: &memoization_info,
                 }),
             )
         }
         None => (None, None),
     };
-    if evaluate_output.is_some() {
+    if value_builder.is_some() {
         Some(1)
     } else {
         None
