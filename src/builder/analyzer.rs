@@ -8,6 +8,7 @@ use crate::setup::{
     self, DesiredMode, FlowSetupMetadata, FlowSetupState, ResourceIdentifier, SourceSetupState,
     TargetSetupState, TargetSetupStateCommon,
 };
+use crate::utils::fingerprint::Fingerprinter;
 use crate::{
     api_bail, api_error,
     base::{
@@ -698,24 +699,32 @@ impl<'a> AnalyzerContext<'a> {
                         let output = scope
                             .data
                             .add_field(reactive_op.name.clone(), &output_type)?;
-                        let op_name = reactive_op.name.clone();
+                        let reactive_op = reactive_op.clone();
                         async move {
                             let executor = executor.await.with_context(|| {
-                                format!("Failed to build executor for transform op: {op_name}")
+                                format!("Failed to build executor for transform op: {}", reactive_op.name)
                             })?;
+                            let behavior_version = executor.behavior_version();
                             let function_exec_info = AnalyzedFunctionExecInfo {
                                 enable_caching: executor.enable_caching(),
-                                behavior_version: executor.behavior_version(),
+                                behavior_version,
+                                fingerprinter: Fingerprinter::default()
+                                    .with(&reactive_op.name)?
+                                    .with(&reactive_op.spec)?
+                                    .with(&behavior_version)?
+                                    .with(&output_type.without_attrs())?,
+                                output_type: output_type.typ.clone(),
                             };
                             if function_exec_info.enable_caching
                                 && function_exec_info.behavior_version.is_some()
                             {
                                 api_bail!(
-                                    "When caching is enabled, behavior version must be specified for transform op: {op_name}",
+                                    "When caching is enabled, behavior version must be specified for transform op: {}",
+                                    reactive_op.name
                                 );
                             }
                             Ok(AnalyzedReactiveOp::Transform(AnalyzedTransformOp {
-                                name: op_name,
+                                name: reactive_op.name,
                                 inputs: input_value_mappings,
                                 function_exec_info,
                                 executor,

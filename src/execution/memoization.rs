@@ -2,11 +2,13 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{Arc, Mutex},
 };
 
 use crate::{
     base::{schema, value},
+    service::error::{SharedError, SharedResultExt},
     utils::fingerprint::Fingerprint,
 };
 
@@ -37,7 +39,7 @@ enum EvaluationCacheData {
     /// Existing entry in previous runs, but not in current run yet.
     Previous(serde_json::Value),
     /// Value appeared in current run.
-    Current(Arc<async_lock::OnceCell<value::Value>>),
+    Current(Arc<async_lock::OnceCell<Result<value::Value, SharedError>>>),
 }
 
 pub struct EvaluationCache {
@@ -79,17 +81,20 @@ impl EvaluationCache {
             .into_iter()
             .filter_map(|(k, e)| match e.data {
                 EvaluationCacheData::Previous(_) => None,
-                EvaluationCacheData::Current(entry) => entry.get().map(|v| {
-                    Ok((
-                        k,
-                        CacheEntry {
-                            time_sec: e.time.timestamp(),
-                            value: serde_json::to_value(v)?,
-                        },
-                    ))
-                }),
+                EvaluationCacheData::Current(entry) => match entry.get() {
+                    Some(Ok(v)) => Some(serde_json::to_value(v).map(|value| {
+                        (
+                            k,
+                            CacheEntry {
+                                time_sec: e.time.timestamp(),
+                                value,
+                            },
+                        )
+                    })),
+                    _ => None,
+                },
             })
-            .collect::<Result<_>>()?)
+            .collect::<Result<_, _>>()?)
     }
 
     pub fn get(
@@ -97,7 +102,7 @@ impl EvaluationCache {
         key: Fingerprint,
         typ: &schema::ValueType,
         ttl: Option<chrono::Duration>,
-    ) -> Result<Arc<async_lock::OnceCell<value::Value>>> {
+    ) -> Result<Arc<async_lock::OnceCell<Result<value::Value, SharedError>>>> {
         let mut cache = self.cache.lock().unwrap();
         let result = {
             match cache.entry(key) {
@@ -110,7 +115,7 @@ impl EvaluationCache {
                     match &mut entry_mut.data {
                         EvaluationCacheData::Previous(value) => {
                             let value = value::Value::from_json(std::mem::take(value), typ)?;
-                            let cell = Arc::new(async_lock::OnceCell::from(value));
+                            let cell = Arc::new(async_lock::OnceCell::from(Ok(value)));
                             let time = entry_mut.time;
                             entry.insert(EvaluationCacheEntry {
                                 time,
@@ -132,5 +137,25 @@ impl EvaluationCache {
             }
         };
         Ok(result)
+    }
+
+    pub async fn evaluate<Fut>(
+        &self,
+        key: Fingerprint,
+        typ: &schema::ValueType,
+        ttl: Option<chrono::Duration>,
+        compute: impl FnOnce() -> Fut,
+    ) -> Result<value::Value>
+    where
+        Fut: Future<Output = Result<value::Value>>,
+    {
+        let cell = self.get(key, typ, ttl)?;
+        let result = cell
+            .get_or_init(|| {
+                let fut = compute();
+                async move { fut.await.map_err(SharedError::new) }
+            })
+            .await;
+        Ok(result.clone().std_result()?)
     }
 }

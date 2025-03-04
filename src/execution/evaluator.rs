@@ -304,7 +304,29 @@ async fn evaluate_op_scope(
         match reactive_op {
             AnalyzedReactiveOp::Transform(op) => {
                 let input_values = assemble_input_values(&op.inputs, scoped_entries);
-                let output_value = op.executor.evaluate(input_values).await?;
+                let output_value = if let Some(cache) = op
+                    .function_exec_info
+                    .enable_caching
+                    .then_some(cache)
+                    .flatten()
+                {
+                    let key = op
+                        .function_exec_info
+                        .fingerprinter
+                        .clone()
+                        .with(&input_values)?
+                        .to_fingerprint();
+                    cache
+                        .evaluate(
+                            key,
+                            &op.function_exec_info.output_type,
+                            /*ttl=*/ None,
+                            move || op.executor.evaluate(input_values),
+                        )
+                        .await?
+                } else {
+                    op.executor.evaluate(input_values).await?
+                };
                 head_scope.define_field(&op.output, output_value)?;
             }
 

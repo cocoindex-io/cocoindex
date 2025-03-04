@@ -6,6 +6,7 @@ use crate::base::schema::ValueType;
 use crate::base::value;
 use crate::execution::db_tracking_setup;
 use crate::ops::interface::*;
+use crate::utils::fingerprint::Fingerprinter;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AnalyzedLocalFieldReference {
@@ -65,6 +66,10 @@ pub struct AnalyzedSourceOp {
 pub struct AnalyzedFunctionExecInfo {
     pub enable_caching: bool,
     pub behavior_version: Option<u32>,
+
+    /// Fingerprinter of the function's behavior.
+    pub fingerprinter: Fingerprinter,
+    pub output_type: ValueType,
 }
 
 pub struct AnalyzedTransformOp {
