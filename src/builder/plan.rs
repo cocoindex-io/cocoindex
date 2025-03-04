@@ -55,24 +55,34 @@ pub struct AnalyzedOpOutput {
 }
 
 pub struct AnalyzedSourceOp {
+    pub name: String,
     pub source_id: i32,
     pub executor: Box<dyn SourceExecutor>,
     pub output: AnalyzedOpOutput,
     pub primary_key_type: ValueType,
 }
 
+pub struct AnalyzedFunctionExecInfo {
+    pub enable_caching: bool,
+    pub behavior_version: Option<u32>,
+}
+
 pub struct AnalyzedTransformOp {
+    pub name: String,
     pub inputs: Vec<AnalyzedValueMapping>,
+    pub function_exec_info: AnalyzedFunctionExecInfo,
     pub executor: Box<dyn SimpleFunctionExecutor>,
     pub output: AnalyzedOpOutput,
 }
 
 pub struct AnalyzedForEachOp {
+    pub name: String,
     pub local_field_ref: AnalyzedLocalFieldReference,
     pub op_scope: AnalyzedOpScope,
 }
 
 pub struct AnalyzedCollectOp {
+    pub name: String,
     pub input: AnalyzedStructMapping,
     pub collector_ref: AnalyzedCollectorReference,
 }
@@ -82,6 +92,7 @@ pub enum AnalyzedPrimaryKeyDef {
 }
 
 pub struct AnalyzedExportOp {
+    pub name: String,
     pub target_id: i32,
     pub input: AnalyzedLocalCollectorReference,
     pub executor: Arc<dyn ExportTargetExecutor>,

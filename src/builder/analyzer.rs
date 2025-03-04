@@ -645,6 +645,7 @@ impl<'a> AnalyzerContext<'a> {
             source_id
         });
 
+        let op_name = source_op.name.clone();
         let output = scope.add_field(source_op.name, &output_type)?;
         let result_fut = async move {
             Ok(AnalyzedSourceOp {
@@ -654,9 +655,10 @@ impl<'a> AnalyzerContext<'a> {
                 primary_key_type: output_type
                     .typ
                     .key_type()
-                    .ok_or_else(|| api_error!("Source must produce a type with key"))?
+                    .ok_or_else(|| api_error!("Source must produce a type with key: {op_name}"))?
                     .typ
                     .clone(),
+                name: op_name,
             })
         };
         Ok(result_fut)
@@ -696,10 +698,27 @@ impl<'a> AnalyzerContext<'a> {
                         let output = scope
                             .data
                             .add_field(reactive_op.name.clone(), &output_type)?;
+                        let op_name = reactive_op.name.clone();
                         async move {
+                            let executor = executor.await.with_context(|| {
+                                format!("Failed to build executor for transform op: {op_name}")
+                            })?;
+                            let function_exec_info = AnalyzedFunctionExecInfo {
+                                enable_caching: executor.enable_caching(),
+                                behavior_version: executor.behavior_version(),
+                            };
+                            if function_exec_info.enable_caching
+                                && function_exec_info.behavior_version.is_some()
+                            {
+                                api_bail!(
+                                    "When caching is enabled, behavior version must be specified for transform op: {op_name}",
+                                );
+                            }
                             Ok(AnalyzedReactiveOp::Transform(AnalyzedTransformOp {
+                                name: op_name,
                                 inputs: input_value_mappings,
-                                executor: executor.await?,
+                                function_exec_info,
+                                executor,
                                 output,
                             }))
                         }
@@ -735,10 +754,14 @@ impl<'a> AnalyzerContext<'a> {
                         parent_scopes.prepend(&scope),
                     )?
                 };
+                let op_name = reactive_op.name.clone();
                 async move {
                     Ok(AnalyzedReactiveOp::ForEach(AnalyzedForEachOp {
                         local_field_ref,
-                        op_scope: op_scope_fut.await?,
+                        op_scope: op_scope_fut
+                            .await
+                            .with_context(|| format!("Analyzing foreach op: {op_name}"))?,
+                        name: op_name,
                     }))
                 }
                 .boxed()
@@ -753,8 +776,10 @@ impl<'a> AnalyzerContext<'a> {
                     struct_schema,
                     scopes,
                 )?;
+                let op_name = reactive_op.name.clone();
                 async move {
                     Ok(AnalyzedReactiveOp::Collect(AnalyzedCollectOp {
+                        name: op_name,
                         input: struct_mapping,
                         collector_ref,
                     }))
@@ -933,8 +958,12 @@ impl<'a> AnalyzerContext<'a> {
             .transpose()?;
 
         Ok(async move {
-            let (executor, query_target) = executor_futs.await?;
+            let (executor, query_target) = executor_futs
+                .await
+                .with_context(|| format!("Analyzing export op: {}", export_op.name))?;
+            let name = export_op.name;
             Ok(AnalyzedExportOp {
+                name,
                 target_id: target_id.unwrap_or_default(),
                 input: local_collector_ref,
                 executor,
