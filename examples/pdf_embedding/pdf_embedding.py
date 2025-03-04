@@ -11,7 +11,7 @@ import cocoindex
 class PdfToMarkdown(cocoindex.op.FunctionSpec):
     """Convert a PDF to markdown."""
 
-@cocoindex.op.executor_class(gpu=True)
+@cocoindex.op.executor_class(gpu=True, cache=True, behavior_version=1)
 class PdfToMarkdownExecutor:
     """Executor for PdfToMarkdown."""
 
