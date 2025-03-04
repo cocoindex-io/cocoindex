@@ -6,9 +6,8 @@ use log::error;
 use serde::Serialize;
 use sqlx::PgPool;
 
-use super::db_tracking::{self, read_source_tracking_info};
+use super::db_tracking::{self, read_source_tracking_info, TrackedTargetKey, ValueFingerprint};
 use super::db_tracking_setup;
-use super::fingerprint::Fingerprinter;
 use super::memoization::{EvaluationCache, MemoizationInfo};
 use crate::base::schema;
 use crate::base::spec::FlowInstanceSpec;
@@ -16,8 +15,7 @@ use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
 use crate::ops::interface::{ExportTargetMutation, ExportTargetUpsertEntry};
 use crate::utils::db::WriteAction;
-
-use self::db_tracking::{TrackedTargetKey, ValueFingerprint};
+use crate::utils::fingerprint::Fingerprinter;
 
 use super::evaluator::{evaluate_source_entry, ScopeValueBuilder};
 
