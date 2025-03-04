@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use futures::future::{join_all, try_join, try_join_all};
-use log::error;
+use log::{debug, error};
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -565,6 +565,7 @@ async fn update_source(
         let result = update_source_entry(plan, source_op_idx, schema, &key, pool).await;
         if let Err(e) = result {
             error!("Error indexing source row: {}", e);
+            debug!("Detailed error: {:?}", e);
         }
     }))
     .await;
