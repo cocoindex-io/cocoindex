@@ -47,7 +47,7 @@ We'll need to install a bunch of dependencies for this project.
 
 Create a new file `quickstart.py` and import the `cocoindex` library:
 
-```python
+```python title="quickstart.py"
 import cocoindex
 ```
 
@@ -61,7 +61,7 @@ Then we'll put the following pieces into the file:
 
 Starting from the indexing flow:
 
-```python
+```python title="quickstart.py"
 @cocoindex.flow_def(name="TextEmbedding")
 def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     # Add a data source to read files from a directory
@@ -118,7 +118,7 @@ Notes:
 
 Starting from the query handler:
 
-```python
+```python title="quickstart.py"
 query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
     name="SemanticsSearch",
     flow=text_embedding_flow,
@@ -136,7 +136,7 @@ This handler queries the vector index `"doc_embeddings"`, and uses the same embe
 
 The main function is used to interact with users and run queries using the query handler above.
 
-```python
+```python title="quickstart.py"
 @cocoindex.main_fn()
 def _main():
     # Run queries to demonstrate the query capabilities.
