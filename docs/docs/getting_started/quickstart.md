@@ -32,7 +32,7 @@ This guide will help you get up and running with CocoIndex in just a few minutes
     - Start a Postgres SQL database for cocoindex using our docker compose config:
 
     ```bash
-    docker compose -f <(curl -L https://raw.githubusercontent.com/cocoIndex/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
+    docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
     ```
 
 ## Step 2: Create the Python file `quickstart.py`

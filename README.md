@@ -37,7 +37,7 @@ pip install cocoindex
     - Start a Postgres SQL database for cocoindex using our docker compose config:
 
     ```bash
-    docker compose -f <(curl -L https://raw.githubusercontent.com/cocoIndex/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
+    docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
     ```
 
 ### Start your first indexing flow!
