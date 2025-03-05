@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 use base64::prelude::*;
 use blake2::digest::typenum;
 use blake2::{Blake2b, Digest};
