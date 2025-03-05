@@ -11,7 +11,7 @@ use crate::{
     utils::immutable::RefList,
 };
 
-use super::memoization::EvaluationCache;
+use super::memoization::{evaluate_with_cell, EvaluationCache};
 
 #[derive(Debug)]
 pub struct ScopeValueBuilder {
@@ -59,7 +59,7 @@ impl ScopeValueBuilder {
     }
 
     fn augmented_from(
-        source: value::ScopeValue,
+        source: &value::ScopeValue,
         schema: &schema::CollectionSchema,
     ) -> Result<Self> {
         let val_index_base = if schema.has_key() { 1 } else { 0 };
@@ -70,7 +70,7 @@ impl ScopeValueBuilder {
         let value::ScopeValue(source_fields) = source;
         for ((v, t), r) in source_fields
             .fields
-            .into_iter()
+            .iter()
             .zip(schema.row.fields[val_index_base..(val_index_base + len)].iter())
             .zip(&mut builder.fields)
         {
@@ -82,17 +82,17 @@ impl ScopeValueBuilder {
 }
 
 fn augmented_value(
-    val: value::Value,
+    val: &value::Value,
     val_type: &schema::ValueType,
 ) -> Result<value::Value<ScopeValueBuilder>> {
     let value = match (val, val_type) {
         (value::Value::Null, _) => value::Value::Null,
-        (value::Value::Basic(v), _) => value::Value::Basic(v),
+        (value::Value::Basic(v), _) => value::Value::Basic(v.clone()),
         (value::Value::Struct(v), schema::ValueType::Struct(t)) => {
             value::Value::Struct(value::FieldValues {
                 fields: v
                     .fields
-                    .into_iter()
+                    .iter()
                     .enumerate()
                     .map(|(i, v)| augmented_value(v, &t.fields[i].value_type.typ))
                     .collect::<Result<Vec<_>>>()?,
@@ -106,8 +106,8 @@ fn augmented_value(
             )
         }
         (value::Value::Table(v), schema::ValueType::Collection(t)) => value::Value::Table(
-            v.into_iter()
-                .map(|(k, v)| Ok((k, ScopeValueBuilder::augmented_from(v, t)?)))
+            v.iter()
+                .map(|(k, v)| Ok((k.clone(), ScopeValueBuilder::augmented_from(v, t)?)))
                 .collect::<Result<BTreeMap<_, _>>>()?,
         ),
         (value::Value::List(v), schema::ValueType::Collection(t)) => value::Value::List(
@@ -245,7 +245,7 @@ impl<'a> ScopeEntry<'a> {
             .expect("Field is already set, violating single-definition rule");
     }
 
-    fn define_field(&self, output_field: &AnalyzedOpOutput, val: value::Value) -> Result<()> {
+    fn define_field(&self, output_field: &AnalyzedOpOutput, val: &value::Value) -> Result<()> {
         let field_index = output_field.field_idx as usize;
         let field_schema = &self.schema.fields[field_index];
         let val = augmented_value(val, &field_schema.value_type.typ)?;
@@ -304,30 +304,28 @@ async fn evaluate_op_scope(
         match reactive_op {
             AnalyzedReactiveOp::Transform(op) => {
                 let input_values = assemble_input_values(&op.inputs, scoped_entries);
-                let output_value = if let Some(cache) = op
-                    .function_exec_info
-                    .enable_cache
-                    .then_some(cache)
-                    .flatten()
-                {
-                    let key = op
-                        .function_exec_info
-                        .fingerprinter
-                        .clone()
-                        .with(&input_values)?
-                        .to_fingerprint();
-                    cache
-                        .evaluate(
+
+                let output_value_cell = match (op.function_exec_info.enable_cache, cache) {
+                    (true, Some(cache)) => {
+                        let key = op
+                            .function_exec_info
+                            .fingerprinter
+                            .clone()
+                            .with(&input_values)?
+                            .to_fingerprint();
+                        Some(cache.get(
                             key,
                             &op.function_exec_info.output_type,
                             /*ttl=*/ None,
-                            move || op.executor.evaluate(input_values),
-                        )
-                        .await?
-                } else {
-                    op.executor.evaluate(input_values).await?
+                        )?)
+                    }
+                    _ => None,
                 };
-                head_scope.define_field(&op.output, output_value)?;
+                let output_value = evaluate_with_cell(output_value_cell.as_ref(), move || {
+                    op.executor.evaluate(input_values)
+                })
+                .await?;
+                head_scope.define_field(&op.output, &output_value)?;
             }
 
             AnalyzedReactiveOp::ForEach(op) => {
@@ -442,7 +440,7 @@ pub async fn evaluate_source_entry<'a>(
     let result = match source_op.executor.get_value(&key).await? {
         Some(val) => {
             let scope_value =
-                ScopeValueBuilder::augmented_from(value::ScopeValue(val), &collection_schema)?;
+                ScopeValueBuilder::augmented_from(&value::ScopeValue(val), &collection_schema)?;
             root_scope_entry.define_field_w_builder(
                 &source_op.output,
                 value::Value::Table(BTreeMap::from([(key.clone(), scope_value)])),
@@ -463,7 +461,7 @@ pub async fn evaluate_source_entry<'a>(
 
 pub async fn evaluate_transient_flow(
     flow: &AnalyzedTransientFlow,
-    input_values: Vec<value::Value>,
+    input_values: &Vec<value::Value>,
 ) -> Result<value::Value> {
     let root_schema = &flow.data_schema.schema;
     let root_scope_value =

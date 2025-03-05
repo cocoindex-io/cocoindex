@@ -142,6 +142,19 @@ impl<T> SharedResultExt<T> for Result<T, SharedError> {
     }
 }
 
+pub trait SharedResultExtRef<'a, T> {
+    fn std_result(self) -> Result<&'a T, SharedErrorWrapper>;
+}
+
+impl<'a, T> SharedResultExtRef<'a, T> for &'a Result<T, SharedError> {
+    fn std_result(self) -> Result<&'a T, SharedErrorWrapper> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(err) => Err(SharedErrorWrapper(err.clone())),
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! api_bail {
     ( $fmt:literal $(, $($arg:expr) , *)?) => {

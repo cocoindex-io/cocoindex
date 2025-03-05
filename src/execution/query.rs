@@ -72,7 +72,7 @@ impl SimpleSemanticsQueryHandler {
     ) -> Result<(QueryResults, SimpleSemanticsQueryInfo)> {
         let query_results = evaluate_transient_flow(
             &self.query_transform_flow,
-            vec![value::BasicValue::Str(Arc::from(query)).into()],
+            &vec![value::BasicValue::Str(Arc::from(query)).into()],
         )
         .await?;
         let vector = match query_results {

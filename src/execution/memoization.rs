@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::HashMap,
     future::Future,
     sync::{Arc, Mutex},
@@ -8,7 +9,7 @@ use std::{
 
 use crate::{
     base::{schema, value},
-    service::error::{SharedError, SharedResultExt},
+    service::error::{SharedError, SharedResultExtRef},
     utils::fingerprint::Fingerprint,
 };
 
@@ -35,11 +36,12 @@ struct EvaluationCacheEntry {
     data: EvaluationCacheData,
 }
 
+pub type CacheEntryCell = Arc<async_lock::OnceCell<Result<value::Value, SharedError>>>;
 enum EvaluationCacheData {
     /// Existing entry in previous runs, but not in current run yet.
     Previous(serde_json::Value),
     /// Value appeared in current run.
-    Current(Arc<async_lock::OnceCell<Result<value::Value, SharedError>>>),
+    Current(CacheEntryCell),
 }
 
 pub struct EvaluationCache {
@@ -102,7 +104,7 @@ impl EvaluationCache {
         key: Fingerprint,
         typ: &schema::ValueType,
         ttl: Option<chrono::Duration>,
-    ) -> Result<Arc<async_lock::OnceCell<Result<value::Value, SharedError>>>> {
+    ) -> Result<CacheEntryCell> {
         let mut cache = self.cache.lock().unwrap();
         let result = {
             match cache.entry(key) {
@@ -138,24 +140,25 @@ impl EvaluationCache {
         };
         Ok(result)
     }
+}
 
-    pub async fn evaluate<Fut>(
-        &self,
-        key: Fingerprint,
-        typ: &schema::ValueType,
-        ttl: Option<chrono::Duration>,
-        compute: impl FnOnce() -> Fut,
-    ) -> Result<value::Value>
-    where
-        Fut: Future<Output = Result<value::Value>>,
-    {
-        let cell = self.get(key, typ, ttl)?;
-        let result = cell
-            .get_or_init(|| {
+pub async fn evaluate_with_cell<'a, Fut>(
+    cell: Option<&'a CacheEntryCell>,
+    compute: impl FnOnce() -> Fut,
+) -> Result<Cow<'a, value::Value>>
+where
+    Fut: Future<Output = Result<value::Value>>,
+{
+    let result = match cell {
+        Some(cell) => Cow::Borrowed(
+            cell.get_or_init(|| {
                 let fut = compute();
                 async move { fut.await.map_err(SharedError::new) }
             })
-            .await;
-        Ok(result.clone().std_result()?)
-    }
+            .await
+            .std_result()?,
+        ),
+        None => Cow::Owned(compute().await?),
+    };
+    Ok(result)
 }
