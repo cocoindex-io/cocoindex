@@ -7,7 +7,7 @@ assignees: ''
 
 ---
 
-**What is the use case? **
+**What is the use case?**
 
 **Describe the solution you'd like**
 A clear and concise description of what you want to happen.
