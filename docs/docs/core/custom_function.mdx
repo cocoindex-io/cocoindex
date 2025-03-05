@@ -56,7 +56,7 @@ A function executor is defined as a class annotated by `@cocoindex.op.executor_c
 
 
 ```python
-@cocoindex.op.executor_class()
+@cocoindex.op.executor_class(...)
 class DemoFunctionExecutor:
     spec: DemoFunctionSpec
     ...
@@ -70,8 +70,26 @@ class DemoFunctionExecutor:
 
 Notes:
 
-*   The `cocoindex.op.executor_class()` class also takes the following input:
+*   The `cocoindex.op.executor_class()` class decorator also takes the following optional arguments:
+
     *   `gpu: bool`: Whether the executor will use GPU. It will affect the way the function is scheduled.
+
+    *   `cache: bool`: Whether the executor will enable cache for this function.
+         When `True`, the executor will cache the result of the function for reuse during reprocessing.
+         We recommend to set this to `True` for any function that is computationally intensive.
+
+    *   `behavior_version: int`: The version of the behavior of the function.
+        When the version is changed, the function will be re-executed even if cache is enabled.
+        It's required to be set if `cache` is `True`.
+
+    For example, this enables cache for the function:
+
+    ```python
+    @cocoindex.op.executor_class(cache=True, behavior_version=1)
+    class DemoFunctionExecutor:
+        ...
+    ```
+
 *   A `spec` field must be present in the class, and must be annoated with the spec class name.
 *   The `prepare()` method is optional. It's executed once and only once before any `__call__` execution, to prepare the function execution.
 *   The `__call__()` method is required. It's executed for each specific rows of data.
@@ -79,3 +97,12 @@ Notes:
 
 </TabItem>
 </Tabs>
+
+## Examples
+
+The cocoindex repository contains the following examples of custom functions:
+
+*   In the [pdf_embedding](https://github.com/cocoindex-io/cocoindex/blob/main/examples/pdf_embedding/pdf_embedding.py) example, we define a custom function `PdfToMarkdown`
+*   The `SentenceTransformerEmbed` function shipped with the CocoIndex Python package is defined by Python SDK.
+    Search for [`SentenceTransformerEmbedExecutor`](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex+SentenceTransformerEmbedExecutor&type=code) to see the code.
+    
