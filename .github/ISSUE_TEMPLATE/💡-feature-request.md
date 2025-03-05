@@ -3,6 +3,7 @@ name: "\U0001F4A1 Feature request"
 about: Suggest an idea for this project
 title: "[FEATURE]"
 labels: ''
+type: 'feature'
 assignees: ''
 
 ---
