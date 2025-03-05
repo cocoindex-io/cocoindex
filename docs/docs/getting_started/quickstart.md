@@ -11,7 +11,27 @@ This guide will help you get up and running with CocoIndex in just a few minutes
 *   loads the data into a vector store (PG Vector)
 
 
-## Step 1: Set up the CocoIndex environment
+## Prerequisite: Install CocoIndex environment
+
+We'll need to install a bunch of dependencies for this project.
+
+1.  Install CocoIndex:
+ 
+    ```bash
+    pip install cocoindex
+    ```
+
+2.  You can skip this step if you already have a Postgres database with pgvector extension installed.
+    If not, the easiest way is to bring up a Postgres database using docker compose:
+
+    - Make sure Docker Compose is installed: [docs](https://docs.docker.com/compose/install/)
+    - Start a Postgres SQL database for cocoindex using our docker compose config:
+
+    ```bash
+    docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
+    ```
+
+## Step 1: Prepare directory for your project
 
 1.  Open the terminal and create a new directory for your project:
 
@@ -20,20 +40,8 @@ This guide will help you get up and running with CocoIndex in just a few minutes
     cd cocoindex-quickstart
     ```
 
- 2. Install CocoIndex:
- 
-    ```bash
-    pip install cocoindex
-    ```
- 
-3.  You need to setup a Postgres database with pgvector extension installed; or bring up a Postgres database using docker compose:
-
-    - Make sure Docker Compose is installed: [docs](https://docs.docker.com/compose/install/)
-    - Start a Postgres SQL database for cocoindex using our docker compose config:
-
-    ```bash
-    docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
-    ```
+2.  Prepare input files for the index. Put them in a directory, e.g. `markdown_files`.
+    If you don't have any files at hand, you may download the example [markdown_files.zip](markdown_files.zip) and unzip it in the current directory.
 
 ## Step 2: Create the Python file `quickstart.py`
 
@@ -57,7 +65,8 @@ Starting from the indexing flow:
 @cocoindex.flow_def(name="TextEmbedding")
 def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     # Add a data source to read files from a directory
-    data_scope["documents"] = flow_builder.add_source(cocoindex.sources.LocalFile(path="markdown_files"))
+    data_scope["documents"] = flow_builder.add_source(
+        cocoindex.sources.LocalFile(path="markdown_files"))
 
     # Add a collector for data to be exported to the vector index
     doc_embeddings = data_scope.add_collector()
@@ -177,9 +186,6 @@ Enter `yes` and it will automatically create a few tables in the database.
 Now we have tables needed by this CocoIndex flow.
 
 ### Step 3.2: Build the index
-
-Before building the index, make sure input markdown files are in the `markdown_files` directory.
-You may download the example [markdown_files.zip](markdown_files.zip) and unzip it in the current directory.
 
 Now we're ready to build the index:
 
