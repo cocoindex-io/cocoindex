@@ -33,6 +33,7 @@ Return type: `Table`, each row represents a chunk, with the following sub fields
 The spec takes the following fields:
 
 *   `model` (type: `str`, required): The name of the SentenceTransformer model to use.
+*   `args` (type: `dict[str, Any]`, optional): Additional arguments to pass to the SentenceTransformer constructor. e.g. `{"trust_remote_code": True}`
 
 Input data:
 
