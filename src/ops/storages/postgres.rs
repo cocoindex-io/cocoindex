@@ -369,7 +369,7 @@ impl QueryTarget for Executor {
         let query_str = format!(
             "SELECT {} {} $1 AS {SCORE_FIELD_NAME}, {} FROM {} ORDER BY {SCORE_FIELD_NAME} LIMIT $2",
             ValidIdentifier::try_from(query.vector_field_name)?,
-            to_similarity_operator(query.similarity_metric),
+            to_distance_operator(query.similarity_metric),
             self.all_fields_comma_separated,
             self.table_name,
         );
@@ -380,7 +380,7 @@ impl QueryTarget for Executor {
             .await?
             .into_iter()
             .map(|r| -> Result<QueryResult> {
-                let score: f64 = r.try_get(0)?;
+                let score: f64 = distance_to_similarity(query.similarity_metric, r.try_get(0)?);
                 let data = self
                     .key_fields_schema
                     .iter()
@@ -400,11 +400,21 @@ impl QueryTarget for Executor {
     }
 }
 
-fn to_similarity_operator(metric: VectorSimilarityMetric) -> &'static str {
+fn to_distance_operator(metric: VectorSimilarityMetric) -> &'static str {
     match metric {
         VectorSimilarityMetric::CosineSimilarity => "<=>",
         VectorSimilarityMetric::L2Distance => "<->",
         VectorSimilarityMetric::InnerProduct => "<#>",
+    }
+}
+
+fn distance_to_similarity(metric: VectorSimilarityMetric, distance: f64) -> f64 {
+    match metric {
+        // cosine distance => cosine similarity
+        VectorSimilarityMetric::CosineSimilarity => 1.0 - distance,
+        VectorSimilarityMetric::L2Distance => distance,
+        // negative inner product => inner product
+        VectorSimilarityMetric::InnerProduct => -distance,
     }
 }
 
