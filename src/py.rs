@@ -11,8 +11,8 @@ use crate::LIB_CONTEXT;
 use crate::{api_error, setup};
 use crate::{builder, execution};
 use anyhow::anyhow;
-use pyo3::types::PyString;
 use pyo3::{exceptions::PyException, prelude::*};
+use pythonize::{depythonize, pythonize};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::btree_map;
@@ -32,31 +32,27 @@ impl<T, E: std::fmt::Debug> IntoPyResult<T> for Result<T, E> {
     }
 }
 
-pub struct Json<T>(pub T);
+pub struct Pythonized<T>(pub T);
 
-impl<'py, T: DeserializeOwned> FromPyObject<'py> for Json<T> {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        let s = ob.extract::<&str>().into_py_result()?;
-        let t: T = serde_json::from_str(s).into_py_result()?;
-        Ok(Json(t))
+impl<'py, T: DeserializeOwned> FromPyObject<'py> for Pythonized<T> {
+    fn extract_bound(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
+        Ok(Pythonized(depythonize(obj).into_py_result()?))
     }
 }
 
-impl<'py, T: Serialize> IntoPyObject<'py> for &Json<T> {
-    type Target = PyString;
-    type Output = Bound<'py, PyString>;
+impl<'py, T: Serialize> IntoPyObject<'py> for &Pythonized<T> {
+    type Target = PyAny;
+    type Output = Bound<'py, PyAny>;
     type Error = PyErr;
 
     fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
-        let s = serde_json::to_string(&self.0).into_py_result()?;
-        // TODO: Avoid another copy by using a writer into Python-native String buffer.
-        Ok(PyString::new(py, &s).into())
+        pythonize(py, &self.0).into_py_result()
     }
 }
 
-impl<'py, T: Serialize> IntoPyObject<'py> for Json<T> {
-    type Target = PyString;
-    type Output = Bound<'py, PyString>;
+impl<'py, T: Serialize> IntoPyObject<'py> for Pythonized<T> {
+    type Target = PyAny;
+    type Output = Bound<'py, PyAny>;
     type Error = PyErr;
 
     fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
@@ -64,13 +60,13 @@ impl<'py, T: Serialize> IntoPyObject<'py> for Json<T> {
     }
 }
 
-impl<T> Json<T> {
+impl<T> Pythonized<T> {
     pub fn into_inner(self) -> T {
         self.0
     }
 }
 
-impl<T> Deref for Json<T> {
+impl<T> Deref for Pythonized<T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -78,7 +74,7 @@ impl<T> Deref for Json<T> {
 }
 
 #[pyfunction]
-fn init(py: Python<'_>, settings: Json<Settings>) -> PyResult<()> {
+fn init(py: Python<'_>, settings: Pythonized<Settings>) -> PyResult<()> {
     py.allow_threads(|| -> anyhow::Result<()> {
         let mut lib_context_locked = LIB_CONTEXT.write().unwrap();
         if lib_context_locked.is_some() {
@@ -91,7 +87,7 @@ fn init(py: Python<'_>, settings: Json<Settings>) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn start_server(py: Python<'_>, settings: Json<ServerSettings>) -> PyResult<()> {
+fn start_server(py: Python<'_>, settings: Pythonized<ServerSettings>) -> PyResult<()> {
     py.allow_threads(|| -> anyhow::Result<()> {
         let lib_context =
             get_lib_context().ok_or_else(|| api_error!("Cocoindex is not initialized"))?;
@@ -196,7 +192,7 @@ impl SimpleSemanticsQueryHandler {
         flow: &Flow,
         target_name: &str,
         query_transform_flow: &TransientFlow,
-        default_similarity_metric: Json<VectorSimilarityMetric>,
+        default_similarity_metric: Pythonized<VectorSimilarityMetric>,
     ) -> PyResult<Self> {
         py.allow_threads(|| {
             let lib_context = get_lib_context()
@@ -243,8 +239,11 @@ impl SimpleSemanticsQueryHandler {
         query: String,
         limit: u32,
         vector_field_name: Option<String>,
-        similarity_matric: Option<Json<VectorSimilarityMetric>>,
-    ) -> PyResult<(Json<QueryResults>, Json<query::SimpleSemanticsQueryInfo>)> {
+        similarity_matric: Option<Pythonized<VectorSimilarityMetric>>,
+    ) -> PyResult<(
+        Pythonized<QueryResults>,
+        Pythonized<query::SimpleSemanticsQueryInfo>,
+    )> {
         py.allow_threads(|| {
             let lib_context = get_lib_context()
                 .ok_or_else(|| anyhow!("cocoindex library not initialized"))
@@ -262,7 +261,7 @@ impl SimpleSemanticsQueryHandler {
                         .await
                 })
                 .into_py_result()?;
-            Ok((Json(results), Json(info)))
+            Ok((Pythonized(results), Pythonized(info)))
         })
     }
 }
@@ -286,7 +285,9 @@ impl SetupStatusCheck {
 }
 
 #[pyfunction]
-fn check_setup_status(options: Json<setup::CheckSetupStatusOptions>) -> PyResult<SetupStatusCheck> {
+fn check_setup_status(
+    options: Pythonized<setup::CheckSetupStatusOptions>,
+) -> PyResult<SetupStatusCheck> {
     let lib_context = get_lib_context()
         .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
     let all_css = lib_context.combined_setup_states.read().unwrap();

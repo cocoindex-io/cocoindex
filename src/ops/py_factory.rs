@@ -113,26 +113,26 @@ fn value_from_py_object<'py>(
 
 #[pyclass(name = "OpArgSchema")]
 pub struct PyOpArgSchema {
-    value_type: crate::py::Json<schema::EnrichedValueType>,
-    analyzed_value: crate::py::Json<plan::AnalyzedValueMapping>,
+    value_type: crate::py::Pythonized<schema::EnrichedValueType>,
+    analyzed_value: crate::py::Pythonized<plan::AnalyzedValueMapping>,
 }
 
 #[pymethods]
 impl PyOpArgSchema {
     #[getter]
-    fn value_type(&self) -> &crate::py::Json<schema::EnrichedValueType> {
+    fn value_type(&self) -> &crate::py::Pythonized<schema::EnrichedValueType> {
         &self.value_type
     }
 
     #[getter]
-    fn analyzed_value(&self) -> &crate::py::Json<plan::AnalyzedValueMapping> {
+    fn analyzed_value(&self) -> &crate::py::Pythonized<plan::AnalyzedValueMapping> {
         &self.analyzed_value
     }
 
     fn validate_arg(
         &self,
         name: &str,
-        typ: crate::py::Json<schema::EnrichedValueType>,
+        typ: crate::py::Pythonized<schema::EnrichedValueType>,
     ) -> PyResult<()> {
         if self.value_type.0.typ != typ.0.typ {
             return Err(PyException::new_err(format!(
@@ -222,13 +222,13 @@ impl SimpleFunctionFactory for PyFunctionFactory {
     )> {
         let (result_type, executor, kw_args_names, num_positional_args) =
             Python::with_gil(|py| -> anyhow::Result<_> {
-                let mut args = vec![crate::py::Json(spec).into_py_any(py)?];
+                let mut args = vec![crate::py::Pythonized(spec).into_py_any(py)?];
                 let mut kwargs = vec![];
                 let mut num_positional_args = 0;
                 for arg in input_schema.into_iter() {
                     let py_arg_schema = PyOpArgSchema {
-                        value_type: crate::py::Json(arg.value_type.clone()),
-                        analyzed_value: crate::py::Json(arg.analyzed_value.clone()),
+                        value_type: crate::py::Pythonized(arg.value_type.clone()),
+                        analyzed_value: crate::py::Pythonized(arg.analyzed_value.clone()),
                     };
                     match arg.name.0 {
                         Some(name) => {
@@ -251,7 +251,7 @@ impl SimpleFunctionFactory for PyFunctionFactory {
                     Some(&kwargs.into_py_dict(py)?),
                 )?;
                 let (result_type, executor) = result
-                    .extract::<(crate::py::Json<schema::EnrichedValueType>, Py<PyAny>)>(py)?;
+                    .extract::<(crate::py::Pythonized<schema::EnrichedValueType>, Py<PyAny>)>(py)?;
                 Ok((
                     result_type.into_inner(),
                     executor,

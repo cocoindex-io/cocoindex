@@ -5,7 +5,6 @@ Flow is the main interface for building and running flows.
 from __future__ import annotations
 
 import re
-import json
 import inspect
 from typing import Any, Callable, Sequence, TypeVar
 from threading import Lock
@@ -61,8 +60,8 @@ def _create_data_slice(
 def _spec_kind(spec: Any) -> str:
     return spec.__class__.__name__
 
-def _spec_json_dump(spec: Any) -> str:
-    return json.dumps(spec.__dict__)
+def _spec_dump(spec: Any) -> dict[str, Any]:
+    return spec.__dict__
 
 T = TypeVar('T')
 
@@ -162,7 +161,7 @@ class DataSlice:
             lambda target_scope, name:
                 flow_builder_state.engine_flow_builder.transform(
                     _spec_kind(fn_spec),
-                    _spec_json_dump(fn_spec),
+                    _spec_dump(fn_spec),
                     args,
                     target_scope,
                     flow_builder_state.field_name_builder.build_name(
@@ -253,8 +252,8 @@ class DataCollector:
             {"field_name": field_name, "metric": metric.value}
             for field_name, metric in vector_index]
         self._flow_builder_state.engine_flow_builder.export(
-            name, _spec_kind(target_spec), _spec_json_dump(target_spec),
-            json.dumps(index_options), self._engine_data_collector)
+            name, _spec_kind(target_spec), _spec_dump(target_spec),
+            index_options, self._engine_data_collector)
 
 
 _flow_name_builder = _NameBuilder()
@@ -294,7 +293,7 @@ class FlowBuilder:
             self._state,
             lambda target_scope, name: self._state.engine_flow_builder.add_source(
                 _spec_kind(spec),
-                _spec_json_dump(spec),
+                _spec_dump(spec),
                 target_scope,
                 self._state.field_name_builder.build_name(
                     name, prefix=_to_snake_case(_spec_kind(spec))+'_'),

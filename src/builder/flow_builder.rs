@@ -386,7 +386,7 @@ impl FlowBuilder {
     pub fn add_source(
         &mut self,
         kind: String,
-        op_spec: py::Json<serde_json::Map<String, serde_json::Value>>,
+        op_spec: py::Pythonized<serde_json::Map<String, serde_json::Value>>,
         target_scope: Option<DataScopeRef>,
         name: String,
     ) -> PyResult<DataSlice> {
@@ -423,7 +423,7 @@ impl FlowBuilder {
     pub fn add_direct_input(
         &mut self,
         name: String,
-        value_type: py::Json<schema::EnrichedValueType>,
+        value_type: py::Pythonized<schema::EnrichedValueType>,
     ) -> PyResult<DataSlice> {
         let mut root_data_scope = self.root_data_scope.lock().unwrap();
         root_data_scope
@@ -453,7 +453,7 @@ impl FlowBuilder {
     pub fn transform(
         &mut self,
         kind: String,
-        op_spec: py::Json<serde_json::Map<String, serde_json::Value>>,
+        op_spec: py::Pythonized<serde_json::Map<String, serde_json::Value>>,
         args: Vec<(DataSlice, Option<String>)>,
         target_scope: Option<DataScopeRef>,
         name: String,
@@ -555,8 +555,8 @@ impl FlowBuilder {
         &mut self,
         name: String,
         kind: String,
-        op_spec: py::Json<serde_json::Map<String, serde_json::Value>>,
-        index_options: py::Json<spec::IndexOptions>,
+        op_spec: py::Pythonized<serde_json::Map<String, serde_json::Value>>,
+        index_options: py::Pythonized<spec::IndexOptions>,
         input: &DataCollector,
     ) -> PyResult<()> {
         let spec = spec::OpSpec {

@@ -1,7 +1,6 @@
 from typing import Callable, Any
 from dataclasses import dataclass
 from threading import Lock
-import json
 
 from . import flow as fl
 from . import vector
@@ -52,7 +51,7 @@ class SimpleSemanticsQueryHandler:
                         engine_handler = _engine.SimpleSemanticsQueryHandler(
                             flow.internal_flow(), target_name,
                             fl.TransientFlow(query_transform_flow, [str]).internal_flow(),
-                            json.dumps(default_similarity_metric.value))
+                            default_similarity_metric.value)
                         engine_handler.register_query_handler(name)
             return engine_handler
         self._lazy_query_handler = _lazy_handler
@@ -71,11 +70,9 @@ class SimpleSemanticsQueryHandler:
         """
         Search the index with the given query, limit, vector field name, and similarity metric.
         """
-        internal_results_json, internal_info_json = self.internal_handler().search(
+        internal_results, internal_info = self.internal_handler().search(
             query, limit, vector_field_name,
             similarity_matric.value if similarity_matric is not None else None)
-        internal_results = json.loads(internal_results_json)
-        internal_info = json.loads(internal_info_json)
         fields = [field['name'] for field in internal_results['fields']]
         results = [QueryResult(data=dict(zip(fields, result['data'])),  score=result['score']) for result in internal_results['results']]
         info = SimpleSemanticsQueryInfo(

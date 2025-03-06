@@ -2,9 +2,8 @@
 Facilities for defining cocoindex operations.
 """
 import inspect
-import json
 
-from typing import get_type_hints, Protocol, Callable, dataclass_transform
+from typing import get_type_hints, Protocol, Any, Callable, dataclass_transform
 from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
@@ -54,8 +53,8 @@ class _FunctionExecutorFactory:
         self._spec_cls = spec_cls
         self._executor_cls = executor_cls
 
-    def __call__(self, spec_json: str, *args, **kwargs):
-        spec = self._spec_cls(**json.loads(spec_json))
+    def __call__(self, spec: dict[str, Any], *args, **kwargs):
+        spec = self._spec_cls(**spec)
         executor = self._executor_cls(spec)
         result_type = executor.analyze(*args, **kwargs)
         return (dump_type(result_type), executor)

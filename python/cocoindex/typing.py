@@ -1,4 +1,3 @@
-import json
 import typing
 import collections
 from typing import Annotated, NamedTuple, Any
@@ -67,7 +66,7 @@ def _basic_type_to_json_value(t, metadata):
     
     return type_json
 
-def _enriched_type_to_json_value(t):
+def _enriched_type_to_json_value(t) -> dict[str, Any] | None:
     if t is None:
         return None
     t, metadata = _get_origin_type_and_metadata(t)
@@ -83,8 +82,8 @@ def _enriched_type_to_json_value(t):
     return enriched_type_json
 
 
-def dump_type(t) -> str:
+def dump_type(t) -> dict[str, Any] | None:
     """
     Convert a Python type to a CocoIndex's type in JSON.
     """
-    return json.dumps(_enriched_type_to_json_value(t))
+    return _enriched_type_to_json_value(t)

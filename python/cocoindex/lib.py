@@ -35,7 +35,7 @@ class Settings:
 
 def init(settings: Settings):
     """Initialize the cocoindex library."""
-    _engine.init(json.dumps(settings.__dict__))
+    _engine.init(settings.__dict__)
 
 @dataclass
 class ServerSettings:
@@ -62,7 +62,7 @@ def start_server(settings: ServerSettings):
     """Start the cocoindex server."""
     flow.ensure_all_flows_built()
     query.ensure_all_handlers_built()
-    _engine.start_server(json.dumps(settings.__dict__))
+    _engine.start_server(settings.__dict__)
 
 def stop():
     """Stop the cocoindex library."""
