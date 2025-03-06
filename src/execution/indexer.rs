@@ -420,7 +420,7 @@ pub async fn update_source_entry<'a>(
     key: &value::KeyValue,
     pool: &PgPool,
 ) -> Result<()> {
-    let source_id = plan.source_ops[source_op_idx as usize].source_id;
+    let source_id = plan.source_ops[source_op_idx].source_id;
     let source_key_json = serde_json::to_value(key)?;
     let process_timestamp = chrono::Utc::now();
 
@@ -532,7 +532,7 @@ async fn update_source(
     schema: &schema::DataSchema,
     pool: &PgPool,
 ) -> Result<SourceUpdateInfo> {
-    let source_op = &plan.source_ops[source_op_idx as usize];
+    let source_op = &plan.source_ops[source_op_idx];
     let (keys, existing_keys_json) = try_join(
         source_op.executor.list_keys(),
         db_tracking::list_source_tracking_keys(
