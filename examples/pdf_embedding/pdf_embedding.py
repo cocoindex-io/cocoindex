@@ -90,5 +90,5 @@ def _run():
             break
 
 if __name__ == "__main__":
-    load_dotenv()
+    load_dotenv(override=True)
     _run()
