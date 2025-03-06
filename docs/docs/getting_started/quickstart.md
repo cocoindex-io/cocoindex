@@ -170,7 +170,7 @@ The `@cocoindex.main_fn` declares a function as the main function for an indexin
 Specify the database URL by environment variable:
 
 ```bash
-export COCOINDEX_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/postgres"
+export COCOINDEX_DATABASE_URL="postgresql://cocoindex:cocoindex@localhost:5432/cocoindex"
 ```
 
 ### Step 3.1: Setup the index pipeline
