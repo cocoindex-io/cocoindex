@@ -122,30 +122,31 @@ pub async fn evaluate_data(
     let fl = &lib_context.with_flow_context(&flow_name, |ctx| ctx.flow.clone())?;
     let schema = &fl.data_schema;
 
-    let field_idx = schema
-        .fields
+    let source_op_idx = fl
+        .flow_instance
+        .source_ops
         .iter()
-        .position(|f| f.name == query.field)
+        .position(|source_op| source_op.name == query.field)
         .ok_or_else(|| {
             ApiError::new(
-                &format!("field not found: {}", query.field),
+                &format!("source field not found: {}", query.field),
                 StatusCode::BAD_REQUEST,
             )
         })?;
-
-    let field_schema = &schema.fields[field_idx];
+    let execution_plan = fl.get_execution_plan().await?;
+    let field_schema =
+        &schema.fields[execution_plan.source_ops[source_op_idx].output.field_idx as usize];
     let collection_schema = match &field_schema.value_type.typ {
         schema::ValueType::Collection(collection) => collection,
         _ => api_bail!("field is not a table: {}", query.field),
     };
-    let execution_plan = fl.get_execution_plan().await?;
     let key_field = collection_schema
         .key_field()
         .ok_or_else(|| api_error!("field {} does not have a key", query.field))?;
     let key = value::KeyValue::from_strs(query.key, &key_field.value_type.typ)?;
 
     let data_builder =
-        evaluator::evaluate_source_entry(&execution_plan, field_idx as u32, &schema, &key, None)
+        evaluator::evaluate_source_entry(&execution_plan, source_op_idx, &schema, &key, None)
             .await?
             .ok_or_else(|| {
                 api_error!("value not found for source at the specified key: {key:?}")

@@ -415,7 +415,7 @@ async fn commit_source_tracking_info(
 
 pub async fn update_source_entry<'a>(
     plan: &ExecutionPlan,
-    source_op_idx: u32,
+    source_op_idx: usize,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
     pool: &PgPool,
@@ -528,7 +528,7 @@ pub async fn update_source_entry<'a>(
 async fn update_source(
     source_name: &str,
     plan: &ExecutionPlan,
-    source_op_idx: u32,
+    source_op_idx: usize,
     schema: &schema::DataSchema,
     pool: &PgPool,
 ) -> Result<SourceUpdateInfo> {
@@ -591,14 +591,7 @@ pub async fn update(
             .iter()
             .enumerate()
             .map(|(source_op_idx, source_op)| async move {
-                update_source(
-                    source_op.name.as_str(),
-                    plan,
-                    source_op_idx as u32,
-                    schema,
-                    pool,
-                )
-                .await
+                update_source(source_op.name.as_str(), plan, source_op_idx, schema, pool).await
             })
             .collect::<Vec<_>>(),
     )

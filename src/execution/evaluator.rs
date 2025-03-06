@@ -412,7 +412,7 @@ async fn evaluate_op_scope(
 
 pub async fn evaluate_source_entry<'a>(
     plan: &ExecutionPlan,
-    source_op_idx: u32,
+    source_op_idx: usize,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
     cache: Option<&EvaluationCache>,
@@ -426,7 +426,7 @@ pub async fn evaluate_source_entry<'a>(
         schema: &root_schema,
     };
 
-    let source_op = &plan.source_ops[source_op_idx as usize];
+    let source_op = &plan.source_ops[source_op_idx];
     let collection_schema = match &root_schema.fields[source_op.output.field_idx as usize]
         .value_type
         .typ
