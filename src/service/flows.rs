@@ -145,12 +145,22 @@ pub async fn evaluate_data(
         .ok_or_else(|| api_error!("field {} does not have a key", query.field))?;
     let key = value::KeyValue::from_strs(query.key, &key_field.value_type.typ)?;
 
-    let data_builder =
-        evaluator::evaluate_source_entry(&execution_plan, source_op_idx, &schema, &key, None)
-            .await?
-            .ok_or_else(|| {
-                api_error!("value not found for source at the specified key: {key:?}")
-            })?;
+    let evaluation_cache = indexer::evaluation_cache_on_existing_data(
+        &execution_plan,
+        source_op_idx,
+        &key,
+        &lib_context.pool,
+    )
+    .await?;
+    let data_builder = evaluator::evaluate_source_entry(
+        &execution_plan,
+        source_op_idx,
+        &schema,
+        &key,
+        Some(&evaluation_cache),
+    )
+    .await?
+    .ok_or_else(|| api_error!("value not found for source at the specified key: {key:?}"))?;
 
     Ok(Json(EvaluateDataResponse {
         schema: schema.clone(),

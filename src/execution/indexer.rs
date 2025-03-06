@@ -413,6 +413,33 @@ async fn commit_source_tracking_info(
     Ok(WithApplyStatus::Normal(()))
 }
 
+/// Built an evaluation cache on the existing data.
+pub async fn evaluation_cache_on_existing_data(
+    plan: &ExecutionPlan,
+    source_op_idx: usize,
+    key: &value::KeyValue,
+    pool: &PgPool,
+) -> Result<EvaluationCache> {
+    let source_id = plan.source_ops[source_op_idx].source_id;
+    let source_key_json = serde_json::to_value(key)?;
+    let existing_tracking_info = read_source_tracking_info(
+        source_id,
+        &source_key_json,
+        &plan.tracking_table_setup,
+        pool,
+    )
+    .await?;
+    let process_timestamp = chrono::Utc::now();
+    let memoization_info = existing_tracking_info
+        .map(|info| info.memoization_info.map(|info| info.0))
+        .flatten()
+        .flatten();
+    Ok(EvaluationCache::new(
+        process_timestamp,
+        memoization_info.map(|info| info.cache),
+    ))
+}
+
 pub async fn update_source_entry<'a>(
     plan: &ExecutionPlan,
     source_op_idx: usize,
