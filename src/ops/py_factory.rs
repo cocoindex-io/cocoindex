@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use axum::async_trait;
 use blocking::unblock;
@@ -6,13 +6,14 @@ use futures::FutureExt;
 use pyo3::{
     exceptions::PyException,
     pyclass, pymethods,
-    types::{IntoPyDict, PyAnyMethods, PyString, PyTuple},
+    types::{IntoPyDict, PyAnyMethods, PyList, PyString, PyTuple},
     Bound, IntoPyObjectExt, Py, PyAny, PyResult, Python,
 };
 
 use crate::{
     base::{schema, value},
     builder::plan,
+    py::IntoPyResult,
 };
 use anyhow::Result;
 
@@ -89,6 +90,28 @@ fn basic_value_from_py_object<'py>(
     Ok(result)
 }
 
+fn field_values_from_py_object<'py>(
+    schema: &schema::StructSchema,
+    v: &Bound<'py, PyAny>,
+) -> PyResult<value::FieldValues> {
+    let list = v.extract::<Vec<Bound<'py, PyAny>>>()?;
+    if list.len() != schema.fields.len() {
+        return Err(PyException::new_err(format!(
+            "struct field number mismatch, expected {}, got {}",
+            schema.fields.len(),
+            list.len()
+        )));
+    }
+    Ok(value::FieldValues {
+        fields: schema
+            .fields
+            .iter()
+            .zip(list.into_iter())
+            .map(|(f, v)| value_from_py_object(&f.value_type.typ, &v))
+            .collect::<PyResult<Vec<_>>>()?,
+    })
+}
+
 fn value_from_py_object<'py>(
     typ: &schema::ValueType,
     v: &Bound<'py, PyAny>,
@@ -99,6 +122,39 @@ fn value_from_py_object<'py>(
         match typ {
             schema::ValueType::Basic(typ) => {
                 value::Value::Basic(basic_value_from_py_object(typ, v)?)
+            }
+            schema::ValueType::Struct(schema) => {
+                value::Value::Struct(field_values_from_py_object(schema, v)?)
+            }
+            schema::ValueType::Collection(schema) => {
+                let list = v.extract::<Vec<Bound<'py, PyAny>>>()?;
+                let values = list
+                    .into_iter()
+                    .map(|v| field_values_from_py_object(&schema.row, &v))
+                    .collect::<PyResult<Vec<_>>>()?;
+                match schema.kind {
+                    schema::CollectionKind::Collection => {
+                        value::Value::Collection(values.into_iter().map(|v| v.into()).collect())
+                    }
+                    schema::CollectionKind::List => {
+                        value::Value::List(values.into_iter().map(|v| v.into()).collect())
+                    }
+                    schema::CollectionKind::Table => value::Value::Table(
+                        values
+                            .into_iter()
+                            .map(|v| {
+                                let mut iter = v.fields.into_iter();
+                                let key = iter.next().unwrap().to_key().into_py_result()?;
+                                Ok((
+                                    key,
+                                    value::ScopeValue(value::FieldValues {
+                                        fields: iter.collect::<Vec<_>>(),
+                                    }),
+                                ))
+                            })
+                            .collect::<PyResult<BTreeMap<_, _>>>()?,
+                    ),
+                }
             }
             _ => {
                 return Err(PyException::new_err(format!(

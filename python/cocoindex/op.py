@@ -1,10 +1,10 @@
 """
 Facilities for defining cocoindex operations.
 """
+import dataclasses
 import inspect
 
 from typing import get_type_hints, Protocol, Any, Callable, dataclass_transform
-from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
 
@@ -28,7 +28,7 @@ class SpecMeta(type):
             setattr(cls, '_op_category', category)
         else:
             # It's the specific class providing specific fields.
-            cls = dataclass(cls)
+            cls = dataclasses.dataclass(cls)
         return cls
 
 class SourceSpec(metaclass=SpecMeta, category=OpCategory.SOURCE): # pylint: disable=too-few-public-methods
@@ -58,6 +58,14 @@ class _FunctionExecutorFactory:
         executor = self._executor_cls(spec)
         result_type = executor.analyze(*args, **kwargs)
         return (dump_type(result_type), executor)
+
+def to_engine_value(value: Any) -> Any:
+    """Convert a Python value to an engine value."""
+    if dataclasses.is_dataclass(value):
+        return [to_engine_value(getattr(value, f.name)) for f in dataclasses.fields(value)]
+    elif isinstance(value, list) or isinstance(value, tuple):
+        return [to_engine_value(v) for v in value]
+    return value
 
 _gpu_dispatch_lock = Lock()
 
@@ -162,9 +170,10 @@ def executor_class(gpu: bool = False, cache: bool = False, behavior_version: int
                     # For now, we use a lock to ensure only one task is executed at a time.
                     # TODO: Implement multi-processing dispatching.
                     with _gpu_dispatch_lock:
-                        return super().__call__(*args, **kwargs)
+                        output = super().__call__(*args, **kwargs)
                 else:
-                    return super().__call__(*args, **kwargs)
+                    output = super().__call__(*args, **kwargs)
+                return to_engine_value(output)
 
         _WrappedClass.__name__ = cls.__name__
 
