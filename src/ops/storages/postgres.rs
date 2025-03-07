@@ -583,9 +583,12 @@ impl SetupStatusCheck {
                             .value_fields_schema
                             .iter()
                             .filter(|(field_name, schema)| {
-                                existing
-                                    .possible_versions()
-                                    .any(|v| v.value_fields_schema.get(*field_name) != Some(schema))
+                                existing.possible_versions().any(|v| {
+                                    v.value_fields_schema
+                                        .get(*field_name)
+                                        .map(to_column_type_sql)
+                                        != Some(to_column_type_sql(schema))
+                                })
                             })
                             .map(|(k, v)| (k.clone(), v.clone()))
                             .collect(),
