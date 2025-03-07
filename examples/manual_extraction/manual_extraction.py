@@ -95,7 +95,7 @@ def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: coco
     """
     Define an example flow that extracts manual information from a Markdown.
     """
-    data_scope["documents"] = flow_builder.add_source(cocoindex.sources.LocalFile(path="pdf_files", binary=True))
+    data_scope["documents"] = flow_builder.add_source(cocoindex.sources.LocalFile(path="manuals", binary=True))
 
     manual_infos = data_scope.add_collector()
 
