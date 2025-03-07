@@ -22,7 +22,7 @@ With CocoIndex, users declare the transformation, CocoIndex creates & maintains 
 
 
 ## Quick Start:
-If you're new to CocoIndex 🤗, we recommend checking out the [Documentation](https://cocoindex.io/docs) or following the [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart).
+If you're new to CocoIndex 🤗, we recommend checking out the 📖 [Documentation](https://cocoindex.io/docs) and ⚡ [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart). We also have a ▶️ [quick start video tutorial](https://youtu.be/gv5R8nOXsWU?si=9ioeKYkMEnYevTXT) for you to jump start.
 
 ### Setup 
 1. Install CocoIndex Python library
