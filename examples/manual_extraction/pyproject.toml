@@ -1,0 +1,6 @@
+[project]
+name = "manual-extraction"
+version = "0.1.0"
+description = "Simple example for cocoindex: extract manual information from a Markdown."
+requires-python = ">=3.10"
+dependencies = ["cocoindex>=0.1.4", "python-dotenv>=1.0.1", "marker-pdf>=1.5.2"]
