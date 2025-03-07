@@ -115,7 +115,7 @@ fn augmented_value(
                 .map(|v| ScopeValueBuilder::augmented_from(v, t))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        (val, _) => panic!("Value kind doesn't match the type {val_type}: {val:?}"),
+        (val, _) => bail!("Value kind doesn't match the type {val_type}: {val:?}"),
     };
     Ok(value)
 }
@@ -157,18 +157,19 @@ impl<'a> ScopeEntry<'a> {
     fn get_local_field_schema<'b>(
         schema: &'b schema::StructSchema,
         indices: &[u32],
-    ) -> &'b schema::FieldSchema {
+    ) -> Result<&'b schema::FieldSchema> {
         let field_idx = indices[0] as usize;
         let field_schema = &schema.fields[field_idx];
-        if indices.len() == 1 {
+        let result = if indices.len() == 1 {
             field_schema
         } else {
             let struct_field_schema = match &field_schema.value_type.typ {
                 schema::ValueType::Struct(s) => s,
-                _ => panic!("Expect struct field"),
+                _ => bail!("Expect struct field"),
             };
-            Self::get_local_field_schema(&struct_field_schema, &indices[1..])
-        }
+            Self::get_local_field_schema(&struct_field_schema, &indices[1..])?
+        };
+        Ok(result)
     }
 
     fn get_local_key_field<'b>(
@@ -229,8 +230,14 @@ impl<'a> ScopeEntry<'a> {
         }
     }
 
-    fn get_field_schema(&self, field_ref: &AnalyzedLocalFieldReference) -> &schema::FieldSchema {
-        Self::get_local_field_schema(self.schema, &field_ref.fields_idx)
+    fn get_field_schema(
+        &self,
+        field_ref: &AnalyzedLocalFieldReference,
+    ) -> Result<&schema::FieldSchema> {
+        Ok(Self::get_local_field_schema(
+            self.schema,
+            &field_ref.fields_idx,
+        )?)
     }
 
     fn define_field_w_builder(
@@ -329,7 +336,7 @@ async fn evaluate_op_scope(
             }
 
             AnalyzedReactiveOp::ForEach(op) => {
-                let target_field_schema = head_scope.get_field_schema(&op.local_field_ref);
+                let target_field_schema = head_scope.get_field_schema(&op.local_field_ref)?;
                 let collection_schema = match &target_field_schema.value_type.typ {
                     schema::ValueType::Collection(cs) => cs,
                     _ => panic!("Expect target field to be a collection"),
