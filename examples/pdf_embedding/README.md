@@ -20,11 +20,20 @@ python pdf_embedding.py cocoindex setup
 Update index:
 
 ```bash
-python text_embedding.py cocoindex update
+python pdf_embedding.py cocoindex update
 ```
 
 Run:
 
 ```bash
 python pdf_embedding.py
+```
+
+## CocoInsight 
+CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
+
+Run CocoInsight to understand your RAG data pipeline:
+
+```
+python pdf_embedding.py cocoindex server -c https://cocoindex.io/cocoinsight
 ```

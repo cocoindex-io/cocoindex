@@ -28,3 +28,12 @@ Run:
 ```bash
 python manual_extraction.py
 ```
+
+## CocoInsight 
+CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
+
+Run CocoInsight to understand your RAG data pipeline:
+
+```
+python manual_extraction.py cocoindex server -c https://cocoindex.io/cocoinsight
+```
