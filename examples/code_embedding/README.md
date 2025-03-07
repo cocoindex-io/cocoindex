@@ -28,3 +28,12 @@ Run:
 ```bash
 python code_embedding.py
 ```
+
+## CocoInsight for code embedding
+CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
+
+Run CocoInsight to understand your RAG data pipeline:
+
+```
+cocoindex server -c https://cocoindex.io/cocoinsight
+```
