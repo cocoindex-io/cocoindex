@@ -3,6 +3,8 @@ title: Quickstart
 description: Get started with CocoIndex in 10 minutes
 ---
 
+import ReactPlayer from 'react-player'
+
 # Build your first CocoIndex project
 
 This guide will help you get up and running with CocoIndex in just a few minutes, that does:
@@ -10,6 +12,8 @@ This guide will help you get up and running with CocoIndex in just a few minutes
 *   Perform basic chunking and embedding
 *   loads the data into a vector store (PG Vector)
 
+
+<ReactPlayer playing controls url='https://www.youtube.com/watch?v=gv5R8nOXsWU' />
 
 ## Prerequisite: Install CocoIndex environment
 
