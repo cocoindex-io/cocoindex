@@ -55,7 +55,7 @@ def _dump_type(t, metadata):
             }
         elif dataclasses.is_dataclass(elem_type):
             encoded_type = {
-                'kind': 'Table',
+                'kind': 'List',
                 'row': { 'fields': _dump_fields_schema(elem_type) },
             }
         else:
