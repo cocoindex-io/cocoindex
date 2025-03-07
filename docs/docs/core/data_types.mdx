@@ -44,3 +44,29 @@ A struct has a bunch of fields, each with a name and a type.
 A table has a collection of rows, each of which is a struct with specified schema.
 
 The first field of a table is always the primary key.
+
+## Indexable Types
+
+### Key Types
+
+Currently, the following types are supported as types for key fields:
+
+- `bytes`
+- `str`
+- `bool`
+- `int64`
+- `range`
+- Struct with all fields being key types
+
+### Vector Type
+
+Users can create vector index on fields with `vector` types.
+A vector index also needs to be configured with a similarity metric, and the index is only effective when this metric is used during retrieval.
+
+Following metrics are supported:
+
+| Metric Name | Description | Similarity Order |
+|-------------|-------------|------------------|
+| `CosineSimilarity` | [Cosine similarity](https://en.wikipedia.org/wiki/Cosine_similarity) | Larger is more similar |
+| `L2Distance` | [L2 distance (a.k.a. Euclidean distance)](https://en.wikipedia.org/wiki/Euclidean_distance) | Smaller is more similar |
+| `InnerProduct` | [Inner product](https://en.wikipedia.org/wiki/Inner_product_space) | Larger is more similar |
