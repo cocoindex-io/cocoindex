@@ -35,5 +35,5 @@ CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute vi
 Run CocoInsight to understand your RAG data pipeline:
 
 ```
-cocoindex server -c https://cocoindex.io/cocoinsight
+python code_embedding.py cocoindex server -c https://cocoindex.io/cocoinsight
 ```
