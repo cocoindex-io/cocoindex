@@ -77,15 +77,19 @@ impl SourceFactoryBase for Factory {
         spec: &Spec,
         _context: &FlowInstanceContext,
     ) -> Result<EnrichedValueType> {
-        Ok(make_output_type(CollectionSchema::new_table(
-            Some("filename".to_string()),
-            make_output_type(BasicValueType::Str),
-            Some("content".to_string()),
-            make_output_type(if spec.binary {
-                BasicValueType::Bytes
-            } else {
-                BasicValueType::Str
-            }),
+        Ok(make_output_type(CollectionSchema::new(
+            CollectionKind::Table,
+            vec![
+                FieldSchema::new("filename", make_output_type(BasicValueType::Str)),
+                FieldSchema::new(
+                    "content",
+                    make_output_type(if spec.binary {
+                        BasicValueType::Bytes
+                    } else {
+                        BasicValueType::Str
+                    }),
+                ),
+            ],
         )))
     }
 

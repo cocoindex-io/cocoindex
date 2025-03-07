@@ -3,10 +3,11 @@ use std::{collections::BTreeMap, sync::Arc};
 use axum::async_trait;
 use blocking::unblock;
 use futures::FutureExt;
+use log::warn;
 use pyo3::{
     exceptions::PyException,
     pyclass, pymethods,
-    types::{IntoPyDict, PyAnyMethods, PyList, PyString, PyTuple},
+    types::{IntoPyDict, PyAnyMethods, PyString, PyTuple},
     Bound, IntoPyObjectExt, Py, PyAny, PyResult, Python,
 };
 
@@ -155,12 +156,6 @@ fn value_from_py_object<'py>(
                             .collect::<PyResult<BTreeMap<_, _>>>()?,
                     ),
                 }
-            }
-            _ => {
-                return Err(PyException::new_err(format!(
-                    "unsupported value type: {}",
-                    typ
-                )))
             }
         }
     };

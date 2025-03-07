@@ -265,11 +265,12 @@ impl SimpleFunctionFactoryBase for Factory {
                 api_bail!("Expect String as input type, got {}", t)
             }
         }
-        Ok(make_output_type(CollectionSchema::new_table(
-            Some("location".to_string()),
-            make_output_type(BasicValueType::Range),
-            Some("text".to_string()),
-            make_output_type(BasicValueType::Str),
+        Ok(make_output_type(CollectionSchema::new(
+            CollectionKind::Table,
+            vec![
+                FieldSchema::new("location", make_output_type(BasicValueType::Range)),
+                FieldSchema::new("text", make_output_type(BasicValueType::Str)),
+            ],
         ))
         .with_attr(
             field_attrs::CHUNK_BASE_TEXT,

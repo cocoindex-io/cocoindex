@@ -3,11 +3,7 @@ use crate::builder::plan::AnalyzedValueMapping;
 use super::spec::*;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    ops::Deref,
-    sync::{Arc, LazyLock},
-};
+use std::{collections::BTreeMap, ops::Deref, sync::Arc};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VectorTypeSchema {
@@ -127,21 +123,20 @@ pub struct CollectionSchema {
 impl CollectionSchema {
     pub fn has_key(&self) -> bool {
         match self.kind {
-            CollectionKind::Collection => false,
-            CollectionKind::Table | CollectionKind::List => true,
+            CollectionKind::Table => true,
+            CollectionKind::Collection | CollectionKind::List => false,
         }
     }
 
     pub fn key_type(&self) -> Option<&EnrichedValueType> {
         match self.kind {
-            CollectionKind::Collection => None,
             CollectionKind::Table => self
                 .row
                 .fields
                 .first()
                 .as_ref()
                 .map(|field| &field.value_type),
-            CollectionKind::List => Some(&LIST_INDEX_FIELD.value_type),
+            CollectionKind::Collection | CollectionKind::List => None,
         }
     }
 
@@ -172,89 +167,21 @@ impl std::fmt::Display for CollectionSchema {
     }
 }
 
-pub const KEY_FIELD_NAME: &'static str = "__key";
-pub const VALUE_FIELD_NAME: &'static str = "__value";
-pub const LIST_INDEX_FIELD_NAME: &'static str = "__index";
-
-pub static LIST_INDEX_FIELD: LazyLock<FieldSchema> = LazyLock::new(|| FieldSchema {
-    name: LIST_INDEX_FIELD_NAME.to_string(),
-    value_type: EnrichedValueType {
-        typ: ValueType::Basic(BasicValueType::Int64),
-        nullable: false,
-        attrs: Default::default(),
-    },
-});
-
 impl CollectionSchema {
-    pub fn new_collection(value_name: Option<String>, value: EnrichedValueType) -> Self {
+    pub fn new(kind: CollectionKind, fields: Vec<FieldSchema>) -> Self {
         Self {
-            kind: CollectionKind::Collection,
+            kind,
             row: StructSchema {
-                fields: Arc::new(vec![FieldSchema {
-                    name: value_name.unwrap_or_else(|| VALUE_FIELD_NAME.to_string()),
-                    value_type: value,
-                }]),
+                fields: Arc::new(fields),
             },
             collectors: Default::default(),
         }
-    }
-
-    pub fn new_table(
-        key_name: Option<String>,
-        key: EnrichedValueType,
-        value_name: Option<String>,
-        value: EnrichedValueType,
-    ) -> Self {
-        Self {
-            kind: CollectionKind::Table,
-            row: StructSchema {
-                fields: Arc::new(vec![
-                    FieldSchema {
-                        name: key_name.unwrap_or_else(|| KEY_FIELD_NAME.to_string()),
-                        value_type: key,
-                    },
-                    FieldSchema {
-                        name: value_name.unwrap_or_else(|| VALUE_FIELD_NAME.to_string()),
-                        value_type: value,
-                    },
-                ]),
-            },
-            collectors: Default::default(),
-        }
-    }
-
-    pub fn new_list(value_name: Option<String>, value: EnrichedValueType) -> Self {
-        Self {
-            kind: CollectionKind::List,
-            row: StructSchema {
-                fields: Arc::new(vec![
-                    LIST_INDEX_FIELD.clone(),
-                    FieldSchema {
-                        name: value_name.unwrap_or_else(|| VALUE_FIELD_NAME.to_string()),
-                        value_type: value,
-                    },
-                ]),
-            },
-            collectors: Default::default(),
-        }
-    }
-
-    pub fn is_table(&self) -> bool {
-        match self.kind {
-            CollectionKind::Collection => false,
-            CollectionKind::Table | CollectionKind::List => true,
-        }
-    }
-
-    pub fn is_list(&self) -> bool {
-        self.kind == CollectionKind::List
     }
 
     pub fn key_field<'a>(&'a self) -> Option<&'a FieldSchema> {
-        if self.is_table() {
-            Some(self.row.fields.first().unwrap())
-        } else {
-            None
+        match self.kind {
+            CollectionKind::Table => Some(self.row.fields.first().unwrap()),
+            CollectionKind::Collection | CollectionKind::List => None,
         }
     }
 }
@@ -373,6 +300,13 @@ pub struct FieldSchema<DataType = ValueType> {
 }
 
 impl FieldSchema {
+    pub fn new(name: impl ToString, value_type: EnrichedValueType) -> Self {
+        Self {
+            name: name.to_string(),
+            value_type,
+        }
+    }
+
     pub fn without_attrs(&self) -> Self {
         Self {
             name: self.name.clone(),
