@@ -36,7 +36,7 @@ def _dump_fields_schema(cls: type) -> list[dict[str, Any]]:
     return [
                 {
                     'name': field.name,
-                    'value_type': _dump_enriched_type(field.type),
+                    **_dump_enriched_type(field.type)
                 }
                 for field in dataclasses.fields(cls)
             ]
@@ -56,7 +56,7 @@ def _dump_type(t, metadata):
         elif dataclasses.is_dataclass(elem_type):
             encoded_type = {
                 'kind': 'Table',
-                'row': _dump_fields_schema(elem_type),
+                'row': { 'fields': _dump_fields_schema(elem_type) },
             }
         else:
             raise ValueError(f"Unsupported type: {t}")
@@ -86,9 +86,7 @@ def _dump_type(t, metadata):
     
     return encoded_type
 
-def _dump_enriched_type(t) -> dict[str, Any] | None:
-    if t is None:
-        return None
+def _dump_enriched_type(t) -> dict[str, Any]:
     t, metadata = _get_origin_type_and_metadata(t)
     enriched_type_json = {'type': _dump_type(t, metadata)}
     attrs = None
@@ -106,4 +104,6 @@ def dump_type(t) -> dict[str, Any] | None:
     """
     Convert a Python type to a CocoIndex's type in JSON.
     """
+    if t is None:
+        return None
     return _dump_enriched_type(t)
