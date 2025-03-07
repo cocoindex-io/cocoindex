@@ -9,7 +9,9 @@ In CocoIndex, all data processed by the flow have a type determined when the flo
 
 This makes schema of data processed by CocoIndex clear, and easily determine the schema of your index.
 
-## Basic Types
+## Data Types 
+
+### Basic Types
 
 This is the list of all basic types supported by CocoIndex:
 
@@ -30,11 +32,6 @@ For some types, CocoIndex Python SDK provides annotated types with finer granula
 When defining [custom functions](/docs/core/custom_function), use the specific types as type annotations for arguments and return values.
 So CocoIndex will have information about the specific type.
 
-## Composite Types
-
-Note: CocoIndex will support functions taking composite types as arguments or returning composite types soon.
-We'll update this section with corresponding Python types by then.
-
 ### Struct
 
 A struct has a bunch of fields, each with a name and a type.
@@ -45,7 +42,14 @@ A table has a collection of rows, each of which is a struct with specified schem
 
 The first field of a table is always the primary key.
 
-## Indexable Types
+:::note
+
+CocoIndex will support functions taking struct and table types as arguments or returning composite types soon.
+We'll update this section with corresponding Python types by then.
+
+:::
+
+## Types to Create Indexes
 
 ### Key Types
 
