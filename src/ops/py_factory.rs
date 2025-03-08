@@ -3,7 +3,6 @@ use std::{collections::BTreeMap, sync::Arc};
 use axum::async_trait;
 use blocking::unblock;
 use futures::FutureExt;
-use log::warn;
 use pyo3::{
     exceptions::PyException,
     pyclass, pymethods,

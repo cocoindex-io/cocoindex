@@ -89,7 +89,7 @@ fn bind_key_field<'arg>(
 
 fn bind_value_field<'arg>(
     builder: &mut sqlx::QueryBuilder<'arg, sqlx::Postgres>,
-    field_schema: &FieldSchema,
+    field_schema: &'arg FieldSchema,
     value: &'arg Value,
 ) -> Result<()> {
     match &value {
@@ -145,7 +145,10 @@ fn bind_value_field<'arg>(
             builder.push("NULL");
         }
         v => {
-            builder.push_bind(sqlx::types::Json(*v));
+            builder.push_bind(sqlx::types::Json(TypedValue {
+                t: &field_schema.value_type.typ,
+                v,
+            }));
         }
     };
     Ok(())
