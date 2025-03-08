@@ -21,7 +21,7 @@
     "clsx": "^2.0.0",
     "mixpanel-browser": "^2.59.0",
     "posthog-docusaurus": "^2.0.2",
-    "prism-react-renderer": "^2.3.0",
+    "prism-react-renderer": "^2.4.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-player": "^2.16.0"

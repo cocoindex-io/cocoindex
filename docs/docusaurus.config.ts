@@ -18,7 +18,7 @@ const config: Config = {
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
   organizationName: 'cocoindex-io', // Usually your GitHub org/user name.
-  projectName: 'docs', // Usually your repo name.
+  projectName: 'cocoindex', // Usually your repo name.
   trailingSlash: false,
 
   onBrokenLinks: 'throw',
@@ -137,6 +137,7 @@ const config: Config = {
     prism: {
       theme: prismThemes.github,
       darkTheme: prismThemes.dracula,
+      additionalLanguages: ['diff', 'json', 'bash', 'docker'],
     },
   } satisfies Preset.ThemeConfig,
 };
