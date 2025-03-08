@@ -18,7 +18,7 @@ const config: Config = {
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
   organizationName: 'cocoindex-io', // Usually your GitHub org/user name.
-  projectName: 'cocoindex', // Usually your repo name.
+  projectName: 'docs', // Usually your repo name.
   trailingSlash: false,
 
   onBrokenLinks: 'throw',
