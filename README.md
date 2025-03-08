@@ -79,7 +79,7 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
         vector_index=[("embedding", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 ```
 
-It defines a index flow like this:
+It defines an index flow like this:
 ![Flow diagram](docs/docs/core/flow_example.svg)
 
 ### Play with existing example and demo
