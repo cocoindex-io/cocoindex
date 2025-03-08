@@ -12,7 +12,7 @@ from threading import Lock
 from . import _engine
 from . import vector
 from . import op
-from .typing import dump_type
+from .typing import encode_type
 
 class _NameBuilder:
     _existing_names: set[str]
@@ -419,7 +419,7 @@ class TransientFlow:
                                   inspect.Parameter.KEYWORD_ONLY):
                 raise ValueError(f"Parameter {param_name} is not a parameter can be passed by name")
             engine_ds = flow_builder_state.engine_flow_builder.add_direct_input(
-                param_name, dump_type(param_type))
+                param_name, encode_type(param_type))
             kwargs[param_name] = DataSlice(_DataSliceState(flow_builder_state, engine_ds))
 
         output = flow_fn(**kwargs)

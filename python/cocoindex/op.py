@@ -8,7 +8,7 @@ from typing import get_type_hints, Protocol, Any, Callable, dataclass_transform
 from enum import Enum
 from threading import Lock
 
-from .typing import dump_type
+from .typing import encode_type
 from . import _engine
 
 
@@ -57,14 +57,14 @@ class _FunctionExecutorFactory:
         spec = self._spec_cls(**spec)
         executor = self._executor_cls(spec)
         result_type = executor.analyze(*args, **kwargs)
-        return (dump_type(result_type), executor)
+        return (encode_type(result_type), executor)
 
-def to_engine_value(value: Any) -> Any:
+def _to_engine_value(value: Any) -> Any:
     """Convert a Python value to an engine value."""
     if dataclasses.is_dataclass(value):
-        return [to_engine_value(getattr(value, f.name)) for f in dataclasses.fields(value)]
+        return [_to_engine_value(getattr(value, f.name)) for f in dataclasses.fields(value)]
     elif isinstance(value, list) or isinstance(value, tuple):
-        return [to_engine_value(v) for v in value]
+        return [_to_engine_value(v) for v in value]
     return value
 
 _gpu_dispatch_lock = Lock()
@@ -123,7 +123,7 @@ def executor_class(gpu: bool = False, cache: bool = False, behavior_version: int
                     if arg_param.kind == inspect.Parameter.KEYWORD_ONLY or arg_param.kind == inspect.Parameter.VAR_KEYWORD:
                         raise ValueError(f"Too many positional arguments: {len(args)} > {next_param_idx}")
                     if arg_param.annotation is not inspect.Parameter.empty:
-                        arg.validate_arg(arg_name, dump_type(arg_param.annotation))
+                        arg.validate_arg(arg_name, encode_type(arg_param.annotation))
                     if arg_param.kind != inspect.Parameter.VAR_POSITIONAL:
                         next_param_idx += 1
 
@@ -139,7 +139,7 @@ def executor_class(gpu: bool = False, cache: bool = False, behavior_version: int
                         raise ValueError(f"Unexpected keyword argument: {kwarg_name}")
                     arg_param = expected_arg[1]
                     if arg_param.annotation is not inspect.Parameter.empty:
-                        kwarg.validate_arg(kwarg_name, dump_type(arg_param.annotation))
+                        kwarg.validate_arg(kwarg_name, encode_type(arg_param.annotation))
 
                 missing_args = [name for (name, arg) in expected_kwargs
                                 if arg.default is inspect.Parameter.empty
@@ -173,7 +173,7 @@ def executor_class(gpu: bool = False, cache: bool = False, behavior_version: int
                         output = super().__call__(*args, **kwargs)
                 else:
                     output = super().__call__(*args, **kwargs)
-                return to_engine_value(output)
+                return _to_engine_value(output)
 
         _WrappedClass.__name__ = cls.__name__
 
