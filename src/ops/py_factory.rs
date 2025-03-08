@@ -139,20 +139,6 @@ impl PyOpArgSchema {
     fn analyzed_value(&self) -> &crate::py::Pythonized<plan::AnalyzedValueMapping> {
         &self.analyzed_value
     }
-
-    fn validate_arg(
-        &self,
-        name: &str,
-        typ: crate::py::Pythonized<schema::EnrichedValueType>,
-    ) -> PyResult<()> {
-        if self.value_type.0.typ != typ.0.typ {
-            return Err(PyException::new_err(format!(
-                "argument `{}` type mismatch, input type: {}, argument type: {}",
-                name, self.value_type.0.typ, typ.0.typ
-            )));
-        }
-        Ok(())
-    }
 }
 
 struct PyFunctionExecutor {
