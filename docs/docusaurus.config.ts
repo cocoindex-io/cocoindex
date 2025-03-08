@@ -75,8 +75,13 @@ const config: Config = {
         target: '_self' // This makes the logo click follow the link in the same window
       },
       items: [
-        { to: '/docs/', label: 'Documentation', position: 'right', target: '_self' },
-        { to: 'https://cocoindex.io/blogs/', label: 'Blog', position: 'right', target: '_self' },
+        { to: '/docs/', label: 'Documentation', position: 'left', target: '_self' },
+        { to: 'https://cocoindex.io/blogs/', label: 'Blog', position: 'left', target: '_self' },
+        {
+          href: 'https://github.com/cocoindex-io/cocoindex',
+          label: 'GitHub',
+          position: 'right',
+        },
       ],
     },
     footer: {
