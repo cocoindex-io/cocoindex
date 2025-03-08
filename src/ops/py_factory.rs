@@ -9,6 +9,7 @@ use pyo3::{
     types::{IntoPyDict, PyAnyMethods, PyString, PyTuple},
     Bound, IntoPyObjectExt, Py, PyAny, PyResult, Python,
 };
+use pythonize::pythonize;
 
 use crate::{
     base::{schema, value},
@@ -20,46 +21,6 @@ use anyhow::Result;
 use super::sdk::{
     ExecutorFuture, FlowInstanceContext, SimpleFunctionExecutor, SimpleFunctionFactory,
 };
-
-fn basic_value_to_py_object<'py>(
-    py: Python<'py>,
-    v: &value::BasicValue,
-) -> PyResult<Bound<'py, PyAny>> {
-    let result = match v {
-        value::BasicValue::Bytes(v) => v.into_bound_py_any(py)?,
-        value::BasicValue::Str(v) => v.into_bound_py_any(py)?,
-        value::BasicValue::Bool(v) => v.into_bound_py_any(py)?,
-        value::BasicValue::Int64(v) => v.into_bound_py_any(py)?,
-        value::BasicValue::Float32(v) => v.into_bound_py_any(py)?,
-        value::BasicValue::Float64(v) => v.into_bound_py_any(py)?,
-        value::BasicValue::Vector(v) => v
-            .iter()
-            .map(|v| basic_value_to_py_object(py, v))
-            .collect::<PyResult<Vec<_>>>()?
-            .into_bound_py_any(py)?,
-        _ => {
-            return Err(PyException::new_err(format!(
-                "unsupported value type: {}",
-                v.kind()
-            )))
-        }
-    };
-    Ok(result)
-}
-
-fn value_to_py_object<'py>(py: Python<'py>, v: &value::Value) -> PyResult<Bound<'py, PyAny>> {
-    let result = match v {
-        value::Value::Null => py.None().into_bound(py),
-        value::Value::Basic(v) => basic_value_to_py_object(py, v)?,
-        _ => {
-            return Err(PyException::new_err(format!(
-                "unsupported value type: {}",
-                v.kind()
-            )))
-        }
-    };
-    Ok(result)
-}
 
 fn basic_value_from_py_object<'py>(
     typ: &schema::BasicValueType,
@@ -212,7 +173,7 @@ impl SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
             Python::with_gil(|py| -> Result<_> {
                 let mut args = Vec::with_capacity(self.num_positional_args);
                 for v in input[0..self.num_positional_args].iter() {
-                    args.push(value_to_py_object(py, v)?);
+                    args.push(pythonize(py, v)?);
                 }
 
                 let kwargs = if self.kw_args_names.is_empty() {
@@ -224,7 +185,7 @@ impl SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
                         .iter()
                         .zip(input[self.num_positional_args..].iter())
                     {
-                        kwargs.push((name.bind(py), value_to_py_object(py, v)?));
+                        kwargs.push((name.bind(py), pythonize(py, v)?));
                     }
                     Some(kwargs)
                 };
@@ -272,7 +233,7 @@ impl SimpleFunctionFactory for PyFunctionFactory {
     )> {
         let (result_type, executor, kw_args_names, num_positional_args) =
             Python::with_gil(|py| -> anyhow::Result<_> {
-                let mut args = vec![crate::py::Pythonized(spec).into_py_any(py)?];
+                let mut args = vec![pythonize(py, &spec)?];
                 let mut kwargs = vec![];
                 let mut num_positional_args = 0;
                 for arg in input_schema.into_iter() {
@@ -285,7 +246,7 @@ impl SimpleFunctionFactory for PyFunctionFactory {
                             kwargs.push((name.clone(), py_arg_schema));
                         }
                         None => {
-                            args.push(py_arg_schema.into_py_any(py)?);
+                            args.push(py_arg_schema.into_bound_py_any(py)?);
                             num_positional_args += 1;
                         }
                     }
