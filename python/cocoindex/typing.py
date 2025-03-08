@@ -1,7 +1,7 @@
 import typing
 import collections
 import dataclasses
-from typing import Annotated, NamedTuple, Any
+from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING
 
 class Vector(NamedTuple):
     dim: int | None
@@ -20,6 +20,28 @@ Float32 = Annotated[float, TypeKind('Float32')]
 Float64 = Annotated[float, TypeKind('Float64')]
 Range = Annotated[tuple[int, int], TypeKind('Range')]
 Json = Annotated[Any, TypeKind('Json')]
+
+R = TypeVar("R")
+
+if TYPE_CHECKING:
+    Table = Annotated[list[R], TypeKind('Table')]
+    List = Annotated[list[R], TypeKind('List')]
+else:
+    # pylint: disable=too-few-public-methods
+    class Table:  # type: ignore[unreachable]
+        """
+        A Table type, which has a list of rows. The first field of each row is the key.
+        """
+        def __class_getitem__(cls, item: type[R]):
+            return Annotated[list[item], TypeKind('Table')]
+
+    # pylint: disable=too-few-public-methods
+    class List:  # type: ignore[unreachable]
+        """
+        A List type, which has a list of ordered rows.
+        """
+        def __class_getitem__(cls, item: type[R]):
+            return Annotated[list[item], TypeKind('List')]
 
 def _find_annotation(metadata, cls):
     for m in iter(metadata):
@@ -43,6 +65,7 @@ def _dump_fields_schema(cls: type) -> list[dict[str, Any]]:
 
 def _dump_type(t, metadata):
     origin_type = typing.get_origin(t)
+    type_kind = _find_annotation(metadata, TypeKind)
     if origin_type is collections.abc.Sequence or origin_type is list:
         args = typing.get_args(t)
         elem_type, elem_type_metadata = _get_origin_type_and_metadata(args[0])
@@ -54,10 +77,16 @@ def _dump_type(t, metadata):
                 'dimension': vector_annot.dim,
             }
         elif dataclasses.is_dataclass(elem_type):
-            encoded_type = {
-                'kind': 'List',
-                'row': { 'fields': _dump_fields_schema(elem_type) },
-            }
+            if type_kind is not None and type_kind.kind == 'Table':
+                encoded_type = {
+                    'kind': 'Table',
+                    'row': { 'fields': _dump_fields_schema(elem_type) },
+                }
+            else:
+                encoded_type = {
+                    'kind': 'List',
+                    'row': { 'fields': _dump_fields_schema(elem_type) },
+                }
         else:
             raise ValueError(f"Unsupported type: {t}")
     elif dataclasses.is_dataclass(t):
@@ -66,7 +95,6 @@ def _dump_type(t, metadata):
             'fields': _dump_fields_schema(t),
         }
     else:
-        type_kind = _find_annotation(metadata, TypeKind)
         if type_kind is not None:
             kind = type_kind.kind
         else:

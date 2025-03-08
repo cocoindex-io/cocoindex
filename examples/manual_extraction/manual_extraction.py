@@ -38,21 +38,21 @@ class ArgInfo:
 @dataclasses.dataclass
 class MethodInfo:
     name: str
-    args: list[ArgInfo]
+    args: cocoindex.typing.List[ArgInfo]
     description: str
 
 @dataclasses.dataclass
 class ClassInfo:
     name: str
     description: str
-    methods: list[MethodInfo]
+    methods: cocoindex.typing.List[MethodInfo]
 
 @dataclasses.dataclass
 class ManualInfo:
     title: str
     description: str
-    classes: list[ClassInfo]
-    methods: list[MethodInfo]
+    classes: cocoindex.typing.Table[ClassInfo]
+    methods: cocoindex.typing.Table[MethodInfo]
 
 
 class ExtractManual(cocoindex.op.FunctionSpec):
