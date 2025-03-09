@@ -47,7 +47,7 @@ jobs:
           env:
               GH_PAGES_DEPLOY: ${{ secrets.GH_PAGES_DEPLOY }}
           if: "${{ env.GH_PAGES_DEPLOY != '' }}"
-          run: echo "::set-output name=defined::true"
+          run: echo "defined=true" >> $GITHUB_OUTPUT
 
   deploy:
     needs: [deploy-precheck]
