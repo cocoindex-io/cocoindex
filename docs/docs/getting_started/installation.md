@@ -6,7 +6,7 @@ description: Setup the CocoIndex environment in 0-3 min
 ## 🐍 Python and Pip
 To follow the steps in this guide, you'll need:
 
-1. Install [Python](https://www.python.org/downloads/). We support Python 3.11 to 3.13.
+1. Install [Python](https://wiki.python.org/moin/BeginnersGuide/Download/). We support Python 3.11 to 3.13.
 2. Install [pip](https://pip.pypa.io/en/stable/installation/) - a Python package installer
 
 
