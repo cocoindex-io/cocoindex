@@ -6,8 +6,8 @@ description: Setup the CocoIndex environment in 0-3 min
 ## 🐍 Python and Pip
 To follow the steps in this guide, you'll need:
 
-To install Python 3.10 or higher. Python 3.12 is recommended.
-To install pip, a Python package installer
+1. Install [Python](https://www.python.org/downloads/). We support Python 3.11 to 3.13 [![Python](https://img.shields.io/badge/python-3.11%20to%203.13-5B5BD6?logo=python&logoColor=white)](https://www.python.org/).
+2. Install [pip](https://pip.pypa.io/en/stable/installation/) - a Python package installer
 
 
 ## 🌴 Install CocoIndex

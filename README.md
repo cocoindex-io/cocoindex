@@ -5,16 +5,16 @@
 <h2 align="center">Extract, Transform, Index Data. Easy and Fresh. 🌴</h2>
 
 <p align="center">
-    <a href="https://github.com/cocoindex-io/cocoindex"><img src="https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6" alt="GitHub"></a>
-    <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logo=opensourceinitiative&logoColor=white" alt="License"></a>
-    <a href="https://pypi.org/project/cocoindex/"><img src="https://img.shields.io/pypi/v/cocoindex?color=5B5BD6" alt="PyPI version"></a>
-    <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20to%203.13-5B5BD6?logo=python&logoColor=white" alt="Python"></a>
-    <a href="https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml"><img src="https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml/badge.svg?event=push&color=5B5BD6" alt="CI"></a>
-    <a href="https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml"><img src="https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml/badge.svg?event=push&color=5B5BD6" alt="release"></a>
-    <a href="https://github.com/cocoindex-io/cocoindex/actions/workflows/docs.yml"><img src="https://github.com/cocoindex-io/cocoindex/actions/workflows/docs.yml/badge.svg?event=push&color=5B5BD6" alt="docs"></a>
-    <a href="https://discord.com/invite/zpA9S2DR7s"><img src="https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white" alt="Discord"></a>
-    <a href="https://www.linkedin.com/company/cocoindex"><img src="https://img.shields.io/badge/LinkedIn-CocoIndex-5B5BD6?logo=linkedin&logoColor=white" alt="LinkedIn"></a>
-    <a href="https://twitter.com/intent/follow?screen_name=cocoindex_io"><img src="https://img.shields.io/twitter/follow/cocoindex_io" alt="X (Twitter)"></a>
+    [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+    [![License](https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logo=opensourceinitiative&logoColor=white)](https://opensource.org/licenses/Apache-2.0)
+    [![PyPI version](https://img.shields.io/pypi/v/cocoindex?color=5B5BD6)](https://pypi.org/project/cocoindex/)
+    [![Python](https://img.shields.io/badge/python-3.11%20to%203.13-5B5BD6?logo=python&logoColor=white)](https://www.python.org/)
+    [![CI](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml)
+    [![release](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml)
+    [![docs](https://github.com/cocoindex-io/cocoindex/actions/workflows/docs.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/docs.yml)
+    [![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
+    [![LinkedIn](https://img.shields.io/badge/LinkedIn-CocoIndex-5B5BD6?logo=linkedin&logoColor=white)](https://www.linkedin.com/company/cocoindex)
+    [![X (Twitter)](https://img.shields.io/twitter/follow/cocoindex_io)](https://twitter.com/intent/follow?screen_name=cocoindex_io)
 </p>
 
 CocoIndex is the world's first open-source engine that supports both custom transformation logic and incremental updates specialized for data indexing.
