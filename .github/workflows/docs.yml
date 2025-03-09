@@ -61,6 +61,8 @@ jobs:
         env:
           USE_SSH: true
         run: |
+          export COCOINDEX_DOCS_POSTHOG_API_KEY=${{ secrets.COCOINDEX_DOCS_POSTHOG_API_KEY }}
+          export COCOINDEX_DOCS_MIXPANEL_API_KEY=${{ secrets.COCOINDEX_DOCS_MIXPANEL_API_KEY }}
           git config --global user.email "cocoindex.io@gmail.com"
           git config --global user.name "CocoIndex"
           yarn install --frozen-lockfile
