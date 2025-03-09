@@ -21,7 +21,7 @@ You can skip this step if you already have a Postgres database with pgvector ext
 
 If you don't have a Postgres database:
 
-1. Make sure Docker Compose 🐳 is installed: [docs](https://docs.docker.com/compose/install/)
+1. Install [Docker](https://docs.docker.com/compose/install/) 🐳.
 2. Start a Postgres SQL database for cocoindex using our docker compose config:
 
 ```bash
