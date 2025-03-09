@@ -1,7 +1,7 @@
 Simple example for cocoindex: extract structured information from a Markdown file.
 
 ## Prerequisite
-Follow [Setup Postgres](../../#setup-postgres) section on the root directory to setup Postgres database.
+Follow [Prerequisite](https://cocoindex.io/docs/getting_started/quickstart#prerequisite-install-cocoindex-environment) to install cocoIndex environment.
 
 ## Run
 
