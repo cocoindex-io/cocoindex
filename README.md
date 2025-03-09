@@ -6,16 +6,16 @@
 
 <p align="center">
 
-    [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
-    [![License](https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logo=opensourceinitiative&logoColor=white)](https://opensource.org/licenses/Apache-2.0)
-    [![PyPI version](https://img.shields.io/pypi/v/cocoindex?color=5B5BD6)](https://pypi.org/project/cocoindex/)
-    [![Python](https://img.shields.io/badge/python-3.11%20to%203.13-5B5BD6?logo=python&logoColor=white)](https://www.python.org/)
-    [![CI](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml)
-    [![release](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml)
-    [![docs](https://github.com/cocoindex-io/cocoindex/actions/workflows/docs.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/docs.yml)
-    [![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
-    [![LinkedIn](https://img.shields.io/badge/LinkedIn-CocoIndex-5B5BD6?logo=linkedin&logoColor=white)](https://www.linkedin.com/company/cocoindex)
-    [![X (Twitter)](https://img.shields.io/twitter/follow/cocoindex_io)](https://twitter.com/intent/follow?screen_name=cocoindex_io)
+[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+[![License](https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logo=opensourceinitiative&logoColor=white)](https://opensource.org/licenses/Apache-2.0)
+[![PyPI version](https://img.shields.io/pypi/v/cocoindex?color=5B5BD6)](https://pypi.org/project/cocoindex/)
+[![Python](https://img.shields.io/badge/python-3.11%20to%203.13-5B5BD6?logo=python&logoColor=white)](https://www.python.org/)
+[![CI](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml)
+[![release](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml)
+[![docs](https://github.com/cocoindex-io/cocoindex/actions/workflows/docs.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/docs.yml)
+[![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-CocoIndex-5B5BD6?logo=linkedin&logoColor=white)](https://www.linkedin.com/company/cocoindex)
+[![X (Twitter)](https://img.shields.io/twitter/follow/cocoindex_io)](https://twitter.com/intent/follow?screen_name=cocoindex_io)
 
 </p>
 
