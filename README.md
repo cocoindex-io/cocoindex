@@ -4,7 +4,7 @@
 
 <h2 align="center">Extract, Transform, Index Data. Easy and Fresh. 🌴</h2>
 
-<p align="center">
+<div style="text-align: center;">
 
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 [![License](https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logo=opensourceinitiative&logoColor=white)](https://opensource.org/licenses/Apache-2.0)
@@ -17,7 +17,7 @@
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-CocoIndex-5B5BD6?logo=linkedin&logoColor=white)](https://www.linkedin.com/company/cocoindex)
 [![X (Twitter)](https://img.shields.io/twitter/follow/cocoindex_io)](https://twitter.com/intent/follow?screen_name=cocoindex_io)
 
-</p>
+</div>
 
 CocoIndex is the world's first open-source engine that supports both custom transformation logic and incremental updates specialized for data indexing.
 <p align="center">
