@@ -5,7 +5,7 @@
 <h2 align="center">Extract, Transform, Index Data. Easy and Fresh. 🌴</h2>
 
 <p align="center">
-    <a href="https://github.com/cocoindex-io/cocoindex/stargazers"><img src="https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6" alt="GitHub"></a>
+    <a href="https://github.com/cocoindex-io/cocoindex"><img src="https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6" alt="GitHub"></a>
     <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logo=opensourceinitiative&logoColor=white" alt="License"></a>
     <a href="https://pypi.org/project/cocoindex/"><img src="https://img.shields.io/pypi/v/cocoindex?color=5B5BD6" alt="PyPI version"></a>
     <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20to%203.13-5B5BD6?logo=python&logoColor=white" alt="Python"></a>
