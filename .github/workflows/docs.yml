@@ -37,10 +37,26 @@ jobs:
       - name: Test build website
         run: yarn build
 
+  deploy-precheck:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' }}
+    outputs:
+      gh-deploy-key: ${{ steps.gh-deploy-key.outputs.defined }}
+    steps:
+        - id: gh-deploy-key
+          env:
+              GH_PAGES_DEPLOY: ${{ secrets.GH_PAGES_DEPLOY }}
+          if: "${{ env.GH_PAGES_DEPLOY != '' }}"
+          run: echo "::set-output name=defined::true"
+
   deploy:
-    if: ${{ github.event_name != 'pull_request' && github.secrets.GH_PAGES_DEPLOY != '' }}
+    needs: [deploy-precheck]
+    if: ${{ needs.deploy-precheck.outputs.gh-deploy-key == 'true' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Check secret set
+        run: |
+          echo "GH_PAGES_DEPLOY: ${{ secrets.GH_PAGES_DEPLOY }}"
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -56,13 +72,13 @@ jobs:
           cache: yarn
       - uses: webfactory/ssh-agent@v0.5.0
         with:
-          ssh-private-key: ${{ github.secrets.GH_PAGES_DEPLOY }}
+          ssh-private-key: ${{ env.GH_PAGES_DEPLOY }}
       - name: Deploy to GitHub Pages
         env:
           USE_SSH: true
         run: |
-          export COCOINDEX_DOCS_POSTHOG_API_KEY=${{ github.secrets.COCOINDEX_DOCS_POSTHOG_API_KEY }}
-          export COCOINDEX_DOCS_MIXPANEL_API_KEY=${{ github.secrets.COCOINDEX_DOCS_MIXPANEL_API_KEY }}
+          export COCOINDEX_DOCS_POSTHOG_API_KEY=${{ secrets.COCOINDEX_DOCS_POSTHOG_API_KEY }}
+          export COCOINDEX_DOCS_MIXPANEL_API_KEY=${{ secrets.COCOINDEX_DOCS_MIXPANEL_API_KEY }}
           git config --global user.email "cocoindex.io@gmail.com"
           git config --global user.name "CocoIndex"
           yarn install --frozen-lockfile
