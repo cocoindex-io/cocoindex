@@ -90,6 +90,21 @@ class ExtractManualExecutor:
             ]
         )
 
+class CleanUpManual(cocoindex.op.FunctionSpec):
+    """Clean up manual information."""
+
+
+
+@cocoindex.op.executor_class()
+class CleanUpManualExecutor:
+    """Executor for CleanUpManual."""
+
+    spec: CleanUpManual
+
+    def __call__(self, manual_info: ManualInfo) -> ManualInfo | None:
+        # TODO: Clean up
+        return manual_info
+
 @cocoindex.flow_def(name="ManualExtraction")
 def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     """
@@ -101,7 +116,8 @@ def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: coco
 
     with data_scope["documents"].row() as doc:
         doc["markdown"] = doc["content"].transform(PdfToMarkdown())
-        doc["manual_info"] = doc["markdown"].transform(ExtractManual())
+        doc["raw_manual_info"] = doc["markdown"].transform(ExtractManual())
+        doc["manual_info"] = doc["raw_manual_info"].transform(CleanUpManual())
         manual_infos.collect(filename=doc["filename"], manual_info=doc["manual_info"])
 
     manual_infos.export(

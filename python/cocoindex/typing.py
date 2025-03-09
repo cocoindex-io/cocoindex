@@ -9,6 +9,7 @@ class Vector(NamedTuple):
 
 class TypeKind(NamedTuple):
     kind: str
+
 class TypeAttr:
     key: str
     value: Any
@@ -23,6 +24,8 @@ Float32 = Annotated[float, TypeKind('Float32')]
 Float64 = Annotated[float, TypeKind('Float64')]
 Range = Annotated[tuple[int, int], TypeKind('Range')]
 Json = Annotated[Any, TypeKind('Json')]
+
+COLLECTION_TYPES = ('Table', 'List')
 
 R = TypeVar("R")
 
@@ -46,10 +49,6 @@ else:
         def __class_getitem__(cls, item: type[R]):
             return Annotated[list[item], TypeKind('List')]
 
-def _dump_field_schema(field: dataclasses.Field) -> dict[str, Any]:
-    encoded = _encode_enriched_type(field.type)
-    encoded['name'] = field.name
-    return encoded
 @dataclasses.dataclass
 class AnalyzedTypeInfo:
     """
@@ -58,7 +57,7 @@ class AnalyzedTypeInfo:
     kind: str
     vector_info: Vector | None
     elem_type: type | None
-    struct_fields: tuple[dataclasses.Field, ...] | None
+    dataclass_type: type | None
     attrs: dict[str, Any] | None
     nullable: bool = False
 
@@ -99,18 +98,18 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         elif isinstance(attr, TypeKind):
             kind = attr.kind
 
-    struct_fields = None
+    dataclass_type = None
     elem_type = None
-    if dataclasses.is_dataclass(t):
+    if isinstance(t, type) and dataclasses.is_dataclass(t):
         if kind is None:
             kind = 'Struct'
         elif kind != 'Struct':
             raise ValueError(f"Unexpected type kind for struct: {kind}")
-        struct_fields = dataclasses.fields(t)
+        dataclass_type = t
     elif base_type is collections.abc.Sequence or base_type is list:
         if kind is None:
             kind = 'Vector' if vector_info is not None else 'List'
-        elif kind not in ('Vector', 'List', 'Table'):
+        elif not (kind == 'Vector' or kind in COLLECTION_TYPES):
             raise ValueError(f"Unexpected type kind for list: {kind}")
 
         args = typing.get_args(t)
@@ -134,15 +133,20 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
             raise ValueError(f"type unsupported yet: {base_type}")
 
     return AnalyzedTypeInfo(kind=kind, vector_info=vector_info, elem_type=elem_type,
-                            struct_fields=struct_fields, attrs=attrs, nullable=nullable)
+                            dataclass_type=dataclass_type, attrs=attrs, nullable=nullable)
+
+def _encode_fields_schema(dataclass_type: type) -> list[dict[str, Any]]:
+    return [{ 'name': field.name,
+              **encode_enriched_type_info(analyze_type_info(field.type))
+            } for field in dataclasses.fields(dataclass_type)]
 
 def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
     encoded_type: dict[str, Any] = { 'kind': type_info.kind }
 
     if type_info.kind == 'Struct':
-        if type_info.struct_fields is None:
-            raise ValueError("Struct type must have a struct fields")
-        encoded_type['fields'] = [_dump_field_schema(field) for field in type_info.struct_fields]
+        if type_info.dataclass_type is None:
+            raise ValueError("Struct type must have a dataclass type")
+        encoded_type['fields'] = _encode_fields_schema(type_info.dataclass_type)
 
     elif type_info.kind == 'Vector':
         if type_info.vector_info is None:
@@ -152,21 +156,22 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         encoded_type['element_type'] = _encode_type(analyze_type_info(type_info.elem_type))
         encoded_type['dimension'] = type_info.vector_info.dim
 
-    elif type_info.kind in ('List', 'Table'):
+    elif type_info.kind in COLLECTION_TYPES:
         if type_info.elem_type is None:
             raise ValueError(f"{type_info.kind} type must have an element type")
-        row_type_inof = analyze_type_info(type_info.elem_type)
-        if row_type_inof.struct_fields is None:
-            raise ValueError(f"{type_info.kind} type must have a struct fields")
+        row_type_info = analyze_type_info(type_info.elem_type)
+        if row_type_info.dataclass_type is None:
+            raise ValueError(f"{type_info.kind} type must have a dataclass type")
         encoded_type['row'] = {
-            'fields': [_dump_field_schema(field) for field in row_type_inof.struct_fields],
+            'fields': _encode_fields_schema(row_type_info.dataclass_type),
         }
 
     return encoded_type
 
-def _encode_enriched_type(t) -> dict[str, Any]:
-    enriched_type_info = analyze_type_info(t)
-
+def encode_enriched_type_info(enriched_type_info: AnalyzedTypeInfo) -> dict[str, Any]:
+    """
+    Encode an enriched type info to a CocoIndex engine's type representation
+    """
     encoded: dict[str, Any] = {'type': _encode_type(enriched_type_info)}
 
     if enriched_type_info.attrs is not None:
@@ -178,10 +183,11 @@ def _encode_enriched_type(t) -> dict[str, Any]:
     return encoded
 
 
-def encode_type(t) -> dict[str, Any] | None:
+def encode_enriched_type(t) -> dict[str, Any] | None:
     """
-    Convert a Python type to a CocoIndex's type in JSON.
+    Convert a Python type to a CocoIndex engine's type representation
     """
     if t is None:
         return None
-    return _encode_enriched_type(t)
+
+    return encode_enriched_type_info(analyze_type_info(t))

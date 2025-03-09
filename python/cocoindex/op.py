@@ -8,7 +8,7 @@ from typing import get_type_hints, Protocol, Any, Callable, dataclass_transform
 from enum import Enum
 from threading import Lock
 
-from .typing import encode_type
+from .typing import encode_enriched_type, analyze_type_info, COLLECTION_TYPES
 from . import _engine
 
 
@@ -57,15 +57,85 @@ class _FunctionExecutorFactory:
         spec = self._spec_cls(**spec)
         executor = self._executor_cls(spec)
         result_type = executor.analyze(*args, **kwargs)
-        return (encode_type(result_type), executor)
+        return (encode_enriched_type(result_type), executor)
 
 def _to_engine_value(value: Any) -> Any:
     """Convert a Python value to an engine value."""
     if dataclasses.is_dataclass(value):
         return [_to_engine_value(getattr(value, f.name)) for f in dataclasses.fields(value)]
-    elif isinstance(value, list) or isinstance(value, tuple):
+    if isinstance(value, (list, tuple)):
         return [_to_engine_value(v) for v in value]
     return value
+
+def _make_engine_struct_value_converter(
+        field_path: list[str],
+        src_fields: list[dict[str, Any]],
+        dst_dataclass_type: type,
+    ) -> Callable[[list], Any]:
+    """Make a converter from an engine field values to a Python value."""
+
+    src_name_to_idx = {f['name']: i for i, f in enumerate(src_fields)}
+    def make_closure_for_value(name: str, param: inspect.Parameter) -> Callable[[list], Any]:
+        src_idx = src_name_to_idx.get(name)
+        if src_idx is not None:
+            field_path.append(f'.{name}')
+            field_converter = _make_engine_value_converter(
+                field_path, src_fields[src_idx]['type'], param.annotation)
+            field_path.pop()
+            return lambda values: field_converter(values[src_idx])
+
+        default_value = param.default
+        if default_value is inspect.Parameter.empty:
+            raise ValueError(
+                f"Field without default value is missing in input: {''.join(field_path)}")
+
+        return lambda _: default_value
+
+    field_value_converters = [
+        make_closure_for_value(name, param)
+        for (name, param) in inspect.signature(dst_dataclass_type).parameters.items()]
+
+    return lambda values: dst_dataclass_type(
+        *(converter(values) for converter in field_value_converters))
+
+def _make_engine_value_converter(
+        field_path: list[str],
+        src_type: dict[str, Any],
+        dst_annotation,
+    ) -> Callable[[Any], Any]:
+    """Make a converter from an engine value to a Python value."""
+
+    src_type_kind = src_type['kind']
+
+    if dst_annotation is inspect.Parameter.empty:
+        if src_type_kind == 'Struct' or src_type_kind in COLLECTION_TYPES:
+            raise ValueError(f"Missing type annotation for `{''.join(field_path)}`."
+                             f"It's required for {src_type_kind} type.")
+        return lambda value: value
+
+    dst_type_info = analyze_type_info(dst_annotation)
+
+    if src_type_kind != dst_type_info.kind:
+        raise ValueError(
+            f"Type mismatch for `{''.join(field_path)}`: "
+            f"passed in {src_type_kind}, declared {dst_annotation} ({dst_type_info.kind})")
+
+    if dst_type_info.dataclass_type is not None:
+        return _make_engine_struct_value_converter(
+            field_path, src_type['fields'], dst_type_info.dataclass_type)
+
+    if src_type_kind in COLLECTION_TYPES:
+        field_path.append('[*]')
+        elem_type_info = analyze_type_info(dst_type_info.elem_type)
+        if elem_type_info.dataclass_type is None:
+            raise ValueError(f"Type mismatch for `{''.join(field_path)}`: "
+                             f"declared `{dst_type_info.kind}`, a dataclass type expected")
+        elem_converter = _make_engine_struct_value_converter(
+            field_path, src_type['row']['fields'], elem_type_info.dataclass_type)
+        field_path.pop()
+        return lambda value: [elem_converter(v) for v in value] if value is not None else None
+
+    return lambda value: value
 
 _gpu_dispatch_lock = Lock()
 
@@ -105,6 +175,9 @@ def executor_class(gpu: bool = False, cache: bool = False, behavior_version: int
                 return behavior_version
 
         class _WrappedClass(cls_type, _Fallback):
+            _args_converters: list[Callable[[Any], Any]]
+            _kwargs_converters: dict[str, Callable[[str, Any], Any]]
+
             def __init__(self, spec):
                 super().__init__()
                 self.spec = spec
@@ -114,16 +187,19 @@ def executor_class(gpu: bool = False, cache: bool = False, behavior_version: int
                 Analyze the spec and arguments. In this phase, argument types should be validated.
                 It should return the expected result type for the current op.
                 """
+                self._args_converters = []
+                self._kwargs_converters = {}
+
                 # Match arguments with parameters.
                 next_param_idx = 0
-                for arg in args:
+                for arg in  args:
                     if next_param_idx >= len(expected_args):
-                        raise ValueError(f"Too many arguments: {len(args)} > {len(expected_args)}")
+                        raise ValueError(f"Too many arguments passed in: {len(args)} > {len(expected_args)}")
                     arg_name, arg_param = expected_args[next_param_idx]
                     if arg_param.kind == inspect.Parameter.KEYWORD_ONLY or arg_param.kind == inspect.Parameter.VAR_KEYWORD:
-                        raise ValueError(f"Too many positional arguments: {len(args)} > {next_param_idx}")
-                    if arg_param.annotation is not inspect.Parameter.empty:
-                        arg.validate_arg(arg_name, encode_type(arg_param.annotation))
+                        raise ValueError(f"Too many positional arguments passed in: {len(args)} > {next_param_idx}")
+                    self._args_converters.append(
+                        _make_engine_value_converter([arg_name], arg.value_type['type'], arg_param.annotation))
                     if arg_param.kind != inspect.Parameter.VAR_POSITIONAL:
                         next_param_idx += 1
 
@@ -136,10 +212,10 @@ def executor_class(gpu: bool = False, cache: bool = False, behavior_version: int
                             or arg[1].kind == inspect.Parameter.VAR_KEYWORD),
                         None)
                     if expected_arg is None:
-                        raise ValueError(f"Unexpected keyword argument: {kwarg_name}")
+                        raise ValueError(f"Unexpected keyword argument passed in: {kwarg_name}")
                     arg_param = expected_arg[1]
-                    if arg_param.annotation is not inspect.Parameter.empty:
-                        kwarg.validate_arg(kwarg_name, encode_type(arg_param.annotation))
+                    self._kwargs_converters[kwarg_name] = _make_engine_value_converter(
+                        [kwarg_name], kwarg.value_type['type'], arg_param.annotation)
 
                 missing_args = [name for (name, arg) in expected_kwargs
                                 if arg.default is inspect.Parameter.empty
@@ -164,15 +240,17 @@ def executor_class(gpu: bool = False, cache: bool = False, behavior_version: int
                     setup_method(self)
 
             def __call__(self, *args, **kwargs):
+                converted_args = (converter(arg) for converter, arg in zip(self._args_converters, args))
+                converted_kwargs = {arg_name: self._kwargs_converters[arg_name](arg) for arg_name, arg in kwargs.items()}
                 if gpu:
                     # For GPU executions, data-level parallelism is applied, so we don't want to execute different tasks in parallel.
                     # Besides, multiprocessing is more appropriate for pytorch.
                     # For now, we use a lock to ensure only one task is executed at a time.
                     # TODO: Implement multi-processing dispatching.
                     with _gpu_dispatch_lock:
-                        output = super().__call__(*args, **kwargs)
+                        output = super().__call__(*converted_args, **converted_kwargs)
                 else:
-                    output = super().__call__(*args, **kwargs)
+                    output = super().__call__(*converted_args, **converted_kwargs)
                 return _to_engine_value(output)
 
         _WrappedClass.__name__ = cls.__name__
