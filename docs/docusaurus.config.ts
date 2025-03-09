@@ -1,3 +1,4 @@
+import webpack from 'webpack';
 import { themes as prismThemes } from 'prism-react-renderer';
 import type { Config } from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
@@ -33,14 +34,17 @@ const config: Config = {
   },
 
   plugins: [
-    [
-      "posthog-docusaurus",
-      {
-        apiKey: "phc_SgKiQafwZjHu4jQW2q402gbz6FYQ2NJRkcgooZMNNcy",
-        appUrl: "https://us.i.posthog.com",
-        enableInDevelopment: false,
-      },
-    ],
+    () => ({
+      name: 'load-env-vars',
+      configureWebpack: () => ({
+        mergeStrategy: { plugins: "append", resolve: "merge" },
+        plugins: [
+          new webpack.DefinePlugin({
+            'process.env.COCOINDEX_DOCS_MIXPANEL_API_KEY': JSON.stringify(process.env.COCOINDEX_DOCS_MIXPANEL_API_KEY),
+          })
+        ],
+      }),
+    }),
   ],
 
   presets: [
@@ -146,5 +150,17 @@ const config: Config = {
     },
   } satisfies Preset.ThemeConfig,
 };
+
+
+if (!!process.env.COCOINDEX_DOCS_POSTHOG_API_KEY) {
+  config.plugins.push([
+    "posthog-docusaurus",
+    {
+      apiKey: process.env.COCOINDEX_DOCS_POSTHOG_API_KEY,
+      appUrl: "https://us.i.posthog.com",
+      enableInDevelopment: false,
+    },
+  ]);
+}
 
 export default config;
