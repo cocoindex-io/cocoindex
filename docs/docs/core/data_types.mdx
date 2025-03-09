@@ -17,37 +17,50 @@ This is the list of all basic types supported by CocoIndex:
 
 | Type | Type in Python | Original Type in Python |
 |------|-----------------|--------------------------|
-| `bytes` | `bytes` | `bytes` |
-| `str` | `str` | `str` |
-| `bool` | `bool` | `bool` |
-| `int64` | `int` | `int` |
-| `float32` | `cocoindex.typing.Float32` |`float` | 
-| `float64` |  `cocoindex.typing.Float64` |`float` |
-| `range` | `cocoindex.typing.Range`  | `tuple[int, int]` |
-| `vector(*type* [, *N*])` |`Annotated[list[type], cocoindex.typing.Vector(dim=N)]` | `list[type]` | 
-| `json` | `cocoindex.typing.Json` | Any type convertible to JSON by `json` package | 
+| bytes | `bytes` | `bytes` |
+| str | `str` | `str` |
+| bool | `bool` | `bool` |
+| int64 | `int` | `int` |
+| float32 | `cocoindex.typing.Float32` |`float` | 
+| float64 |  `cocoindex.typing.Float64` |`float` |
+| range | `cocoindex.typing.Range`  | `tuple[int, int]` |
+| vector[*type*, *N*?] |`Annotated[list[type], cocoindex.typing.Vector(dim=N)]` | `list[type]` | 
+| json | `cocoindex.typing.Json` | Any type convertible to JSON by `json` package | 
 
 For some types, CocoIndex Python SDK provides annotated types with finer granularity than Python's original type, e.g. `Float32` and `Float64` for `float`, and `vector` has dimension information.
 
 When defining [custom functions](/docs/core/custom_function), use the specific types as type annotations for arguments and return values.
 So CocoIndex will have information about the specific type.
 
-### Struct
+### Struct Type
 
 A struct has a bunch of fields, each with a name and a type.
 
-### Table
+In Python, a struct type is represented by a [dataclass](https://docs.python.org/3/library/dataclasses.html),
+and all fields must be annotated with a specific type. For example:
 
-A table has a collection of rows, each of which is a struct with specified schema.
+```python
+from dataclasses import dataclass
 
-The first field of a table is always the primary key.
+@dataclass
+class Order:
+    order_id: str
+    name: str
+    price: float
+```
 
-:::note
+### Collection Types
 
-CocoIndex will support functions taking struct and table types as arguments or returning composite types soon.
-We'll update this section with corresponding Python types by then.
+A collection type models a collection of rows, each of which is a struct with specific schema.
 
-:::
+We have two specific types of collection:
+
+| Type | Description |Type in Python | Original Type in Python |
+|------|-------------|---------------|-------------------------|
+| Table[*type*] | The first field is the key, and CocoIndex enforces its uniqueness | `cocoindex.typing.Table[type]` | `list[type]` |
+| List[*type*] | No key field; row order is preserved | `cocoindex.typing.List[type]` | `list[type]` |
+
+For example, we can use `cocoindex.typing.Table[Order]` to represent a table of orders, and the first field `order_id` will be taken as the key field.
 
 ## Types to Create Indexes
 
