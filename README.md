@@ -9,15 +9,9 @@
     <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logo=opensourceinitiative&logoColor=white" alt="License"></a>
     <a href="https://pypi.org/project/cocoindex/"><img src="https://img.shields.io/pypi/v/cocoindex?color=5B5BD6" alt="PyPI version"></a>
     <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%20to%203.13-5B5BD6?logo=python&logoColor=white" alt="Python"></a>
-</p>
-
-<p align="center">
     <a href="https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml"><img src="https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml/badge.svg?event=push" alt="CI"></a>
     <a href="https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml"><img src="https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml/badge.svg?event=push" alt="release"></a>
     <a href="https://github.com/cocoindex-io/cocoindex/actions/workflows/docs.yml"><img src="https://github.com/cocoindex-io/cocoindex/actions/workflows/docs.yml/badge.svg?event=push" alt="docs"></a>
-</p>
-
-<p align="center">
     <a href="https://discord.com/invite/zpA9S2DR7s"><img src="https://img.shields.io/discord/1314801574169673738?logo=discord&labelColor=%20%235462eb&logoColor=%20%23f5f5f5" alt="Discord"></a>
     <a href="https://www.linkedin.com/company/cocoindex"><img src="https://img.shields.io/badge/LinkedIn-CocoIndex-5B5BD6?logo=linkedin&logoColor=white" alt="LinkedIn"></a>
     <a href="https://twitter.com/intent/follow?screen_name=cocoindex_io"><img src="https://img.shields.io/twitter/follow/cocoindex_io" alt="X (Twitter)"></a>
