@@ -1,7 +1,8 @@
 Simple example for cocoindex: build embedding index based on local files.
 
 ## Prerequisite
-Follow [Prerequisite](https://cocoindex.io/docs/getting_started/quickstart#prerequisite-install-cocoindex-environment) to install cocoIndex environment.
+Install Postgres if you don't have one. See [installation guide](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
+
 
 ## Run
 
