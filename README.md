@@ -4,7 +4,7 @@
 
 <h2 align="center">Extract, Transform, Index Data. Easy and Fresh. 🌴</h2>
 
-<div style="text-align: center;">
+<div align="center">
 
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 [![License](https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logo=opensourceinitiative&logoColor=white)](https://opensource.org/licenses/Apache-2.0)
