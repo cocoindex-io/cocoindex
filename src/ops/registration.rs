@@ -8,6 +8,7 @@ use std::sync::{Arc, LazyLock, RwLock, RwLockReadGuard};
 fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
     sources::local_file::Factory.register(registry)?;
     functions::split_recursively::Factory.register(registry)?;
+    functions::extract_by_mistral::Factory.register(registry)?;
     Arc::new(storages::postgres::Factory::default()).register(registry)?;
 
     Ok(())
