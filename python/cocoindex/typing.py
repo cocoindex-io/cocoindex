@@ -2,7 +2,7 @@ import typing
 import collections
 import dataclasses
 import types
-from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING
+from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING, overload
 
 class Vector(NamedTuple):
     dim: int | None
@@ -182,6 +182,13 @@ def encode_enriched_type_info(enriched_type_info: AnalyzedTypeInfo) -> dict[str,
 
     return encoded
 
+@overload
+def encode_enriched_type(t: None) -> None:
+    ...
+
+@overload
+def encode_enriched_type(t: Any) -> dict[str, Any]:
+    ...
 
 def encode_enriched_type(t) -> dict[str, Any] | None:
     """

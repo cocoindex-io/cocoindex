@@ -60,8 +60,15 @@ def _create_data_slice(
 def _spec_kind(spec: Any) -> str:
     return spec.__class__.__name__
 
-def _spec_dump(spec: Any) -> dict[str, Any]:
-    return spec.__dict__
+def _spec_value_dump(spec: Any) -> Any:
+    """Recursively dump a spec object and its nested attributes to a dictionary."""
+    if hasattr(spec, '__dict__'):
+        return {k: _spec_value_dump(v) for k, v in spec.__dict__.items()}
+    elif isinstance(spec, (list, tuple)):
+        return [_spec_value_dump(item) for item in spec]
+    elif isinstance(spec, dict):
+        return {k: _spec_value_dump(v) for k, v in spec.items()}
+    return spec
 
 T = TypeVar('T')
 
@@ -161,7 +168,7 @@ class DataSlice:
             lambda target_scope, name:
                 flow_builder_state.engine_flow_builder.transform(
                     _spec_kind(fn_spec),
-                    _spec_dump(fn_spec),
+                    _spec_value_dump(fn_spec),
                     args,
                     target_scope,
                     flow_builder_state.field_name_builder.build_name(
@@ -252,7 +259,7 @@ class DataCollector:
             {"field_name": field_name, "metric": metric.value}
             for field_name, metric in vector_index]
         self._flow_builder_state.engine_flow_builder.export(
-            name, _spec_kind(target_spec), _spec_dump(target_spec),
+            name, _spec_kind(target_spec), _spec_value_dump(target_spec),
             index_options, self._engine_data_collector)
 
 
@@ -293,7 +300,7 @@ class FlowBuilder:
             self._state,
             lambda target_scope, name: self._state.engine_flow_builder.add_source(
                 _spec_kind(spec),
-                _spec_dump(spec),
+                _spec_value_dump(spec),
                 target_scope,
                 self._state.field_name_builder.build_name(
                     name, prefix=_to_snake_case(_spec_kind(spec))+'_'),
