@@ -43,3 +43,4 @@ pythonize = "0.23.0"
 # TODO: Switch to a stable tag of mistralrs after a new release is tagged.
 mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git" }
 schemars = "0.8.22"
+openssl = { version = "0.10.71", features = ["vendored"] }
