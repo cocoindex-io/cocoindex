@@ -1,0 +1,3 @@
+[build]
+# This is required by tokio-console: https://docs.rs/tokio-console/latest/tokio_console
+rustflags = ["--cfg", "tokio_unstable"]

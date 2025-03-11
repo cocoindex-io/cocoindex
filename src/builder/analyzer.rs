@@ -23,7 +23,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use futures::future::try_join3;
 use futures::{future::try_join_all, FutureExt};
 use indexmap::IndexMap;
-use log::warn;
+use log::{trace, warn};
 
 #[derive(Debug)]
 pub(super) enum ValueTypeBuilder {
@@ -649,9 +649,12 @@ impl<'a> AnalyzerContext<'a> {
         let op_name = source_op.name.clone();
         let output = scope.add_field(source_op.name, &output_type)?;
         let result_fut = async move {
+            trace!("Start building executor for source op `{}`", op_name);
+            let executor = executor.await?;
+            trace!("Finished building executor for source op `{}`", op_name);
             Ok(AnalyzedSourceOp {
                 source_id: source_id.unwrap_or_default(),
-                executor: executor.await?,
+                executor,
                 output,
                 primary_key_type: output_type
                     .typ
@@ -701,12 +704,15 @@ impl<'a> AnalyzerContext<'a> {
                             .add_field(reactive_op.name.clone(), &output_type)?;
                         let reactive_op = reactive_op.clone();
                         async move {
+                            trace!("Start building executor for transform op `{}`", reactive_op.name);
                             let executor = executor.await.with_context(|| {
                                 format!("Failed to build executor for transform op: {}", reactive_op.name)
                             })?;
+                            let enable_cache = executor.enable_cache();
                             let behavior_version = executor.behavior_version();
+                            trace!("Finished building executor for transform op `{}`, enable cache: {enable_cache}, behavior version: {behavior_version:?}", reactive_op.name);
                             let function_exec_info = AnalyzedFunctionExecInfo {
-                                enable_cache: executor.enable_cache(),
+                                enable_cache,
                                 behavior_version,
                                 fingerprinter: Fingerprinter::default()
                                     .with(&reactive_op.name)?
@@ -874,7 +880,7 @@ impl<'a> AnalyzerContext<'a> {
         };
 
         let target_id: i32 = 1; // TODO: Fill it with a meaningful value automatically
-        let ((setup_key, desired_state), executor_futs) = export_factory.clone().build(
+        let ((setup_key, desired_state), executor_fut) = export_factory.clone().build(
             export_op.name.clone(),
             target_id,
             spec,
@@ -967,9 +973,14 @@ impl<'a> AnalyzerContext<'a> {
             .transpose()?;
 
         Ok(async move {
-            let (executor, query_target) = executor_futs
+            trace!("Start building executor for export op `{}`", export_op.name);
+            let (executor, query_target) = executor_fut
                 .await
                 .with_context(|| format!("Analyzing export op: {}", export_op.name))?;
+            trace!(
+                "Finished building executor for export op `{}`",
+                export_op.name
+            );
             let name = export_op.name;
             Ok(AnalyzedExportOp {
                 name,

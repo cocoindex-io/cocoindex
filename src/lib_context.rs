@@ -49,7 +49,8 @@ impl LibContext {
 }
 
 pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
-    env_logger::init();
+    console_subscriber::init();
+
     let runtime = Runtime::new()?;
     let (pool, all_css) = runtime.block_on(async {
         let pool = PgPool::connect(&settings.database_url).await?;

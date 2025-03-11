@@ -46,7 +46,6 @@ impl Executor {
     async fn new(spec: Spec) -> Result<Self> {
         let model = mistralrs::TextModelBuilder::new(spec.model.model_id)
             .with_isq(spec.model.isq_type)
-            .with_logging()
             .with_paged_attn(|| mistralrs::PagedAttentionMetaBuilder::default().build())?
             .build()
             .await?;

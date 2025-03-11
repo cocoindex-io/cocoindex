@@ -10,6 +10,7 @@ use crate::{
 };
 use anyhow::Result;
 use futures::{future::Shared, FutureExt};
+use log::trace;
 
 pub struct AnalyzedFlow {
     pub flow_instance: spec::FlowInstanceSpec,
@@ -55,6 +56,7 @@ impl AnalyzedFlow {
     }
 
     pub async fn get_execution_plan(&self) -> Result<Arc<plan::ExecutionPlan>> {
+        trace!("get_execution_plan() started");
         let execution_plan = self
             .execution_plan
             .as_ref()
@@ -62,6 +64,7 @@ impl AnalyzedFlow {
             .clone()
             .await
             .std_result()?;
+        trace!("get_execution_plan() finished");
         Ok(execution_plan)
     }
 }
