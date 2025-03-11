@@ -48,47 +48,12 @@ class ClassInfo:
     methods: cocoindex.typing.List[MethodInfo]
 
 @dataclasses.dataclass
-class ManualInfo:
+class ModuleInfo:
     title: str
     description: str
     classes: cocoindex.typing.Table[ClassInfo]
     methods: cocoindex.typing.Table[MethodInfo]
 
-
-class ExtractManual(cocoindex.op.FunctionSpec):
-    """Extract manual information from a Markdown."""
-
-@cocoindex.op.executor_class()
-class ExtractManualExecutor:
-    """Executor for ExtractManual."""
-
-    spec: ExtractManual
-
-    def __call__(self, _markdown: str) -> ManualInfo:
-        return ManualInfo(
-            title="title_placeholder",
-            description="description_placeholder",
-            classes=[
-                ClassInfo(
-                    name="class_name_placeholder",
-                    description="class_description_placeholder",
-                    methods=[
-                        MethodInfo(
-                            name="method_name_placeholder",
-                            args=[ArgInfo(name="arg_name_placeholder", description="arg_description_placeholder")],
-                            description="method_description_placeholder"
-                        )
-                    ]
-                )
-            ],
-            methods=[
-                MethodInfo(
-                    name="method_name_placeholder",
-                    args=[ArgInfo(name="arg_name_placeholder", description="arg_description_placeholder")],
-                    description="method_description_placeholder"
-                )
-            ]
-        )
 
 class CleanUpManual(cocoindex.op.FunctionSpec):
     """Clean up manual information."""
@@ -101,9 +66,9 @@ class CleanUpManualExecutor:
 
     spec: CleanUpManual
 
-    def __call__(self, manual_info: ManualInfo) -> ManualInfo | None:
+    def __call__(self, module_info: ModuleInfo) -> ModuleInfo | None:
         # TODO: Clean up
-        return manual_info
+        return module_info
 
 @cocoindex.flow_def(name="ManualExtraction")
 def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
@@ -116,9 +81,15 @@ def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: coco
 
     with data_scope["documents"].row() as doc:
         doc["markdown"] = doc["content"].transform(PdfToMarkdown())
-        doc["raw_manual_info"] = doc["markdown"].transform(ExtractManual())
-        doc["manual_info"] = doc["raw_manual_info"].transform(CleanUpManual())
-        manual_infos.collect(filename=doc["filename"], manual_info=doc["manual_info"])
+        doc["raw_module_info"] = doc["markdown"].transform(
+            cocoindex.functions.ExtractByMistral(
+                model=cocoindex.functions.MistralModelSpec(
+                    model_id="microsoft/Phi-3.5-mini-instruct",
+                    isq_type="Q8_0"),
+                output_type=cocoindex.typing.encode_enriched_type(ModuleInfo),
+                instructions="Please extract Python module information from the manual."))
+        doc["module_info"] = doc["raw_module_info"].transform(CleanUpManual())
+        manual_infos.collect(filename=doc["filename"], module_info=doc["module_info"])
 
     manual_infos.export(
         "manual_infos",
