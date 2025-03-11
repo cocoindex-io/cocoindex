@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use axum::async_trait;
-use blocking::unblock;
 use futures::FutureExt;
 use pyo3::{
     exceptions::PyException,
@@ -219,7 +218,7 @@ struct PyFunctionExecutor {
 impl SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
     async fn evaluate(&self, input: Vec<value::Value>) -> Result<value::Value> {
         let self = self.clone();
-        unblock(move || {
+        let result = tokio::task::spawn_blocking(move || {
             Python::with_gil(|py| -> Result<_> {
                 let mut args = Vec::with_capacity(self.num_positional_args);
                 for v in input[0..self.num_positional_args].iter() {
@@ -255,7 +254,8 @@ impl SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
                 )?)
             })
         })
-        .await
+        .await??;
+        Ok(result)
     }
 
     fn enable_cache(&self) -> bool {
@@ -323,27 +323,31 @@ impl SimpleFunctionFactory for PyFunctionFactory {
 
         let executor_fut = {
             let result_type = result_type.clone();
-            unblock(move || {
-                let (enable_cache, behavior_version) =
-                    Python::with_gil(|py| -> anyhow::Result<_> {
-                        executor.call_method(py, "prepare", (), None)?;
-                        let enable_cache = executor
-                            .call_method(py, "enable_cache", (), None)?
-                            .extract::<bool>(py)?;
-                        let behavior_version = executor
-                            .call_method(py, "behavior_version", (), None)?
-                            .extract::<Option<u32>>(py)?;
-                        Ok((enable_cache, behavior_version))
-                    })?;
-                Ok(Box::new(Arc::new(PyFunctionExecutor {
-                    py_function_executor: executor,
-                    num_positional_args,
-                    kw_args_names,
-                    result_type,
-                    enable_cache,
-                    behavior_version,
-                })) as Box<dyn SimpleFunctionExecutor>)
-            })
+            async move {
+                let executor = tokio::task::spawn_blocking(move || -> Result<_> {
+                    let (enable_cache, behavior_version) =
+                        Python::with_gil(|py| -> anyhow::Result<_> {
+                            executor.call_method(py, "prepare", (), None)?;
+                            let enable_cache = executor
+                                .call_method(py, "enable_cache", (), None)?
+                                .extract::<bool>(py)?;
+                            let behavior_version = executor
+                                .call_method(py, "behavior_version", (), None)?
+                                .extract::<Option<u32>>(py)?;
+                            Ok((enable_cache, behavior_version))
+                        })?;
+                    Ok(Box::new(Arc::new(PyFunctionExecutor {
+                        py_function_executor: executor,
+                        num_positional_args,
+                        kw_args_names,
+                        result_type,
+                        enable_cache,
+                        behavior_version,
+                    })) as Box<dyn SimpleFunctionExecutor>)
+                })
+                .await??;
+                Ok(executor)
+            }
         };
 
         Ok((result_type, executor_fut.boxed()))
