@@ -50,6 +50,7 @@ impl LibContext {
 
 pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
     console_subscriber::init();
+    env_logger::init();
 
     let runtime = Runtime::new()?;
     let (pool, all_css) = runtime.block_on(async {
