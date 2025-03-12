@@ -45,7 +45,4 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: 'true'
           manylinux: auto
-          before-script-linux: |
-            sudo apt-get update
-            sudo apt-get install -y gnustep gnustep-devel gobjc
           container: ${{ matrix.platform.container }}
