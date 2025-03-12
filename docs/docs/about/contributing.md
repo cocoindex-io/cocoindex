@@ -29,7 +29,7 @@ We love contributions from our community! This guide explains how to get involve
 
 -   (Optional) Before running a specific example, set extra environment variables, for exposing extra traces, allowing dev UI, etc.
     ```bash
-    . .env.lib_debug
+    . ./.env.lib_debug
     ```
 
 ## Submit Your Code
