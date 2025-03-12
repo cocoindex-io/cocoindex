@@ -2,6 +2,7 @@ mod base;
 mod builder;
 mod execution;
 mod lib_context;
+mod llm;
 mod ops;
 mod py;
 mod server;

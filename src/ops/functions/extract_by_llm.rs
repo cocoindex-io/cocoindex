@@ -1,32 +1,28 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
-use anyhow::anyhow;
-use mistralrs::{self, TextMessageRole};
+use schemars::schema::SchemaObject;
 use serde::Serialize;
 
 use crate::base::json_schema::ToJsonSchema;
+use crate::llm::{LlmClient, LlmGenerateRequest, LlmSpec, OutputFormat};
 use crate::ops::sdk::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MistralModelSpec {
-    model_id: String,
-    isq_type: mistralrs::IsqType,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Spec {
-    model: MistralModelSpec,
+    llm_spec: LlmSpec,
     output_type: EnrichedValueType,
-    instructions: Option<String>,
+    instruction: Option<String>,
 }
 
 struct Executor {
-    model: mistralrs::Model,
+    client: LlmClient,
+    output_json_schema: SchemaObject,
     output_type: EnrichedValueType,
-    request_base: mistralrs::RequestBuilder,
+    system_prompt: String,
 }
 
-fn get_system_message(instructions: &Option<String>) -> String {
+fn get_system_prompt(instructions: &Option<String>) -> String {
     let mut message =
         "You are a helpful assistant that extracts structured information from text. \
 Your task is to analyze the input text and output valid JSON that matches the specified schema. \
@@ -44,24 +40,11 @@ Output only the JSON without any additional messages or explanations."
 
 impl Executor {
     async fn new(spec: Spec) -> Result<Self> {
-        let model = mistralrs::TextModelBuilder::new(spec.model.model_id)
-            .with_isq(spec.model.isq_type)
-            .with_paged_attn(|| mistralrs::PagedAttentionMetaBuilder::default().build())?
-            .build()
-            .await?;
-        let request_base = mistralrs::RequestBuilder::new()
-            .set_constraint(mistralrs::Constraint::JsonSchema(serde_json::to_value(
-                spec.output_type.to_json_schema(),
-            )?))
-            .set_deterministic_sampler()
-            .add_message(
-                TextMessageRole::System,
-                get_system_message(&spec.instructions),
-            );
         Ok(Self {
-            model,
+            client: LlmClient::new(spec.llm_spec).await?,
+            output_json_schema: spec.output_type.to_json_schema(),
             output_type: spec.output_type,
-            request_base,
+            system_prompt: get_system_prompt(&spec.instruction),
         })
     }
 }
@@ -78,17 +61,15 @@ impl SimpleFunctionExecutor for Executor {
 
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
         let text = input.iter().next().unwrap().as_str()?;
-        let request = self
-            .request_base
-            .clone()
-            .add_message(TextMessageRole::User, text);
-        let response = self.model.send_chat_request(request).await?;
-        let response_text = response.choices[0]
-            .message
-            .content
-            .as_ref()
-            .ok_or_else(|| anyhow!("No content in response"))?;
-        let json_value: serde_json::Value = serde_json::from_str(response_text)?;
+        let req = LlmGenerateRequest {
+            system_prompt: Some(Cow::Borrowed(&self.system_prompt)),
+            user_prompt: Cow::Borrowed(text),
+            output_format: Some(OutputFormat::JsonSchema(Cow::Borrowed(
+                &self.output_json_schema,
+            ))),
+        };
+        let res = self.client.generate(req).await?;
+        let json_value: serde_json::Value = serde_json::from_str(res.text.as_str())?;
         let value = Value::from_json(json_value, &self.output_type.typ)?;
         Ok(value)
     }
@@ -101,7 +82,7 @@ impl SimpleFunctionFactoryBase for Factory {
     type Spec = Spec;
 
     fn name(&self) -> &str {
-        "ExtractByMistral"
+        "ExtractByLlm"
     }
 
     fn get_output_schema(

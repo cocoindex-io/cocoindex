@@ -82,12 +82,12 @@ def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: coco
     with data_scope["documents"].row() as doc:
         doc["markdown"] = doc["content"].transform(PdfToMarkdown())
         doc["raw_module_info"] = doc["markdown"].transform(
-            cocoindex.functions.ExtractByMistral(
-                model=cocoindex.functions.MistralModelSpec(
-                    model_id="microsoft/Phi-3.5-mini-instruct",
-                    isq_type="Q8_0"),
+            cocoindex.functions.ExtractByLlm(
+                llm_spec=cocoindex.llm.LlmSpec(
+                    api_type=cocoindex.llm.LlmApiType.OLLAMA,
+                    model="llama3.2:latest"),
                 output_type=cocoindex.typing.encode_enriched_type(ModuleInfo),
-                instructions="Please extract Python module information from the manual."))
+                instruction="Please extract Python module information from the manual."))
         doc["module_info"] = doc["raw_module_info"].transform(CleanUpManual())
         manual_infos.collect(filename=doc["filename"], module_info=doc["module_info"])
 

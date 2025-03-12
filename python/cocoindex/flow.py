@@ -8,6 +8,7 @@ import re
 import inspect
 from typing import Any, Callable, Sequence, TypeVar
 from threading import Lock
+from enum import Enum
 
 from . import _engine
 from . import vector
@@ -62,7 +63,9 @@ def _spec_kind(spec: Any) -> str:
 
 def _spec_value_dump(spec: Any) -> Any:
     """Recursively dump a spec object and its nested attributes to a dictionary."""
-    if hasattr(spec, '__dict__'):
+    if isinstance(spec, Enum):
+        return spec.value
+    elif hasattr(spec, '__dict__'):
         return {k: _spec_value_dump(v) for k, v in spec.__dict__.items()}
     elif isinstance(spec, (list, tuple)):
         return [_spec_value_dump(item) for item in spec]
