@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use anyhow::Result;
+use async_trait::async_trait;
 use schemars::schema::SchemaObject;
 use serde::{Deserialize, Serialize};
 
@@ -32,5 +34,21 @@ pub struct LlmGenerateResponse {
     pub text: String,
 }
 
-mod client;
-pub use client::LlmClient;
+#[async_trait]
+pub trait LlmGenerationClient: Send + Sync {
+    async fn generate<'req>(
+        &self,
+        request: LlmGenerateRequest<'req>,
+    ) -> Result<LlmGenerateResponse>;
+}
+
+mod ollama;
+
+pub async fn new_llm_generation_client(spec: LlmSpec) -> Result<Box<dyn LlmGenerationClient>> {
+    let client = match spec.api_type {
+        LlmApiType::Ollama => {
+            Box::new(ollama::Client::new(spec).await?) as Box<dyn LlmGenerationClient>
+        }
+    };
+    Ok(client)
+}

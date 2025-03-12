@@ -1,8 +1,10 @@
+use super::LlmGenerationClient;
 use anyhow::Result;
+use async_trait::async_trait;
 use schemars::schema::SchemaObject;
 use serde::{Deserialize, Serialize};
 
-pub struct LlmClient {
+pub struct Client {
     generate_url: String,
     model: String,
     reqwest_client: reqwest::Client,
@@ -30,7 +32,7 @@ struct OllamaResponse {
 
 const OLLAMA_DEFAULT_ADDRESS: &str = "http://localhost:11434";
 
-impl LlmClient {
+impl Client {
     pub async fn new(spec: super::LlmSpec) -> Result<Self> {
         let address = match &spec.address {
             Some(addr) => addr.trim_end_matches('/'),
@@ -42,10 +44,13 @@ impl LlmClient {
             reqwest_client: reqwest::Client::new(),
         })
     }
+}
 
-    pub async fn generate<'a>(
+#[async_trait]
+impl LlmGenerationClient for Client {
+    async fn generate<'req>(
         &self,
-        request: super::LlmGenerateRequest<'a>,
+        request: super::LlmGenerateRequest<'req>,
     ) -> Result<super::LlmGenerateResponse> {
         let req = OllamaRequest {
             model: &self.model,

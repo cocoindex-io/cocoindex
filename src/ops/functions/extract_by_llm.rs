@@ -5,7 +5,9 @@ use schemars::schema::SchemaObject;
 use serde::Serialize;
 
 use crate::base::json_schema::ToJsonSchema;
-use crate::llm::{LlmClient, LlmGenerateRequest, LlmSpec, OutputFormat};
+use crate::llm::{
+    new_llm_generation_client, LlmGenerateRequest, LlmGenerationClient, LlmSpec, OutputFormat,
+};
 use crate::ops::sdk::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,7 +18,7 @@ pub struct Spec {
 }
 
 struct Executor {
-    client: LlmClient,
+    client: Box<dyn LlmGenerationClient>,
     output_json_schema: SchemaObject,
     output_type: EnrichedValueType,
     system_prompt: String,
@@ -41,7 +43,7 @@ Output only the JSON without any additional messages or explanations."
 impl Executor {
     async fn new(spec: Spec) -> Result<Self> {
         Ok(Self {
-            client: LlmClient::new(spec.llm_spec).await?,
+            client: new_llm_generation_client(spec.llm_spec).await?,
             output_json_schema: spec.output_type.to_json_schema(),
             output_type: spec.output_type,
             system_prompt: get_system_prompt(&spec.instruction),
