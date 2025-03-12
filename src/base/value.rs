@@ -624,12 +624,7 @@ where
                 }
                 Self::from_json_values(fields_schema.iter().zip(v.into_iter()))
             }
-            serde_json::Value::Object(v) => {
-                if v.len() != fields_schema.len() {
-                    api_bail!("unmatched value length");
-                }
-                Self::from_json_object(v, fields_schema.iter())
-            }
+            serde_json::Value::Object(v) => Self::from_json_object(v, fields_schema.iter()),
             _ => api_bail!("invalid value type"),
         }
     }
@@ -812,7 +807,7 @@ where
                 CollectionKind::List => {
                     let rows = v
                         .into_iter()
-                        .map(|v| Ok(FieldValues::from_json(v, &s.row.fields[1..])?.into()))
+                        .map(|v| Ok(FieldValues::from_json(v, &s.row.fields)?.into()))
                         .collect::<Result<Vec<_>>>()?;
                     Value::List(rows)
                 }
