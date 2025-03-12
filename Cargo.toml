@@ -48,3 +48,4 @@ openssl = { version = "0.10.71", features = ["vendored"] }
 console-subscriber = "0.4.1"
 env_logger = "0.11.7"
 reqwest = { version = "0.12.13", features = ["json"] }
+async-openai = "0.28.0"

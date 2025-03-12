@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LlmApiType {
     Ollama,
+    OpenAi,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,7 +20,10 @@ pub struct LlmSpec {
 
 #[derive(Debug)]
 pub enum OutputFormat<'a> {
-    JsonSchema(Cow<'a, SchemaObject>),
+    JsonSchema {
+        name: Cow<'a, str>,
+        schema: Cow<'a, SchemaObject>,
+    },
 }
 
 #[derive(Debug)]
@@ -43,11 +47,15 @@ pub trait LlmGenerationClient: Send + Sync {
 }
 
 mod ollama;
+mod openai;
 
 pub async fn new_llm_generation_client(spec: LlmSpec) -> Result<Box<dyn LlmGenerationClient>> {
     let client = match spec.api_type {
         LlmApiType::Ollama => {
             Box::new(ollama::Client::new(spec).await?) as Box<dyn LlmGenerationClient>
+        }
+        LlmApiType::OpenAi => {
+            Box::new(openai::Client::new(spec).await?) as Box<dyn LlmGenerationClient>
         }
     };
     Ok(client)

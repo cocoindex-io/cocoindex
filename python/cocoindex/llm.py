@@ -3,6 +3,7 @@ from enum import Enum
 
 class LlmApiType(Enum):
     """The type of LLM API to use."""
+    OPENAI = "OpenAi"
     OLLAMA = "Ollama"
 
 @dataclass

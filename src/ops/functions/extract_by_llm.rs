@@ -66,9 +66,10 @@ impl SimpleFunctionExecutor for Executor {
         let req = LlmGenerateRequest {
             system_prompt: Some(Cow::Borrowed(&self.system_prompt)),
             user_prompt: Cow::Borrowed(text),
-            output_format: Some(OutputFormat::JsonSchema(Cow::Borrowed(
-                &self.output_json_schema,
-            ))),
+            output_format: Some(OutputFormat::JsonSchema {
+                name: Cow::Borrowed("ExtractedData"),
+                schema: Cow::Borrowed(&self.output_json_schema),
+            }),
         };
         let res = self.client.generate(req).await?;
         let json_value: serde_json::Value = serde_json::from_str(res.text.as_str())?;
