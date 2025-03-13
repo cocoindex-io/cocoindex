@@ -32,43 +32,53 @@ class PdfToMarkdownExecutor:
 
 @dataclasses.dataclass
 class ArgInfo:
+    """Information about an argument of a method."""
     name: str
     description: str
 
 @dataclasses.dataclass
 class MethodInfo:
+    """Information about a method."""
     name: str
     args: cocoindex.typing.List[ArgInfo]
     description: str
 
 @dataclasses.dataclass
 class ClassInfo:
+    """Information about a class."""
     name: str
     description: str
     methods: cocoindex.typing.List[MethodInfo]
 
 @dataclasses.dataclass
 class ModuleInfo:
+    """Information about a Python module."""
     title: str
     description: str
     classes: cocoindex.typing.Table[ClassInfo]
     methods: cocoindex.typing.Table[MethodInfo]
 
+@dataclasses.dataclass
+class ModuleSummary:
+    """Summary info about a Python module."""
+    num_classes: int
+    num_methods: int
 
-class CleanUpManual(cocoindex.op.FunctionSpec):
-    """Clean up manual information."""
-
-
+@dataclasses.dataclass
+class SummarizeModule(cocoindex.op.FunctionSpec):
+    """Summarize a Python module."""
 
 @cocoindex.op.executor_class()
-class CleanUpManualExecutor:
-    """Executor for CleanUpManual."""
+class SummarizeModuleExecutor:
+    """Executor for SummarizeModule."""
 
-    spec: CleanUpManual
+    spec: SummarizeModule
 
-    def __call__(self, module_info: ModuleInfo) -> ModuleInfo | None:
-        # TODO: Clean up
-        return module_info
+    def __call__(self, module_info: ModuleInfo) -> ModuleSummary:
+        return ModuleSummary(
+            num_classes=len(module_info.classes),
+            num_methods=len(module_info.methods),
+        )
 
 @cocoindex.flow_def(name="ManualExtraction")
 def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
@@ -77,27 +87,31 @@ def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: coco
     """
     data_scope["documents"] = flow_builder.add_source(cocoindex.sources.LocalFile(path="manuals", binary=True))
 
-    manual_infos = data_scope.add_collector()
+    modules_index = data_scope.add_collector()
 
     with data_scope["documents"].row() as doc:
         doc["markdown"] = doc["content"].transform(PdfToMarkdown())
-        doc["raw_module_info"] = doc["markdown"].transform(
+        doc["module_info"] = doc["markdown"].transform(
             cocoindex.functions.ExtractByLlm(
-                llm_spec=cocoindex.llm.LlmSpec(
-                     api_type=cocoindex.llm.LlmApiType.OLLAMA,
+                llm_spec=cocoindex.LlmSpec(
+                     api_type=cocoindex.LlmApiType.OLLAMA,
                      # See the full list of models: https://ollama.com/library
-                     model="llama3.2:latest"
+                     model="llama3.2"
                 ),
                 # Replace by this spec below, to use OpenAI API model instead of ollama
-                #   llm_spec=cocoindex.llm.LlmSpec(
-                #       api_type=cocoindex.llm.LlmApiType.OPENAI, model="gpt-4o"),
-                output_type=cocoindex.typing.encode_enriched_type(ModuleInfo),
+                #   llm_spec=cocoindex.LlmSpec(
+                #       api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
+                output_type=ModuleInfo,
                 instruction="Please extract Python module information from the manual."))
-        doc["module_info"] = doc["raw_module_info"].transform(CleanUpManual())
-        manual_infos.collect(filename=doc["filename"], module_info=doc["module_info"])
+        doc["module_summary"] = doc["module_info"].transform(SummarizeModule())
+        modules_index.collect(
+            filename=doc["filename"],
+            module_info=doc["module_info"],
+            module_summary=doc["module_summary"],
+        )
 
-    manual_infos.export(
-        "manual_infos",
+    modules_index.export(
+        "modules",
         cocoindex.storages.Postgres(),
         primary_key_fields=["filename"],
     )
