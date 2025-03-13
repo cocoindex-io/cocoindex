@@ -12,12 +12,11 @@ use crate::{api_error, setup};
 use crate::{builder, execution};
 use anyhow::anyhow;
 use pyo3::{exceptions::PyException, prelude::*};
-use pythonize::{depythonize, pythonize};
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use std::collections::btree_map;
-use std::ops::Deref;
 use std::sync::Arc;
+
+mod convert;
+pub use convert::*;
 
 pub trait IntoPyResult<T> {
     fn into_py_result(self) -> PyResult<T>;
@@ -29,47 +28,6 @@ impl<T, E: std::fmt::Debug> IntoPyResult<T> for Result<T, E> {
             Ok(value) => Ok(value),
             Err(err) => Err(PyException::new_err(format!("{:?}", err))),
         }
-    }
-}
-
-pub struct Pythonized<T>(pub T);
-
-impl<'py, T: DeserializeOwned> FromPyObject<'py> for Pythonized<T> {
-    fn extract_bound(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
-        Ok(Pythonized(depythonize(obj).into_py_result()?))
-    }
-}
-
-impl<'py, T: Serialize> IntoPyObject<'py> for &Pythonized<T> {
-    type Target = PyAny;
-    type Output = Bound<'py, PyAny>;
-    type Error = PyErr;
-
-    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
-        pythonize(py, &self.0).into_py_result()
-    }
-}
-
-impl<'py, T: Serialize> IntoPyObject<'py> for Pythonized<T> {
-    type Target = PyAny;
-    type Output = Bound<'py, PyAny>;
-    type Error = PyErr;
-
-    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
-        (&self).into_pyobject(py)
-    }
-}
-
-impl<T> Pythonized<T> {
-    pub fn into_inner(self) -> T {
-        self.0
-    }
-}
-
-impl<T> Deref for Pythonized<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 
