@@ -34,9 +34,6 @@ jobs:
           - { os: linux, runner: ubuntu-24.04, target: x86_64, container: "quay.io/pypa/manylinux_2_28_x86_64:latest" }
           - { os: linux, runner: ubuntu-24.04, target: aarch64, container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64" }
           - { os: linux, runner: ubuntu-24.04, target: armv7, container: "ghcr.io/rust-cross/manylinux_2_28-cross:armv7" }
-          - { os: musllinux, runner: ubuntu-24.04, target: x86_64, container: "off" }
-          - { os: musllinux, runner: ubuntu-24.04, target: aarch64, container: "off" }
-          - { os: musllinux, runner: ubuntu-24.04, target: armv7, container: "off" }
           - { os: windows, runner: windows-latest, target: x64 }
           - { os: macos, runner: macos-13, target: x86_64 }
           - { os: macos, runner: macos-14, target: aarch64 }
