@@ -31,7 +31,7 @@ jobs:
     strategy:
       matrix:
         platform:
-          - { os: linux, runner: ubuntu-24.04, target: aarch64 }
+          - { os: linux, runner: ubuntu-24.04, target: x86_64, container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64" }
           - { os: macos, runner: macos-15, target: aarch64 }
     steps:
       - uses: actions/checkout@v4
