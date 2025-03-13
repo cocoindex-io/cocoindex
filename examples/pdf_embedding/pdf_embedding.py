@@ -50,8 +50,8 @@ def pdf_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
     with data_scope["documents"].row() as doc:
         doc["markdown"] = doc["content"].transform(PdfToMarkdown())
         doc["chunks"] = doc["markdown"].transform(
-            cocoindex.functions.SplitRecursively(
-                language="markdown", chunk_size=300, chunk_overlap=100))
+            cocoindex.functions.SplitRecursively(),
+            language="markdown", chunk_size=300, chunk_overlap=100)
 
         with doc["chunks"].row() as chunk:
             chunk["embedding"] = chunk["text"].call(text_to_embedding)

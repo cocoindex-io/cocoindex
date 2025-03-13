@@ -21,8 +21,8 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 
     with data_scope["files"].row() as file:
         file["chunks"] = file["content"].transform(
-                    cocoindex.functions.SplitRecursively(
-                        language="javascript", chunk_size=300, chunk_overlap=100))
+            cocoindex.functions.SplitRecursively(),
+            language="javascript", chunk_size=300, chunk_overlap=100)
         with file["chunks"].row() as chunk:
             chunk["embedding"] = chunk["text"].call(code_to_embedding)
             code_embeddings.collect(filename=file["filename"], location=chunk["location"],

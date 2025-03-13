@@ -9,6 +9,7 @@ from enum import Enum
 from threading import Lock
 
 from .typing import encode_enriched_type, analyze_type_info, COLLECTION_TYPES
+from .convert import to_engine_value
 from . import _engine
 
 
@@ -58,14 +59,6 @@ class _FunctionExecutorFactory:
         executor = self._executor_cls(spec)
         result_type = executor.analyze(*args, **kwargs)
         return (encode_enriched_type(result_type), executor)
-
-def _to_engine_value(value: Any) -> Any:
-    """Convert a Python value to an engine value."""
-    if dataclasses.is_dataclass(value):
-        return [_to_engine_value(getattr(value, f.name)) for f in dataclasses.fields(value)]
-    if isinstance(value, (list, tuple)):
-        return [_to_engine_value(v) for v in value]
-    return value
 
 def _make_engine_struct_value_converter(
         field_path: list[str],
@@ -251,7 +244,7 @@ def executor_class(gpu: bool = False, cache: bool = False, behavior_version: int
                         output = super().__call__(*converted_args, **converted_kwargs)
                 else:
                     output = super().__call__(*converted_args, **converted_kwargs)
-                return _to_engine_value(output)
+                return to_engine_value(output)
 
         _WrappedClass.__name__ = cls.__name__
 

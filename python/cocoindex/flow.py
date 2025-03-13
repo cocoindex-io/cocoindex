@@ -162,11 +162,15 @@ class DataSlice:
         with self.row() as scope:
             f(scope)
 
-    def transform(self, fn_spec: op.FunctionSpec, /, name: str | None = None) -> DataSlice:
+    def transform(self, fn_spec: op.FunctionSpec, *args, **kwargs) -> DataSlice:
         """
         Apply a function to the data slice.
         """
-        args = [(self._state.engine_data_slice, None)]
+        transform_args = [(self._state.engine_data_slice, None)]
+        transform_args += [(self._state.flow_builder_state.get_data_slice(v), None) for v in args]
+        transform_args += [(self._state.flow_builder_state.get_data_slice(v), k)
+                           for (k, v) in kwargs.items()]
+
         flow_builder_state = self._state.flow_builder_state
         return _create_data_slice(
             flow_builder_state,
@@ -174,12 +178,11 @@ class DataSlice:
                 flow_builder_state.engine_flow_builder.transform(
                     _spec_kind(fn_spec),
                     _spec_value_dump(fn_spec),
-                    args,
+                    transform_args,
                     target_scope,
                     flow_builder_state.field_name_builder.build_name(
                         name, prefix=_to_snake_case(_spec_kind(fn_spec))+'_'),
-                ),
-            name)
+                ))
 
     def call(self, func: Callable[[DataSlice], T]) -> T:
         """
@@ -282,6 +285,14 @@ class _FlowBuilderState:
         self.engine_flow_builder = _engine.FlowBuilder(flow_name)
         self.field_name_builder = _NameBuilder()
 
+    def get_data_slice(self, v: Any) -> _engine.DataSlice:
+        """
+        Return a data slice that represents the given value.
+        """
+        if isinstance(v, DataSlice):
+            return v._state.engine_data_slice
+        return self.engine_flow_builder.constant(encode_enriched_type(type(v)), v)
+
 class FlowBuilder:
     """
     A flow builder is used to build a flow.
@@ -312,7 +323,6 @@ class FlowBuilder:
             ),
             name
         )
-
 
 class Flow:
     """

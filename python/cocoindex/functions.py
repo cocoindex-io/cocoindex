@@ -7,9 +7,6 @@ from . import op, llm
 
 class SplitRecursively(op.FunctionSpec):
     """Split a document (in string) recursively."""
-    chunk_size: int
-    chunk_overlap: int
-    language: str | None = None
 
 class ExtractByLlm(op.FunctionSpec):
     """Extract information from a text using a LLM."""
