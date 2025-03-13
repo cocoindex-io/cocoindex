@@ -158,19 +158,19 @@ impl DataScopeRef {
 #[pyclass]
 #[derive(Debug, Clone)]
 pub struct DataType {
-    typ: schema::EnrichedValueType,
+    schema: schema::EnrichedValueType,
 }
 
 impl From<schema::EnrichedValueType> for DataType {
-    fn from(typ: schema::EnrichedValueType) -> Self {
-        Self { typ }
+    fn from(schema: schema::EnrichedValueType) -> Self {
+        Self { schema }
     }
 }
 
 #[pymethods]
 impl DataType {
     pub fn __str__(&self) -> String {
-        format!("{}", self.typ)
+        format!("{}", self.schema)
     }
 
     pub fn __repr__(&self) -> String {
@@ -201,7 +201,7 @@ impl DataSlice {
     }
 
     pub fn field(&self, field_name: &str) -> PyResult<Option<DataSlice>> {
-        let field_schema = match &self.data_type.typ.typ {
+        let field_schema = match &self.data_type.schema.typ {
             schema::ValueType::Struct(struct_type) => {
                 match struct_type.fields.iter().find(|f| f.name == field_name) {
                     Some(field) => field,
@@ -232,7 +232,7 @@ impl DataSlice {
                 .map(|f| f.spec.clone())
                 .ok_or_else(|| PyException::new_err(format!("field {} not found", field_name)))?,
 
-            spec::ValueMapping::Literal { .. } => {
+            spec::ValueMapping::Constant { .. } => {
                 return Err(PyException::new_err(
                     "field access not supported for literal",
                 ))
@@ -277,7 +277,7 @@ impl std::fmt::Display for DataSlice {
         write!(
             f,
             "DataSlice({}; {} {}) ",
-            self.data_type.typ, self.scope, self.value
+            self.data_type.schema, self.scope, self.value
         )?;
         Ok(())
     }
@@ -420,6 +420,24 @@ impl FlowBuilder {
         Ok(result)
     }
 
+    pub fn constant<'py>(
+        &self,
+        value_type: py::Pythonized<schema::EnrichedValueType>,
+        value: Bound<'py, PyAny>,
+    ) -> PyResult<DataSlice> {
+        let schema = value_type.into_inner();
+        let value = py::value_from_py_object(&schema.typ, &value)?;
+        let slice = DataSlice {
+            scope: self.root_data_scope_ref.clone(),
+            value: Arc::new(spec::ValueMapping::Constant(spec::ConstantMapping {
+                schema: schema.clone(),
+                value: serde_json::to_value(value).into_py_result()?,
+            })),
+            data_type: schema.into(),
+        };
+        Ok(slice)
+    }
+
     pub fn add_direct_input(
         &mut self,
         name: String,
@@ -533,7 +551,7 @@ impl FlowBuilder {
                     .into_iter()
                     .map(|(name, ds)| FieldSchema {
                         name,
-                        value_type: ds.data_type.typ,
+                        value_type: ds.data_type.schema,
                     })
                     .collect(),
             ),
@@ -600,7 +618,7 @@ impl FlowBuilder {
                 scope: None,
                 field_path: spec::FieldPath(vec![field_name.to_string()]),
             })),
-            data_type: DataType { typ: field_type },
+            data_type: DataType { schema: field_type },
         }))
     }
 

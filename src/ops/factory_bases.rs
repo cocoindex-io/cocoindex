@@ -24,8 +24,20 @@ pub struct ResolvedOpArg {
     pub idx: usize,
 }
 
-impl ResolvedOpArg {
-    pub fn expect_type(self, expected_type: &ValueType) -> Result<Self> {
+pub trait ResolvedOpArgExt: Sized {
+    type ValueType;
+    type ValueRef<'a>;
+
+    fn expect_type(self, expected_type: &ValueType) -> Result<Self>;
+    fn value<'a>(&self, args: &'a Vec<value::Value>) -> Result<Self::ValueRef<'a>>;
+    fn take_value(&self, args: &mut Vec<value::Value>) -> Result<Self::ValueType>;
+}
+
+impl ResolvedOpArgExt for ResolvedOpArg {
+    type ValueType = value::Value;
+    type ValueRef<'a> = &'a value::Value;
+
+    fn expect_type(self, expected_type: &ValueType) -> Result<Self> {
         if &self.typ.typ != expected_type {
             api_bail!(
                 "Expected argument `{}` to be of type `{}`, got `{}`",
@@ -37,7 +49,7 @@ impl ResolvedOpArg {
         Ok(self)
     }
 
-    pub fn value<'a>(&self, args: &'a Vec<value::Value>) -> Result<&'a value::Value> {
+    fn value<'a>(&self, args: &'a Vec<value::Value>) -> Result<&'a value::Value> {
         if self.idx >= args.len() {
             api_bail!(
                 "Two few arguments, {} provided, expected at least {} for `{}`",
@@ -49,7 +61,7 @@ impl ResolvedOpArg {
         Ok(&args[self.idx])
     }
 
-    pub fn take_value(&self, args: &mut Vec<value::Value>) -> Result<value::Value> {
+    fn take_value(&self, args: &mut Vec<value::Value>) -> Result<value::Value> {
         if self.idx >= args.len() {
             api_bail!(
                 "Two few arguments, {} provided, expected at least {} for `{}`",
@@ -59,6 +71,23 @@ impl ResolvedOpArg {
             );
         }
         Ok(std::mem::take(&mut args[self.idx]))
+    }
+}
+
+impl ResolvedOpArgExt for Option<ResolvedOpArg> {
+    type ValueType = Option<value::Value>;
+    type ValueRef<'a> = Option<&'a value::Value>;
+
+    fn expect_type(self, expected_type: &ValueType) -> Result<Self> {
+        self.map(|arg| arg.expect_type(expected_type)).transpose()
+    }
+
+    fn value<'a>(&self, args: &'a Vec<value::Value>) -> Result<Option<&'a value::Value>> {
+        self.as_ref().map(|arg| arg.value(args)).transpose()
+    }
+
+    fn take_value(&self, args: &mut Vec<value::Value>) -> Result<Option<value::Value>> {
+        self.as_ref().map(|arg| arg.take_value(args)).transpose()
     }
 }
 

@@ -45,7 +45,7 @@ pub struct AnalyzedStructMapping {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind")]
 pub enum AnalyzedValueMapping {
-    Literal { value: value::Value },
+    Constant { value: value::Value },
     Field(AnalyzedFieldReference),
     Struct(AnalyzedStructMapping),
 }

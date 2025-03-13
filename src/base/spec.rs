@@ -2,7 +2,7 @@ use std::ops::Deref;
 
 use serde::{Deserialize, Serialize};
 
-use super::schema::FieldSchema;
+use super::schema::{EnrichedValueType, FieldSchema};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -85,7 +85,8 @@ pub struct FieldMapping {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LiteralMapping {
+pub struct ConstantMapping {
+    pub schema: EnrichedValueType,
     pub value: serde_json::Value,
 }
 
@@ -103,7 +104,7 @@ pub struct StructMapping {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum ValueMapping {
-    Literal(LiteralMapping),
+    Constant(ConstantMapping),
     Field(FieldMapping),
     Struct(StructMapping),
     // TODO: Add support for collections
@@ -124,7 +125,7 @@ impl ValueMapping {
 impl std::fmt::Display for ValueMapping {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ValueMapping::Literal(v) => write!(
+            ValueMapping::Constant(v) => write!(
                 f,
                 "{}",
                 serde_json::to_string(&v.value)

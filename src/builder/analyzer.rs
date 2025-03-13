@@ -11,11 +11,7 @@ use crate::setup::{
 use crate::utils::fingerprint::Fingerprinter;
 use crate::{
     api_bail, api_error,
-    base::{
-        schema::*,
-        spec::*,
-        value::{self, *},
-    },
+    base::{schema::*, spec::*, value},
     ops::{interface::*, registry::*},
     utils::immutable::RefList,
 };
@@ -497,30 +493,9 @@ fn analyze_value_mapping(
     scopes: RefList<'_, &'_ ExecutionScope<'_>>,
 ) -> Result<(AnalyzedValueMapping, EnrichedValueType)> {
     let result = match value_mapping {
-        ValueMapping::Literal(v) => {
-            let (value_type, basic_value) = match &v.value {
-                serde_json::Value::String(s) => {
-                    (BasicValueType::Str, BasicValue::Str(Arc::from(s.as_str())))
-                }
-                serde_json::Value::Number(n) => (
-                    BasicValueType::Float64,
-                    BasicValue::Float64(
-                        n.as_f64().ok_or_else(|| anyhow!("Invalid number: {}", n))?,
-                    ),
-                ),
-                serde_json::Value::Bool(b) => (BasicValueType::Bool, BasicValue::Bool(*b)),
-                _ => bail!("Unsupported value type: {}", v.value),
-            };
-            (
-                AnalyzedValueMapping::Literal {
-                    value: value::Value::Basic(basic_value),
-                },
-                EnrichedValueType {
-                    typ: ValueType::Basic(value_type),
-                    nullable: false,
-                    attrs: Default::default(),
-                },
-            )
+        ValueMapping::Constant(v) => {
+            let value = value::Value::from_json(v.value.clone(), &v.schema.typ)?;
+            (AnalyzedValueMapping::Constant { value }, v.schema.clone())
         }
 
         ValueMapping::Field(v) => {

@@ -266,7 +266,7 @@ fn assemble_value(
     scoped_entries: RefList<'_, &ScopeEntry<'_>>,
 ) -> value::Value {
     match value_mapping {
-        AnalyzedValueMapping::Literal { value } => value.clone(),
+        AnalyzedValueMapping::Constant { value } => value.clone(),
         AnalyzedValueMapping::Field(field_ref) => scoped_entries
             .headn(field_ref.scope_up_level as usize)
             .unwrap()
