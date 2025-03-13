@@ -62,8 +62,8 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
     with data_scope["documents"].row() as doc:
         # Split the document into chunks, put into `chunks` field
         doc["chunks"] = doc["content"].transform(
-            cocoindex.functions.SplitRecursively(
-                language="markdown", chunk_size=300, chunk_overlap=100))
+            cocoindex.functions.SplitRecursively(),
+            language="markdown", chunk_size=300, chunk_overlap=100)
 
         # Transform data of each chunk
         with doc["chunks"].row() as chunk:

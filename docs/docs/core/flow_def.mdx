@@ -122,6 +122,10 @@ A data slice has a certain data type, and it's the input for most operations.
 `transform()` method transforms the data slice by a function, which creates another data slice.
 A *function spec* needs to be provided for any transform operation, to describe the function and parameters related to the function.
 
+The function takes one or multiple data arguments.
+The first argument is the data slice to be transformed, and the `transform()` method is applied from it.
+Other arguments can be passed in as positional arguments or keyword arguments, aftert the function spec.
+
 <Tabs>
 <TabItem value="python" label="Python" default>
 
@@ -129,7 +133,9 @@ A *function spec* needs to be provided for any transform operation, to describe 
 @cocoindex.flow_def(name="DemoFlow")
 def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
   ...
-  data_scope["field1"] = data_scope["documents"].transform(DemoFunctionSpec(...))
+  data_scope["field2"] = data_scope["field1"].transform(
+                             DemoFunctionSpec(...),
+                             arg1, arg2, ..., key0=kwarg0, key1=kwarg1, ...)
   ...
 ```
 

@@ -11,15 +11,12 @@ description: CocoIndex Built-in Functions
 It tries to split at higher-level boundaries. If each chunk is still too large, it tries at the next level of boundaries.
 For example, for a Markdown file, it identifies boundaries in this order: level-1 sections, level-2 sections, level-3 sections, paragraphs, sentences, etc.
 
-The spec takes the following fields:
-
-*   `chunk_size` (type: `int`, required): The maximum size of each chunk, in bytes.
-*   `chunk_overlap` (type: `int`, required): The maximum overlap size between adjacent chunks, in bytes.
-*   `language` (type: `str`, optional): The language of the document. Currently it supports `markdown`, `python` and  `javascript`. If unspecified, will treat it as plain text.
-
 Input data:
 
 *   `text` (type: `str`, required): The text to split.
+*   `chunk_size` (type: `int`, required): The maximum size of each chunk, in bytes.
+*   `chunk_overlap` (type: `int`, optional): The maximum overlap size between adjacent chunks, in bytes.
+*   `language` (type: `str`, optional): The language of the document. Currently it supports `markdown`, `python` and  `javascript`. If unspecified, will treat it as plain text.
 
 Return type: `Table`, each row represents a chunk, with the following sub fields:
 
