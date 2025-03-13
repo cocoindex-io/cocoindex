@@ -56,3 +56,5 @@ Run CocoInsight to understand your RAG data pipeline:
 ```
 python manual_extraction.py cocoindex server -c https://cocoindex.io
 ```
+
+Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).

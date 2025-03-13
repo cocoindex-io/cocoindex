@@ -35,5 +35,7 @@ CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute vi
 Run CocoInsight to understand your RAG data pipeline:
 
 ```
-python pdf_embedding.py cocoindex server -c https://cocoindex.io/cocoinsight
+python pdf_embedding.py cocoindex server -c https://cocoindex.io
 ```
+
+Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
