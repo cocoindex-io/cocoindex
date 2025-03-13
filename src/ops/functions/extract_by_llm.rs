@@ -17,7 +17,12 @@ pub struct Spec {
     instruction: Option<String>,
 }
 
+pub struct Args {
+    text: ResolvedOpArg,
+}
+
 struct Executor {
+    args: Args,
     client: Box<dyn LlmGenerationClient>,
     output_json_schema: SchemaObject,
     output_type: EnrichedValueType,
@@ -41,8 +46,9 @@ Output only the JSON without any additional messages or explanations."
 }
 
 impl Executor {
-    async fn new(spec: Spec) -> Result<Self> {
+    async fn new(spec: Spec, args: Args) -> Result<Self> {
         Ok(Self {
+            args,
             client: new_llm_generation_client(spec.llm_spec).await?,
             output_json_schema: spec.output_type.to_json_schema(),
             output_type: spec.output_type,
@@ -62,7 +68,7 @@ impl SimpleFunctionExecutor for Executor {
     }
 
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
-        let text = input.iter().next().unwrap().as_str()?;
+        let text = self.args.text.value(&input)?.as_str()?;
         let req = LlmGenerateRequest {
             system_prompt: Some(Cow::Borrowed(&self.system_prompt)),
             user_prompt: Cow::Borrowed(text),
@@ -83,32 +89,34 @@ pub struct Factory;
 #[async_trait]
 impl SimpleFunctionFactoryBase for Factory {
     type Spec = Spec;
+    type ResolvedArgs = Args;
 
     fn name(&self) -> &str {
         "ExtractByLlm"
     }
 
-    fn get_output_schema(
+    fn resolve_schema(
         &self,
         spec: &Spec,
-        input_schema: &Vec<OpArgSchema>,
+        args_resolver: &mut OpArgsResolver<'_>,
         _context: &FlowInstanceContext,
-    ) -> Result<EnrichedValueType> {
-        match &expect_input_1(input_schema)?.value_type.typ {
-            ValueType::Basic(BasicValueType::Str) => {}
-            t => {
-                api_bail!("Expect String as input type, got {}", t)
-            }
-        }
-        Ok(spec.output_type.clone())
+    ) -> Result<(Args, EnrichedValueType)> {
+        Ok((
+            Args {
+                text: args_resolver
+                    .next_arg("text")?
+                    .expect_type(&ValueType::Basic(BasicValueType::Str))?,
+            },
+            spec.output_type.clone(),
+        ))
     }
 
     async fn build_executor(
         self: Arc<Self>,
         spec: Spec,
-        _input_schema: Vec<OpArgSchema>,
+        resolved_input_schema: Args,
         _context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SimpleFunctionExecutor>> {
-        Ok(Box::new(Executor::new(spec).await?))
+        Ok(Box::new(Executor::new(spec, resolved_input_schema).await?))
     }
 }

@@ -16,6 +16,10 @@ pub struct Spec {
     chunk_overlap: usize,
 }
 
+pub struct Args {
+    text: ResolvedOpArg,
+}
+
 static DEFAULT_SEPARATORS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [r"\n\n+", r"\n", r"\s+"]
         .into_iter()
@@ -95,11 +99,12 @@ static SEPARATORS_BY_LANG: LazyLock<HashMap<&'static str, Vec<Regex>>> = LazyLoc
 
 struct Executor {
     spec: Spec,
+    args: Args,
     separators: &'static [Regex],
 }
 
 impl Executor {
-    fn new(spec: Spec) -> Result<Self> {
+    fn new(spec: Spec, args: Args) -> Result<Self> {
         let separators = spec
             .language
             .as_ref()
@@ -109,7 +114,11 @@ impl Executor {
                     .map(|v| v.as_slice())
             })
             .unwrap_or(DEFAULT_SEPARATORS.as_slice());
-        Ok(Self { spec, separators })
+        Ok(Self {
+            spec,
+            args,
+            separators,
+        })
     }
 
     fn add_output<'s>(pos: usize, text: &'s str, output: &mut Vec<(RangeValue, &'s str)>) {
@@ -220,14 +229,12 @@ fn translate_bytes_to_chars<'a>(text: &str, offsets: impl Iterator<Item = &'a mu
 #[async_trait]
 impl SimpleFunctionExecutor for Executor {
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
-        let str_value = input.into_iter().next().unwrap();
-        let str_value = str_value.as_str().unwrap();
-
+        let text = self.args.text.value(&input)?.as_str()?;
         let mut output = Vec::new();
-        self.split_substring(str_value, 0, 0, &mut output);
+        self.split_substring(text, 0, 0, &mut output);
 
         translate_bytes_to_chars(
-            str_value,
+            text,
             output
                 .iter_mut()
                 .map(|(range, _)| [&mut range.start, &mut range.end].into_iter())
@@ -248,24 +255,24 @@ pub struct Factory;
 #[async_trait]
 impl SimpleFunctionFactoryBase for Factory {
     type Spec = Spec;
+    type ResolvedArgs = Args;
 
     fn name(&self) -> &str {
         "SplitRecursively"
     }
 
-    fn get_output_schema(
+    fn resolve_schema(
         &self,
         _spec: &Spec,
-        input_schema: &Vec<OpArgSchema>,
+        args_resolver: &mut OpArgsResolver<'_>,
         _context: &FlowInstanceContext,
-    ) -> Result<EnrichedValueType> {
-        match &expect_input_1(input_schema)?.value_type.typ {
-            ValueType::Basic(BasicValueType::Str) => {}
-            t => {
-                api_bail!("Expect String as input type, got {}", t)
-            }
-        }
-        Ok(make_output_type(CollectionSchema::new(
+    ) -> Result<(Args, EnrichedValueType)> {
+        let args = Args {
+            text: args_resolver
+                .next_arg("text")?
+                .expect_type(&ValueType::Basic(BasicValueType::Str))?,
+        };
+        let output_schema = make_output_type(CollectionSchema::new(
             CollectionKind::Table,
             vec![
                 FieldSchema::new("location", make_output_type(BasicValueType::Range)),
@@ -274,16 +281,17 @@ impl SimpleFunctionFactoryBase for Factory {
         ))
         .with_attr(
             field_attrs::CHUNK_BASE_TEXT,
-            serde_json::to_value(&input_schema[0].analyzed_value)?,
-        ))
+            serde_json::to_value(&args_resolver.get_analyze_value(&args.text))?,
+        );
+        Ok((args, output_schema))
     }
 
     async fn build_executor(
         self: Arc<Self>,
         spec: Spec,
-        _input_schema: Vec<OpArgSchema>,
+        args: Args,
         _context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SimpleFunctionExecutor>> {
-        Ok(Box::new(Executor::new(spec)?))
+        Ok(Box::new(Executor::new(spec, args)?))
     }
 }

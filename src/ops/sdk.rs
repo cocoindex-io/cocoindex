@@ -1,6 +1,5 @@
 pub use super::factory_bases::*;
 pub use super::interface::*;
-pub use crate::api_bail;
 pub use crate::base::schema::*;
 pub use crate::base::value::*;
 pub use anyhow::Result;
@@ -40,27 +39,6 @@ pub fn make_output_type<Type: TypeCore>(value_type: Type) -> EnrichedValueType {
 
 #[derive(Debug, Deserialize)]
 pub struct EmptySpec {}
-
-pub fn expect_input_0(input_schema: &Vec<OpArgSchema>) -> Result<()> {
-    if input_schema.len() != 1 {
-        api_bail!("Expected 0 input field, got {}", input_schema.len());
-    }
-    Ok(())
-}
-
-pub fn expect_input_1(input_schema: &Vec<OpArgSchema>) -> Result<&OpArgSchema> {
-    if input_schema.len() != 1 {
-        api_bail!("Expected 1 input field, got {}", input_schema.len());
-    }
-    Ok(&input_schema[0])
-}
-
-pub fn expect_input_2(input_schema: &Vec<OpArgSchema>) -> Result<(&OpArgSchema, &OpArgSchema)> {
-    if input_schema.len() != 2 {
-        api_bail!("Expected 2 input fields, got {}", input_schema.len());
-    }
-    Ok((&input_schema[0], &input_schema[1]))
-}
 
 #[macro_export]
 macro_rules! fields_value {

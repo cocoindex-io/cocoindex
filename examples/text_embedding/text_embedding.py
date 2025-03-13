@@ -26,6 +26,10 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
             cocoindex.functions.SplitRecursively(
                 language="markdown", chunk_size=300, chunk_overlap=100))
 
+        doc["chunks"] = flow_builder.call(
+                cocoindex.functions.SplitRecursively(),
+                doc["content"], language="markdown", chunk_size=300, chunk_overlap=100);
+
         with doc["chunks"].row() as chunk:
             chunk["embedding"] = text_to_embedding(chunk["text"])
             doc_embeddings.collect(filename=doc["filename"], location=chunk["location"],
