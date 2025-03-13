@@ -40,3 +40,17 @@ Input data:
 *   `text` (type: `str`, required): The text to embed.
 
 Return type: `vector[float32; N]`, where `N` is determined by the model
+
+## ExtractByLlm
+
+`ExtractByLlm` extracts structured information from a text using specified LLM. The spec takes the following fields:
+
+*   `llm_spec` (type: `cocoindex.LlmSpec`, required): The specification of the LLM to use. See [LLM Spec](/docs/ai/llm#llm-spec) for more details.
+*   `output_type` (type: `type`, required): The type of the output. e.g. a dataclass type name. See [Data Types](/docs/core/data_types) for all supported data types. The LLM will output values that match the schema of the type.
+*   `instruction` (type: `str`, optional): Additional instruction for the LLM.
+
+Input data:
+
+*   `text` (type: `str`, required): The text to extract information from.
+
+Return type: As specified by the `output_type` field in the spec. The extracted information from the input text.

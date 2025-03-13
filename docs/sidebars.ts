@@ -38,6 +38,14 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'AI Support',
+      collapsed: false,
+      items: [
+        'ai/llm',
+      ],
+    },
+    {
+      type: 'category',
       label: 'About',
       collapsed: false,
       items: [

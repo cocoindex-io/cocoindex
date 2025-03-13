@@ -1,0 +1,79 @@
+---
+title: LLM Support
+description: LLMs integrated with CocoIndex for various built-in functions
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+CocoIndex provides builtin functions (e.g. [`ExtractByLlm`](/docs/ops/functions#extractbyllm)) that process data using LLM.
+You usually need to provide a `LlmSpec`, to configure the LLM integration you want to use and LLM models, etc.
+
+
+## LLM Spec
+
+The `cocoindex.LlmSpec` data class is used to configure the LLM integration you want to use and LLM models, etc.
+It has the following fields:
+
+*   `api_type`: The type of integrated LLM API to use, e.g. `cocoindex.LlmApiType.OPENAI` or `cocoindex.LlmApiType.OLLAMA`.
+    See supported LLM APIs in the [LLM API integrations](#llm-api-integrations) section below.
+*   `model`: The name of the LLM model to use.
+*   `address` (optional): The address of the LLM API.
+
+
+## LLM API integrations
+
+CocoIndex integrates with various LLM APIs for these functions.
+
+### OpenAI
+
+To use the OpenAI LLM API, you need to set the environment variable `OPENAI_API_KEY`.
+You can generate the API key from [OpenAI Dashboard](https://platform.openai.com/api-keys).
+
+A spec for OpenAI looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.OPENAI,
+    model="gpt-4o",
+)
+```
+
+Currently we don't support custom address for OpenAI API.
+
+You can find the full list of models supported by OpenAI [here](https://platform.openai.com/docs/models).
+
+</TabItem>
+</Tabs>
+
+### Ollama
+
+[Ollama](https://ollama.com/) allows you to run LLM models on your local machine easily. To get started:
+
+*   [Download](https://ollama.com/download) and install Ollama.
+*   Pull your favorite LLM models by the `ollama pull` command, e.g.
+    ```bash
+    ollama pull llama3.2
+    ```
+You can find the [list of models](https://ollama.com/library) supported by Ollama.
+
+A spec for Ollama looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.OLLAMA,
+    model="llama3.2:latest",
+    # Optional, use Ollama's default port (11434) on localhost if not specified
+    address="http://localhost:11434",
+)
+```
+
+</TabItem>
+</Tabs>
+
