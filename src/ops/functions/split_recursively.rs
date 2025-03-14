@@ -91,7 +91,7 @@ static SEPARATORS_BY_LANG: LazyLock<HashMap<&'static str, Vec<Regex>>> = LazyLoc
     .collect()
 });
 
-trait NestedChunk: Sized {
+trait NestedChunk {
     fn range(&self) -> &RangeValue;
 
     fn sub_chunks(&self) -> Option<impl Iterator<Item = Self>>;
@@ -128,25 +128,29 @@ impl<'a, 's: 'a> Iterator for SubChunksIter<'a, 's> {
     type Item = Chunk<'s>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(start_pos) = self.next_start_pos {
-            let end_pos = match self.matches_iter.next() {
-                Some(grp) => {
-                    self.next_start_pos = Some(self.parent.range.start + grp.end());
-                    self.parent.range.start + grp.start()
-                }
-                None => {
-                    self.next_start_pos = None;
-                    self.parent.range.end
-                }
-            };
-            Some(Chunk {
-                target: self.parent.target,
-                range: RangeValue::new(start_pos, end_pos),
-                next_sep_id: self.parent.next_sep_id + 1,
-            })
+        let start_pos = if let Some(start_pos) = self.next_start_pos {
+            start_pos
         } else {
-            None
-        }
+            return None;
+        };
+        let end_pos = match self.matches_iter.next() {
+            Some(grp) => {
+                self.next_start_pos = Some(self.parent.range.start + grp.end());
+                self.parent.range.start + grp.start()
+            }
+            None => {
+                self.next_start_pos = None;
+                if start_pos >= self.parent.range.end {
+                    return None;
+                }
+                self.parent.range.end
+            }
+        };
+        Some(Chunk {
+            target: self.parent.target,
+            range: RangeValue::new(start_pos, end_pos),
+            next_sep_id: self.parent.next_sep_id + 1,
+        })
     }
 }
 
@@ -177,7 +181,7 @@ struct RecursiveChunker<'s> {
 impl<'s> RecursiveChunker<'s> {
     fn split_substring<Chk>(&self, chunk: Chk, output: &mut Vec<(RangeValue, &'s str)>)
     where
-        Chk: NestedChunk,
+        Chk: NestedChunk + Sized,
     {
         let sub_chunks_iter = if let Some(sub_chunks_iter) = chunk.sub_chunks() {
             sub_chunks_iter
