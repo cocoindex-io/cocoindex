@@ -20,6 +20,15 @@ impl RangeValue {
     pub fn new(start: usize, end: usize) -> Self {
         RangeValue { start, end }
     }
+
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+
+    pub fn extract_str<'s>(&self, s: &'s (impl AsRef<str> + ?Sized)) -> &'s str {
+        let s = s.as_ref();
+        &s[self.start..self.end]
+    }
 }
 
 impl Serialize for RangeValue {
