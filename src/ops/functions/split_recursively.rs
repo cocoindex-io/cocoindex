@@ -317,6 +317,7 @@ fn translate_bytes_to_chars<'a>(text: &str, offsets: impl Iterator<Item = &'a mu
     }
 
     // Offsets after the last char.
+    **next_offset = char_idx;
     for offset in offsets_iter {
         **offset = char_idx;
     }
@@ -366,7 +367,9 @@ impl SimpleFunctionExecutor for Executor {
             full_text,
             output
                 .iter_mut()
-                .map(|(range, _)| [&mut range.start, &mut range.end].into_iter())
+                .map(|(range, _)| {
+                    std::iter::once(&mut range.start).chain(std::iter::once(&mut range.end))
+                })
                 .flatten(),
         );
 
