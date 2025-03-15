@@ -272,10 +272,18 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
 
     fn add_output(&self, range: RangeValue, output: &mut Vec<(RangeValue, &'s str)>) {
         let text = range.extract_str(self.full_text);
-        let trimmed_text = text.trim_end();
+
+        // Trim leading new lines.
+        let trimmed_text = text.trim_start_matches(['\n', '\r']);
+        let adjusted_start = range.start + (text.len() - trimmed_text.len());
+
+        // Trim trailing whitespaces
+        let trimmed_text = trimmed_text.trim_end();
+
+        // Only record non-empty chunks.
         if !trimmed_text.is_empty() {
             output.push((
-                RangeValue::new(range.start, range.start + trimmed_text.len()),
+                RangeValue::new(adjusted_start, adjusted_start + trimmed_text.len()),
                 trimmed_text,
             ));
         }
