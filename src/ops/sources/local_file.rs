@@ -1,3 +1,4 @@
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use log::warn;
 use std::{path::PathBuf, sync::Arc};
 
@@ -7,12 +8,16 @@ use crate::{fields_value, ops::sdk::*};
 pub struct Spec {
     path: String,
     binary: bool,
+    included_patterns: Option<Vec<String>>,
+    excluded_patterns: Option<Vec<String>>,
 }
 
 struct Executor {
     root_path_str: String,
     root_path: PathBuf,
     binary: bool,
+    included_glob_set: Option<GlobSet>,
+    excluded_glob_set: Option<GlobSet>,
 }
 
 impl Executor {
@@ -20,16 +25,26 @@ impl Executor {
         for entry in std::fs::read_dir(dir_path)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_dir() {
-                Box::pin(self.traverse_dir(&path, result)).await?;
-            } else {
-                if let Some(file_name) = path.to_str() {
-                    result.push(KeyValue::Str(Arc::from(
-                        &file_name[self.root_path_str.len() + 1..],
-                    )));
-                } else {
-                    warn!("Skipped ill-formed file path: {}", path.display());
+            if let Some(file_name) = path.to_str() {
+                let relative_path = &file_name[self.root_path_str.len() + 1..];
+                if self
+                    .excluded_glob_set
+                    .as_ref()
+                    .map_or(false, |glob_set| glob_set.is_match(relative_path))
+                {
+                    continue;
                 }
+                if path.is_dir() {
+                    Box::pin(self.traverse_dir(&path, result)).await?;
+                } else if self
+                    .included_glob_set
+                    .as_ref()
+                    .map_or(true, |glob_set| glob_set.is_match(relative_path))
+                {
+                    result.push(KeyValue::Str(Arc::from(relative_path)));
+                }
+            } else {
+                warn!("Skipped ill-formed file path: {}", path.display());
             }
         }
         Ok(())
@@ -102,6 +117,16 @@ impl SourceFactoryBase for Factory {
             root_path_str: spec.path.clone(),
             root_path: PathBuf::from(spec.path),
             binary: spec.binary,
+            included_glob_set: spec.included_patterns.map(build_glob_set).transpose()?,
+            excluded_glob_set: spec.excluded_patterns.map(build_glob_set).transpose()?,
         }))
     }
+}
+
+fn build_glob_set(patterns: Vec<String>) -> Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(Glob::new(pattern.as_str())?);
+    }
+    Ok(builder.build()?)
 }
