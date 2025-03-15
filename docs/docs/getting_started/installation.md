@@ -12,7 +12,7 @@ To follow the steps in this guide, you'll need:
 
 ## 🌴 Install CocoIndex
 ```bash
-pip install cocoindex
+pip install -U cocoindex
 ```
 
 ## 📦 Install Postgres

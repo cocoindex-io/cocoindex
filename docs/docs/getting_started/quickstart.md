@@ -21,7 +21,7 @@ We'll need to install a bunch of dependencies for this project.
 1.  Install CocoIndex:
  
     ```bash
-    pip install cocoindex
+    pip install -U cocoindex
     ```
 
 2.  You can skip this step if you already have a Postgres database with pgvector extension installed.

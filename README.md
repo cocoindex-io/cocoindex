@@ -33,7 +33,7 @@ If you're new to CocoIndex 🤗, we recommend checking out the 📖 [Documentati
 1. Install CocoIndex Python library
 
 ```bash
-pip install cocoindex
+pip install -U cocoindex
 ```
 
 2. Setup Postgres with pgvector extension; or bring up a Postgres database using docker compose:
