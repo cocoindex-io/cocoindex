@@ -413,6 +413,7 @@ impl SimpleFunctionExecutor for Executor {
         let lang_config = {
             let language = self.args.language.value(&input)?;
             language
+                .optional()
                 .map(|v| anyhow::Ok(v.as_str()?.as_ref()))
                 .transpose()?
                 .and_then(|lang| TREE_SITTER_LANGUAGE_BY_LANG.get(lang))
@@ -426,6 +427,7 @@ impl SimpleFunctionExecutor for Executor {
                 .args
                 .chunk_overlap
                 .value(&input)?
+                .optional()
                 .map(|v| v.as_int64())
                 .transpose()?
                 .unwrap_or(0) as usize,

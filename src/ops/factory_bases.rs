@@ -25,18 +25,12 @@ pub struct ResolvedOpArg {
 }
 
 pub trait ResolvedOpArgExt: Sized {
-    type ValueType;
-    type ValueRef<'a>;
-
     fn expect_type(self, expected_type: &ValueType) -> Result<Self>;
-    fn value<'a>(&self, args: &'a Vec<value::Value>) -> Result<Self::ValueRef<'a>>;
-    fn take_value(&self, args: &mut Vec<value::Value>) -> Result<Self::ValueType>;
+    fn value<'a>(&self, args: &'a Vec<value::Value>) -> Result<&'a value::Value>;
+    fn take_value(&self, args: &mut Vec<value::Value>) -> Result<value::Value>;
 }
 
 impl ResolvedOpArgExt for ResolvedOpArg {
-    type ValueType = value::Value;
-    type ValueRef<'a> = &'a value::Value;
-
     fn expect_type(self, expected_type: &ValueType) -> Result<Self> {
         if &self.typ.typ != expected_type {
             api_bail!(
@@ -75,19 +69,24 @@ impl ResolvedOpArgExt for ResolvedOpArg {
 }
 
 impl ResolvedOpArgExt for Option<ResolvedOpArg> {
-    type ValueType = Option<value::Value>;
-    type ValueRef<'a> = Option<&'a value::Value>;
-
     fn expect_type(self, expected_type: &ValueType) -> Result<Self> {
         self.map(|arg| arg.expect_type(expected_type)).transpose()
     }
 
-    fn value<'a>(&self, args: &'a Vec<value::Value>) -> Result<Option<&'a value::Value>> {
-        self.as_ref().map(|arg| arg.value(args)).transpose()
+    fn value<'a>(&self, args: &'a Vec<value::Value>) -> Result<&'a value::Value> {
+        Ok(self
+            .as_ref()
+            .map(|arg| arg.value(args))
+            .transpose()?
+            .unwrap_or(&value::Value::Null))
     }
 
-    fn take_value(&self, args: &mut Vec<value::Value>) -> Result<Option<value::Value>> {
-        self.as_ref().map(|arg| arg.take_value(args)).transpose()
+    fn take_value(&self, args: &mut Vec<value::Value>) -> Result<value::Value> {
+        Ok(self
+            .as_ref()
+            .map(|arg| arg.take_value(args))
+            .transpose()?
+            .unwrap_or(value::Value::Null))
     }
 }
 

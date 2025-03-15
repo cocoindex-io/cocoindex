@@ -487,6 +487,13 @@ impl<VS> Value<VS> {
         }
     }
 
+    pub fn optional(&self) -> Option<&Self> {
+        match self {
+            Value::Null => None,
+            _ => Some(self),
+        }
+    }
+
     pub fn as_bytes(&self) -> Result<&Arc<[u8]>> {
         match self {
             Value::Basic(BasicValue::Bytes(v)) => Ok(v),
