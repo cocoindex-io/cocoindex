@@ -4,6 +4,7 @@ use regex::{Matches, Regex};
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::{collections::HashMap, sync::Arc};
+use unicase::UniCase;
 
 use crate::base::field_attrs;
 use crate::{fields_value, ops::sdk::*};
@@ -31,10 +32,10 @@ struct LanguageConfig {
 }
 
 fn add_language<'a>(
-    output: &'a mut HashMap<&'static str, Arc<LanguageConfig>>,
+    output: &'a mut HashMap<UniCase<&'static str>, Arc<LanguageConfig>>,
     name: &'static str,
     aliases: impl IntoIterator<Item = &'static str>,
-    lang_fn: tree_sitter_language::LanguageFn,
+    lang_fn: impl Into<tree_sitter::Language>,
     terminal_node_kinds: impl IntoIterator<Item = &'a str>,
 ) {
     let tree_sitter_lang: tree_sitter::Language = lang_fn.into();
@@ -58,49 +59,143 @@ fn add_language<'a>(
         terminal_node_kind_ids,
     });
     for name in std::iter::once(name).chain(aliases.into_iter()) {
-        if output.insert(name, config.clone()).is_some() {
+        if output.insert(name.into(), config.clone()).is_some() {
             panic!("Language `{name}` already exists");
         }
     }
 }
 
-static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<HashMap<&'static str, Arc<LanguageConfig>>> =
+static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<HashMap<UniCase<&'static str>, Arc<LanguageConfig>>> =
     LazyLock::new(|| {
         let mut map = HashMap::new();
+        add_language(&mut map, "C", [".c"], tree_sitter_c::LANGUAGE, []);
         add_language(
             &mut map,
-            "Python",
-            ["py", "python"],
-            tree_sitter_python::LANGUAGE,
+            "C++",
+            [".cpp", ".cc", ".cxx", ".h", ".hpp", "cpp"],
+            tree_sitter_c::LANGUAGE,
             [],
         );
+        add_language(
+            &mut map,
+            "C#",
+            [".cs", "cs"],
+            tree_sitter_c_sharp::LANGUAGE,
+            [],
+        );
+        add_language(&mut map, "CSS", [".css"], tree_sitter_css::LANGUAGE, []);
+        add_language(
+            &mut map,
+            "Fortran",
+            [".f", ".f90", ".f95", ".f03", "f", "f90", "f95", "f03"],
+            tree_sitter_fortran::LANGUAGE,
+            [],
+        );
+        add_language(
+            &mut map,
+            "Go",
+            [".go", "golang"],
+            tree_sitter_go::LANGUAGE,
+            [],
+        );
+        add_language(
+            &mut map,
+            "HTML",
+            [".html", ".htm"],
+            tree_sitter_html::LANGUAGE,
+            [],
+        );
+        add_language(&mut map, "Java", [".java"], tree_sitter_java::LANGUAGE, []);
         add_language(
             &mut map,
             "JavaScript",
-            ["JS", "js", "Javascript", "javascript"],
+            [".js", "js"],
             tree_sitter_javascript::LANGUAGE,
+            [],
+        );
+        add_language(&mut map, "JSON", [".json"], tree_sitter_json::LANGUAGE, []);
+        add_language(
+            &mut map,
+            "Markdown",
+            [".md", "md"],
+            tree_sitter_md::LANGUAGE,
+            ["inline"],
+        );
+        add_language(
+            &mut map,
+            "Pascal",
+            [".pas", "pas", ".dpr", "dpr", "Delphi"],
+            tree_sitter_pascal::LANGUAGE,
+            [],
+        );
+        add_language(&mut map, "PHP", [".php"], tree_sitter_php::LANGUAGE_PHP, []);
+        add_language(
+            &mut map,
+            "Python",
+            [".py"],
+            tree_sitter_python::LANGUAGE,
+            [],
+        );
+        add_language(&mut map, "R", [".r"], tree_sitter_r::LANGUAGE, []);
+        add_language(&mut map, "Ruby", [".rb"], tree_sitter_ruby::LANGUAGE, []);
+        add_language(
+            &mut map,
+            "Rust",
+            [".rs", "rs"],
+            tree_sitter_rust::LANGUAGE,
             [],
         );
         add_language(
             &mut map,
-            "TypeScript",
-            ["TS", "ts", "Typescript", "typescript"],
-            tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            "Scala",
+            [".scala"],
+            tree_sitter_scala::LANGUAGE,
+            [],
+        );
+        add_language(
+            &mut map,
+            "SCSS",
+            [".scss"],
+            tree_sitter_scss::language(),
+            [],
+        );
+        add_language(&mut map, "SQL", [".sql"], tree_sitter_sequel::LANGUAGE, []);
+        add_language(
+            &mut map,
+            "Swift",
+            [".swift"],
+            tree_sitter_swift::LANGUAGE,
+            [],
+        );
+        add_language(
+            &mut map,
+            "TOML",
+            [".toml"],
+            tree_sitter_toml_ng::LANGUAGE,
             [],
         );
         add_language(
             &mut map,
             "TSX",
-            ["tsx"],
+            [".tsx"],
             tree_sitter_typescript::LANGUAGE_TSX,
             [],
         );
         add_language(
             &mut map,
-            "Markdown",
-            ["md", "markdown"],
-            tree_sitter_md::LANGUAGE.into(),
-            ["inline"],
+            "TypeScript",
+            [".ts", "ts"],
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            [],
+        );
+        add_language(&mut map, "XML", [".xml"], tree_sitter_xml::LANGUAGE_XML, []);
+        add_language(&mut map, "DTD", [".dtd"], tree_sitter_xml::LANGUAGE_DTD, []);
+        add_language(
+            &mut map,
+            "YAML",
+            [".yaml", ".yml"],
+            tree_sitter_yaml::LANGUAGE,
+            [],
         );
         map
     });
@@ -416,7 +511,7 @@ impl SimpleFunctionExecutor for Executor {
                 .optional()
                 .map(|v| anyhow::Ok(v.as_str()?.as_ref()))
                 .transpose()?
-                .and_then(|lang| TREE_SITTER_LANGUAGE_BY_LANG.get(lang))
+                .and_then(|lang| TREE_SITTER_LANGUAGE_BY_LANG.get(&UniCase::new(lang)))
         };
 
         let recursive_chunker = RecursiveChunker {

@@ -16,8 +16,9 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
     Define an example flow that embeds files into a vector database.
     """
     data_scope["files"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="../../python", included_patterns=["**/*.py"]))
-
+        cocoindex.sources.LocalFile(path="../..",
+                                    included_patterns=["*.py"],
+                                    excluded_patterns=[".*"]))
     code_embeddings = data_scope.add_collector()
 
     with data_scope["files"].row() as file:
