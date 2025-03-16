@@ -21,27 +21,33 @@ struct Executor {
 }
 
 impl Executor {
+    fn is_excluded(&self, path: &str) -> bool {
+        self.excluded_glob_set
+            .as_ref()
+            .map_or(false, |glob_set| glob_set.is_match(path))
+    }
+
+    fn is_file_included(&self, path: &str) -> bool {
+        self.included_glob_set
+            .as_ref()
+            .map_or(true, |glob_set| glob_set.is_match(path))
+            && !self.is_excluded(path)
+    }
+
     async fn traverse_dir(&self, dir_path: &PathBuf, result: &mut Vec<KeyValue>) -> Result<()> {
         for entry in std::fs::read_dir(dir_path)? {
             let entry = entry?;
             let path = entry.path();
             if let Some(file_name) = path.to_str() {
                 let relative_path = &file_name[self.root_path_str.len() + 1..];
-                if self
-                    .excluded_glob_set
-                    .as_ref()
-                    .map_or(false, |glob_set| glob_set.is_match(relative_path))
-                {
-                    continue;
-                }
                 if path.is_dir() {
-                    Box::pin(self.traverse_dir(&path, result)).await?;
-                } else if self
-                    .included_glob_set
-                    .as_ref()
-                    .map_or(true, |glob_set| glob_set.is_match(relative_path))
-                {
-                    result.push(KeyValue::Str(Arc::from(relative_path)));
+                    if !self.is_excluded(relative_path) {
+                        Box::pin(self.traverse_dir(&path, result)).await?;
+                    }
+                } else {
+                    if self.is_file_included(relative_path) {
+                        result.push(KeyValue::Str(Arc::from(relative_path)));
+                    }
                 }
             } else {
                 warn!("Skipped ill-formed file path: {}", path.display());
@@ -60,6 +66,9 @@ impl SourceExecutor for Executor {
     }
 
     async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
+        if !self.is_file_included(key.str_value()?.as_ref()) {
+            return Ok(None);
+        }
         let path = self.root_path.join(key.str_value()?.as_ref());
         let result = match std::fs::read(path) {
             Ok(content) => {
