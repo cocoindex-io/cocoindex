@@ -16,7 +16,10 @@ Input data:
 *   `text` (type: `str`, required): The text to split.
 *   `chunk_size` (type: `int`, required): The maximum size of each chunk, in bytes.
 *   `chunk_overlap` (type: `int`, optional): The maximum overlap size between adjacent chunks, in bytes.
-*   `language` (type: `str`, optional): The language of the document. Currently it supports `markdown`, `python` and  `javascript`. If unspecified, will treat it as plain text.
+*   `language` (type: `str`, optional): The language of the document.
+    Can be a langauge name (e.g. `Python`, `Javascript`, `Markdown`) or a file extension (e.g. `.py`, `.js`, `.md`).
+    To see all supported language names and extensions, see [the code](https://github.com/search?q=org%3Acocoindex-io+lang%3Arust++%22static+TREE_SITTER_LANGUAGE_BY_LANG%22&type=code).
+    If it's unspecified or the specified language is not supported, it will be treated as plain text.
 
 Return type: `Table`, each row represents a chunk, with the following sub fields:
 
