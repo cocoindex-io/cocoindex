@@ -117,7 +117,7 @@ static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<HashMap<UniCase<&'static str>, Arc
         add_language(
             &mut map,
             "Markdown",
-            [".md", "md"],
+            [".md", ".mdx", "md"],
             tree_sitter_md::LANGUAGE,
             ["inline"],
         );
