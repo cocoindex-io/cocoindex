@@ -64,21 +64,13 @@ class ModuleSummary:
     num_classes: int
     num_methods: int
 
-@dataclasses.dataclass
-class SummarizeModule(cocoindex.op.FunctionSpec):
+@cocoindex.op.function()
+def summarize_module(module_info: ModuleInfo) -> ModuleSummary:
     """Summarize a Python module."""
-
-@cocoindex.op.executor_class()
-class SummarizeModuleExecutor:
-    """Executor for SummarizeModule."""
-
-    spec: SummarizeModule
-
-    def __call__(self, module_info: ModuleInfo) -> ModuleSummary:
-        return ModuleSummary(
-            num_classes=len(module_info.classes),
-            num_methods=len(module_info.methods),
-        )
+    return ModuleSummary(
+        num_classes=len(module_info.classes),
+        num_methods=len(module_info.methods),
+    )
 
 @cocoindex.flow_def(name="ManualExtraction")
 def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
@@ -103,7 +95,7 @@ def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: coco
                 #       api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
                 output_type=ModuleInfo,
                 instruction="Please extract Python module information from the manual."))
-        doc["module_summary"] = doc["module_info"].transform(SummarizeModule())
+        doc["module_summary"] = doc["module_info"].transform(summarize_module)
         modules_index.collect(
             filename=doc["filename"],
             module_info=doc["module_info"],

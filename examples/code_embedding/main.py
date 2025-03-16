@@ -3,17 +3,10 @@ from dotenv import load_dotenv
 import cocoindex
 import os
 
-class ExtractExtension(cocoindex.op.FunctionSpec):
-    """Summarize a Python module."""
-
-@cocoindex.op.executor_class()
-class ExtractExtensionExecutor:
-    """Executor for ExtractExtension."""
-
-    spec: ExtractExtension
-
-    def __call__(self, filename: str) -> str:
-        return os.path.splitext(filename)[1]
+@cocoindex.op.function()
+def extract_extension(filename: str) -> str:
+    """Extract the extension of a filename."""
+    return os.path.splitext(filename)[1]
 
 def code_to_embedding(text: cocoindex.DataSlice) -> cocoindex.DataSlice:
     """
@@ -35,7 +28,7 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
     code_embeddings = data_scope.add_collector()
 
     with data_scope["files"].row() as file:
-        file["extension"] = file["filename"].transform(ExtractExtension())
+        file["extension"] = file["filename"].transform(extract_extension)
         file["chunks"] = file["content"].transform(
             cocoindex.functions.SplitRecursively(),
             language=file["extension"], chunk_size=1000, chunk_overlap=300)
