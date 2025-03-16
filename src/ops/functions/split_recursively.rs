@@ -83,7 +83,13 @@ static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<HashMap<UniCase<&'static str>, Arc
             tree_sitter_c_sharp::LANGUAGE,
             [],
         );
-        add_language(&mut map, "CSS", [".css"], tree_sitter_css::LANGUAGE, []);
+        add_language(
+            &mut map,
+            "CSS",
+            [".css", ".scss"],
+            tree_sitter_css::LANGUAGE,
+            [],
+        );
         add_language(
             &mut map,
             "Fortran",
@@ -150,13 +156,6 @@ static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<HashMap<UniCase<&'static str>, Arc
             "Scala",
             [".scala"],
             tree_sitter_scala::LANGUAGE,
-            [],
-        );
-        add_language(
-            &mut map,
-            "SCSS",
-            [".scss"],
-            tree_sitter_scss::language(),
             [],
         );
         add_language(&mut map, "SQL", [".sql"], tree_sitter_sequel::LANGUAGE, []);
