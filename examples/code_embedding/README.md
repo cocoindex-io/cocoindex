@@ -6,7 +6,6 @@ Simple example for cocoindex: build embedding index based on local files.
 ## Run
 
 Install dependencies:
-
 ```bash
 pip install -e .
 ```
@@ -14,19 +13,19 @@ pip install -e .
 Setup:
 
 ```bash
-python code_embedding.py cocoindex setup
+python main.py cocoindex setup
 ```
 
 Update index:
 
 ```bash
-python code_embedding.py cocoindex update
+python main.py cocoindex update
 ```
 
 Run:
 
 ```bash
-python code_embedding.py
+python main.py
 ```
 
 ## CocoInsight
@@ -35,7 +34,7 @@ CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute vi
 Run CocoInsight to understand your RAG data pipeline:
 
 ```
-python code_embedding.py cocoindex server -c https://cocoindex.io
+python main.py cocoindex server -c https://cocoindex.io
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).

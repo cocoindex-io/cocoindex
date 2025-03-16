@@ -25,13 +25,13 @@ pip install -e .
 Setup:
 
 ```bash
-python manuals_llm_extraction.py cocoindex setup
+python main.py cocoindex setup
 ```
 
 Update index:
 
 ```bash
-python manuals_llm_extraction.py cocoindex update
+python main.py cocoindex update
 ```
 
 ### Query the index
@@ -54,7 +54,7 @@ CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute vi
 Run CocoInsight to understand your RAG data pipeline:
 
 ```
-python manuals_llm_extraction.py cocoindex server -c https://cocoindex.io
+python main.py cocoindex server -c https://cocoindex.io
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
