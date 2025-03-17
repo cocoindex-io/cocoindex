@@ -80,3 +80,7 @@ tree-sitter-yaml = "0.7.0"
 globset = "0.4.16"
 unicase = "2.8.1"
 google-drive3 = "6.0.0"
+hyper-util = "0.1.10"
+hyper-rustls = { version = "0.27.5", features = ["ring"] }
+yup-oauth2 = "12.1.0"
+rustls = { version = "0.23.25", features = ["ring"] }
