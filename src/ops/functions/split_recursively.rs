@@ -449,8 +449,8 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
         // Trim trailing whitespaces
         let trimmed_text = trimmed_text.trim_end();
 
-        // Only record non-empty chunks.
-        if !trimmed_text.is_empty() {
+        // Only record chunks with alphanumeric characters.
+        if trimmed_text.chars().any(|ch| ch.is_alphanumeric()) {
             output.push((
                 RangeValue::new(adjusted_start, adjusted_start + trimmed_text.len()),
                 trimmed_text,
