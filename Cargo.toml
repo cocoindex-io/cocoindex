@@ -79,3 +79,4 @@ tree-sitter-yaml = "0.7.0"
 
 globset = "0.4.16"
 unicase = "2.8.1"
+google-drive3 = "6.0.0"
