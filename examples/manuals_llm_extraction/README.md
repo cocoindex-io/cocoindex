@@ -60,8 +60,7 @@ You should see results like:
 
 
 ## CocoInsight 
-CocoInsight is in Early Access now (Free) 😊 You found us! It is 
-A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
+CocoInsight is a tool to help you understand your data pipeline and data index. CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
 
 Run CocoInsight to understand your RAG data pipeline:
 
