@@ -24,5 +24,5 @@ class GoogleDrive(op.SourceSpec):
     _op_category = op.OpCategory.SOURCE
 
     service_account_credential_path: str
-    root_folder_id: str
+    root_folder_ids: list[str]
     binary: bool = False

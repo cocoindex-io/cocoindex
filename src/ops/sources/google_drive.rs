@@ -73,13 +73,13 @@ fn is_supported_file_type(mime_type: &str) -> bool {
 pub struct Spec {
     service_account_credential_path: String,
     binary: bool,
-    root_folder_id: String,
+    root_folder_ids: Vec<String>,
 }
 
 struct Executor {
     drive_hub: DriveHub<HttpsConnector<HttpConnector>>,
     binary: bool,
-    root_folder_id: String,
+    root_folder_ids: Vec<String>,
 }
 
 impl Executor {
@@ -102,7 +102,7 @@ impl Executor {
         Ok(Self {
             drive_hub,
             binary: spec.binary,
-            root_folder_id: spec.root_folder_id,
+            root_folder_ids: spec.root_folder_ids,
         })
     }
 }
@@ -176,8 +176,10 @@ impl Executor {
 impl SourceExecutor for Executor {
     async fn list_keys(&self) -> Result<Vec<KeyValue>> {
         let mut result = IndexSet::new();
-        self.traverse_folder(&self.root_folder_id, &mut IndexSet::new(), &mut result)
-            .await?;
+        for root_folder_id in &self.root_folder_ids {
+            self.traverse_folder(root_folder_id, &mut IndexSet::new(), &mut result)
+                .await?;
+        }
         Ok(result.into_iter().collect())
     }
 
