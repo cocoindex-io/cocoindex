@@ -16,3 +16,13 @@ class LocalFile(op.SourceSpec):
     # If provided, files matching these patterns will be excluded.
     # See https://docs.rs/globset/latest/globset/index.html#syntax for the syntax of the patterns.
     excluded_patterns: list[str] | None = None
+
+
+class GoogleDrive(op.SourceSpec):
+    """Import data from Google Drive."""
+
+    _op_category = op.OpCategory.SOURCE
+
+    service_account_credential_path: str
+    root_folder_id: str
+    binary: bool = False
