@@ -1,12 +1,15 @@
 use std::sync::Arc;
 
+use futures::future::try_join;
 use google_drive3::{
     api::Scope,
     yup_oauth2::{read_service_account_key, ServiceAccountAuthenticator},
     DriveHub,
 };
+use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
+use log::debug;
 
 use crate::ops::sdk::*;
 
@@ -37,7 +40,7 @@ impl Executor {
                     hyper_rustls::HttpsConnectorBuilder::new()
                         .with_provider_and_native_roots(rustls::crypto::ring::default_provider())?
                         .https_only()
-                        .enable_http1()
+                        .enable_http2()
                         .build(),
                 );
         let drive_hub = DriveHub::new(client, auth);
@@ -72,16 +75,17 @@ impl SourceExecutor for Executor {
                 .drive_hub
                 .files()
                 .list()
-                .q(&query)
-                .add_scope(Scope::Readonly);
+                .add_scope(Scope::Readonly)
+                .q(&query);
             if let Some(next_page_token) = &next_page_token {
                 list_call = list_call.page_token(next_page_token);
             }
-            let (resp, files) = list_call.doit().await?;
+            let (_, files) = list_call.doit().await?;
             if let Some(files) = files.files {
                 for file in files {
-                    if let Some(name) = file.name {
-                        result.push(KeyValue::Str(Arc::from(name)));
+                    debug!("file: {:?}", file);
+                    if let Some(id) = file.id {
+                        result.push(KeyValue::Str(Arc::from(id)));
                     }
                 }
             }
@@ -94,7 +98,45 @@ impl SourceExecutor for Executor {
     }
 
     async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
-        unimplemented!()
+        let file_id = key.str_value()?;
+
+        let filename = async {
+            let (_, file) = self
+                .drive_hub
+                .files()
+                .get(file_id)
+                .add_scope(Scope::Readonly)
+                .doit()
+                .await?;
+            anyhow::Ok(file.name.unwrap_or_default())
+        };
+        let body = async {
+            let (resp, _) = self
+                .drive_hub
+                .files()
+                .get(file_id)
+                .add_scope(Scope::Readonly)
+                .param("alt", "media")
+                .doit()
+                .await?;
+            let content = resp.into_body().collect().await?;
+            anyhow::Ok(content)
+        };
+        let (filename, content) = try_join(filename, body).await?;
+
+        let mut fields = Vec::with_capacity(2);
+        fields.push(filename.into());
+        if self.binary {
+            fields.push(content.to_bytes().to_vec().into());
+        } else {
+            fields.push(
+                String::from_utf8_lossy(&content.to_bytes())
+                    .to_string()
+                    .into(),
+            );
+        }
+
+        Ok(Some(FieldValues { fields }))
     }
 }
 
@@ -116,6 +158,7 @@ impl SourceFactoryBase for Factory {
         Ok(make_output_type(CollectionSchema::new(
             CollectionKind::Table,
             vec![
+                FieldSchema::new("file_id", make_output_type(BasicValueType::Str)),
                 FieldSchema::new("filename", make_output_type(BasicValueType::Str)),
                 FieldSchema::new(
                     "content",
