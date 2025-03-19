@@ -85,14 +85,9 @@ def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: coco
         doc["markdown"] = doc["content"].transform(PdfToMarkdown())
         doc["module_info"] = doc["markdown"].transform(
             cocoindex.functions.ExtractByLlm(
-                llm_spec=cocoindex.LlmSpec(
-                     api_type=cocoindex.LlmApiType.OLLAMA,
-                     # See the full list of models: https://ollama.com/library
-                     model="llama3.2"
-                ),
                 # Replace by this spec below, to use OpenAI API model instead of ollama
-                #   llm_spec=cocoindex.LlmSpec(
-                #       api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
+                   llm_spec=cocoindex.LlmSpec(
+                       api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
                 output_type=ModuleInfo,
                 instruction="Please extract Python module information from the manual."))
         doc["module_summary"] = doc["module_info"].transform(summarize_module)
