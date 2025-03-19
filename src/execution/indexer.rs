@@ -1,10 +1,9 @@
-use std::collections::{HashMap, HashSet};
-
 use anyhow::Result;
 use futures::future::{join_all, try_join, try_join_all};
 use log::{debug, error};
 use serde::Serialize;
 use sqlx::PgPool;
+use std::collections::{HashMap, HashSet};
 
 use super::db_tracking::{self, read_source_tracking_info, TrackedTargetKey};
 use super::db_tracking_setup;
@@ -23,16 +22,23 @@ use super::evaluator::{evaluate_source_entry, ScopeValueBuilder};
 pub struct UpdateStats {
     pub num_insertions: usize,
     pub num_deletions: usize,
-    pub num_updates: usize,
+    pub num_already_exists: usize,
+    pub num_errors: usize,
 }
 
 impl std::fmt::Display for UpdateStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let num_source_rows = self.num_insertions + self.num_deletions + self.num_already_exists;
+        write!(f, "{num_source_rows} source rows processed",)?;
+        if self.num_errors > 0 {
+            write!(f, " with {} ERRORS", self.num_errors)?;
+        }
         write!(
             f,
-            "{} added, {} removed, {} updated",
-            self.num_insertions, self.num_deletions, self.num_updates
-        )
+            ": {} added, {} removed, {} already exists",
+            self.num_insertions, self.num_deletions, self.num_already_exists
+        )?;
+        Ok(())
     }
 }
 
@@ -588,21 +594,27 @@ async fn update_source(
         }
     }
 
-    join_all(all_keys_set.into_iter().map(|key| async move {
+    let num_errors = join_all(all_keys_set.into_iter().map(|key| async move {
         let result = update_source_entry(plan, source_op_idx, schema, &key, pool).await;
         if let Err(e) = result {
             error!("Error indexing source row: {}", e);
             debug!("Detailed error: {:?}", e);
+            1
+        } else {
+            0
         }
     }))
-    .await;
+    .await
+    .iter()
+    .sum();
 
     Ok(SourceUpdateInfo {
         source_name: source_name.to_string(),
         stats: UpdateStats {
             num_insertions: num_new_keys - num_updates,
             num_deletions,
-            num_updates,
+            num_already_exists: num_updates,
+            num_errors,
         },
     })
 }
