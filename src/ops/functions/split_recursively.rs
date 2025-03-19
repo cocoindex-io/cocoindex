@@ -334,14 +334,14 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
             return;
         }
         let mut start_pos = chunks[0].start;
-        for i in 1..chunks.len() - 1 {
-            let chunk = &chunks[i];
-            if chunk.end - start_pos > self.chunk_size {
+        for i in 0..chunks.len() - 1 {
+            let next_chunk = &chunks[i + 1];
+            if next_chunk.end - start_pos > self.chunk_size {
+                let chunk = &chunks[i];
                 self.add_output(RangeValue::new(start_pos, chunk.end), output);
 
                 // Find the new start position, allowing overlap within the threshold.
                 let mut new_start_idx = i + 1;
-                let next_chunk = &chunks[i + 1];
                 while new_start_idx > 0 {
                     let prev_pos = chunks[new_start_idx - 1].start;
                     if prev_pos <= start_pos
