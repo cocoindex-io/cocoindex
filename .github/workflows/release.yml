@@ -33,7 +33,6 @@ jobs:
         platform:
           - { os: linux, runner: ubuntu-24.04, target: x86_64, container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64" }
           - { os: linux, runner: ubuntu-24.04, target: aarch64, container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64" }
-          - { os: linux, runner: ubuntu-24.04, target: armv7, container: "ghcr.io/rust-cross/manylinux_2_28-cross:armv7" }
           - { os: windows, runner: windows-latest, target: x64 }
           - { os: macos, runner: macos-13, target: x86_64 }
           - { os: macos, runner: macos-14, target: aarch64 }
