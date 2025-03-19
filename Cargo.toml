@@ -44,10 +44,12 @@ async-lock = "3.4.0"
 hex = "0.4.3"
 pythonize = "0.23.0"
 schemars = "0.8.22"
-openssl = { version = "0.10.71", features = ["vendored"] }
 console-subscriber = "0.4.1"
 env_logger = "0.11.7"
-reqwest = { version = "0.12.13", features = ["json"] }
+reqwest = { version = "0.12.13", default_features = false, features = [
+    "json",
+    "rustls-tls",
+] }
 async-openai = "0.28.0"
 tree-sitter = "0.25.3"
 tree-sitter-language = "0.1.5"
