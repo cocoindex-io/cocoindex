@@ -1,0 +1,6 @@
+[project]
+name = "gdrive-text-embedding"
+version = "0.1.0"
+description = "Simple example for cocoindex: build embedding index based on Google Drive files."
+requires-python = ">=3.11"
+dependencies = ["cocoindex>=0.1.12", "python-dotenv>=1.0.1"]
