@@ -93,7 +93,9 @@ impl Executor {
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build(
                     hyper_rustls::HttpsConnectorBuilder::new()
-                        .with_provider_and_native_roots(rustls::crypto::ring::default_provider())?
+                        .with_provider_and_native_roots(
+                            rustls::crypto::aws_lc_rs::default_provider(),
+                        )?
                         .https_only()
                         .enable_http2()
                         .build(),
