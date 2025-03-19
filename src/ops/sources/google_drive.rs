@@ -196,7 +196,7 @@ impl SourceExecutor for Executor {
             .doit()
             .await?;
 
-        let resp_body = if let Some(export_mime_type) = file
+        let (mime_type, resp_body) = if let Some(export_mime_type) = file
             .mime_type
             .as_ref()
             .and_then(|mime_type| EXPORT_MIME_TYPES.get(mime_type.as_str()))
@@ -206,13 +206,15 @@ impl SourceExecutor for Executor {
             } else {
                 export_mime_type.text
             };
-            self.drive_hub
+            let content = self
+                .drive_hub
                 .files()
                 .export(&file_id, target_mime_type)
                 .add_scope(Scope::Readonly)
                 .doit()
                 .await?
-                .into_body()
+                .into_body();
+            (Some(target_mime_type.to_string()), content)
         } else {
             let (resp, _) = self
                 .drive_hub
@@ -222,11 +224,12 @@ impl SourceExecutor for Executor {
                 .param("alt", "media")
                 .doit()
                 .await?;
-            resp.into_body()
+            (file.mime_type, resp.into_body())
         };
         let content = resp_body.collect().await?;
         let mut fields = Vec::with_capacity(2);
         fields.push(file.name.unwrap_or_default().into());
+        fields.push(mime_type.into());
         if self.binary {
             fields.push(content.to_bytes().to_vec().into());
         } else {
@@ -261,6 +264,7 @@ impl SourceFactoryBase for Factory {
             vec![
                 FieldSchema::new("file_id", make_output_type(BasicValueType::Str)),
                 FieldSchema::new("filename", make_output_type(BasicValueType::Str)),
+                FieldSchema::new("mime_type", make_output_type(BasicValueType::Str)),
                 FieldSchema::new(
                     "content",
                     make_output_type(if spec.binary {

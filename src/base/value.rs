@@ -395,6 +395,15 @@ impl From<FieldValues> for Value {
     }
 }
 
+impl<T: Into<Value>> From<Option<T>> for Value {
+    fn from(value: Option<T>) -> Self {
+        match value {
+            Some(v) => v.into(),
+            None => Value::Null,
+        }
+    }
+}
+
 impl<VS> Value<VS> {
     pub fn from_alternative<AltVS>(value: Value<AltVS>) -> Self
     where
