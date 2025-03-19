@@ -96,6 +96,7 @@ Go to the [examples directory](examples) to try out with any of the examples, fo
 | [Code Embedding](examples/code_embedding) | Index code embeddings for semantic search |
 | [PDF Embedding](examples/pdf_embedding) | Parse PDF and index text embeddings for semantic search |
 | [Manuals LLM Extraction](examples/manuals_llm_extraction) | Extract structured information from a manual using LLM |
+| [Google Drive Text Embedding](examples/gdrive_text_embedding) | Index text documents from Google Drive |
 
 More coming and stay tuned! If there's any specific examples you would like to see, please let us know in our [Discord community](https://discord.com/invite/zpA9S2DR7s) 🌱.
 
