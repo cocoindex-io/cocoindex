@@ -13,7 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.23.5" }
 anyhow = { version = "1.0.97", features = ["std"] }
-async-trait = "0.1.87"
+async-trait = "0.1.88"
 axum = "0.7.9"
 axum-extra = { version = "0.9.6", features = ["query"] }
 base64 = "0.22.1"
@@ -26,7 +26,7 @@ regex = "1.11.1"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 sqlx = { version = "0.8.3", features = ["chrono", "postgres", "runtime-tokio"] }
-tokio = { version = "1.44.0", features = [
+tokio = { version = "1.44.1", features = [
     "macros",
     "rt-multi-thread",
     "full",
@@ -46,7 +46,7 @@ pythonize = "0.23.0"
 schemars = "0.8.22"
 console-subscriber = "0.4.1"
 env_logger = "0.11.7"
-reqwest = { version = "0.12.13", default_features = false, features = [
+reqwest = { version = "0.12.15", default-features = false, features = [
     "json",
     "rustls-tls",
 ] }
@@ -58,7 +58,7 @@ tree-sitter-c = "0.23.4"
 tree-sitter-cpp = "0.23.4"
 tree-sitter-c-sharp = "0.23.1"
 tree-sitter-css = "0.23.2"
-tree-sitter-fortran = "0.5.0"
+tree-sitter-fortran = "0.5.1"
 tree-sitter-go = "0.23.4"
 tree-sitter-html = "0.23.2"
 tree-sitter-java = "0.23.5"
