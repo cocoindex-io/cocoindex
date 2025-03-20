@@ -1,7 +1,7 @@
 use std::sync::{Mutex, OnceLock};
 use std::{borrow::Cow, collections::BTreeMap};
 
-use anyhow::{bail, Ok, Result};
+use anyhow::{bail, Context, Ok, Result};
 use futures::future::try_join_all;
 
 use crate::builder::{plan::*, AnalyzedTransientFlow};
@@ -298,7 +298,17 @@ async fn evaluate_child_op_scope(
     child_scope_entry: ScopeEntry<'_>,
     cache: Option<&EvaluationCache>,
 ) -> Result<()> {
-    evaluate_op_scope(op_scope, scoped_entries.prepend(&child_scope_entry), cache).await
+    evaluate_op_scope(op_scope, scoped_entries.prepend(&child_scope_entry), cache)
+        .await
+        .with_context(|| {
+            format!(
+                "Evaluating in scope with key {}",
+                match child_scope_entry.key.key() {
+                    Some(k) => k.to_string(),
+                    None => "()".to_string(),
+                }
+            )
+        })
 }
 
 async fn evaluate_op_scope(
@@ -331,7 +341,8 @@ async fn evaluate_op_scope(
                 let output_value = evaluate_with_cell(output_value_cell.as_ref(), move || {
                     op.executor.evaluate(input_values)
                 })
-                .await?;
+                .await
+                .with_context(|| format!("Evaluating Transform op `{}`", op.name,))?;
                 head_scope.define_field(&op.output, &output_value)?;
             }
 
@@ -339,7 +350,7 @@ async fn evaluate_op_scope(
                 let target_field_schema = head_scope.get_field_schema(&op.local_field_ref)?;
                 let collection_schema = match &target_field_schema.value_type.typ {
                     schema::ValueType::Collection(cs) => cs,
-                    _ => panic!("Expect target field to be a collection"),
+                    _ => bail!("Expect target field to be a collection"),
                 };
 
                 let target_field = head_scope.get_value_field_builder(&op.local_field_ref);
@@ -391,10 +402,12 @@ async fn evaluate_op_scope(
                         })
                         .collect::<Vec<_>>(),
                     _ => {
-                        panic!("Target field type is expected to be a collection");
+                        bail!("Target field type is expected to be a collection");
                     }
                 };
-                try_join_all(task_futs).await?;
+                try_join_all(task_futs)
+                    .await
+                    .with_context(|| format!("Evaluating ForEach op `{}`", op.name,))?;
             }
 
             AnalyzedReactiveOp::Collect(op) => {

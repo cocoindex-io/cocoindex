@@ -133,6 +133,28 @@ impl serde::Serialize for KeyValue {
     }
 }
 
+impl std::fmt::Display for KeyValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeyValue::Bytes(v) => write!(f, "{}", BASE64_STANDARD.encode(v)),
+            KeyValue::Str(v) => write!(f, "\"{}\"", v.escape_default()),
+            KeyValue::Bool(v) => write!(f, "{}", v),
+            KeyValue::Int64(v) => write!(f, "{}", v),
+            KeyValue::Range(v) => write!(f, "[{}, {})", v.start, v.end),
+            KeyValue::Struct(v) => {
+                write!(
+                    f,
+                    "[{}]",
+                    v.iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+        }
+    }
+}
+
 impl KeyValue {
     fn parts_from_str(
         values_iter: &mut impl Iterator<Item = String>,
