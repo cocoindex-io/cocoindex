@@ -325,7 +325,7 @@ async fn evaluate_op_scope(
                             .fingerprinter
                             .clone()
                             .with(&input_values)?
-                            .to_fingerprint();
+                            .into_fingerprint();
                         Some(cache.get(
                             key,
                             &op.function_exec_info.output_type,
@@ -426,7 +426,7 @@ async fn evaluate_op_scope(
     Ok(())
 }
 
-pub async fn evaluate_source_entry<'a>(
+pub async fn evaluate_source_entry(
     plan: &ExecutionPlan,
     source_op_idx: usize,
     schema: &schema::DataSchema,

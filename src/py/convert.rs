@@ -199,7 +199,7 @@ pub fn value_from_py_object<'py>(
                             .into_iter()
                             .map(|v| {
                                 let mut iter = v.fields.into_iter();
-                                let key = iter.next().unwrap().to_key().into_py_result()?;
+                                let key = iter.next().unwrap().into_key().into_py_result()?;
                                 Ok((
                                     key,
                                     value::ScopeValue(value::FieldValues {

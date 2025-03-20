@@ -334,7 +334,7 @@ impl<T: Into<BasicValue>> From<Vec<T>> for BasicValue {
 }
 
 impl BasicValue {
-    pub fn to_key(self) -> Result<KeyValue> {
+    pub fn into_key(self) -> Result<KeyValue> {
         let result = match self {
             BasicValue::Bytes(v) => KeyValue::Bytes(v),
             BasicValue::Str(v) => KeyValue::Str(v),
@@ -473,13 +473,13 @@ impl<VS> Value<VS> {
         matches!(self, Value::Null)
     }
 
-    pub fn to_key(self) -> Result<KeyValue> {
+    pub fn into_key(self) -> Result<KeyValue> {
         let result = match self {
-            Value::Basic(v) => v.to_key()?,
+            Value::Basic(v) => v.into_key()?,
             Value::Struct(v) => KeyValue::Struct(
                 v.fields
                     .into_iter()
-                    .map(|v| v.to_key())
+                    .map(|v| v.into_key())
                     .collect::<Result<Vec<_>>>()?,
             ),
             Value::Null | Value::Collection(_) | Value::Table(_) | Value::List(_) => {
@@ -661,7 +661,7 @@ where
         })
     }
 
-    pub fn from_json<'a>(value: serde_json::Value, fields_schema: &[FieldSchema]) -> Result<Self> {
+    pub fn from_json(value: serde_json::Value, fields_schema: &[FieldSchema]) -> Result<Self> {
         match value {
             serde_json::Value::Array(v) => {
                 if v.len() != fields_schema.len() {
@@ -821,7 +821,7 @@ where
                                         })?,
                                         &key_field.value_type.typ,
                                     )?
-                                    .to_key()?;
+                                    .into_key()?;
                                     let values = FieldValues::from_json_values(
                                         fields_iter.zip(field_vals_iter),
                                     )?;
@@ -839,7 +839,7 @@ where
                                         )?),
                                         &key_field.value_type.typ,
                                     )?
-                                    .to_key()?;
+                                    .into_key()?;
                                     let values = FieldValues::from_json_object(v, fields_iter)?;
                                     Ok((key, values.into()))
                                 }

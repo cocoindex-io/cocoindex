@@ -1,3 +1,16 @@
+/// Concepts:
+/// - Resource: some setup that needs to be tracked and maintained.
+/// - Setup State: current state of a resource.
+/// - Staging Change: states changes that may not be really applied yet.
+/// - Combined Setup State: Setup State + Staging Change.
+/// - Status Check: information about changes that are being applied / need to be applied.
+///
+/// Resource hierarchy:
+/// - [resource: setup metadata table] /// - Flow
+///   - [resource: metadata]
+///   - [resource: tracking table]
+///   - Target
+///     - [resource: target-specific stuff]
 use anyhow::Result;
 use axum::async_trait;
 use indenter::indented;
@@ -14,20 +27,6 @@ use crate::base::schema;
 use crate::execution::db_tracking_setup;
 
 const INDENT: &str = "    ";
-
-/// Concepts:
-/// - Resource: some setup that needs to be tracked and maintained.
-/// - Setup State: current state of a resource.
-/// - Staging Change: states changes that may not be really applied yet.
-/// - Combined Setup State: Setup State + Staging Change.
-/// - Status Check: information about changes that are being applied / need to be applied.
-///
-/// Resource hierarchy:
-/// - [resource: setup metadata table] /// - Flow
-///   - [resource: metadata]
-///   - [resource: tracking table]
-///   - Target
-///     - [resource: target-specific stuff]
 
 pub trait StateMode: Clone + Copy {
     type State<T: Debug + Clone>: Debug + Clone;

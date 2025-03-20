@@ -408,9 +408,11 @@ impl FlowBuilder {
             flow_ctx: &self.flow_inst_context,
         };
         let mut root_data_scope = self.root_data_scope.lock().unwrap();
-        let _ = analyzer_ctx
+
+        let analyzed = analyzer_ctx
             .analyze_source_op(&mut root_data_scope, source_op.clone(), None, None)
             .into_py_result()?;
+        std::mem::drop(analyzed);
 
         let result =
             Self::last_field_to_data_slice(&root_data_scope, self.root_data_scope_ref.clone())
@@ -498,7 +500,10 @@ impl FlowBuilder {
                         op: spec,
                     }),
                 };
-                let _ = analyzer_ctx.analyze_reactive_op(scope, &reactive_op, parent_scopes)?;
+
+                let analyzed =
+                    analyzer_ctx.analyze_reactive_op(scope, &reactive_op, parent_scopes)?;
+                std::mem::drop(analyzed);
 
                 reactive_ops.push(reactive_op);
                 let result = Self::last_field_to_data_slice(scope.data, common_scope.clone())
@@ -537,7 +542,11 @@ impl FlowBuilder {
                         collector_name: collector.name.clone(),
                     }),
                 };
-                let _ = analyzer_ctx.analyze_reactive_op(scope, &reactive_op, parent_scopes)?;
+
+                let analyzed =
+                    analyzer_ctx.analyze_reactive_op(scope, &reactive_op, parent_scopes)?;
+                std::mem::drop(analyzed);
+
                 reactive_ops.push(reactive_op);
                 Ok(())
             },

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Mutex;
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc, u32};
+use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use super::plan::*;
 use crate::execution::db_tracking_setup;

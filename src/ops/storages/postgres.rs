@@ -46,12 +46,10 @@ fn key_value_fields_iter<'a>(
 
 fn convertible_to_pgvector(vec_schema: &VectorTypeSchema) -> bool {
     if vec_schema.dimension.is_some() {
-        match &*vec_schema.element_type {
-            BasicValueType::Float32 => true,
-            BasicValueType::Float64 => true,
-            BasicValueType::Int64 => true,
-            _ => false,
-        }
+        matches!(
+            *vec_schema.element_type,
+            BasicValueType::Float32 | BasicValueType::Float64 | BasicValueType::Int64
+        )
     } else {
         false
     }
@@ -468,8 +466,8 @@ pub struct SetupState {
 impl SetupState {
     fn new(
         table_id: &TableId,
-        key_fields_schema: &Vec<FieldSchema>,
-        value_fields_schema: &Vec<FieldSchema>,
+        key_fields_schema: &[FieldSchema],
+        value_fields_schema: &[FieldSchema],
         index_options: &IndexOptions,
     ) -> Self {
         Self {

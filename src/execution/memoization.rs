@@ -133,10 +133,10 @@ impl EvaluationCache {
     }
 }
 
-pub async fn evaluate_with_cell<'a, Fut>(
-    cell: Option<&'a CacheEntryCell>,
+pub async fn evaluate_with_cell<Fut>(
+    cell: Option<&CacheEntryCell>,
     compute: impl FnOnce() -> Fut,
-) -> Result<Cow<'a, value::Value>>
+) -> Result<Cow<'_, value::Value>>
 where
     Fut: Future<Output = Result<value::Value>>,
 {

@@ -222,7 +222,7 @@ async fn precommit_source_tracking_info(
                 let curr_fp = Some(
                     Fingerprinter::default()
                         .with(&field_values)?
-                        .to_fingerprint(),
+                        .into_fingerprint(),
                 );
 
                 let existing_target_keys = target_info.existing_keys_info.remove(&primary_key_json);
@@ -437,7 +437,7 @@ pub async fn evaluation_cache_on_existing_data(
     ))
 }
 
-pub async fn update_source_entry<'a>(
+pub async fn update_source_entry(
     plan: &ExecutionPlan,
     source_op_idx: usize,
     schema: &schema::DataSchema,

@@ -34,7 +34,7 @@ impl serde::ser::Error for FingerprinterError {
 pub struct Fingerprint([u8; 16]);
 
 impl Fingerprint {
-    pub fn to_base64(&self) -> String {
+    pub fn to_base64(self) -> String {
         BASE64_STANDARD.encode(self.0)
     }
 
@@ -77,7 +77,7 @@ pub struct Fingerprinter {
 }
 
 impl Fingerprinter {
-    pub fn to_fingerprint(self) -> Fingerprint {
+    pub fn into_fingerprint(self) -> Fingerprint {
         Fingerprint(self.hasher.finalize().into())
     }
 
