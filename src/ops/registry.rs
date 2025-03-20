@@ -6,6 +6,12 @@ pub struct ExecutorFactoryRegistry {
     factories: HashMap<String, ExecutorFactory>,
 }
 
+impl Default for ExecutorFactoryRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExecutorFactoryRegistry {
     pub fn new() -> Self {
         Self {

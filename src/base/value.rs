@@ -405,7 +405,7 @@ impl From<KeyValue> for Value {
             KeyValue::Int64(v) => Value::Basic(BasicValue::Int64(v)),
             KeyValue::Range(v) => Value::Basic(BasicValue::Range(v)),
             KeyValue::Struct(v) => Value::Struct(FieldValues {
-                fields: v.into_iter().map(|k| Value::from(k)).collect(),
+                fields: v.into_iter().map(Value::from).collect(),
             }),
         }
     }
@@ -463,11 +463,9 @@ impl<VS> Value<VS> {
                     .map(|v| Value::<VS>::from_alternative_ref(v))
                     .collect(),
             }),
-            Value::Collection(v) => Value::Collection(v.into_iter().map(|v| v.into()).collect()),
-            Value::Table(v) => {
-                Value::Table(v.into_iter().map(|(k, v)| (k.clone(), v.into())).collect())
-            }
-            Value::List(v) => Value::List(v.into_iter().map(|v| v.into()).collect()),
+            Value::Collection(v) => Value::Collection(v.iter().map(|v| v.into()).collect()),
+            Value::Table(v) => Value::Table(v.iter().map(|(k, v)| (k.clone(), v.into())).collect()),
+            Value::List(v) => Value::List(v.iter().map(|v| v.into()).collect()),
         }
     }
 
@@ -669,7 +667,7 @@ where
                 if v.len() != fields_schema.len() {
                     api_bail!("unmatched value length");
                 }
-                Self::from_json_values(fields_schema.iter().zip(v.into_iter()))
+                Self::from_json_values(fields_schema.iter().zip(v))
             }
             serde_json::Value::Object(v) => Self::from_json_object(v, fields_schema.iter()),
             _ => api_bail!("invalid value type"),
@@ -741,7 +739,7 @@ impl BasicValue {
             ) => {
                 let vec = v
                     .into_iter()
-                    .map(|v| BasicValue::from_json(v, &element_type))
+                    .map(|v| BasicValue::from_json(v, element_type))
                     .collect::<Result<Vec<_>>>()?;
                 BasicValue::Vector(Arc::from(vec))
             }
@@ -774,7 +772,7 @@ impl serde::Serialize for Value<ScopeValue> {
     }
 }
 
-impl<'a> serde::Serialize for TableEntry<'a> {
+impl serde::Serialize for TableEntry<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let &TableEntry(key, value) = self;
         let mut seq = serializer.serialize_seq(Some(value.0.fields.len() + 1))?;
@@ -873,7 +871,7 @@ pub struct TypedValue<'a> {
     pub v: &'a Value,
 }
 
-impl<'a> Serialize for TypedValue<'a> {
+impl Serialize for TypedValue<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match (self.t, self.v) {
             (ValueType::Basic(_), v) => v.serialize(serializer),

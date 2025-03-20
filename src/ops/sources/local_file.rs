@@ -24,13 +24,13 @@ impl Executor {
     fn is_excluded(&self, path: &str) -> bool {
         self.excluded_glob_set
             .as_ref()
-            .map_or(false, |glob_set| glob_set.is_match(path))
+            .is_some_and(|glob_set| glob_set.is_match(path))
     }
 
     fn is_file_included(&self, path: &str) -> bool {
         self.included_glob_set
             .as_ref()
-            .map_or(true, |glob_set| glob_set.is_match(path))
+            .is_none_or(|glob_set| glob_set.is_match(path))
             && !self.is_excluded(path)
     }
 
@@ -44,10 +44,8 @@ impl Executor {
                     if !self.is_excluded(relative_path) {
                         Box::pin(self.traverse_dir(&path, result)).await?;
                     }
-                } else {
-                    if self.is_file_included(relative_path) {
-                        result.push(KeyValue::Str(Arc::from(relative_path)));
-                    }
+                } else if self.is_file_included(relative_path) {
+                    result.push(KeyValue::Str(Arc::from(relative_path)));
                 }
             } else {
                 warn!("Skipped ill-formed file path: {}", path.display());

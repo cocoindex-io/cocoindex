@@ -21,8 +21,8 @@ struct ExportMimeType {
     binary: &'static str,
 }
 
-const FOLDER_MIME_TYPE: &'static str = "application/vnd.google-apps.folder";
-const FILE_MIME_TYPE: &'static str = "application/vnd.google-apps.file";
+const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
+const FILE_MIME_TYPE: &str = "application/vnd.google-apps.file";
 static EXPORT_MIME_TYPES: LazyLock<HashMap<&'static str, ExportMimeType>> = LazyLock::new(|| {
     HashMap::from([
         (
@@ -209,7 +209,7 @@ impl SourceExecutor for Executor {
             let content = self
                 .drive_hub
                 .files()
-                .export(&file_id, target_mime_type)
+                .export(file_id, target_mime_type)
                 .add_scope(Scope::Readonly)
                 .doit()
                 .await?

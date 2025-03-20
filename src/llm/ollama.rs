@@ -55,12 +55,11 @@ impl LlmGenerationClient for Client {
         let req = OllamaRequest {
             model: &self.model,
             prompt: request.user_prompt.as_ref(),
-            format: match &request.output_format {
-                Some(super::OutputFormat::JsonSchema { schema, .. }) => {
-                    Some(OllamaFormat::JsonSchema(schema.as_ref()))
-                }
-                None => None,
-            },
+            format: request.output_format.as_ref().map(
+                |super::OutputFormat::JsonSchema { schema, .. }| {
+                    OllamaFormat::JsonSchema(schema.as_ref())
+                },
+            ),
             system: request.system_prompt.as_ref().map(|s| s.as_ref()),
             stream: Some(false),
         };

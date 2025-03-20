@@ -101,7 +101,7 @@ impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
 
     fn describe_changes(&self) -> Vec<String> {
         let mut changes: Vec<String> = vec![];
-        if self.desired_state.is_some() && self.legacy_table_names.len() > 0 {
+        if self.desired_state.is_some() && !self.legacy_table_names.is_empty() {
             changes.push(format!(
                 "Rename legacy tracking tables: {}. ",
                 self.legacy_table_names.join(", ")
@@ -109,7 +109,7 @@ impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
         }
         match (self.min_existing_version_ids, &self.desired_state) {
             (None, Some(state)) => {
-                changes.push(format!("Create the tracking table: {}. ", state.table_name).into())
+                changes.push(format!("Create the tracking table: {}. ", state.table_name))
             }
             (Some(min_version_id), Some(desired)) => {
                 if min_version_id < desired.version_id {
@@ -139,7 +139,7 @@ impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
         match (self.min_existing_version_ids, &self.desired_state) {
             (None, Some(_)) => SetupChangeType::Create,
             (Some(min_version_id), Some(desired)) => {
-                if min_version_id == desired.version_id && self.legacy_table_names.len() == 0 {
+                if min_version_id == desired.version_id && self.legacy_table_names.is_empty() {
                     SetupChangeType::NoChange
                 } else if min_version_id < desired.version_id {
                     SetupChangeType::Update

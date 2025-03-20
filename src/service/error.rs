@@ -57,9 +57,9 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
-impl Into<PyErr> for ApiError {
-    fn into(self) -> PyErr {
-        PyException::new_err(self.err.to_string())
+impl From<ApiError> for PyErr {
+    fn from(val: ApiError) -> Self {
+        PyException::new_err(val.err.to_string())
     }
 }
 

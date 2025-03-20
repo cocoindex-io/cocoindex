@@ -88,7 +88,7 @@ impl Fingerprinter {
     }
 
     pub fn write<S: Serialize>(&mut self, value: &S) -> Result<(), FingerprinterError> {
-        Ok(value.serialize(self)?)
+        value.serialize(self)
     }
 
     fn write_type_tag(&mut self, tag: &str) {
@@ -135,13 +135,13 @@ impl Serializer for &mut Fingerprinter {
 
     fn serialize_i16(self, v: i16) -> Result<(), Self::Error> {
         self.write_type_tag("i2");
-        self.hasher.update(&v.to_le_bytes());
+        self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
     fn serialize_i32(self, v: i32) -> Result<(), Self::Error> {
         self.write_type_tag("i4");
-        self.hasher.update(&v.to_le_bytes());
+        self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 

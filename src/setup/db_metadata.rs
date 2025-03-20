@@ -195,8 +195,7 @@ pub async fn stage_changes_for_flow(
     let mut existing_records = read_metadata_records_for_flow(flow_name, &mut *txn).await?;
     let latest_metadata_version = existing_records
         .get(&VERSION_RESOURCE_TYPE_ID)
-        .map(|m| parse_flow_version(&m.state))
-        .flatten();
+        .and_then(|m| parse_flow_version(&m.state));
     if seen_metadata_version < latest_metadata_version {
         return Err(ApiError::new(
             "seen newer version in the metadata table",
@@ -218,7 +217,7 @@ pub async fn stage_changes_for_flow(
     .await?;
 
     for (type_id, desired_state) in state_updates {
-        let existing = existing_records.remove(&type_id);
+        let existing = existing_records.remove(type_id);
         let change = match desired_state {
             Some(desired_state) => StateChange::Upsert(desired_state.clone()),
             None => StateChange::Delete,

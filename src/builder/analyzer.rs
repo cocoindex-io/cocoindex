@@ -107,7 +107,7 @@ impl TryInto<StructSchema> for &StructSchemaBuilder {
             fields: Arc::new(
                 self.fields
                     .iter()
-                    .map(|f| FieldSchema::<ValueType>::from_alternative(f))
+                    .map(FieldSchema::<ValueType>::from_alternative)
                     .collect::<Result<Vec<_>>>()?,
             ),
         })
@@ -306,7 +306,7 @@ impl CollectorBuilder {
             api_bail!("Collector is already used");
         }
         let common_schema =
-            try_make_common_struct_schemas(&self.schema, &schema).with_context(|| {
+            try_make_common_struct_schemas(&self.schema, schema).with_context(|| {
                 format!(
                     "Collectors are sent with entries in incompatible schemas:\n  {}\n  {}\n",
                     self.schema, schema
@@ -377,7 +377,7 @@ impl DataScopeBuilder {
             i += 1;
 
             struct_schema = match &field.value_type.typ {
-                ValueTypeBuilder::Struct(struct_type) => &struct_type,
+                ValueTypeBuilder::Struct(struct_type) => struct_type,
                 _ => {
                     api_bail!("Field {} is not a struct", field_path[0..(i + 1)].join("."));
                 }
@@ -508,7 +508,7 @@ fn analyze_value_mapping(
             (
                 AnalyzedValueMapping::Field(AnalyzedFieldReference {
                     local: local_field_ref,
-                    scope_up_level: scope_up_level as u32,
+                    scope_up_level,
                 }),
                 EnrichedValueType::from_alternative(value_type)?,
             )
@@ -559,7 +559,7 @@ fn add_collector(
     })
 }
 
-impl<'a> AnalyzerContext<'a> {
+impl AnalyzerContext<'_> {
     pub(super) fn analyze_source_op(
         &self,
         scope: &mut DataScopeBuilder,
@@ -592,8 +592,7 @@ impl<'a> AnalyzerContext<'a> {
         let source_id = metadata.map(|metadata| {
             let existing_source_ids = existing_source_states
                 .iter()
-                .map(|v| v.iter())
-                .flatten()
+                .flat_map(|v| v.iter())
                 .filter_map(|state| {
                     if state.key_schema == key_schema_no_attrs {
                         Some(state.source_id)
@@ -741,7 +740,7 @@ impl<'a> AnalyzerContext<'a> {
                     self.analyze_op_scope(
                         &mut exec_scope,
                         &op.op_scope.ops,
-                        parent_scopes.prepend(&scope),
+                        parent_scopes.prepend(scope),
                     )?
                 };
                 let op_name = reactive_op.name.clone();
@@ -873,8 +872,7 @@ impl<'a> AnalyzerContext<'a> {
             .map(|setup_state| -> Result<i32> {
                 let existing_target_ids = existing_target_states
                     .iter()
-                    .map(|v| v.iter())
-                    .flatten()
+                    .flat_map(|v| v.iter())
                     .map(|state| state.common.target_id)
                     .collect::<HashSet<_>>();
                 let target_id = if existing_target_ids.len() == 1 {
@@ -888,15 +886,13 @@ impl<'a> AnalyzerContext<'a> {
                 };
                 let max_schema_version_id = existing_target_states
                     .iter()
-                    .map(|v| v.iter())
-                    .flatten()
+                    .flat_map(|v| v.iter())
                     .map(|s| s.common.max_schema_version_id)
                     .max()
                     .unwrap_or(0);
                 let reusable_schema_version_ids = existing_target_states
                     .iter()
-                    .map(|v| v.iter())
-                    .flatten()
+                    .flat_map(|v| v.iter())
                     .map(|s| {
                         Ok({
                             if export_factory.will_keep_all_existing_data(
@@ -1010,8 +1006,7 @@ pub fn analyze_flow(
     let existing_metadata_versions = || {
         existing_flow_ss
             .iter()
-            .map(|flow_ss| flow_ss.metadata.possible_versions())
-            .flatten()
+            .flat_map(|flow_ss| flow_ss.metadata.possible_versions())
     };
 
     let mut source_states_by_name = HashMap::<&str, Vec<&SourceSetupState>>::new();
@@ -1037,8 +1032,7 @@ pub fn analyze_flow(
 
     let mut setup_state = setup::FlowSetupState::<setup::DesiredMode> {
         seen_flow_metadata_version: existing_flow_ss
-            .map(|flow_ss| flow_ss.seen_flow_metadata_version)
-            .flatten(),
+            .and_then(|flow_ss| flow_ss.seen_flow_metadata_version),
         metadata: FlowSetupMetadata {
             last_source_id: existing_metadata_versions()
                 .map(|metadata| metadata.last_source_id)
@@ -1052,14 +1046,13 @@ pub fn analyze_flow(
         },
         tracking_table: db_tracking_setup::TrackingTableSetupState {
             table_name: existing_flow_ss
-                .map(|flow_ss| {
+                .and_then(|flow_ss| {
                     flow_ss
                         .tracking_table
                         .current
                         .as_ref()
                         .map(|v| v.table_name.clone())
                 })
-                .flatten()
                 .unwrap_or_else(|| db_tracking_setup::default_tracking_table_name(&flow_inst.name)),
             version_id: db_tracking_setup::CURRENT_TRACKING_TABLE_VERSION,
         },
@@ -1078,7 +1071,7 @@ pub fn analyze_flow(
             .map(|source_op| {
                 let existing_source_states = source_states_by_name.get(source_op.name.as_str());
                 analyzer_ctx.analyze_source_op(
-                    &mut root_exec_scope.data,
+                    root_exec_scope.data,
                     source_op.clone(),
                     Some(&mut setup_state.metadata),
                     existing_source_states,
@@ -1095,7 +1088,7 @@ pub fn analyze_flow(
             .iter()
             .map(|export_op| {
                 analyzer_ctx.analyze_export_op(
-                    &mut root_exec_scope.data,
+                    root_exec_scope.data,
                     export_op.clone(),
                     Some(&mut setup_state),
                     &target_states_by_name_type,

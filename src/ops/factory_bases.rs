@@ -126,14 +126,12 @@ impl<'a> OpArgsResolver<'a> {
             } else {
                 Some(idx)
             }
+        } else if self.next_positional_idx < self.num_positional_args {
+            let idx = self.next_positional_idx;
+            self.next_positional_idx += 1;
+            Some(idx)
         } else {
-            if self.next_positional_idx < self.num_positional_args {
-                let idx = self.next_positional_idx;
-                self.next_positional_idx += 1;
-                Some(idx)
-            } else {
-                None
-            }
+            None
         };
         Ok(idx.map(|idx| ResolvedOpArg {
             name: name.to_string(),
@@ -300,10 +298,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         desired_state: Option<Self::SetupState>,
         existing_states: setup::CombinedState<Self::SetupState>,
     ) -> Result<
-        impl setup::ResourceSetupStatusCheck<Key = Self::Key, State = Self::SetupState>
-            + Send
-            + Sync
-            + 'static,
+        impl setup::ResourceSetupStatusCheck<Key = Self::Key, State = Self::SetupState> + 'static,
     >;
 
     fn will_keep_all_existing_data(
@@ -342,7 +337,7 @@ impl<T: StorageFactoryBase> ResourceSetupStatusCheckWrapper<T> {
             key_json: serde_json::to_value(inner.key())?,
             state_json: inner
                 .desired_state()
-                .map(|s| serde_json::to_value(s))
+                .map(serde_json::to_value)
                 .transpose()?,
             inner,
         })

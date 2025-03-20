@@ -47,7 +47,7 @@ impl ToJsonSchema for schema::BasicValueType {
                 }));
                 schema
                     .metadata
-                    .get_or_insert_with(|| Default::default())
+                    .get_or_insert_with(Default::default)
                     .description =
                     Some("A range, start pos (inclusive), end pos (exclusive).".to_string());
             }
@@ -80,7 +80,8 @@ impl ToJsonSchema for schema::StructSchema {
                 required: self
                     .fields
                     .iter()
-                    .filter_map(|f| (!f.value_type.nullable).then(|| f.name.to_string()))
+                    .filter(|&f| (!f.value_type.nullable))
+                    .map(|f| f.name.to_string())
                     .collect(),
                 additional_properties: Some(Schema::Bool(false).into()),
                 ..Default::default()

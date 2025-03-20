@@ -155,7 +155,7 @@ pub async fn evaluate_data(
     let data_builder = evaluator::evaluate_source_entry(
         &execution_plan,
         source_op_idx,
-        &schema,
+        schema,
         &key,
         Some(&evaluation_cache),
     )

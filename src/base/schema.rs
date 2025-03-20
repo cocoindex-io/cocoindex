@@ -178,7 +178,7 @@ impl CollectionSchema {
         }
     }
 
-    pub fn key_field<'a>(&'a self) -> Option<&'a FieldSchema> {
+    pub fn key_field(&self) -> Option<&FieldSchema> {
         match self.kind {
             CollectionKind::Table => Some(self.row.fields.first().unwrap()),
             CollectionKind::Collection | CollectionKind::List => None,

@@ -239,11 +239,7 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
     type Item = Chunk<'t, 's>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let start_pos = if let Some(start_pos) = self.next_start_pos {
-            start_pos
-        } else {
-            return None;
-        };
+        let start_pos = self.next_start_pos?;
         let end_pos = match self.matches_iter.next() {
             Some(grp) => {
                 self.next_start_pos = Some(self.parent.range.start + grp.end());
@@ -544,12 +540,9 @@ impl SimpleFunctionExecutor for Executor {
 
         translate_bytes_to_chars(
             full_text,
-            output
-                .iter_mut()
-                .map(|(range, _)| {
-                    std::iter::once(&mut range.start).chain(std::iter::once(&mut range.end))
-                })
-                .flatten(),
+            output.iter_mut().flat_map(|(range, _)| {
+                std::iter::once(&mut range.start).chain(std::iter::once(&mut range.end))
+            }),
         );
 
         let table = output
@@ -601,7 +594,7 @@ impl SimpleFunctionFactoryBase for Factory {
         ))
         .with_attr(
             field_attrs::CHUNK_BASE_TEXT,
-            serde_json::to_value(&args_resolver.get_analyze_value(&args.text))?,
+            serde_json::to_value(args_resolver.get_analyze_value(&args.text))?,
         );
         Ok((args, output_schema))
     }

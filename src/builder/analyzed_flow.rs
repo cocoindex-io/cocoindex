@@ -83,9 +83,9 @@ impl AnalyzedTransientFlow {
             analyzer::analyze_transient_flow(&transient_flow, &ctx, registry)?;
         Ok(Self {
             transient_flow_instance: transient_flow,
-            data_schema: data_schema,
+            data_schema,
             execution_plan: execution_plan_fut.await?,
-            output_type: output_type,
+            output_type,
         })
     }
 }

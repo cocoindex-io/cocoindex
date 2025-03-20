@@ -18,17 +18,9 @@ pub struct CacheEntry {
     time_sec: i64,
     value: serde_json::Value,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MemoizationInfo {
     pub cache: HashMap<Fingerprint, CacheEntry>,
-}
-
-impl Default for MemoizationInfo {
-    fn default() -> Self {
-        Self {
-            cache: HashMap::new(),
-        }
-    }
 }
 
 struct EvaluationCacheEntry {
@@ -59,8 +51,7 @@ impl EvaluationCache {
             cache: Mutex::new(
                 existing_cache
                     .into_iter()
-                    .map(|e| e.into_iter())
-                    .flatten()
+                    .flat_map(|e| e.into_iter())
                     .map(|(k, e)| {
                         (
                             k,

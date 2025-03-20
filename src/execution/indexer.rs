@@ -232,7 +232,7 @@ async fn precommit_source_tracking_info(
 
                 if existing_target_keys
                     .as_ref()
-                    .map(|keys| keys.len() > 0 && keys.iter().all(|(_, fp)| fp == &curr_fp))
+                    .map(|keys| !keys.is_empty() && keys.iter().all(|(_, fp)| fp == &curr_fp))
                     .unwrap_or(false)
                     && existing_staging_target_keys
                         .map(|keys| keys.iter().all(|(_, fp)| fp == &curr_fp))
@@ -252,7 +252,7 @@ async fn precommit_source_tracking_info(
                     target_info.new_staging_keys_info.push((
                         primary_key_json.clone(),
                         process_ordinal,
-                        curr_fp.clone(),
+                        curr_fp,
                     ));
                     keys_info.push((primary_key_json, process_ordinal, curr_fp));
                 }
@@ -266,14 +266,8 @@ async fn precommit_source_tracking_info(
     for (target_id, target_tracking_info) in tracking_info_for_targets.into_iter() {
         let legacy_keys: HashSet<serde_json::Value> = target_tracking_info
             .existing_keys_info
-            .into_iter()
-            .map(|(key, _)| key)
-            .chain(
-                target_tracking_info
-                    .existing_staging_keys_info
-                    .into_iter()
-                    .map(|(key, _)| key),
-            )
+            .into_keys()
+            .chain(target_tracking_info.existing_staging_keys_info.into_keys())
             .collect();
 
         let mut new_staging_keys_info = target_tracking_info.new_staging_keys_info;
@@ -357,27 +351,25 @@ async fn commit_source_tracking_info(
     }
 
     let cleaned_staging_target_keys = tracking_info
-        .and_then(|info| {
+        .map(|info| {
             let sqlx::types::Json(staging_target_keys) = info.staging_target_keys;
-            Some(
-                staging_target_keys
-                    .into_iter()
-                    .filter_map(|(target_id, target_keys)| {
-                        let cleaned_target_keys: Vec<_> = target_keys
-                            .into_iter()
-                            .filter(|(_, ordinal, _)| {
-                                Some(*ordinal) > precommit_metadata.existing_process_ordinal
-                                    && *ordinal != precommit_metadata.process_ordinal
-                            })
-                            .collect();
-                        if cleaned_target_keys.len() > 0 {
-                            Some((target_id, cleaned_target_keys))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>(),
-            )
+            staging_target_keys
+                .into_iter()
+                .filter_map(|(target_id, target_keys)| {
+                    let cleaned_target_keys: Vec<_> = target_keys
+                        .into_iter()
+                        .filter(|(_, ordinal, _)| {
+                            Some(*ordinal) > precommit_metadata.existing_process_ordinal
+                                && *ordinal != precommit_metadata.process_ordinal
+                        })
+                        .collect();
+                    if !cleaned_target_keys.is_empty() {
+                        Some((target_id, cleaned_target_keys))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
         })
         .unwrap_or_default();
 
@@ -437,8 +429,7 @@ pub async fn evaluation_cache_on_existing_data(
     .await?;
     let process_timestamp = chrono::Utc::now();
     let memoization_info = existing_tracking_info
-        .map(|info| info.memoization_info.map(|info| info.0))
-        .flatten()
+        .and_then(|info| info.memoization_info.map(|info| info.0))
         .flatten();
     Ok(EvaluationCache::new(
         process_timestamp,
@@ -469,8 +460,7 @@ pub async fn update_source_entry<'a>(
     .await?;
     let already_exists = existing_tracking_info.is_some();
     let memoization_info = existing_tracking_info
-        .map(|info| info.memoization_info.map(|info| info.0))
-        .flatten()
+        .and_then(|info| info.memoization_info.map(|info| info.0))
         .flatten();
     let evaluation_cache =
         EvaluationCache::new(process_timestamp, memoization_info.map(|info| info.cache));
