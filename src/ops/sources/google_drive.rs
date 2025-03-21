@@ -188,13 +188,32 @@ impl SourceExecutor for Executor {
     async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
         let file_id = key.str_value()?;
 
-        let (_, file) = self
+        let file = match self
             .drive_hub
             .files()
             .get(file_id)
             .add_scope(Scope::Readonly)
+            .param("fields", "id,name,mimeType,trashed")
             .doit()
-            .await?;
+            .await
+        {
+            Ok((_, file)) => {
+                if file.trashed == Some(true) {
+                    return Ok(None);
+                }
+                file
+            }
+            Err(google_drive3::Error::BadRequest(err_msg))
+                if err_msg
+                    .get("error")
+                    .and_then(|e| e.get("code"))
+                    .and_then(|code| code.as_i64())
+                    == Some(404) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => Err(e)?,
+        };
 
         let (mime_type, resp_body) = if let Some(export_mime_type) = file
             .mime_type
@@ -227,19 +246,18 @@ impl SourceExecutor for Executor {
             (file.mime_type, resp.into_body())
         };
         let content = resp_body.collect().await?;
-        let mut fields = Vec::with_capacity(2);
-        fields.push(file.name.unwrap_or_default().into());
-        fields.push(mime_type.into());
-        if self.binary {
-            fields.push(content.to_bytes().to_vec().into());
-        } else {
-            fields.push(
+
+        let fields = vec![
+            file.name.unwrap_or_default().into(),
+            mime_type.into(),
+            if self.binary {
+                content.to_bytes().to_vec().into()
+            } else {
                 String::from_utf8_lossy(&content.to_bytes())
                     .to_string()
-                    .into(),
-            );
-        }
-
+                    .into()
+            },
+        ];
         Ok(Some(FieldValues { fields }))
     }
 }
