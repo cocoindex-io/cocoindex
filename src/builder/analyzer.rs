@@ -60,6 +60,7 @@ impl TryInto<ValueType> for &ValueTypeBuilder {
 pub(super) struct StructSchemaBuilder {
     fields: Vec<FieldSchema<ValueTypeBuilder>>,
     field_name_idx: HashMap<FieldName, u32>,
+    description: Option<Arc<str>>,
 }
 
 impl StructSchemaBuilder {
@@ -91,6 +92,7 @@ impl TryFrom<&StructSchema> for StructSchemaBuilder {
         let mut result = StructSchemaBuilder {
             fields: Vec::with_capacity(schema.fields.len()),
             field_name_idx: HashMap::with_capacity(schema.fields.len()),
+            description: schema.description.clone(),
         };
         for field in schema.fields.iter() {
             result.add_field(FieldSchema::<ValueTypeBuilder>::from_alternative(field)?)?;
@@ -110,6 +112,7 @@ impl TryInto<StructSchema> for &StructSchemaBuilder {
                     .map(FieldSchema::<ValueType>::from_alternative)
                     .collect::<Result<Vec<_>>>()?,
             ),
+            description: self.description.clone(),
         })
     }
 }
@@ -284,6 +287,10 @@ fn try_make_common_struct_schemas(
     }
     Ok(StructSchema {
         fields: Arc::new(result_fields),
+        description: schema1
+            .description
+            .clone()
+            .or_else(|| schema2.description.clone()),
     })
 }
 
@@ -484,6 +491,7 @@ fn analyze_struct_mapping(
         },
         StructSchema {
             fields: Arc::new(field_schemas),
+            description: None,
         },
     ))
 }
@@ -829,6 +837,7 @@ impl AnalyzerContext<'_> {
                 } else {
                     ValueType::Struct(StructSchema {
                         fields: Arc::from(key_fields_schema.clone()),
+                        description: None,
                     })
                 };
                 let mut value_fields_schema: Vec<FieldSchema> = vec![];

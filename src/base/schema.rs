@@ -68,12 +68,16 @@ impl std::fmt::Display for BasicValueType {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StructSchema {
     pub fields: Arc<Vec<FieldSchema>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<Arc<str>>,
 }
 
 impl StructSchema {
     pub fn without_attrs(&self) -> Self {
         Self {
             fields: Arc::new(self.fields.iter().map(|f| f.without_attrs()).collect()),
+            description: None,
         }
     }
 }
@@ -168,11 +172,16 @@ impl std::fmt::Display for CollectionSchema {
 }
 
 impl CollectionSchema {
-    pub fn new(kind: CollectionKind, fields: Vec<FieldSchema>) -> Self {
+    pub fn new(
+        kind: CollectionKind,
+        fields: Vec<FieldSchema>,
+        description: Option<Arc<str>>,
+    ) -> Self {
         Self {
             kind,
             row: StructSchema {
                 fields: Arc::new(fields),
+                description,
             },
             collectors: Default::default(),
         }

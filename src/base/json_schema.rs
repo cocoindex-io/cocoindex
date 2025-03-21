@@ -1,6 +1,6 @@
 use super::schema;
 use schemars::schema::{
-    ArrayValidation, InstanceType, ObjectValidation, Schema, SchemaObject, SingleOrVec,
+    ArrayValidation, InstanceType, Metadata, ObjectValidation, Schema, SchemaObject, SingleOrVec,
 };
 
 pub trait ToJsonSchema {
@@ -70,6 +70,10 @@ impl ToJsonSchema for schema::BasicValueType {
 impl ToJsonSchema for schema::StructSchema {
     fn to_json_schema(&self) -> SchemaObject {
         SchemaObject {
+            metadata: Some(Box::new(Metadata {
+                description: self.description.as_ref().map(|s| s.to_string()),
+                ..Default::default()
+            })),
             instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Object))),
             object: Some(Box::new(ObjectValidation {
                 properties: self

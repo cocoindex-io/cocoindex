@@ -563,6 +563,7 @@ impl FlowBuilder {
                     })
                     .collect(),
             ),
+            description: None,
         };
 
         {

@@ -591,6 +591,7 @@ impl SimpleFunctionFactoryBase for Factory {
                 FieldSchema::new("location", make_output_type(BasicValueType::Range)),
                 FieldSchema::new("text", make_output_type(BasicValueType::Str)),
             ],
+            None,
         ))
         .with_attr(
             field_attrs::CHUNK_BASE_TEXT,
