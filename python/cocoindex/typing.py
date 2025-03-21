@@ -2,6 +2,7 @@ import typing
 import collections
 import dataclasses
 import types
+import inspect
 from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING, overload
 
 class Vector(NamedTuple):
@@ -147,6 +148,8 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         if type_info.dataclass_type is None:
             raise ValueError("Struct type must have a dataclass type")
         encoded_type['fields'] = _encode_fields_schema(type_info.dataclass_type)
+        if doc := inspect.getdoc(type_info.dataclass_type):
+            encoded_type['description'] = doc
 
     elif type_info.kind == 'Vector':
         if type_info.vector_info is None:
