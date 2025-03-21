@@ -137,9 +137,17 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
                             dataclass_type=dataclass_type, attrs=attrs, nullable=nullable)
 
 def _encode_fields_schema(dataclass_type: type) -> list[dict[str, Any]]:
-    return [{ 'name': field.name,
-              **encode_enriched_type_info(analyze_type_info(field.type))
-            } for field in dataclasses.fields(dataclass_type)]
+    result = []
+    for field in dataclasses.fields(dataclass_type):
+        try:
+            type_info = encode_enriched_type_info(analyze_type_info(field.type))
+        except ValueError as e:
+            e.add_note(f"Failed to encode annotation for field - "
+                       f"{dataclass_type.__name__}.{field.name}: {field.type}")
+            raise
+        type_info['name'] = field.name
+        result.append(type_info)
+    return result
 
 def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
     encoded_type: dict[str, Any] = { 'kind': type_info.kind }
