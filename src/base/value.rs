@@ -874,6 +874,7 @@ pub struct TypedValue<'a> {
 impl Serialize for TypedValue<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match (self.t, self.v) {
+            (_, Value::Null) => serializer.serialize_none(),
             (ValueType::Basic(_), v) => v.serialize(serializer),
             (ValueType::Struct(s), Value::Struct(field_values)) => TypedFieldsValue {
                 schema: s,
