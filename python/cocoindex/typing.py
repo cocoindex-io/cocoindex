@@ -131,7 +131,7 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         elif t is float:
             kind = 'Float64'
         else:
-            raise ValueError(f"type unsupported yet: {base_type}")
+            raise ValueError(f"type unsupported yet: {t}")
 
     return AnalyzedTypeInfo(kind=kind, vector_info=vector_info, elem_type=elem_type,
                             dataclass_type=dataclass_type, attrs=attrs, nullable=nullable)
