@@ -418,13 +418,13 @@ async fn commit_source_tracking_info(
     Ok(WithApplyStatus::Normal(()))
 }
 
-/// Built an evaluation cache on the existing data.
-pub async fn evaluation_cache_on_existing_data(
+pub async fn evaluate_source_entry_with_cache(
     plan: &ExecutionPlan,
     source_op_idx: usize,
+    schema: &schema::DataSchema,
     key: &value::KeyValue,
     pool: &PgPool,
-) -> Result<EvaluationCache> {
+) -> Result<Option<value::ScopeValue>> {
     let source_id = plan.source_ops[source_op_idx].source_id;
     let source_key_json = serde_json::to_value(key)?;
     let existing_tracking_info = read_source_tracking_info(
@@ -438,10 +438,11 @@ pub async fn evaluation_cache_on_existing_data(
     let memoization_info = existing_tracking_info
         .and_then(|info| info.memoization_info.map(|info| info.0))
         .flatten();
-    Ok(EvaluationCache::new(
-        process_timestamp,
-        memoization_info.map(|info| info.cache),
-    ))
+    let evaluation_cache =
+        EvaluationCache::new(process_timestamp, memoization_info.map(|info| info.cache));
+    let data_builder =
+        evaluate_source_entry(plan, source_op_idx, schema, key, Some(&evaluation_cache)).await?;
+    Ok(data_builder.map(|builder| builder.into()))
 }
 
 pub async fn update_source_entry(
