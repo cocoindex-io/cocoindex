@@ -49,6 +49,17 @@ Return type: `vector[float32; N]`, where `N` is determined by the model
 *   `output_type` (type: `type`, required): The type of the output. e.g. a dataclass type name. See [Data Types](/docs/core/data_types) for all supported data types. The LLM will output values that match the schema of the type.
 *   `instruction` (type: `str`, optional): Additional instruction for the LLM.
 
+:::tip Clear type definitions
+
+Definitions of the `output_type` is fed into LLM as guidance to generate the output.
+To improve the quality of the extracted information, giving clear definitions for your dataclasses is especially important, e.g.
+
+*   Provide readable field names for your dataclasses.
+*   Provide reasonable docstrings for your dataclasses.
+*   For any optional fields, clearly annotate that they are optional, by `SomeType | None` or `typing.Optional[SomeType]`.
+
+:::
+
 Input data:
 
 *   `text` (type: `str`, required): The text to extract information from.
