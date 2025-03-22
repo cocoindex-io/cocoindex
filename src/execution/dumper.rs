@@ -11,7 +11,7 @@ use yaml_rust2::YamlEmitter;
 
 use super::indexer;
 use crate::base::{schema, value};
-use crate::builder::plan::{AnalyzedExportOp, AnalyzedSourceOp, ExecutionPlan};
+use crate::builder::plan::{AnalyzedSourceOp, ExecutionPlan};
 use crate::utils::yaml_ser::YamlSerializer;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -208,7 +208,7 @@ impl<'a> Dumper<'a> {
     }
 }
 
-pub async fn dump_evaluation_output(
+pub async fn evaluate_and_dump(
     plan: &ExecutionPlan,
     schema: &schema::DataSchema,
     options: DumpEvaluationOutputOptions,

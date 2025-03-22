@@ -118,6 +118,31 @@ impl Flow {
             Ok(IndexUpdateInfo(update_info))
         })
     }
+
+    pub fn evaluate_and_dump(
+        &self,
+        py: Python<'_>,
+        options: Pythonized<execution::dumper::DumpEvaluationOutputOptions>,
+    ) -> PyResult<()> {
+        py.allow_threads(|| {
+            let lib_context = get_lib_context()
+                .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
+            lib_context
+                .runtime
+                .block_on(async {
+                    let exec_plan = self.0.get_execution_plan().await?;
+                    execution::dumper::evaluate_and_dump(
+                        &exec_plan,
+                        &self.0.data_schema,
+                        options.into_inner(),
+                        &lib_context.pool,
+                    )
+                    .await
+                })
+                .into_py_result()?;
+            Ok(())
+        })
+    }
 }
 
 #[pyclass]
