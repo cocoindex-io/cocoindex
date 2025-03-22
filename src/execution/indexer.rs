@@ -417,29 +417,40 @@ async fn commit_source_tracking_info(
     Ok(WithApplyStatus::Normal(()))
 }
 
+pub enum EvaluationCacheOption<'a> {
+    NoCache,
+    UseCache(&'a PgPool),
+}
+
 pub async fn evaluate_source_entry_with_cache(
     plan: &ExecutionPlan,
     source_op: &AnalyzedSourceOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
-    pool: &PgPool,
+    cache_option: EvaluationCacheOption<'_>,
 ) -> Result<Option<ScopeValueBuilder>> {
-    let source_key_json = serde_json::to_value(key)?;
-    let existing_tracking_info = read_source_tracking_info(
-        source_op.source_id,
-        &source_key_json,
-        &plan.tracking_table_setup,
-        pool,
-    )
-    .await?;
-    let process_timestamp = chrono::Utc::now();
-    let memoization_info = existing_tracking_info
-        .and_then(|info| info.memoization_info.map(|info| info.0))
-        .flatten();
-    let evaluation_cache =
-        EvaluationCache::new(process_timestamp, memoization_info.map(|info| info.cache));
-    let data_builder =
-        evaluate_source_entry(plan, source_op, schema, key, Some(&evaluation_cache)).await?;
+    let cache = match cache_option {
+        EvaluationCacheOption::NoCache => None,
+        EvaluationCacheOption::UseCache(pool) => {
+            let source_key_json = serde_json::to_value(key)?;
+            let existing_tracking_info = read_source_tracking_info(
+                source_op.source_id,
+                &source_key_json,
+                &plan.tracking_table_setup,
+                pool,
+            )
+            .await?;
+            let process_timestamp = chrono::Utc::now();
+            let memoization_info = existing_tracking_info
+                .and_then(|info| info.memoization_info.map(|info| info.0))
+                .flatten();
+            Some(EvaluationCache::new(
+                process_timestamp,
+                memoization_info.map(|info| info.cache),
+            ))
+        }
+    };
+    let data_builder = evaluate_source_entry(plan, source_op, schema, key, cache.as_ref()).await?;
     Ok(data_builder)
 }
 

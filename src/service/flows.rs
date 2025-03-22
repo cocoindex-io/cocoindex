@@ -10,14 +10,13 @@ use axum_extra::extract::Query;
 use serde::{Deserialize, Serialize};
 
 use super::error::ApiError;
+use crate::base::{schema::DataSchema, value};
+use crate::lib_context::LibContext;
 use crate::{
     api_bail, api_error,
     base::{schema, spec},
     execution::indexer,
 };
-use crate::{execution::indexer::IndexUpdateInfo, lib_context::LibContext};
-
-use crate::base::{schema::DataSchema, value};
 
 pub async fn list_flows(
     State(lib_context): State<Arc<LibContext>>,
@@ -150,7 +149,7 @@ pub async fn evaluate_data(
         source_op,
         schema,
         &key,
-        &lib_context.pool,
+        indexer::EvaluationCacheOption::UseCache(&lib_context.pool),
     )
     .await?
     .ok_or_else(|| api_error!("value not found for source at the specified key: {key:?}"))?;
@@ -164,7 +163,7 @@ pub async fn evaluate_data(
 pub async fn update(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<IndexUpdateInfo>, ApiError> {
+) -> Result<Json<indexer::IndexUpdateInfo>, ApiError> {
     let fl = &lib_context.with_flow_context(&flow_name, |ctx| ctx.flow.clone())?;
     let execution_plan = fl.get_execution_plan().await?;
     let update_info = indexer::update(&execution_plan, &fl.data_schema, &lib_context.pool).await?;
