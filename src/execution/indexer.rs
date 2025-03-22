@@ -508,11 +508,6 @@ pub async fn update_source_entry(
         }
         None => (None, None),
     };
-    if value_builder.is_some() {
-        Some(1)
-    } else {
-        None
-    };
 
     // Phase 2 (precommit): Update with the memoization info and stage target keys.
     let precommit_output = precommit_source_tracking_info(
