@@ -11,7 +11,6 @@ use super::db_tracking::{self, read_source_tracking_info, TrackedTargetKey};
 use super::db_tracking_setup;
 use super::memoization::{EvaluationCache, MemoizationInfo};
 use crate::base::schema;
-use crate::base::spec::FlowInstanceSpec;
 use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
 use crate::ops::interface::{ExportTargetMutation, ExportTargetUpsertEntry};
@@ -420,15 +419,14 @@ async fn commit_source_tracking_info(
 
 pub async fn evaluate_source_entry_with_cache(
     plan: &ExecutionPlan,
-    source_op_idx: usize,
+    source_op: &AnalyzedSourceOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
     pool: &PgPool,
 ) -> Result<Option<value::ScopeValue>> {
-    let source_id = plan.source_ops[source_op_idx].source_id;
     let source_key_json = serde_json::to_value(key)?;
     let existing_tracking_info = read_source_tracking_info(
-        source_id,
+        source_op.source_id,
         &source_key_json,
         &plan.tracking_table_setup,
         pool,
@@ -441,20 +439,19 @@ pub async fn evaluate_source_entry_with_cache(
     let evaluation_cache =
         EvaluationCache::new(process_timestamp, memoization_info.map(|info| info.cache));
     let data_builder =
-        evaluate_source_entry(plan, source_op_idx, schema, key, Some(&evaluation_cache)).await?;
+        evaluate_source_entry(plan, source_op, schema, key, Some(&evaluation_cache)).await?;
     Ok(data_builder.map(|builder| builder.into()))
 }
 
 pub async fn update_source_entry(
     plan: &ExecutionPlan,
-    source_op_idx: usize,
+    source_op: &AnalyzedSourceOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
     only_for_deletion: bool,
     pool: &PgPool,
     stats: &UpdateStats,
 ) -> Result<()> {
-    let source_id = plan.source_ops[source_op_idx].source_id;
     let source_key_json = serde_json::to_value(key)?;
     let process_timestamp = chrono::Utc::now();
 
@@ -462,7 +459,7 @@ pub async fn update_source_entry(
 
     // TODO: Skip if the source is not newer and the processing logic is not changed.
     let existing_tracking_info = read_source_tracking_info(
-        source_id,
+        source_op.source_id,
         &source_key_json,
         &plan.tracking_table_setup,
         pool,
@@ -475,7 +472,7 @@ pub async fn update_source_entry(
     let evaluation_cache =
         EvaluationCache::new(process_timestamp, memoization_info.map(|info| info.cache));
     let value_builder = if !only_for_deletion {
-        evaluate_source_entry(plan, source_op_idx, schema, key, Some(&evaluation_cache)).await?
+        evaluate_source_entry(plan, source_op, schema, key, Some(&evaluation_cache)).await?
     } else {
         None
     };
@@ -512,7 +509,7 @@ pub async fn update_source_entry(
 
     // Phase 2 (precommit): Update with the memoization info and stage target keys.
     let precommit_output = precommit_source_tracking_info(
-        source_id,
+        source_op.source_id,
         &source_key_json,
         source_ordinal,
         precommit_data,
@@ -546,7 +543,7 @@ pub async fn update_source_entry(
 
     // Phase 4: Update the tracking record.
     commit_source_tracking_info(
-        source_id,
+        source_op.source_id,
         &source_key_json,
         source_ordinal,
         &plan.logic_fingerprint,
@@ -562,23 +559,14 @@ pub async fn update_source_entry(
 
 async fn update_source_entry_with_err_handling(
     plan: &ExecutionPlan,
-    source_op_idx: usize,
+    source_op: &AnalyzedSourceOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
     only_for_deletion: bool,
     pool: &PgPool,
     stats: &UpdateStats,
 ) {
-    let r = update_source_entry(
-        plan,
-        source_op_idx,
-        schema,
-        key,
-        only_for_deletion,
-        pool,
-        stats,
-    )
-    .await;
+    let r = update_source_entry(plan, source_op, schema, key, only_for_deletion, pool, stats).await;
     if let Err(e) = r {
         stats.num_errors.fetch_add(1, Relaxed);
         error!("{:?}", e.context("Error in indexing a source row"));
@@ -588,11 +576,10 @@ async fn update_source_entry_with_err_handling(
 async fn update_source(
     source_name: &str,
     plan: &ExecutionPlan,
-    source_op_idx: usize,
+    source_op: &AnalyzedSourceOp,
     schema: &schema::DataSchema,
     pool: &PgPool,
 ) -> Result<SourceUpdateInfo> {
-    let source_op = &plan.source_ops[source_op_idx];
     let (keys, existing_keys_json) = try_join(
         source_op.executor.list_keys(),
         db_tracking::list_source_tracking_keys(
@@ -605,7 +592,7 @@ async fn update_source(
 
     let stats = UpdateStats::default();
     let upsert_futs = join_all(keys.iter().map(|key| {
-        update_source_entry_with_err_handling(plan, source_op_idx, schema, key, false, pool, &stats)
+        update_source_entry_with_err_handling(plan, source_op, schema, key, false, pool, &stats)
     }));
     let deleted_keys = existing_keys_json
         .into_iter()
@@ -619,7 +606,7 @@ async fn update_source(
         .filter_ok(|existing_key| !keys.contains(existing_key))
         .collect::<Result<Vec<_>>>()?;
     let delete_futs = join_all(deleted_keys.iter().map(|key| {
-        update_source_entry_with_err_handling(plan, source_op_idx, schema, key, true, pool, &stats)
+        update_source_entry_with_err_handling(plan, source_op, schema, key, true, pool, &stats)
     }));
     join(upsert_futs, delete_futs).await;
 
@@ -630,17 +617,15 @@ async fn update_source(
 }
 
 pub async fn update(
-    spec: &FlowInstanceSpec,
     plan: &ExecutionPlan,
     schema: &schema::DataSchema,
     pool: &PgPool,
 ) -> Result<IndexUpdateInfo> {
     let source_update_stats = try_join_all(
-        spec.source_ops
+        plan.source_ops
             .iter()
-            .enumerate()
-            .map(|(source_op_idx, source_op)| async move {
-                update_source(source_op.name.as_str(), plan, source_op_idx, schema, pool).await
+            .map(|source_op| async move {
+                update_source(source_op.name.as_str(), plan, source_op, schema, pool).await
             })
             .collect::<Vec<_>>(),
     )

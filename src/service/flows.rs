@@ -133,9 +133,9 @@ pub async fn evaluate_data(
                 StatusCode::BAD_REQUEST,
             )
         })?;
-    let execution_plan = fl.get_execution_plan().await?;
-    let field_schema =
-        &schema.fields[execution_plan.source_ops[source_op_idx].output.field_idx as usize];
+    let plan = fl.get_execution_plan().await?;
+    let source_op = &plan.source_ops[source_op_idx];
+    let field_schema = &schema.fields[source_op.output.field_idx as usize];
     let collection_schema = match &field_schema.value_type.typ {
         schema::ValueType::Collection(collection) => collection,
         _ => api_bail!("field is not a table: {}", query.field),
@@ -146,8 +146,8 @@ pub async fn evaluate_data(
     let key = value::KeyValue::from_strs(query.key, &key_field.value_type.typ)?;
 
     let data = indexer::evaluate_source_entry_with_cache(
-        &execution_plan,
-        source_op_idx,
+        &plan,
+        source_op,
         schema,
         &key,
         &lib_context.pool,
@@ -167,12 +167,6 @@ pub async fn update(
 ) -> Result<Json<IndexUpdateInfo>, ApiError> {
     let fl = &lib_context.with_flow_context(&flow_name, |ctx| ctx.flow.clone())?;
     let execution_plan = fl.get_execution_plan().await?;
-    let update_info = indexer::update(
-        &fl.flow_instance,
-        &execution_plan,
-        &fl.data_schema,
-        &lib_context.pool,
-    )
-    .await?;
+    let update_info = indexer::update(&execution_plan, &fl.data_schema, &lib_context.pool).await?;
     Ok(Json(update_info))
 }
