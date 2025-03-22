@@ -909,7 +909,7 @@ impl Serialize for TypedValue<'_> {
             (_, Value::Null) => serializer.serialize_none(),
             (ValueType::Basic(_), v) => v.serialize(serializer),
             (ValueType::Struct(s), Value::Struct(field_values)) => TypedFieldsValue {
-                schema: s,
+                schema: &s.fields,
                 values_iter: field_values.fields.iter(),
             }
             .serialize(serializer),
@@ -917,7 +917,7 @@ impl Serialize for TypedValue<'_> {
                 let mut seq = serializer.serialize_seq(Some(rows.len()))?;
                 for row in rows {
                     seq.serialize_element(&TypedFieldsValue {
-                        schema: &c.row,
+                        schema: &c.row.fields,
                         values_iter: row.fields.iter(),
                     })?;
                 }
@@ -927,7 +927,7 @@ impl Serialize for TypedValue<'_> {
                 let mut seq = serializer.serialize_seq(Some(rows.len()))?;
                 for (k, v) in rows {
                     seq.serialize_element(&TypedFieldsValue {
-                        schema: &c.row,
+                        schema: &c.row.fields,
                         values_iter: std::iter::once(&Value::from(k.clone()))
                             .chain(v.fields.iter()),
                     })?;
@@ -943,15 +943,15 @@ impl Serialize for TypedValue<'_> {
 }
 
 pub struct TypedFieldsValue<'a, I: Iterator<Item = &'a Value> + Clone> {
-    schema: &'a StructSchema,
-    values_iter: I,
+    pub schema: &'a [FieldSchema],
+    pub values_iter: I,
 }
 
 impl<'a, I: Iterator<Item = &'a Value> + Clone> Serialize for TypedFieldsValue<'a, I> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(self.schema.fields.len()))?;
+        let mut map = serializer.serialize_map(Some(self.schema.len()))?;
         let values_iter = self.values_iter.clone();
-        for (field, value) in self.schema.fields.iter().zip(values_iter) {
+        for (field, value) in self.schema.iter().zip(values_iter) {
             map.serialize_entry(
                 &field.name,
                 &TypedValue {

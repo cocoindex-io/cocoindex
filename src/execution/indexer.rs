@@ -73,7 +73,7 @@ impl std::fmt::Display for IndexUpdateInfo {
     }
 }
 
-fn make_primary_key(
+pub fn extract_primary_key(
     primary_key_def: &AnalyzedPrimaryKeyDef,
     record: &FieldValues,
 ) -> Result<KeyValue> {
@@ -215,7 +215,7 @@ async fn precommit_source_tracking_info(
                 .or_default();
             let mut keys_info = Vec::new();
             for value in collected_values.iter() {
-                let primary_key = make_primary_key(&export_op.primary_key_def, value)?;
+                let primary_key = extract_primary_key(&export_op.primary_key_def, value)?;
                 let primary_key_json = serde_json::to_value(&primary_key)?;
 
                 let mut field_values = FieldValues {
