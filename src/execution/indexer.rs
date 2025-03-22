@@ -423,7 +423,7 @@ pub async fn evaluate_source_entry_with_cache(
     schema: &schema::DataSchema,
     key: &value::KeyValue,
     pool: &PgPool,
-) -> Result<Option<value::ScopeValue>> {
+) -> Result<Option<ScopeValueBuilder>> {
     let source_key_json = serde_json::to_value(key)?;
     let existing_tracking_info = read_source_tracking_info(
         source_op.source_id,
@@ -440,7 +440,7 @@ pub async fn evaluate_source_entry_with_cache(
         EvaluationCache::new(process_timestamp, memoization_info.map(|info| info.cache));
     let data_builder =
         evaluate_source_entry(plan, source_op, schema, key, Some(&evaluation_cache)).await?;
-    Ok(data_builder.map(|builder| builder.into()))
+    Ok(data_builder)
 }
 
 pub async fn update_source_entry(

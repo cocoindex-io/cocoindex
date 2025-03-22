@@ -145,7 +145,7 @@ pub async fn evaluate_data(
         .ok_or_else(|| api_error!("field {} does not have a key", query.field))?;
     let key = value::KeyValue::from_strs(query.key, &key_field.value_type.typ)?;
 
-    let data = indexer::evaluate_source_entry_with_cache(
+    let value_builder = indexer::evaluate_source_entry_with_cache(
         &plan,
         source_op,
         schema,
@@ -157,7 +157,7 @@ pub async fn evaluate_data(
 
     Ok(Json(EvaluateDataResponse {
         schema: schema.clone(),
-        data,
+        data: value_builder.into(),
     }))
 }
 
