@@ -170,7 +170,7 @@ impl<'a> Dumper<'a> {
                 .map(|s| urlencoding::encode(&s).into_owned())
                 .join(":");
             s.truncate(
-                (0..FILENAME_PREFIX_MAX_LENGTH)
+                (0..(FILENAME_PREFIX_MAX_LENGTH - source_op.name.as_str().len()))
                     .rev()
                     .find(|i| s.is_char_boundary(*i))
                     .unwrap_or(0),
@@ -178,14 +178,18 @@ impl<'a> Dumper<'a> {
             keys_by_filename_prefix.entry(s).or_default().push(key);
         }
 
+        let mut file_path_base =
+            PathBuf::from(&self.options.output_dir).join(source_op.name.as_str());
+        file_path_base.push(":");
         let evaluate_futs =
             keys_by_filename_prefix
                 .into_iter()
                 .flat_map(|(filename_prefix, keys)| {
                     let num_keys = keys.len();
+                    let file_path_base = &file_path_base;
                     keys.into_iter().enumerate().map(move |(i, key)| {
-                        let mut file_path =
-                            Path::new(&self.options.output_dir).join(Path::new(&filename_prefix));
+                        let mut file_path = file_path_base.clone();
+                        file_path.push(&filename_prefix);
                         if num_keys > 1 {
                             file_path.push(format!(".{}", i));
                         }
