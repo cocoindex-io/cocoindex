@@ -195,6 +195,24 @@ impl KeyValue {
         Ok(result)
     }
 
+    fn parts_to_strs(&self, output: &mut Vec<String>) {
+        match self {
+            KeyValue::Bytes(v) => output.push(BASE64_STANDARD.encode(v)),
+            KeyValue::Str(v) => output.push(v.to_string()),
+            KeyValue::Bool(v) => output.push(v.to_string()),
+            KeyValue::Int64(v) => output.push(v.to_string()),
+            KeyValue::Range(v) => {
+                output.push(v.start.to_string());
+                output.push(v.end.to_string());
+            }
+            KeyValue::Struct(v) => {
+                for part in v {
+                    part.parts_to_strs(output);
+                }
+            }
+        }
+    }
+
     pub fn from_strs(value: impl IntoIterator<Item = String>, schema: &ValueType) -> Result<Self> {
         let mut values_iter = value.into_iter();
         let result = Self::parts_from_str(&mut values_iter, schema)?;
@@ -202,6 +220,12 @@ impl KeyValue {
             api_bail!("Key parts more than expected");
         }
         Ok(result)
+    }
+
+    pub fn to_strs(&self) -> Vec<String> {
+        let mut output = Vec::with_capacity(self.num_parts());
+        self.parts_to_strs(&mut output);
+        output
     }
 
     pub fn kind_str(&self) -> &'static str {
@@ -254,6 +278,14 @@ impl KeyValue {
         match self {
             KeyValue::Struct(v) => Ok(v),
             _ => anyhow::bail!("expected struct value, but got {}", self.kind_str()),
+        }
+    }
+
+    pub fn num_parts(&self) -> usize {
+        match self {
+            KeyValue::Range(_) => 2,
+            KeyValue::Struct(v) => v.iter().map(|v| v.num_parts()).sum(),
+            _ => 1,
         }
     }
 }
