@@ -36,7 +36,7 @@ We love contributions from our community! This guide explains how to get involve
 
 To submit your code:
 
-1. Fork the [CocoIndex repository](https://github.com/cocoIndex/cocoindex)
+1. Fork the [CocoIndex repository](https://github.com/cocoindex-io/cocoindex)
 2. [Create a new branch](https://docs.github.com/en/desktop/making-changes-in-a-branch/managing-branches-in-github-desktop) on your fork
 3. Make your changes
 4. [Open a Pull Request (PR)](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork) when your work is ready for review

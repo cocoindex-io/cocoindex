@@ -217,6 +217,6 @@ It will ask you to enter a query and it will return the top 10 results.
 Next, you may want to:
 
 *   Learn about [CocoIndex Basics](../core/basics.md).
-*   Learn about other examples in the [examples](https://github.com/cocoIndex/cocoindex/tree/main/examples) directory.
+*   Learn about other examples in the [examples](https://github.com/cocoindex-io/cocoindex/tree/main/examples) directory.
     *    The `text_embedding` example is this quickstart with some polishing (loading environment variables from `.env` file, extract pieces shared by the indexing flow and query handler into a function).
     *    Pick other examples to learn upon your interest.
