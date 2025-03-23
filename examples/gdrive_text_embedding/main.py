@@ -3,15 +3,6 @@ from dotenv import load_dotenv
 import cocoindex
 import os
 
-def text_to_embedding(text: cocoindex.DataSlice) -> cocoindex.DataSlice:
-    """
-    Embed the text using a SentenceTransformer model.
-    This is a shared logic between indexing and querying, so extract it as a function.
-    """
-    return text.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"))
-
 @cocoindex.flow_def(name="GoogleDriveTextEmbedding")
 def gdrive_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     """
@@ -33,7 +24,9 @@ def gdrive_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: 
             language="markdown", chunk_size=2000, chunk_overlap=500)
 
         with doc["chunks"].row() as chunk:
-            chunk["embedding"] = text_to_embedding(chunk["text"])
+            chunk["embedding"] = chunk["text"].transform(
+                cocoindex.functions.SentenceTransformerEmbed(
+                 model="sentence-transformers/all-MiniLM-L6-v2")) 
             doc_embeddings.collect(filename=doc["filename"], location=chunk["location"],
                                    text=chunk["text"], embedding=chunk["embedding"])
 
@@ -47,7 +40,9 @@ query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
     name="SemanticsSearch",
     flow=gdrive_text_embedding_flow,
     target_name="doc_embeddings",
-    query_transform_flow=text_to_embedding,
+    query_transform_flow=lambda text: text.transform(
+        cocoindex.functions.SentenceTransformerEmbed(
+            model="sentence-transformers/all-MiniLM-L6-v2")),
     default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)
 
 @cocoindex.main_fn()
