@@ -57,13 +57,18 @@ def update(flow_name: str | None):
 @click.argument("flow_name", type=str, required=False)
 @click.option(
     "-o", "--output-dir", type=str, required=False,
-    help="The directory to dump the evaluation output to.")
+    help="The directory to dump the output to.")
 @click.option(
     "-c", "--use-cache", is_flag=True, show_default=True, default=True,
-    help="Use cached evaluation results if available.")
+    help="Use already-cached intermediate data if available. "
+         "Note that we only reuse existing cached data without updating the cache "
+         "even if it's turned on.")
 def evaluate(flow_name: str | None, output_dir: str | None, use_cache: bool = True):
     """
-    Evaluate and dump the flow.
+    Evaluate the flow and dump flow outputs to files.
+
+    Instead of updating the index, it dumps what should be indexed to files.
+    Mainly used for evaluation purpose.
     """
     fl = _flow_by_name(flow_name)
     if output_dir is None:

@@ -372,7 +372,7 @@ class Flow:
 
     def evaluate_and_dump(self, options: EvaluateAndDumpOptions):
         """
-        Evaluate and dump the flow.
+        Evaluate the flow and dump flow outputs to files.
         """
         return self._lazy_engine_flow().evaluate_and_dump(_dump_engine_object(options))
 
