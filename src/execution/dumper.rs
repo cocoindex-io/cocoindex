@@ -5,6 +5,7 @@ use itertools::Itertools;
 use serde::ser::SerializeSeq;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use yaml_rust2::YamlEmitter;
@@ -24,10 +25,11 @@ const FILENAME_PREFIX_MAX_LENGTH: usize = 128;
 
 struct TargetExportData<'a> {
     schema: &'a Vec<schema::FieldSchema>,
+    // The purpose is to make rows sorted by primary key.
     data: BTreeMap<value::KeyValue, &'a value::FieldValues>,
 }
 
-impl<'a> Serialize for TargetExportData<'a> {
+impl Serialize for TargetExportData<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -46,7 +48,11 @@ impl<'a> Serialize for TargetExportData<'a> {
 #[derive(Serialize)]
 struct SourceOutputData<'a> {
     key: value::TypedValue<'a>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     exports: Option<IndexMap<&'a str, TargetExportData<'a>>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -103,14 +109,12 @@ impl<'a> Dumper<'a> {
                     export_op.name.as_str(),
                     TargetExportData {
                         schema: &self.schema.collectors[collector_idx].spec.fields,
-                        data: collected_values_buffer
+                        data: collected_values_buffer[collector_idx]
                             .iter()
                             .map(|v| -> Result<_> {
-                                let key = indexer::extract_primary_key(
-                                    &export_op.primary_key_def,
-                                    &v[collector_idx],
-                                )?;
-                                Ok((key, &v[collector_idx]))
+                                let key =
+                                    indexer::extract_primary_key(&export_op.primary_key_def, v)?;
+                                Ok((key, v))
                             })
                             .collect::<Result<_>>()?,
                     },
@@ -125,7 +129,7 @@ impl<'a> Dumper<'a> {
         &self,
         source_op: &AnalyzedSourceOp,
         key: value::KeyValue,
-        file_name: PathBuf,
+        file_path: PathBuf,
     ) -> Result<()> {
         let mut collected_values_buffer = Vec::new();
         let (exports, error) = match self
@@ -138,24 +142,24 @@ impl<'a> Dumper<'a> {
         let key_value = value::Value::from(key);
         let file_data = SourceOutputData {
             key: value::TypedValue {
-                t: &self.schema.fields[source_op.output.field_idx as usize]
-                    .value_type
-                    .typ,
+                t: &source_op.primary_key_type,
                 v: &key_value,
             },
             exports,
             error,
         };
+
         let yaml_output = {
             let mut yaml_output = String::new();
             let yaml_data = YamlSerializer::serialize(&file_data)?;
             let mut yaml_emitter = YamlEmitter::new(&mut yaml_output);
+            yaml_emitter.multiline_strings(true);
+            yaml_emitter.compact(true);
             yaml_emitter.dump(&yaml_data)?;
             yaml_output
         };
-        let mut file_path = file_name;
-        file_path.push(".yaml");
         tokio::fs::write(file_path, yaml_output).await?;
+
         Ok(())
     }
 
@@ -177,22 +181,21 @@ impl<'a> Dumper<'a> {
             );
             keys_by_filename_prefix.entry(s).or_default().push(key);
         }
-
-        let mut file_path_base =
-            PathBuf::from(&self.options.output_dir).join(source_op.name.as_str());
-        file_path_base.push(":");
+        let output_dir = Path::new(&self.options.output_dir);
         let evaluate_futs =
             keys_by_filename_prefix
                 .into_iter()
                 .flat_map(|(filename_prefix, keys)| {
                     let num_keys = keys.len();
-                    let file_path_base = &file_path_base;
                     keys.into_iter().enumerate().map(move |(i, key)| {
-                        let mut file_path = file_path_base.clone();
-                        file_path.push(&filename_prefix);
-                        if num_keys > 1 {
-                            file_path.push(format!(".{}", i));
-                        }
+                        let extra_id = if num_keys > 1 {
+                            Cow::Owned(format!(".{}", i))
+                        } else {
+                            Cow::Borrowed("")
+                        };
+                        let file_name =
+                            format!("{}@{}{}.yaml", source_op.name, filename_prefix, extra_id);
+                        let file_path = output_dir.join(Path::new(&file_name));
                         self.evaluate_and_dump_source_entry(source_op, key, file_path)
                     })
                 });
