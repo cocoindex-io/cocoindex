@@ -9,6 +9,7 @@ import inspect
 from typing import Any, Callable, Sequence, TypeVar, get_origin
 from threading import Lock
 from enum import Enum
+from dataclasses import dataclass
 
 from . import _engine
 from . import vector
@@ -61,18 +62,18 @@ def _create_data_slice(
 def _spec_kind(spec: Any) -> str:
     return spec.__class__.__name__
 
-def _spec_value_dump(v: Any) -> Any:
-    """Recursively dump a spec object and its nested attributes to a dictionary."""
+def _dump_engine_object(v: Any) -> Any:
+    """Recursively dump an object for engine. Engine side uses `Pythonzized` to catch."""
     if isinstance(v, type) or get_origin(v) is not None:
         return encode_enriched_type(v)
     elif isinstance(v, Enum):
         return v.value
     elif hasattr(v, '__dict__'):
-        return {k: _spec_value_dump(v) for k, v in v.__dict__.items()}
+        return {k: _dump_engine_object(v) for k, v in v.__dict__.items()}
     elif isinstance(v, (list, tuple)):
-        return [_spec_value_dump(item) for item in v]
+        return [_dump_engine_object(item) for item in v]
     elif isinstance(v, dict):
-        return {k: _spec_value_dump(v) for k, v in v.items()}
+        return {k: _dump_engine_object(v) for k, v in v.items()}
     return v
 
 T = TypeVar('T')
@@ -177,7 +178,7 @@ class DataSlice:
             lambda target_scope, name:
                 flow_builder_state.engine_flow_builder.transform(
                     _spec_kind(fn_spec),
-                    _spec_value_dump(fn_spec),
+                    _dump_engine_object(fn_spec),
                     transform_args,
                     target_scope,
                     flow_builder_state.field_name_builder.build_name(
@@ -267,7 +268,7 @@ class DataCollector:
             {"field_name": field_name, "metric": metric.value}
             for field_name, metric in vector_index]
         self._flow_builder_state.engine_flow_builder.export(
-            name, _spec_kind(target_spec), _spec_value_dump(target_spec),
+            name, _spec_kind(target_spec), _dump_engine_object(target_spec),
             index_options, self._engine_data_collector)
 
 
@@ -316,13 +317,20 @@ class FlowBuilder:
             self._state,
             lambda target_scope, name: self._state.engine_flow_builder.add_source(
                 _spec_kind(spec),
-                _spec_value_dump(spec),
+                _dump_engine_object(spec),
                 target_scope,
                 self._state.field_name_builder.build_name(
                     name, prefix=_to_snake_case(_spec_kind(spec))+'_'),
             ),
             name
         )
+@dataclass
+class EvaluateAndDumpOptions:
+    """
+    Options for evaluating and dumping a flow.
+    """
+    output_dir: str
+    use_cache: bool = True
 
 class Flow:
     """
@@ -348,6 +356,13 @@ class Flow:
     def __repr__(self):
         return repr(self._lazy_engine_flow())
 
+    @property
+    def name(self) -> str:
+        """
+        Get the name of the flow.
+        """
+        return self._lazy_engine_flow().name()
+
     def update(self):
         """
         Update the index defined by the flow.
@@ -355,12 +370,17 @@ class Flow:
         """
         return self._lazy_engine_flow().update()
 
+    def evaluate_and_dump(self, options: EvaluateAndDumpOptions):
+        """
+        Evaluate and dump the flow.
+        """
+        return self._lazy_engine_flow().evaluate_and_dump(_dump_engine_object(options))
+
     def internal_flow(self) -> _engine.Flow:
         """
         Get the engine flow.
         """
         return self._lazy_engine_flow()
-
 
 def _create_lazy_flow(name: str | None, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
     """

@@ -15,7 +15,7 @@ use crate::builder::plan::{AnalyzedSourceOp, ExecutionPlan};
 use crate::utils::yaml_ser::YamlSerializer;
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct DumpEvaluationOutputOptions {
+pub struct EvaluateAndDumpOptions {
     pub output_dir: String,
     pub use_cache: bool,
 }
@@ -54,7 +54,7 @@ struct Dumper<'a> {
     plan: &'a ExecutionPlan,
     schema: &'a schema::DataSchema,
     pool: &'a PgPool,
-    options: DumpEvaluationOutputOptions,
+    options: EvaluateAndDumpOptions,
 }
 
 impl<'a> Dumper<'a> {
@@ -215,7 +215,7 @@ impl<'a> Dumper<'a> {
 pub async fn evaluate_and_dump(
     plan: &ExecutionPlan,
     schema: &schema::DataSchema,
-    options: DumpEvaluationOutputOptions,
+    options: EvaluateAndDumpOptions,
     pool: &PgPool,
 ) -> Result<()> {
     let output_dir = Path::new(&options.output_dir);

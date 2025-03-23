@@ -103,6 +103,10 @@ impl Flow {
         self.__str__()
     }
 
+    pub fn name(&self) -> &str {
+        &self.0.flow_instance.name
+    }
+
     pub fn update(&self, py: Python<'_>) -> PyResult<IndexUpdateInfo> {
         py.allow_threads(|| {
             let lib_context = get_lib_context()
@@ -122,7 +126,7 @@ impl Flow {
     pub fn evaluate_and_dump(
         &self,
         py: Python<'_>,
-        options: Pythonized<execution::dumper::DumpEvaluationOutputOptions>,
+        options: Pythonized<execution::dumper::EvaluateAndDumpOptions>,
     ) -> PyResult<()> {
         py.allow_threads(|| {
             let lib_context = get_lib_context()

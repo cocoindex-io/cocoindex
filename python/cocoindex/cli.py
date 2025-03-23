@@ -1,4 +1,5 @@
 import click
+import datetime
 
 from . import flow, lib
 from .setup import check_setup_status, CheckSetupStatusOptions, apply_setup_changes
@@ -51,6 +52,24 @@ def update(flow_name: str | None):
     """
     stats = _flow_by_name(flow_name).update()
     print(stats)
+
+@cli.command()
+@click.argument("flow_name", type=str, required=False)
+@click.option(
+    "-o", "--output-dir", type=str, required=False,
+    help="The directory to dump the evaluation output to.")
+@click.option(
+    "-c", "--use-cache", is_flag=True, show_default=True, default=True,
+    help="Use cached evaluation results if available.")
+def evaluate(flow_name: str | None, output_dir: str | None, use_cache: bool = True):
+    """
+    Evaluate and dump the flow.
+    """
+    fl = _flow_by_name(flow_name)
+    if output_dir is None:
+        output_dir = f"eval_{fl.name}_{datetime.datetime.now().strftime('%y%m%d_%H%M%S')}"
+    options = flow.EvaluateAndDumpOptions(output_dir=output_dir, use_cache=use_cache)
+    fl.evaluate_and_dump(options)
 
 _default_server_settings = lib.ServerSettings.from_env()
 
