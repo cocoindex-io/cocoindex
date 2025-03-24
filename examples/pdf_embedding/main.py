@@ -60,7 +60,7 @@ def pdf_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
 
     doc_embeddings.export(
         "doc_embeddings",
-        cocoindex.storages.Postgres(),
+        cocoindex.storages.Qdrant(qdrant_url="http://localhost:6333", collection_name="cocoindex"),
         primary_key_fields=["filename", "location"],
         vector_index=[("embedding", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 

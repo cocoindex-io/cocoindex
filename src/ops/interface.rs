@@ -132,6 +132,7 @@ pub enum ExecutorFactory {
     ExportTarget(Arc<dyn ExportTargetFactory + Send + Sync>),
 }
 
+#[derive(Debug)]
 pub struct VectorMatchQuery {
     pub vector_field_name: String,
     pub vector: Vec<f32>,

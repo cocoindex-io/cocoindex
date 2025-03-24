@@ -6,3 +6,8 @@ class Postgres(op.StorageSpec):
 
     database_url: str | None = None
     table_name: str | None = None
+
+class Qdrant(op.StorageSpec):
+    """Storage powered by Qdrant - https://qdrant.tech/."""
+
+    collection_name: str
