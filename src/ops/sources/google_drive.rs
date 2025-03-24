@@ -14,6 +14,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use indexmap::IndexSet;
 use log::warn;
 
+use crate::base::field_attrs;
 use crate::ops::sdk::*;
 
 struct ExportMimeType {
@@ -277,22 +278,39 @@ impl SourceFactoryBase for Factory {
         spec: &Spec,
         _context: &FlowInstanceContext,
     ) -> Result<EnrichedValueType> {
+        let mut struct_schema = StructSchema::default();
+        let mut schema_builder = StructSchemaBuilder::new(&mut struct_schema);
+        schema_builder.add_field(FieldSchema::new(
+            "file_id",
+            make_output_type(BasicValueType::Str),
+        ));
+        let filename_field = schema_builder.add_field(FieldSchema::new(
+            "filename",
+            make_output_type(BasicValueType::Str),
+        ));
+        let mime_type_field = schema_builder.add_field(FieldSchema::new(
+            "mime_type",
+            make_output_type(BasicValueType::Str),
+        ));
+        schema_builder.add_field(FieldSchema::new(
+            "content",
+            make_output_type(if spec.binary {
+                BasicValueType::Bytes
+            } else {
+                BasicValueType::Str
+            })
+            .with_attr(
+                field_attrs::CONTENT_FILENAME,
+                serde_json::to_value(filename_field.to_field_ref())?,
+            )
+            .with_attr(
+                field_attrs::CONTENT_MIME_TYPE,
+                serde_json::to_value(mime_type_field.to_field_ref())?,
+            ),
+        ));
         Ok(make_output_type(CollectionSchema::new(
             CollectionKind::Table,
-            vec![
-                FieldSchema::new("file_id", make_output_type(BasicValueType::Str)),
-                FieldSchema::new("filename", make_output_type(BasicValueType::Str)),
-                FieldSchema::new("mime_type", make_output_type(BasicValueType::Str)),
-                FieldSchema::new(
-                    "content",
-                    make_output_type(if spec.binary {
-                        BasicValueType::Bytes
-                    } else {
-                        BasicValueType::Str
-                    }),
-                ),
-            ],
-            None,
+            struct_schema,
         )))
     }
 

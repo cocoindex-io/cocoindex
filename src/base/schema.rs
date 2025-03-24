@@ -65,7 +65,7 @@ impl std::fmt::Display for BasicValueType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct StructSchema {
     pub fields: Arc<Vec<FieldSchema>>,
 
@@ -172,17 +172,10 @@ impl std::fmt::Display for CollectionSchema {
 }
 
 impl CollectionSchema {
-    pub fn new(
-        kind: CollectionKind,
-        fields: Vec<FieldSchema>,
-        description: Option<Arc<str>>,
-    ) -> Self {
+    pub fn new(kind: CollectionKind, row: StructSchema) -> Self {
         Self {
             kind,
-            row: StructSchema {
-                fields: Arc::new(fields),
-                description,
-            },
+            row,
             collectors: Default::default(),
         }
     }

@@ -2,6 +2,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use log::warn;
 use std::{path::PathBuf, sync::Arc};
 
+use crate::base::field_attrs;
 use crate::{fields_value, ops::sdk::*};
 
 #[derive(Debug, Deserialize)]
@@ -99,20 +100,28 @@ impl SourceFactoryBase for Factory {
         spec: &Spec,
         _context: &FlowInstanceContext,
     ) -> Result<EnrichedValueType> {
+        let mut struct_schema = StructSchema::default();
+        let mut schema_builder = StructSchemaBuilder::new(&mut struct_schema);
+        let filename_field = schema_builder.add_field(FieldSchema::new(
+            "filename",
+            make_output_type(BasicValueType::Str),
+        ));
+        schema_builder.add_field(FieldSchema::new(
+            "content",
+            make_output_type(if spec.binary {
+                BasicValueType::Bytes
+            } else {
+                BasicValueType::Str
+            })
+            .with_attr(
+                field_attrs::CONTENT_FILENAME,
+                serde_json::to_value(filename_field.to_field_ref())?,
+            ),
+        ));
+
         Ok(make_output_type(CollectionSchema::new(
             CollectionKind::Table,
-            vec![
-                FieldSchema::new("filename", make_output_type(BasicValueType::Str)),
-                FieldSchema::new(
-                    "content",
-                    make_output_type(if spec.binary {
-                        BasicValueType::Bytes
-                    } else {
-                        BasicValueType::Str
-                    }),
-                ),
-            ],
-            None,
+            struct_schema,
         )))
     }
 

@@ -585,18 +585,23 @@ impl SimpleFunctionFactoryBase for Factory {
                 .next_optional_arg("language")?
                 .expect_type(&ValueType::Basic(BasicValueType::Str))?,
         };
-        let output_schema = make_output_type(CollectionSchema::new(
-            CollectionKind::Table,
-            vec![
-                FieldSchema::new("location", make_output_type(BasicValueType::Range)),
-                FieldSchema::new("text", make_output_type(BasicValueType::Str)),
-            ],
-            None,
-        ))
-        .with_attr(
-            field_attrs::CHUNK_BASE_TEXT,
-            serde_json::to_value(args_resolver.get_analyze_value(&args.text))?,
-        );
+
+        let mut struct_schema = StructSchema::default();
+        let mut schema_builder = StructSchemaBuilder::new(&mut struct_schema);
+        schema_builder.add_field(FieldSchema::new(
+            "location",
+            make_output_type(BasicValueType::Range),
+        ));
+        schema_builder.add_field(FieldSchema::new(
+            "text",
+            make_output_type(BasicValueType::Str),
+        ));
+        let output_schema =
+            make_output_type(CollectionSchema::new(CollectionKind::Table, struct_schema))
+                .with_attr(
+                    field_attrs::CHUNK_BASE_TEXT,
+                    serde_json::to_value(args_resolver.get_analyze_value(&args.text))?,
+                );
         Ok((args, output_schema))
     }
 
