@@ -26,8 +26,8 @@ pub struct ResolvedOpArg {
 
 pub trait ResolvedOpArgExt: Sized {
     fn expect_type(self, expected_type: &ValueType) -> Result<Self>;
-    fn value<'a>(&self, args: &'a Vec<value::Value>) -> Result<&'a value::Value>;
-    fn take_value(&self, args: &mut Vec<value::Value>) -> Result<value::Value>;
+    fn value<'a>(&self, args: &'a [value::Value]) -> Result<&'a value::Value>;
+    fn take_value(&self, args: &mut [value::Value]) -> Result<value::Value>;
 }
 
 impl ResolvedOpArgExt for ResolvedOpArg {
@@ -43,7 +43,7 @@ impl ResolvedOpArgExt for ResolvedOpArg {
         Ok(self)
     }
 
-    fn value<'a>(&self, args: &'a Vec<value::Value>) -> Result<&'a value::Value> {
+    fn value<'a>(&self, args: &'a [value::Value]) -> Result<&'a value::Value> {
         if self.idx >= args.len() {
             api_bail!(
                 "Two few arguments, {} provided, expected at least {} for `{}`",
@@ -55,7 +55,7 @@ impl ResolvedOpArgExt for ResolvedOpArg {
         Ok(&args[self.idx])
     }
 
-    fn take_value(&self, args: &mut Vec<value::Value>) -> Result<value::Value> {
+    fn take_value(&self, args: &mut [value::Value]) -> Result<value::Value> {
         if self.idx >= args.len() {
             api_bail!(
                 "Two few arguments, {} provided, expected at least {} for `{}`",
@@ -73,7 +73,7 @@ impl ResolvedOpArgExt for Option<ResolvedOpArg> {
         self.map(|arg| arg.expect_type(expected_type)).transpose()
     }
 
-    fn value<'a>(&self, args: &'a Vec<value::Value>) -> Result<&'a value::Value> {
+    fn value<'a>(&self, args: &'a [value::Value]) -> Result<&'a value::Value> {
         Ok(self
             .as_ref()
             .map(|arg| arg.value(args))
@@ -81,7 +81,7 @@ impl ResolvedOpArgExt for Option<ResolvedOpArg> {
             .unwrap_or(&value::Value::Null))
     }
 
-    fn take_value(&self, args: &mut Vec<value::Value>) -> Result<value::Value> {
+    fn take_value(&self, args: &mut [value::Value]) -> Result<value::Value> {
         Ok(self
             .as_ref()
             .map(|arg| arg.take_value(args))
@@ -126,14 +126,12 @@ impl<'a> OpArgsResolver<'a> {
             } else {
                 Some(idx)
             }
+        } else if self.next_positional_idx < self.num_positional_args {
+            let idx = self.next_positional_idx;
+            self.next_positional_idx += 1;
+            Some(idx)
         } else {
-            if self.next_positional_idx < self.num_positional_args {
-                let idx = self.next_positional_idx;
-                self.next_positional_idx += 1;
-                Some(idx)
-            } else {
-                None
-            }
+            None
         };
         Ok(idx.map(|idx| ResolvedOpArg {
             name: name.to_string(),
@@ -300,10 +298,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         desired_state: Option<Self::SetupState>,
         existing_states: setup::CombinedState<Self::SetupState>,
     ) -> Result<
-        impl setup::ResourceSetupStatusCheck<Key = Self::Key, State = Self::SetupState>
-            + Send
-            + Sync
-            + 'static,
+        impl setup::ResourceSetupStatusCheck<Key = Self::Key, State = Self::SetupState> + 'static,
     >;
 
     fn will_keep_all_existing_data(
@@ -342,7 +337,7 @@ impl<T: StorageFactoryBase> ResourceSetupStatusCheckWrapper<T> {
             key_json: serde_json::to_value(inner.key())?,
             state_json: inner
                 .desired_state()
-                .map(|s| serde_json::to_value(s))
+                .map(serde_json::to_value)
                 .transpose()?,
             inner,
         })

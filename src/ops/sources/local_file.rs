@@ -2,6 +2,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use log::warn;
 use std::{path::PathBuf, sync::Arc};
 
+use crate::base::field_attrs;
 use crate::{fields_value, ops::sdk::*};
 
 #[derive(Debug, Deserialize)]
@@ -24,13 +25,13 @@ impl Executor {
     fn is_excluded(&self, path: &str) -> bool {
         self.excluded_glob_set
             .as_ref()
-            .map_or(false, |glob_set| glob_set.is_match(path))
+            .is_some_and(|glob_set| glob_set.is_match(path))
     }
 
     fn is_file_included(&self, path: &str) -> bool {
         self.included_glob_set
             .as_ref()
-            .map_or(true, |glob_set| glob_set.is_match(path))
+            .is_none_or(|glob_set| glob_set.is_match(path))
             && !self.is_excluded(path)
     }
 
@@ -44,10 +45,8 @@ impl Executor {
                     if !self.is_excluded(relative_path) {
                         Box::pin(self.traverse_dir(&path, result)).await?;
                     }
-                } else {
-                    if self.is_file_included(relative_path) {
-                        result.push(KeyValue::Str(Arc::from(relative_path)));
-                    }
+                } else if self.is_file_included(relative_path) {
+                    result.push(KeyValue::Str(Arc::from(relative_path)));
                 }
             } else {
                 warn!("Skipped ill-formed file path: {}", path.display());
@@ -101,19 +100,28 @@ impl SourceFactoryBase for Factory {
         spec: &Spec,
         _context: &FlowInstanceContext,
     ) -> Result<EnrichedValueType> {
+        let mut struct_schema = StructSchema::default();
+        let mut schema_builder = StructSchemaBuilder::new(&mut struct_schema);
+        let filename_field = schema_builder.add_field(FieldSchema::new(
+            "filename",
+            make_output_type(BasicValueType::Str),
+        ));
+        schema_builder.add_field(FieldSchema::new(
+            "content",
+            make_output_type(if spec.binary {
+                BasicValueType::Bytes
+            } else {
+                BasicValueType::Str
+            })
+            .with_attr(
+                field_attrs::CONTENT_FILENAME,
+                serde_json::to_value(filename_field.to_field_ref())?,
+            ),
+        ));
+
         Ok(make_output_type(CollectionSchema::new(
             CollectionKind::Table,
-            vec![
-                FieldSchema::new("filename", make_output_type(BasicValueType::Str)),
-                FieldSchema::new(
-                    "content",
-                    make_output_type(if spec.binary {
-                        BasicValueType::Bytes
-                    } else {
-                        BasicValueType::Str
-                    }),
-                ),
-            ],
+            struct_schema,
         )))
     }
 

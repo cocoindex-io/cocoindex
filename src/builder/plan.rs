@@ -104,6 +104,7 @@ pub struct AnalyzedExportOp {
     pub query_target: Option<Arc<dyn QueryTarget>>,
     pub primary_key_def: AnalyzedPrimaryKeyDef,
     pub primary_key_type: ValueType,
+    /// idx for value fields - excluding the primary key field.
     pub value_fields: Vec<u32>,
 }
 

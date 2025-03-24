@@ -1,3 +1,16 @@
+/// Concepts:
+/// - Resource: some setup that needs to be tracked and maintained.
+/// - Setup State: current state of a resource.
+/// - Staging Change: states changes that may not be really applied yet.
+/// - Combined Setup State: Setup State + Staging Change.
+/// - Status Check: information about changes that are being applied / need to be applied.
+///
+/// Resource hierarchy:
+/// - [resource: setup metadata table] /// - Flow
+///   - [resource: metadata]
+///   - [resource: tracking table]
+///   - Target
+///     - [resource: target-specific stuff]
 use anyhow::Result;
 use axum::async_trait;
 use indenter::indented;
@@ -13,21 +26,7 @@ use super::db_metadata;
 use crate::base::schema;
 use crate::execution::db_tracking_setup;
 
-const INDENT: &'static str = "    ";
-
-/// Concepts:
-/// - Resource: some setup that needs to be tracked and maintained.
-/// - Setup State: current state of a resource.
-/// - Staging Change: states changes that may not be really applied yet.
-/// - Combined Setup State: Setup State + Staging Change.
-/// - Status Check: information about changes that are being applied / need to be applied.
-///
-/// Resource hierarchy:
-/// - [resource: setup metadata table] /// - Flow
-///   - [resource: metadata]
-///   - [resource: tracking table]
-///   - Target
-///     - [resource: target-specific stuff]
+const INDENT: &str = "    ";
 
 pub trait StateMode: Clone + Copy {
     type State<T: Debug + Clone>: Debug + Clone;
@@ -51,7 +50,7 @@ impl<T: Debug + Clone> CombinedState<T> {
     pub fn possible_versions(&self) -> impl Iterator<Item = &T> {
         self.current
             .iter()
-            .chain(self.staging.iter().map(|s| s.state().into_iter()).flatten())
+            .chain(self.staging.iter().flat_map(|s| s.state().into_iter()))
     }
 
     pub fn always_exists(&self) -> bool {
@@ -63,9 +62,9 @@ impl<T: Debug + Clone> CombinedState<T> {
         desired: Option<&T>,
         f: F,
     ) -> BTreeSet<&V> {
-        let desired_value = desired.map(|d| f(d));
+        let desired_value = desired.map(&f);
         self.possible_versions()
-            .map(|v| f(v))
+            .map(f)
             .filter(|v| Some(*v) != desired_value)
             .collect()
     }
@@ -152,21 +151,11 @@ pub struct TargetSetupState {
     pub state: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct FlowSetupMetadata {
     pub last_source_id: i32,
     pub last_target_id: i32,
     pub sources: BTreeMap<String, SourceSetupState>,
-}
-
-impl Default for FlowSetupMetadata {
-    fn default() -> Self {
-        Self {
-            last_source_id: 0,
-            last_target_id: 0,
-            sources: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -311,8 +300,8 @@ impl AllSetupStatusCheck {
 }
 
 pub struct ObjectSetupStatusCode<'a, StatusCheck: ObjectSetupStatusCheck>(&'a StatusCheck);
-impl<'a, StatusCheck: ObjectSetupStatusCheck> std::fmt::Display
-    for ObjectSetupStatusCode<'a, StatusCheck>
+impl<StatusCheck: ObjectSetupStatusCheck> std::fmt::Display
+    for ObjectSetupStatusCode<'_, StatusCheck>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -335,8 +324,8 @@ impl<'a, StatusCheck: ObjectSetupStatusCheck> std::fmt::Display
 
 pub struct FormattedResourceSetup<'a, Check: ResourceSetupStatusCheck + ?Sized>(&'a Check);
 
-impl<'a, Change: ResourceSetupStatusCheck + ?Sized> std::fmt::Display
-    for FormattedResourceSetup<'a, Change>
+impl<Change: ResourceSetupStatusCheck + ?Sized> std::fmt::Display
+    for FormattedResourceSetup<'_, Change>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let status_code = match self.0.change_type() {
@@ -360,19 +349,19 @@ impl<'a, Change: ResourceSetupStatusCheck + ?Sized> std::fmt::Display
         let changes = self.0.describe_changes();
         if !changes.is_empty() {
             let mut f = indented(f).with_str(INDENT);
-            write!(f, "TODO:\n")?;
+            writeln!(f, "TODO:")?;
             for change in changes {
-                write!(f, "  - {}\n", change)?;
+                writeln!(f, "  - {}", change)?;
             }
         }
-        write!(f, "\n")?;
+        writeln!(f)?;
         Ok(())
     }
 }
 
 pub struct FormattedFlowSetupStatusCheck<'a>(&'a str, &'a FlowSetupStatusCheck);
 
-impl<'a> std::fmt::Display for FormattedFlowSetupStatusCheck<'a> {
+impl std::fmt::Display for FormattedFlowSetupStatusCheck<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let flow_ssc = self.1;
 
@@ -387,7 +376,7 @@ impl<'a> std::fmt::Display for FormattedFlowSetupStatusCheck<'a> {
         write!(f, "{}", FormattedResourceSetup(&flow_ssc.tracking_table))?;
 
         for target_resource in &flow_ssc.target_resources {
-            write!(f, "{}\n", target_resource)?;
+            writeln!(f, "{}", target_resource)?;
         }
 
         Ok(())

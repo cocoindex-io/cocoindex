@@ -5,7 +5,7 @@ impl TryFrom<String> for ValidIdentifier {
     type Error = anyhow::Error;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        if s.len() > 0 && s.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        if !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_') {
             Ok(ValidIdentifier(s))
         } else {
             Err(anyhow::anyhow!("Invalid identifier: {s:?}"))

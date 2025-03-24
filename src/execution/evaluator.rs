@@ -21,10 +21,10 @@ pub struct ScopeValueBuilder {
     pub collected_values: Vec<Mutex<Vec<value::FieldValues>>>,
 }
 
-impl Into<value::ScopeValue> for &ScopeValueBuilder {
-    fn into(self) -> value::ScopeValue {
+impl From<&ScopeValueBuilder> for value::ScopeValue {
+    fn from(val: &ScopeValueBuilder) -> Self {
         value::ScopeValue(value::FieldValues {
-            fields: self
+            fields: val
                 .fields
                 .iter()
                 .map(|f| value::Value::from_alternative_ref(f.get().unwrap()))
@@ -33,10 +33,10 @@ impl Into<value::ScopeValue> for &ScopeValueBuilder {
     }
 }
 
-impl Into<value::ScopeValue> for ScopeValueBuilder {
-    fn into(self) -> value::ScopeValue {
+impl From<ScopeValueBuilder> for value::ScopeValue {
+    fn from(val: ScopeValueBuilder) -> Self {
         value::ScopeValue(value::FieldValues {
-            fields: self
+            fields: val
                 .fields
                 .into_iter()
                 .map(|f| value::Value::from_alternative(f.into_inner().unwrap()))
@@ -100,7 +100,7 @@ fn augmented_value(
         }
         (value::Value::Collection(v), schema::ValueType::Collection(t)) => {
             value::Value::Collection(
-                v.into_iter()
+                v.iter()
                     .map(|v| ScopeValueBuilder::augmented_from(v, t))
                     .collect::<Result<Vec<_>>>()?,
             )
@@ -111,7 +111,7 @@ fn augmented_value(
                 .collect::<Result<BTreeMap<_, _>>>()?,
         ),
         (value::Value::List(v), schema::ValueType::Collection(t)) => value::Value::List(
-            v.into_iter()
+            v.iter()
                 .map(|v| ScopeValueBuilder::augmented_from(v, t))
                 .collect::<Result<Vec<_>>>()?,
         ),
@@ -139,10 +139,10 @@ impl<'a> ScopeKey<'a> {
     }
 
     pub fn value_field_index_base(&self) -> u32 {
-        match self {
-            &ScopeKey::None => 0,
-            &ScopeKey::MapKey(_) => 1,
-            &ScopeKey::ListIndex(_) => 1,
+        match *self {
+            ScopeKey::None => 0,
+            ScopeKey::MapKey(_) => 1,
+            ScopeKey::ListIndex(_) => 1,
         }
     }
 }
@@ -153,7 +153,7 @@ struct ScopeEntry<'a> {
     schema: &'a schema::StructSchema,
 }
 
-impl<'a> ScopeEntry<'a> {
+impl ScopeEntry<'_> {
     fn get_local_field_schema<'b>(
         schema: &'b schema::StructSchema,
         indices: &[u32],
@@ -167,7 +167,7 @@ impl<'a> ScopeEntry<'a> {
                 schema::ValueType::Struct(s) => s,
                 _ => bail!("Expect struct field"),
             };
-            Self::get_local_field_schema(&struct_field_schema, &indices[1..])?
+            Self::get_local_field_schema(struct_field_schema, &indices[1..])?
         };
         Ok(result)
     }
@@ -178,12 +178,10 @@ impl<'a> ScopeEntry<'a> {
     ) -> &'b value::KeyValue {
         if indices.is_empty() {
             key_val
+        } else if let value::KeyValue::Struct(ref fields) = key_val {
+            Self::get_local_key_field(&fields[indices[0] as usize], &indices[1..])
         } else {
-            if let value::KeyValue::Struct(ref fields) = key_val {
-                Self::get_local_key_field(&fields[indices[0] as usize], &indices[1..])
-            } else {
-                panic!("Only struct can be accessed by sub field");
-            }
+            panic!("Only struct can be accessed by sub field");
         }
     }
 
@@ -193,12 +191,10 @@ impl<'a> ScopeEntry<'a> {
     ) -> &'b value::Value<ScopeValueBuilder> {
         if indices.is_empty() {
             val
+        } else if let value::Value::Struct(ref fields) = val {
+            Self::get_local_field(&fields.fields[indices[0] as usize], &indices[1..])
         } else {
-            if let value::Value::Struct(ref fields) = val {
-                Self::get_local_field(&fields.fields[indices[0] as usize], &indices[1..])
-            } else {
-                panic!("Only struct can be accessed by sub field");
-            }
+            panic!("Only struct can be accessed by sub field");
         }
     }
 
@@ -211,21 +207,21 @@ impl<'a> ScopeEntry<'a> {
         let val = self.value.fields[(first_index - index_base) as usize]
             .get()
             .unwrap();
-        Self::get_local_field(&val, &field_ref.fields_idx[1..])
+        Self::get_local_field(val, &field_ref.fields_idx[1..])
     }
 
     fn get_field(&self, field_ref: &AnalyzedLocalFieldReference) -> value::Value {
         let first_index = field_ref.fields_idx[0];
         let index_base = self.key.value_field_index_base();
         if first_index < index_base {
-            let key_val = self.key.key().unwrap().into_owned().into();
+            let key_val = self.key.key().unwrap().into_owned();
             let key_part = Self::get_local_key_field(&key_val, &field_ref.fields_idx[1..]);
             key_part.clone().into()
         } else {
             let val = self.value.fields[(first_index - index_base) as usize]
                 .get()
                 .unwrap();
-            let val_part = Self::get_local_field(&val, &field_ref.fields_idx[1..]);
+            let val_part = Self::get_local_field(val, &field_ref.fields_idx[1..]);
             value::Value::from_alternative_ref(val_part)
         }
     }
@@ -329,7 +325,7 @@ async fn evaluate_op_scope(
                             .fingerprinter
                             .clone()
                             .with(&input_values)?
-                            .to_fingerprint();
+                            .into_fingerprint();
                         Some(cache.get(
                             key,
                             &op.function_exec_info.output_type,
@@ -356,14 +352,14 @@ async fn evaluate_op_scope(
                 let target_field = head_scope.get_value_field_builder(&op.local_field_ref);
                 let task_futs = match target_field {
                     value::Value::Collection(v) => v
-                        .into_iter()
+                        .iter()
                         .map(|item| {
                             evaluate_child_op_scope(
                                 &op.op_scope,
                                 scoped_entries,
                                 ScopeEntry {
                                     key: ScopeKey::None,
-                                    value: &item,
+                                    value: item,
                                     schema: &collection_schema.row,
                                 },
                                 cache,
@@ -371,7 +367,7 @@ async fn evaluate_op_scope(
                         })
                         .collect::<Vec<_>>(),
                     value::Value::Table(v) => v
-                        .into_iter()
+                        .iter()
                         .map(|(k, v)| {
                             evaluate_child_op_scope(
                                 &op.op_scope,
@@ -430,9 +426,9 @@ async fn evaluate_op_scope(
     Ok(())
 }
 
-pub async fn evaluate_source_entry<'a>(
+pub async fn evaluate_source_entry(
     plan: &ExecutionPlan,
-    source_op_idx: usize,
+    source_op: &AnalyzedSourceOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
     cache: Option<&EvaluationCache>,
@@ -443,10 +439,9 @@ pub async fn evaluate_source_entry<'a>(
     let root_scope_entry = ScopeEntry {
         key: ScopeKey::None,
         value: &root_scope_value,
-        schema: &root_schema,
+        schema: root_schema,
     };
 
-    let source_op = &plan.source_ops[source_op_idx];
     let collection_schema = match &root_schema.fields[source_op.output.field_idx as usize]
         .value_type
         .typ
@@ -457,10 +452,10 @@ pub async fn evaluate_source_entry<'a>(
         }
     };
 
-    let result = match source_op.executor.get_value(&key).await? {
+    let result = match source_op.executor.get_value(key).await? {
         Some(val) => {
             let scope_value =
-                ScopeValueBuilder::augmented_from(&value::ScopeValue(val), &collection_schema)?;
+                ScopeValueBuilder::augmented_from(&value::ScopeValue(val), collection_schema)?;
             root_scope_entry.define_field_w_builder(
                 &source_op.output,
                 value::Value::Table(BTreeMap::from([(key.clone(), scope_value)])),
@@ -489,7 +484,7 @@ pub async fn evaluate_transient_flow(
     let root_scope_entry = ScopeEntry {
         key: ScopeKey::None,
         value: &root_scope_value,
-        schema: &root_schema,
+        schema: root_schema,
     };
 
     if input_values.len() != flow.execution_plan.input_fields.len() {

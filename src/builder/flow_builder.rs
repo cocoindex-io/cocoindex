@@ -85,13 +85,13 @@ impl DataScopeRef {
                 if let Some(child) = child {
                     DataScopeRef(child)
                 } else {
-                    let new_scope = self.make_child_scope(&entry.key())?;
+                    let new_scope = self.make_child_scope(entry.key())?;
                     entry.insert(Arc::downgrade(&new_scope.0));
                     new_scope
                 }
             }
             Entry::Vacant(entry) => {
-                let new_scope = self.make_child_scope(&entry.key())?;
+                let new_scope = self.make_child_scope(entry.key())?;
                 entry.insert(Arc::downgrade(&new_scope.0));
                 new_scope
             }
@@ -118,7 +118,7 @@ impl DataScopeRef {
             .1
             .value_type
             .typ;
-        for field in (&field_path[1..]).iter() {
+        for field in field_path[1..].iter() {
             let struct_builder = match field_typ {
                 ValueTypeBuilder::Struct(struct_type) => struct_type,
                 _ => bail!("expect struct type"),
@@ -250,10 +250,9 @@ impl DataSlice {
             spec::ValueMapping::Field(v) => &v.field_path,
             _ => return Err(PyException::new_err("expect field path")),
         };
-        Ok(self
-            .scope
+        self.scope
             .get_child_scope(field_path.clone())
-            .into_py_result()?)
+            .into_py_result()
     }
 }
 
@@ -409,9 +408,11 @@ impl FlowBuilder {
             flow_ctx: &self.flow_inst_context,
         };
         let mut root_data_scope = self.root_data_scope.lock().unwrap();
-        let _ = analyzer_ctx
+
+        let analyzed = analyzer_ctx
             .analyze_source_op(&mut root_data_scope, source_op.clone(), None, None)
             .into_py_result()?;
+        std::mem::drop(analyzed);
 
         let result =
             Self::last_field_to_data_slice(&root_data_scope, self.root_data_scope_ref.clone())
@@ -420,10 +421,10 @@ impl FlowBuilder {
         Ok(result)
     }
 
-    pub fn constant<'py>(
+    pub fn constant(
         &self,
         value_type: py::Pythonized<schema::EnrichedValueType>,
-        value: Bound<'py, PyAny>,
+        value: Bound<'_, PyAny>,
     ) -> PyResult<DataSlice> {
         let schema = value_type.into_inner();
         let value = py::value_from_py_object(&schema.typ, &value)?;
@@ -499,10 +500,13 @@ impl FlowBuilder {
                         op: spec,
                     }),
                 };
-                let _ = analyzer_ctx.analyze_reactive_op(scope, &reactive_op, parent_scopes)?;
+
+                let analyzed =
+                    analyzer_ctx.analyze_reactive_op(scope, &reactive_op, parent_scopes)?;
+                std::mem::drop(analyzed);
 
                 reactive_ops.push(reactive_op);
-                let result = Self::last_field_to_data_slice(&scope.data, common_scope.clone())
+                let result = Self::last_field_to_data_slice(scope.data, common_scope.clone())
                     .into_py_result()?;
                 Ok(result)
             },
@@ -538,7 +542,11 @@ impl FlowBuilder {
                         collector_name: collector.name.clone(),
                     }),
                 };
-                let _ = analyzer_ctx.analyze_reactive_op(scope, &reactive_op, parent_scopes)?;
+
+                let analyzed =
+                    analyzer_ctx.analyze_reactive_op(scope, &reactive_op, parent_scopes)?;
+                std::mem::drop(analyzed);
+
                 reactive_ops.push(reactive_op);
                 Ok(())
             },
@@ -555,6 +563,7 @@ impl FlowBuilder {
                     })
                     .collect(),
             ),
+            description: None,
         };
 
         {
@@ -706,10 +715,10 @@ impl std::fmt::Display for FlowBuilder {
             )?;
         }
         for field in self.direct_input_fields.iter() {
-            write!(f, "Direct input {}: {}\n", field.name, field.value_type)?;
+            writeln!(f, "Direct input {}: {}", field.name, field.value_type)?;
         }
         if !self.direct_input_fields.is_empty() {
-            write!(f, "\n")?;
+            writeln!(f)?;
         }
         for op in self.reactive_ops.iter() {
             write!(

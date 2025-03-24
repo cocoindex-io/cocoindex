@@ -132,12 +132,7 @@ impl std::fmt::Display for ValueMapping {
                     .unwrap_or_else(|_| "#(invalid json value)".to_string())
             ),
             ValueMapping::Field(v) => {
-                write!(
-                    f,
-                    "{}.{}",
-                    v.scope.as_ref().map(|s| s.as_str()).unwrap_or(""),
-                    v.field_path
-                )
+                write!(f, "{}.{}", v.scope.as_deref().unwrap_or(""), v.field_path)
             }
             ValueMapping::Struct(v) => write!(
                 f,

@@ -92,8 +92,7 @@ impl LlmGenerationClient for Client {
             .choices
             .into_iter()
             .next()
-            .map(|choice| choice.message.content)
-            .flatten()
+            .and_then(|choice| choice.message.content)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
 
         Ok(super::LlmGenerateResponse { text })

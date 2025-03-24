@@ -12,7 +12,7 @@ After a flow is defined as discussed in [Flow Definition](/docs/core/flow_def), 
 
 ## update
 
-The `update()` method will update will update the index defined by the flow.
+The `update()` method will update the index defined by the flow.
 
 Once the function returns, the indice is fresh up to the moment when the function is called.
 
@@ -21,6 +21,26 @@ Once the function returns, the indice is fresh up to the moment when the functio
 
 ```python
 flow.update()
+```
+
+</TabItem>
+</Tabs>
+
+## evaluate_and_dump
+
+The `evaluate_and_dump()` method evaluates the flow and dump flow outputs to files.
+
+It takes a `EvaluateAndDumpOptions` dataclass as input to configure, with the following fields:
+
+*   `output_dir` (type: `str`, required): The directory to dump the result to.
+*   `use_cache` (type: `bool`, default: `True`): Use already-cached intermediate data if available.
+    Note that we only reuse existing cached data without updating the cache even if it's turned on.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+flow.evaluate_and_dump(EvaluateAndDumpOptions(output_dir="./eval_output"))
 ```
 
 </TabItem>

@@ -40,7 +40,7 @@ pub async fn search(
                 })?
                 .clone(),
             None => {
-                if flow_ctx.query_handlers.len() == 0 {
+                if flow_ctx.query_handlers.is_empty() {
                     return Err(ApiError::new(
                         &format!("No query handler found for flow: {flow_name}"),
                         StatusCode::NOT_FOUND,

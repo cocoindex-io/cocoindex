@@ -46,12 +46,10 @@ fn key_value_fields_iter<'a>(
 
 fn convertible_to_pgvector(vec_schema: &VectorTypeSchema) -> bool {
     if vec_schema.dimension.is_some() {
-        match &*vec_schema.element_type {
-            BasicValueType::Float32 => true,
-            BasicValueType::Float64 => true,
-            BasicValueType::Int64 => true,
-            _ => false,
-        }
+        matches!(
+            *vec_schema.element_type,
+            BasicValueType::Float32 | BasicValueType::Float64 | BasicValueType::Int64
+        )
     } else {
         false
     }
@@ -166,16 +164,16 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
                     .map(|v| BasicValue::Str(Arc::from(v))),
                 BasicValueType::Bool => row
                     .try_get::<Option<bool>, _>(field_idx)?
-                    .map(|v| BasicValue::Bool(v)),
+                    .map(BasicValue::Bool),
                 BasicValueType::Int64 => row
                     .try_get::<Option<i64>, _>(field_idx)?
-                    .map(|v| BasicValue::Int64(v)),
+                    .map(BasicValue::Int64),
                 BasicValueType::Float32 => row
                     .try_get::<Option<f32>, _>(field_idx)?
-                    .map(|v| BasicValue::Float32(v)),
+                    .map(BasicValue::Float32),
                 BasicValueType::Float64 => row
                     .try_get::<Option<f64>, _>(field_idx)?
-                    .map(|v| BasicValue::Float64(v)),
+                    .map(BasicValue::Float64),
                 BasicValueType::Range => row
                     .try_get::<Option<PgRange<i64>>, _>(field_idx)?
                     .map(|v| match (v.start, v.end) {
@@ -199,12 +197,12 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
                                     v.as_slice()
                                         .iter()
                                         .map(|e| {
-                                            Ok(match &*vs.element_type {
-                                                &BasicValueType::Float32 => BasicValue::Float32(*e),
-                                                &BasicValueType::Float64 => {
+                                            Ok(match *vs.element_type {
+                                                BasicValueType::Float32 => BasicValue::Float32(*e),
+                                                BasicValueType::Float64 => {
                                                     BasicValue::Float64(*e as f64)
                                                 }
-                                                &BasicValueType::Int64 => {
+                                                BasicValueType::Int64 => {
                                                     BasicValue::Int64(*e as i64)
                                                 }
                                                 _ => anyhow::bail!("invalid vector element type"),
@@ -221,7 +219,7 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
                     }
                 }
             };
-            basic_value.map(|bv| Value::Basic(bv))
+            basic_value.map(Value::Basic)
         }
         _ => row
             .try_get::<Option<serde_json::Value>, _>(field_idx)?
@@ -468,8 +466,8 @@ pub struct SetupState {
 impl SetupState {
     fn new(
         table_id: &TableId,
-        key_fields_schema: &Vec<FieldSchema>,
-        value_fields_schema: &Vec<FieldSchema>,
+        key_fields_schema: &[FieldSchema],
+        value_fields_schema: &[FieldSchema],
         index_options: &IndexOptions,
     ) -> Self {
         Self {
@@ -570,13 +568,12 @@ impl SetupStatusCheck {
                 let table_upsertion = if existing.always_exists()
                     && existing
                         .possible_versions()
-                        .all(|v| v.is_compatible(&desired))
+                        .all(|v| v.is_compatible(desired))
                 {
                     TableUpsertionAction::Update {
                         columns_to_delete: existing
                             .possible_versions()
-                            .map(|v| v.value_fields_schema.keys())
-                            .flatten()
+                            .flat_map(|v| v.value_fields_schema.keys())
                             .filter(|column_name| {
                                 !desired.value_fields_schema.contains_key(*column_name)
                             })
@@ -606,8 +603,7 @@ impl SetupStatusCheck {
                     table_upsertion,
                     indexes_to_delete: existing
                         .possible_versions()
-                        .map(|v| v.vector_indexes.keys())
-                        .flatten()
+                        .flat_map(|v| v.vector_indexes.keys())
                         .filter(|index_name| !desired.vector_indexes.contains_key(*index_name))
                         .cloned()
                         .collect(),
@@ -629,7 +625,7 @@ impl SetupStatusCheck {
             .map(|state| {
                 existing
                     .possible_versions()
-                    .any(|v| !v.is_compatible(&state))
+                    .any(|v| !v.is_compatible(state))
             })
             .unwrap_or(true);
         let create_pgvector_extension = desired_state
@@ -816,7 +812,7 @@ impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
                 .await?;
         }
         if self.create_pgvector_extension {
-            sqlx::query(&format!("CREATE EXTENSION IF NOT EXISTS vector;"))
+            sqlx::query("CREATE EXTENSION IF NOT EXISTS vector;")
                 .execute(&db_pool)
                 .await?;
         }
@@ -931,9 +927,8 @@ impl StorageFactoryBase for Arc<Factory> {
         key: TableId,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
-    ) -> Result<
-        impl setup::ResourceSetupStatusCheck<Key = TableId, State = SetupState> + Send + Sync + 'static,
-    > {
+    ) -> Result<impl setup::ResourceSetupStatusCheck<Key = TableId, State = SetupState> + 'static>
+    {
         Ok(SetupStatusCheck::new(self.clone(), key, desired, existing))
     }
 

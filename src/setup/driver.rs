@@ -164,21 +164,11 @@ fn to_object_status<A, B>(existing: Option<A>, desired: Option<B>) -> Result<Obj
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct GroupedResourceStates {
     desired_common: Option<TargetSetupStateCommon>,
     desired: Option<serde_json::Value>,
     existing: CombinedState<serde_json::Value>,
-}
-
-impl Default for GroupedResourceStates {
-    fn default() -> Self {
-        Self {
-            desired_common: None,
-            desired: None,
-            existing: CombinedState::default(),
-        }
-    }
 }
 
 fn group_resource_states<'a>(
@@ -236,8 +226,7 @@ pub fn check_flow_setup_status(
 
     let new_source_ids = desired_state
         .iter()
-        .map(|d| d.metadata.sources.values().map(|v| v.source_id))
-        .flatten()
+        .flat_map(|d| d.metadata.sources.values().map(|v| v.source_id))
         .collect::<HashSet<i32>>();
     let tracking_table_change = db_tracking_setup::TrackingTableSetupStatusCheck::new(
         desired_state.map(|d| &d.tracking_table),
@@ -245,16 +234,14 @@ pub fn check_flow_setup_status(
             .map(|e| Cow::Borrowed(&e.tracking_table))
             .unwrap_or_default(),
         (existing_state.iter())
-            .map(|state| state.metadata.possible_versions())
-            .flatten()
-            .map(|metadata| {
+            .flat_map(|state| state.metadata.possible_versions())
+            .flat_map(|metadata| {
                 metadata
                     .sources
                     .values()
                     .map(|v| v.source_id)
                     .filter(|id| !new_source_ids.contains(id))
             })
-            .flatten()
             .collect::<BTreeSet<i32>>()
             .into_iter()
             .collect(),
@@ -262,14 +249,8 @@ pub fn check_flow_setup_status(
 
     let target_resources = {
         let grouped_target_resources = group_resource_states(
-            desired_state
-                .iter()
-                .map(|d| d.targets.iter().map(|(k, v)| (k, v)))
-                .flatten(),
-            existing_state
-                .iter()
-                .map(|e| e.targets.iter().map(|(k, v)| (k, v)))
-                .flatten(),
+            desired_state.iter().flat_map(|d| d.targets.iter()),
+            existing_state.iter().flat_map(|e| e.targets.iter()),
         )?;
         let registry = executor_factory_registry();
         grouped_target_resources
@@ -297,9 +278,7 @@ pub fn check_flow_setup_status(
     };
     Ok(FlowSetupStatusCheck {
         status: to_object_status(existing_state, desired_state)?,
-        seen_flow_metadata_version: existing_state
-            .map(|s| s.seen_flow_metadata_version)
-            .flatten(),
+        seen_flow_metadata_version: existing_state.and_then(|s| s.seen_flow_metadata_version),
         metadata_change,
         tracking_table: tracking_table_change,
         target_resources,
@@ -348,13 +327,13 @@ async fn maybe_update_resource_setup(
     resource: &(impl ResourceSetupStatusCheck + ?Sized),
 ) -> Result<()> {
     if resource.change_type() != SetupChangeType::NoChange {
-        write!(write, "{}:\n", resource.describe_resource(),)?;
+        writeln!(write, "{}:", resource.describe_resource(),)?;
         for change in resource.describe_changes() {
-            write!(write, "  - {}\n", change)?;
+            writeln!(write, "  - {}", change)?;
         }
         write!(write, "Pushing...")?;
         resource.apply_change().await?;
-        write!(write, "DONE\n")?;
+        writeln!(write, "DONE")?;
     }
     Ok(())
 }
@@ -389,7 +368,7 @@ pub async fn apply_changes(
                 ),
                 metadata_change
                     .desired_state()
-                    .map(|s| serde_json::to_value(s))
+                    .map(serde_json::to_value)
                     .transpose()?,
             );
         }
@@ -402,7 +381,7 @@ pub async fn apply_changes(
                 flow_status
                     .tracking_table
                     .desired_state()
-                    .map(|s| serde_json::to_value(s))
+                    .map(serde_json::to_value)
                     .transpose()?,
             );
         }
@@ -453,7 +432,7 @@ pub async fn apply_changes(
         )
         .await?;
 
-        write!(write, "Done for flow {}\n", flow_name)?;
+        writeln!(write, "Done for flow {}", flow_name)?;
     }
     Ok(())
 }

@@ -2,6 +2,7 @@ import typing
 import collections
 import dataclasses
 import types
+import inspect
 from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING, overload
 
 class Vector(NamedTuple):
@@ -130,15 +131,23 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         elif t is float:
             kind = 'Float64'
         else:
-            raise ValueError(f"type unsupported yet: {base_type}")
+            raise ValueError(f"type unsupported yet: {t}")
 
     return AnalyzedTypeInfo(kind=kind, vector_info=vector_info, elem_type=elem_type,
                             dataclass_type=dataclass_type, attrs=attrs, nullable=nullable)
 
 def _encode_fields_schema(dataclass_type: type) -> list[dict[str, Any]]:
-    return [{ 'name': field.name,
-              **encode_enriched_type_info(analyze_type_info(field.type))
-            } for field in dataclasses.fields(dataclass_type)]
+    result = []
+    for field in dataclasses.fields(dataclass_type):
+        try:
+            type_info = encode_enriched_type_info(analyze_type_info(field.type))
+        except ValueError as e:
+            e.add_note(f"Failed to encode annotation for field - "
+                       f"{dataclass_type.__name__}.{field.name}: {field.type}")
+            raise
+        type_info['name'] = field.name
+        result.append(type_info)
+    return result
 
 def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
     encoded_type: dict[str, Any] = { 'kind': type_info.kind }
@@ -147,6 +156,8 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         if type_info.dataclass_type is None:
             raise ValueError("Struct type must have a dataclass type")
         encoded_type['fields'] = _encode_fields_schema(type_info.dataclass_type)
+        if doc := inspect.getdoc(type_info.dataclass_type):
+            encoded_type['description'] = doc
 
     elif type_info.kind == 'Vector':
         if type_info.vector_info is None:

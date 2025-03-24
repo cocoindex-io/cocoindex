@@ -14,6 +14,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use indexmap::IndexSet;
 use log::warn;
 
+use crate::base::field_attrs;
 use crate::ops::sdk::*;
 
 struct ExportMimeType {
@@ -21,8 +22,8 @@ struct ExportMimeType {
     binary: &'static str,
 }
 
-const FOLDER_MIME_TYPE: &'static str = "application/vnd.google-apps.folder";
-const FILE_MIME_TYPE: &'static str = "application/vnd.google-apps.file";
+const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
+const FILE_MIME_TYPE: &str = "application/vnd.google-apps.file";
 static EXPORT_MIME_TYPES: LazyLock<HashMap<&'static str, ExportMimeType>> = LazyLock::new(|| {
     HashMap::from([
         (
@@ -188,13 +189,32 @@ impl SourceExecutor for Executor {
     async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
         let file_id = key.str_value()?;
 
-        let (_, file) = self
+        let file = match self
             .drive_hub
             .files()
             .get(file_id)
             .add_scope(Scope::Readonly)
+            .param("fields", "id,name,mimeType,trashed")
             .doit()
-            .await?;
+            .await
+        {
+            Ok((_, file)) => {
+                if file.trashed == Some(true) {
+                    return Ok(None);
+                }
+                file
+            }
+            Err(google_drive3::Error::BadRequest(err_msg))
+                if err_msg
+                    .get("error")
+                    .and_then(|e| e.get("code"))
+                    .and_then(|code| code.as_i64())
+                    == Some(404) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => Err(e)?,
+        };
 
         let (mime_type, resp_body) = if let Some(export_mime_type) = file
             .mime_type
@@ -209,7 +229,7 @@ impl SourceExecutor for Executor {
             let content = self
                 .drive_hub
                 .files()
-                .export(&file_id, target_mime_type)
+                .export(file_id, target_mime_type)
                 .add_scope(Scope::Readonly)
                 .doit()
                 .await?
@@ -227,19 +247,18 @@ impl SourceExecutor for Executor {
             (file.mime_type, resp.into_body())
         };
         let content = resp_body.collect().await?;
-        let mut fields = Vec::with_capacity(2);
-        fields.push(file.name.unwrap_or_default().into());
-        fields.push(mime_type.into());
-        if self.binary {
-            fields.push(content.to_bytes().to_vec().into());
-        } else {
-            fields.push(
+
+        let fields = vec![
+            file.name.unwrap_or_default().into(),
+            mime_type.into(),
+            if self.binary {
+                content.to_bytes().to_vec().into()
+            } else {
                 String::from_utf8_lossy(&content.to_bytes())
                     .to_string()
-                    .into(),
-            );
-        }
-
+                    .into()
+            },
+        ];
         Ok(Some(FieldValues { fields }))
     }
 }
@@ -259,21 +278,39 @@ impl SourceFactoryBase for Factory {
         spec: &Spec,
         _context: &FlowInstanceContext,
     ) -> Result<EnrichedValueType> {
+        let mut struct_schema = StructSchema::default();
+        let mut schema_builder = StructSchemaBuilder::new(&mut struct_schema);
+        schema_builder.add_field(FieldSchema::new(
+            "file_id",
+            make_output_type(BasicValueType::Str),
+        ));
+        let filename_field = schema_builder.add_field(FieldSchema::new(
+            "filename",
+            make_output_type(BasicValueType::Str),
+        ));
+        let mime_type_field = schema_builder.add_field(FieldSchema::new(
+            "mime_type",
+            make_output_type(BasicValueType::Str),
+        ));
+        schema_builder.add_field(FieldSchema::new(
+            "content",
+            make_output_type(if spec.binary {
+                BasicValueType::Bytes
+            } else {
+                BasicValueType::Str
+            })
+            .with_attr(
+                field_attrs::CONTENT_FILENAME,
+                serde_json::to_value(filename_field.to_field_ref())?,
+            )
+            .with_attr(
+                field_attrs::CONTENT_MIME_TYPE,
+                serde_json::to_value(mime_type_field.to_field_ref())?,
+            ),
+        ));
         Ok(make_output_type(CollectionSchema::new(
             CollectionKind::Table,
-            vec![
-                FieldSchema::new("file_id", make_output_type(BasicValueType::Str)),
-                FieldSchema::new("filename", make_output_type(BasicValueType::Str)),
-                FieldSchema::new("mime_type", make_output_type(BasicValueType::Str)),
-                FieldSchema::new(
-                    "content",
-                    make_output_type(if spec.binary {
-                        BasicValueType::Bytes
-                    } else {
-                        BasicValueType::Str
-                    }),
-                ),
-            ],
+            struct_schema,
         )))
     }
 

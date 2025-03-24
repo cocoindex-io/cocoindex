@@ -1,6 +1,6 @@
 use super::schema;
 use schemars::schema::{
-    ArrayValidation, InstanceType, ObjectValidation, Schema, SchemaObject, SingleOrVec,
+    ArrayValidation, InstanceType, Metadata, ObjectValidation, Schema, SchemaObject, SingleOrVec,
 };
 
 pub trait ToJsonSchema {
@@ -47,7 +47,7 @@ impl ToJsonSchema for schema::BasicValueType {
                 }));
                 schema
                     .metadata
-                    .get_or_insert_with(|| Default::default())
+                    .get_or_insert_with(Default::default)
                     .description =
                     Some("A range, start pos (inclusive), end pos (exclusive).".to_string());
             }
@@ -70,6 +70,10 @@ impl ToJsonSchema for schema::BasicValueType {
 impl ToJsonSchema for schema::StructSchema {
     fn to_json_schema(&self) -> SchemaObject {
         SchemaObject {
+            metadata: Some(Box::new(Metadata {
+                description: self.description.as_ref().map(|s| s.to_string()),
+                ..Default::default()
+            })),
             instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Object))),
             object: Some(Box::new(ObjectValidation {
                 properties: self
@@ -80,7 +84,8 @@ impl ToJsonSchema for schema::StructSchema {
                 required: self
                     .fields
                     .iter()
-                    .filter_map(|f| (!f.value_type.nullable).then(|| f.name.to_string()))
+                    .filter(|&f| (!f.value_type.nullable))
+                    .map(|f| f.name.to_string())
                     .collect(),
                 additional_properties: Some(Schema::Bool(false).into()),
                 ..Default::default()

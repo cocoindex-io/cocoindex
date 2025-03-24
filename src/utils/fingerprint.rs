@@ -34,7 +34,7 @@ impl serde::ser::Error for FingerprinterError {
 pub struct Fingerprint([u8; 16]);
 
 impl Fingerprint {
-    pub fn to_base64(&self) -> String {
+    pub fn to_base64(self) -> String {
         BASE64_STANDARD.encode(self.0)
     }
 
@@ -77,7 +77,7 @@ pub struct Fingerprinter {
 }
 
 impl Fingerprinter {
-    pub fn to_fingerprint(self) -> Fingerprint {
+    pub fn into_fingerprint(self) -> Fingerprint {
         Fingerprint(self.hasher.finalize().into())
     }
 
@@ -88,7 +88,7 @@ impl Fingerprinter {
     }
 
     pub fn write<S: Serialize>(&mut self, value: &S) -> Result<(), FingerprinterError> {
-        Ok(value.serialize(self)?)
+        value.serialize(self)
     }
 
     fn write_type_tag(&mut self, tag: &str) {
@@ -135,13 +135,13 @@ impl Serializer for &mut Fingerprinter {
 
     fn serialize_i16(self, v: i16) -> Result<(), Self::Error> {
         self.write_type_tag("i2");
-        self.hasher.update(&v.to_le_bytes());
+        self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
     fn serialize_i32(self, v: i32) -> Result<(), Self::Error> {
         self.write_type_tag("i4");
-        self.hasher.update(&v.to_le_bytes());
+        self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 

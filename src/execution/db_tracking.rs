@@ -91,7 +91,7 @@ pub async fn precommit_source_tracking_info(
         .bind(source_key_json) // $2
         .bind(max_process_ordinal) // $3
         .bind(sqlx::types::Json(staging_target_keys)) // $4
-        .bind(memoization_info.map(|m| sqlx::types::Json(m))) // $5
+        .bind(memoization_info.map(sqlx::types::Json)) // $5
         .execute(db_executor)
         .await?;
     Ok(())
