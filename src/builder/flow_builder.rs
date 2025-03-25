@@ -514,10 +514,12 @@ impl FlowBuilder {
         .into_py_result()
     }
 
+    #[pyo3(signature = (collector, fields, auto_uuid_field=None))]
     pub fn collect(
         &mut self,
         collector: &DataCollector,
         fields: Vec<(FieldName, DataSlice)>,
+        auto_uuid_field: Option<FieldName>,
     ) -> PyResult<()> {
         let common_scope = Self::minimum_common_scope(fields.iter().map(|(_, ds)| &ds.scope), None)
             .into_py_result()?;
@@ -540,6 +542,7 @@ impl FlowBuilder {
                         },
                         scope_name: collector.scope.scope_name.clone(),
                         collector_name: collector.name.clone(),
+                        auto_uuid_field,
                     }),
                 };
 

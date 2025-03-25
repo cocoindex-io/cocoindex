@@ -474,7 +474,7 @@ fn find_scope<'a>(
 fn analyze_struct_mapping(
     mapping: &StructMapping,
     scopes: RefList<'_, &'_ ExecutionScope<'_>>,
-) -> Result<(AnalyzedStructMapping, StructSchema)> {
+) -> Result<(AnalyzedStructMapping, Vec<FieldSchema>)> {
     let mut field_mappings = Vec::with_capacity(mapping.fields.len());
     let mut field_schemas = Vec::with_capacity(mapping.fields.len());
     for field in mapping.fields.iter() {
@@ -489,10 +489,7 @@ fn analyze_struct_mapping(
         AnalyzedStructMapping {
             fields: field_mappings,
         },
-        StructSchema {
-            fields: Arc::new(field_schemas),
-            description: None,
-        },
+        field_schemas,
     ))
 }
 
@@ -523,11 +520,14 @@ fn analyze_value_mapping(
         }
 
         ValueMapping::Struct(v) => {
-            let (struct_mapping, struct_schema) = analyze_struct_mapping(v, scopes)?;
+            let (struct_mapping, field_schemas) = analyze_struct_mapping(v, scopes)?;
             (
                 AnalyzedValueMapping::Struct(struct_mapping),
                 EnrichedValueType {
-                    typ: ValueType::Struct(struct_schema),
+                    typ: ValueType::Struct(StructSchema {
+                        fields: Arc::new(field_schemas),
+                        description: None,
+                    }),
                     nullable: false,
                     attrs: Default::default(),
                 },
@@ -766,22 +766,36 @@ impl AnalyzerContext<'_> {
 
             ReactiveOpSpec::Collect(op) => {
                 let scopes = parent_scopes.prepend(scope);
-                let (struct_mapping, struct_schema) = analyze_struct_mapping(&op.input, scopes)?;
-                let collector_ref = add_collector(
-                    &op.scope_name,
-                    op.collector_name.clone(),
-                    struct_schema,
-                    scopes,
-                )?;
-                let op_name = reactive_op.name.clone();
-                async move {
-                    Ok(AnalyzedReactiveOp::Collect(AnalyzedCollectOp {
-                        name: op_name,
-                        input: struct_mapping,
-                        collector_ref,
-                    }))
+                let (struct_mapping, mut field_schemas) =
+                    analyze_struct_mapping(&op.input, scopes)?;
+                if let Some(auto_uuid_field) = &op.auto_uuid_field {
+                    field_schemas.insert(
+                        0,
+                        FieldSchema::new(
+                            auto_uuid_field.clone(),
+                            EnrichedValueType {
+                                typ: ValueType::Basic(BasicValueType::Uuid),
+                                nullable: false,
+                                attrs: Default::default(),
+                            },
+                        ),
+                    )
                 }
-                .boxed()
+                let collect_op = AnalyzedReactiveOp::Collect(AnalyzedCollectOp {
+                    name: reactive_op.name.clone(),
+                    has_auto_uuid_field: op.auto_uuid_field.is_some(),
+                    input: struct_mapping,
+                    collector_ref: add_collector(
+                        &op.scope_name,
+                        op.collector_name.clone(),
+                        StructSchema {
+                            fields: Arc::new(field_schemas),
+                            description: None,
+                        },
+                        scopes,
+                    )?,
+                });
+                async move { Ok(collect_op) }.boxed()
             }
         };
         Ok(result_fut)

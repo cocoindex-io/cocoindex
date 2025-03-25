@@ -88,6 +88,7 @@ pub struct AnalyzedForEachOp {
 
 pub struct AnalyzedCollectOp {
     pub name: String,
+    pub has_auto_uuid_field: bool,
     pub input: AnalyzedStructMapping,
     pub collector_ref: AnalyzedCollectorReference,
 }

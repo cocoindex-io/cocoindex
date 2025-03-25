@@ -3,7 +3,9 @@ use crate::utils::{db::WriteAction, fingerprint::Fingerprint};
 use anyhow::Result;
 use sqlx::PgPool;
 
+/// (target_key, process_ordinal, fingerprint)
 pub type TrackedTargetKey = (serde_json::Value, i64, Option<Fingerprint>);
+/// (source_id, target_key)
 pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKey>)>;
 
 #[derive(sqlx::FromRow, Debug)]

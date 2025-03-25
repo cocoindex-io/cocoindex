@@ -181,9 +181,15 @@ pub struct ForEachOpSpec {
 /// Emit data to a given collector at the given scope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectOpSpec {
+    /// Field values to be collected.
     pub input: StructMapping,
+    /// Scope for the collector.
     pub scope_name: ScopeName,
+    /// Name of the collector.
     pub collector_name: FieldName,
+    /// If specified, the collector will have an automatically generated UUID field with the given name.
+    /// The uuid will remain stable when collected input values remain unchanged.
+    pub auto_uuid_field: Option<FieldName>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
