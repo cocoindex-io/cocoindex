@@ -791,6 +791,7 @@ impl AnalyzerContext<'_> {
                 let scopes = parent_scopes.prepend(scope);
                 let (struct_mapping, fields_schema) = analyze_struct_mapping(&op.input, scopes)?;
                 let has_auto_uuid_field = op.auto_uuid_field.is_some();
+                let fingerprinter = Fingerprinter::default().with(&fields_schema)?;
                 let collect_op = AnalyzedReactiveOp::Collect(AnalyzedCollectOp {
                     name: reactive_op.name.clone(),
                     has_auto_uuid_field,
@@ -801,6 +802,7 @@ impl AnalyzerContext<'_> {
                         CollectorSchema::from_fields(fields_schema, has_auto_uuid_field),
                         scopes,
                     )?,
+                    fingerprinter,
                 });
                 async move { Ok(collect_op) }.boxed()
             }
