@@ -360,13 +360,13 @@ impl std::fmt::Display for CollectorSchema {
 }
 
 impl CollectorSchema {
-    pub fn from_fields(fields: Vec<FieldSchema>, has_auto_uuid_field: bool) -> Self {
+    pub fn from_fields(fields: Vec<FieldSchema>, auto_uuid_field: Option<FieldName>) -> Self {
         let mut fields = fields;
-        let auto_uuid_field_idx = if has_auto_uuid_field {
+        let auto_uuid_field_idx = if let Some(auto_uuid_field) = auto_uuid_field {
             fields.insert(
                 0,
                 FieldSchema::new(
-                    "uuid".to_string(),
+                    auto_uuid_field,
                     EnrichedValueType {
                         typ: ValueType::Basic(BasicValueType::Uuid),
                         nullable: false,

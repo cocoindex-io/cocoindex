@@ -799,7 +799,7 @@ impl AnalyzerContext<'_> {
                     collector_ref: add_collector(
                         &op.scope_name,
                         op.collector_name.clone(),
-                        CollectorSchema::from_fields(fields_schema, has_auto_uuid_field),
+                        CollectorSchema::from_fields(fields_schema, op.auto_uuid_field.clone()),
                         scopes,
                     )?,
                     fingerprinter,

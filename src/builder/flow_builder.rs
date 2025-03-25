@@ -543,7 +543,7 @@ impl FlowBuilder {
                         },
                         scope_name: collector.scope.scope_name.clone(),
                         collector_name: collector.name.clone(),
-                        auto_uuid_field,
+                        auto_uuid_field: auto_uuid_field.clone(),
                     }),
                 };
 
@@ -565,7 +565,7 @@ impl FlowBuilder {
                     value_type: ds.data_type.schema,
                 })
                 .collect(),
-            has_auto_uuid_field,
+            auto_uuid_field,
         );
         {
             let mut collector = collector.collector.lock().unwrap();

@@ -238,6 +238,12 @@ class DataScope:
             )
         )
 
+class GeneratedField(Enum):
+    """
+    A generated field is automatically set by the engine.
+    """
+    UUID = "Uuid"
+
 class DataCollector:
     """A data collector is used to collect data into a collector."""
     _flow_builder_state: _FlowBuilderState
@@ -248,12 +254,25 @@ class DataCollector:
         self._flow_builder_state = flow_builder_state
         self._engine_data_collector = data_collector
 
-    def collect(self, **kwargs: DataSlice):
+    def collect(self, **kwargs: DataSlice | GeneratedField):
         """
         Collect data into the collector.
         """
+        regular_kwargs = []
+        auto_uuid_field = None
+        for k, v in kwargs.items():
+            if isinstance(v, GeneratedField):
+                if v == GeneratedField.UUID:
+                    if auto_uuid_field is not None:
+                        raise ValueError("Only one generated UUID field is allowed")
+                    auto_uuid_field = k
+                else:
+                    raise ValueError(f"Unexpected generated field: {v}")
+            else:
+                regular_kwargs.append((k, _data_slice_state(v).engine_data_slice))
+
         self._flow_builder_state.engine_flow_builder.collect(
-            self._engine_data_collector, [(k, _data_slice_state(v).engine_data_slice) for k, v in kwargs.items()])
+            self._engine_data_collector, regular_kwargs, auto_uuid_field)
 
     def export(self, name: str, target_spec: op.StorageSpec, /, *,
               primary_key_fields: Sequence[str] | None = None,
