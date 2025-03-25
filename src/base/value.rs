@@ -9,7 +9,6 @@ use serde::{
     Deserialize, Serialize,
 };
 use std::{collections::BTreeMap, ops::Deref, sync::Arc};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RangeValue {
@@ -77,7 +76,7 @@ pub enum KeyValue {
     Bool(bool),
     Int64(i64),
     Range(RangeValue),
-    Uuid(Uuid),
+    Uuid(uuid::Uuid),
     Struct(Vec<KeyValue>),
 }
 
@@ -304,7 +303,7 @@ pub enum BasicValue {
     Float32(f32),
     Float64(f64),
     Range(RangeValue),
-    Uuid(Uuid),
+    Uuid(uuid::Uuid),
     Json(Arc<serde_json::Value>),
     Vector(Arc<[BasicValue]>),
 }
@@ -775,6 +774,9 @@ impl BasicValue {
                     .ok_or_else(|| anyhow::anyhow!("invalid fp64 value {v}"))?,
             ),
             (v, BasicValueType::Range) => BasicValue::Range(serde_json::from_value(v)?),
+            (serde_json::Value::String(v), BasicValueType::Uuid) => {
+                BasicValue::Uuid(uuid::Uuid::parse_str(v.as_str())?)
+            }
             (v, BasicValueType::Json) => BasicValue::Json(Arc::from(v)),
             (
                 serde_json::Value::Array(v),
