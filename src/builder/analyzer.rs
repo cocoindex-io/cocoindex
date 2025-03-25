@@ -313,7 +313,14 @@ fn try_merge_collector_schemas(
     schema2: &CollectorSchema,
 ) -> Result<CollectorSchema> {
     let fields = try_merge_fields_schemas(&schema1.fields, &schema2.fields)?;
-    Ok(CollectorSchema { fields })
+    Ok(CollectorSchema {
+        fields,
+        auto_uuid_field_idx: if schema1.auto_uuid_field_idx == schema2.auto_uuid_field_idx {
+            schema1.auto_uuid_field_idx
+        } else {
+            None
+        },
+    })
 }
 
 #[derive(Debug)]
@@ -782,31 +789,16 @@ impl AnalyzerContext<'_> {
 
             ReactiveOpSpec::Collect(op) => {
                 let scopes = parent_scopes.prepend(scope);
-                let (struct_mapping, mut fields_schema) =
-                    analyze_struct_mapping(&op.input, scopes)?;
-                if let Some(auto_uuid_field) = &op.auto_uuid_field {
-                    fields_schema.insert(
-                        0,
-                        FieldSchema::new(
-                            auto_uuid_field.clone(),
-                            EnrichedValueType {
-                                typ: ValueType::Basic(BasicValueType::Uuid),
-                                nullable: false,
-                                attrs: Default::default(),
-                            },
-                        ),
-                    )
-                }
+                let (struct_mapping, fields_schema) = analyze_struct_mapping(&op.input, scopes)?;
+                let has_auto_uuid_field = op.auto_uuid_field.is_some();
                 let collect_op = AnalyzedReactiveOp::Collect(AnalyzedCollectOp {
                     name: reactive_op.name.clone(),
-                    has_auto_uuid_field: op.auto_uuid_field.is_some(),
+                    has_auto_uuid_field,
                     input: struct_mapping,
                     collector_ref: add_collector(
                         &op.scope_name,
                         op.collector_name.clone(),
-                        CollectorSchema {
-                            fields: fields_schema,
-                        },
+                        CollectorSchema::from_fields(fields_schema, has_auto_uuid_field),
                         scopes,
                     )?,
                 });

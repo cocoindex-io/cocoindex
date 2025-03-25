@@ -342,6 +342,8 @@ impl std::fmt::Display for FieldSchema {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CollectorSchema {
     pub fields: Vec<FieldSchema>,
+    /// If specified, the collector will have an automatically generated UUID field with the given index.
+    pub auto_uuid_field_idx: Option<usize>,
 }
 
 impl std::fmt::Display for CollectorSchema {
@@ -358,9 +360,33 @@ impl std::fmt::Display for CollectorSchema {
 }
 
 impl CollectorSchema {
+    pub fn from_fields(fields: Vec<FieldSchema>, has_auto_uuid_field: bool) -> Self {
+        let mut fields = fields;
+        let auto_uuid_field_idx = if has_auto_uuid_field {
+            fields.insert(
+                0,
+                FieldSchema::new(
+                    "uuid".to_string(),
+                    EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Uuid),
+                        nullable: false,
+                        attrs: Default::default(),
+                    },
+                ),
+            );
+            Some(0)
+        } else {
+            None
+        };
+        Self {
+            fields,
+            auto_uuid_field_idx,
+        }
+    }
     pub fn without_attrs(&self) -> Self {
         Self {
             fields: self.fields.iter().map(|f| f.without_attrs()).collect(),
+            auto_uuid_field_idx: self.auto_uuid_field_idx,
         }
     }
 }

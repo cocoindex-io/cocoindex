@@ -523,6 +523,7 @@ impl FlowBuilder {
     ) -> PyResult<()> {
         let common_scope = Self::minimum_common_scope(fields.iter().map(|(_, ds)| &ds.scope), None)
             .into_py_result()?;
+        let has_auto_uuid_field = auto_uuid_field.is_some();
         let name = format!(".collect.{}", self.next_generated_op_id);
         self.next_generated_op_id += 1;
         self.do_in_scope(
@@ -556,16 +557,16 @@ impl FlowBuilder {
         )
         .into_py_result()?;
 
-        let collector_schema = CollectorSchema {
-            fields: fields
+        let collector_schema = CollectorSchema::from_fields(
+            fields
                 .into_iter()
                 .map(|(name, ds)| FieldSchema {
                     name,
                     value_type: ds.data_type.schema,
                 })
                 .collect(),
-        };
-
+            has_auto_uuid_field,
+        );
         {
             let mut collector = collector.collector.lock().unwrap();
             if let Some(collector) = collector.as_mut() {
