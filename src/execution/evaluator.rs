@@ -278,14 +278,13 @@ fn assemble_value(
     }
 }
 
-fn assemble_input_values(
-    value_mappings: &[AnalyzedValueMapping],
-    scoped_entries: RefList<'_, &ScopeEntry<'_>>,
-) -> Vec<value::Value> {
+fn assemble_input_values<'a>(
+    value_mappings: &'a [AnalyzedValueMapping],
+    scoped_entries: RefList<'a, &ScopeEntry<'a>>,
+) -> impl Iterator<Item = value::Value> + 'a {
     value_mappings
         .iter()
-        .map(|value_mapping| assemble_value(value_mapping, scoped_entries))
-        .collect()
+        .map(move |value_mapping| assemble_value(value_mapping, scoped_entries))
 }
 
 async fn evaluate_child_op_scope(
@@ -316,7 +315,9 @@ async fn evaluate_op_scope(
     for reactive_op in op_scope.reactive_ops.iter() {
         match reactive_op {
             AnalyzedReactiveOp::Transform(op) => {
-                let input_values = assemble_input_values(&op.inputs, scoped_entries);
+                let mut input_values = Vec::with_capacity(op.inputs.len());
+                input_values
+                    .extend(assemble_input_values(&op.inputs, scoped_entries).collect::<Vec<_>>());
                 let output_value_cell = memory.get_cache_entry(
                     || {
                         Ok(op
@@ -402,7 +403,23 @@ async fn evaluate_op_scope(
             }
 
             AnalyzedReactiveOp::Collect(op) => {
-                let field_values = assemble_input_values(&op.input.fields, scoped_entries);
+                let mut field_values = Vec::with_capacity(
+                    op.input.fields.len() + if op.has_auto_uuid_field { 1 } else { 0 },
+                );
+                let field_values_iter = assemble_input_values(&op.input.fields, scoped_entries);
+                if op.has_auto_uuid_field {
+                    field_values.push(value::Value::Null);
+                    field_values.extend(field_values_iter);
+                    let uuid = memory.next_uuid(
+                        op.fingerprinter
+                            .clone()
+                            .with(&field_values[1..])?
+                            .into_fingerprint(),
+                    )?;
+                    field_values[0] = value::Value::Basic(value::BasicValue::Uuid(uuid));
+                } else {
+                    field_values.extend(field_values_iter);
+                };
                 let collector_entry = scoped_entries
                     .headn(op.collector_ref.scope_up_level as usize)
                     .unwrap();
