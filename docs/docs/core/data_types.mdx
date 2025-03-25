@@ -24,6 +24,7 @@ This is the list of all basic types supported by CocoIndex:
 | float32 | `cocoindex.typing.Float32` |`float` | 
 | float64 |  `cocoindex.typing.Float64` |`float` |
 | range | `cocoindex.typing.Range`  | `tuple[int, int]` |
+| uuid | `uuid.UUId` | `uuid.UUID` |
 | vector[*type*, *N*?] |`Annotated[list[type], cocoindex.typing.Vector(dim=N)]` | `list[type]` | 
 | json | `cocoindex.typing.Json` | Any type convertible to JSON by `json` package | 
 
@@ -73,6 +74,7 @@ Currently, the following types are supported as types for key fields:
 - `bool`
 - `int64`
 - `range`
+- `uuid`
 - Struct with all fields being key types
 
 ### Vector Type
