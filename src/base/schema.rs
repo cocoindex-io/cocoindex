@@ -125,7 +125,7 @@ pub struct CollectionSchema {
     pub row: StructSchema,
 
     #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
-    pub collectors: Vec<NamedSpec<StructSchema>>,
+    pub collectors: Vec<NamedSpec<Arc<CollectorSchema>>>,
 }
 
 impl CollectionSchema {
@@ -157,7 +157,7 @@ impl CollectionSchema {
                 .iter()
                 .map(|c| NamedSpec {
                     name: c.name.clone(),
-                    spec: c.spec.without_attrs(),
+                    spec: Arc::from(c.spec.without_attrs()),
                 })
                 .collect(),
         }
@@ -339,13 +339,39 @@ impl std::fmt::Display for FieldSchema {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CollectorSchema {
+    pub fields: Vec<FieldSchema>,
+}
+
+impl std::fmt::Display for CollectorSchema {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Collector(")?;
+        for (i, field) in self.fields.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", field)?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl CollectorSchema {
+    pub fn without_attrs(&self) -> Self {
+        Self {
+            fields: self.fields.iter().map(|f| f.without_attrs()).collect(),
+        }
+    }
+}
+
 /// Top-level schema for a flow instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataSchema {
     pub schema: StructSchema,
 
     #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
-    pub collectors: Vec<NamedSpec<StructSchema>>,
+    pub collectors: Vec<NamedSpec<Arc<CollectorSchema>>>,
 }
 
 impl Deref for DataSchema {
