@@ -35,6 +35,9 @@ pub enum BasicValueType {
     /// A range, with a start offset and a length.
     Range,
 
+    /// A UUID.
+    Uuid,
+
     /// A JSON value.
     Json,
 
@@ -52,6 +55,7 @@ impl std::fmt::Display for BasicValueType {
             BasicValueType::Float32 => write!(f, "float32"),
             BasicValueType::Float64 => write!(f, "float64"),
             BasicValueType::Range => write!(f, "range"),
+            BasicValueType::Uuid => write!(f, "uuid"),
             BasicValueType::Json => write!(f, "json"),
             BasicValueType::Vector(s) => write!(
                 f,

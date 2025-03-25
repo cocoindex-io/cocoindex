@@ -87,6 +87,7 @@ impl SimpleSemanticsQueryHandler {
                         | value::BasicValue::Str(_)
                         | value::BasicValue::Bool(_)
                         | value::BasicValue::Range(_)
+                        | value::BasicValue::Uuid(_)
                         | value::BasicValue::Json(_)
                         | value::BasicValue::Vector(_) => {
                             bail!("Query results is not a vector of number")

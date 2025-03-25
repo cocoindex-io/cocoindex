@@ -26,9 +26,6 @@ impl ToJsonSchema for schema::BasicValueType {
             schema::BasicValueType::Float32 | schema::BasicValueType::Float64 => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::Number)));
             }
-            schema::BasicValueType::Json => {
-                // Can be any value. No type constraint.
-            }
             schema::BasicValueType::Range => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::Array)));
                 schema.array = Some(Box::new(ArrayValidation {
@@ -50,6 +47,13 @@ impl ToJsonSchema for schema::BasicValueType {
                     .get_or_insert_with(Default::default)
                     .description =
                     Some("A range, start pos (inclusive), end pos (exclusive).".to_string());
+            }
+            schema::BasicValueType::Uuid => {
+                schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
+                schema.format = Some("uuid".to_string());
+            }
+            schema::BasicValueType::Json => {
+                // Can be any value. No type constraint.
             }
             schema::BasicValueType::Vector(s) => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::Array)));
