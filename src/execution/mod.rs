@@ -1,9 +1,9 @@
-pub mod dumper;
-pub mod evaluator;
-pub mod indexer;
-pub mod query;
+pub(crate) mod dumper;
+pub(crate) mod evaluator;
+pub(crate) mod indexer;
+pub(crate) mod query;
 
 mod db_tracking;
 pub mod db_tracking_setup;
 
-mod memoization;
+pub(crate) mod memoization;

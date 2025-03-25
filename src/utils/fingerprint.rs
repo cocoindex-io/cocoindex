@@ -31,7 +31,7 @@ impl serde::ser::Error for FingerprinterError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Fingerprint([u8; 16]);
+pub struct Fingerprint(pub [u8; 16]);
 
 impl Fingerprint {
     pub fn to_base64(self) -> String {

@@ -16,6 +16,7 @@ use crate::{
     api_bail, api_error,
     base::{schema, spec},
     execution::indexer,
+    execution::memoization,
 };
 
 pub async fn list_flows(
@@ -144,12 +145,16 @@ pub async fn evaluate_data(
         .ok_or_else(|| api_error!("field {} does not have a key", query.field))?;
     let key = value::KeyValue::from_strs(query.key, &key_field.value_type.typ)?;
 
-    let value_builder = indexer::evaluate_source_entry_with_cache(
+    let value_builder = indexer::evaluate_source_entry_with_memory(
         &plan,
         source_op,
         schema,
         &key,
-        indexer::EvaluationCacheOption::UseCache(&lib_context.pool),
+        memoization::EvaluationMemoryOptions {
+            enable_cache: true,
+            evaluation_only: true,
+        },
+        &lib_context.pool,
     )
     .await?
     .ok_or_else(|| api_error!("value not found for source at the specified key: {key:?}"))?;

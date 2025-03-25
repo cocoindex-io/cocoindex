@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use yaml_rust2::YamlEmitter;
 
 use super::indexer;
+use super::memoization::EvaluationMemoryOptions;
 use crate::base::{schema, value};
 use crate::builder::plan::{AnalyzedSourceOp, ExecutionPlan};
 use crate::utils::yaml_ser::YamlSerializer;
@@ -73,18 +74,16 @@ impl<'a> Dumper<'a> {
     where
         'a: 'b,
     {
-        let cache_option = if self.options.use_cache {
-            indexer::EvaluationCacheOption::UseCache(self.pool)
-        } else {
-            indexer::EvaluationCacheOption::NoCache
-        };
-
-        let data_builder = indexer::evaluate_source_entry_with_cache(
+        let data_builder = indexer::evaluate_source_entry_with_memory(
             self.plan,
             source_op,
             self.schema,
             key,
-            cache_option,
+            EvaluationMemoryOptions {
+                enable_cache: self.options.use_cache,
+                evaluation_only: true,
+            },
+            self.pool,
         )
         .await?;
 

@@ -11,7 +11,7 @@ use crate::{
     utils::immutable::RefList,
 };
 
-use super::memoization::{evaluate_with_cell, EvaluationCache};
+use super::memoization::{evaluate_with_cell, EvaluationMemory, EvaluationMemoryOptions};
 
 #[derive(Debug)]
 pub struct ScopeValueBuilder {
@@ -292,9 +292,9 @@ async fn evaluate_child_op_scope(
     op_scope: &AnalyzedOpScope,
     scoped_entries: RefList<'_, &ScopeEntry<'_>>,
     child_scope_entry: ScopeEntry<'_>,
-    cache: Option<&EvaluationCache>,
+    memory: &EvaluationMemory,
 ) -> Result<()> {
-    evaluate_op_scope(op_scope, scoped_entries.prepend(&child_scope_entry), cache)
+    evaluate_op_scope(op_scope, scoped_entries.prepend(&child_scope_entry), memory)
         .await
         .with_context(|| {
             format!(
@@ -310,30 +310,25 @@ async fn evaluate_child_op_scope(
 async fn evaluate_op_scope(
     op_scope: &AnalyzedOpScope,
     scoped_entries: RefList<'_, &ScopeEntry<'_>>,
-    cache: Option<&EvaluationCache>,
+    memory: &EvaluationMemory,
 ) -> Result<()> {
     let head_scope = *scoped_entries.head().unwrap();
     for reactive_op in op_scope.reactive_ops.iter() {
         match reactive_op {
             AnalyzedReactiveOp::Transform(op) => {
                 let input_values = assemble_input_values(&op.inputs, scoped_entries);
-
-                let output_value_cell = match (op.function_exec_info.enable_cache, cache) {
-                    (true, Some(cache)) => {
-                        let key = op
+                let output_value_cell = memory.get_cache_entry(
+                    || {
+                        Ok(op
                             .function_exec_info
                             .fingerprinter
                             .clone()
                             .with(&input_values)?
-                            .into_fingerprint();
-                        Some(cache.get(
-                            key,
-                            &op.function_exec_info.output_type,
-                            /*ttl=*/ None,
-                        )?)
-                    }
-                    _ => None,
-                };
+                            .into_fingerprint())
+                    },
+                    &op.function_exec_info.output_type,
+                    /*ttl=*/ None,
+                )?;
                 let output_value = evaluate_with_cell(output_value_cell.as_ref(), move || {
                     op.executor.evaluate(input_values)
                 })
@@ -362,7 +357,7 @@ async fn evaluate_op_scope(
                                     value: item,
                                     schema: &collection_schema.row,
                                 },
-                                cache,
+                                memory,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -377,7 +372,7 @@ async fn evaluate_op_scope(
                                     value: v,
                                     schema: &collection_schema.row,
                                 },
-                                cache,
+                                memory,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -393,7 +388,7 @@ async fn evaluate_op_scope(
                                     value: item,
                                     schema: &collection_schema.row,
                                 },
-                                cache,
+                                memory,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -431,7 +426,7 @@ pub async fn evaluate_source_entry(
     source_op: &AnalyzedSourceOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
-    cache: Option<&EvaluationCache>,
+    memory: &EvaluationMemory,
 ) -> Result<Option<ScopeValueBuilder>> {
     let root_schema = &schema.schema;
     let root_scope_value =
@@ -464,7 +459,7 @@ pub async fn evaluate_source_entry(
             evaluate_op_scope(
                 &plan.op_scope,
                 RefList::Nil.prepend(&root_scope_entry),
-                cache,
+                memory,
             )
             .await?;
             Some(root_scope_value)
@@ -497,10 +492,18 @@ pub async fn evaluate_transient_flow(
     for (field, value) in flow.execution_plan.input_fields.iter().zip(input_values) {
         root_scope_entry.define_field(field, value)?;
     }
+    let eval_memory = EvaluationMemory::new(
+        chrono::Utc::now(),
+        None,
+        EvaluationMemoryOptions {
+            enable_cache: false,
+            evaluation_only: true,
+        },
+    );
     evaluate_op_scope(
         &flow.execution_plan.op_scope,
         RefList::Nil.prepend(&root_scope_entry),
-        None,
+        &eval_memory,
     )
     .await?;
     let output_value = assemble_value(
