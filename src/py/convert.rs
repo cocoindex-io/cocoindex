@@ -63,17 +63,14 @@ fn basic_value_to_py_object<'py>(
         value::BasicValue::Int64(v) => v.into_bound_py_any(py)?,
         value::BasicValue::Float32(v) => v.into_bound_py_any(py)?,
         value::BasicValue::Float64(v) => v.into_bound_py_any(py)?,
+        value::BasicValue::Range(v) => pythonize(py, v).into_py_result()?,
+        value::BasicValue::Uuid(v) => v.as_bytes().into_bound_py_any(py)?,
+        value::BasicValue::Json(v) => pythonize(py, v).into_py_result()?,
         value::BasicValue::Vector(v) => v
             .iter()
             .map(|v| basic_value_to_py_object(py, v))
             .collect::<PyResult<Vec<_>>>()?
             .into_bound_py_any(py)?,
-        _ => {
-            return Err(PyException::new_err(format!(
-                "unsupported value type: {}",
-                v.kind()
-            )))
-        }
     };
     Ok(result)
 }
@@ -129,18 +126,19 @@ fn basic_value_from_py_object<'py>(
         schema::BasicValueType::Int64 => value::BasicValue::Int64(v.extract::<i64>()?),
         schema::BasicValueType::Float32 => value::BasicValue::Float32(v.extract::<f32>()?),
         schema::BasicValueType::Float64 => value::BasicValue::Float64(v.extract::<f64>()?),
+        schema::BasicValueType::Range => value::BasicValue::Range(depythonize(v)?),
+        schema::BasicValueType::Uuid => {
+            value::BasicValue::Uuid(uuid::Uuid::from_bytes(v.extract::<uuid::Bytes>()?))
+        }
+        schema::BasicValueType::Json => {
+            value::BasicValue::Json(Arc::from(depythonize::<serde_json::Value>(v)?))
+        }
         schema::BasicValueType::Vector(elem) => value::BasicValue::Vector(Arc::from(
             v.extract::<Vec<Bound<'py, PyAny>>>()?
                 .into_iter()
                 .map(|v| basic_value_from_py_object(&elem.element_type, &v))
                 .collect::<PyResult<Vec<_>>>()?,
         )),
-        _ => {
-            return Err(PyException::new_err(format!(
-                "unsupported value type: {}",
-                typ
-            )))
-        }
     };
     Ok(result)
 }
