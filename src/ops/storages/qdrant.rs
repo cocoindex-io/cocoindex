@@ -70,12 +70,10 @@ impl ExportTargetExecutor for Executor {
     async fn apply_mutation(&self, mutation: ExportTargetMutation) -> Result<()> {
         let mut points: Vec<PointStruct> = Vec::with_capacity(mutation.upserts.len());
         for upsert in mutation.upserts.iter() {
-            let key_fields = key_value_fields_iter(&self.key_fields_schema, &upsert.key)?
-                .iter()
-                .collect();
-            let key_fields = parse_key_fields(&key_fields, &self.key_fields_schema)?;
+            let key_fields = key_value_fields_iter(&self.key_fields_schema, &upsert.key)?;
+            let key_fields = key_values_to_payload(&key_fields, &self.key_fields_schema)?;
             let (mut payload, vectors) =
-                parse_value_fields(&upsert.value.fields, &self.value_fields_schema)?;
+                values_to_payload(&upsert.value.fields, &self.value_fields_schema)?;
             payload.extend(key_fields);
 
             points.push(PointStruct::new(1, vectors, payload));
@@ -88,8 +86,8 @@ impl ExportTargetExecutor for Executor {
     }
 }
 
-fn parse_key_fields(
-    key_fields: &Vec<&KeyValue>,
+fn key_values_to_payload(
+    key_fields: &[KeyValue],
     schema: &Vec<FieldSchema>,
 ) -> Result<HashMap<String, QdrantValue>> {
     let mut payload = HashMap::with_capacity(key_fields.len());
@@ -117,7 +115,7 @@ fn parse_key_fields(
     Ok(payload)
 }
 
-fn parse_value_fields(
+fn values_to_payload(
     value_fields: &Vec<Value>,
     schema: &Vec<FieldSchema>,
 ) -> Result<(HashMap<String, QdrantValue>, NamedVectors)> {
