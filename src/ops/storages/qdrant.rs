@@ -375,7 +375,6 @@ impl StorageFactoryBase for Arc<Factory> {
     fn build(
         self: Arc<Self>,
         _name: String,
-        _target_id: i32,
         spec: Spec,
         key_fields_schema: Vec<FieldSchema>,
         value_fields_schema: Vec<FieldSchema>,
@@ -385,6 +384,7 @@ impl StorageFactoryBase for Arc<Factory> {
         (CollectionId, SetupState),
         ExecutorFuture<'static, (Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>,
     )> {
+        // TODO(Anush008): Add as a field to the Spec
         let url = "http://localhost:6334/";
         let collection_name = spec.collection_name;
         let table_id = CollectionId {
@@ -418,13 +418,11 @@ impl StorageFactoryBase for Arc<Factory> {
         Ok(SetupStatusCheck::new(key, desired))
     }
 
-    fn will_keep_all_existing_data(
+    fn check_state_compatibility(
         &self,
-        _name: &str,
-        _target_id: i32,
         _desired: &SetupState,
         _existing: &SetupState,
-    ) -> Result<bool> {
-        Ok(true)
+    ) -> Result<SetupStateCompatibility> {
+        Ok(SetupStateCompatibility::Compatible)
     }
 }
