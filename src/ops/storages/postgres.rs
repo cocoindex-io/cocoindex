@@ -21,6 +21,7 @@ use serde::Serialize;
 use sqlx::postgres::types::PgRange;
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
+use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
@@ -78,6 +79,9 @@ fn bind_key_field<'arg>(
                 end: Bound::Excluded(v.end as i64),
             });
         }
+        KeyValue::Uuid(v) => {
+            builder.push_bind(v);
+        }
         KeyValue::Struct(fields) => {
             builder.push_bind(sqlx::types::Json(fields));
         }
@@ -110,14 +114,17 @@ fn bind_value_field<'arg>(
             BasicValue::Float64(v) => {
                 builder.push_bind(v);
             }
-            BasicValue::Json(v) => {
-                builder.push_bind(sqlx::types::Json(&**v));
-            }
             BasicValue::Range(v) => {
                 builder.push_bind(PgRange {
                     start: Bound::Included(v.start as i64),
                     end: Bound::Excluded(v.end as i64),
                 });
+            }
+            BasicValue::Uuid(v) => {
+                builder.push_bind(v);
+            }
+            BasicValue::Json(v) => {
+                builder.push_bind(sqlx::types::Json(&**v));
             }
             BasicValue::Vector(v) => match &field_schema.value_type.typ {
                 ValueType::Basic(BasicValueType::Vector(vs)) if convertible_to_pgvector(vs) => {
@@ -186,6 +193,9 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
                         _ => anyhow::bail!("invalid range value"),
                     })
                     .transpose()?,
+                BasicValueType::Uuid => row
+                    .try_get::<Option<Uuid>, _>(field_idx)?
+                    .map(BasicValue::Uuid),
                 BasicValueType::Json => row
                     .try_get::<Option<serde_json::Value>, _>(field_idx)?
                     .map(|v| BasicValue::Json(Arc::from(v))),
@@ -655,6 +665,7 @@ fn to_column_type_sql(column_type: &ValueType) -> Cow<'static, str> {
             BasicValueType::Float32 => "real".into(),
             BasicValueType::Float64 => "double precision".into(),
             BasicValueType::Range => "int8range".into(),
+            BasicValueType::Uuid => "uuid".into(),
             BasicValueType::Json => "jsonb".into(),
             BasicValueType::Vector(vec_schema) => {
                 if convertible_to_pgvector(vec_schema) {
@@ -883,7 +894,6 @@ impl StorageFactoryBase for Arc<Factory> {
     fn build(
         self: Arc<Self>,
         name: String,
-        target_id: i32,
         spec: Spec,
         key_fields_schema: Vec<FieldSchema>,
         value_fields_schema: Vec<FieldSchema>,
@@ -895,9 +905,9 @@ impl StorageFactoryBase for Arc<Factory> {
     )> {
         let table_id = TableId {
             database_url: spec.database_url.clone(),
-            table_name: spec.table_name.unwrap_or_else(|| {
-                format!("{}__{}__{}", context.flow_instance_name, name, target_id)
-            }),
+            table_name: spec
+                .table_name
+                .unwrap_or_else(|| format!("{}__{}", context.flow_instance_name, name)),
         };
         let setup_state = SetupState::new(
             &table_id,
@@ -932,22 +942,30 @@ impl StorageFactoryBase for Arc<Factory> {
         Ok(SetupStatusCheck::new(self.clone(), key, desired, existing))
     }
 
-    fn will_keep_all_existing_data(
+    fn check_state_compatibility(
         &self,
-        _name: &str,
-        _target_id: i32,
         desired: &SetupState,
         existing: &SetupState,
-    ) -> Result<bool> {
-        let result = existing
-            .key_fields_schema
-            .iter()
-            .all(|(k, v)| desired.key_fields_schema.get(k) == Some(v))
+    ) -> Result<SetupStateCompatibility> {
+        let is_key_identical = existing.key_fields_schema.len() == desired.key_fields_schema.len()
             && existing
+                .key_fields_schema
+                .iter()
+                .all(|(k, v)| desired.key_fields_schema.get(k) == Some(v));
+        let compatibility = if is_key_identical {
+            let is_value_lossy = existing
                 .value_fields_schema
                 .iter()
                 .any(|(k, v)| desired.value_fields_schema.get(k) != Some(v));
-        Ok(result)
+            if is_value_lossy {
+                SetupStateCompatibility::PartialCompatible
+            } else {
+                SetupStateCompatibility::Compatible
+            }
+        } else {
+            SetupStateCompatibility::NotCompatible
+        };
+        Ok(compatibility)
     }
 }
 

@@ -3,6 +3,7 @@ Utilities to convert between Python and engine values.
 """
 import dataclasses
 import inspect
+import uuid
 
 from typing import Any, Callable
 from .typing import analyze_type_info, COLLECTION_TYPES
@@ -13,6 +14,8 @@ def to_engine_value(value: Any) -> Any:
         return [to_engine_value(getattr(value, f.name)) for f in dataclasses.fields(value)]
     if isinstance(value, (list, tuple)):
         return [to_engine_value(v) for v in value]
+    if isinstance(value, uuid.UUID):
+        return value.bytes
     return value
 
 def make_engine_value_converter(
@@ -61,6 +64,9 @@ def make_engine_value_converter(
             field_path, src_type['row']['fields'], elem_type_info.dataclass_type)
         field_path.pop()
         return lambda value: [elem_converter(v) for v in value] if value is not None else None
+
+    if src_type_kind == 'Uuid':
+        return lambda value: uuid.UUID(bytes=value)
 
     return lambda value: value
 

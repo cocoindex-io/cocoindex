@@ -35,6 +35,9 @@ pub enum BasicValueType {
     /// A range, with a start offset and a length.
     Range,
 
+    /// A UUID.
+    Uuid,
+
     /// A JSON value.
     Json,
 
@@ -52,6 +55,7 @@ impl std::fmt::Display for BasicValueType {
             BasicValueType::Float32 => write!(f, "float32"),
             BasicValueType::Float64 => write!(f, "float64"),
             BasicValueType::Range => write!(f, "range"),
+            BasicValueType::Uuid => write!(f, "uuid"),
             BasicValueType::Json => write!(f, "json"),
             BasicValueType::Vector(s) => write!(
                 f,
@@ -121,7 +125,7 @@ pub struct CollectionSchema {
     pub row: StructSchema,
 
     #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
-    pub collectors: Vec<NamedSpec<StructSchema>>,
+    pub collectors: Vec<NamedSpec<Arc<CollectorSchema>>>,
 }
 
 impl CollectionSchema {
@@ -153,7 +157,7 @@ impl CollectionSchema {
                 .iter()
                 .map(|c| NamedSpec {
                     name: c.name.clone(),
-                    spec: c.spec.without_attrs(),
+                    spec: Arc::from(c.spec.without_attrs()),
                 })
                 .collect(),
         }
@@ -335,13 +339,65 @@ impl std::fmt::Display for FieldSchema {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CollectorSchema {
+    pub fields: Vec<FieldSchema>,
+    /// If specified, the collector will have an automatically generated UUID field with the given index.
+    pub auto_uuid_field_idx: Option<usize>,
+}
+
+impl std::fmt::Display for CollectorSchema {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Collector(")?;
+        for (i, field) in self.fields.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", field)?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl CollectorSchema {
+    pub fn from_fields(fields: Vec<FieldSchema>, auto_uuid_field: Option<FieldName>) -> Self {
+        let mut fields = fields;
+        let auto_uuid_field_idx = if let Some(auto_uuid_field) = auto_uuid_field {
+            fields.insert(
+                0,
+                FieldSchema::new(
+                    auto_uuid_field,
+                    EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Uuid),
+                        nullable: false,
+                        attrs: Default::default(),
+                    },
+                ),
+            );
+            Some(0)
+        } else {
+            None
+        };
+        Self {
+            fields,
+            auto_uuid_field_idx,
+        }
+    }
+    pub fn without_attrs(&self) -> Self {
+        Self {
+            fields: self.fields.iter().map(|f| f.without_attrs()).collect(),
+            auto_uuid_field_idx: self.auto_uuid_field_idx,
+        }
+    }
+}
+
 /// Top-level schema for a flow instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataSchema {
     pub schema: StructSchema,
 
     #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
-    pub collectors: Vec<NamedSpec<StructSchema>>,
+    pub collectors: Vec<NamedSpec<Arc<CollectorSchema>>>,
 }
 
 impl Deref for DataSchema {

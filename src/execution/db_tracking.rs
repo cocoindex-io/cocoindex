@@ -1,16 +1,18 @@
-use super::{db_tracking_setup::TrackingTableSetupState, memoization::MemoizationInfo};
+use super::{db_tracking_setup::TrackingTableSetupState, memoization::StoredMemoizationInfo};
 use crate::utils::{db::WriteAction, fingerprint::Fingerprint};
 use anyhow::Result;
 use sqlx::PgPool;
 
+/// (target_key, process_ordinal, fingerprint)
 pub type TrackedTargetKey = (serde_json::Value, i64, Option<Fingerprint>);
+/// (source_id, target_key)
 pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKey>)>;
 
 #[derive(sqlx::FromRow, Debug)]
 pub struct SourceTrackingInfo {
     pub max_process_ordinal: i64,
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
-    pub memoization_info: Option<sqlx::types::Json<Option<MemoizationInfo>>>,
+    pub memoization_info: Option<sqlx::types::Json<Option<StoredMemoizationInfo>>>,
 
     pub processed_source_ordinal: Option<i64>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
@@ -72,7 +74,7 @@ pub async fn precommit_source_tracking_info(
     source_key_json: &serde_json::Value,
     max_process_ordinal: i64,
     staging_target_keys: TrackedTargetKeyForSource,
-    memoization_info: Option<&MemoizationInfo>,
+    memoization_info: Option<&StoredMemoizationInfo>,
     db_setup: &TrackingTableSetupState,
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
     action: WriteAction,

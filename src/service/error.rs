@@ -113,7 +113,7 @@ pub struct SharedErrorWrapper(SharedError);
 
 impl Display for SharedErrorWrapper {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        Display::fmt(&self.0, f)
+        Debug::fmt(&self.0, f)
     }
 }
 

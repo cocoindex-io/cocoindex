@@ -76,6 +76,7 @@ pub enum KeyValue {
     Bool(bool),
     Int64(i64),
     Range(RangeValue),
+    Uuid(uuid::Uuid),
     Struct(Vec<KeyValue>),
 }
 
@@ -141,6 +142,7 @@ impl std::fmt::Display for KeyValue {
             KeyValue::Bool(v) => write!(f, "{}", v),
             KeyValue::Int64(v) => write!(f, "{}", v),
             KeyValue::Range(v) => write!(f, "[{}, {})", v.start, v.end),
+            KeyValue::Uuid(v) => write!(f, "{}", v),
             KeyValue::Struct(v) => {
                 write!(
                     f,
@@ -205,6 +207,7 @@ impl KeyValue {
                 output.push(v.start.to_string());
                 output.push(v.end.to_string());
             }
+            KeyValue::Uuid(v) => output.push(v.to_string()),
             KeyValue::Struct(v) => {
                 for part in v {
                     part.parts_to_strs(output);
@@ -235,6 +238,7 @@ impl KeyValue {
             KeyValue::Bool(_) => "bool",
             KeyValue::Int64(_) => "int64",
             KeyValue::Range { .. } => "range",
+            KeyValue::Uuid(_) => "uuid",
             KeyValue::Struct(_) => "struct",
         }
     }
@@ -299,6 +303,7 @@ pub enum BasicValue {
     Float32(f32),
     Float64(f64),
     Range(RangeValue),
+    Uuid(uuid::Uuid),
     Json(Arc<serde_json::Value>),
     Vector(Arc<[BasicValue]>),
 }
@@ -373,6 +378,7 @@ impl BasicValue {
             BasicValue::Bool(v) => KeyValue::Bool(v),
             BasicValue::Int64(v) => KeyValue::Int64(v),
             BasicValue::Range(v) => KeyValue::Range(v),
+            BasicValue::Uuid(v) => KeyValue::Uuid(v),
             BasicValue::Float32(_)
             | BasicValue::Float64(_)
             | BasicValue::Json(_)
@@ -388,6 +394,7 @@ impl BasicValue {
             BasicValue::Bool(v) => KeyValue::Bool(*v),
             BasicValue::Int64(v) => KeyValue::Int64(*v),
             BasicValue::Range(v) => KeyValue::Range(*v),
+            BasicValue::Uuid(v) => KeyValue::Uuid(*v),
             BasicValue::Float32(_)
             | BasicValue::Float64(_)
             | BasicValue::Json(_)
@@ -405,6 +412,7 @@ impl BasicValue {
             BasicValue::Float32(_) => "float32",
             BasicValue::Float64(_) => "float64",
             BasicValue::Range(_) => "range",
+            BasicValue::Uuid(_) => "uuid",
             BasicValue::Json(_) => "json",
             BasicValue::Vector(_) => "vector",
         }
@@ -436,6 +444,7 @@ impl From<KeyValue> for Value {
             KeyValue::Bool(v) => Value::Basic(BasicValue::Bool(v)),
             KeyValue::Int64(v) => Value::Basic(BasicValue::Int64(v)),
             KeyValue::Range(v) => Value::Basic(BasicValue::Range(v)),
+            KeyValue::Uuid(v) => Value::Basic(BasicValue::Uuid(v)),
             KeyValue::Struct(v) => Value::Struct(FieldValues {
                 fields: v.into_iter().map(Value::from).collect(),
             }),
@@ -734,6 +743,7 @@ impl serde::Serialize for BasicValue {
             BasicValue::Float32(v) => serializer.serialize_f32(*v),
             BasicValue::Float64(v) => serializer.serialize_f64(*v),
             BasicValue::Range(v) => v.serialize(serializer),
+            BasicValue::Uuid(v) => serializer.serialize_str(&v.to_string()),
             BasicValue::Json(v) => v.serialize(serializer),
             BasicValue::Vector(v) => v.serialize(serializer),
         }
@@ -764,6 +774,9 @@ impl BasicValue {
                     .ok_or_else(|| anyhow::anyhow!("invalid fp64 value {v}"))?,
             ),
             (v, BasicValueType::Range) => BasicValue::Range(serde_json::from_value(v)?),
+            (serde_json::Value::String(v), BasicValueType::Uuid) => {
+                BasicValue::Uuid(uuid::Uuid::parse_str(v.as_str())?)
+            }
             (v, BasicValueType::Json) => BasicValue::Json(Arc::from(v)),
             (
                 serde_json::Value::Array(v),

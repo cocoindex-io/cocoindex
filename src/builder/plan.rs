@@ -88,8 +88,11 @@ pub struct AnalyzedForEachOp {
 
 pub struct AnalyzedCollectOp {
     pub name: String,
+    pub has_auto_uuid_field: bool,
     pub input: AnalyzedStructMapping,
     pub collector_ref: AnalyzedCollectorReference,
+    /// Fingerprinter of the collector's schema. Used to decide when to reuse auto-generated UUIDs.
+    pub fingerprinter: Fingerprinter,
 }
 
 pub enum AnalyzedPrimaryKeyDef {

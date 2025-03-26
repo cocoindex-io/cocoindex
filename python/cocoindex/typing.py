@@ -3,6 +3,7 @@ import collections
 import dataclasses
 import types
 import inspect
+import uuid
 from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING, overload
 
 class Vector(NamedTuple):
@@ -130,6 +131,8 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
             kind = 'Int64'
         elif t is float:
             kind = 'Float64'
+        elif t is uuid.UUID:
+            kind = 'Uuid'
         else:
             raise ValueError(f"type unsupported yet: {t}")
 

@@ -97,4 +97,8 @@ impl LlmGenerationClient for Client {
 
         Ok(super::LlmGenerateResponse { text })
     }
+
+    fn json_schema_fields_always_required(&self) -> bool {
+        true
+    }
 }

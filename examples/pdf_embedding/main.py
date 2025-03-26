@@ -55,13 +55,14 @@ def pdf_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
 
         with doc["chunks"].row() as chunk:
             chunk["embedding"] = chunk["text"].call(text_to_embedding)
-            doc_embeddings.collect(filename=doc["filename"], location=chunk["location"],
+            doc_embeddings.collect(id=cocoindex.GeneratedField.UUID,
+                                   filename=doc["filename"], location=chunk["location"],
                                    text=chunk["text"], embedding=chunk["embedding"])
 
     doc_embeddings.export(
         "doc_embeddings",
         cocoindex.storages.Qdrant(qdrant_url="http://localhost:6333", collection_name="cocoindex"),
-        primary_key_fields=["filename", "location"],
+        primary_key_fields=["id"],
         vector_index=[("embedding", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 
 query_handler = cocoindex.query.SimpleSemanticsQueryHandler(

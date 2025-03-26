@@ -31,7 +31,7 @@ impl serde::ser::Error for FingerprinterError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Fingerprint([u8; 16]);
+pub struct Fingerprint(pub [u8; 16]);
 
 impl Fingerprint {
     pub fn to_base64(self) -> String {
@@ -81,13 +81,13 @@ impl Fingerprinter {
         Fingerprint(self.hasher.finalize().into())
     }
 
-    pub fn with<S: Serialize>(self, value: &S) -> Result<Self, FingerprinterError> {
+    pub fn with<S: Serialize + ?Sized>(self, value: &S) -> Result<Self, FingerprinterError> {
         let mut fingerprinter = self;
         value.serialize(&mut fingerprinter)?;
         Ok(fingerprinter)
     }
 
-    pub fn write<S: Serialize>(&mut self, value: &S) -> Result<(), FingerprinterError> {
+    pub fn write<S: Serialize + ?Sized>(&mut self, value: &S) -> Result<(), FingerprinterError> {
         value.serialize(self)
     }
 

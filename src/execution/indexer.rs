@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 use super::db_tracking::{self, read_source_tracking_info, TrackedTargetKey};
 use super::db_tracking_setup;
-use super::memoization::{EvaluationCache, MemoizationInfo};
+use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, StoredMemoizationInfo};
 use crate::base::schema;
 use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
@@ -118,7 +118,7 @@ struct TrackingInfoForTarget<'a> {
 #[derive(Debug)]
 struct PrecommitData<'a> {
     scope_value: &'a ScopeValueBuilder,
-    memoization_info: &'a MemoizationInfo,
+    memoization_info: &'a StoredMemoizationInfo,
 }
 struct PrecommitMetadata {
     source_entry_exists: bool,
@@ -417,40 +417,31 @@ async fn commit_source_tracking_info(
     Ok(WithApplyStatus::Normal(()))
 }
 
-pub enum EvaluationCacheOption<'a> {
-    NoCache,
-    UseCache(&'a PgPool),
-}
-
-pub async fn evaluate_source_entry_with_cache(
+pub async fn evaluate_source_entry_with_memory(
     plan: &ExecutionPlan,
     source_op: &AnalyzedSourceOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
-    cache_option: EvaluationCacheOption<'_>,
+    options: EvaluationMemoryOptions,
+    pool: &PgPool,
 ) -> Result<Option<ScopeValueBuilder>> {
-    let cache = match cache_option {
-        EvaluationCacheOption::NoCache => None,
-        EvaluationCacheOption::UseCache(pool) => {
-            let source_key_json = serde_json::to_value(key)?;
-            let existing_tracking_info = read_source_tracking_info(
-                source_op.source_id,
-                &source_key_json,
-                &plan.tracking_table_setup,
-                pool,
-            )
-            .await?;
-            let process_timestamp = chrono::Utc::now();
-            let memoization_info = existing_tracking_info
-                .and_then(|info| info.memoization_info.map(|info| info.0))
-                .flatten();
-            Some(EvaluationCache::new(
-                process_timestamp,
-                memoization_info.map(|info| info.cache),
-            ))
-        }
+    let stored_info = if options.enable_cache || !options.evaluation_only {
+        let source_key_json = serde_json::to_value(key)?;
+        let existing_tracking_info = read_source_tracking_info(
+            source_op.source_id,
+            &source_key_json,
+            &plan.tracking_table_setup,
+            pool,
+        )
+        .await?;
+        existing_tracking_info
+            .and_then(|info| info.memoization_info.map(|info| info.0))
+            .flatten()
+    } else {
+        None
     };
-    let data_builder = evaluate_source_entry(plan, source_op, schema, key, cache.as_ref()).await?;
+    let memory = EvaluationMemory::new(chrono::Utc::now(), stored_info, options);
+    let data_builder = evaluate_source_entry(plan, source_op, schema, key, &memory).await?;
     Ok(data_builder)
 }
 
@@ -480,10 +471,16 @@ pub async fn update_source_entry(
     let memoization_info = existing_tracking_info
         .and_then(|info| info.memoization_info.map(|info| info.0))
         .flatten();
-    let evaluation_cache =
-        EvaluationCache::new(process_timestamp, memoization_info.map(|info| info.cache));
+    let evaluation_memory = EvaluationMemory::new(
+        process_timestamp,
+        memoization_info,
+        EvaluationMemoryOptions {
+            enable_cache: true,
+            evaluation_only: false,
+        },
+    );
     let value_builder = if !only_for_deletion {
-        evaluate_source_entry(plan, source_op, schema, key, Some(&evaluation_cache)).await?
+        evaluate_source_entry(plan, source_op, schema, key, &evaluation_memory).await?
     } else {
         None
     };
@@ -501,9 +498,7 @@ pub async fn update_source_entry(
         return Ok(());
     }
 
-    let memoization_info = MemoizationInfo {
-        cache: evaluation_cache.into_stored()?,
-    };
+    let memoization_info = evaluation_memory.into_stored()?;
     let (source_ordinal, precommit_data) = match &value_builder {
         Some(scope_value) => {
             (

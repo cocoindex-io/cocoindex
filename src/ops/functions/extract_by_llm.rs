@@ -47,10 +47,14 @@ Output only the JSON without any additional messages or explanations."
 
 impl Executor {
     async fn new(spec: Spec, args: Args) -> Result<Self> {
+        let client = new_llm_generation_client(spec.llm_spec).await?;
+        let output_json_schema = spec
+            .output_type
+            .to_json_schema(&client.to_json_schema_options());
         Ok(Self {
             args,
-            client: new_llm_generation_client(spec.llm_spec).await?,
-            output_json_schema: spec.output_type.to_json_schema(),
+            client,
+            output_json_schema,
             output_type: spec.output_type,
             system_prompt: get_system_prompt(&spec.instruction),
         })
