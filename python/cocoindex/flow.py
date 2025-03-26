@@ -254,7 +254,7 @@ class DataCollector:
         self._flow_builder_state = flow_builder_state
         self._engine_data_collector = data_collector
 
-    def collect(self, **kwargs: DataSlice | GeneratedField):
+    def collect(self, **kwargs):
         """
         Collect data into the collector.
         """
@@ -269,7 +269,8 @@ class DataCollector:
                 else:
                     raise ValueError(f"Unexpected generated field: {v}")
             else:
-                regular_kwargs.append((k, _data_slice_state(v).engine_data_slice))
+                regular_kwargs.append(
+                    (k, self._flow_builder_state.get_data_slice(v)))
 
         self._flow_builder_state.engine_flow_builder.collect(
             self._engine_data_collector, regular_kwargs, auto_uuid_field)
