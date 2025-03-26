@@ -77,6 +77,7 @@ pub enum KeyValue {
     Int64(i64),
     Range(RangeValue),
     Uuid(uuid::Uuid),
+    Date(chrono::NaiveDate),
     Struct(Vec<KeyValue>),
 }
 
@@ -122,6 +123,18 @@ impl From<RangeValue> for KeyValue {
     }
 }
 
+impl From<uuid::Uuid> for KeyValue {
+    fn from(value: uuid::Uuid) -> Self {
+        KeyValue::Uuid(value)
+    }
+}
+
+impl From<chrono::NaiveDate> for KeyValue {
+    fn from(value: chrono::NaiveDate) -> Self {
+        KeyValue::Date(value)
+    }
+}
+
 impl From<Vec<KeyValue>> for KeyValue {
     fn from(value: Vec<KeyValue>) -> Self {
         KeyValue::Struct(value)
@@ -143,6 +156,7 @@ impl std::fmt::Display for KeyValue {
             KeyValue::Int64(v) => write!(f, "{}", v),
             KeyValue::Range(v) => write!(f, "[{}, {})", v.start, v.end),
             KeyValue::Uuid(v) => write!(f, "{}", v),
+            KeyValue::Date(v) => write!(f, "{}", v),
             KeyValue::Struct(v) => {
                 write!(
                     f,
@@ -172,17 +186,19 @@ impl KeyValue {
                         KeyValue::Bytes(Arc::from(BASE64_STANDARD.decode(v)?))
                     }
                     BasicValueType::Str { .. } => KeyValue::Str(Arc::from(v)),
-                    BasicValueType::Bool => KeyValue::Bool(v.parse::<bool>()?),
-                    BasicValueType::Int64 => KeyValue::Int64(v.parse::<i64>()?),
+                    BasicValueType::Bool => KeyValue::Bool(v.parse()?),
+                    BasicValueType::Int64 => KeyValue::Int64(v.parse()?),
                     BasicValueType::Range => {
                         let v2 = values_iter
                             .next()
                             .ok_or_else(|| api_error!("Key parts less than expected"))?;
                         KeyValue::Range(RangeValue {
-                            start: v.parse::<usize>()?,
-                            end: v2.parse::<usize>()?,
+                            start: v.parse()?,
+                            end: v2.parse()?,
                         })
                     }
+                    BasicValueType::Uuid => KeyValue::Uuid(v.parse()?),
+                    BasicValueType::Date => KeyValue::Date(v.parse()?),
                     schema => api_bail!("Invalid key type {schema}"),
                 }
             }
@@ -208,6 +224,7 @@ impl KeyValue {
                 output.push(v.end.to_string());
             }
             KeyValue::Uuid(v) => output.push(v.to_string()),
+            KeyValue::Date(v) => output.push(v.to_string()),
             KeyValue::Struct(v) => {
                 for part in v {
                     part.parts_to_strs(output);
@@ -239,6 +256,7 @@ impl KeyValue {
             KeyValue::Int64(_) => "int64",
             KeyValue::Range { .. } => "range",
             KeyValue::Uuid(_) => "uuid",
+            KeyValue::Date(_) => "date",
             KeyValue::Struct(_) => "struct",
         }
     }
@@ -278,6 +296,20 @@ impl KeyValue {
         }
     }
 
+    pub fn uuid_value(&self) -> Result<uuid::Uuid> {
+        match self {
+            KeyValue::Uuid(v) => Ok(*v),
+            _ => anyhow::bail!("expected uuid value, but got {}", self.kind_str()),
+        }
+    }
+
+    pub fn date_value(&self) -> Result<chrono::NaiveDate> {
+        match self {
+            KeyValue::Date(v) => Ok(*v),
+            _ => anyhow::bail!("expected date value, but got {}", self.kind_str()),
+        }
+    }
+
     pub fn struct_value(&self) -> Result<&Vec<KeyValue>> {
         match self {
             KeyValue::Struct(v) => Ok(v),
@@ -304,6 +336,10 @@ pub enum BasicValue {
     Float64(f64),
     Range(RangeValue),
     Uuid(uuid::Uuid),
+    Date(chrono::NaiveDate),
+    Time(chrono::NaiveTime),
+    LocalDateTime(chrono::NaiveDateTime),
+    OffsetDateTime(chrono::DateTime<chrono::FixedOffset>),
     Json(Arc<serde_json::Value>),
     Vector(Arc<[BasicValue]>),
 }
@@ -356,6 +392,36 @@ impl From<f64> for BasicValue {
     }
 }
 
+impl From<uuid::Uuid> for BasicValue {
+    fn from(value: uuid::Uuid) -> Self {
+        BasicValue::Uuid(value)
+    }
+}
+
+impl From<chrono::NaiveDate> for BasicValue {
+    fn from(value: chrono::NaiveDate) -> Self {
+        BasicValue::Date(value)
+    }
+}
+
+impl From<chrono::NaiveTime> for BasicValue {
+    fn from(value: chrono::NaiveTime) -> Self {
+        BasicValue::Time(value)
+    }
+}
+
+impl From<chrono::NaiveDateTime> for BasicValue {
+    fn from(value: chrono::NaiveDateTime) -> Self {
+        BasicValue::LocalDateTime(value)
+    }
+}
+
+impl From<chrono::DateTime<chrono::FixedOffset>> for BasicValue {
+    fn from(value: chrono::DateTime<chrono::FixedOffset>) -> Self {
+        BasicValue::OffsetDateTime(value)
+    }
+}
+
 impl From<serde_json::Value> for BasicValue {
     fn from(value: serde_json::Value) -> Self {
         BasicValue::Json(Arc::from(value))
@@ -379,8 +445,12 @@ impl BasicValue {
             BasicValue::Int64(v) => KeyValue::Int64(v),
             BasicValue::Range(v) => KeyValue::Range(v),
             BasicValue::Uuid(v) => KeyValue::Uuid(v),
+            BasicValue::Date(v) => KeyValue::Date(v),
             BasicValue::Float32(_)
             | BasicValue::Float64(_)
+            | BasicValue::Time(_)
+            | BasicValue::LocalDateTime(_)
+            | BasicValue::OffsetDateTime(_)
             | BasicValue::Json(_)
             | BasicValue::Vector(_) => api_bail!("invalid key value type"),
         };
@@ -395,8 +465,12 @@ impl BasicValue {
             BasicValue::Int64(v) => KeyValue::Int64(*v),
             BasicValue::Range(v) => KeyValue::Range(*v),
             BasicValue::Uuid(v) => KeyValue::Uuid(*v),
+            BasicValue::Date(v) => KeyValue::Date(*v),
             BasicValue::Float32(_)
             | BasicValue::Float64(_)
+            | BasicValue::Time(_)
+            | BasicValue::LocalDateTime(_)
+            | BasicValue::OffsetDateTime(_)
             | BasicValue::Json(_)
             | BasicValue::Vector(_) => api_bail!("invalid key value type"),
         };
@@ -413,6 +487,10 @@ impl BasicValue {
             BasicValue::Float64(_) => "float64",
             BasicValue::Range(_) => "range",
             BasicValue::Uuid(_) => "uuid",
+            BasicValue::Date(_) => "date",
+            BasicValue::Time(_) => "time",
+            BasicValue::LocalDateTime(_) => "local_datetime",
+            BasicValue::OffsetDateTime(_) => "offset_datetime",
             BasicValue::Json(_) => "json",
             BasicValue::Vector(_) => "vector",
         }
@@ -445,6 +523,7 @@ impl From<KeyValue> for Value {
             KeyValue::Int64(v) => Value::Basic(BasicValue::Int64(v)),
             KeyValue::Range(v) => Value::Basic(BasicValue::Range(v)),
             KeyValue::Uuid(v) => Value::Basic(BasicValue::Uuid(v)),
+            KeyValue::Date(v) => Value::Basic(BasicValue::Date(v)),
             KeyValue::Struct(v) => Value::Struct(FieldValues {
                 fields: v.into_iter().map(Value::from).collect(),
             }),
@@ -744,6 +823,12 @@ impl serde::Serialize for BasicValue {
             BasicValue::Float64(v) => serializer.serialize_f64(*v),
             BasicValue::Range(v) => v.serialize(serializer),
             BasicValue::Uuid(v) => serializer.serialize_str(&v.to_string()),
+            BasicValue::Date(v) => serializer.serialize_str(&v.to_string()),
+            BasicValue::Time(v) => serializer.serialize_str(&v.to_string()),
+            BasicValue::LocalDateTime(v) => serializer.serialize_str(&v.to_string()),
+            BasicValue::OffsetDateTime(v) => {
+                serializer.serialize_str(&v.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
+            }
             BasicValue::Json(v) => v.serialize(serializer),
             BasicValue::Vector(v) => v.serialize(serializer),
         }
@@ -774,8 +859,14 @@ impl BasicValue {
                     .ok_or_else(|| anyhow::anyhow!("invalid fp64 value {v}"))?,
             ),
             (v, BasicValueType::Range) => BasicValue::Range(serde_json::from_value(v)?),
-            (serde_json::Value::String(v), BasicValueType::Uuid) => {
-                BasicValue::Uuid(uuid::Uuid::parse_str(v.as_str())?)
+            (serde_json::Value::String(v), BasicValueType::Uuid) => BasicValue::Uuid(v.parse()?),
+            (serde_json::Value::String(v), BasicValueType::Date) => BasicValue::Date(v.parse()?),
+            (serde_json::Value::String(v), BasicValueType::Time) => BasicValue::Time(v.parse()?),
+            (serde_json::Value::String(v), BasicValueType::LocalDateTime) => {
+                BasicValue::LocalDateTime(v.parse()?)
+            }
+            (serde_json::Value::String(v), BasicValueType::OffsetDateTime) => {
+                BasicValue::OffsetDateTime(chrono::DateTime::parse_from_rfc3339(&v)?)
             }
             (v, BasicValueType::Json) => BasicValue::Json(Arc::from(v)),
             (

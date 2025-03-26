@@ -82,6 +82,9 @@ fn bind_key_field<'arg>(
         KeyValue::Uuid(v) => {
             builder.push_bind(v);
         }
+        KeyValue::Date(v) => {
+            builder.push_bind(v);
+        }
         KeyValue::Struct(fields) => {
             builder.push_bind(sqlx::types::Json(fields));
         }
@@ -121,6 +124,18 @@ fn bind_value_field<'arg>(
                 });
             }
             BasicValue::Uuid(v) => {
+                builder.push_bind(v);
+            }
+            BasicValue::Date(v) => {
+                builder.push_bind(v);
+            }
+            BasicValue::Time(v) => {
+                builder.push_bind(v);
+            }
+            BasicValue::LocalDateTime(v) => {
+                builder.push_bind(v);
+            }
+            BasicValue::OffsetDateTime(v) => {
                 builder.push_bind(v);
             }
             BasicValue::Json(v) => {
@@ -196,6 +211,18 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
                 BasicValueType::Uuid => row
                     .try_get::<Option<Uuid>, _>(field_idx)?
                     .map(BasicValue::Uuid),
+                BasicValueType::Date => row
+                    .try_get::<Option<chrono::NaiveDate>, _>(field_idx)?
+                    .map(BasicValue::Date),
+                BasicValueType::Time => row
+                    .try_get::<Option<chrono::NaiveTime>, _>(field_idx)?
+                    .map(BasicValue::Time),
+                BasicValueType::LocalDateTime => row
+                    .try_get::<Option<chrono::NaiveDateTime>, _>(field_idx)?
+                    .map(BasicValue::LocalDateTime),
+                BasicValueType::OffsetDateTime => row
+                    .try_get::<Option<chrono::DateTime<chrono::FixedOffset>>, _>(field_idx)?
+                    .map(BasicValue::OffsetDateTime),
                 BasicValueType::Json => row
                     .try_get::<Option<serde_json::Value>, _>(field_idx)?
                     .map(|v| BasicValue::Json(Arc::from(v))),
@@ -666,6 +693,10 @@ fn to_column_type_sql(column_type: &ValueType) -> Cow<'static, str> {
             BasicValueType::Float64 => "double precision".into(),
             BasicValueType::Range => "int8range".into(),
             BasicValueType::Uuid => "uuid".into(),
+            BasicValueType::Date => "date".into(),
+            BasicValueType::Time => "time".into(),
+            BasicValueType::LocalDateTime => "timestamp".into(),
+            BasicValueType::OffsetDateTime => "timestamp with time zone".into(),
             BasicValueType::Json => "jsonb".into(),
             BasicValueType::Vector(vec_schema) => {
                 if convertible_to_pgvector(vec_schema) {

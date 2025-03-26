@@ -49,15 +49,32 @@ impl ToJsonSchema for schema::BasicValueType {
                     max_items: Some(2),
                     ..Default::default()
                 }));
-                schema
-                    .metadata
-                    .get_or_insert_with(Default::default)
-                    .description =
+                schema.metadata.get_or_insert_default().description =
                     Some("A range, start pos (inclusive), end pos (exclusive).".to_string());
             }
             schema::BasicValueType::Uuid => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
                 schema.format = Some("uuid".to_string());
+            }
+            schema::BasicValueType::Date => {
+                schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
+                schema.format = Some("date".to_string());
+            }
+            schema::BasicValueType::Time => {
+                schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
+                schema.format = Some("time".to_string());
+            }
+            schema::BasicValueType::LocalDateTime => {
+                schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
+                schema.format = Some("date-time".to_string());
+                schema.metadata.get_or_insert_default().description =
+                    Some("Date time without timezone offset, YYYY-MM-DDThh:mm:ss".to_string());
+            }
+            schema::BasicValueType::OffsetDateTime => {
+                schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
+                schema.format = Some("date-time".to_string());
+                schema.metadata.get_or_insert_default().description =
+                    Some("Date time with timezone offset in RFC3339".to_string());
             }
             schema::BasicValueType::Json => {
                 // Can be any value. No type constraint.
