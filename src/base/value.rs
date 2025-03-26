@@ -1,14 +1,16 @@
 use crate::{api_bail, api_error};
 
 use super::schema::*;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use base64::prelude::*;
+use chrono::Offset;
+use log::warn;
 use serde::{
     de::{SeqAccess, Visitor},
     ser::{SerializeMap, SerializeSeq, SerializeTuple},
     Deserialize, Serialize,
 };
-use std::{collections::BTreeMap, ops::Deref, sync::Arc};
+use std::{collections::BTreeMap, ops::Deref, str::FromStr, sync::Arc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RangeValue {
@@ -866,7 +868,20 @@ impl BasicValue {
                 BasicValue::LocalDateTime(v.parse()?)
             }
             (serde_json::Value::String(v), BasicValueType::OffsetDateTime) => {
-                BasicValue::OffsetDateTime(chrono::DateTime::parse_from_rfc3339(&v)?)
+                match chrono::DateTime::parse_from_rfc3339(&v) {
+                    Ok(dt) => BasicValue::OffsetDateTime(dt),
+                    Err(e) => {
+                        if let Ok(dt) = v.parse::<chrono::NaiveDateTime>() {
+                            warn!("Datetime without timezone offset, assuming UTC");
+                            BasicValue::OffsetDateTime(chrono::DateTime::from_naive_utc_and_offset(
+                                dt,
+                                chrono::Utc.fix(),
+                            ))
+                        } else {
+                            Err(e)?
+                        }
+                    }
+                }
             }
             (v, BasicValueType::Json) => BasicValue::Json(Arc::from(v)),
             (

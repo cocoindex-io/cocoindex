@@ -101,4 +101,8 @@ impl LlmGenerationClient for Client {
     fn json_schema_fields_always_required(&self) -> bool {
         true
     }
+
+    fn json_schema_supports_format(&self) -> bool {
+        false
+    }
 }

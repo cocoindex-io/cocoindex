@@ -8,6 +8,9 @@ pub struct ToJsonSchemaOptions {
     /// Use union type (with `null`) for optional fields instead.
     /// Models like OpenAI will reject the schema if a field is not required.
     pub fields_always_required: bool,
+
+    /// If true, the JSON schema supports the `format` keyword.
+    pub supports_format: bool,
 }
 
 pub trait ToJsonSchema {
@@ -54,27 +57,46 @@ impl ToJsonSchema for schema::BasicValueType {
             }
             schema::BasicValueType::Uuid => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
-                schema.format = Some("uuid".to_string());
+                if options.supports_format {
+                    schema.format = Some("uuid".to_string());
+                } else {
+                    schema.metadata.get_or_insert_default().description =
+                        Some("A UUID, e.g. 123e4567-e89b-12d3-a456-426614174000".to_string());
+                }
             }
             schema::BasicValueType::Date => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
-                schema.format = Some("date".to_string());
+                if options.supports_format {
+                    schema.format = Some("date".to_string());
+                } else {
+                    schema.metadata.get_or_insert_default().description =
+                        Some("A date, e.g. 2025-03-27".to_string());
+                }
             }
             schema::BasicValueType::Time => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
-                schema.format = Some("time".to_string());
+                if options.supports_format {
+                    schema.format = Some("time".to_string());
+                } else {
+                    schema.metadata.get_or_insert_default().description =
+                        Some("A time, e.g. 13:32:12".to_string());
+                }
             }
             schema::BasicValueType::LocalDateTime => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
-                schema.format = Some("date-time".to_string());
+                if options.supports_format {
+                    schema.format = Some("date-time".to_string());
+                }
                 schema.metadata.get_or_insert_default().description =
-                    Some("Date time without timezone offset, YYYY-MM-DDThh:mm:ss".to_string());
+                    Some("Date time without timezone offset, e.g. 2025-03-27T13:32:12".to_string());
             }
             schema::BasicValueType::OffsetDateTime => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
-                schema.format = Some("date-time".to_string());
+                if options.supports_format {
+                    schema.format = Some("date-time".to_string());
+                }
                 schema.metadata.get_or_insert_default().description =
-                    Some("Date time with timezone offset in RFC3339".to_string());
+                    Some("Date time with timezone offset in RFC3339, e.g. 2025-03-27T13:32:12Z, 2025-03-27T07:32:12.313-06:00".to_string());
             }
             schema::BasicValueType::Json => {
                 // Can be any value. No type constraint.

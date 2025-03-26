@@ -54,9 +54,15 @@ pub trait LlmGenerationClient: Send + Sync {
         false
     }
 
+    /// If true, the LLM supports the `format` keyword in the JSON schema.
+    fn json_schema_supports_format(&self) -> bool {
+        true
+    }
+
     fn to_json_schema_options(&self) -> ToJsonSchemaOptions {
         ToJsonSchemaOptions {
             fields_always_required: self.json_schema_fields_always_required(),
+            supports_format: self.json_schema_supports_format(),
         }
     }
 }
