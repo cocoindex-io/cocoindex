@@ -86,13 +86,24 @@ pub trait ExportTargetExecutor: Send + Sync {
     async fn apply_mutation(&self, mutation: ExportTargetMutation) -> Result<()>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupStateCompatibility {
+    /// The resource is fully compatible with the desired state.
+    /// This means the resource can be updated to the desired state without any loss of data.
+    Compatible,
+    /// The resource is partially compatible with the desired state.
+    /// This means some existing data will be lost after applying the setup change.
+    PartialCompatible,
+    /// The resource needs to be rebuilt
+    NotCompatible,
+}
+
 pub trait ExportTargetFactory {
     // The first field of the `input_schema` is the primary key field.
     // If it has struct type, it should be converted to composite primary key.
     fn build(
         self: Arc<Self>,
         name: String,
-        target_id: i32,
         spec: serde_json::Value,
         key_fields_schema: Vec<FieldSchema>,
         value_fields_schema: Vec<FieldSchema>,
@@ -116,13 +127,11 @@ pub trait ExportTargetFactory {
         >,
     >;
 
-    fn will_keep_all_existing_data(
+    fn check_state_compatibility(
         &self,
-        name: &str,
-        target_id: i32,
         desired_state: &serde_json::Value,
         existing_state: &serde_json::Value,
-    ) -> Result<bool>;
+    ) -> Result<SetupStateCompatibility>;
 }
 
 #[derive(Clone)]

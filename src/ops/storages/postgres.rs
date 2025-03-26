@@ -894,7 +894,6 @@ impl StorageFactoryBase for Arc<Factory> {
     fn build(
         self: Arc<Self>,
         name: String,
-        target_id: i32,
         spec: Spec,
         key_fields_schema: Vec<FieldSchema>,
         value_fields_schema: Vec<FieldSchema>,
@@ -906,9 +905,9 @@ impl StorageFactoryBase for Arc<Factory> {
     )> {
         let table_id = TableId {
             database_url: spec.database_url.clone(),
-            table_name: spec.table_name.unwrap_or_else(|| {
-                format!("{}__{}__{}", context.flow_instance_name, name, target_id)
-            }),
+            table_name: spec
+                .table_name
+                .unwrap_or_else(|| format!("{}__{}", context.flow_instance_name, name)),
         };
         let setup_state = SetupState::new(
             &table_id,
@@ -943,22 +942,30 @@ impl StorageFactoryBase for Arc<Factory> {
         Ok(SetupStatusCheck::new(self.clone(), key, desired, existing))
     }
 
-    fn will_keep_all_existing_data(
+    fn check_state_compatibility(
         &self,
-        _name: &str,
-        _target_id: i32,
         desired: &SetupState,
         existing: &SetupState,
-    ) -> Result<bool> {
-        let result = existing
-            .key_fields_schema
-            .iter()
-            .all(|(k, v)| desired.key_fields_schema.get(k) == Some(v))
+    ) -> Result<SetupStateCompatibility> {
+        let is_key_identical = existing.key_fields_schema.len() == desired.key_fields_schema.len()
             && existing
+                .key_fields_schema
+                .iter()
+                .all(|(k, v)| desired.key_fields_schema.get(k) == Some(v));
+        let compatibility = if is_key_identical {
+            let is_value_lossy = existing
                 .value_fields_schema
                 .iter()
                 .any(|(k, v)| desired.value_fields_schema.get(k) != Some(v));
-        Ok(result)
+            if is_value_lossy {
+                SetupStateCompatibility::PartialCompatible
+            } else {
+                SetupStateCompatibility::Compatible
+            }
+        } else {
+            SetupStateCompatibility::NotCompatible
+        };
+        Ok(compatibility)
     }
 }
 

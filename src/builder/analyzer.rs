@@ -885,10 +885,8 @@ impl AnalyzerContext<'_> {
             }
         };
 
-        let target_id: i32 = 1; // TODO: Fill it with a meaningful value automatically
         let ((setup_key, desired_state), executor_fut) = export_factory.clone().build(
             export_op.name.clone(),
-            target_id,
             spec,
             key_fields_schema,
             value_fields_schema,
@@ -902,44 +900,42 @@ impl AnalyzerContext<'_> {
         let existing_target_states = existing_target_states.get(&resource_id);
         let target_id = setup_state
             .map(|setup_state| -> Result<i32> {
-                let existing_target_ids = existing_target_states
-                    .iter()
-                    .flat_map(|v| v.iter())
-                    .map(|state| state.common.target_id)
-                    .collect::<HashSet<_>>();
-                let target_id = if existing_target_ids.len() == 1 {
-                    existing_target_ids.into_iter().next().unwrap()
+                let mut compatible_target_ids = HashSet::<Option<i32>>::new();
+                let mut reusable_schema_version_ids = HashSet::<Option<i32>>::new();
+                for existing_state in existing_target_states.iter().flat_map(|v| v.iter()) {
+                    let compatibility = export_factory
+                        .check_state_compatibility(&desired_state, &existing_state.state)?;
+                    let compatible_target_id =
+                        if compatibility != SetupStateCompatibility::NotCompatible {
+                            reusable_schema_version_ids.insert(
+                                (compatibility == SetupStateCompatibility::Compatible)
+                                    .then_some(existing_state.common.schema_version_id),
+                            );
+                            Some(existing_state.common.target_id)
+                        } else {
+                            None
+                        };
+                    compatible_target_ids.insert(compatible_target_id);
+                }
+
+                let target_id = if compatible_target_ids.len() == 1 {
+                    compatible_target_ids.into_iter().next().flatten()
                 } else {
-                    if existing_target_ids.len() > 1 {
+                    if compatible_target_ids.len() > 1 {
                         warn!("Multiple target states with the same key schema found");
                     }
+                    None
+                };
+                let target_id = target_id.unwrap_or_else(|| {
                     setup_state.metadata.last_target_id += 1;
                     setup_state.metadata.last_target_id
-                };
+                });
                 let max_schema_version_id = existing_target_states
                     .iter()
                     .flat_map(|v| v.iter())
                     .map(|s| s.common.max_schema_version_id)
                     .max()
                     .unwrap_or(0);
-                let reusable_schema_version_ids = existing_target_states
-                    .iter()
-                    .flat_map(|v| v.iter())
-                    .map(|s| {
-                        Ok({
-                            if export_factory.will_keep_all_existing_data(
-                                &export_op.name,
-                                target_id,
-                                &desired_state,
-                                &s.state,
-                            )? {
-                                Some(s.common.schema_version_id)
-                            } else {
-                                None
-                            }
-                        })
-                    })
-                    .collect::<Result<HashSet<_>>>()?;
                 let schema_version_id = if reusable_schema_version_ids.len() == 1 {
                     reusable_schema_version_ids
                         .into_iter()

@@ -523,7 +523,6 @@ impl FlowBuilder {
     ) -> PyResult<()> {
         let common_scope = Self::minimum_common_scope(fields.iter().map(|(_, ds)| &ds.scope), None)
             .into_py_result()?;
-        let has_auto_uuid_field = auto_uuid_field.is_some();
         let name = format!(".collect.{}", self.next_generated_op_id);
         self.next_generated_op_id += 1;
         self.do_in_scope(

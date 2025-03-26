@@ -281,7 +281,6 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
     fn build(
         self: Arc<Self>,
         name: String,
-        target_id: i32,
         spec: Self::Spec,
         key_fields_schema: Vec<FieldSchema>,
         value_fields_schema: Vec<FieldSchema>,
@@ -301,13 +300,11 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         impl setup::ResourceSetupStatusCheck<Key = Self::Key, State = Self::SetupState> + 'static,
     >;
 
-    fn will_keep_all_existing_data(
+    fn check_state_compatibility(
         &self,
-        name: &str,
-        target_id: i32,
         desired_state: &Self::SetupState,
         existing_state: &Self::SetupState,
-    ) -> Result<bool>;
+    ) -> Result<SetupStateCompatibility>;
 
     fn register(self, registry: &mut ExecutorFactoryRegistry) -> Result<()>
     where
@@ -384,7 +381,6 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
     fn build(
         self: Arc<Self>,
         name: String,
-        target_id: i32,
         spec: serde_json::Value,
         key_fields_schema: Vec<FieldSchema>,
         value_fields_schema: Vec<FieldSchema>,
@@ -398,7 +394,6 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         let ((setup_key, setup_state), executors) = StorageFactoryBase::build(
             self,
             name,
-            target_id,
             spec,
             key_fields_schema,
             value_fields_schema,
@@ -438,17 +433,13 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         )?))
     }
 
-    fn will_keep_all_existing_data(
+    fn check_state_compatibility(
         &self,
-        name: &str,
-        target_id: i32,
         desired_state: &serde_json::Value,
         existing_state: &serde_json::Value,
-    ) -> Result<bool> {
-        let result = StorageFactoryBase::will_keep_all_existing_data(
+    ) -> Result<SetupStateCompatibility> {
+        let result = StorageFactoryBase::check_state_compatibility(
             self,
-            name,
-            target_id,
             &serde_json::from_value(desired_state.clone())?,
             &serde_json::from_value(existing_state.clone())?,
         )?;
