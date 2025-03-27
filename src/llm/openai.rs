@@ -98,11 +98,11 @@ impl LlmGenerationClient for Client {
         Ok(super::LlmGenerateResponse { text })
     }
 
-    fn json_schema_fields_always_required(&self) -> bool {
-        true
-    }
-
-    fn json_schema_supports_format(&self) -> bool {
-        false
+    fn json_schema_options(&self) -> super::ToJsonSchemaOptions {
+        super::ToJsonSchemaOptions {
+            fields_always_required: true,
+            supports_format: false,
+            extract_descriptions: false,
+        }
     }
 }
