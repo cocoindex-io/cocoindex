@@ -11,7 +11,7 @@ We love contributions from our community! This guide explains how to get involve
 
 -   Install Rust toolchain: [docs](https://rust-lang.org/tools/install)
 
--   (Optional) Setup and activate python virtual environment
+-   (Optional) Setup and activate python virtual environment. Make sure buildings / runnings all happen in the same virtual env
     ```bash
     virtualenv --python=$(which python3.12) .venv
     . .venv/bin/activate
@@ -22,7 +22,7 @@ We love contributions from our community! This guide explains how to get involve
     pip install maturin
     ```
 
--   Build the library. In the same virtual env, run at the root of cocoindex directory
+-   Build the library. Run at the root of cocoindex directory.
     ```bash
     maturin develop
     ```
