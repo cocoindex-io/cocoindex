@@ -109,6 +109,9 @@ pub struct AnalyzedExportOp {
     pub primary_key_type: ValueType,
     /// idx for value fields - excluding the primary key field.
     pub value_fields: Vec<u32>,
+    /// If true, value is never changed on the same primary key.
+    /// This is guaranteed if the primary key contains auto-generated UUIDs.
+    pub value_stable: bool,
 }
 
 pub enum AnalyzedReactiveOp {

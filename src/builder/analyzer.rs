@@ -971,6 +971,12 @@ impl AnalyzerContext<'_> {
             })
             .transpose()?;
 
+        let value_stable = collector_schema
+            .auto_uuid_field_idx
+            .map(|uuid_idx| match &primary_key_def {
+                AnalyzedPrimaryKeyDef::Fields(fields) => fields.contains(&uuid_idx),
+            })
+            .unwrap_or(false);
         Ok(async move {
             trace!("Start building executor for export op `{}`", export_op.name);
             let (executor, query_target) = executor_fut
@@ -990,6 +996,7 @@ impl AnalyzerContext<'_> {
                 primary_key_def,
                 primary_key_type,
                 value_fields: value_fields_idx,
+                value_stable,
             })
         })
     }

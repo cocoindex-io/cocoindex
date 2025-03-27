@@ -226,17 +226,20 @@ async fn precommit_source_tracking_info(
                         .fields
                         .push(value.fields[*field as usize].clone());
                 }
-                let curr_fp = Some(
-                    Fingerprinter::default()
-                        .with(&field_values)?
-                        .into_fingerprint(),
-                );
-
                 let existing_target_keys = target_info.existing_keys_info.remove(&primary_key_json);
                 let existing_staging_target_keys = target_info
                     .existing_staging_keys_info
                     .remove(&primary_key_json);
 
+                let curr_fp = if !export_op.value_stable {
+                    Some(
+                        Fingerprinter::default()
+                            .with(&field_values)?
+                            .into_fingerprint(),
+                    )
+                } else {
+                    None
+                };
                 if existing_target_keys
                     .as_ref()
                     .map(|keys| !keys.is_empty() && keys.iter().all(|(_, fp)| fp == &curr_fp))
