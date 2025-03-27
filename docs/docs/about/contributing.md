@@ -14,7 +14,6 @@ We love contributions from our community! This guide explains how to get involve
 -   (Optional) Setup Python virtual environment:
     ```bash
     virtualenv --python=$(which python3.12) .venv
-    . .venv/bin/activate
     ```
     Activate the virtual environment, before any installings / buildings / runnings:
 
