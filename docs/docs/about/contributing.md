@@ -22,7 +22,7 @@ We love contributions from our community! This guide explains how to get involve
     pip install maturin
     ```
 
--   Build the library
+-   Build the library. In the same virtual env, run at the root of cocoindex directory
     ```bash
     maturin develop
     ```
