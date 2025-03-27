@@ -8,12 +8,14 @@ use crate::setup;
 use anyhow::{bail, Result};
 use derivative::Derivative;
 use futures::FutureExt;
-use qdrant_client::qdrant::value::Kind;
 use qdrant_client::qdrant::vectors_output::VectorsOptions;
-use qdrant_client::qdrant::{NamedVectors, PointStruct, UpsertPointsBuilder, Value as QdrantValue};
+use qdrant_client::qdrant::{
+    NamedVectors, PointStruct, UpsertPointsBuilder, Value as QdrantValue,
+};
 use qdrant_client::qdrant::{Query, QueryPointsBuilder, ScoredPoint};
 use qdrant_client::Qdrant;
 use serde::Serialize;
+use serde_json::json;
 
 fn key_value_fields_iter<'a>(
     key_fields_schema: &[FieldSchema],
@@ -71,7 +73,7 @@ impl ExportTargetExecutor for Executor {
         let mut points: Vec<PointStruct> = Vec::with_capacity(mutation.upserts.len());
         for upsert in mutation.upserts.iter() {
             let key_fields = key_value_fields_iter(&self.key_fields_schema, &upsert.key)?;
-            let key_fields = key_values_to_payload(&key_fields, &self.key_fields_schema)?;
+            let key_fields = key_values_to_payload(key_fields, &self.key_fields_schema)?;
             let (mut payload, vectors) =
                 values_to_payload(&upsert.value.fields, &self.value_fields_schema)?;
             payload.extend(key_fields);
@@ -93,23 +95,16 @@ fn key_values_to_payload(
     let mut payload = HashMap::with_capacity(key_fields.len());
 
     for (key_value, field_schema) in key_fields.iter().zip(schema.iter()) {
-        let value = match key_value {
-            KeyValue::Bytes(v) => QdrantValue {
-                kind: Some(Kind::StringValue(String::from_utf8_lossy(v).into_owned())),
-            },
-            KeyValue::Str(v) => QdrantValue {
-                kind: Some(Kind::StringValue(v.clone().to_string())),
-            },
-            KeyValue::Bool(v) => QdrantValue {
-                kind: Some(Kind::BoolValue(*v)),
-            },
-            KeyValue::Int64(v) => QdrantValue {
-                kind: Some(Kind::IntegerValue(*v)),
-            },
-            e => anyhow::bail!("Unsupported key value type {}", e),
+        let json_value = match key_value {
+            KeyValue::Bytes(v) => String::from_utf8_lossy(v).into(),
+            KeyValue::Str(v) => v.to_string().into(),
+            KeyValue::Bool(v) => (*v).into(),
+            KeyValue::Int64(v) => (*v).into(),
+            KeyValue::Uuid(v) => v.to_string().into(),
+            KeyValue::Range(v) => json!({ "start": v.start, "end": v.end }),
+            _ => bail!("Unsupported key value type"),
         };
-
-        payload.insert(field_schema.name.clone(), value);
+        payload.insert(field_schema.name.clone(), json_value.into());
     }
 
     Ok(payload)
@@ -124,57 +119,34 @@ fn values_to_payload(
 
     for (value, field_schema) in value_fields.iter().zip(schema.iter()) {
         let field_name = &field_schema.name;
+
         match value {
-            Value::Basic(basic_value) => match basic_value {
-                BasicValue::Bytes(v) => insert_qdrant_value(
-                    &mut payload,
-                    field_name,
-                    Kind::StringValue(String::from_utf8_lossy(v).into_owned()),
-                ),
-                BasicValue::Str(v) => insert_qdrant_value(
-                    &mut payload,
-                    field_name,
-                    Kind::StringValue(v.clone().to_string()),
-                ),
-                BasicValue::Bool(v) => {
-                    insert_qdrant_value(&mut payload, field_name, Kind::BoolValue(*v))
-                }
-                BasicValue::Int64(v) => {
-                    insert_qdrant_value(&mut payload, field_name, Kind::IntegerValue(*v))
-                }
-                BasicValue::Float32(v) => {
-                    insert_qdrant_value(&mut payload, field_name, Kind::DoubleValue(*v as f64))
-                }
-                BasicValue::Float64(v) => {
-                    insert_qdrant_value(&mut payload, field_name, Kind::DoubleValue(*v))
-                }
-                BasicValue::Range(v) => insert_qdrant_value(
-                    &mut payload,
-                    field_name,
-                    Kind::StringValue(format!("[{}, {})", v.start, v.end)),
-                ),
-                BasicValue::Vector(v) => {
-                    let vector = convert_to_vector(v.to_vec());
-                    vectors = vectors.add_vector(field_name, vector);
-                }
-                _ => {
-                    bail!("Unsupported BasicValue type in Value::Basic");
-                }
-            },
+            Value::Basic(basic_value) => {
+                let json_value = match basic_value {
+                    BasicValue::Bytes(v) => String::from_utf8_lossy(v).into(),
+                    BasicValue::Str(v) => v.clone().to_string().into(),
+                    BasicValue::Bool(v) => (*v).into(),
+                    BasicValue::Int64(v) => (*v).into(),
+                    BasicValue::Float32(v) => (*v as f64).into(),
+                    BasicValue::Float64(v) => (*v).into(),
+                    BasicValue::Range(v) => json!({ "start": v.start, "end": v.end }),
+                    BasicValue::Vector(v) => {
+                        let vector = convert_to_vector(v.to_vec());
+                        vectors = vectors.add_vector(field_name, vector);
+                        continue;
+                    }
+                    _ => bail!("Unsupported BasicValue type in Value::Basic"),
+                };
+                payload.insert(field_name.clone(), json_value.into());
+            }
             Value::Null => {
-                payload.insert(field_schema.name.clone(), QdrantValue { kind: None });
+                payload.insert(field_name.clone(), QdrantValue { kind: None });
             }
-            _ => {
-                bail!("Unsupported Value variant: {:?}", value);
-            }
+            _ => bail!("Unsupported Value variant: {:?}", value),
         }
     }
 
     Ok((payload, vectors))
-}
-
-fn insert_qdrant_value(payload: &mut HashMap<String, QdrantValue>, field_name: &str, kind: Kind) {
-    payload.insert(field_name.to_string(), QdrantValue { kind: Some(kind) });
 }
 
 fn convert_to_vector(v: Vec<BasicValue>) -> Vec<f32> {
@@ -393,7 +365,7 @@ impl StorageFactoryBase for Arc<Factory> {
         let setup_state = SetupState {};
         let executors = async move {
             let executor = Arc::new(Executor::new(
-                &url,
+                url,
                 &collection_name,
                 key_fields_schema,
                 value_fields_schema,
