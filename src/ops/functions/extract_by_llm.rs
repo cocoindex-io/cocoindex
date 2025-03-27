@@ -1,10 +1,11 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use log::debug;
 use schemars::schema::SchemaObject;
 use serde::Serialize;
 
-use crate::base::json_schema::ToJsonSchema;
+use crate::base::json_schema::JsonSchemaBuilder;
 use crate::llm::{
     new_llm_generation_client, LlmGenerateRequest, LlmGenerationClient, LlmSpec, OutputFormat,
 };
@@ -48,9 +49,8 @@ Output only the JSON without any additional messages or explanations."
 impl Executor {
     async fn new(spec: Spec, args: Args) -> Result<Self> {
         let client = new_llm_generation_client(spec.llm_spec).await?;
-        let output_json_schema = spec
-            .output_type
-            .to_json_schema(&client.to_json_schema_options());
+        let mut json_schema_builder = JsonSchemaBuilder::new(client.to_json_schema_options());
+        let output_json_schema = json_schema_builder.for_enriched_value_type(&spec.output_type);
         Ok(Self {
             args,
             client,
@@ -83,6 +83,10 @@ impl SimpleFunctionExecutor for Executor {
         };
         let res = self.client.generate(req).await?;
         let json_value: serde_json::Value = serde_json::from_str(res.text.as_str())?;
+        debug!(
+            "json_value:\n{}",
+            serde_json::to_string_pretty(&json_value)?
+        );
         let value = Value::from_json(json_value, &self.output_type.typ)?;
         Ok(value)
     }
