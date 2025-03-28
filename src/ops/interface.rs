@@ -14,13 +14,30 @@ pub struct FlowInstanceContext {
     pub flow_instance_name: String,
 }
 
+pub struct SourceData<'a> {
+    pub update_time: Option<chrono::DateTime<chrono::Utc>>,
+    pub data: BoxFuture<'a, Result<FieldValues>>,
+}
+
+pub struct SourceChange<'a> {
+    /// Last update/deletion time. None means unavailable.
+    pub time: Option<chrono::DateTime<chrono::Utc>>,
+    /// None means a deletion.
+    pub data: Option<BoxFuture<'a, Result<FieldValues>>>,
+}
+
 #[async_trait]
 pub trait SourceExecutor: Send + Sync {
     /// Get the list of keys for the source.
     async fn list_keys(&self) -> Result<Vec<KeyValue>>;
 
     // Get the value for the given key.
-    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>>;
+    async fn get_value(
+        &self,
+        key: &'async_trait KeyValue,
+    ) -> Result<Option<SourceData<'async_trait>>>;
+
+    async fn get_changes(&self) -> Result<Vec<SourceChange<'async_trait>>>;
 }
 
 pub trait SourceFactory {
