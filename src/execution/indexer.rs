@@ -478,22 +478,27 @@ pub async fn update_source_entry(
     )
     .await?;
     let already_exists = existing_tracking_info.is_some();
-    let (existing_source_ordinal, memoization_info) = match existing_tracking_info {
-        Some(info) => (
-            info.processed_source_ordinal.map(Ordinal),
-            info.memoization_info.map(|info| info.0).flatten(),
-        ),
-        None => (None, None),
-    };
+    let (existing_source_ordinal, existing_logic_fingerprint, memoization_info) =
+        match existing_tracking_info {
+            Some(info) => (
+                info.processed_source_ordinal.map(Ordinal),
+                info.process_logic_fingerprint,
+                info.memoization_info.map(|info| info.0).flatten(),
+            ),
+            None => Default::default(),
+        };
     let (source_ordinal, output, stored_mem_info) = if !only_for_deletion {
         let source_data = source_op.executor.get_value(key).await?;
         let source_ordinal = source_data.as_ref().and_then(|d| d.ordinal);
         match (source_ordinal, existing_source_ordinal) {
             // TODO: Collapse if the source is not newer and the processing logic is not changed.
-            (Some(source_ordinal), Some(existing_source_ordinal))
-                if source_ordinal <= existing_source_ordinal =>
-            {
-                return Ok(());
+            (Some(source_ordinal), Some(existing_source_ordinal)) => {
+                if source_ordinal < existing_source_ordinal
+                    || (source_ordinal == existing_source_ordinal
+                        && existing_logic_fingerprint == source_op.)
+                {
+                    return Ok(());
+                }
             }
             _ => {}
         }
