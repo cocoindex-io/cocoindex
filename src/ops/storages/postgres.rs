@@ -1,8 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
-use std::future::Future;
 use std::ops::Bound;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use crate::base::spec::{self, *};
@@ -13,7 +11,7 @@ use crate::{get_lib_context, setup};
 use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use derivative::Derivative;
-use futures::future::Shared;
+use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
@@ -457,12 +455,8 @@ fn distance_to_similarity(metric: VectorSimilarityMetric, distance: f64) -> f64 
 }
 
 pub struct Factory {
-    db_pools: Mutex<
-        HashMap<
-            Option<String>,
-            Shared<Pin<Box<dyn Future<Output = Result<PgPool, SharedError>> + Send>>>,
-        >,
-    >,
+    db_pools:
+        Mutex<HashMap<Option<String>, Shared<BoxFuture<'static, Result<PgPool, SharedError>>>>>,
 }
 
 impl Default for Factory {
@@ -932,7 +926,7 @@ impl StorageFactoryBase for Arc<Factory> {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         (TableId, SetupState),
-        ExecutorFuture<'static, (Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>,
+        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
     )> {
         let table_id = TableId {
             database_url: spec.database_url.clone(),

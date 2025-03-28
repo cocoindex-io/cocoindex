@@ -6,14 +6,13 @@ use crate::base::{
 use crate::setup;
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use serde::Serialize;
-use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 pub struct FlowInstanceContext {
     pub flow_instance_name: String,
 }
-
-pub type ExecutorFuture<'a, E> = Pin<Box<dyn Future<Output = Result<E>> + Send + 'a>>;
 
 #[async_trait]
 pub trait SourceExecutor: Send + Sync {
@@ -31,7 +30,7 @@ pub trait SourceFactory {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         EnrichedValueType,
-        ExecutorFuture<'static, Box<dyn SourceExecutor>>,
+        BoxFuture<'static, Result<Box<dyn SourceExecutor>>>,
     )>;
 }
 
@@ -59,7 +58,7 @@ pub trait SimpleFunctionFactory {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         EnrichedValueType,
-        ExecutorFuture<'static, Box<dyn SimpleFunctionExecutor>>,
+        BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
     )>;
 }
 
@@ -111,7 +110,7 @@ pub trait ExportTargetFactory {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         (serde_json::Value, serde_json::Value),
-        ExecutorFuture<'static, (Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>,
+        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
     )>;
 
     fn check_setup_status(

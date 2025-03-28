@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::async_trait;
+use futures::future::BoxFuture;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -208,7 +209,7 @@ impl<T: SourceFactoryBase> SourceFactory for T {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         EnrichedValueType,
-        ExecutorFuture<'static, Box<dyn SourceExecutor>>,
+        BoxFuture<'static, Result<Box<dyn SourceExecutor>>>,
     )> {
         let spec: T::Spec = serde_json::from_value(spec)?;
         let output_schema = self.get_output_schema(&spec, &context)?;
@@ -259,7 +260,7 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         EnrichedValueType,
-        ExecutorFuture<'static, Box<dyn SimpleFunctionExecutor>>,
+        BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
     )> {
         let spec: T::Spec = serde_json::from_value(spec)?;
         let mut args_resolver = OpArgsResolver::new(&input_schema)?;
@@ -288,7 +289,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         (Self::Key, Self::SetupState),
-        ExecutorFuture<'static, (Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>,
+        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
     )>;
 
     fn check_setup_status(
@@ -388,7 +389,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         (serde_json::Value, serde_json::Value),
-        ExecutorFuture<'static, (Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>,
+        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
     )> {
         let spec: T::Spec = serde_json::from_value(spec)?;
         let ((setup_key, setup_state), executors) = StorageFactoryBase::build(

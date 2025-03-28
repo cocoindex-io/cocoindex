@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 use super::{analyzer, plan};
 use crate::{
@@ -9,16 +9,18 @@ use crate::{
     setup::{self, ObjectSetupStatusCheck},
 };
 use anyhow::Result;
-use futures::{future::Shared, FutureExt};
+use futures::{
+    future::{BoxFuture, Shared},
+    FutureExt,
+};
 
 pub struct AnalyzedFlow {
     pub flow_instance: spec::FlowInstanceSpec,
     pub data_schema: schema::DataSchema,
     pub desired_state: setup::FlowSetupState<setup::DesiredMode>,
     /// It's None if the flow is not up to date
-    pub execution_plan: Option<
-        Shared<Pin<Box<dyn Future<Output = Result<Arc<plan::ExecutionPlan>, SharedError>> + Send>>>,
-    >,
+    pub execution_plan:
+        Option<Shared<BoxFuture<'static, Result<Arc<plan::ExecutionPlan>, SharedError>>>>,
 }
 
 impl AnalyzedFlow {

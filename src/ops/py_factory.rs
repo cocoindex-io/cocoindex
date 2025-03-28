@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::async_trait;
-use futures::FutureExt;
+use futures::{future::BoxFuture, FutureExt};
 use pyo3::{
     pyclass, pymethods,
     types::{IntoPyDict, PyString, PyTuple},
@@ -16,9 +16,7 @@ use crate::{
 };
 use anyhow::Result;
 
-use super::sdk::{
-    ExecutorFuture, FlowInstanceContext, SimpleFunctionExecutor, SimpleFunctionFactory,
-};
+use super::interface::{FlowInstanceContext, SimpleFunctionExecutor, SimpleFunctionFactory};
 
 #[pyclass(name = "OpArgSchema")]
 pub struct PyOpArgSchema {
@@ -114,7 +112,7 @@ impl SimpleFunctionFactory for PyFunctionFactory {
         _context: Arc<FlowInstanceContext>,
     ) -> Result<(
         schema::EnrichedValueType,
-        ExecutorFuture<'static, Box<dyn SimpleFunctionExecutor>>,
+        BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
     )> {
         let (result_type, executor, kw_args_names, num_positional_args) =
             Python::with_gil(|py| -> anyhow::Result<_> {

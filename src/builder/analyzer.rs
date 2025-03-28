@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Mutex;
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashMap, future::Future, sync::Arc};
 
 use super::plan::*;
 use crate::execution::db_tracking_setup;
@@ -16,7 +16,7 @@ use crate::{
     utils::immutable::RefList,
 };
 use anyhow::{anyhow, bail, Context, Result};
-use futures::future::try_join3;
+use futures::future::{try_join3, BoxFuture};
 use futures::{future::try_join_all, FutureExt};
 use indexmap::IndexMap;
 use log::{trace, warn};
@@ -678,7 +678,7 @@ impl AnalyzerContext<'_> {
         scope: &mut ExecutionScope<'_>,
         reactive_op: &NamedSpec<ReactiveOpSpec>,
         parent_scopes: RefList<'_, &'_ ExecutionScope<'_>>,
-    ) -> Result<Pin<Box<dyn Future<Output = Result<AnalyzedReactiveOp>> + Send>>> {
+    ) -> Result<BoxFuture<'static, Result<AnalyzedReactiveOp>>> {
         let result_fut = match &reactive_op.spec {
             ReactiveOpSpec::Transform(op) => {
                 let input_field_schemas =
