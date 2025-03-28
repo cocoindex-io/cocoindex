@@ -82,9 +82,10 @@ const config: Config = {
         { to: '/docs/', label: 'Documentation', position: 'left', target: '_self' },
         { to: 'https://cocoindex.io/blogs/', label: 'Blog', position: 'left', target: '_self' },
         {
-          href: 'https://github.com/cocoindex-io/cocoindex',
-          label: 'GitHub',
+          type: 'html',
           position: 'right',
+          value: '<iframe src="https://ghbtns.com/github-btn.html?user=cocoindex-io&repo=cocoindex&type=star&count=true" frameborder="0" scrolling="0" width="120" height="20" title="GitHub" style="vertical-align: middle;"></iframe>',
+          className: 'navbar-github-link',
         },
       ],
     },
