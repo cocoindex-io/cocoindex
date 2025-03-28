@@ -175,6 +175,31 @@ impl Executor {
     }
 }
 
+trait ResultExt<T> {
+    type OptResult;
+    fn or_not_found(self) -> Self::OptResult;
+}
+
+impl<T> ResultExt<T> for google_drive3::Result<T> {
+    type OptResult = google_drive3::Result<Option<T>>;
+
+    fn or_not_found(self) -> Self::OptResult {
+        match self {
+            Ok(value) => Ok(Some(value)),
+            Err(google_drive3::Error::BadRequest(err_msg))
+                if err_msg
+                    .get("error")
+                    .and_then(|e| e.get("code"))
+                    .and_then(|code| code.as_i64())
+                    == Some(404) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
 #[async_trait]
 impl SourceExecutor for Executor {
     async fn list_keys(&self) -> Result<Vec<KeyValue>> {
@@ -186,80 +211,80 @@ impl SourceExecutor for Executor {
         Ok(result.into_iter().collect())
     }
 
-    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
+    async fn get_value(&self, key: &KeyValue) -> Result<Option<SourceData<'async_trait>>> {
         let file_id = key.str_value()?;
 
-        let file = match self
+        let resp = self
             .drive_hub
             .files()
             .get(file_id)
             .add_scope(Scope::Readonly)
-            .param("fields", "id,name,mimeType,trashed")
+            .param("fields", "id,name,mimeType,trashed,modifiedTime")
             .doit()
             .await
-        {
-            Ok((_, file)) => {
-                if file.trashed == Some(true) {
-                    return Ok(None);
-                }
-                file
-            }
-            Err(google_drive3::Error::BadRequest(err_msg))
-                if err_msg
-                    .get("error")
-                    .and_then(|e| e.get("code"))
-                    .and_then(|code| code.as_i64())
-                    == Some(404) =>
+            .or_not_found()?;
+        let file = match resp {
+            Some((_, file)) if file.trashed != Some(true) => file,
+            _ => return Ok(None),
+        };
+
+        let modified_time = file.modified_time;
+        let value = async move {
+            let type_n_body = if let Some(export_mime_type) = file
+                .mime_type
+                .as_ref()
+                .and_then(|mime_type| EXPORT_MIME_TYPES.get(mime_type.as_str()))
             {
-                return Ok(None);
-            }
-            Err(e) => Err(e)?,
-        };
-
-        let (mime_type, resp_body) = if let Some(export_mime_type) = file
-            .mime_type
-            .as_ref()
-            .and_then(|mime_type| EXPORT_MIME_TYPES.get(mime_type.as_str()))
-        {
-            let target_mime_type = if self.binary {
-                export_mime_type.binary
+                let target_mime_type = if self.binary {
+                    export_mime_type.binary
+                } else {
+                    export_mime_type.text
+                };
+                self.drive_hub
+                    .files()
+                    .export(file_id, target_mime_type)
+                    .add_scope(Scope::Readonly)
+                    .doit()
+                    .await
+                    .or_not_found()?
+                    .map(|content| (Some(target_mime_type.to_string()), content.into_body()))
             } else {
-                export_mime_type.text
+                self.drive_hub
+                    .files()
+                    .get(file_id)
+                    .add_scope(Scope::Readonly)
+                    .param("alt", "media")
+                    .doit()
+                    .await
+                    .or_not_found()?
+                    .map(|(resp, _)| (file.mime_type, resp.into_body()))
             };
-            let content = self
-                .drive_hub
-                .files()
-                .export(file_id, target_mime_type)
-                .add_scope(Scope::Readonly)
-                .doit()
-                .await?
-                .into_body();
-            (Some(target_mime_type.to_string()), content)
-        } else {
-            let (resp, _) = self
-                .drive_hub
-                .files()
-                .get(file_id)
-                .add_scope(Scope::Readonly)
-                .param("alt", "media")
-                .doit()
-                .await?;
-            (file.mime_type, resp.into_body())
-        };
-        let content = resp_body.collect().await?;
+            let value = match type_n_body {
+                Some((mime_type, resp_body)) => {
+                    let content = resp_body.collect().await?;
 
-        let fields = vec![
-            file.name.unwrap_or_default().into(),
-            mime_type.into(),
-            if self.binary {
-                content.to_bytes().to_vec().into()
-            } else {
-                String::from_utf8_lossy(&content.to_bytes())
-                    .to_string()
-                    .into()
-            },
-        ];
-        Ok(Some(FieldValues { fields }))
+                    let fields = vec![
+                        file.name.unwrap_or_default().into(),
+                        mime_type.into(),
+                        if self.binary {
+                            content.to_bytes().to_vec().into()
+                        } else {
+                            String::from_utf8_lossy(&content.to_bytes())
+                                .to_string()
+                                .into()
+                        },
+                    ];
+                    Some(FieldValues { fields })
+                }
+                None => None,
+            };
+            Ok(value)
+        }
+        .boxed();
+        Ok(Some(SourceData {
+            ordinal: modified_time.map(|t| t.try_into()).transpose()?,
+            value,
+        }))
     }
 }
 

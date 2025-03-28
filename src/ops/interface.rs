@@ -1,29 +1,58 @@
+use std::time::SystemTime;
+
 use crate::base::{
     schema::*,
     spec::{IndexOptions, VectorSimilarityMetric},
     value::*,
 };
+use crate::prelude::*;
 use crate::setup;
-use anyhow::Result;
-use async_trait::async_trait;
-use futures::future::BoxFuture;
+use chrono::TimeZone;
 use serde::Serialize;
-use std::sync::Arc;
 
 pub struct FlowInstanceContext {
     pub flow_instance_name: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ordinal(pub i64);
+
+impl Into<i64> for Ordinal {
+    fn into(self) -> i64 {
+        self.0
+    }
+}
+
+impl TryFrom<SystemTime> for Ordinal {
+    type Error = anyhow::Error;
+
+    fn try_from(time: SystemTime) -> Result<Self, Self::Error> {
+        let duration = time.duration_since(std::time::UNIX_EPOCH)?;
+        Ok(duration.as_micros().try_into().map(Ordinal)?)
+    }
+}
+
+impl<TZ: TimeZone> TryFrom<chrono::DateTime<TZ>> for Ordinal {
+    type Error = anyhow::Error;
+
+    fn try_from(time: chrono::DateTime<TZ>) -> Result<Self, Self::Error> {
+        Ok(Ordinal(time.timestamp_micros()))
+    }
+}
+
 pub struct SourceData<'a> {
-    pub update_time: Option<chrono::DateTime<chrono::Utc>>,
-    pub data: BoxFuture<'a, Result<FieldValues>>,
+    /// Value that must increase monotonically after change. E.g. can be from the update time.
+    pub ordinal: Option<Ordinal>,
+    /// None means the item is gone when polling.
+    pub value: BoxFuture<'a, Result<Option<FieldValues>>>,
 }
 
 pub struct SourceChange<'a> {
-    /// Last update/deletion time. None means unavailable.
-    pub time: Option<chrono::DateTime<chrono::Utc>>,
-    /// None means a deletion.
-    pub data: Option<BoxFuture<'a, Result<FieldValues>>>,
+    /// Last update/deletion ordinal. None means unavailable.
+    pub ordinal: Option<Ordinal>,
+    pub key: KeyValue,
+    /// None means a deletion. None within the `BoxFuture` means the item is gone when polling.
+    pub value: Option<BoxFuture<'a, Result<Option<FieldValues>>>>,
 }
 
 #[async_trait]
@@ -32,12 +61,11 @@ pub trait SourceExecutor: Send + Sync {
     async fn list_keys(&self) -> Result<Vec<KeyValue>>;
 
     // Get the value for the given key.
-    async fn get_value(
-        &self,
-        key: &'async_trait KeyValue,
-    ) -> Result<Option<SourceData<'async_trait>>>;
+    async fn get_value(&self, key: &KeyValue) -> Result<Option<SourceData<'async_trait>>>;
 
-    async fn get_changes(&self) -> Result<Vec<SourceChange<'async_trait>>>;
+    fn change_stream<'a>(&'a self) -> Option<BoxStream<'a, SourceChange<'a>>> {
+        None
+    }
 }
 
 pub trait SourceFactory {

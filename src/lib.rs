@@ -4,6 +4,7 @@ mod execution;
 mod lib_context;
 mod llm;
 mod ops;
+mod prelude;
 mod py;
 mod server;
 mod service;

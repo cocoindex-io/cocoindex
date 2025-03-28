@@ -443,8 +443,9 @@ pub async fn evaluate_source_entry(
     source_op: &AnalyzedSourceOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
+    source_value: value::FieldValues,
     memory: &EvaluationMemory,
-) -> Result<Option<ScopeValueBuilder>> {
+) -> Result<ScopeValueBuilder> {
     let root_schema = &schema.schema;
     let root_scope_value =
         ScopeValueBuilder::new(root_schema.fields.len(), schema.collectors.len());
@@ -464,26 +465,20 @@ pub async fn evaluate_source_entry(
         }
     };
 
-    let result = match source_op.executor.get_value(key).await? {
-        Some(val) => {
-            let scope_value =
-                ScopeValueBuilder::augmented_from(&value::ScopeValue(val), collection_schema)?;
-            root_scope_entry.define_field_w_builder(
-                &source_op.output,
-                value::Value::Table(BTreeMap::from([(key.clone(), scope_value)])),
-            );
+    let scope_value =
+        ScopeValueBuilder::augmented_from(&value::ScopeValue(source_value), collection_schema)?;
+    root_scope_entry.define_field_w_builder(
+        &source_op.output,
+        value::Value::Table(BTreeMap::from([(key.clone(), scope_value)])),
+    );
 
-            evaluate_op_scope(
-                &plan.op_scope,
-                RefList::Nil.prepend(&root_scope_entry),
-                memory,
-            )
-            .await?;
-            Some(root_scope_value)
-        }
-        None => None,
-    };
-    anyhow::Ok(result)
+    evaluate_op_scope(
+        &plan.op_scope,
+        RefList::Nil.prepend(&root_scope_entry),
+        memory,
+    )
+    .await?;
+    Ok(root_scope_value)
 }
 
 pub async fn evaluate_transient_flow(

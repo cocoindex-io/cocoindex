@@ -64,24 +64,38 @@ impl SourceExecutor for Executor {
         Ok(result)
     }
 
-    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
+    async fn get_value(&self, key: &KeyValue) -> Result<Option<SourceData<'async_trait>>> {
         if !self.is_file_included(key.str_value()?.as_ref()) {
             return Ok(None);
         }
         let path = self.root_path.join(key.str_value()?.as_ref());
-        let result = match std::fs::read(path) {
-            Ok(content) => {
-                let content = if self.binary {
-                    fields_value!(content)
-                } else {
-                    fields_value!(String::from_utf8_lossy(&content).to_string())
-                };
-                Some(content)
+        let modified_time = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata.modified()?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(None);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
         };
-        Ok(result)
+        let value = async move {
+            let value = match std::fs::read(path) {
+                Ok(content) => {
+                    let content = if self.binary {
+                        fields_value!(content)
+                    } else {
+                        fields_value!(String::from_utf8_lossy(&content).to_string())
+                    };
+                    Some(content)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => Err(e)?,
+            };
+            Ok(value)
+        }
+        .boxed();
+        Ok(Some(SourceData {
+            ordinal: Some(modified_time.try_into()?),
+            value,
+        }))
     }
 }
 

@@ -1,4 +1,5 @@
-use anyhow::Result;
+use crate::prelude::*;
+
 use futures::future::{join, join_all, try_join, try_join_all};
 use itertools::Itertools;
 use log::error;
@@ -13,7 +14,7 @@ use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, StoredMemoiz
 use crate::base::schema;
 use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
-use crate::ops::interface::{ExportTargetMutation, ExportTargetUpsertEntry};
+use crate::ops::interface::{ExportTargetMutation, ExportTargetUpsertEntry, Ordinal};
 use crate::utils::db::WriteAction;
 use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 
@@ -93,9 +94,9 @@ pub fn extract_primary_key(
     Ok(key)
 }
 
-enum WithApplyStatus<T = ()> {
+pub enum UnchangedOr<T> {
     Normal(T),
-    Collapsed,
+    Unchanged,
 }
 
 #[derive(Default)]
@@ -140,7 +141,7 @@ async fn precommit_source_tracking_info(
     db_setup: &db_tracking_setup::TrackingTableSetupState,
     export_ops: &[AnalyzedExportOp],
     pool: &PgPool,
-) -> Result<WithApplyStatus<PrecommitOutput>> {
+) -> Result<UnchangedOr<PrecommitOutput>> {
     let mut txn = pool.begin().await?;
 
     let tracking_info = db_tracking::read_source_tracking_info_for_precommit(
@@ -157,7 +158,7 @@ async fn precommit_source_tracking_info(
             .and_then(|info| info.processed_source_ordinal)
             > source_ordinal
     {
-        return Ok(WithApplyStatus::Collapsed);
+        return Ok(UnchangedOr::Unchanged);
     }
     let process_ordinal = (tracking_info
         .as_ref()
@@ -323,7 +324,7 @@ async fn precommit_source_tracking_info(
 
     txn.commit().await?;
 
-    Ok(WithApplyStatus::Normal(PrecommitOutput {
+    Ok(UnchangedOr::Normal(PrecommitOutput {
         metadata: PrecommitMetadata {
             source_entry_exists: data.is_some(),
             process_ordinal,
@@ -343,7 +344,7 @@ async fn commit_source_tracking_info(
     process_timestamp: &chrono::DateTime<chrono::Utc>,
     db_setup: &db_tracking_setup::TrackingTableSetupState,
     pool: &PgPool,
-) -> Result<WithApplyStatus<()>> {
+) -> Result<UnchangedOr<()>> {
     let mut txn = pool.begin().await?;
 
     let tracking_info = db_tracking::read_source_tracking_info_for_commit(
@@ -357,7 +358,7 @@ async fn commit_source_tracking_info(
     if tracking_info.as_ref().and_then(|info| info.process_ordinal)
         >= Some(precommit_metadata.process_ordinal)
     {
-        return Ok(WithApplyStatus::Collapsed);
+        return Ok(UnchangedOr::Unchanged);
     }
 
     let cleaned_staging_target_keys = tracking_info
@@ -417,7 +418,7 @@ async fn commit_source_tracking_info(
 
     txn.commit().await?;
 
-    Ok(WithApplyStatus::Normal(()))
+    Ok(UnchangedOr::Normal(()))
 }
 
 pub async fn evaluate_source_entry_with_memory(
@@ -444,8 +445,16 @@ pub async fn evaluate_source_entry_with_memory(
         None
     };
     let memory = EvaluationMemory::new(chrono::Utc::now(), stored_info, options);
-    let data_builder = evaluate_source_entry(plan, source_op, schema, key, &memory).await?;
-    Ok(data_builder)
+    let source_data = match source_op.executor.get_value(key).await? {
+        Some(d) => d,
+        None => return Ok(None),
+    };
+    let source_value = match source_data.value.await? {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let output = evaluate_source_entry(plan, source_op, schema, key, source_value, &memory).await?;
+    Ok(Some(output))
 }
 
 pub async fn update_source_entry(
@@ -461,8 +470,6 @@ pub async fn update_source_entry(
     let process_timestamp = chrono::Utc::now();
 
     // Phase 1: Evaluate with memoization info.
-
-    // TODO: Skip if the source is not newer and the processing logic is not changed.
     let existing_tracking_info = read_source_tracking_info(
         source_op.source_id,
         &source_key_json,
@@ -471,57 +478,80 @@ pub async fn update_source_entry(
     )
     .await?;
     let already_exists = existing_tracking_info.is_some();
-    let memoization_info = existing_tracking_info
-        .and_then(|info| info.memoization_info.map(|info| info.0))
-        .flatten();
-    let evaluation_memory = EvaluationMemory::new(
-        process_timestamp,
-        memoization_info,
-        EvaluationMemoryOptions {
-            enable_cache: true,
-            evaluation_only: false,
-        },
-    );
-    let value_builder = if !only_for_deletion {
-        evaluate_source_entry(plan, source_op, schema, key, &evaluation_memory).await?
-    } else {
-        None
+    let (existing_source_ordinal, memoization_info) = match existing_tracking_info {
+        Some(info) => (
+            info.processed_source_ordinal.map(Ordinal),
+            info.memoization_info.map(|info| info.0).flatten(),
+        ),
+        None => (None, None),
     };
-    let exists = value_builder.is_some();
-
+    let (source_ordinal, output, stored_mem_info) = if !only_for_deletion {
+        let source_data = source_op.executor.get_value(key).await?;
+        let source_ordinal = source_data.as_ref().and_then(|d| d.ordinal);
+        match (source_ordinal, existing_source_ordinal) {
+            // TODO: Collapse if the source is not newer and the processing logic is not changed.
+            (Some(source_ordinal), Some(existing_source_ordinal))
+                if source_ordinal <= existing_source_ordinal =>
+            {
+                return Ok(());
+            }
+            _ => {}
+        }
+        let source_value = match source_data {
+            Some(d) => d.value.await?,
+            None => None,
+        };
+        match source_value {
+            Some(source_value) => {
+                let evaluation_memory = EvaluationMemory::new(
+                    process_timestamp,
+                    memoization_info,
+                    EvaluationMemoryOptions {
+                        enable_cache: true,
+                        evaluation_only: false,
+                    },
+                );
+                let output = evaluate_source_entry(
+                    plan,
+                    source_op,
+                    schema,
+                    key,
+                    source_value,
+                    &evaluation_memory,
+                )
+                .await?;
+                (
+                    source_ordinal,
+                    Some(output),
+                    evaluation_memory.into_stored()?,
+                )
+            }
+            None => Default::default(),
+        }
+    } else {
+        Default::default()
+    };
     if already_exists {
-        if exists {
+        if output.is_some() {
             stats.num_already_exists.fetch_add(1, Relaxed);
         } else {
             stats.num_deletions.fetch_add(1, Relaxed);
         }
-    } else if exists {
+    } else if output.is_some() {
         stats.num_insertions.fetch_add(1, Relaxed);
     } else {
         return Ok(());
     }
 
-    let memoization_info = evaluation_memory.into_stored()?;
-    let (source_ordinal, precommit_data) = match &value_builder {
-        Some(scope_value) => {
-            (
-                // TODO: Generate the actual source ordinal.
-                Some(1),
-                Some(PrecommitData {
-                    scope_value,
-                    memoization_info: &memoization_info,
-                }),
-            )
-        }
-        None => (None, None),
-    };
-
     // Phase 2 (precommit): Update with the memoization info and stage target keys.
     let precommit_output = precommit_source_tracking_info(
         source_op.source_id,
         &source_key_json,
-        source_ordinal,
-        precommit_data,
+        source_ordinal.map(|o| o.into()),
+        output.as_ref().map(|scope_value| PrecommitData {
+            scope_value,
+            memoization_info: &stored_mem_info,
+        }),
         &process_timestamp,
         &plan.tracking_table_setup,
         &plan.export_ops,
@@ -529,8 +559,8 @@ pub async fn update_source_entry(
     )
     .await?;
     let precommit_output = match precommit_output {
-        WithApplyStatus::Normal(output) => output,
-        WithApplyStatus::Collapsed => return Ok(()),
+        UnchangedOr::Normal(output) => output,
+        UnchangedOr::Unchanged => return Ok(()),
     };
 
     // Phase 3: Apply changes to the target storage, including upserting new target records and removing existing ones.
@@ -554,7 +584,7 @@ pub async fn update_source_entry(
     commit_source_tracking_info(
         source_op.source_id,
         &source_key_json,
-        source_ordinal,
+        source_ordinal.map(|o| o.into()),
         &plan.logic_fingerprint,
         precommit_output.metadata,
         &process_timestamp,
