@@ -1094,63 +1094,67 @@ pub fn analyze_flow(
         // TODO: Fill it with a meaningful value.
         targets: IndexMap::new(),
     };
-    let plan_fut = {
-        let analyzer_ctx = AnalyzerContext { registry, flow_ctx };
-        let mut root_exec_scope = ExecutionScope {
-            name: ROOT_SCOPE_NAME,
-            data: &mut root_data_scope,
-        };
-        let source_ops_futs = flow_inst
-            .source_ops
-            .iter()
-            .map(|source_op| {
-                let existing_source_states = source_states_by_name.get(source_op.name.as_str());
-                analyzer_ctx.analyze_source_op(
-                    root_exec_scope.data,
-                    source_op.clone(),
-                    Some(&mut setup_state.metadata),
-                    existing_source_states,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let op_scope_fut = analyzer_ctx.analyze_op_scope(
-            &mut root_exec_scope,
-            &flow_inst.reactive_ops,
-            RefList::Nil,
-        )?;
-        let export_ops_futs = flow_inst
-            .export_ops
-            .iter()
-            .map(|export_op| {
-                analyzer_ctx.analyze_export_op(
-                    root_exec_scope.data,
-                    export_op.clone(),
-                    Some(&mut setup_state),
-                    &target_states_by_name_type,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
 
-        let tracking_table_setup = setup_state.tracking_table.clone();
-        async move {
-            let (source_ops, op_scope, export_ops) = try_join3(
-                try_join_all(source_ops_futs),
-                op_scope_fut,
-                try_join_all(export_ops_futs),
+    let analyzer_ctx = AnalyzerContext { registry, flow_ctx };
+    let mut root_exec_scope = ExecutionScope {
+        name: ROOT_SCOPE_NAME,
+        data: &mut root_data_scope,
+    };
+    let source_ops_futs = flow_inst
+        .source_ops
+        .iter()
+        .map(|source_op| {
+            let existing_source_states = source_states_by_name.get(source_op.name.as_str());
+            analyzer_ctx.analyze_source_op(
+                root_exec_scope.data,
+                source_op.clone(),
+                Some(&mut setup_state.metadata),
+                existing_source_states,
             )
-            .await?;
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let op_scope_fut = analyzer_ctx.analyze_op_scope(
+        &mut root_exec_scope,
+        &flow_inst.reactive_ops,
+        RefList::Nil,
+    )?;
+    let export_ops_futs = flow_inst
+        .export_ops
+        .iter()
+        .map(|export_op| {
+            analyzer_ctx.analyze_export_op(
+                root_exec_scope.data,
+                export_op.clone(),
+                Some(&mut setup_state),
+                &target_states_by_name_type,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-            Ok(ExecutionPlan {
-                tracking_table_setup,
-                logic_fingerprint: vec![0; 8], // TODO: Fill it with a meaningful value automatically
-                source_ops,
-                op_scope,
-                export_ops,
-            })
-        }
+    let tracking_table_setup = setup_state.tracking_table.clone();
+    let data_schema = root_data_scope.into_data_schema()?;
+    let logic_fingerprint = Fingerprinter::default()
+        .with(&flow_inst)?
+        .with(&data_schema)?
+        .into_fingerprint();
+    let plan_fut = async move {
+        let (source_ops, op_scope, export_ops) = try_join3(
+            try_join_all(source_ops_futs),
+            op_scope_fut,
+            try_join_all(export_ops_futs),
+        )
+        .await?;
+
+        Ok(ExecutionPlan {
+            tracking_table_setup,
+            logic_fingerprint,
+            source_ops,
+            op_scope,
+            export_ops,
+        })
     };
 
-    Ok((root_data_scope.into_data_schema()?, plan_fut, setup_state))
+    Ok((data_schema, plan_fut, setup_state))
 }
 
 pub fn analyze_transient_flow<'a>(

@@ -6,7 +6,7 @@ use crate::base::schema::ValueType;
 use crate::base::value;
 use crate::execution::db_tracking_setup;
 use crate::ops::interface::*;
-use crate::utils::fingerprint::Fingerprinter;
+use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AnalyzedLocalFieldReference {
@@ -126,7 +126,7 @@ pub struct AnalyzedOpScope {
 
 pub struct ExecutionPlan {
     pub tracking_table_setup: db_tracking_setup::TrackingTableSetupState,
-    pub logic_fingerprint: Vec<u8>,
+    pub logic_fingerprint: Fingerprint,
 
     pub source_ops: Vec<AnalyzedSourceOp>,
     pub op_scope: AnalyzedOpScope,

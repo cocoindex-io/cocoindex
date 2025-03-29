@@ -22,28 +22,39 @@ use super::evaluator::{evaluate_source_entry, ScopeValueBuilder};
 
 #[derive(Debug, Serialize, Default)]
 pub struct UpdateStats {
+    pub num_skipped: AtomicUsize,
     pub num_insertions: AtomicUsize,
     pub num_deletions: AtomicUsize,
-    pub num_already_exists: AtomicUsize,
+    pub num_repreocesses: AtomicUsize,
     pub num_errors: AtomicUsize,
 }
 
 impl std::fmt::Display for UpdateStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let num_source_rows = self.num_insertions.load(Relaxed)
-            + self.num_deletions.load(Relaxed)
-            + self.num_already_exists.load(Relaxed);
-        write!(f, "{num_source_rows} source rows processed",)?;
-        if self.num_errors.load(Relaxed) > 0 {
-            write!(f, " with {} ERRORS", self.num_errors.load(Relaxed))?;
+        let num_skipped = self.num_skipped.load(Relaxed);
+        if num_skipped > 0 {
+            write!(f, "{} rows skipped", num_skipped)?;
         }
-        write!(
-            f,
-            ": {} added, {} removed, {} already exists",
-            self.num_insertions.load(Relaxed),
-            self.num_deletions.load(Relaxed),
-            self.num_already_exists.load(Relaxed)
-        )?;
+
+        let num_insertions = self.num_insertions.load(Relaxed);
+        let num_deletions = self.num_deletions.load(Relaxed);
+        let num_reprocesses = self.num_repreocesses.load(Relaxed);
+        let num_source_rows = num_insertions + num_deletions + num_reprocesses;
+        if num_source_rows > 0 {
+            if num_skipped > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{num_source_rows} source rows processed",)?;
+
+            let num_errors = self.num_errors.load(Relaxed);
+            if num_errors > 0 {
+                write!(f, " with {num_errors} ERRORS",)?;
+            }
+            write!(
+                f,
+                ": {num_insertions} added, {num_deletions} removed, {num_reprocesses} repocessed",
+            )?;
+        }
         Ok(())
     }
 }
@@ -495,8 +506,11 @@ pub async fn update_source_entry(
             (Some(source_ordinal), Some(existing_source_ordinal)) => {
                 if source_ordinal < existing_source_ordinal
                     || (source_ordinal == existing_source_ordinal
-                        && existing_logic_fingerprint == source_op.)
+                        && existing_logic_fingerprint.as_ref().map(|v| v.as_slice())
+                            == Some(plan.logic_fingerprint.0.as_slice()))
                 {
+                    // TODO: We should detect based on finer grain fingerprint.
+                    stats.num_skipped.fetch_add(1, Relaxed);
                     return Ok(());
                 }
             }
@@ -538,7 +552,7 @@ pub async fn update_source_entry(
     };
     if already_exists {
         if output.is_some() {
-            stats.num_already_exists.fetch_add(1, Relaxed);
+            stats.num_repreocesses.fetch_add(1, Relaxed);
         } else {
             stats.num_deletions.fetch_add(1, Relaxed);
         }
@@ -590,7 +604,7 @@ pub async fn update_source_entry(
         source_op.source_id,
         &source_key_json,
         source_ordinal.map(|o| o.into()),
-        &plan.logic_fingerprint,
+        &plan.logic_fingerprint.0,
         precommit_output.metadata,
         &process_timestamp,
         &plan.tracking_table_setup,
