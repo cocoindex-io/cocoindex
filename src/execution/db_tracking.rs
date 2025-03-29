@@ -9,26 +9,21 @@ pub type TrackedTargetKey = (serde_json::Value, i64, Option<Fingerprint>);
 pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKey>)>;
 
 #[derive(sqlx::FromRow, Debug)]
-pub struct SourceTrackingInfo {
-    pub max_process_ordinal: i64,
-    pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
+pub struct SourceTrackingInfoForProcessing {
     pub memoization_info: Option<sqlx::types::Json<Option<StoredMemoizationInfo>>>,
 
     pub processed_source_ordinal: Option<i64>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
-    pub process_ordinal: Option<i64>,
-    pub process_time_micros: Option<i64>,
-    pub target_keys: Option<sqlx::types::Json<TrackedTargetKeyForSource>>,
 }
 
-pub async fn read_source_tracking_info(
+pub async fn read_source_tracking_info_for_processing(
     source_id: i32,
     source_key_json: &serde_json::Value,
     db_setup: &TrackingTableSetupState,
     pool: &PgPool,
-) -> Result<Option<SourceTrackingInfo>> {
+) -> Result<Option<SourceTrackingInfoForProcessing>> {
     let query_str = format!(
-        "SELECT max_process_ordinal, staging_target_keys, memoization_info, processed_source_ordinal, process_logic_fingerprint, process_ordinal, process_time_micros, target_keys FROM {} WHERE source_id = $1 AND source_key = $2",
+        "SELECT memoization_info, processed_source_ordinal, process_logic_fingerprint FROM {} WHERE source_id = $1 AND source_key = $2",
         db_setup.table_name
     );
     let tracking_info = sqlx::query_as(&query_str)

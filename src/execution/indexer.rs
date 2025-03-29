@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-use super::db_tracking::{self, read_source_tracking_info, TrackedTargetKey};
+use super::db_tracking::{self, read_source_tracking_info_for_processing, TrackedTargetKey};
 use super::db_tracking_setup;
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, StoredMemoizationInfo};
 use crate::base::schema;
@@ -442,7 +442,7 @@ pub async fn evaluate_source_entry_with_memory(
 ) -> Result<Option<ScopeValueBuilder>> {
     let stored_info = if options.enable_cache || !options.evaluation_only {
         let source_key_json = serde_json::to_value(key)?;
-        let existing_tracking_info = read_source_tracking_info(
+        let existing_tracking_info = read_source_tracking_info_for_processing(
             source_op.source_id,
             &source_key_json,
             &plan.tracking_table_setup,
@@ -481,7 +481,7 @@ pub async fn update_source_entry(
     let process_timestamp = chrono::Utc::now();
 
     // Phase 1: Evaluate with memoization info.
-    let existing_tracking_info = read_source_tracking_info(
+    let existing_tracking_info = read_source_tracking_info_for_processing(
         source_op.source_id,
         &source_key_json,
         &plan.tracking_table_setup,
