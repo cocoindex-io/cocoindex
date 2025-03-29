@@ -1,5 +1,6 @@
 use anyhow::Result;
 use futures::future::try_join_all;
+use futures::StreamExt;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use serde::ser::SerializeSeq;
@@ -14,6 +15,7 @@ use super::indexer;
 use super::memoization::EvaluationMemoryOptions;
 use crate::base::{schema, value};
 use crate::builder::plan::{AnalyzedSourceOp, ExecutionPlan};
+use crate::ops::interface::SourceExecutorListOptions;
 use crate::utils::yaml_ser::YamlSerializer;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -163,22 +165,27 @@ impl<'a> Dumper<'a> {
     }
 
     async fn evaluate_and_dump_for_source_op(&self, source_op: &AnalyzedSourceOp) -> Result<()> {
-        let all_keys = source_op.executor.list_keys().await?;
-
         let mut keys_by_filename_prefix: IndexMap<String, Vec<value::KeyValue>> = IndexMap::new();
-        for key in all_keys {
-            let mut s = key
-                .to_strs()
-                .into_iter()
-                .map(|s| urlencoding::encode(&s).into_owned())
-                .join(":");
-            s.truncate(
-                (0..(FILENAME_PREFIX_MAX_LENGTH - source_op.name.as_str().len()))
-                    .rev()
-                    .find(|i| s.is_char_boundary(*i))
-                    .unwrap_or(0),
-            );
-            keys_by_filename_prefix.entry(s).or_default().push(key);
+
+        let mut rows_stream = source_op.executor.list(SourceExecutorListOptions {
+            include_ordinal: false,
+        });
+        while let Some(rows) = rows_stream.next().await {
+            for row in rows?.into_iter() {
+                let mut s = row
+                    .key
+                    .to_strs()
+                    .into_iter()
+                    .map(|s| urlencoding::encode(&s).into_owned())
+                    .join(":");
+                s.truncate(
+                    (0..(FILENAME_PREFIX_MAX_LENGTH - source_op.name.as_str().len()))
+                        .rev()
+                        .find(|i| s.is_char_boundary(*i))
+                        .unwrap_or(0),
+                );
+                keys_by_filename_prefix.entry(s).or_default().push(row.key);
+            }
         }
         let output_dir = Path::new(&self.options.output_dir);
         let evaluate_futs =

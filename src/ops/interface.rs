@@ -47,6 +47,12 @@ pub struct SourceData<'a> {
     pub value: BoxFuture<'a, Result<Option<FieldValues>>>,
 }
 
+pub struct SourceRowMetadata {
+    pub key: KeyValue,
+    /// None means the ordinal is unavailable.
+    pub ordinal: Option<Ordinal>,
+}
+
 pub struct SourceChange<'a> {
     /// Last update/deletion ordinal. None means unavailable.
     pub ordinal: Option<Ordinal>,
@@ -55,10 +61,18 @@ pub struct SourceChange<'a> {
     pub value: Option<BoxFuture<'a, Result<Option<FieldValues>>>>,
 }
 
+#[derive(Debug, Default)]
+pub struct SourceExecutorListOptions {
+    pub include_ordinal: bool,
+}
+
 #[async_trait]
 pub trait SourceExecutor: Send + Sync {
     /// Get the list of keys for the source.
-    async fn list_keys(&self) -> Result<Vec<KeyValue>>;
+    fn list<'a>(
+        &'a self,
+        options: SourceExecutorListOptions,
+    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>>;
 
     // Get the value for the given key.
     async fn get_value(&self, key: &KeyValue) -> Result<Option<SourceData<'async_trait>>>;

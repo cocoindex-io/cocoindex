@@ -7,16 +7,20 @@ use axum::{
     Json,
 };
 use axum_extra::extract::Query;
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use super::error::ApiError;
-use crate::base::{schema::DataSchema, value};
 use crate::lib_context::LibContext;
 use crate::{
     api_bail, api_error,
     base::{schema, spec},
     execution::indexer,
     execution::memoization,
+};
+use crate::{
+    base::{schema::DataSchema, value},
+    ops::interface::SourceExecutorListOptions,
 };
 
 pub async fn list_flows(
@@ -95,7 +99,13 @@ pub async fn get_keys(
             )
         })?;
 
-    let keys = source_op.executor.list_keys().await?;
+    let mut rows_stream = source_op.executor.list(SourceExecutorListOptions {
+        include_ordinal: false,
+    });
+    let mut keys = Vec::new();
+    while let Some(rows) = rows_stream.next().await {
+        keys.extend(rows?.into_iter().map(|row| row.key));
+    }
     Ok(Json(GetKeysResponse {
         key_type: key_type.clone(),
         keys,

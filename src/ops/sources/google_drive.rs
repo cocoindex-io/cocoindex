@@ -1,18 +1,18 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, LazyLock},
 };
 
+use async_stream::try_stream;
 use google_drive3::{
-    api::Scope,
+    api::{File, Scope},
     yup_oauth2::{read_service_account_key, ServiceAccountAuthenticator},
     DriveHub,
 };
 use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
-use indexmap::IndexSet;
-use log::warn;
+use log::{trace, warn};
 
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
@@ -80,7 +80,7 @@ pub struct Spec {
 struct Executor {
     drive_hub: DriveHub<HttpsConnector<HttpConnector>>,
     binary: bool,
-    root_folder_ids: Vec<String>,
+    root_folder_ids: Vec<Arc<str>>,
 }
 
 impl Executor {
@@ -105,7 +105,7 @@ impl Executor {
         Ok(Self {
             drive_hub,
             binary: spec.binary,
-            root_folder_ids: spec.root_folder_ids,
+            root_folder_ids: spec.root_folder_ids.into_iter().map(Arc::from).collect(),
         })
     }
 }
@@ -123,55 +123,60 @@ fn escape_string(s: &str) -> String {
 }
 
 impl Executor {
-    async fn traverse_folder(
+    fn visit_file(
+        &self,
+        file: File,
+        new_folder_ids: &mut Vec<Arc<str>>,
+        seen_ids: &mut HashSet<Arc<str>>,
+    ) -> Result<Option<SourceRowMetadata>> {
+        if file.trashed == Some(true) {
+            return Ok(None);
+        }
+        let (id, mime_type) = match (file.id, file.mime_type) {
+            (Some(id), Some(mime_type)) => (Arc::<str>::from(id), mime_type),
+            (id, mime_type) => {
+                warn!("Skipping file with incomplete metadata: id={id:?}, mime_type={mime_type:?}",);
+                return Ok(None);
+            }
+        };
+        if !seen_ids.insert(id.clone()) {
+            return Ok(None);
+        }
+        let result = if mime_type == FOLDER_MIME_TYPE {
+            new_folder_ids.push(id);
+            None
+        } else if is_supported_file_type(&mime_type) {
+            Some(SourceRowMetadata {
+                key: KeyValue::Str(Arc::from(id)),
+                ordinal: file.modified_time.map(|t| t.try_into()).transpose()?,
+            })
+        } else {
+            trace!("Skipping file with unsupported mime type: id={id}, mime_type={mime_type}, name={:?}", file.name);
+            None
+        };
+        Ok(result)
+    }
+
+    async fn list_files(
         &self,
         folder_id: &str,
-        visited_folder_ids: &mut IndexSet<String>,
-        result: &mut IndexSet<KeyValue>,
-    ) -> Result<()> {
-        if !visited_folder_ids.insert(folder_id.to_string()) {
-            return Ok(());
-        }
+        fields: &str,
+        next_page_token: &mut Option<String>,
+    ) -> Result<impl Iterator<Item = File>> {
         let query = format!("'{}' in parents", escape_string(folder_id));
-        let mut next_page_token: Option<String> = None;
-        loop {
-            let mut list_call = self
-                .drive_hub
-                .files()
-                .list()
-                .add_scope(Scope::Readonly)
-                .q(&query);
-            if let Some(next_page_token) = &next_page_token {
-                list_call = list_call.page_token(next_page_token);
-            }
-            let (_, files) = list_call.doit().await?;
-            if let Some(files) = files.files {
-                for file in files {
-                    match (file.id, file.mime_type) {
-                        (Some(id), Some(mime_type)) => {
-                            if mime_type == FOLDER_MIME_TYPE {
-                                Box::pin(self.traverse_folder(&id, visited_folder_ids, result))
-                                    .await?;
-                            } else if is_supported_file_type(&mime_type) {
-                                result.insert(KeyValue::Str(Arc::from(id)));
-                            } else {
-                                warn!("Skipping file with unsupported mime type: id={id}, mime_type={mime_type}, name={:?}", file.name);
-                            }
-                        }
-                        (id, mime_type) => {
-                            warn!(
-                                "Skipping file with incomplete metadata: id={id:?}, mime_type={mime_type:?}",
-                            );
-                        }
-                    }
-                }
-            }
-            next_page_token = files.next_page_token;
-            if next_page_token.is_none() {
-                break;
-            }
+        let mut list_call = self
+            .drive_hub
+            .files()
+            .list()
+            .add_scope(Scope::Readonly)
+            .q(&query)
+            .param("fields", fields);
+        if let Some(next_page_token) = &next_page_token {
+            list_call = list_call.page_token(next_page_token);
         }
-        Ok(())
+        let (_, files) = list_call.doit().await?;
+        let file_iter = files.files.into_iter().flat_map(|file| file.into_iter());
+        Ok(file_iter)
     }
 }
 
@@ -202,13 +207,43 @@ impl<T> ResultExt<T> for google_drive3::Result<T> {
 
 #[async_trait]
 impl SourceExecutor for Executor {
-    async fn list_keys(&self) -> Result<Vec<KeyValue>> {
-        let mut result = IndexSet::new();
-        for root_folder_id in &self.root_folder_ids {
-            self.traverse_folder(root_folder_id, &mut IndexSet::new(), &mut result)
-                .await?;
+    fn list<'a>(
+        &'a self,
+        options: SourceExecutorListOptions,
+    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>> {
+        let mut seen_ids = HashSet::new();
+        let mut folder_ids = self.root_folder_ids.clone();
+        let fields = format!(
+            "files(id,name,mimeType,trashed{})",
+            if options.include_ordinal {
+                ",modifiedTime"
+            } else {
+                ""
+            }
+        );
+        let mut new_folder_ids = Vec::new();
+        try_stream! {
+            while let Some(folder_id) = folder_ids.pop() {
+                let mut next_page_token = None;
+                loop {
+                    let mut curr_rows = Vec::new();
+                    let files = self
+                        .list_files(&folder_id, &fields, &mut next_page_token)
+                        .await?;
+                    for file in files {
+                        curr_rows.extend(self.visit_file(file, &mut new_folder_ids, &mut seen_ids)?);
+                    }
+                    if !curr_rows.is_empty() {
+                        yield curr_rows;
+                    }
+                    if next_page_token.is_none() {
+                        break;
+                    }
+                }
+                folder_ids.extend(new_folder_ids.drain(..).rev());
+            }
         }
-        Ok(result.into_iter().collect())
+        .boxed()
     }
 
     async fn get_value(&self, key: &KeyValue) -> Result<Option<SourceData<'async_trait>>> {

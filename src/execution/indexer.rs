@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use futures::future::{join, join_all, try_join, try_join_all};
+use futures::future::{join, join_all, try_join_all};
 use itertools::Itertools;
 use log::error;
 use serde::Serialize;
@@ -14,7 +14,9 @@ use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, StoredMemoiz
 use crate::base::schema;
 use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
-use crate::ops::interface::{ExportTargetMutation, ExportTargetUpsertEntry, Ordinal};
+use crate::ops::interface::{
+    ExportTargetMutation, ExportTargetUpsertEntry, Ordinal, SourceExecutorListOptions,
+};
 use crate::utils::db::WriteAction;
 use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 
@@ -638,15 +640,20 @@ async fn update_source(
     schema: &schema::DataSchema,
     pool: &PgPool,
 ) -> Result<SourceUpdateInfo> {
-    let (keys, existing_keys_json) = try_join(
-        source_op.executor.list_keys(),
-        db_tracking::list_source_tracking_keys(
-            source_op.source_id,
-            &plan.tracking_table_setup,
-            pool,
-        ),
+    let existing_keys_json = db_tracking::list_source_tracking_keys(
+        source_op.source_id,
+        &plan.tracking_table_setup,
+        pool,
     )
     .await?;
+
+    let mut keys = Vec::new();
+    let mut rows_stream = source_op.executor.list(SourceExecutorListOptions {
+        include_ordinal: false,
+    });
+    while let Some(rows) = rows_stream.next().await {
+        keys.extend(rows?.into_iter().map(|row| row.key));
+    }
 
     let stats = UpdateStats::default();
     let upsert_futs = join_all(keys.iter().map(|key| {
