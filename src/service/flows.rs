@@ -1,27 +1,17 @@
-use std::sync::Arc;
+use crate::prelude::*;
 
-use anyhow::Result;
+use crate::{base::schema::DataSchema, ops::interface::SourceExecutorListOptions};
+use crate::{
+    execution::memoization,
+    execution::{row_indexer, stats},
+};
+use crate::{execution::source_indexer, lib_context::LibContext};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     Json,
 };
 use axum_extra::extract::Query;
-use futures::StreamExt;
-use serde::{Deserialize, Serialize};
-
-use super::error::ApiError;
-use crate::lib_context::LibContext;
-use crate::{
-    api_bail, api_error,
-    base::{schema, spec},
-    execution::indexer,
-    execution::memoization,
-};
-use crate::{
-    base::{schema::DataSchema, value},
-    ops::interface::SourceExecutorListOptions,
-};
 
 pub async fn list_flows(
     State(lib_context): State<Arc<LibContext>>,
@@ -155,7 +145,7 @@ pub async fn evaluate_data(
         .ok_or_else(|| api_error!("field {} does not have a key", query.field))?;
     let key = value::KeyValue::from_strs(query.key, &key_field.value_type.typ)?;
 
-    let value_builder = indexer::evaluate_source_entry_with_memory(
+    let value_builder = row_indexer::evaluate_source_entry_with_memory(
         &plan,
         source_op,
         schema,
@@ -178,9 +168,10 @@ pub async fn evaluate_data(
 pub async fn update(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<indexer::IndexUpdateInfo>, ApiError> {
+) -> Result<Json<stats::IndexUpdateInfo>, ApiError> {
     let fl = &lib_context.with_flow_context(&flow_name, |ctx| ctx.flow.clone())?;
     let execution_plan = fl.get_execution_plan().await?;
-    let update_info = indexer::update(&execution_plan, &fl.data_schema, &lib_context.pool).await?;
+    let update_info =
+        source_indexer::update(&execution_plan, &fl.data_schema, &lib_context.pool).await?;
     Ok(Json(update_info))
 }

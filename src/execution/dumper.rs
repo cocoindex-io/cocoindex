@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use yaml_rust2::YamlEmitter;
 
-use super::indexer;
 use super::memoization::EvaluationMemoryOptions;
+use super::row_indexer;
 use crate::base::{schema, value};
 use crate::builder::plan::{AnalyzedSourceOp, ExecutionPlan};
 use crate::ops::interface::SourceExecutorListOptions;
@@ -76,7 +76,7 @@ impl<'a> Dumper<'a> {
     where
         'a: 'b,
     {
-        let data_builder = indexer::evaluate_source_entry_with_memory(
+        let data_builder = row_indexer::evaluate_source_entry_with_memory(
             self.plan,
             source_op,
             self.schema,
@@ -113,8 +113,10 @@ impl<'a> Dumper<'a> {
                         data: collected_values_buffer[collector_idx]
                             .iter()
                             .map(|v| -> Result<_> {
-                                let key =
-                                    indexer::extract_primary_key(&export_op.primary_key_def, v)?;
+                                let key = row_indexer::extract_primary_key(
+                                    &export_op.primary_key_def,
+                                    v,
+                                )?;
                                 Ok((key, v))
                             })
                             .collect::<Result<_>>()?,

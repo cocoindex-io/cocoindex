@@ -77,7 +77,7 @@ fn register_function_factory(name: String, py_function_factory: Py<PyAny>) -> Py
 }
 
 #[pyclass]
-pub struct IndexUpdateInfo(pub execution::indexer::IndexUpdateInfo);
+pub struct IndexUpdateInfo(pub execution::stats::IndexUpdateInfo);
 
 #[pymethods]
 impl IndexUpdateInfo {
@@ -115,8 +115,12 @@ impl Flow {
                 .runtime
                 .block_on(async {
                     let exec_plan = self.0.get_execution_plan().await?;
-                    execution::indexer::update(&exec_plan, &self.0.data_schema, &lib_context.pool)
-                        .await
+                    execution::source_indexer::update(
+                        &exec_plan,
+                        &self.0.data_schema,
+                        &lib_context.pool,
+                    )
+                    .await
                 })
                 .into_py_result()?;
             Ok(IndexUpdateInfo(update_info))

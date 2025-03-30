@@ -9,7 +9,6 @@ pub use super::interface::*;
 pub use crate::base::schema::*;
 pub use crate::base::spec::*;
 pub use crate::base::value::*;
-pub use serde::Deserialize;
 
 /// Defined for all types convertible to ValueType, to ease creation for ValueType in various operation factories.
 pub trait TypeCore {
