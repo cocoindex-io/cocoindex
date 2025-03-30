@@ -246,15 +246,14 @@ impl SourceExecutor for Executor {
         .boxed()
     }
 
-    async fn get_value(&self, key: &KeyValue) -> Result<Option<SourceData<'async_trait>>> {
+    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
         let file_id = key.str_value()?;
-
         let resp = self
             .drive_hub
             .files()
             .get(file_id)
             .add_scope(Scope::Readonly)
-            .param("fields", "id,name,mimeType,trashed,modifiedTime")
+            .param("fields", "id,name,mimeType,trashed")
             .doit()
             .await
             .or_not_found()?;
@@ -262,64 +261,55 @@ impl SourceExecutor for Executor {
             Some((_, file)) if file.trashed != Some(true) => file,
             _ => return Ok(None),
         };
-
-        let modified_time = file.modified_time;
-        let value = async move {
-            let type_n_body = if let Some(export_mime_type) = file
-                .mime_type
-                .as_ref()
-                .and_then(|mime_type| EXPORT_MIME_TYPES.get(mime_type.as_str()))
-            {
-                let target_mime_type = if self.binary {
-                    export_mime_type.binary
-                } else {
-                    export_mime_type.text
-                };
-                self.drive_hub
-                    .files()
-                    .export(file_id, target_mime_type)
-                    .add_scope(Scope::Readonly)
-                    .doit()
-                    .await
-                    .or_not_found()?
-                    .map(|content| (Some(target_mime_type.to_string()), content.into_body()))
+        let type_n_body = if let Some(export_mime_type) = file
+            .mime_type
+            .as_ref()
+            .and_then(|mime_type| EXPORT_MIME_TYPES.get(mime_type.as_str()))
+        {
+            let target_mime_type = if self.binary {
+                export_mime_type.binary
             } else {
-                self.drive_hub
-                    .files()
-                    .get(file_id)
-                    .add_scope(Scope::Readonly)
-                    .param("alt", "media")
-                    .doit()
-                    .await
-                    .or_not_found()?
-                    .map(|(resp, _)| (file.mime_type, resp.into_body()))
+                export_mime_type.text
             };
-            let value = match type_n_body {
-                Some((mime_type, resp_body)) => {
-                    let content = resp_body.collect().await?;
+            self.drive_hub
+                .files()
+                .export(file_id, target_mime_type)
+                .add_scope(Scope::Readonly)
+                .doit()
+                .await
+                .or_not_found()?
+                .map(|content| (Some(target_mime_type.to_string()), content.into_body()))
+        } else {
+            self.drive_hub
+                .files()
+                .get(file_id)
+                .add_scope(Scope::Readonly)
+                .param("alt", "media")
+                .doit()
+                .await
+                .or_not_found()?
+                .map(|(resp, _)| (file.mime_type, resp.into_body()))
+        };
+        let value = match type_n_body {
+            Some((mime_type, resp_body)) => {
+                let content = resp_body.collect().await?;
 
-                    let fields = vec![
-                        file.name.unwrap_or_default().into(),
-                        mime_type.into(),
-                        if self.binary {
-                            content.to_bytes().to_vec().into()
-                        } else {
-                            String::from_utf8_lossy(&content.to_bytes())
-                                .to_string()
-                                .into()
-                        },
-                    ];
-                    Some(FieldValues { fields })
-                }
-                None => None,
-            };
-            Ok(value)
-        }
-        .boxed();
-        Ok(Some(SourceData {
-            ordinal: modified_time.map(|t| t.try_into()).transpose()?,
-            value,
-        }))
+                let fields = vec![
+                    file.name.unwrap_or_default().into(),
+                    mime_type.into(),
+                    if self.binary {
+                        content.to_bytes().to_vec().into()
+                    } else {
+                        String::from_utf8_lossy(&content.to_bytes())
+                            .to_string()
+                            .into()
+                    },
+                ];
+                Some(FieldValues { fields })
+            }
+            None => None,
+        };
+        Ok(value)
     }
 }
 

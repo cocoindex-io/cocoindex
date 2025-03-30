@@ -94,15 +94,13 @@ impl SourceContext {
             let source_op = &plan.source_ops[self.source_idx];
             let source_value = if source_version.kind == row_indexer::SourceVersionKind::Deleted {
                 None
-            } else if let Some(d) = source_op.executor.get_value(&key).await? {
-                d.value.await?
             } else {
                 // Even if the source version kind is not Deleted, the source value might be gone one polling.
                 // In this case, we still use the current source version even if it's already stale - actually this version skew
                 // also happens for update cases and there's no way to keep them always in sync for many sources.
                 //
                 // We only need source version <= actual version for value.
-                None
+                source_op.executor.get_value(&key).await?
             };
             let schema = &self.flow.data_schema;
             let result = row_indexer::update_source_row(

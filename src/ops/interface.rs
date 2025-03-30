@@ -40,13 +40,6 @@ impl<TZ: TimeZone> TryFrom<chrono::DateTime<TZ>> for Ordinal {
     }
 }
 
-pub struct SourceData<'a> {
-    /// Value that must increase monotonically after change. E.g. can be from the update time.
-    pub ordinal: Option<Ordinal>,
-    /// None means the item is gone when polling.
-    pub value: BoxFuture<'a, Result<Option<FieldValues>>>,
-}
-
 pub struct SourceRowMetadata {
     pub key: KeyValue,
     /// None means the ordinal is unavailable.
@@ -75,7 +68,7 @@ pub trait SourceExecutor: Send + Sync {
     ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>>;
 
     // Get the value for the given key.
-    async fn get_value(&self, key: &KeyValue) -> Result<Option<SourceData<'async_trait>>>;
+    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>>;
 
     fn change_stream<'a>(&'a self) -> Option<BoxStream<'a, SourceChange<'a>>> {
         None

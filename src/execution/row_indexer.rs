@@ -463,12 +463,8 @@ pub async fn evaluate_source_entry_with_memory(
         None
     };
     let memory = EvaluationMemory::new(chrono::Utc::now(), stored_info, options);
-    let source_data = match source_op.executor.get_value(key).await? {
+    let source_value = match source_op.executor.get_value(key).await? {
         Some(d) => d,
-        None => return Ok(None),
-    };
-    let source_value = match source_data.value.await? {
-        Some(value) => value,
         None => return Ok(None),
     };
     let output = evaluate_source_entry(plan, source_op, schema, key, source_value, &memory).await?;
