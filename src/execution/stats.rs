@@ -11,6 +11,18 @@ pub struct UpdateStats {
     pub num_errors: AtomicUsize,
 }
 
+impl Clone for UpdateStats {
+    fn clone(&self) -> Self {
+        Self {
+            num_skipped: self.num_skipped.load(Relaxed).into(),
+            num_insertions: self.num_insertions.load(Relaxed).into(),
+            num_deletions: self.num_deletions.load(Relaxed).into(),
+            num_repreocesses: self.num_repreocesses.load(Relaxed).into(),
+            num_errors: self.num_errors.load(Relaxed).into(),
+        }
+    }
+}
+
 impl std::fmt::Display for UpdateStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let num_skipped = self.num_skipped.load(Relaxed);

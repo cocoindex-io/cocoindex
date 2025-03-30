@@ -1,4 +1,4 @@
-pub use crate::prelude::*;
+pub(crate) use crate::prelude::*;
 
 use crate::builder::plan::AnalyzedFieldReference;
 use crate::builder::plan::AnalyzedLocalFieldReference;

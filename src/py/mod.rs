@@ -114,13 +114,7 @@ impl Flow {
             let update_info = lib_context
                 .runtime
                 .block_on(async {
-                    let exec_plan = self.0.get_execution_plan().await?;
-                    execution::source_indexer::update(
-                        &exec_plan,
-                        &self.0.data_schema,
-                        &lib_context.pool,
-                    )
-                    .await
+                    execution::source_indexer::update(&self.0, &lib_context.pool).await
                 })
                 .into_py_result()?;
             Ok(IndexUpdateInfo(update_info))

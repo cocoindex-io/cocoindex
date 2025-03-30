@@ -170,8 +170,6 @@ pub async fn update(
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<stats::IndexUpdateInfo>, ApiError> {
     let fl = &lib_context.with_flow_context(&flow_name, |ctx| ctx.flow.clone())?;
-    let execution_plan = fl.get_execution_plan().await?;
-    let update_info =
-        source_indexer::update(&execution_plan, &fl.data_schema, &lib_context.pool).await?;
+    let update_info = source_indexer::update(&fl, &lib_context.pool).await?;
     Ok(Json(update_info))
 }
