@@ -380,13 +380,14 @@ impl FlowBuilder {
         self.root_data_scope_ref.clone()
     }
 
-    #[pyo3(signature = (kind, op_spec, target_scope, name))]
+    #[pyo3(signature = (kind, op_spec, target_scope, name, refresh_options=None))]
     pub fn add_source(
         &mut self,
         kind: String,
         op_spec: py::Pythonized<serde_json::Map<String, serde_json::Value>>,
         target_scope: Option<DataScopeRef>,
         name: String,
+        refresh_options: Option<py::Pythonized<spec::SourceRefreshOptions>>,
     ) -> PyResult<DataSlice> {
         if let Some(target_scope) = target_scope {
             if !Arc::ptr_eq(&target_scope.0, &self.root_data_scope_ref.0) {
@@ -402,6 +403,7 @@ impl FlowBuilder {
                     kind,
                     spec: op_spec.into_inner(),
                 },
+                refresh_options: refresh_options.map(|o| o.into_inner()).unwrap_or_default(),
             },
         };
         let analyzer_ctx = AnalyzerContext {

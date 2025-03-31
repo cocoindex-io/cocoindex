@@ -1,8 +1,7 @@
-use std::ops::Deref;
-
-use serde::{Deserialize, Serialize};
+use crate::prelude::*;
 
 use super::schema::{EnrichedValueType, FieldSchema};
+use std::ops::Deref;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -163,9 +162,17 @@ pub struct OpSpec {
     pub spec: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SourceRefreshOptions {
+    pub refresh_interval: Option<chrono::Duration>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportOpSpec {
     pub source: OpSpec,
+
+    #[serde(default)]
+    pub refresh_options: SourceRefreshOptions,
 }
 
 /// Transform data using a given operator.

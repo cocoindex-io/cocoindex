@@ -1,9 +1,5 @@
-use std::sync::Arc;
+use crate::prelude::*;
 
-use serde::Serialize;
-
-use crate::base::schema::ValueType;
-use crate::base::value;
 use crate::execution::db_tracking_setup;
 use crate::ops::interface::*;
 use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
@@ -60,7 +56,8 @@ pub struct AnalyzedImportOp {
     pub source_id: i32,
     pub executor: Box<dyn SourceExecutor>,
     pub output: AnalyzedOpOutput,
-    pub primary_key_type: ValueType,
+    pub primary_key_type: schema::ValueType,
+    pub refresh_options: spec::SourceRefreshOptions,
 }
 
 pub struct AnalyzedFunctionExecInfo {
@@ -69,7 +66,7 @@ pub struct AnalyzedFunctionExecInfo {
 
     /// Fingerprinter of the function's behavior.
     pub fingerprinter: Fingerprinter,
-    pub output_type: ValueType,
+    pub output_type: schema::ValueType,
 }
 
 pub struct AnalyzedTransformOp {
@@ -106,7 +103,7 @@ pub struct AnalyzedExportOp {
     pub executor: Arc<dyn ExportTargetExecutor>,
     pub query_target: Option<Arc<dyn QueryTarget>>,
     pub primary_key_def: AnalyzedPrimaryKeyDef,
-    pub primary_key_type: ValueType,
+    pub primary_key_type: schema::ValueType,
     /// idx for value fields - excluding the primary key field.
     pub value_fields: Vec<u32>,
     /// If true, value is never changed on the same primary key.

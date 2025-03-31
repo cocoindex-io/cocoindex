@@ -668,6 +668,7 @@ impl AnalyzerContext<'_> {
                     .typ
                     .clone(),
                 name: op_name,
+                refresh_options: import_op.spec.refresh_options,
             })
         };
         Ok(result_fut)
