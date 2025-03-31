@@ -1,11 +1,11 @@
 use crate::prelude::*;
 
+use crate::lib_context::LibContext;
 use crate::{base::schema::DataSchema, ops::interface::SourceExecutorListOptions};
 use crate::{
     execution::memoization,
     execution::{row_indexer, stats},
 };
-use crate::{execution::source_indexer, lib_context::LibContext};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -171,6 +171,14 @@ pub async fn update(
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<stats::IndexUpdateInfo>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
-    let update_info = source_indexer::update(&flow_ctx, &lib_context.pool).await?;
-    Ok(Json(update_info))
+    let mut synchronizer = execution::FlowSynchronizer::start(
+        flow_ctx.clone(),
+        &lib_context.pool,
+        &execution::FlowSynchronizerOptions {
+            keep_refreshed: false,
+        },
+    )
+    .await?;
+    synchronizer.join().await?;
+    Ok(Json(synchronizer.index_update_info()))
 }

@@ -164,7 +164,7 @@ pub struct OpSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SourceRefreshOptions {
-    pub refresh_interval: Option<chrono::Duration>,
+    pub refresh_interval: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

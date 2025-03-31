@@ -7,4 +7,7 @@ pub(crate) mod row_indexer;
 pub(crate) mod source_indexer;
 pub(crate) mod stats;
 
+mod synchronizer;
+pub(crate) use synchronizer::*;
+
 mod db_tracking;

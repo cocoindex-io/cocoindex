@@ -1,15 +1,14 @@
-use std::collections::{hash_map, HashMap};
-
 use crate::prelude::*;
+
+use sqlx::PgPool;
+use std::collections::{hash_map, HashMap};
+use tokio::{sync::Semaphore, task::JoinSet};
 
 use super::{
     db_tracking,
     row_indexer::{self, SkippedOr, SourceVersion},
     stats,
 };
-use futures::future::try_join_all;
-use sqlx::PgPool;
-use tokio::{sync::Semaphore, task::JoinSet};
 struct SourceRowIndexingState {
     source_version: SourceVersion,
     processing_sem: Arc<Semaphore>,
@@ -190,7 +189,11 @@ impl SourceIndexingContext {
         );
     }
 
-    async fn update_source(self: &Arc<Self>, pool: &PgPool) -> Result<stats::SourceUpdateInfo> {
+    pub async fn update(
+        self: &Arc<Self>,
+        pool: &PgPool,
+        update_stats: &Arc<stats::UpdateStats>,
+    ) -> Result<()> {
         let plan = self.flow.get_execution_plan().await?;
         let import_op = &plan.import_ops[self.source_idx];
         let mut rows_stream = import_op
@@ -204,13 +207,12 @@ impl SourceIndexingContext {
             state.scan_generation += 1;
             state.scan_generation
         };
-        let update_stats = Arc::new(stats::UpdateStats::default());
         while let Some(row) = rows_stream.next().await {
             for row in row? {
                 self.process_source_key_if_newer(
                     row.key,
                     SourceVersion::from_current(row.ordinal),
-                    &update_stats,
+                    update_stats,
                     pool,
                     &mut join_set,
                 );
@@ -252,25 +254,6 @@ impl SourceIndexingContext {
             }
         }
 
-        Ok(stats::SourceUpdateInfo {
-            source_name: import_op.name.clone(),
-            stats: Arc::unwrap_or_clone(update_stats),
-        })
+        Ok(())
     }
-}
-
-pub async fn update(flow_context: &FlowContext, pool: &PgPool) -> Result<stats::IndexUpdateInfo> {
-    let plan = flow_context.flow.get_execution_plan().await?;
-    let source_update_stats = try_join_all(
-        (0..plan.import_ops.len())
-            .map(|idx| async move {
-                let source_context = flow_context.get_source_indexing_context(idx, pool).await?;
-                source_context.update_source(pool).await
-            })
-            .collect::<Vec<_>>(),
-    )
-    .await?;
-    Ok(stats::IndexUpdateInfo {
-        sources: source_update_stats,
-    })
 }

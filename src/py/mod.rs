@@ -92,6 +92,52 @@ impl IndexUpdateInfo {
 #[pyclass]
 pub struct Flow(pub Arc<FlowContext>);
 
+#[pyclass]
+pub struct FlowSynchronizer(pub async_lock::RwLock<execution::FlowSynchronizer>);
+
+#[pymethods]
+impl FlowSynchronizer {
+    pub fn join(&self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| {
+            let lib_context = get_lib_context()
+                .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
+            lib_context
+                .runtime
+                .block_on(async {
+                    let mut synchronizer = self.0.write().await;
+                    synchronizer.join().await
+                })
+                .into_py_result()
+        })
+    }
+
+    pub fn abort(&self, py: Python<'_>) -> PyResult<()> {
+        py.allow_threads(|| {
+            let lib_context = get_lib_context()
+                .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
+            lib_context.runtime.block_on(async {
+                let mut synchronizer = self.0.write().await;
+                synchronizer.abort();
+            });
+            Ok(())
+        })
+    }
+
+    pub fn index_update_info(&self, py: Python<'_>) -> PyResult<IndexUpdateInfo> {
+        py.allow_threads(|| {
+            let lib_context = get_lib_context()
+                .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
+            lib_context
+                .runtime
+                .block_on(async {
+                    let synchronizer = self.0.read().await;
+                    anyhow::Ok(IndexUpdateInfo(synchronizer.index_update_info()))
+                })
+                .into_py_result()
+        })
+    }
+}
+
 #[pymethods]
 impl Flow {
     pub fn __str__(&self) -> String {
@@ -113,10 +159,41 @@ impl Flow {
             let update_info = lib_context
                 .runtime
                 .block_on(async {
-                    execution::source_indexer::update(&self.0, &lib_context.pool).await
+                    let mut synchronizer = execution::FlowSynchronizer::start(
+                        self.0.clone(),
+                        &lib_context.pool,
+                        &execution::FlowSynchronizerOptions {
+                            keep_refreshed: false,
+                        },
+                    )
+                    .await?;
+                    synchronizer.join().await?;
+                    anyhow::Ok(synchronizer.index_update_info())
                 })
                 .into_py_result()?;
             Ok(IndexUpdateInfo(update_info))
+        })
+    }
+
+    pub fn keep_in_sync(&self, py: Python<'_>) -> PyResult<FlowSynchronizer> {
+        py.allow_threads(|| {
+            let lib_context = get_lib_context()
+                .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
+            let synchronizer = lib_context
+                .runtime
+                .block_on(async {
+                    let synchronizer = execution::FlowSynchronizer::start(
+                        self.0.clone(),
+                        &lib_context.pool,
+                        &execution::FlowSynchronizerOptions {
+                            keep_refreshed: false,
+                        },
+                    )
+                    .await?;
+                    anyhow::Ok(synchronizer)
+                })
+                .into_py_result()?;
+            Ok(FlowSynchronizer(async_lock::RwLock::new(synchronizer)))
         })
     }
 
@@ -308,6 +385,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<builder::flow_builder::DataSlice>()?;
     m.add_class::<builder::flow_builder::DataScopeRef>()?;
     m.add_class::<Flow>()?;
+    m.add_class::<FlowSynchronizer>()?;
     m.add_class::<TransientFlow>()?;
     m.add_class::<IndexUpdateInfo>()?;
     m.add_class::<SimpleSemanticsQueryHandler>()?;
