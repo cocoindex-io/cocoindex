@@ -1,3 +1,5 @@
+use crate::prelude::*;
+
 use crate::base::spec::VectorSimilarityMetric;
 use crate::execution::query;
 use crate::get_lib_context;
@@ -7,13 +9,10 @@ use crate::ops::py_factory::PyOpArgSchema;
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
 use crate::server::{self, ServerSettings};
 use crate::settings::Settings;
+use crate::setup;
 use crate::LIB_CONTEXT;
-use crate::{api_error, setup};
-use crate::{builder, execution};
-use anyhow::anyhow;
 use pyo3::{exceptions::PyException, prelude::*};
 use std::collections::btree_map;
-use std::sync::Arc;
 
 mod convert;
 pub use convert::*;
@@ -91,12 +90,12 @@ impl IndexUpdateInfo {
 }
 
 #[pyclass]
-pub struct Flow(pub Arc<builder::AnalyzedFlow>);
+pub struct Flow(pub Arc<FlowContext>);
 
 #[pymethods]
 impl Flow {
     pub fn __str__(&self) -> String {
-        serde_json::to_string_pretty(&self.0.flow_instance).unwrap()
+        serde_json::to_string_pretty(&self.0.flow.flow_instance).unwrap()
     }
 
     pub fn __repr__(&self) -> String {
@@ -104,7 +103,7 @@ impl Flow {
     }
 
     pub fn name(&self) -> &str {
-        &self.0.flow_instance.name
+        &self.0.flow.flow_instance.name
     }
 
     pub fn update(&self, py: Python<'_>) -> PyResult<IndexUpdateInfo> {
@@ -132,10 +131,10 @@ impl Flow {
             lib_context
                 .runtime
                 .block_on(async {
-                    let exec_plan = self.0.get_execution_plan().await?;
+                    let exec_plan = self.0.flow.get_execution_plan().await?;
                     execution::dumper::evaluate_and_dump(
                         &exec_plan,
-                        &self.0.data_schema,
+                        &self.0.flow.data_schema,
                         options.into_inner(),
                         &lib_context.pool,
                     )
@@ -181,7 +180,7 @@ impl SimpleSemanticsQueryHandler {
             let handler = lib_context
                 .runtime
                 .block_on(query::SimpleSemanticsQueryHandler::new(
-                    flow.0.clone(),
+                    flow.0.flow.clone(),
                     target_name,
                     query_transform_flow.0.clone(),
                     default_similarity_metric.0,
@@ -194,11 +193,11 @@ impl SimpleSemanticsQueryHandler {
     pub fn register_query_handler(&self, name: String) -> PyResult<()> {
         let lib_context = get_lib_context()
             .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
-        let mut flows = lib_context.flows.write().unwrap();
-        let flow_ctx = flows
-            .get_mut(&self.0.flow_name)
-            .ok_or_else(|| PyException::new_err(format!("flow not found: {}", self.0.flow_name)))?;
-        match flow_ctx.query_handlers.entry(name) {
+        let flow_ctx = lib_context
+            .get_flow_context(&self.0.flow_name)
+            .into_py_result()?;
+        let mut query_handlers = flow_ctx.query_handlers.lock().unwrap();
+        match query_handlers.entry(name) {
             btree_map::Entry::Occupied(entry) => {
                 return Err(PyException::new_err(format!(
                     "query handler name already exists: {}",
@@ -270,8 +269,8 @@ fn check_setup_status(
 ) -> PyResult<SetupStatusCheck> {
     let lib_context = get_lib_context()
         .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
+    let flows = lib_context.flows.lock().unwrap();
     let all_css = lib_context.combined_setup_states.read().unwrap();
-    let flows = lib_context.flows.read().unwrap();
     let setup_status =
         setup::check_setup_status(&flows, &all_css, options.into_inner()).into_py_result()?;
     Ok(SetupStatusCheck(setup_status))

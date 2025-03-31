@@ -1,9 +1,9 @@
-use anyhow::{anyhow, bail, Result};
+use crate::prelude::*;
+
 use pyo3::{exceptions::PyException, prelude::*};
 use std::{
     collections::{btree_map, hash_map::Entry, HashMap},
     ops::Deref,
-    sync::{Arc, Mutex, Weak},
 };
 
 use super::analyzer::{
@@ -11,10 +11,9 @@ use super::analyzer::{
     ExecutionScope, ValueTypeBuilder,
 };
 use crate::{
-    api_bail,
     base::{
-        schema::{self, CollectorSchema, FieldSchema},
-        spec::{self, FieldName, NamedSpec},
+        schema::{CollectorSchema, FieldSchema},
+        spec::{FieldName, NamedSpec},
     },
     get_lib_context,
     lib_context::LibContext,
@@ -649,10 +648,8 @@ impl FlowBuilder {
                     ))
             })
             .into_py_result()?;
-        let analyzed_flow = Arc::new(analyzed_flow);
-
-        let mut analyzed_flows = self.lib_context.flows.write().unwrap();
-        match analyzed_flows.entry(self.flow_instance_name.clone()) {
+        let mut flow_ctxs = self.lib_context.flows.lock().unwrap();
+        let flow_ctx = match flow_ctxs.entry(self.flow_instance_name.clone()) {
             btree_map::Entry::Occupied(_) => {
                 return Err(PyException::new_err(format!(
                     "flow instance name already exists: {}",
@@ -660,10 +657,12 @@ impl FlowBuilder {
                 )));
             }
             btree_map::Entry::Vacant(entry) => {
-                entry.insert(FlowContext::new(analyzed_flow.clone()));
+                let flow_ctx = Arc::new(FlowContext::new(Arc::new(analyzed_flow)));
+                entry.insert(flow_ctx.clone());
+                flow_ctx
             }
-        }
-        Ok(py::Flow(analyzed_flow))
+        };
+        Ok(py::Flow(flow_ctx))
     }
 
     pub fn build_transient_flow(&self, py: Python<'_>) -> PyResult<py::TransientFlow> {

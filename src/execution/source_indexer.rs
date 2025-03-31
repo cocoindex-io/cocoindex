@@ -10,13 +10,13 @@ use super::{
 use futures::future::try_join_all;
 use sqlx::PgPool;
 use tokio::{sync::Semaphore, task::JoinSet};
-struct SourceRowState {
+struct SourceRowIndexingState {
     source_version: SourceVersion,
     processing_sem: Arc<Semaphore>,
     touched_generation: usize,
 }
 
-impl Default for SourceRowState {
+impl Default for SourceRowIndexingState {
     fn default() -> Self {
         Self {
             source_version: SourceVersion::default(),
@@ -26,17 +26,17 @@ impl Default for SourceRowState {
     }
 }
 
-struct SourceState {
-    rows: HashMap<value::KeyValue, SourceRowState>,
+struct SourceIndexingState {
+    rows: HashMap<value::KeyValue, SourceRowIndexingState>,
     scan_generation: usize,
 }
-pub struct SourceContext {
+pub struct SourceIndexingContext {
     flow: Arc<builder::AnalyzedFlow>,
     source_idx: usize,
-    state: Mutex<SourceState>,
+    state: Mutex<SourceIndexingState>,
 }
 
-impl SourceContext {
+impl SourceIndexingContext {
     pub async fn load(
         flow: Arc<builder::AnalyzedFlow>,
         source_idx: usize,
@@ -58,7 +58,7 @@ impl SourceContext {
             .into_key()?;
             rows.insert(
                 source_key,
-                SourceRowState {
+                SourceRowIndexingState {
                     source_version: SourceVersion::from_stored(
                         key_metadata.processed_source_ordinal,
                         &key_metadata.process_logic_fingerprint,
@@ -72,7 +72,7 @@ impl SourceContext {
         Ok(Self {
             flow,
             source_idx,
-            state: Mutex::new(SourceState {
+            state: Mutex::new(SourceIndexingState {
                 rows,
                 scan_generation,
             }),
@@ -144,7 +144,7 @@ impl SourceContext {
                         }
                     }
                     hash_map::Entry::Vacant(entry) => {
-                        entry.insert(SourceRowState {
+                        entry.insert(SourceRowIndexingState {
                             source_version: target_source_version,
                             touched_generation: scan_generation,
                             ..Default::default()
@@ -259,15 +259,12 @@ impl SourceContext {
     }
 }
 
-pub async fn update(
-    flow: &Arc<builder::AnalyzedFlow>,
-    pool: &PgPool,
-) -> Result<stats::IndexUpdateInfo> {
-    let plan = flow.get_execution_plan().await?;
+pub async fn update(flow_context: &FlowContext, pool: &PgPool) -> Result<stats::IndexUpdateInfo> {
+    let plan = flow_context.flow.get_execution_plan().await?;
     let source_update_stats = try_join_all(
         (0..plan.source_ops.len())
             .map(|idx| async move {
-                let source_context = Arc::new(SourceContext::load(flow.clone(), idx, pool).await?);
+                let source_context = flow_context.get_source_indexing_context(idx, pool).await?;
                 source_context.update_source(pool).await
             })
             .collect::<Vec<_>>(),

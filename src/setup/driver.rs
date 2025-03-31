@@ -1,14 +1,14 @@
+use crate::prelude::*;
+
+use indexmap::IndexMap;
+use serde::de::DeserializeOwned;
+use sqlx::PgPool;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::{Debug, Display},
     str::FromStr,
 };
-
-use anyhow::{bail, Result};
-use indexmap::IndexMap;
-use serde::{de::DeserializeOwned, Deserialize};
-use sqlx::PgPool;
 
 use super::{
     db_metadata, CombinedState, DesiredMode, ExistingMode, FlowSetupState, FlowSetupStatusCheck,
@@ -292,7 +292,7 @@ pub struct CheckSetupStatusOptions {
 }
 
 pub fn check_setup_status(
-    flows: &BTreeMap<String, FlowContext>,
+    flows: &BTreeMap<String, Arc<FlowContext>>,
     all_setup_state: &AllSetupState<ExistingMode>,
     options: CheckSetupStatusOptions,
 ) -> Result<AllSetupStatusCheck> {

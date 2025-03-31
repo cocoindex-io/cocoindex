@@ -1,50 +1,85 @@
+use crate::prelude::*;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+use crate::execution::source_indexer::SourceIndexingContext;
 use crate::service::error::ApiError;
 use crate::settings;
 use crate::setup;
 use crate::{builder::AnalyzedFlow, execution::query::SimpleSemanticsQueryHandler};
-use anyhow::Result;
+use async_lock::OnceCell;
 use axum::http::StatusCode;
 use sqlx::PgPool;
 use tokio::runtime::Runtime;
 
 pub struct FlowContext {
     pub flow: Arc<AnalyzedFlow>,
-    pub query_handlers: BTreeMap<String, Arc<SimpleSemanticsQueryHandler>>,
+    pub source_indexing_contexts: Vec<OnceCell<Arc<SourceIndexingContext>>>,
+    pub query_handlers: Mutex<BTreeMap<String, Arc<SimpleSemanticsQueryHandler>>>,
 }
 
 impl FlowContext {
     pub fn new(flow: Arc<AnalyzedFlow>) -> Self {
+        let mut source_indexing_contexts = Vec::new();
+        source_indexing_contexts
+            .resize_with(flow.flow_instance.source_ops.len(), || OnceCell::new());
         Self {
             flow,
-            query_handlers: BTreeMap::new(),
+            source_indexing_contexts,
+            query_handlers: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    pub async fn get_source_indexing_context(
+        &self,
+        source_idx: usize,
+        pool: &PgPool,
+    ) -> Result<&Arc<SourceIndexingContext>> {
+        self.source_indexing_contexts[source_idx]
+            .get_or_try_init(|| async move {
+                Ok(Arc::new(
+                    SourceIndexingContext::load(self.flow.clone(), source_idx, pool).await?,
+                ))
+            })
+            .await
+    }
+
+    pub fn get_query_handler(&self, name: &str) -> Result<Arc<SimpleSemanticsQueryHandler>> {
+        let query_handlers = self.query_handlers.lock().unwrap();
+        let query_handler = query_handlers
+            .get(name)
+            .ok_or_else(|| {
+                ApiError::new(
+                    &format!("Query handler not found: {name}"),
+                    StatusCode::NOT_FOUND,
+                )
+            })?
+            .clone();
+        Ok(query_handler)
     }
 }
 
 pub struct LibContext {
     pub runtime: Runtime,
     pub pool: PgPool,
-    pub flows: RwLock<BTreeMap<String, FlowContext>>,
+    pub flows: Mutex<BTreeMap<String, Arc<FlowContext>>>,
     pub combined_setup_states: RwLock<setup::AllSetupState<setup::ExistingMode>>,
 }
 
 impl LibContext {
-    pub fn with_flow_context<R>(
-        &self,
-        flow_name: &str,
-        f: impl FnOnce(&FlowContext) -> R,
-    ) -> Result<R, ApiError> {
-        let flows = self.flows.read().unwrap();
-        let flow_context = flows.get(flow_name).ok_or_else(|| {
-            ApiError::new(
-                &format!("Flow instance not found: {flow_name}"),
-                StatusCode::NOT_FOUND,
-            )
-        })?;
-        Ok(f(flow_context))
+    pub fn get_flow_context(&self, flow_name: &str) -> Result<Arc<FlowContext>> {
+        let flows = self.flows.lock().unwrap();
+        let flow_ctx = flows
+            .get(flow_name)
+            .ok_or_else(|| {
+                ApiError::new(
+                    &format!("Flow instance not found: {flow_name}"),
+                    StatusCode::NOT_FOUND,
+                )
+            })?
+            .clone();
+        Ok(flow_ctx)
     }
 }
 
@@ -62,6 +97,6 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         runtime,
         pool,
         combined_setup_states: RwLock::new(all_css),
-        flows: RwLock::new(BTreeMap::new()),
+        flows: Mutex::new(BTreeMap::new()),
     })
 }

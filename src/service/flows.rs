@@ -17,7 +17,7 @@ pub async fn list_flows(
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<Vec<String>>, ApiError> {
     Ok(Json(
-        lib_context.flows.read().unwrap().keys().cloned().collect(),
+        lib_context.flows.lock().unwrap().keys().cloned().collect(),
     ))
 }
 
@@ -25,16 +25,16 @@ pub async fn get_flow_spec(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<spec::FlowInstanceSpec>, ApiError> {
-    let fl = &lib_context.with_flow_context(&flow_name, |ctx| ctx.flow.clone())?;
-    Ok(Json(fl.flow_instance.clone()))
+    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
+    Ok(Json(flow_ctx.flow.flow_instance.clone()))
 }
 
 pub async fn get_flow_schema(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<DataSchema>, ApiError> {
-    let fl = &lib_context.with_flow_context(&flow_name, |ctx| ctx.flow.clone())?;
-    Ok(Json(fl.data_schema.clone()))
+    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
+    Ok(Json(flow_ctx.flow.data_schema.clone()))
 }
 
 #[derive(Deserialize)]
@@ -53,8 +53,8 @@ pub async fn get_keys(
     Query(query): Query<GetKeysParam>,
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<GetKeysResponse>, ApiError> {
-    let fl = &lib_context.with_flow_context(&flow_name, |ctx| ctx.flow.clone())?;
-    let schema = &fl.data_schema;
+    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
+    let schema = &flow_ctx.flow.data_schema;
 
     let field_idx = schema
         .fields
@@ -77,7 +77,7 @@ pub async fn get_keys(
             )
         })?;
 
-    let execution_plan = fl.get_execution_plan().await?;
+    let execution_plan = flow_ctx.flow.get_execution_plan().await?;
     let source_op = execution_plan
         .source_ops
         .iter()
@@ -119,10 +119,11 @@ pub async fn evaluate_data(
     Query(query): Query<EvaluateDataParams>,
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<EvaluateDataResponse>, ApiError> {
-    let fl = &lib_context.with_flow_context(&flow_name, |ctx| ctx.flow.clone())?;
-    let schema = &fl.data_schema;
+    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
+    let schema = &flow_ctx.flow.data_schema;
 
-    let source_op_idx = fl
+    let source_op_idx = flow_ctx
+        .flow
         .flow_instance
         .source_ops
         .iter()
@@ -133,7 +134,7 @@ pub async fn evaluate_data(
                 StatusCode::BAD_REQUEST,
             )
         })?;
-    let plan = fl.get_execution_plan().await?;
+    let plan = flow_ctx.flow.get_execution_plan().await?;
     let source_op = &plan.source_ops[source_op_idx];
     let field_schema = &schema.fields[source_op.output.field_idx as usize];
     let collection_schema = match &field_schema.value_type.typ {
@@ -169,7 +170,7 @@ pub async fn update(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<stats::IndexUpdateInfo>, ApiError> {
-    let fl = &lib_context.with_flow_context(&flow_name, |ctx| ctx.flow.clone())?;
-    let update_info = source_indexer::update(&fl, &lib_context.pool).await?;
+    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
+    let update_info = source_indexer::update(&flow_ctx, &lib_context.pool).await?;
     Ok(Json(update_info))
 }
