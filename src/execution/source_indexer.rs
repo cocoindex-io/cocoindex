@@ -43,17 +43,17 @@ impl SourceIndexingContext {
         pool: &PgPool,
     ) -> Result<Self> {
         let plan = flow.get_execution_plan().await?;
-        let source_op = &plan.source_ops[source_idx];
+        let import_op = &plan.import_ops[source_idx];
         let mut list_state = db_tracking::ListTrackedSourceKeyMetadataState::new();
         let mut rows = HashMap::new();
         let mut key_metadata_stream =
-            list_state.list(source_op.source_id, &plan.tracking_table_setup, pool);
+            list_state.list(import_op.source_id, &plan.tracking_table_setup, pool);
         let scan_generation = 0;
         while let Some(key_metadata) = key_metadata_stream.next().await {
             let key_metadata = key_metadata?;
             let source_key = value::Value::<value::ScopeValue>::from_json(
                 key_metadata.source_key,
-                &source_op.primary_key_type,
+                &import_op.primary_key_type,
             )?
             .into_key()?;
             rows.insert(
@@ -91,7 +91,7 @@ impl SourceIndexingContext {
         let fut = async move {
             let permit = processing_sem.acquire().await?;
             let plan = self.flow.get_execution_plan().await?;
-            let source_op = &plan.source_ops[self.source_idx];
+            let import_op = &plan.import_ops[self.source_idx];
             let source_value = if source_version.kind == row_indexer::SourceVersionKind::Deleted {
                 None
             } else {
@@ -100,12 +100,12 @@ impl SourceIndexingContext {
                 // also happens for update cases and there's no way to keep them always in sync for many sources.
                 //
                 // We only need source version <= actual version for value.
-                source_op.executor.get_value(&key).await?
+                import_op.executor.get_value(&key).await?
             };
             let schema = &self.flow.data_schema;
             let result = row_indexer::update_source_row(
                 &plan,
-                source_op,
+                import_op,
                 schema,
                 &key,
                 source_value,
@@ -192,8 +192,8 @@ impl SourceIndexingContext {
 
     async fn update_source(self: &Arc<Self>, pool: &PgPool) -> Result<stats::SourceUpdateInfo> {
         let plan = self.flow.get_execution_plan().await?;
-        let source_op = &plan.source_ops[self.source_idx];
-        let mut rows_stream = source_op
+        let import_op = &plan.import_ops[self.source_idx];
+        let mut rows_stream = import_op
             .executor
             .list(interface::SourceExecutorListOptions {
                 include_ordinal: true,
@@ -253,7 +253,7 @@ impl SourceIndexingContext {
         }
 
         Ok(stats::SourceUpdateInfo {
-            source_name: source_op.name.clone(),
+            source_name: import_op.name.clone(),
             stats: Arc::unwrap_or_clone(update_stats),
         })
     }
@@ -262,7 +262,7 @@ impl SourceIndexingContext {
 pub async fn update(flow_context: &FlowContext, pool: &PgPool) -> Result<stats::IndexUpdateInfo> {
     let plan = flow_context.flow.get_execution_plan().await?;
     let source_update_stats = try_join_all(
-        (0..plan.source_ops.len())
+        (0..plan.import_ops.len())
             .map(|idx| async move {
                 let source_context = flow_context.get_source_indexing_context(idx, pool).await?;
                 source_context.update_source(pool).await

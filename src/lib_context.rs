@@ -23,7 +23,7 @@ impl FlowContext {
     pub fn new(flow: Arc<AnalyzedFlow>) -> Self {
         let mut source_indexing_contexts = Vec::new();
         source_indexing_contexts
-            .resize_with(flow.flow_instance.source_ops.len(), || OnceCell::new());
+            .resize_with(flow.flow_instance.import_ops.len(), || OnceCell::new());
         Self {
             flow,
             source_indexing_contexts,

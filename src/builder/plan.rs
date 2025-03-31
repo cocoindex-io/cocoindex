@@ -55,7 +55,7 @@ pub struct AnalyzedOpOutput {
     pub field_idx: u32,
 }
 
-pub struct AnalyzedSourceOp {
+pub struct AnalyzedImportOp {
     pub name: String,
     pub source_id: i32,
     pub executor: Box<dyn SourceExecutor>,
@@ -128,7 +128,7 @@ pub struct ExecutionPlan {
     pub tracking_table_setup: db_tracking_setup::TrackingTableSetupState,
     pub logic_fingerprint: Fingerprint,
 
-    pub source_ops: Vec<AnalyzedSourceOp>,
+    pub import_ops: Vec<AnalyzedImportOp>,
     pub op_scope: AnalyzedOpScope,
     pub export_ops: Vec<AnalyzedExportOp>,
 }

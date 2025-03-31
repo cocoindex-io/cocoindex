@@ -440,7 +440,7 @@ async fn evaluate_op_scope(
 
 pub async fn evaluate_source_entry(
     plan: &ExecutionPlan,
-    source_op: &AnalyzedSourceOp,
+    import_op: &AnalyzedImportOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
     source_value: value::FieldValues,
@@ -455,7 +455,7 @@ pub async fn evaluate_source_entry(
         schema: root_schema,
     };
 
-    let collection_schema = match &root_schema.fields[source_op.output.field_idx as usize]
+    let collection_schema = match &root_schema.fields[import_op.output.field_idx as usize]
         .value_type
         .typ
     {
@@ -468,7 +468,7 @@ pub async fn evaluate_source_entry(
     let scope_value =
         ScopeValueBuilder::augmented_from(&value::ScopeValue(source_value), collection_schema)?;
     root_scope_entry.define_field_w_builder(
-        &source_op.output,
+        &import_op.output,
         value::Value::Table(BTreeMap::from([(key.clone(), scope_value)])),
     );
 

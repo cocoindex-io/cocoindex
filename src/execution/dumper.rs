@@ -14,7 +14,7 @@ use yaml_rust2::YamlEmitter;
 use super::memoization::EvaluationMemoryOptions;
 use super::row_indexer;
 use crate::base::{schema, value};
-use crate::builder::plan::{AnalyzedSourceOp, ExecutionPlan};
+use crate::builder::plan::{AnalyzedImportOp, ExecutionPlan};
 use crate::ops::interface::SourceExecutorListOptions;
 use crate::utils::yaml_ser::YamlSerializer;
 
@@ -69,7 +69,7 @@ struct Dumper<'a> {
 impl<'a> Dumper<'a> {
     async fn evaluate_source_entry<'b>(
         &'a self,
-        source_op: &'a AnalyzedSourceOp,
+        import_op: &'a AnalyzedImportOp,
         key: &value::KeyValue,
         collected_values_buffer: &'b mut Vec<Vec<value::FieldValues>>,
     ) -> Result<Option<IndexMap<&'b str, TargetExportData<'b>>>>
@@ -78,7 +78,7 @@ impl<'a> Dumper<'a> {
     {
         let data_builder = row_indexer::evaluate_source_entry_with_memory(
             self.plan,
-            source_op,
+            import_op,
             self.schema,
             key,
             EvaluationMemoryOptions {
@@ -130,13 +130,13 @@ impl<'a> Dumper<'a> {
 
     async fn evaluate_and_dump_source_entry(
         &self,
-        source_op: &AnalyzedSourceOp,
+        import_op: &AnalyzedImportOp,
         key: value::KeyValue,
         file_path: PathBuf,
     ) -> Result<()> {
         let mut collected_values_buffer = Vec::new();
         let (exports, error) = match self
-            .evaluate_source_entry(source_op, &key, &mut collected_values_buffer)
+            .evaluate_source_entry(import_op, &key, &mut collected_values_buffer)
             .await
         {
             Ok(exports) => (exports, None),
@@ -145,7 +145,7 @@ impl<'a> Dumper<'a> {
         let key_value = value::Value::from(key);
         let file_data = SourceOutputData {
             key: value::TypedValue {
-                t: &source_op.primary_key_type,
+                t: &import_op.primary_key_type,
                 v: &key_value,
             },
             exports,
@@ -166,10 +166,10 @@ impl<'a> Dumper<'a> {
         Ok(())
     }
 
-    async fn evaluate_and_dump_for_source_op(&self, source_op: &AnalyzedSourceOp) -> Result<()> {
+    async fn evaluate_and_dump_for_source(&self, import_op: &AnalyzedImportOp) -> Result<()> {
         let mut keys_by_filename_prefix: IndexMap<String, Vec<value::KeyValue>> = IndexMap::new();
 
-        let mut rows_stream = source_op.executor.list(SourceExecutorListOptions {
+        let mut rows_stream = import_op.executor.list(SourceExecutorListOptions {
             include_ordinal: false,
         });
         while let Some(rows) = rows_stream.next().await {
@@ -181,7 +181,7 @@ impl<'a> Dumper<'a> {
                     .map(|s| urlencoding::encode(&s).into_owned())
                     .join(":");
                 s.truncate(
-                    (0..(FILENAME_PREFIX_MAX_LENGTH - source_op.name.as_str().len()))
+                    (0..(FILENAME_PREFIX_MAX_LENGTH - import_op.name.as_str().len()))
                         .rev()
                         .find(|i| s.is_char_boundary(*i))
                         .unwrap_or(0),
@@ -202,9 +202,9 @@ impl<'a> Dumper<'a> {
                             Cow::Borrowed("")
                         };
                         let file_name =
-                            format!("{}@{}{}.yaml", source_op.name, filename_prefix, extra_id);
+                            format!("{}@{}{}.yaml", import_op.name, filename_prefix, extra_id);
                         let file_path = output_dir.join(Path::new(&file_name));
-                        self.evaluate_and_dump_source_entry(source_op, key, file_path)
+                        self.evaluate_and_dump_source_entry(import_op, key, file_path)
                     })
                 });
         try_join_all(evaluate_futs).await?;
@@ -214,9 +214,9 @@ impl<'a> Dumper<'a> {
     async fn evaluate_and_dump(&self) -> Result<()> {
         try_join_all(
             self.plan
-                .source_ops
+                .import_ops
                 .iter()
-                .map(|source_op| self.evaluate_and_dump_for_source_op(source_op)),
+                .map(|import_op| self.evaluate_and_dump_for_source(import_op)),
         )
         .await?;
         Ok(())

@@ -78,8 +78,8 @@ pub async fn get_keys(
         })?;
 
     let execution_plan = flow_ctx.flow.get_execution_plan().await?;
-    let source_op = execution_plan
-        .source_ops
+    let import_op = execution_plan
+        .import_ops
         .iter()
         .find(|op| op.output.field_idx == field_idx as u32)
         .ok_or_else(|| {
@@ -89,7 +89,7 @@ pub async fn get_keys(
             )
         })?;
 
-    let mut rows_stream = source_op.executor.list(SourceExecutorListOptions {
+    let mut rows_stream = import_op.executor.list(SourceExecutorListOptions {
         include_ordinal: false,
     });
     let mut keys = Vec::new();
@@ -122,12 +122,12 @@ pub async fn evaluate_data(
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let schema = &flow_ctx.flow.data_schema;
 
-    let source_op_idx = flow_ctx
+    let import_op_idx = flow_ctx
         .flow
         .flow_instance
-        .source_ops
+        .import_ops
         .iter()
-        .position(|source_op| source_op.name == query.field)
+        .position(|op| op.name == query.field)
         .ok_or_else(|| {
             ApiError::new(
                 &format!("source field not found: {}", query.field),
@@ -135,8 +135,8 @@ pub async fn evaluate_data(
             )
         })?;
     let plan = flow_ctx.flow.get_execution_plan().await?;
-    let source_op = &plan.source_ops[source_op_idx];
-    let field_schema = &schema.fields[source_op.output.field_idx as usize];
+    let import_op = &plan.import_ops[import_op_idx];
+    let field_schema = &schema.fields[import_op.output.field_idx as usize];
     let collection_schema = match &field_schema.value_type.typ {
         schema::ValueType::Collection(collection) => collection,
         _ => api_bail!("field is not a table: {}", query.field),
@@ -148,7 +148,7 @@ pub async fn evaluate_data(
 
     let value_builder = row_indexer::evaluate_source_entry_with_memory(
         &plan,
-        source_op,
+        import_op,
         schema,
         &key,
         memoization::EvaluationMemoryOptions {

@@ -163,6 +163,11 @@ pub struct OpSpec {
     pub spec: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportOpSpec {
+    pub source: OpSpec,
+}
+
 /// Transform data using a given operator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformOpSpec {
@@ -244,7 +249,7 @@ pub struct FlowInstanceSpec {
     pub name: String,
 
     #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
-    pub source_ops: Vec<NamedSpec<OpSpec>>,
+    pub import_ops: Vec<NamedSpec<ImportOpSpec>>,
 
     #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
     pub reactive_ops: Vec<NamedSpec<ReactiveOpSpec>>,

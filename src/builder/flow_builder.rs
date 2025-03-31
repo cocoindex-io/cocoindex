@@ -329,7 +329,7 @@ pub struct FlowBuilder {
     direct_input_fields: Vec<FieldSchema>,
     direct_output_value: Option<spec::ValueMapping>,
 
-    source_ops: Vec<NamedSpec<spec::OpSpec>>,
+    import_ops: Vec<NamedSpec<spec::ImportOpSpec>>,
     export_ops: Vec<NamedSpec<spec::ExportOpSpec>>,
 
     next_generated_op_id: usize,
@@ -365,7 +365,7 @@ impl FlowBuilder {
 
             reactive_ops: vec![],
 
-            source_ops: vec![],
+            import_ops: vec![],
             export_ops: vec![],
 
             direct_input_fields: vec![],
@@ -395,11 +395,13 @@ impl FlowBuilder {
                 ));
             }
         }
-        let source_op = spec::NamedSpec {
+        let import_op = spec::NamedSpec {
             name,
-            spec: spec::OpSpec {
-                kind,
-                spec: op_spec.into_inner(),
+            spec: spec::ImportOpSpec {
+                source: spec::OpSpec {
+                    kind,
+                    spec: op_spec.into_inner(),
+                },
             },
         };
         let analyzer_ctx = AnalyzerContext {
@@ -409,14 +411,14 @@ impl FlowBuilder {
         let mut root_data_scope = self.root_data_scope.lock().unwrap();
 
         let analyzed = analyzer_ctx
-            .analyze_source_op(&mut root_data_scope, source_op.clone(), None, None)
+            .analyze_import_op(&mut root_data_scope, import_op.clone(), None, None)
             .into_py_result()?;
         std::mem::drop(analyzed);
 
         let result =
             Self::last_field_to_data_slice(&root_data_scope, self.root_data_scope_ref.clone())
                 .into_py_result()?;
-        self.source_ops.push(source_op);
+        self.import_ops.push(import_op);
         Ok(result)
     }
 
@@ -633,7 +635,7 @@ impl FlowBuilder {
     pub fn build_flow(&self, py: Python<'_>) -> PyResult<py::Flow> {
         let spec = spec::FlowInstanceSpec {
             name: self.flow_instance_name.clone(),
-            source_ops: self.source_ops.clone(),
+            import_ops: self.import_ops.clone(),
             reactive_ops: self.reactive_ops.clone(),
             export_ops: self.export_ops.clone(),
         };
@@ -705,7 +707,7 @@ impl FlowBuilder {
 impl std::fmt::Display for FlowBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Flow instance name: {}\n\n", self.flow_instance_name)?;
-        for op in self.source_ops.iter() {
+        for op in self.import_ops.iter() {
             write!(
                 f,
                 "Source op {}\n{}\n",

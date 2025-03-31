@@ -441,7 +441,7 @@ async fn commit_source_tracking_info(
 
 pub async fn evaluate_source_entry_with_memory(
     plan: &ExecutionPlan,
-    source_op: &AnalyzedSourceOp,
+    import_op: &AnalyzedImportOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
     options: EvaluationMemoryOptions,
@@ -450,7 +450,7 @@ pub async fn evaluate_source_entry_with_memory(
     let stored_info = if options.enable_cache || !options.evaluation_only {
         let source_key_json = serde_json::to_value(key)?;
         let existing_tracking_info = read_source_tracking_info_for_processing(
-            source_op.source_id,
+            import_op.source_id,
             &source_key_json,
             &plan.tracking_table_setup,
             pool,
@@ -463,17 +463,17 @@ pub async fn evaluate_source_entry_with_memory(
         None
     };
     let memory = EvaluationMemory::new(chrono::Utc::now(), stored_info, options);
-    let source_value = match source_op.executor.get_value(key).await? {
+    let source_value = match import_op.executor.get_value(key).await? {
         Some(d) => d,
         None => return Ok(None),
     };
-    let output = evaluate_source_entry(plan, source_op, schema, key, source_value, &memory).await?;
+    let output = evaluate_source_entry(plan, import_op, schema, key, source_value, &memory).await?;
     Ok(Some(output))
 }
 
 pub async fn update_source_row(
     plan: &ExecutionPlan,
-    source_op: &AnalyzedSourceOp,
+    import_op: &AnalyzedImportOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
     source_value: Option<FieldValues>,
@@ -486,7 +486,7 @@ pub async fn update_source_row(
 
     // Phase 1: Evaluate with memoization info.
     let existing_tracking_info = read_source_tracking_info_for_processing(
-        source_op.source_id,
+        import_op.source_id,
         &source_key_json,
         &plan.tracking_table_setup,
         pool,
@@ -519,7 +519,7 @@ pub async fn update_source_row(
             );
             let output = evaluate_source_entry(
                 plan,
-                source_op,
+                import_op,
                 schema,
                 key,
                 source_value,
@@ -533,7 +533,7 @@ pub async fn update_source_row(
 
     // Phase 2 (precommit): Update with the memoization info and stage target keys.
     let precommit_output = precommit_source_tracking_info(
-        source_op.source_id,
+        import_op.source_id,
         &source_key_json,
         source_version,
         plan.logic_fingerprint,
@@ -572,7 +572,7 @@ pub async fn update_source_row(
 
     // Phase 4: Update the tracking record.
     commit_source_tracking_info(
-        source_op.source_id,
+        import_op.source_id,
         &source_key_json,
         source_version,
         &plan.logic_fingerprint.0,
