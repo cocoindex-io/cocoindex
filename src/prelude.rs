@@ -6,12 +6,14 @@ pub(crate) use futures::{future::BoxFuture, prelude::*, stream::BoxStream};
 pub(crate) use futures::{FutureExt, StreamExt};
 pub(crate) use itertools::Itertools;
 pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::sync::{Arc, Mutex, Weak};
+pub(crate) use std::borrow::Cow;
+pub(crate) use std::collections::{BTreeMap, HashMap};
+pub(crate) use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock, Weak};
 
 pub(crate) use crate::base::{schema, spec, value};
 pub(crate) use crate::builder::{self, plan};
 pub(crate) use crate::execution;
-pub(crate) use crate::lib_context::{FlowContext, LibContext};
+pub(crate) use crate::lib_context::{get_lib_context, get_runtime, FlowContext, LibContext};
 pub(crate) use crate::ops::interface;
 pub(crate) use crate::service::error::ApiError;
 

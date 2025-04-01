@@ -1,8 +1,5 @@
 use crate::prelude::*;
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
-
 use crate::execution::source_indexer::SourceIndexingContext;
 use crate::service::error::ApiError;
 use crate::settings;
@@ -10,6 +7,7 @@ use crate::setup;
 use crate::{builder::AnalyzedFlow, execution::query::SimpleSemanticsQueryHandler};
 use axum::http::StatusCode;
 use sqlx::PgPool;
+use std::collections::BTreeMap;
 use tokio::runtime::Runtime;
 
 pub struct FlowContext {
@@ -60,8 +58,9 @@ impl FlowContext {
     }
 }
 
+static TOKIO_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| Runtime::new().unwrap());
+
 pub struct LibContext {
-    pub runtime: Runtime,
     pub pool: PgPool,
     pub flows: Mutex<BTreeMap<String, Arc<FlowContext>>>,
     pub combined_setup_states: RwLock<setup::AllSetupState<setup::ExistingMode>>,
@@ -83,20 +82,47 @@ impl LibContext {
     }
 }
 
-pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
-    console_subscriber::init();
-    env_logger::init();
+pub fn get_runtime() -> &'static Runtime {
+    &TOKIO_RUNTIME
+}
 
-    let runtime = Runtime::new()?;
-    let (pool, all_css) = runtime.block_on(async {
+static LIB_INIT: OnceLock<()> = OnceLock::new();
+pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
+    LIB_INIT.get_or_init(|| {
+        console_subscriber::init();
+        env_logger::init();
+        pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).unwrap();
+    });
+
+    let (pool, all_css) = get_runtime().block_on(async {
         let pool = PgPool::connect(&settings.database_url).await?;
         let existing_ss = setup::get_existing_setup_state(&pool).await?;
         anyhow::Ok((pool, existing_ss))
     })?;
     Ok(LibContext {
-        runtime,
         pool,
         combined_setup_states: RwLock::new(all_css),
         flows: Mutex::new(BTreeMap::new()),
     })
+}
+
+static LIB_CONTEXT: RwLock<Option<Arc<LibContext>>> = RwLock::new(None);
+
+pub(crate) fn init_lib_context(settings: settings::Settings) -> Result<()> {
+    let mut lib_context_locked = LIB_CONTEXT.write().unwrap();
+    *lib_context_locked = Some(Arc::new(create_lib_context(settings)?));
+    Ok(())
+}
+
+pub(crate) fn get_lib_context() -> Result<Arc<LibContext>> {
+    let lib_context_locked = LIB_CONTEXT.read().unwrap();
+    lib_context_locked
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| anyhow!("CocoIndex library is not initialized or already stopped"))
+}
+
+pub(crate) fn clear_lib_context() {
+    let mut lib_context_locked = LIB_CONTEXT.write().unwrap();
+    *lib_context_locked = None;
 }

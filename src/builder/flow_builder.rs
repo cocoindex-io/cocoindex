@@ -15,7 +15,6 @@ use crate::{
         schema::{CollectorSchema, FieldSchema},
         spec::{FieldName, NamedSpec},
     },
-    get_lib_context,
     lib_context::LibContext,
     ops::interface::FlowInstanceContext,
     py::IntoPyResult,
@@ -339,8 +338,7 @@ pub struct FlowBuilder {
 impl FlowBuilder {
     #[new]
     pub fn new(name: &str) -> PyResult<Self> {
-        let lib_context = get_lib_context()
-            .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
+        let lib_context = get_lib_context().into_py_result()?;
         let existing_flow_ss = lib_context
             .combined_setup_states
             .read()
@@ -643,13 +641,11 @@ impl FlowBuilder {
         };
         let analyzed_flow = py
             .allow_threads(|| {
-                self.lib_context
-                    .runtime
-                    .block_on(super::AnalyzedFlow::from_flow_instance(
-                        spec,
-                        self.existing_flow_ss.as_ref(),
-                        &crate::ops::executor_factory_registry(),
-                    ))
+                get_runtime().block_on(super::AnalyzedFlow::from_flow_instance(
+                    spec,
+                    self.existing_flow_ss.as_ref(),
+                    &crate::ops::executor_factory_registry(),
+                ))
             })
             .into_py_result()?;
         let mut flow_ctxs = self.lib_context.flows.lock().unwrap();
@@ -686,12 +682,10 @@ impl FlowBuilder {
         };
         let analyzed_flow = py
             .allow_threads(|| {
-                self.lib_context.runtime.block_on(
-                    super::AnalyzedTransientFlow::from_transient_flow(
-                        spec,
-                        &crate::ops::executor_factory_registry(),
-                    ),
-                )
+                get_runtime().block_on(super::AnalyzedTransientFlow::from_transient_flow(
+                    spec,
+                    &crate::ops::executor_factory_registry(),
+                ))
             })
             .into_py_result()?;
         Ok(py::TransientFlow(Arc::new(analyzed_flow)))
