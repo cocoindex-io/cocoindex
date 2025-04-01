@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - docs/**
+      - ".github/workflows/docs.yml"
   push:
     branches: [main]
     paths:
       - docs/**
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
