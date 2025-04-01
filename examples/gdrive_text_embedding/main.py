@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 
 import cocoindex
+import datetime
 import os
 
 @cocoindex.flow_def(name="GoogleDriveTextEmbedding")
@@ -14,7 +15,9 @@ def gdrive_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: 
     data_scope["documents"] = flow_builder.add_source(
         cocoindex.sources.GoogleDrive(
             service_account_credential_path=credential_path,
-            root_folder_ids=root_folder_ids))
+            root_folder_ids=root_folder_ids),
+        refresh_options=cocoindex.SourceRefreshOptions(
+            refresh_interval=datetime.timedelta(minutes=1)))
 
     doc_embeddings = data_scope.add_collector()
 

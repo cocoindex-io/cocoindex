@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import inspect
+import datetime
 from typing import Any, Callable, Sequence, TypeVar, get_origin
 from threading import Lock
 from enum import Enum
@@ -64,10 +65,17 @@ def _spec_kind(spec: Any) -> str:
 
 def _dump_engine_object(v: Any) -> Any:
     """Recursively dump an object for engine. Engine side uses `Pythonzized` to catch."""
-    if isinstance(v, type) or get_origin(v) is not None:
+    if v is None:
+        return None
+    elif isinstance(v, type) or get_origin(v) is not None:
         return encode_enriched_type(v)
     elif isinstance(v, Enum):
         return v.value
+    elif isinstance(v, datetime.timedelta):
+        total_secs = v.total_seconds()
+        secs = int(total_secs)
+        nanos = int((total_secs - secs) * 1e9)
+        return {'secs': secs, 'nanos': nanos}
     elif hasattr(v, '__dict__'):
         return {k: _dump_engine_object(v) for k, v in v.__dict__.items()}
     elif isinstance(v, (list, tuple)):
@@ -314,6 +322,13 @@ class _FlowBuilderState:
             return v._state.engine_data_slice
         return self.engine_flow_builder.constant(encode_enriched_type(type(v)), v)
 
+@dataclass
+class SourceRefreshOptions:
+    """
+    Options for refreshing a source.
+    """
+    refresh_interval: datetime.timedelta | None = None
+
 class FlowBuilder:
     """
     A flow builder is used to build a flow.
@@ -329,7 +344,10 @@ class FlowBuilder:
     def __repr__(self):
         return repr(self._state.engine_flow_builder)
 
-    def add_source(self, spec: op.SourceSpec, /, name: str | None = None) -> DataSlice:
+    def add_source(self, spec: op.SourceSpec, /, *,
+            name: str | None = None,
+            refresh_options: SourceRefreshOptions | None = None,
+        ) -> DataSlice:
         """
         Add a source to the flow.
         """
@@ -341,9 +359,47 @@ class FlowBuilder:
                 target_scope,
                 self._state.field_name_builder.build_name(
                     name, prefix=_to_snake_case(_spec_kind(spec))+'_'),
+                _dump_engine_object(refresh_options),
             ),
             name
         )
+
+@dataclass
+class FlowLiveUpdaterOptions:
+    """
+    Options for live updating a flow.
+    """
+    live_mode: bool = False
+
+class FlowLiveUpdater:
+    """
+    A live updater for a flow.
+    """
+    _engine_live_updater: _engine.FlowLiveUpdater
+
+    def __init__(self, fl: Flow, options: FlowLiveUpdaterOptions):
+        self._engine_live_updater = _engine.FlowLiveUpdater(
+            fl._lazy_engine_flow(), _dump_engine_object(options))
+
+    async def wait(self):
+        """
+        Wait for the live updater to finish.
+        """
+        return await self._engine_live_updater.wait()
+
+    def abort(self):
+        """
+        Abort the live updater.
+        """
+        self._engine_live_updater.abort()
+
+    def update_stats(self) -> _engine.IndexUpdateInfo:
+        """
+        Get the index update info.
+        """
+        return self._engine_live_updater.index_update_info()
+
+
 @dataclass
 class EvaluateAndDumpOptions:
     """
@@ -383,12 +439,14 @@ class Flow:
         """
         return self._lazy_engine_flow().name()
 
-    def update(self):
+    async def update(self):
         """
         Update the index defined by the flow.
         Once the function returns, the indice is fresh up to the moment when the function is called.
         """
-        return self._lazy_engine_flow().update()
+        updater = FlowLiveUpdater(self, FlowLiveUpdaterOptions(live_mode=False))
+        await updater.wait()
+        return updater.update_stats()
 
     def evaluate_and_dump(self, options: EvaluateAndDumpOptions):
         """
@@ -440,6 +498,13 @@ def flow_names() -> list[str]:
     """
     with _flows_lock:
         return list(_flows.keys())
+
+def flows() -> list[Flow]:
+    """
+    Get all flows.
+    """
+    with _flows_lock:
+        return list(_flows.values())
 
 def flow_by_name(name: str) -> Flow:
     """

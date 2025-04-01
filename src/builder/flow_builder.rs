@@ -1,9 +1,9 @@
-use anyhow::{anyhow, bail, Result};
+use crate::prelude::*;
+
 use pyo3::{exceptions::PyException, prelude::*};
 use std::{
     collections::{btree_map, hash_map::Entry, HashMap},
     ops::Deref,
-    sync::{Arc, Mutex, Weak},
 };
 
 use super::analyzer::{
@@ -11,12 +11,10 @@ use super::analyzer::{
     ExecutionScope, ValueTypeBuilder,
 };
 use crate::{
-    api_bail,
     base::{
-        schema::{self, CollectorSchema, FieldSchema},
-        spec::{self, FieldName, NamedSpec},
+        schema::{CollectorSchema, FieldSchema},
+        spec::{FieldName, NamedSpec},
     },
-    get_lib_context,
     lib_context::LibContext,
     ops::interface::FlowInstanceContext,
     py::IntoPyResult,
@@ -330,7 +328,7 @@ pub struct FlowBuilder {
     direct_input_fields: Vec<FieldSchema>,
     direct_output_value: Option<spec::ValueMapping>,
 
-    source_ops: Vec<NamedSpec<spec::OpSpec>>,
+    import_ops: Vec<NamedSpec<spec::ImportOpSpec>>,
     export_ops: Vec<NamedSpec<spec::ExportOpSpec>>,
 
     next_generated_op_id: usize,
@@ -340,8 +338,7 @@ pub struct FlowBuilder {
 impl FlowBuilder {
     #[new]
     pub fn new(name: &str) -> PyResult<Self> {
-        let lib_context = get_lib_context()
-            .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
+        let lib_context = get_lib_context().into_py_result()?;
         let existing_flow_ss = lib_context
             .combined_setup_states
             .read()
@@ -366,7 +363,7 @@ impl FlowBuilder {
 
             reactive_ops: vec![],
 
-            source_ops: vec![],
+            import_ops: vec![],
             export_ops: vec![],
 
             direct_input_fields: vec![],
@@ -381,13 +378,14 @@ impl FlowBuilder {
         self.root_data_scope_ref.clone()
     }
 
-    #[pyo3(signature = (kind, op_spec, target_scope, name))]
+    #[pyo3(signature = (kind, op_spec, target_scope, name, refresh_options=None))]
     pub fn add_source(
         &mut self,
         kind: String,
         op_spec: py::Pythonized<serde_json::Map<String, serde_json::Value>>,
         target_scope: Option<DataScopeRef>,
         name: String,
+        refresh_options: Option<py::Pythonized<spec::SourceRefreshOptions>>,
     ) -> PyResult<DataSlice> {
         if let Some(target_scope) = target_scope {
             if !Arc::ptr_eq(&target_scope.0, &self.root_data_scope_ref.0) {
@@ -396,11 +394,14 @@ impl FlowBuilder {
                 ));
             }
         }
-        let source_op = spec::NamedSpec {
+        let import_op = spec::NamedSpec {
             name,
-            spec: spec::OpSpec {
-                kind,
-                spec: op_spec.into_inner(),
+            spec: spec::ImportOpSpec {
+                source: spec::OpSpec {
+                    kind,
+                    spec: op_spec.into_inner(),
+                },
+                refresh_options: refresh_options.map(|o| o.into_inner()).unwrap_or_default(),
             },
         };
         let analyzer_ctx = AnalyzerContext {
@@ -410,14 +411,14 @@ impl FlowBuilder {
         let mut root_data_scope = self.root_data_scope.lock().unwrap();
 
         let analyzed = analyzer_ctx
-            .analyze_source_op(&mut root_data_scope, source_op.clone(), None, None)
+            .analyze_import_op(&mut root_data_scope, import_op.clone(), None, None)
             .into_py_result()?;
         std::mem::drop(analyzed);
 
         let result =
             Self::last_field_to_data_slice(&root_data_scope, self.root_data_scope_ref.clone())
                 .into_py_result()?;
-        self.source_ops.push(source_op);
+        self.import_ops.push(import_op);
         Ok(result)
     }
 
@@ -634,25 +635,21 @@ impl FlowBuilder {
     pub fn build_flow(&self, py: Python<'_>) -> PyResult<py::Flow> {
         let spec = spec::FlowInstanceSpec {
             name: self.flow_instance_name.clone(),
-            source_ops: self.source_ops.clone(),
+            import_ops: self.import_ops.clone(),
             reactive_ops: self.reactive_ops.clone(),
             export_ops: self.export_ops.clone(),
         };
         let analyzed_flow = py
             .allow_threads(|| {
-                self.lib_context
-                    .runtime
-                    .block_on(super::AnalyzedFlow::from_flow_instance(
-                        spec,
-                        self.existing_flow_ss.as_ref(),
-                        &crate::ops::executor_factory_registry(),
-                    ))
+                get_runtime().block_on(super::AnalyzedFlow::from_flow_instance(
+                    spec,
+                    self.existing_flow_ss.as_ref(),
+                    &crate::ops::executor_factory_registry(),
+                ))
             })
             .into_py_result()?;
-        let analyzed_flow = Arc::new(analyzed_flow);
-
-        let mut analyzed_flows = self.lib_context.flows.write().unwrap();
-        match analyzed_flows.entry(self.flow_instance_name.clone()) {
+        let mut flow_ctxs = self.lib_context.flows.lock().unwrap();
+        let flow_ctx = match flow_ctxs.entry(self.flow_instance_name.clone()) {
             btree_map::Entry::Occupied(_) => {
                 return Err(PyException::new_err(format!(
                     "flow instance name already exists: {}",
@@ -660,10 +657,12 @@ impl FlowBuilder {
                 )));
             }
             btree_map::Entry::Vacant(entry) => {
-                entry.insert(FlowContext::new(analyzed_flow.clone()));
+                let flow_ctx = Arc::new(FlowContext::new(Arc::new(analyzed_flow)));
+                entry.insert(flow_ctx.clone());
+                flow_ctx
             }
-        }
-        Ok(py::Flow(analyzed_flow))
+        };
+        Ok(py::Flow(flow_ctx))
     }
 
     pub fn build_transient_flow(&self, py: Python<'_>) -> PyResult<py::TransientFlow> {
@@ -683,12 +682,10 @@ impl FlowBuilder {
         };
         let analyzed_flow = py
             .allow_threads(|| {
-                self.lib_context.runtime.block_on(
-                    super::AnalyzedTransientFlow::from_transient_flow(
-                        spec,
-                        &crate::ops::executor_factory_registry(),
-                    ),
-                )
+                get_runtime().block_on(super::AnalyzedTransientFlow::from_transient_flow(
+                    spec,
+                    &crate::ops::executor_factory_registry(),
+                ))
             })
             .into_py_result()?;
         Ok(py::TransientFlow(Arc::new(analyzed_flow)))
@@ -706,7 +703,7 @@ impl FlowBuilder {
 impl std::fmt::Display for FlowBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Flow instance name: {}\n\n", self.flow_instance_name)?;
-        for op in self.source_ops.iter() {
+        for op in self.import_ops.iter() {
             write!(
                 f,
                 "Source op {}\n{}\n",

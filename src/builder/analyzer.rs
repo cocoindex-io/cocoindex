@@ -591,25 +591,25 @@ fn add_collector(
 }
 
 impl AnalyzerContext<'_> {
-    pub(super) fn analyze_source_op(
+    pub(super) fn analyze_import_op(
         &self,
         scope: &mut DataScopeBuilder,
-        source_op: NamedSpec<OpSpec>,
+        import_op: NamedSpec<ImportOpSpec>,
         metadata: Option<&mut FlowSetupMetadata>,
         existing_source_states: Option<&Vec<&SourceSetupState>>,
-    ) -> Result<impl Future<Output = Result<AnalyzedSourceOp>> + Send> {
-        let factory = self.registry.get(&source_op.spec.kind);
+    ) -> Result<impl Future<Output = Result<AnalyzedImportOp>> + Send> {
+        let factory = self.registry.get(&import_op.spec.source.kind);
         let source_factory = match factory {
             Some(ExecutorFactory::Source(source_executor)) => source_executor.clone(),
             _ => {
                 return Err(anyhow::anyhow!(
                     "Source executor not found for kind: {}",
-                    source_op.spec.kind
+                    import_op.spec.source.kind
                 ))
             }
         };
         let (output_type, executor) = source_factory.build(
-            serde_json::Value::Object(source_op.spec.spec),
+            serde_json::Value::Object(import_op.spec.source.spec),
             self.flow_ctx.clone(),
         )?;
 
@@ -642,7 +642,7 @@ impl AnalyzerContext<'_> {
                 metadata.last_source_id
             };
             metadata.sources.insert(
-                source_op.name.clone(),
+                import_op.name.clone(),
                 SourceSetupState {
                     source_id,
                     key_schema: key_schema_no_attrs,
@@ -651,13 +651,13 @@ impl AnalyzerContext<'_> {
             source_id
         });
 
-        let op_name = source_op.name.clone();
-        let output = scope.add_field(source_op.name, &output_type)?;
+        let op_name = import_op.name.clone();
+        let output = scope.add_field(import_op.name, &output_type)?;
         let result_fut = async move {
             trace!("Start building executor for source op `{}`", op_name);
             let executor = executor.await?;
             trace!("Finished building executor for source op `{}`", op_name);
-            Ok(AnalyzedSourceOp {
+            Ok(AnalyzedImportOp {
                 source_id: source_id.unwrap_or_default(),
                 executor,
                 output,
@@ -668,6 +668,7 @@ impl AnalyzerContext<'_> {
                     .typ
                     .clone(),
                 name: op_name,
+                refresh_options: import_op.spec.refresh_options,
             })
         };
         Ok(result_fut)
@@ -1094,63 +1095,67 @@ pub fn analyze_flow(
         // TODO: Fill it with a meaningful value.
         targets: IndexMap::new(),
     };
-    let plan_fut = {
-        let analyzer_ctx = AnalyzerContext { registry, flow_ctx };
-        let mut root_exec_scope = ExecutionScope {
-            name: ROOT_SCOPE_NAME,
-            data: &mut root_data_scope,
-        };
-        let source_ops_futs = flow_inst
-            .source_ops
-            .iter()
-            .map(|source_op| {
-                let existing_source_states = source_states_by_name.get(source_op.name.as_str());
-                analyzer_ctx.analyze_source_op(
-                    root_exec_scope.data,
-                    source_op.clone(),
-                    Some(&mut setup_state.metadata),
-                    existing_source_states,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let op_scope_fut = analyzer_ctx.analyze_op_scope(
-            &mut root_exec_scope,
-            &flow_inst.reactive_ops,
-            RefList::Nil,
-        )?;
-        let export_ops_futs = flow_inst
-            .export_ops
-            .iter()
-            .map(|export_op| {
-                analyzer_ctx.analyze_export_op(
-                    root_exec_scope.data,
-                    export_op.clone(),
-                    Some(&mut setup_state),
-                    &target_states_by_name_type,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
 
-        let tracking_table_setup = setup_state.tracking_table.clone();
-        async move {
-            let (source_ops, op_scope, export_ops) = try_join3(
-                try_join_all(source_ops_futs),
-                op_scope_fut,
-                try_join_all(export_ops_futs),
+    let analyzer_ctx = AnalyzerContext { registry, flow_ctx };
+    let mut root_exec_scope = ExecutionScope {
+        name: ROOT_SCOPE_NAME,
+        data: &mut root_data_scope,
+    };
+    let import_ops_futs = flow_inst
+        .import_ops
+        .iter()
+        .map(|import_op| {
+            let existing_source_states = source_states_by_name.get(import_op.name.as_str());
+            analyzer_ctx.analyze_import_op(
+                root_exec_scope.data,
+                import_op.clone(),
+                Some(&mut setup_state.metadata),
+                existing_source_states,
             )
-            .await?;
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let op_scope_fut = analyzer_ctx.analyze_op_scope(
+        &mut root_exec_scope,
+        &flow_inst.reactive_ops,
+        RefList::Nil,
+    )?;
+    let export_ops_futs = flow_inst
+        .export_ops
+        .iter()
+        .map(|export_op| {
+            analyzer_ctx.analyze_export_op(
+                root_exec_scope.data,
+                export_op.clone(),
+                Some(&mut setup_state),
+                &target_states_by_name_type,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-            Ok(ExecutionPlan {
-                tracking_table_setup,
-                logic_fingerprint: vec![0; 8], // TODO: Fill it with a meaningful value automatically
-                source_ops,
-                op_scope,
-                export_ops,
-            })
-        }
+    let tracking_table_setup = setup_state.tracking_table.clone();
+    let data_schema = root_data_scope.into_data_schema()?;
+    let logic_fingerprint = Fingerprinter::default()
+        .with(&flow_inst)?
+        .with(&data_schema)?
+        .into_fingerprint();
+    let plan_fut = async move {
+        let (import_ops, op_scope, export_ops) = try_join3(
+            try_join_all(import_ops_futs),
+            op_scope_fut,
+            try_join_all(export_ops_futs),
+        )
+        .await?;
+
+        Ok(ExecutionPlan {
+            tracking_table_setup,
+            logic_fingerprint,
+            import_ops,
+            op_scope,
+            export_ops,
+        })
     };
 
-    Ok((root_data_scope.into_data_schema()?, plan_fut, setup_state))
+    Ok((data_schema, plan_fut, setup_state))
 }
 
 pub fn analyze_transient_flow<'a>(

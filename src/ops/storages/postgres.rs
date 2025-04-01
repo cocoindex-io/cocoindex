@@ -1,14 +1,10 @@
-use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
-use std::ops::Bound;
-use std::sync::{Arc, Mutex};
+use crate::prelude::*;
 
 use crate::base::spec::{self, *};
 use crate::ops::sdk::*;
 use crate::service::error::{shared_ok, SharedError, SharedResultExt};
+use crate::setup;
 use crate::utils::db::ValidIdentifier;
-use crate::{get_lib_context, setup};
-use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use derivative::Derivative;
 use futures::future::{BoxFuture, Shared};
@@ -19,6 +15,7 @@ use serde::Serialize;
 use sqlx::postgres::types::PgRange;
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
+use std::ops::Bound;
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
@@ -1005,12 +1002,7 @@ impl Factory {
                         shared_ok(if let Some(database_url) = database_url {
                             PgPool::connect(&database_url).await?
                         } else {
-                            get_lib_context()
-                                .ok_or_else(|| {
-                                    SharedError::new(anyhow!("Cocoindex is not initialized"))
-                                })?
-                                .pool
-                                .clone()
+                            get_lib_context().map_err(SharedError::new)?.pool.clone()
                         })
                     };
                     let shared_fut = pool_fut.boxed().shared();
