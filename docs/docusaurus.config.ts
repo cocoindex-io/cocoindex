@@ -5,6 +5,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 const COCOINDEX_DOCS_ALGOLIA_API_KEY = process.env.COCOINDEX_DOCS_ALGOLIA_API_KEY;
+const COCOINDEX_DOCS_ALGOLIA_APP_ID = process.env.COCOINDEX_DOCS_ALGOLIA_APP_ID;
 
 const config: Config = {
   title: 'CocoIndex',
@@ -168,7 +169,7 @@ if (!!process.env.COCOINDEX_DOCS_POSTHOG_API_KEY) {
 
 if (!!COCOINDEX_DOCS_ALGOLIA_API_KEY) {
   config.themeConfig.algolia = {
-    appId: '44X0L2ARXK',
+    appId: COCOINDEX_DOCS_ALGOLIA_APP_ID,
     apiKey: COCOINDEX_DOCS_ALGOLIA_API_KEY,
     indexName: 'cocoindex',
     contextualSearch: true,
