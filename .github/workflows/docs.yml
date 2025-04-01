@@ -20,6 +20,7 @@ jobs:
   test-deploy:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
+    environment: docs-release
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,8 +41,9 @@ jobs:
         run: yarn build
 
   deploy-precheck:
-    runs-on: ubuntu-latest
     if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    environment: docs-release
     outputs:
       gh-deploy-key: ${{ steps.gh-deploy-key.outputs.defined }}
     steps:
