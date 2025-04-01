@@ -1,3 +1,4 @@
+import asyncio
 import click
 import datetime
 
@@ -50,7 +51,7 @@ def update(flow_name: str | None):
     """
     Update the index defined by the flow.
     """
-    stats = _flow_by_name(flow_name).update()
+    stats = asyncio.run(_flow_by_name(flow_name).update())
     print(stats)
 
 @cli.command()

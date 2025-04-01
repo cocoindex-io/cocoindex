@@ -93,47 +93,29 @@ impl IndexUpdateInfo {
 pub struct Flow(pub Arc<FlowContext>);
 
 #[pyclass]
-pub struct FlowSynchronizer(pub async_lock::RwLock<execution::FlowSynchronizer>);
+pub struct FlowSynchronizer(pub Arc<tokio::sync::RwLock<execution::FlowSynchronizer>>);
 
 #[pymethods]
 impl FlowSynchronizer {
-    pub fn join(&self, py: Python<'_>) -> PyResult<()> {
-        py.allow_threads(|| {
-            let lib_context = get_lib_context()
-                .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
-            lib_context
-                .runtime
-                .block_on(async {
-                    let mut synchronizer = self.0.write().await;
-                    synchronizer.join().await
-                })
-                .into_py_result()
+    pub fn join<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let synchronizer = self.0.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let mut synchronizer = synchronizer.write().await;
+            synchronizer.join().await.into_py_result()
         })
     }
 
-    pub fn abort(&self, py: Python<'_>) -> PyResult<()> {
+    pub fn abort(&self, py: Python<'_>) {
         py.allow_threads(|| {
-            let lib_context = get_lib_context()
-                .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
-            lib_context.runtime.block_on(async {
-                let mut synchronizer = self.0.write().await;
-                synchronizer.abort();
-            });
-            Ok(())
+            let mut synchronizer = self.0.blocking_write();
+            synchronizer.abort();
         })
     }
 
-    pub fn index_update_info(&self, py: Python<'_>) -> PyResult<IndexUpdateInfo> {
+    pub fn index_update_info(&self, py: Python<'_>) -> IndexUpdateInfo {
         py.allow_threads(|| {
-            let lib_context = get_lib_context()
-                .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
-            lib_context
-                .runtime
-                .block_on(async {
-                    let synchronizer = self.0.read().await;
-                    anyhow::Ok(IndexUpdateInfo(synchronizer.index_update_info()))
-                })
-                .into_py_result()
+            let synchronizer = self.0.blocking_read();
+            IndexUpdateInfo(synchronizer.index_update_info())
         })
     }
 }
@@ -152,25 +134,24 @@ impl Flow {
         &self.0.flow.flow_instance.name
     }
 
-    pub fn update(&self, py: Python<'_>) -> PyResult<IndexUpdateInfo> {
-        py.allow_threads(|| {
+    pub fn update<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let flow_ctx = self.0.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let lib_context = get_lib_context()
                 .ok_or_else(|| PyException::new_err("cocoindex library not initialized"))?;
-            let update_info = lib_context
-                .runtime
-                .block_on(async {
-                    let mut synchronizer = execution::FlowSynchronizer::start(
-                        self.0.clone(),
-                        &lib_context.pool,
-                        &execution::FlowSynchronizerOptions {
-                            keep_refreshed: false,
-                        },
-                    )
-                    .await?;
-                    synchronizer.join().await?;
-                    anyhow::Ok(synchronizer.index_update_info())
-                })
+            let update_info = {
+                let mut synchronizer = execution::FlowSynchronizer::start(
+                    flow_ctx,
+                    &lib_context.pool,
+                    &execution::FlowSynchronizerOptions {
+                        keep_refreshed: false,
+                    },
+                )
+                .await
                 .into_py_result()?;
+                synchronizer.join().await.into_py_result()?;
+                synchronizer.index_update_info()
+            };
             Ok(IndexUpdateInfo(update_info))
         })
     }
@@ -193,7 +174,9 @@ impl Flow {
                     anyhow::Ok(synchronizer)
                 })
                 .into_py_result()?;
-            Ok(FlowSynchronizer(async_lock::RwLock::new(synchronizer)))
+            Ok(FlowSynchronizer(Arc::new(tokio::sync::RwLock::new(
+                synchronizer,
+            ))))
         })
     }
 

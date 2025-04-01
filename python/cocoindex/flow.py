@@ -383,12 +383,12 @@ class Flow:
         """
         return self._lazy_engine_flow().name()
 
-    def update(self):
+    async def update(self):
         """
         Update the index defined by the flow.
         Once the function returns, the indice is fresh up to the moment when the function is called.
         """
-        return self._lazy_engine_flow().update()
+        return await self._lazy_engine_flow().update()
 
     def evaluate_and_dump(self, options: EvaluateAndDumpOptions):
         """
