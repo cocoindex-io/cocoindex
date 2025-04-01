@@ -370,6 +370,7 @@ class FlowLiveUpdaterOptions:
     Options for live updating a flow.
     """
     live_mode: bool = False
+    print_stats: bool = False
 
 class FlowLiveUpdater:
     """

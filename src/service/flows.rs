@@ -174,7 +174,10 @@ pub async fn update(
     let mut live_updater = execution::FlowLiveUpdater::start(
         flow_ctx.clone(),
         &lib_context.pool,
-        execution::FlowLiveUpdaterOptions { live_mode: false },
+        execution::FlowLiveUpdaterOptions {
+            live_mode: false,
+            ..Default::default()
+        },
     )
     .await?;
     live_updater.wait().await?;

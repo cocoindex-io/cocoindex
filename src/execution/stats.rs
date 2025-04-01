@@ -1,46 +1,94 @@
 use crate::prelude::*;
 
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+use std::{
+    ops::AddAssign,
+    sync::atomic::{AtomicI64, Ordering::Relaxed},
+};
 
-#[derive(Debug, Serialize, Default)]
-pub struct UpdateStats {
-    pub num_skipped: AtomicUsize,
-    pub num_insertions: AtomicUsize,
-    pub num_deletions: AtomicUsize,
-    pub num_repreocesses: AtomicUsize,
-    pub num_errors: AtomicUsize,
+#[derive(Default, Serialize)]
+pub struct Counter(pub AtomicI64);
+
+impl Counter {
+    pub fn inc(&self, by: i64) {
+        self.0.fetch_add(by, Relaxed);
+    }
+
+    pub fn get(&self) -> i64 {
+        self.0.load(Relaxed)
+    }
+
+    pub fn delta(&self, base: &Self) -> Counter {
+        Counter(AtomicI64::new(self.get() - base.get()))
+    }
+
+    pub fn into_inner(self) -> i64 {
+        self.0.into_inner()
+    }
 }
 
-impl Clone for UpdateStats {
+impl AddAssign for Counter {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0.fetch_add(rhs.into_inner(), Relaxed);
+    }
+}
+
+impl Clone for Counter {
     fn clone(&self) -> Self {
-        Self {
-            num_skipped: self.num_skipped.load(Relaxed).into(),
-            num_insertions: self.num_insertions.load(Relaxed).into(),
-            num_deletions: self.num_deletions.load(Relaxed).into(),
-            num_repreocesses: self.num_repreocesses.load(Relaxed).into(),
-            num_errors: self.num_errors.load(Relaxed).into(),
+        Self(AtomicI64::new(self.get()))
+    }
+}
+
+impl std::fmt::Display for Counter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get())
+    }
+}
+
+impl std::fmt::Debug for Counter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get())
+    }
+}
+
+#[derive(Debug, Serialize, Default, Clone)]
+pub struct UpdateStats {
+    pub num_skipped: Counter,
+    pub num_insertions: Counter,
+    pub num_deletions: Counter,
+    pub num_repreocesses: Counter,
+    pub num_errors: Counter,
+}
+
+impl UpdateStats {
+    pub fn delta(&self, base: &Self) -> Self {
+        UpdateStats {
+            num_skipped: self.num_skipped.delta(&base.num_skipped),
+            num_insertions: self.num_insertions.delta(&base.num_insertions),
+            num_deletions: self.num_deletions.delta(&base.num_deletions),
+            num_repreocesses: self.num_repreocesses.delta(&base.num_repreocesses),
+            num_errors: self.num_errors.delta(&base.num_errors),
         }
     }
 }
 
 impl std::fmt::Display for UpdateStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let num_skipped = self.num_skipped.load(Relaxed);
+        let num_skipped = self.num_skipped.get();
         if num_skipped > 0 {
             write!(f, "{} rows skipped", num_skipped)?;
         }
 
-        let num_insertions = self.num_insertions.load(Relaxed);
-        let num_deletions = self.num_deletions.load(Relaxed);
-        let num_reprocesses = self.num_repreocesses.load(Relaxed);
+        let num_insertions = self.num_insertions.get();
+        let num_deletions = self.num_deletions.get();
+        let num_reprocesses = self.num_repreocesses.get();
         let num_source_rows = num_insertions + num_deletions + num_reprocesses;
         if num_source_rows > 0 {
             if num_skipped > 0 {
-                write!(f, ", ")?;
+                write!(f, "; ")?;
             }
             write!(f, "{num_source_rows} source rows processed",)?;
 
-            let num_errors = self.num_errors.load(Relaxed);
+            let num_errors = self.num_errors.get();
             if num_errors > 0 {
                 write!(f, " with {num_errors} ERRORS",)?;
             }

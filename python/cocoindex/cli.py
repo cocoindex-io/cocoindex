@@ -49,20 +49,20 @@ def setup(delete_legacy_flows):
 @click.argument("flow_name", type=str, required=False)
 @click.option(
     "-L", "--live", is_flag=True, show_default=True, default=False,
-    help="If true, it will continuously watch changes from data sources and apply to the target index.")
-def update(flow_name: str | None, live: bool):
+    help="Continuously watch changes from data sources and apply to the target index.")
+@click.option(
+    "-q", "--quiet", is_flag=True, show_default=True, default=False,
+    help="Avoid printing anything to the output, e.g. statistics.")
+def update(flow_name: str | None, live: bool, quiet: bool):
     """
     Update the index to reflect the latest data from data sources.
     """
     async def _update_all():
         async def _update_flow(fl: flow.Flow):
-            updater = flow.FlowLiveUpdater(fl, flow.FlowLiveUpdaterOptions(live_mode=live))
+            updater = flow.FlowLiveUpdater(
+                fl,
+                flow.FlowLiveUpdaterOptions(live_mode=live, print_stats=not quiet))
             await updater.wait()
-            print(f"Updated index for {fl.name}:")
-            for line in str(updater.update_stats()).split("\n"):
-                if line := line.strip():
-                    print(f"  {line}")
-            print()
         await asyncio.gather(*(_update_flow(fl) for fl in _flows_by_name(flow_name)))
     asyncio.run(_update_all())
 

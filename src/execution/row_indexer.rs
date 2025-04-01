@@ -3,7 +3,6 @@ use crate::prelude::*;
 use futures::future::try_join_all;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::Ordering::Relaxed;
 
 use super::db_tracking::{self, read_source_tracking_info_for_processing, TrackedTargetKey};
 use super::db_tracking_setup;
@@ -101,7 +100,7 @@ impl SourceVersion {
         };
         if should_skip {
             if let Some(update_stats) = update_stats {
-                update_stats.num_skipped.fetch_add(1, Relaxed);
+                update_stats.num_skipped.inc(1);
             }
         }
         should_skip
@@ -585,12 +584,12 @@ pub async fn update_source_row(
 
     if already_exists {
         if output.is_some() {
-            update_stats.num_repreocesses.fetch_add(1, Relaxed);
+            update_stats.num_repreocesses.inc(1);
         } else {
-            update_stats.num_deletions.fetch_add(1, Relaxed);
+            update_stats.num_deletions.inc(1);
         }
     } else if output.is_some() {
-        update_stats.num_insertions.fetch_add(1, Relaxed);
+        update_stats.num_insertions.inc(1);
     }
 
     Ok(SkippedOr::Normal(()))

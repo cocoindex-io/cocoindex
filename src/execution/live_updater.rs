@@ -17,6 +17,9 @@ pub struct FlowLiveUpdaterOptions {
     /// If true, the updater will keep refreshing the index.
     /// Otherwise, it will only apply changes from the source up to the current time.
     pub live_mode: bool,
+
+    /// If true, stats will be printed to the console.
+    pub print_stats: bool,
 }
 
 async fn update_source(
@@ -25,18 +28,38 @@ async fn update_source(
     source_update_stats: Arc<stats::UpdateStats>,
     source_idx: usize,
     pool: PgPool,
-    live_mode: bool,
+    options: FlowLiveUpdaterOptions,
 ) -> Result<()> {
     let source_context = flow_ctx
         .get_source_indexing_context(source_idx, &pool)
         .await?;
 
+    let import_op = &plan.import_ops[source_idx];
+    let maybe_print_stats = |stats: &stats::UpdateStats| {
+        if options.print_stats {
+            println!(
+                "{}.{}: {}",
+                flow_ctx.flow.flow_instance.name, import_op.name, stats
+            );
+        } else {
+            trace!(
+                "{}.{}: {}",
+                flow_ctx.flow.flow_instance.name,
+                import_op.name,
+                stats
+            );
+        }
+    };
+
     let mut update_start = Instant::now();
     source_context.update(&pool, &source_update_stats).await?;
+    maybe_print_stats(&source_update_stats);
 
-    let import_op = &plan.import_ops[source_idx];
-    if let (true, Some(refresh_interval)) = (live_mode, import_op.refresh_options.refresh_interval)
-    {
+    if let (true, Some(refresh_interval)) = (
+        options.live_mode,
+        import_op.refresh_options.refresh_interval,
+    ) {
+        let mut last_stats = source_update_stats.as_ref().clone();
         loop {
             let elapsed = update_start.elapsed();
             if elapsed < refresh_interval {
@@ -44,6 +67,10 @@ async fn update_source(
             }
             update_start = Instant::now();
             source_context.update(&pool, &source_update_stats).await?;
+
+            let this_stats = source_update_stats.as_ref().clone();
+            maybe_print_stats(&this_stats.delta(&last_stats));
+            last_stats = this_stats;
         }
     }
     Ok(())
@@ -67,7 +94,7 @@ impl FlowLiveUpdater {
                     source_update_stats.clone(),
                     source_idx,
                     pool.clone(),
-                    options.live_mode,
+                    options.clone(),
                 ));
                 source_update_stats
             })
