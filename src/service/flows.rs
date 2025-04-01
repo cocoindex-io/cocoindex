@@ -171,14 +171,12 @@ pub async fn update(
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<stats::IndexUpdateInfo>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
-    let mut synchronizer = execution::FlowSynchronizer::start(
+    let mut live_updater = execution::FlowLiveUpdater::start(
         flow_ctx.clone(),
         &lib_context.pool,
-        &execution::FlowSynchronizerOptions {
-            keep_refreshed: false,
-        },
+        execution::FlowLiveUpdaterOptions { live_mode: false },
     )
     .await?;
-    synchronizer.join().await?;
-    Ok(Json(synchronizer.index_update_info()))
+    live_updater.wait().await?;
+    Ok(Json(live_updater.index_update_info()))
 }

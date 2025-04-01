@@ -6,23 +6,26 @@ use super::stats;
 use sqlx::PgPool;
 use tokio::task::JoinSet;
 
-pub struct FlowSynchronizer {
+pub struct FlowLiveUpdater {
     flow_ctx: Arc<FlowContext>,
     tasks: JoinSet<Result<()>>,
     sources_update_stats: Vec<Arc<stats::UpdateStats>>,
 }
 
-pub struct FlowSynchronizerOptions {
-    pub keep_refreshed: bool,
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FlowLiveUpdaterOptions {
+    /// If true, the updater will keep refreshing the index.
+    /// Otherwise, it will only apply changes from the source up to the current time.
+    pub live_mode: bool,
 }
 
-async fn sync_source(
+async fn update_source(
     flow_ctx: Arc<FlowContext>,
     plan: Arc<plan::ExecutionPlan>,
     source_update_stats: Arc<stats::UpdateStats>,
     source_idx: usize,
     pool: PgPool,
-    keep_refreshed: bool,
+    live_mode: bool,
 ) -> Result<()> {
     let source_context = flow_ctx
         .get_source_indexing_context(source_idx, &pool)
@@ -32,8 +35,7 @@ async fn sync_source(
     source_context.update(&pool, &source_update_stats).await?;
 
     let import_op = &plan.import_ops[source_idx];
-    if let (true, Some(refresh_interval)) =
-        (keep_refreshed, import_op.refresh_options.refresh_interval)
+    if let (true, Some(refresh_interval)) = (live_mode, import_op.refresh_options.refresh_interval)
     {
         loop {
             let elapsed = update_start.elapsed();
@@ -47,11 +49,11 @@ async fn sync_source(
     Ok(())
 }
 
-impl FlowSynchronizer {
+impl FlowLiveUpdater {
     pub async fn start(
         flow_ctx: Arc<FlowContext>,
         pool: &PgPool,
-        options: &FlowSynchronizerOptions,
+        options: FlowLiveUpdaterOptions,
     ) -> Result<Self> {
         let plan = flow_ctx.flow.get_execution_plan().await?;
 
@@ -59,13 +61,13 @@ impl FlowSynchronizer {
         let sources_update_stats = (0..plan.import_ops.len())
             .map(|source_idx| {
                 let source_update_stats = Arc::new(stats::UpdateStats::default());
-                tasks.spawn(sync_source(
+                tasks.spawn(update_source(
                     flow_ctx.clone(),
                     plan.clone(),
                     source_update_stats.clone(),
                     source_idx,
                     pool.clone(),
-                    options.keep_refreshed,
+                    options.live_mode,
                 ));
                 source_update_stats
             })
@@ -77,10 +79,10 @@ impl FlowSynchronizer {
         })
     }
 
-    pub async fn join(&mut self) -> Result<()> {
+    pub async fn wait(&mut self) -> Result<()> {
         while let Some(result) = self.tasks.join_next().await {
             if let Err(e) = (|| anyhow::Ok(result??))() {
-                error!("{:?}", e.context("Error in synchronizing a source"));
+                error!("{:?}", e.context("Error in applying changes from a source"));
             }
         }
         Ok(())

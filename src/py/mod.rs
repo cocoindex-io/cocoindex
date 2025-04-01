@@ -10,6 +10,7 @@ use crate::server::{self, ServerSettings};
 use crate::settings::Settings;
 use crate::setup;
 use pyo3::{exceptions::PyException, prelude::*};
+use pyo3_async_runtimes::tokio::future_into_py;
 use std::collections::btree_map;
 
 mod convert;
@@ -82,29 +83,51 @@ impl IndexUpdateInfo {
 pub struct Flow(pub Arc<FlowContext>);
 
 #[pyclass]
-pub struct FlowSynchronizer(pub Arc<tokio::sync::RwLock<execution::FlowSynchronizer>>);
+pub struct FlowLiveUpdater(pub Arc<tokio::sync::RwLock<execution::FlowLiveUpdater>>);
 
 #[pymethods]
-impl FlowSynchronizer {
-    pub fn join<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let synchronizer = self.0.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let mut synchronizer = synchronizer.write().await;
-            synchronizer.join().await.into_py_result()
+impl FlowLiveUpdater {
+    #[new]
+    pub fn new(
+        py: Python<'_>,
+        flow: &Flow,
+        options: Pythonized<execution::FlowLiveUpdaterOptions>,
+    ) -> PyResult<Self> {
+        py.allow_threads(|| {
+            let live_updater = get_runtime()
+                .block_on(async {
+                    let live_updater = execution::FlowLiveUpdater::start(
+                        flow.0.clone(),
+                        &get_lib_context()?.pool,
+                        options.into_inner(),
+                    )
+                    .await?;
+                    anyhow::Ok(live_updater)
+                })
+                .into_py_result()?;
+            Ok(Self(Arc::new(tokio::sync::RwLock::new(live_updater))))
+        })
+    }
+
+    pub fn wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let live_updater = self.0.clone();
+        future_into_py(py, async move {
+            let mut live_updater = live_updater.write().await;
+            live_updater.wait().await.into_py_result()
         })
     }
 
     pub fn abort(&self, py: Python<'_>) {
         py.allow_threads(|| {
-            let mut synchronizer = self.0.blocking_write();
-            synchronizer.abort();
+            let mut live_updater = self.0.blocking_write();
+            live_updater.abort();
         })
     }
 
     pub fn index_update_info(&self, py: Python<'_>) -> IndexUpdateInfo {
         py.allow_threads(|| {
-            let synchronizer = self.0.blocking_read();
-            IndexUpdateInfo(synchronizer.index_update_info())
+            let live_updater = self.0.blocking_read();
+            IndexUpdateInfo(live_updater.index_update_info())
         })
     }
 }
@@ -121,47 +144,6 @@ impl Flow {
 
     pub fn name(&self) -> &str {
         &self.0.flow.flow_instance.name
-    }
-
-    pub fn update<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let flow_ctx = self.0.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let update_info = {
-                let mut synchronizer = execution::FlowSynchronizer::start(
-                    flow_ctx,
-                    &get_lib_context().into_py_result()?.pool,
-                    &execution::FlowSynchronizerOptions {
-                        keep_refreshed: false,
-                    },
-                )
-                .await
-                .into_py_result()?;
-                synchronizer.join().await.into_py_result()?;
-                synchronizer.index_update_info()
-            };
-            Ok(IndexUpdateInfo(update_info))
-        })
-    }
-
-    pub fn keep_in_sync(&self, py: Python<'_>) -> PyResult<FlowSynchronizer> {
-        py.allow_threads(|| {
-            let synchronizer = get_runtime()
-                .block_on(async {
-                    let synchronizer = execution::FlowSynchronizer::start(
-                        self.0.clone(),
-                        &get_lib_context()?.pool,
-                        &execution::FlowSynchronizerOptions {
-                            keep_refreshed: false,
-                        },
-                    )
-                    .await?;
-                    anyhow::Ok(synchronizer)
-                })
-                .into_py_result()?;
-            Ok(FlowSynchronizer(Arc::new(tokio::sync::RwLock::new(
-                synchronizer,
-            ))))
-        })
     }
 
     pub fn evaluate_and_dump(
@@ -340,7 +322,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<builder::flow_builder::DataSlice>()?;
     m.add_class::<builder::flow_builder::DataScopeRef>()?;
     m.add_class::<Flow>()?;
-    m.add_class::<FlowSynchronizer>()?;
+    m.add_class::<FlowLiveUpdater>()?;
     m.add_class::<TransientFlow>()?;
     m.add_class::<IndexUpdateInfo>()?;
     m.add_class::<SimpleSemanticsQueryHandler>()?;

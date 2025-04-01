@@ -7,7 +7,7 @@ pub(crate) mod row_indexer;
 pub(crate) mod source_indexer;
 pub(crate) mod stats;
 
-mod synchronizer;
-pub(crate) use synchronizer::*;
+mod live_updater;
+pub(crate) use live_updater::*;
 
 mod db_tracking;

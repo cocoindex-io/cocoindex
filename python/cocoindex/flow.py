@@ -344,6 +344,43 @@ class FlowBuilder:
             ),
             name
         )
+
+@dataclass
+class FlowLiveUpdaterOptions:
+    """
+    Options for live updating a flow.
+    """
+    live_mode: bool = False
+
+class FlowLiveUpdater:
+    """
+    A live updater for a flow.
+    """
+    _engine_live_updater: _engine.FlowLiveUpdater
+
+    def __init__(self, fl: Flow, options: FlowLiveUpdaterOptions):
+        self._engine_live_updater = _engine.FlowLiveUpdater(
+            fl._lazy_engine_flow(), _dump_engine_object(options))
+
+    async def wait(self):
+        """
+        Wait for the live updater to finish.
+        """
+        return await self._engine_live_updater.wait()
+
+    def abort(self):
+        """
+        Abort the live updater.
+        """
+        self._engine_live_updater.abort()
+
+    def update_stats(self) -> _engine.IndexUpdateInfo:
+        """
+        Get the index update info.
+        """
+        return self._engine_live_updater.index_update_info()
+
+
 @dataclass
 class EvaluateAndDumpOptions:
     """
@@ -388,7 +425,9 @@ class Flow:
         Update the index defined by the flow.
         Once the function returns, the indice is fresh up to the moment when the function is called.
         """
-        return await self._lazy_engine_flow().update()
+        updater = FlowLiveUpdater(self, FlowLiveUpdaterOptions(live_mode=False))
+        await updater.wait()
+        return updater.update_stats()
 
     def evaluate_and_dump(self, options: EvaluateAndDumpOptions):
         """
@@ -440,6 +479,13 @@ def flow_names() -> list[str]:
     """
     with _flows_lock:
         return list(_flows.keys())
+
+def flows() -> list[Flow]:
+    """
+    Get all flows.
+    """
+    with _flows_lock:
+        return list(_flows.values())
 
 def flow_by_name(name: str) -> Flow:
     """

@@ -47,12 +47,24 @@ def setup(delete_legacy_flows):
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
-def update(flow_name: str | None):
+@click.option(
+    "-L", "--live", is_flag=True, show_default=True, default=False,
+    help="If true, it will continuously watch changes from data sources and apply to the target index.")
+def update(flow_name: str | None, live: bool):
     """
-    Update the index defined by the flow.
+    Update the index to reflect the latest data from data sources.
     """
-    stats = asyncio.run(_flow_by_name(flow_name).update())
-    print(stats)
+    async def _update_all():
+        async def _update_flow(fl: flow.Flow):
+            updater = flow.FlowLiveUpdater(fl, flow.FlowLiveUpdaterOptions(live_mode=live))
+            await updater.wait()
+            print(f"Updated index for {fl.name}:")
+            for line in str(updater.update_stats()).split("\n"):
+                if line := line.strip():
+                    print(f"  {line}")
+            print()
+        await asyncio.gather(*(_update_flow(fl) for fl in _flows_by_name(flow_name)))
+    asyncio.run(_update_all())
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
@@ -112,3 +124,9 @@ def _flow_name(name: str | None) -> str:
 
 def _flow_by_name(name: str | None) -> flow.Flow:
     return flow.flow_by_name(_flow_name(name))
+
+def _flows_by_name(name: str | None) -> list[flow.Flow]:
+    if name is None:
+        return flow.flows()
+    else:
+        return [flow.flow_by_name(name)]
