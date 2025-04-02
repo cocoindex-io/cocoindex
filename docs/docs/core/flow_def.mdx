@@ -54,7 +54,7 @@ The `FlowBuilder` object is the starting point to construct a flow.
 
 ### Import From Source
 
-`FlowBuilder` provides a `from_source()` method to import data from external sources.
+`FlowBuilder` provides a `add_source()` method to import data from external sources.
 A *source spec* needs to be provided for any import operation, to describe the source and parameters related to the source.
 Import must happen at the top level, and the field created by import must be in the top-level struct.
 
@@ -64,14 +64,14 @@ Import must happen at the top level, and the field created by import must be in 
 ```python
 @cocoindex.flow_def(name="DemoFlow")
 def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-  data_scope["documents"] = flow_builder.from_source(DemoSourceSpec(...))
+  data_scope["documents"] = flow_builder.add_source(DemoSourceSpec(...))
   ......
 ```
 
 </TabItem>
 </Tabs>
 
-`from_source()` returns a `DataSlice`. Once external data sources are imported, you can further transform them using methods exposed by these data objects, as discussed in the following sections.
+`add_source()` returns a `DataSlice`. Once external data sources are imported, you can further transform them using methods exposed by these data objects, as discussed in the following sections.
 
 We'll describe different data objects in next few sections.
 Note that the actual value of data is not available at the time when we define the flow: it's only available at runtime.
@@ -96,7 +96,7 @@ Getting and setting a field of a data scope is done by the `[]` operator with a 
 def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
 
   # Add "documents" to the top-level data scope.
-  data_scope["documents"] = flow_builder.from_source(DemoSourceSpec(...))
+  data_scope["documents"] = flow_builder.add_source(DemoSourceSpec(...))
 
   # Each row of "documents" is a child scope.
   with data_scope["documents"].row() as document:
