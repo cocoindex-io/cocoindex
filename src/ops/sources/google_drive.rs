@@ -1,9 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, LazyLock},
-};
-
-use async_stream::try_stream;
+use chrono::Duration;
 use google_drive3::{
     api::{File, Scope},
     yup_oauth2::{read_service_account_key, ServiceAccountAuthenticator},
@@ -12,7 +7,6 @@ use google_drive3::{
 use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
-use log::{trace, warn};
 
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
@@ -75,12 +69,14 @@ pub struct Spec {
     service_account_credential_path: String,
     binary: bool,
     root_folder_ids: Vec<String>,
+    recent_changes_poll_interval: Option<std::time::Duration>,
 }
 
 struct Executor {
     drive_hub: DriveHub<HttpsConnector<HttpConnector>>,
     binary: bool,
-    root_folder_ids: Vec<Arc<str>>,
+    root_folder_ids: IndexSet<Arc<str>>,
+    recent_updates_poll_interval: Option<std::time::Duration>,
 }
 
 impl Executor {
@@ -106,6 +102,7 @@ impl Executor {
             drive_hub,
             binary: spec.binary,
             root_folder_ids: spec.root_folder_ids.into_iter().map(Arc::from).collect(),
+            recent_updates_poll_interval: spec.recent_changes_poll_interval,
         })
     }
 }
@@ -122,6 +119,7 @@ fn escape_string(s: &str) -> String {
     escaped
 }
 
+const CUTOFF_TIME_BUFFER: Duration = Duration::seconds(1);
 impl Executor {
     fn visit_file(
         &self,
@@ -151,7 +149,6 @@ impl Executor {
                 ordinal: file.modified_time.map(|t| t.try_into()).transpose()?,
             })
         } else {
-            trace!("Skipping file with unsupported mime type: id={id}, mime_type={mime_type}, name={:?}", file.name);
             None
         };
         Ok(result)
@@ -175,8 +172,100 @@ impl Executor {
             list_call = list_call.page_token(next_page_token);
         }
         let (_, files) = list_call.doit().await?;
+        *next_page_token = files.next_page_token;
         let file_iter = files.files.into_iter().flat_map(|file| file.into_iter());
         Ok(file_iter)
+    }
+
+    fn make_cutoff_time(
+        most_recent_modified_time: Option<DateTime<Utc>>,
+        list_start_time: DateTime<Utc>,
+    ) -> DateTime<Utc> {
+        let safe_upperbound = list_start_time - CUTOFF_TIME_BUFFER;
+        most_recent_modified_time
+            .map(|t| t.min(safe_upperbound))
+            .unwrap_or(safe_upperbound)
+    }
+
+    async fn get_recent_updates(
+        &self,
+        cutoff_time: &mut DateTime<Utc>,
+    ) -> Result<Vec<SourceChange>> {
+        let mut page_size: i32 = 10;
+        let mut next_page_token: Option<String> = None;
+        let mut changes = Vec::new();
+        let mut most_recent_modified_time = None;
+        let start_time = Utc::now();
+        'paginate: loop {
+            let mut list_call = self
+                .drive_hub
+                .files()
+                .list()
+                .add_scope(Scope::Readonly)
+                .param("fields", "files(id,modifiedTime,parents,trashed)")
+                .order_by("modifiedTime desc")
+                .page_size(page_size);
+            if let Some(token) = next_page_token {
+                list_call = list_call.page_token(token.as_str());
+            }
+            let (_, files) = list_call.doit().await?;
+            for file in files.files.into_iter().flat_map(|files| files.into_iter()) {
+                let modified_time = file.modified_time.unwrap_or_default();
+                if most_recent_modified_time.is_none() {
+                    most_recent_modified_time = Some(modified_time);
+                }
+                if modified_time <= *cutoff_time {
+                    break 'paginate;
+                }
+                if self.is_file_covered(&file).await? {
+                    changes.push(SourceChange {
+                        ordinal: Some(modified_time.try_into()?),
+                        key: KeyValue::Str(Arc::from(
+                            file.id.ok_or_else(|| anyhow!("File has no id"))?,
+                        )),
+                        value: SourceValueChange::Upsert(None),
+                    });
+                }
+            }
+            if let Some(token) = files.next_page_token {
+                next_page_token = Some(token);
+            } else {
+                break;
+            }
+            // List more in a page since 2nd.
+            page_size = 100;
+        }
+        *cutoff_time = Self::make_cutoff_time(most_recent_modified_time, start_time);
+        Ok(changes)
+    }
+
+    async fn is_file_covered(&self, file: &File) -> Result<bool> {
+        if file.trashed == Some(true) {
+            return Ok(false);
+        }
+        let mut next_file_id = Some(Cow::Borrowed(
+            file.id.as_ref().ok_or_else(|| anyhow!("File has no id"))?,
+        ));
+        while let Some(file_id) = next_file_id {
+            if self.root_folder_ids.contains(file_id.as_str()) {
+                return Ok(true);
+            }
+            let (_, file) = self
+                .drive_hub
+                .files()
+                .get(&file_id)
+                .add_scope(Scope::Readonly)
+                .param("fields", "parents")
+                .doit()
+                .await?;
+            next_file_id = file
+                .parents
+                .into_iter()
+                .flat_map(|parents| parents.into_iter())
+                .map(Cow::Owned)
+                .next();
+        }
+        Ok(false)
     }
 }
 
@@ -310,6 +399,34 @@ impl SourceExecutor for Executor {
             None => None,
         };
         Ok(value)
+    }
+
+    async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
+        let poll_interval = if let Some(poll_interval) = self.recent_updates_poll_interval {
+            poll_interval
+        } else {
+            return Ok(None);
+        };
+        let mut cutoff_time = Utc::now() - CUTOFF_TIME_BUFFER;
+        let mut interval = tokio::time::interval(poll_interval);
+        interval.tick().await;
+        let stream = stream! {
+            loop {
+                interval.tick().await;
+                let changes = self.get_recent_updates(&mut cutoff_time).await;
+                match changes {
+                    Ok(changes) => {
+                        for change in changes {
+                            yield change;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error getting recent updates: {e}");
+                    }
+                }
+            }
+        };
+        Ok(Some(stream.boxed()))
     }
 }
 

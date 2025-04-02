@@ -75,8 +75,8 @@ pub trait SourceExecutor: Send + Sync {
     // Get the value for the given key.
     async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>>;
 
-    fn change_stream<'a>(&'a self) -> Option<BoxStream<'a, SourceChange>> {
-        None
+    async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
+        Ok(None)
     }
 }
 

@@ -85,33 +85,35 @@ async fn update_source(
     let mut futs: Vec<BoxFuture<'_, Result<()>>> = Vec::new();
 
     // Deal with change streams.
-    if let (true, Some(change_stream)) = (options.live_mode, import_op.executor.change_stream()) {
-        let pool = pool.clone();
-        let source_update_stats = source_update_stats.clone();
-        futs.push(
-            async move {
-                let mut change_stream = change_stream;
-                while let Some(change) = change_stream.next().await {
-                    source_context
-                        .process_change(change, &pool, &source_update_stats)
-                        .map(tokio::spawn);
+    if options.live_mode {
+        if let Some(change_stream) = import_op.executor.change_stream().await? {
+            let pool = pool.clone();
+            let source_update_stats = source_update_stats.clone();
+            futs.push(
+                async move {
+                    let mut change_stream = change_stream;
+                    while let Some(change) = change_stream.next().await {
+                        source_context
+                            .process_change(change, &pool, &source_update_stats)
+                            .map(tokio::spawn);
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-            .boxed(),
-        );
-        futs.push(
-            async move {
-                let mut interval = tokio::time::interval(REPORT_INTERVAL);
-                interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-                interval.tick().await;
-                loop {
+                .boxed(),
+            );
+            futs.push(
+                async move {
+                    let mut interval = tokio::time::interval(REPORT_INTERVAL);
+                    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                     interval.tick().await;
-                    report_stats();
+                    loop {
+                        interval.tick().await;
+                        report_stats();
+                    }
                 }
-            }
-            .boxed(),
-        );
+                .boxed(),
+            );
+        }
     }
 
     // The main update loop.

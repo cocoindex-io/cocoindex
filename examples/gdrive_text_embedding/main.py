@@ -11,11 +11,12 @@ def gdrive_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: 
     """
     credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
     root_folder_ids = os.environ["GOOGLE_DRIVE_ROOT_FOLDER_IDS"].split(",")
-    
+
     data_scope["documents"] = flow_builder.add_source(
         cocoindex.sources.GoogleDrive(
             service_account_credential_path=credential_path,
-            root_folder_ids=root_folder_ids),
+            root_folder_ids=root_folder_ids,
+            recent_changes_poll_interval=datetime.timedelta(seconds=10)),
         refresh_options=cocoindex.SourceRefreshOptions(
             refresh_interval=datetime.timedelta(minutes=1)))
 

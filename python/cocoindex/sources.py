@@ -1,5 +1,6 @@
 """All builtin sources."""
 from . import op
+import datetime
 
 class LocalFile(op.SourceSpec):
     """Import data from local file system."""
@@ -26,3 +27,4 @@ class GoogleDrive(op.SourceSpec):
     service_account_credential_path: str
     root_folder_ids: list[str]
     binary: bool = False
+    recent_changes_poll_interval: datetime.timedelta | None = None
