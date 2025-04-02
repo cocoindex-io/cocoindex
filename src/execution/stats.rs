@@ -69,6 +69,14 @@ impl UpdateStats {
             num_errors: self.num_errors.delta(&base.num_errors),
         }
     }
+
+    pub fn is_zero(&self) -> bool {
+        self.num_skipped.get() == 0
+            && self.num_insertions.get() == 0
+            && self.num_deletions.get() == 0
+            && self.num_repreocesses.get() == 0
+            && self.num_errors.get() == 0
+    }
 }
 
 impl std::fmt::Display for UpdateStats {
@@ -96,6 +104,10 @@ impl std::fmt::Display for UpdateStats {
                 f,
                 ": {num_insertions} added, {num_deletions} removed, {num_reprocesses} repocessed",
             )?;
+        }
+
+        if num_skipped == 0 && num_source_rows == 0 {
+            write!(f, "no changes")?;
         }
         Ok(())
     }

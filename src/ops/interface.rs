@@ -46,12 +46,17 @@ pub struct SourceRowMetadata {
     pub ordinal: Option<Ordinal>,
 }
 
-pub struct SourceChange<'a> {
+pub enum SourceValueChange {
+    /// None means value unavailable in this change - needs a separate poll by get_value() API.
+    Upsert(Option<FieldValues>),
+    Delete,
+}
+
+pub struct SourceChange {
     /// Last update/deletion ordinal. None means unavailable.
     pub ordinal: Option<Ordinal>,
     pub key: KeyValue,
-    /// None means a deletion. None within the `BoxFuture` means the item is gone when polling.
-    pub value: Option<BoxFuture<'a, Result<Option<FieldValues>>>>,
+    pub value: SourceValueChange,
 }
 
 #[derive(Debug, Default)]
@@ -70,7 +75,7 @@ pub trait SourceExecutor: Send + Sync {
     // Get the value for the given key.
     async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>>;
 
-    fn change_stream<'a>(&'a self) -> Option<BoxStream<'a, SourceChange<'a>>> {
+    fn change_stream<'a>(&'a self) -> Option<BoxStream<'a, SourceChange>> {
         None
     }
 }

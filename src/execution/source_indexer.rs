@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{ops::interface::SourceValueChange, prelude::*};
 
 use sqlx::PgPool;
 use std::collections::{hash_map, HashMap};
@@ -6,7 +6,7 @@ use tokio::{sync::Semaphore, task::JoinSet};
 
 use super::{
     db_tracking,
-    row_indexer::{self, SkippedOr, SourceVersion},
+    row_indexer::{self, SkippedOr, SourceVersion, SourceVersionKind},
     stats,
 };
 struct SourceRowIndexingState {
@@ -78,21 +78,23 @@ impl SourceIndexingContext {
         })
     }
 
-    fn process_source_key(
+    async fn process_source_key(
         self: Arc<Self>,
         key: value::KeyValue,
         source_version: SourceVersion,
+        value: Option<value::FieldValues>,
         update_stats: Arc<stats::UpdateStats>,
         processing_sem: Arc<Semaphore>,
         pool: PgPool,
-        join_set: &mut JoinSet<Result<()>>,
     ) {
-        let fut = async move {
+        let process = async move {
             let permit = processing_sem.acquire().await?;
             let plan = self.flow.get_execution_plan().await?;
             let import_op = &plan.import_ops[self.source_idx];
             let source_value = if source_version.kind == row_indexer::SourceVersionKind::Deleted {
                 None
+            } else if let Some(value) = value {
+                Some(value)
             } else {
                 // Even if the source version kind is not Deleted, the source value might be gone one polling.
                 // In this case, we still use the current source version even if it's already stale - actually this version skew
@@ -154,17 +156,19 @@ impl SourceIndexingContext {
             drop(permit);
             anyhow::Ok(())
         };
-        join_set.spawn(fut);
+        if let Err(e) = process.await {
+            error!("{:?}", e.context("Error in processing a source row"));
+        }
     }
 
     fn process_source_key_if_newer(
         self: &Arc<Self>,
         key: value::KeyValue,
         source_version: SourceVersion,
+        value: Option<value::FieldValues>,
         update_stats: &Arc<stats::UpdateStats>,
         pool: &PgPool,
-        join_set: &mut JoinSet<Result<()>>,
-    ) {
+    ) -> Option<impl Future<Output = ()> + Send + 'static> {
         let processing_sem = {
             let mut state = self.state.lock().unwrap();
             let scan_generation = state.scan_generation;
@@ -174,19 +178,19 @@ impl SourceIndexingContext {
                 .source_version
                 .should_skip(&source_version, Some(&update_stats))
             {
-                return;
+                return None;
             }
             row_state.source_version = source_version.clone();
             row_state.processing_sem.clone()
         };
-        self.clone().process_source_key(
+        Some(self.clone().process_source_key(
             key,
             source_version,
+            value,
             update_stats.clone(),
             processing_sem,
             pool.clone(),
-            join_set,
-        );
+        ))
     }
 
     pub async fn update(
@@ -212,15 +216,18 @@ impl SourceIndexingContext {
                 self.process_source_key_if_newer(
                     row.key,
                     SourceVersion::from_current(row.ordinal),
+                    None,
                     update_stats,
                     pool,
-                    &mut join_set,
-                );
+                )
+                .map(|fut| join_set.spawn(fut));
             }
         }
         while let Some(result) = join_set.join_next().await {
-            if let Err(e) = (|| anyhow::Ok(result??))() {
-                error!("{:?}", e.context("Error in indexing a source row"));
+            if let Err(e) = result {
+                if !e.is_cancelled() {
+                    error!("{:?}", e);
+                }
             }
         }
 
@@ -239,21 +246,45 @@ impl SourceIndexingContext {
             deleted_key_versions
         };
         for (key, source_version, processing_sem) in deleted_key_versions {
-            self.clone().process_source_key(
+            join_set.spawn(self.clone().process_source_key(
                 key,
                 source_version,
+                None,
                 update_stats.clone(),
                 processing_sem,
                 pool.clone(),
-                &mut join_set,
-            );
+            ));
         }
         while let Some(result) = join_set.join_next().await {
-            if let Err(e) = (|| anyhow::Ok(result??))() {
-                error!("{:?}", e.context("Error in deleting a source row"));
+            if let Err(e) = result {
+                if !e.is_cancelled() {
+                    error!("{:?}", e);
+                }
             }
         }
 
         Ok(())
+    }
+
+    pub fn process_change(
+        self: &Arc<Self>,
+        change: interface::SourceChange,
+        pool: &PgPool,
+        update_stats: &Arc<stats::UpdateStats>,
+    ) -> Option<impl Future<Output = ()> + Send + 'static> {
+        let (source_version_kind, value) = match change.value {
+            SourceValueChange::Upsert(value) => (SourceVersionKind::CurrentLogic, value),
+            SourceValueChange::Delete => (SourceVersionKind::Deleted, None),
+        };
+        self.process_source_key_if_newer(
+            change.key,
+            SourceVersion {
+                ordinal: change.ordinal,
+                kind: source_version_kind,
+            },
+            value,
+            update_stats,
+            pool,
+        )
     }
 }
