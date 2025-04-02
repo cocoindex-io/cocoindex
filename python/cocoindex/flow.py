@@ -324,7 +324,7 @@ class _FlowBuilderState:
         return self.engine_flow_builder.constant(encode_enriched_type(type(v)), v)
 
 @dataclass
-class SourceRefreshOptions:
+class _SourceRefreshOptions:
     """
     Options for refreshing a source.
     """
@@ -347,7 +347,7 @@ class FlowBuilder:
 
     def add_source(self, spec: op.SourceSpec, /, *,
             name: str | None = None,
-            refresh_options: SourceRefreshOptions | None = None,
+            refresh_interval: datetime.timedelta | None = None,
         ) -> DataSlice:
         """
         Add a source to the flow.
@@ -360,7 +360,7 @@ class FlowBuilder:
                 target_scope,
                 self._state.field_name_builder.build_name(
                     name, prefix=_to_snake_case(_spec_kind(spec))+'_'),
-                _dump_engine_object(refresh_options),
+                _dump_engine_object(_SourceRefreshOptions(refresh_interval=refresh_interval)),
             ),
             name
         )

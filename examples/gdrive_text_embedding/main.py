@@ -17,8 +17,7 @@ def gdrive_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: 
             service_account_credential_path=credential_path,
             root_folder_ids=root_folder_ids,
             recent_changes_poll_interval=datetime.timedelta(seconds=10)),
-        refresh_options=cocoindex.SourceRefreshOptions(
-            refresh_interval=datetime.timedelta(minutes=1)))
+        refresh_interval=datetime.timedelta(minutes=1))
 
     doc_embeddings = data_scope.add_collector()
 
