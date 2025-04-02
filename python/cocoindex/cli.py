@@ -52,19 +52,17 @@ def setup(delete_legacy_flows):
     help="Continuously watch changes from data sources and apply to the target index.")
 @click.option(
     "-q", "--quiet", is_flag=True, show_default=True, default=False,
-    help="Avoid printing anything to the output, e.g. statistics.")
+    help="Avoid printing anything to the standard output, e.g. statistics.")
 def update(flow_name: str | None, live: bool, quiet: bool):
     """
     Update the index to reflect the latest data from data sources.
     """
-    async def _update_all():
-        async def _update_flow(fl: flow.Flow):
-            updater = flow.FlowLiveUpdater(
-                fl,
-                flow.FlowLiveUpdaterOptions(live_mode=live, print_stats=not quiet))
-            await updater.wait()
-        await asyncio.gather(*(_update_flow(fl) for fl in _flows_by_name(flow_name)))
-    asyncio.run(_update_all())
+    options = flow.FlowLiveUpdaterOptions(live_mode=live, print_stats=not quiet)
+    if flow_name is None:
+        asyncio.run(flow.update_all_flows(options))
+    else:
+        updater = flow.FlowLiveUpdater(_flow_by_name(flow_name), options)
+        asyncio.run(updater.wait())
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
@@ -99,13 +97,22 @@ _default_server_settings = lib.ServerSettings.from_env()
     "-c", "--cors-origin", type=str, default=_default_server_settings.cors_origin,
     help="The origin of the client (e.g. CocoInsight UI) to allow CORS from. "
          "e.g. `http://cocoindex.io` if you want to allow CocoInsight to access the server.")
-def server(address: str, cors_origin: str | None):
+@click.option(
+    "-L", "--live-update", is_flag=True, show_default=True, default=False,
+    help="Continuously watch changes from data sources and apply to the target index.")
+@click.option(
+    "-q", "--quiet", is_flag=True, show_default=True, default=False,
+    help="Avoid printing anything to the standard output, e.g. statistics.")
+def server(address: str, live_update: bool, quiet: bool, cors_origin: str | None):
     """
     Start a HTTP server providing REST APIs.
 
     It will allow tools like CocoInsight to access the server.
     """
     lib.start_server(lib.ServerSettings(address=address, cors_origin=cors_origin))
+    if live_update:
+        options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
+        asyncio.run(flow.update_all_flows(options))
     input("Press Enter to stop...")
 
 
@@ -124,9 +131,3 @@ def _flow_name(name: str | None) -> str:
 
 def _flow_by_name(name: str | None) -> flow.Flow:
     return flow.flow_by_name(_flow_name(name))
-
-def _flows_by_name(name: str | None) -> list[flow.Flow]:
-    if name is None:
-        return flow.flows()
-    else:
-        return [flow.flow_by_name(name)]

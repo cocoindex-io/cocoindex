@@ -4,6 +4,7 @@ Flow is the main interface for building and running flows.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import inspect
 import datetime
@@ -382,13 +383,13 @@ class FlowLiveUpdater:
         self._engine_live_updater = _engine.FlowLiveUpdater(
             fl._lazy_engine_flow(), _dump_engine_object(options))
 
-    async def wait(self):
+    async def wait(self) -> None:
         """
         Wait for the live updater to finish.
         """
-        return await self._engine_live_updater.wait()
+        await self._engine_live_updater.wait()
 
-    def abort(self):
+    def abort(self) -> None:
         """
         Abort the live updater.
         """
@@ -521,6 +522,19 @@ def ensure_all_flows_built() -> None:
     with _flows_lock:
         for fl in _flows.values():
             fl.internal_flow()
+
+async def update_all_flows(options: FlowLiveUpdaterOptions) -> dict[str, _engine.IndexUpdateInfo]:
+    """
+    Update all flows.
+    """
+    ensure_all_flows_built()
+    async def _update_flow(fl: Flow) -> _engine.IndexUpdateInfo:
+        updater = FlowLiveUpdater(fl, options)
+        await updater.wait()
+        return updater.update_stats()
+    fls = flows()
+    all_stats = await asyncio.gather(*(_update_flow(fl) for fl in fls))
+    return {fl.name: stats for fl, stats in zip(fls, all_stats)}
 
 _transient_flow_name_builder = _NameBuilder()
 class TransientFlow:
