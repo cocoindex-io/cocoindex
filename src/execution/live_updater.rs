@@ -177,8 +177,14 @@ impl FlowLiveUpdater {
 
     pub async fn wait(&mut self) -> Result<()> {
         while let Some(result) = self.tasks.join_next().await {
-            if let Err(e) = (|| anyhow::Ok(result??))() {
-                error!("{:?}", e.context("Error in applying changes from a source"));
+            match result {
+                Err(e) if !e.is_cancelled() => {
+                    error!("{:?}", e);
+                }
+                Ok(Err(e)) => {
+                    error!("{:?}", e.context("Error in applying changes from a source"));
+                }
+                _ => {}
             }
         }
         Ok(())

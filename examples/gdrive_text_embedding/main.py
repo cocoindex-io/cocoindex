@@ -51,21 +51,23 @@ query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
 
 @cocoindex.main_fn()
 def _run():
-    # Run queries in a loop to demonstrate the query capabilities.
-    while True:
-        try:
-            query = input("Enter search query (or Enter to quit): ")
-            if query == '':
+    # Use a `FlowLiveUpdater` to keep the flow data updated.
+    with cocoindex.FlowLiveUpdater(gdrive_text_embedding_flow):
+        # Run queries in a loop to demonstrate the query capabilities.
+        while True:
+            try:
+                query = input("Enter search query (or Enter to quit): ")
+                if query == '':
+                    break
+                results, _ = query_handler.search(query, 10)
+                print("\nSearch results:")
+                for result in results:
+                    print(f"[{result.score:.3f}] {result.data['filename']}")
+                    print(f"    {result.data['text']}")
+                    print("---")
+                print()
+            except KeyboardInterrupt:
                 break
-            results, _ = query_handler.search(query, 10)
-            print("\nSearch results:")
-            for result in results:
-                print(f"[{result.score:.3f}] {result.data['filename']}")
-                print(f"    {result.data['text']}")
-                print("---")
-            print()
-        except KeyboardInterrupt:
-            break
 
 if __name__ == "__main__":
     load_dotenv(override=True)

@@ -370,7 +370,7 @@ class FlowLiveUpdaterOptions:
     """
     Options for live updating a flow.
     """
-    live_mode: bool = False
+    live_mode: bool = True
     print_stats: bool = False
 
 class FlowLiveUpdater:
@@ -379,9 +379,16 @@ class FlowLiveUpdater:
     """
     _engine_live_updater: _engine.FlowLiveUpdater
 
-    def __init__(self, fl: Flow, options: FlowLiveUpdaterOptions):
+    def __init__(self, fl: Flow, options: FlowLiveUpdaterOptions | None = None):
         self._engine_live_updater = _engine.FlowLiveUpdater(
-            fl._lazy_engine_flow(), _dump_engine_object(options))
+            fl._lazy_engine_flow(), _dump_engine_object(options or FlowLiveUpdaterOptions()))
+
+    def __enter__(self) -> FlowLiveUpdater:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.abort()
+        asyncio.run(self.wait())
 
     async def wait(self) -> None:
         """
