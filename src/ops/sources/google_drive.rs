@@ -217,13 +217,16 @@ impl Executor {
                 if modified_time <= *cutoff_time {
                     break 'paginate;
                 }
-                if self.is_file_covered(&file).await? {
+                let file_id = file.id.ok_or_else(|| anyhow!("File has no id"))?;
+                if self.is_file_covered(&file_id).await? {
                     changes.push(SourceChange {
                         ordinal: Some(modified_time.try_into()?),
-                        key: KeyValue::Str(Arc::from(
-                            file.id.ok_or_else(|| anyhow!("File has no id"))?,
-                        )),
-                        value: SourceValueChange::Upsert(None),
+                        key: KeyValue::Str(Arc::from(file_id)),
+                        value: if file.trashed == Some(true) {
+                            SourceValueChange::Delete
+                        } else {
+                            SourceValueChange::Upsert(None)
+                        },
                     });
                 }
             }
@@ -239,15 +242,10 @@ impl Executor {
         Ok(changes)
     }
 
-    async fn is_file_covered(&self, file: &File) -> Result<bool> {
-        if file.trashed == Some(true) {
-            return Ok(false);
-        }
-        let mut next_file_id = Some(Cow::Borrowed(
-            file.id.as_ref().ok_or_else(|| anyhow!("File has no id"))?,
-        ));
+    async fn is_file_covered(&self, file_id: &str) -> Result<bool> {
+        let mut next_file_id = Some(Cow::Borrowed(file_id));
         while let Some(file_id) = next_file_id {
-            if self.root_folder_ids.contains(file_id.as_str()) {
+            if self.root_folder_ids.contains(file_id.as_ref()) {
                 return Ok(true);
             }
             let (_, file) = self
