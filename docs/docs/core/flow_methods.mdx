@@ -1,40 +1,188 @@
 ---
-title: Flow Methods
-description: Methods of a CocoIndex Flow
+title: Flow Running
+description: Run a CocoIndex Flow, including build / update data in the target storage and evaluate the flow without changing the target storage.
 ---
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# Methods of a CocoIndex Flow
+# Running a CocoIndex Flow
 
-After a flow is defined as discussed in [Flow Definition](/docs/core/flow_def), you get a Flow object and can call its methods to operate with it.
+After a flow is defined as discussed in [Flow Definition](/docs/core/flow_def), you can start to transform data with it.
 
-## update
+It can be achieved in two ways:
 
-The `update()` method will update the index defined by the flow.
+*   Use APIs provided by the library.
+    You have a `cocoindex.Flow` object after defining the flow in your code, and you can interact with it later.
 
-Once the function returns, the indice is fresh up to the moment when the function is called.
+*   Use [CocoIndex CLI](/docs/core/cli).
+
+We'll focus on the first way in this document.
+The following sections assume you have a `demo_flow`:
 
 <Tabs>
 <TabItem value="python" label="Python" default>
 
 ```python
-flow.update()
+@cocoindex.flow_def(name="DemoFlow")
+def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+  ...
+```
+
+It creates a `demo_flow` object in `cocoindex.Flow` type.
+
+</TabItem>
+</Tabs>
+
+
+## Build / update target data
+
+The major goal of a flow is to perform the transformations on source data and build / update data in the target storage (the index).
+This action has two flavors:
+
+*   **One time update.**
+    It builds/update the target data based on source data up to the current moment.
+    After the target data is at least as fresh as the source data when update starts, it's done.
+    It fits into situations that you need to access the fresh target data at certain time points.
+
+*   **Live update.**
+    It continuously watches the source data and updates the target data accordingly.
+    It's long-running and only stops when being aborted explicitly.
+    It fits into situations that you need to access the fresh target data continuously in most of the time.
+
+:::info
+
+For both flavors, CocoIndex is performing updates incrementally.
+i.e. we only performs computations and storage mutations on source data that are changed, or the flow has changed.
+This is to achieve best efficiency.
+
+:::
+
+
+### One time update
+
+:::tip
+
+CLI equivalence: `cocoindex update`
+
+:::
+
+The `update()` async method creates/updates data in the target storage.
+
+Once the function returns, the target data is fresh up to the moment when the function is called.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+stats = await demo_flow.update()
+print(stats)
 ```
 
 </TabItem>
 </Tabs>
 
-## evaluate_and_dump
+### Live update
 
-The `evaluate_and_dump()` method evaluates the flow and dump flow outputs to files.
+:::tip
+
+CLI equivalence: `cocoindex update -L`
+
+:::
+
+Live update is *eligible* for certain data sources, including:
+
+*   Data sources configured with a [refresh interval](flow_def#refresh-interval).
+*   Data sources provides a **change stream**.
+
+To perform live update, you need to create a `cocoindex.FlowLiveUpdater` object using the `cocoindex.Flow` object.
+It takes an optional `cocoindex.FlowLiveUpdaterOptions` option, with the following fields:
+
+*   `live_mode` (type: `bool`, default: `True`):
+     Whether to perform live update for eligible data sources.
+
+*   `print_stats` (type: `bool`, default: `False`): Whether to print stats during update.
+
+For data sources ineligible for live updates, or when the `live_mode` is `False`,
+the `FlowLiveUpdater` only performs a one-time update, i.e. similar to the one-time update (`update()` method) above,
+under a unified interface.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+This creates a `cocoindex.FlowLiveUpdater` object, with an optional `cocoindex.FlowLiveUpdaterOptions` option:
+
+```python
+my_updater = cocoindex.FlowLiveUpdater(
+    demo_flow, cocoindex.FlowLiveUpdaterOptions(print_stats=True))
+```
+
+</TabItem>
+</Tabs>
+
+A `FlowLiveUpdater` object supports the following methods:
+
+*   `abort()`: Abort the updater.
+*   `wait()` (async): Wait for the updater to finish. It only unblocks in one of the following cases:
+    *   The updater was aborted.
+    *   A one time update is done, and live update is not enabled:
+        either `live_mode` is `False`, or all data sources are ineligible for live updates.
+*   `update_stats()`: It returns the stats of the updater.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+my_updater = cocoindex.FlowLiveUpdater(demo_flow)
+
+# Perform your own logic (e.g. a query loop).
+...
+
+# Print the update stats.
+print(my_updater.update_stats())
+# Abort the updater.
+my_updater.abort()
+# Wait for the updater to finish.
+await my_updater.wait()
+```
+
+Python SDK also allows you to use the updater as a context manager.
+It will abort and wait for the updater to finish automatically when the context is exited.
+The following code is equivalent to the code above:
+
+```python
+async with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
+    # Perform your own logic (e.g. a query loop).
+    ...
+    print(my_updater.update_stats())
+```
+
+Within a synchronous function, remove `async` before `with`, like this:
+
+```python
+with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
+    ...
+```
+
+</TabItem>
+</Tabs>
+
+## Evaluate the flow
+
+:::tip
+
+CLI equivalence: `cocoindex evaluate`
+
+:::
+
+CocoIndex allows you to run the transformations defined by the flow without updating the target storage.
+The `evaluate_and_dump()` method supports this by dumping flow outputs to files.
 
 It takes a `EvaluateAndDumpOptions` dataclass as input to configure, with the following fields:
 
 *   `output_dir` (type: `str`, required): The directory to dump the result to.
 *   `use_cache` (type: `bool`, default: `True`): Use already-cached intermediate data if available.
-    Note that we only reuse existing cached data without updating the cache even if it's turned on.
+    Note that we only read existing cached data without updating the cache, even if it's turned on.
 
 <Tabs>
 <TabItem value="python" label="Python" default>

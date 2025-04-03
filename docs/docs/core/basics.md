@@ -1,6 +1,6 @@
 ---
 title: Basics
-description: CocoIndex Basics
+description: "CocoIndex basic concepts: indexing flow, data, operations, data updates, etc."
 ---
 
 # CocoIndex Basics
@@ -9,7 +9,7 @@ An **index** is a collection of data stored in a way that is easy for retrieval.
 
 CocoIndex is an ETL framework for building indexes from specified data sources, a.k.a. indexing. It also offers utilities for users to retrieve data from the indexes.
 
-## Indexing Flow
+## Indexing flow
 
 An indexing flow extracts data from speicfied data sources, upon specified transformations, and puts the transformed data into specified storage for later retrieval.
 
@@ -36,7 +36,7 @@ An **operation** in an indexing flow defines a step in the flow. An operation is
 *   **Action**, which defines the behavior of the operation, e.g. *import*, *transform*, *for each*, *collect* and *export*.
     See [Flow Definition](flow_def) for more details for each action.
 
-*   Some actions (i.e. "import", "transform" and "export") require an **Operation Spec**, which describes the specific behavior of the operation, e.g. a source to import from, a function describing the transformation behavior, a storage to export to as an index.
+*   Some actions (i.e. "import", "transform" and "export") require an **Operation Spec**, which describes the specific behavior of the operation, e.g. a source to import from, a function describing the transformation behavior, a target storage to export to (as an index).
     *   Each operation spec has a **operation type**, e.g. `LocalFile` (data source), `SplitRecursively` (function), `SentenceTransformerEmbed` (function), `Postgres` (storage).
     *   CocoIndex framework maintains a set of supported operation types. Users can also implement their own.
 
@@ -60,31 +60,40 @@ This shows schema and example data for the indexing flow:
 
 ![Data Example](data_example.svg)
 
-### Life Cycle of an Indexing Flow
+### Life cycle of an indexing flow
 
-An indexing flow, once set up, maintains a long-lived relationship between source data and indexes. This means:
+An indexing flow, once set up, maintains a long-lived relationship between data source and data in target storage. This means:
 
-1. The indexes created by the flow remain available for querying at any time
-2. When source data changes, the indexes are automatically updated to reflect those changes
-3. CocoIndex intelligently manages these updates by:
-   - Determining which parts of the index need to be recomputed
-   - Reusing existing computations where possible
-   - Only reprocessing the minimum necessary data
+1.  The target storage created by the flow remain available for querying at any time
+
+2.  As source data changes (new data added, existing data updated or deleted), data in the target storage are updated to reflect those changes,
+    on certain pace, according to the update mode:
+
+    *   **One time update**: Once triggered, CocoIndex updates the target data to reflect the version of source data up to the current moment.
+    *   **Live update**: CocoIndex continuously watches the source data and updates the target data accordingly.
+    
+    See more details in the [build / update target data](flow_methods#build--update-target-data) section.
+
+3.  CocoIndex intelligently manages these updates by:
+    *   Determining which parts of the target data need to be recomputed
+    *   Reusing existing computations where possible
+    *   Only reprocessing the minimum necessary data
+
 
 You can think of an indexing flow similar to formulas in a spreadsheet:
 
-- In a spreadsheet, you define formulas that transform input cells into output cells
-- When input values change, the spreadsheet automatically recalculates affected outputs
-- You focus on defining the transformation logic, not managing updates
+*   In a spreadsheet, you define formulas that transform input cells into output cells
+*   When input values change, the spreadsheet recalculates affected outputs
+*   You focus on defining the transformation logic, not managing updates
 
 CocoIndex works the same way, but with more powerful capabilities:
 
-- Instead of flat tables, CocoIndex models data in nested data structures, making it more natural to model complex data
-- Instead of simple cell-level formulas, you have operations like "for each" to apply the same formula across rows without repeating yourself
+* Instead of flat tables, CocoIndex models data in nested data structures, making it more natural to model complex data
+* Instead of simple cell-level formulas, you have operations like "for each" to apply the same formula across rows without repeating yourself
 
-This means when writing your flow operations, you can treat source data as if it were static - focusing purely on defining the transformation logic. CocoIndex takes care of maintaining the dynamic relationship between sources and indexes behind the scenes.
+This means when writing your flow operations, you can treat source data as if it were static - focusing purely on defining the transformation logic. CocoIndex takes care of maintaining the dynamic relationship between sources and target data behind the scenes.
 
-### Internal Storage
+### Internal storage
 
 As an indexing flow is long-lived, it needs to store intermediate data to keep track of the states.
 CocoIndex uses internal storage for this purpose.
@@ -94,9 +103,9 @@ See [Initialization](initialization) for configuring its location, and `cocoinde
 
 ## Retrieval
 
-There are two ways to retrieve data from indexes built by an indexing flow:
+There are two ways to retrieve data from target storage built by an indexing flow:
 
-*   Query the underlying index storage directly for maximum flexibility.
-*   Use CocoIndex *query handlers* for a more convenient experience with built-in tooling support (e.g. CocoInsight) to understand query performance against the index.
+*   Query the underlying target storage directly for maximum flexibility.
+*   Use CocoIndex *query handlers* for a more convenient experience with built-in tooling support (e.g. CocoInsight) to understand query performance against the target data.
 
-Query handlers are tied to specific indexing flows. They accept query inputs, transform them by defined operations, and retrieve matching data from the index storage that was created by the flow.
+Query handlers are tied to specific indexing flows. They accept query inputs, transform them by defined operations, and retrieve matching data from the target storage that was created by the flow.
