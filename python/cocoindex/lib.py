@@ -1,10 +1,12 @@
 """
 Library level functions and states.
 """
-import json
 import os
 import sys
-from typing import Callable, Self
+import functools
+import inspect
+import asyncio
+from typing import Callable, Self, Any
 from dataclasses import dataclass
 
 from . import _engine
@@ -78,20 +80,40 @@ def main_fn(
 
     If the settings are not provided, they are loaded from the environment variables.
     """
+
+    def _pre_init() -> None:
+        effective_settings = settings or Settings.from_env()
+        init(effective_settings)
+
+    def _should_run_cli() -> bool:
+        return len(sys.argv) > 1 and sys.argv[1] == cocoindex_cmd
+
+    def _run_cli():
+        return cli.cli.main(sys.argv[2:], prog_name=f"{sys.argv[0]} {sys.argv[1]}")
+
     def _main_wrapper(fn: Callable) -> Callable:
-
-        def _inner(*args, **kwargs):
-            effective_settings = settings or Settings.from_env()
-            init(effective_settings)
-            try:
-                if len(sys.argv) > 1 and sys.argv[1] == cocoindex_cmd:
-                    return cli.cli.main(sys.argv[2:], prog_name=f"{sys.argv[0]} {sys.argv[1]}")
-                else:
+        if inspect.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def _inner(*args, **kwargs):
+                _pre_init()
+                try:
+                    if _should_run_cli():
+                        # Schedule to a separate thread as it invokes nested event loop.
+                        return await asyncio.to_thread(_run_cli)
+                    return await fn(*args, **kwargs)
+                finally:
+                    stop()
+            return _inner
+        else:
+            @functools.wraps(fn)
+            def _inner(*args, **kwargs):
+                _pre_init()
+                try:
+                    if _should_run_cli():
+                        return _run_cli()
                     return fn(*args, **kwargs)
-            finally:
-                stop()
-
-        _inner.__name__ = fn.__name__
-        return _inner
+                finally:
+                    stop()
+            return _inner
 
     return _main_wrapper

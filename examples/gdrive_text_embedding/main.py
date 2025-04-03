@@ -49,9 +49,9 @@ query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
     default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)
 
 @cocoindex.main_fn()
-def _run():
+async def _run():
     # Use a `FlowLiveUpdater` to keep the flow data updated.
-    with cocoindex.FlowLiveUpdater(gdrive_text_embedding_flow):
+    async with cocoindex.FlowLiveUpdater(gdrive_text_embedding_flow):
         # Run queries in a loop to demonstrate the query capabilities.
         while True:
             try:
@@ -70,4 +70,5 @@ def _run():
 
 if __name__ == "__main__":
     load_dotenv(override=True)
-    _run()
+    import asyncio
+    asyncio.run(_run())
