@@ -390,6 +390,13 @@ class FlowLiveUpdater:
         self.abort()
         asyncio.run(self.wait())
 
+    async def __aenter__(self) -> FlowLiveUpdater:
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        self.abort()
+        await self.wait()
+
     async def wait(self) -> None:
         """
         Wait for the live updater to finish.
@@ -448,7 +455,7 @@ class Flow:
         """
         return self._lazy_engine_flow().name()
 
-    async def update(self):
+    async def update(self) -> _engine.IndexUpdateInfo:
         """
         Update the index defined by the flow.
         Once the function returns, the indice is fresh up to the moment when the function is called.
