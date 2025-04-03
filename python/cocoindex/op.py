@@ -181,6 +181,10 @@ def _register_op_factory(
             return to_engine_value(output)
 
     _WrappedClass.__name__ = executor_cls.__name__
+    _WrappedClass.__doc__ = executor_cls.__doc__
+    _WrappedClass.__module__ = executor_cls.__module__
+    _WrappedClass.__qualname__ = executor_cls.__qualname__
+    _WrappedClass.__wrapped__ = executor_cls
 
     if category == OpCategory.FUNCTION:
         _engine.register_function_factory(
@@ -234,7 +238,12 @@ def function(**args) -> Callable[[Callable], FunctionSpec]:
 
         class _Spec(FunctionSpec):
             pass
+
         _Spec.__name__ = op_name
+        _Spec.__doc__ = fn.__doc__
+        _Spec.__module__ = fn.__module__
+        _Spec.__qualname__ = fn.__qualname__
+        _Spec.__wrapped__ = fn
 
         _register_op_factory(
             category=OpCategory.FUNCTION,
