@@ -1,13 +1,6 @@
-use std::collections::HashMap;
+use crate::prelude::*;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::Arc;
-
-use anyhow::Result;
-use axum::async_trait;
-use futures::future::BoxFuture;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 
 use super::interface::*;
 use super::registry::*;
@@ -15,7 +8,6 @@ use crate::api_bail;
 use crate::api_error;
 use crate::base::schema::*;
 use crate::base::spec::*;
-use crate::base::value;
 use crate::builder::plan::AnalyzedValueMapping;
 use crate::setup;
 // SourceFactoryBase
@@ -272,6 +264,13 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
     }
 }
 
+pub struct ExportTargetBuildOutput<F: StorageFactoryBase + ?Sized> {
+    pub executor:
+        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
+    pub setup_key: F::Key,
+    pub desired_setup_state: F::SetupState,
+}
+
 pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
     type Spec: DeserializeOwned + Send + Sync;
     type Key: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash + Send + Sync;
@@ -287,11 +286,9 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         value_fields_schema: Vec<FieldSchema>,
         storage_options: IndexOptions,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<(
-        (Self::Key, Self::SetupState),
-        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
-    )>;
+    ) -> Result<ExportTargetBuildOutput<Self>>;
 
+    /// This is only called for non-user-setup targets.
     fn check_setup_status(
         &self,
         key: Self::Key,
@@ -387,12 +384,9 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         value_fields_schema: Vec<FieldSchema>,
         storage_options: IndexOptions,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<(
-        (serde_json::Value, serde_json::Value),
-        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
-    )> {
+    ) -> Result<interface::ExportTargetBuildOutput> {
         let spec: T::Spec = serde_json::from_value(spec)?;
-        let ((setup_key, setup_state), executors) = StorageFactoryBase::build(
+        let build_output = StorageFactoryBase::build(
             self,
             name,
             spec,
@@ -401,13 +395,11 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             storage_options,
             context,
         )?;
-        Ok((
-            (
-                serde_json::to_value(setup_key)?,
-                serde_json::to_value(setup_state)?,
-            ),
-            executors,
-        ))
+        Ok(interface::ExportTargetBuildOutput {
+            executor: build_output.executor,
+            setup_key: serde_json::to_value(build_output.setup_key)?,
+            desired_setup_state: serde_json::to_value(build_output.desired_setup_state)?,
+        })
     }
 
     fn check_setup_status(

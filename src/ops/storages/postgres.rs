@@ -921,10 +921,7 @@ impl StorageFactoryBase for Arc<Factory> {
         value_fields_schema: Vec<FieldSchema>,
         storage_options: IndexOptions,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<(
-        (TableId, SetupState),
-        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
-    )> {
+    ) -> Result<ExportTargetBuildOutput<Self>> {
         let table_id = TableId {
             database_url: spec.database_url.clone(),
             table_name: spec
@@ -951,7 +948,11 @@ impl StorageFactoryBase for Arc<Factory> {
                 Some(query_target as Arc<dyn QueryTarget>),
             ))
         };
-        Ok(((table_id, setup_state), executors.boxed()))
+        Ok(ExportTargetBuildOutput {
+            executor: executors.boxed(),
+            setup_key: table_id,
+            desired_setup_state: setup_state,
+        })
     }
 
     fn check_setup_status(

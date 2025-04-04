@@ -886,7 +886,7 @@ impl AnalyzerContext<'_> {
             }
         };
 
-        let ((setup_key, desired_state), executor_fut) = export_factory.clone().build(
+        let setup_output = export_factory.clone().build(
             export_op.name.clone(),
             spec,
             key_fields_schema,
@@ -895,7 +895,7 @@ impl AnalyzerContext<'_> {
             self.flow_ctx.clone(),
         )?;
         let resource_id = ResourceIdentifier {
-            key: setup_key.clone(),
+            key: setup_output.setup_key.clone(),
             target_kind: export_target.kind.clone(),
         };
         let existing_target_states = existing_target_states.get(&resource_id);
@@ -904,8 +904,10 @@ impl AnalyzerContext<'_> {
                 let mut compatible_target_ids = HashSet::<Option<i32>>::new();
                 let mut reusable_schema_version_ids = HashSet::<Option<i32>>::new();
                 for existing_state in existing_target_states.iter().flat_map(|v| v.iter()) {
-                    let compatibility = export_factory
-                        .check_state_compatibility(&desired_state, &existing_state.state)?;
+                    let compatibility = export_factory.check_state_compatibility(
+                        &setup_output.desired_setup_state,
+                        &existing_state.state,
+                    )?;
                     let compatible_target_id =
                         if compatibility != SetupStateCompatibility::NotCompatible {
                             reusable_schema_version_ids.insert(
@@ -946,10 +948,7 @@ impl AnalyzerContext<'_> {
                 } else {
                     max_schema_version_id + 1
                 };
-                match setup_state.targets.entry(ResourceIdentifier {
-                    key: setup_key,
-                    target_kind: export_target.kind.clone(),
-                }) {
+                match setup_state.targets.entry(resource_id) {
                     indexmap::map::Entry::Occupied(entry) => {
                         api_bail!(
                             "Target resource already exists: kind = {}, key = {}",
@@ -964,7 +963,7 @@ impl AnalyzerContext<'_> {
                                 schema_version_id,
                                 max_schema_version_id: max_schema_version_id.max(schema_version_id),
                             },
-                            state: desired_state,
+                            state: setup_output.desired_setup_state,
                         });
                     }
                 }
@@ -980,7 +979,8 @@ impl AnalyzerContext<'_> {
             .unwrap_or(false);
         Ok(async move {
             trace!("Start building executor for export op `{}`", export_op.name);
-            let (executor, query_target) = executor_fut
+            let (executor, query_target) = setup_output
+                .executor
                 .await
                 .with_context(|| format!("Analyzing export op: {}", export_op.name))?;
             trace!(

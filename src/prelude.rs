@@ -7,7 +7,7 @@ pub(crate) use futures::{future::BoxFuture, prelude::*, stream::BoxStream};
 pub(crate) use futures::{FutureExt, StreamExt};
 pub(crate) use indexmap::{IndexMap, IndexSet};
 pub(crate) use itertools::Itertools;
-pub(crate) use serde::{Deserialize, Serialize};
+pub(crate) use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub(crate) use std::borrow::Cow;
 pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 pub(crate) use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock, Weak};

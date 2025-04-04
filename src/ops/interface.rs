@@ -154,6 +154,13 @@ pub enum SetupStateCompatibility {
     NotCompatible,
 }
 
+pub struct ExportTargetBuildOutput {
+    pub executor:
+        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
+    pub setup_key: serde_json::Value,
+    pub desired_setup_state: serde_json::Value,
+}
+
 pub trait ExportTargetFactory {
     // The first field of the `input_schema` is the primary key field.
     // If it has struct type, it should be converted to composite primary key.
@@ -165,10 +172,7 @@ pub trait ExportTargetFactory {
         value_fields_schema: Vec<FieldSchema>,
         storage_options: IndexOptions,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<(
-        (serde_json::Value, serde_json::Value),
-        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
-    )>;
+    ) -> Result<ExportTargetBuildOutput>;
 
     fn check_setup_status(
         &self,
