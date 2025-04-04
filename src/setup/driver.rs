@@ -285,16 +285,9 @@ pub fn check_flow_setup_status(
     })
 }
 
-#[derive(Debug, Deserialize, Default)]
-pub struct CheckSetupStatusOptions {
-    /// If true, also check / clean up flows existing before but no longer exist.
-    pub delete_legacy_flows: bool,
-}
-
-pub fn check_setup_status(
+pub fn sync_setup(
     flows: &BTreeMap<String, Arc<FlowContext>>,
     all_setup_state: &AllSetupState<ExistingMode>,
-    options: CheckSetupStatusOptions,
 ) -> Result<AllSetupStatusCheck> {
     let mut flow_status_checks = BTreeMap::new();
     for (flow_name, flow_context) in flows {
@@ -304,19 +297,33 @@ pub fn check_setup_status(
             check_flow_setup_status(Some(&flow_context.flow.desired_state), existing_state)?,
         );
     }
-    if options.delete_legacy_flows {
-        for (flow_name, existing_state) in all_setup_state.flows.iter() {
-            if !flows.contains_key(flow_name) {
-                flow_status_checks.insert(
-                    flow_name.clone(),
-                    check_flow_setup_status(None, Some(existing_state))?,
-                );
-            }
+    Ok(AllSetupStatusCheck {
+        metadata_table: db_metadata::MetadataTableSetup {
+            metadata_table_missing: !all_setup_state.has_metadata_table,
+        },
+        flows: flow_status_checks,
+    })
+}
+
+pub fn drop_setup(
+    flow_names: impl IntoIterator<Item = String>,
+    all_setup_state: &AllSetupState<ExistingMode>,
+) -> Result<AllSetupStatusCheck> {
+    if !all_setup_state.has_metadata_table {
+        api_bail!("CocoIndex metadata table is missing.");
+    }
+    let mut flow_status_checks = BTreeMap::new();
+    for flow_name in flow_names.into_iter() {
+        if let Some(existing_state) = all_setup_state.flows.get(&flow_name) {
+            flow_status_checks.insert(
+                flow_name,
+                check_flow_setup_status(None, Some(existing_state))?,
+            );
         }
     }
     Ok(AllSetupStatusCheck {
         metadata_table: db_metadata::MetadataTableSetup {
-            metadata_table_missing: !all_setup_state.has_metadata_table,
+            metadata_table_missing: false,
         },
         flows: flow_status_checks,
     })

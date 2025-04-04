@@ -3,7 +3,7 @@ import click
 import datetime
 
 from . import flow, lib
-from .setup import check_setup_status, CheckSetupStatusOptions, apply_setup_changes
+from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
 
 @click.group()
 def cli():
@@ -12,12 +12,42 @@ def cli():
     """
 
 @cli.command()
-def ls():
+@click.option(
+    "-a", "--all", "show_all", is_flag=True, show_default=True, default=False,
+    help="Also show all flows with persisted setup, even if not defined in the current process.")
+def ls(show_all: bool):
     """
-    List all available flows.
+    List all flows.
     """
-    for name in flow.flow_names():
-        click.echo(name)
+    current_flow_names = [fl.name for fl in flow.flows()]
+    persisted_flow_names = flow_names_with_setup()
+    remaining_persisted_flow_names = set(persisted_flow_names)
+
+    has_missing_setup = False
+    has_extra_setup = False
+
+    for name in current_flow_names:
+        if name in remaining_persisted_flow_names:
+            remaining_persisted_flow_names.remove(name)
+            suffix = ''
+        else:
+            suffix = ' [+]'
+            has_missing_setup = True
+        click.echo(f'{name}{suffix}')
+
+    if show_all:
+        for name in persisted_flow_names:
+            if name in remaining_persisted_flow_names:
+                click.echo(f'{name} [?]')
+                has_extra_setup = True
+
+    if has_missing_setup or has_extra_setup:
+        click.echo('')
+        click.echo('Notes:')
+        if has_missing_setup:
+            click.echo('  [+]: Flows present in the current process, but missing setup.')
+        if has_extra_setup:
+            click.echo('  [?]: Flows with persisted setup, but not in the current process.')
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
@@ -28,17 +58,41 @@ def show(flow_name: str | None):
     click.echo(str(_flow_by_name(flow_name)))
 
 @cli.command()
-@click.option(
-    "-D", "--delete_legacy_flows", is_flag=True, show_default=True, default=False,
-    help="Also check / delete flows existing before but no longer exist.")
-def setup(delete_legacy_flows):
+def setup():
     """
-    Check and apply backend setup changes for flows, including the internal and target storage (to export).
+    Check and apply backend setup changes for flows, including the internal and target storage
+    (to export).
     """
-    options = CheckSetupStatusOptions(delete_legacy_flows=delete_legacy_flows)
-    status_check = check_setup_status(options)
-    print(status_check)
+    status_check = sync_setup()
+    click.echo(status_check)
     if status_check.is_up_to_date():
+        click.echo("No changes need to be pushed.")
+        return
+    if not click.confirm(
+        "Changes need to be pushed. Continue? [yes/N]", default=False, show_default=False):
+        return
+    apply_setup_changes(status_check)
+
+@cli.command()
+@click.argument("flow_name", type=str, nargs=-1)
+@click.option(
+    "-a", "--all", "drop_all", is_flag=True, show_default=True, default=False,
+    help="Drop all flows with persisted setup, even if not defined in the current process.")
+def drop(flow_name: tuple[str, ...], drop_all: bool):
+    """
+    Drop the backend for specified flows.
+    If no flow is specified, all flows defined in the current process will be dropped.
+    """
+    if drop_all:
+        flow_names = flow_names_with_setup()
+    elif len(flow_name) == 0:
+        flow_names = [fl.name for fl in flow.flows()]
+    else:
+        flow_names = list(flow_name)
+    status_check = drop_setup(flow_names)
+    click.echo(status_check)
+    if status_check.is_up_to_date():
+        click.echo("No flows need to be dropped.")
         return
     if not click.confirm(
         "Changes need to be pushed. Continue? [yes/N]", default=False, show_default=False):

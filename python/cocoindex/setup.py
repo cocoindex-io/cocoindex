@@ -1,15 +1,16 @@
-from dataclasses import dataclass
-
 from . import flow
 from . import _engine
 
-@dataclass
-class CheckSetupStatusOptions:
-    delete_legacy_flows: bool
-
-def check_setup_status(options: CheckSetupStatusOptions) -> _engine.SetupStatusCheck:
+def sync_setup() -> _engine.SetupStatusCheck:
     flow.ensure_all_flows_built()
-    return _engine.check_setup_status(vars(options))
+    return _engine.sync_setup()
+
+def drop_setup(flow_names: list[str]) -> _engine.SetupStatusCheck:
+    flow.ensure_all_flows_built()
+    return _engine.drop_setup(flow_names)
+
+def flow_names_with_setup() -> list[str]:
+    return _engine.flow_names_with_setup()
 
 def apply_setup_changes(status_check: _engine.SetupStatusCheck):
     _engine.apply_setup_changes(status_check)

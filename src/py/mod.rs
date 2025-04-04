@@ -278,15 +278,28 @@ impl SetupStatusCheck {
 }
 
 #[pyfunction]
-fn check_setup_status(
-    options: Pythonized<setup::CheckSetupStatusOptions>,
-) -> PyResult<SetupStatusCheck> {
+fn sync_setup() -> PyResult<SetupStatusCheck> {
     let lib_context = get_lib_context().into_py_result()?;
     let flows = lib_context.flows.lock().unwrap();
-    let all_css = lib_context.combined_setup_states.read().unwrap();
-    let setup_status =
-        setup::check_setup_status(&flows, &all_css, options.into_inner()).into_py_result()?;
+    let all_setup_states = lib_context.all_setup_states.read().unwrap();
+    let setup_status = setup::sync_setup(&flows, &all_setup_states).into_py_result()?;
     Ok(SetupStatusCheck(setup_status))
+}
+
+#[pyfunction]
+fn drop_setup(flow_names: Vec<String>) -> PyResult<SetupStatusCheck> {
+    let lib_context = get_lib_context().into_py_result()?;
+    let all_setup_states = lib_context.all_setup_states.read().unwrap();
+    let setup_status = setup::drop_setup(flow_names, &all_setup_states).into_py_result()?;
+    Ok(SetupStatusCheck(setup_status))
+}
+
+#[pyfunction]
+fn flow_names_with_setup() -> PyResult<Vec<String>> {
+    let lib_context = get_lib_context().into_py_result()?;
+    let all_setup_states = lib_context.all_setup_states.read().unwrap();
+    let flow_names = all_setup_states.flows.keys().cloned().collect();
+    Ok(flow_names)
 }
 
 #[pyfunction]
@@ -314,8 +327,10 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(start_server, m)?)?;
     m.add_function(wrap_pyfunction!(stop, m)?)?;
     m.add_function(wrap_pyfunction!(register_function_factory, m)?)?;
-    m.add_function(wrap_pyfunction!(check_setup_status, m)?)?;
+    m.add_function(wrap_pyfunction!(sync_setup, m)?)?;
+    m.add_function(wrap_pyfunction!(drop_setup, m)?)?;
     m.add_function(wrap_pyfunction!(apply_setup_changes, m)?)?;
+    m.add_function(wrap_pyfunction!(flow_names_with_setup, m)?)?;
 
     m.add_class::<builder::flow_builder::FlowBuilder>()?;
     m.add_class::<builder::flow_builder::DataCollector>()?;

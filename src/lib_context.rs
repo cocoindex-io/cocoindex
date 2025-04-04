@@ -63,7 +63,7 @@ static TOKIO_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| Runtime::new().unwrap
 pub struct LibContext {
     pub pool: PgPool,
     pub flows: Mutex<BTreeMap<String, Arc<FlowContext>>>,
-    pub combined_setup_states: RwLock<setup::AllSetupState<setup::ExistingMode>>,
+    pub all_setup_states: RwLock<setup::AllSetupState<setup::ExistingMode>>,
 }
 
 impl LibContext {
@@ -94,14 +94,14 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).unwrap();
     });
 
-    let (pool, all_css) = get_runtime().block_on(async {
+    let (pool, all_setup_states) = get_runtime().block_on(async {
         let pool = PgPool::connect(&settings.database_url).await?;
         let existing_ss = setup::get_existing_setup_state(&pool).await?;
         anyhow::Ok((pool, existing_ss))
     })?;
     Ok(LibContext {
         pool,
-        combined_setup_states: RwLock::new(all_css),
+        all_setup_states: RwLock::new(all_setup_states),
         flows: Mutex::new(BTreeMap::new()),
     })
 }
