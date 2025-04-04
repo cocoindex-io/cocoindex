@@ -61,11 +61,12 @@ The following subcommands are available:
 | Subcommand | Description |
 | ---------- | ----------- |
 | `ls` | List all flows. |
-| `server` | Start a HTTP server providing REST APIs. It will allow tools like CocoInsight to access the server. |
-| `setup` | Check and apply setup changes for flows, including the internal and target storage (to export). |
 | `show` | Show the spec for a specific flow. |
+| `setup` | Check and apply backend setup changes for flows, including the internal and target storage (to export). |
+| `drop` | Drop the backend setup for specified flows. |
 | `update` | Update the index defined by the flow. |
 | `evaluate` | Evaluate the flow and dump flow outputs to files.  Instead of updating the index, it dumps what should be indexed to files. Mainly used for evaluation purpose. |
+| `server` | Start a HTTP server providing REST APIs. It will allow tools like CocoInsight to access the server. |
 
 Use `--help` to see the full list of subcommands, and `subcommand --help` to see the usage of a specific one.
 

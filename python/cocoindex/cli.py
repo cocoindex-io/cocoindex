@@ -77,10 +77,11 @@ def setup():
 @click.argument("flow_name", type=str, nargs=-1)
 @click.option(
     "-a", "--all", "drop_all", is_flag=True, show_default=True, default=False,
-    help="Drop all flows with persisted setup, even if not defined in the current process.")
+    help="Drop the backend setup for all flows with persisted setup, "
+         "even if not defined in the current process.")
 def drop(flow_name: tuple[str, ...], drop_all: bool):
     """
-    Drop the backend for specified flows.
+    Drop the backend setup for specified flows.
     If no flow is specified, all flows defined in the current process will be dropped.
     """
     if drop_all:
