@@ -304,8 +304,7 @@ impl ResourceSetupStatusCheck for MetadataTableSetup {
     }
 
     fn desired_state(&self) -> Option<&Self::State> {
-        warn!("Metadata table is unexpected to have a state");
-        None
+        Some(&())
     }
 
     fn describe_resource(&self) -> String {
