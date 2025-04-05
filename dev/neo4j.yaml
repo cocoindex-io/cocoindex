@@ -1,3 +1,4 @@
+name: cocoindex-neo4j
 services:
   neo4j:
     image: neo4j:latest
@@ -8,6 +9,7 @@ services:
         - /$HOME/neo4j/plugins:/plugins
     environment:
         - NEO4J_AUTH=neo4j/cocoindex
+        - NEO4J_PLUGINS='["graph-data-science"]'
     ports:
       - "7474:7474"
       - "7687:7687"
