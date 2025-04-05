@@ -71,7 +71,8 @@ The spec takes the following fields:
     If the file is deleted (or the current account no longer has access to), this change will not be detected by this change stream.
 
     So when a `GoogleDrive` source enabled `recent_changes_poll_interval`, it's still recommended to set a `refresh_interval`, with a larger value.
-    So that most changes can be covered by polling recent changes (with low latency), and remaining changes (files no longer exist or accessible) will still be covered (with a higher latency).
+    So that most changes can be covered by polling recent changes (with low latency, like 10 seconds), and remaining changes (files no longer exist or accessible) will still be covered (with a higher latency, like 5 minutes, and should be larger if you have a huge number of files like 1M).
+    In reality, configure them based on your requirement: how freshness do you need to target index to be?
 
     :::
 
