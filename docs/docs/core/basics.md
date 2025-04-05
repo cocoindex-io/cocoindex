@@ -70,15 +70,17 @@ An indexing flow, once set up, maintains a long-lived relationship between data 
     on certain pace, according to the update mode:
 
     *   **One time update**: Once triggered, CocoIndex updates the target data to reflect the version of source data up to the current moment.
-    *   **Live update**: CocoIndex continuously watches the source data and updates the target data accordingly.
+    *   **Live update**: CocoIndex continuously reacts to changes of source data and updates the target data accordingly, based on various **change capture mechanisms** for the source.
     
     See more details in the [build / update target data](flow_methods#build--update-target-data) section.
 
-3.  CocoIndex intelligently manages these updates by:
+3.  CocoIndex intelligently reprocesses to propagate source changes to target by:
+
     *   Determining which parts of the target data need to be recomputed
     *   Reusing existing computations where possible
     *   Only reprocessing the minimum necessary data
 
+    This is known as **incremental processing**.
 
 You can think of an indexing flow similar to formulas in a spreadsheet:
 

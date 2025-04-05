@@ -59,7 +59,7 @@ The spec takes the following fields:
 *   `service_account_credential_path` (type: `str`, required): full path to the service account credential file in JSON format.
 *   `root_folder_ids` (type: `list[str]`, required): a list of Google Drive folder IDs to import files from.
 *   `binary` (type: `bool`, optional): whether reading files as binary (instead of text).
-*   `recent_changes_poll_interval` (type: `datetime.timedelta`, optional): when set, this source provides a *change stream* by polling Google Drive for recent modified files periodically.
+*   `recent_changes_poll_interval` (type: `datetime.timedelta`, optional): when set, this source provides a *change capture mechanism* by polling Google Drive for recent modified files periodically.
 
     :::info
 
@@ -70,8 +70,8 @@ The spec takes the following fields:
     On the other hand, this only detects changes for files still exists.
     If the file is deleted (or the current account no longer has access to), this change will not be detected by this change stream.
 
-    So when a source is configured with a change stream, it's still recommended to set a `refresh_interval`, with a larger value.
-    So for most changes can be covered by the change stream (with low latency), and remaining changes (files no longer exist or accessible) will still be covered (with a higher latency).
+    So when a `GoogleDrive` source enabled `recent_changes_poll_interval`, it's still recommended to set a `refresh_interval`, with a larger value.
+    So that most changes can be covered by polling recent changes (with low latency), and remaining changes (files no longer exist or accessible) will still be covered (with a higher latency).
 
     :::
 
