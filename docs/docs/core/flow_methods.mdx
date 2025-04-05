@@ -98,7 +98,7 @@ A data source may enable one or multiple *change capture mechanisms*:
     For example, [`GoogleDrive` source](../ops/sources#google-drive) allows polling recent modified files.
     See documentations for specific data sources.
 
-Change capture mechanisms enables CocoIndex to continuously capture changes from the source data and update the target data accordingly, under live update mode.
+Change capture mechanisms enable CocoIndex to continuously capture changes from the source data and update the target data accordingly, under live update mode.
 
 To perform live update, you need to create a `cocoindex.FlowLiveUpdater` object using the `cocoindex.Flow` object.
 It takes an optional `cocoindex.FlowLiveUpdaterOptions` option, with the following fields:
@@ -194,7 +194,7 @@ It takes a `EvaluateAndDumpOptions` dataclass as input to configure, with the fo
 <TabItem value="python" label="Python" default>
 
 ```python
-flow.evaluate_and_dump(EvaluateAndDumpOptions(output_dir="./eval_output"))
+demo_flow.evaluate_and_dump(EvaluateAndDumpOptions(output_dir="./eval_output"))
 ```
 
 </TabItem>
