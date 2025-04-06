@@ -288,7 +288,8 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         context: Arc<FlowInstanceContext>,
     ) -> Result<ExportTargetBuildOutput<Self>>;
 
-    /// This is only called for non-user-setup targets.
+    /// Will not be called if it's setup by user.
+    /// It returns an error if the target only supports setup by user.
     fn check_setup_status(
         &self,
         key: Self::Key,

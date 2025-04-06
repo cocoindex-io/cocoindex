@@ -286,7 +286,8 @@ class DataCollector:
 
     def export(self, name: str, target_spec: op.StorageSpec, /, *,
               primary_key_fields: Sequence[str] | None = None,
-              vector_index: Sequence[tuple[str, vector.VectorSimilarityMetric]] = ()):
+              vector_index: Sequence[tuple[str, vector.VectorSimilarityMetric]] = (),
+              setup_by_user: bool = False):
         """
         Export the collected data to the specified target.
         """
@@ -298,7 +299,7 @@ class DataCollector:
             for field_name, metric in vector_index]
         self._flow_builder_state.engine_flow_builder.export(
             name, _spec_kind(target_spec), _dump_engine_object(target_spec),
-            index_options, self._engine_data_collector)
+            index_options, self._engine_data_collector, setup_by_user)
 
 
 _flow_name_builder = _NameBuilder()

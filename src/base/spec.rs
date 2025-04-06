@@ -231,6 +231,7 @@ pub struct ExportOpSpec {
     pub collector_name: FieldName,
     pub target: OpSpec,
     pub index_options: IndexOptions,
+    pub setup_by_user: bool,
 }
 
 /// A reactive operation reacts on given input values.

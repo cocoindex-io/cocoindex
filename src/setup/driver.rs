@@ -14,7 +14,6 @@ use super::{
     db_metadata, CombinedState, DesiredMode, ExistingMode, FlowSetupState, FlowSetupStatusCheck,
     ObjectSetupStatusCheck, ObjectStatus, ResourceIdentifier, ResourceSetupStatusCheck,
     SetupChangeType, StateChange, TargetResourceSetupStatusCheck, TargetSetupState,
-    TargetSetupStateCommon,
 };
 use super::{AllSetupState, AllSetupStatusCheck};
 use crate::execution::db_tracking_setup;
@@ -166,9 +165,8 @@ fn to_object_status<A, B>(existing: Option<A>, desired: Option<B>) -> Result<Obj
 
 #[derive(Debug, Default)]
 struct GroupedResourceStates {
-    desired_common: Option<TargetSetupStateCommon>,
-    desired: Option<serde_json::Value>,
-    existing: CombinedState<serde_json::Value>,
+    desired: Option<TargetSetupState>,
+    existing: CombinedState<TargetSetupState>,
 }
 
 fn group_resource_states<'a>(
@@ -181,8 +179,7 @@ fn group_resource_states<'a>(
             (
                 key,
                 GroupedResourceStates {
-                    desired_common: Some(state.common.clone()),
-                    desired: Some(state.state.clone()),
+                    desired: Some(state.clone()),
                     existing: CombinedState::default(),
                 },
             )
@@ -199,14 +196,13 @@ fn group_resource_states<'a>(
         }
         let entry = entry.or_default();
         if let Some(current) = &state.current {
-            entry.existing.current = Some(current.state.clone());
+            entry.existing.current = Some(current.clone());
         }
         for s in state.staging.iter() {
             match s {
-                StateChange::Upsert(v) => entry
-                    .existing
-                    .staging
-                    .push(StateChange::Upsert(v.state.clone())),
+                StateChange::Upsert(v) => {
+                    entry.existing.staging.push(StateChange::Upsert(v.clone()))
+                }
                 StateChange::Delete => entry.existing.staging.push(StateChange::Delete),
             }
         }
@@ -247,41 +243,72 @@ pub fn check_flow_setup_status(
             .collect(),
     );
 
-    let target_resources = {
-        let grouped_target_resources = group_resource_states(
-            desired_state.iter().flat_map(|d| d.targets.iter()),
-            existing_state.iter().flat_map(|e| e.targets.iter()),
-        )?;
-        let registry = executor_factory_registry();
-        grouped_target_resources
-            .into_iter()
-            .map(|(resource_id, v)| -> Result<_> {
-                let factory = registry.get(&resource_id.target_kind).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Target resource type not found: {}",
-                        resource_id.target_kind
-                    )
-                })?;
-                let status_check = match factory {
-                    ExecutorFactory::ExportTarget(factory) => {
-                        factory.check_setup_status(&resource_id.key, v.desired, v.existing)?
+    let mut target_setup_state_updates = Vec::new();
+    let mut target_resources = Vec::new();
+
+    let grouped_target_resources = group_resource_states(
+        desired_state.iter().flat_map(|d| d.targets.iter()),
+        existing_state.iter().flat_map(|e| e.targets.iter()),
+    )?;
+    let registry = executor_factory_registry();
+    for (resource_id, v) in grouped_target_resources.into_iter() {
+        let factory = registry.get(&resource_id.target_kind).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Target resource type not found: {}",
+                resource_id.target_kind
+            )
+        })?;
+        target_setup_state_updates.push((resource_id.clone(), v.desired.clone()));
+        let (desired_state, desired_common) = match v.desired {
+            Some(desired) => (
+                (!desired.common.setup_by_user).then_some(desired.state),
+                Some(desired.common),
+            ),
+            None => (None, None),
+        };
+        let existing_without_setup_by_user = CombinedState {
+            current: v
+                .existing
+                .current
+                .and_then(|s| s.state_unless_setup_by_user()),
+            staging: v
+                .existing
+                .staging
+                .into_iter()
+                .filter_map(|s| match s {
+                    StateChange::Upsert(s) => {
+                        s.state_unless_setup_by_user().map(StateChange::Upsert)
                     }
-                    _ => bail!("Unexpected factory type for {}", resource_id.target_kind),
-                };
-                Ok(TargetResourceSetupStatusCheck {
-                    target_kind: resource_id.target_kind.clone(),
-                    common: v.desired_common,
-                    status_check,
+                    StateChange::Delete => Some(StateChange::Delete),
                 })
-            })
-            .collect::<Result<Vec<_>>>()?
-    };
+                .collect(),
+        };
+        let never_setup_by_sys = desired_state.is_none()
+            && existing_without_setup_by_user.current.is_none()
+            && existing_without_setup_by_user.staging.is_empty();
+        if !never_setup_by_sys {
+            let status_check = match factory {
+                ExecutorFactory::ExportTarget(factory) => factory.check_setup_status(
+                    &resource_id.key,
+                    desired_state,
+                    existing_without_setup_by_user,
+                )?,
+                _ => bail!("Unexpected factory type for {}", resource_id.target_kind),
+            };
+            target_resources.push(TargetResourceSetupStatusCheck {
+                target_kind: resource_id.target_kind.clone(),
+                common: desired_common,
+                status_check,
+            });
+        }
+    }
     Ok(FlowSetupStatusCheck {
         status: to_object_status(existing_state, desired_state)?,
         seen_flow_metadata_version: existing_state.and_then(|s| s.seen_flow_metadata_version),
         metadata_change,
         tracking_table: tracking_table_change,
         target_resources,
+        target_setup_state_updates,
     })
 }
 
@@ -392,25 +419,15 @@ pub async fn apply_changes(
                     .transpose()?,
             );
         }
-        for target_resource in &flow_status.target_resources {
+        for (resource_id, state_update) in &flow_status.target_setup_state_updates {
             state_updates.insert(
                 db_metadata::ResourceTypeKey::new(
-                    MetadataRecordType::Target(target_resource.target_kind.clone()).to_string(),
-                    target_resource.status_check.key().clone(),
+                    MetadataRecordType::Target(resource_id.target_kind.clone()).to_string(),
+                    resource_id.key.clone(),
                 ),
-                target_resource
-                    .common
+                state_update
                     .as_ref()
-                    .map(|c| {
-                        serde_json::to_value(TargetSetupState {
-                            common: c.clone(),
-                            state: target_resource
-                                .status_check
-                                .desired_state()
-                                .cloned()
-                                .unwrap_or_default(),
-                        })
-                    })
+                    .map(serde_json::to_value)
                     .transpose()?,
             );
         }

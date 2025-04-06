@@ -162,8 +162,6 @@ pub struct ExportTargetBuildOutput {
 }
 
 pub trait ExportTargetFactory {
-    // The first field of the `input_schema` is the primary key field.
-    // If it has struct type, it should be converted to composite primary key.
     fn build(
         self: Arc<Self>,
         name: String,
@@ -174,6 +172,8 @@ pub trait ExportTargetFactory {
         context: Arc<FlowInstanceContext>,
     ) -> Result<ExportTargetBuildOutput>;
 
+    /// Will not be called if it's setup by user.
+    /// It returns an error if the target only supports setup by user.
     fn check_setup_status(
         &self,
         key: &serde_json::Value,

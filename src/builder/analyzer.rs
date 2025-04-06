@@ -904,10 +904,15 @@ impl AnalyzerContext<'_> {
                 let mut compatible_target_ids = HashSet::<Option<i32>>::new();
                 let mut reusable_schema_version_ids = HashSet::<Option<i32>>::new();
                 for existing_state in existing_target_states.iter().flat_map(|v| v.iter()) {
-                    let compatibility = export_factory.check_state_compatibility(
-                        &setup_output.desired_setup_state,
-                        &existing_state.state,
-                    )?;
+                    let compatibility =
+                        if export_op.spec.setup_by_user == existing_state.common.setup_by_user {
+                            export_factory.check_state_compatibility(
+                                &setup_output.desired_setup_state,
+                                &existing_state.state,
+                            )?
+                        } else {
+                            SetupStateCompatibility::NotCompatible
+                        };
                     let compatible_target_id =
                         if compatibility != SetupStateCompatibility::NotCompatible {
                             reusable_schema_version_ids.insert(
@@ -962,6 +967,7 @@ impl AnalyzerContext<'_> {
                                 target_id,
                                 schema_version_id,
                                 max_schema_version_id: max_schema_version_id.max(schema_version_id),
+                                setup_by_user: export_op.spec.setup_by_user,
                             },
                             state: setup_output.desired_setup_state,
                         });

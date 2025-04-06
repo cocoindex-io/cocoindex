@@ -11,19 +11,14 @@
 ///   - [resource: tracking table]
 ///   - Target
 ///     - [resource: target-specific stuff]
-use anyhow::Result;
-use axum::async_trait;
+use crate::prelude::*;
+
 use indenter::indented;
-use indexmap::IndexMap;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::fmt::Debug;
 use std::fmt::{Display, Write};
 use std::hash::Hash;
-use std::{collections::BTreeMap, fmt::Debug};
 
 use super::db_metadata;
-use crate::base::schema;
 use crate::execution::db_tracking_setup;
 
 const INDENT: &str = "    ";
@@ -142,6 +137,8 @@ pub struct TargetSetupStateCommon {
     pub target_id: i32,
     pub schema_version_id: i32,
     pub max_schema_version_id: i32,
+    #[serde(default)]
+    pub setup_by_user: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -149,6 +146,12 @@ pub struct TargetSetupState {
     pub common: TargetSetupStateCommon,
 
     pub state: serde_json::Value,
+}
+
+impl TargetSetupState {
+    pub fn state_unless_setup_by_user(self) -> Option<serde_json::Value> {
+        (!self.common.setup_by_user).then_some(self.state)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -269,6 +272,7 @@ pub struct FlowSetupStatusCheck {
 
     pub tracking_table: db_tracking_setup::TrackingTableSetupStatusCheck,
     pub target_resources: Vec<TargetResourceSetupStatusCheck>,
+    pub target_setup_state_updates: Vec<(ResourceIdentifier, Option<TargetSetupState>)>,
 }
 impl ObjectSetupStatusCheck for FlowSetupStatusCheck {
     fn status(&self) -> ObjectStatus {

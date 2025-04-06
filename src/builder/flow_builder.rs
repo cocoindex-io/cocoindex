@@ -579,6 +579,7 @@ impl FlowBuilder {
         Ok(())
     }
 
+    #[pyo3(signature = (name, kind, op_spec, index_options, input, setup_by_user=false))]
     pub fn export(
         &mut self,
         name: String,
@@ -586,6 +587,7 @@ impl FlowBuilder {
         op_spec: py::Pythonized<serde_json::Map<String, serde_json::Value>>,
         index_options: py::Pythonized<spec::IndexOptions>,
         input: &DataCollector,
+        setup_by_user: bool,
     ) -> PyResult<()> {
         let spec = spec::OpSpec {
             kind,
@@ -603,6 +605,7 @@ impl FlowBuilder {
                 collector_name: input.name.clone(),
                 target: spec,
                 index_options: index_options.into_inner(),
+                setup_by_user,
             },
         });
         Ok(())
