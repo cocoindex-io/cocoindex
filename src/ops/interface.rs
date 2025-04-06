@@ -148,9 +148,10 @@ pub enum SetupStateCompatibility {
     /// This means the resource can be updated to the desired state without any loss of data.
     Compatible,
     /// The resource is partially compatible with the desired state.
-    /// This means some existing data will be lost after applying the setup change.
+    /// This means data from some existing fields will be lost after applying the setup change.
+    /// But at least their key fields of all rows are still preserved.
     PartialCompatible,
-    /// The resource needs to be rebuilt
+    /// The resource needs to be rebuilt. After applying the setup change, all data will be gone.
     NotCompatible,
 }
 
