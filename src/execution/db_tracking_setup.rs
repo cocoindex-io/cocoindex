@@ -82,19 +82,16 @@ impl TrackingTableSetupStatusCheck {
 }
 
 #[async_trait]
-impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
-    type Key = ();
-    type State = TrackingTableSetupState;
-
+impl ResourceSetupStatusCheck<(), TrackingTableSetupState> for TrackingTableSetupStatusCheck {
     fn describe_resource(&self) -> String {
         "Tracking Table".to_string()
     }
 
-    fn key(&self) -> &Self::Key {
+    fn key(&self) -> &() {
         &()
     }
 
-    fn desired_state(&self) -> Option<&Self::State> {
+    fn desired_state(&self) -> Option<&TrackingTableSetupState> {
         self.desired_state.as_ref()
     }
 

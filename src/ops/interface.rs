@@ -182,9 +182,7 @@ pub trait ExportTargetFactory {
         existing_states: setup::CombinedState<serde_json::Value>,
     ) -> Result<
         Box<
-            dyn setup::ResourceSetupStatusCheck<Key = serde_json::Value, State = serde_json::Value>
-                + Send
-                + Sync,
+            dyn setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value> + Send + Sync,
         >,
     >;
 

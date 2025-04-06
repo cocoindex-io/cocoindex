@@ -10,6 +10,7 @@ pub(crate) use itertools::Itertools;
 pub(crate) use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub(crate) use std::borrow::Cow;
 pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+pub(crate) use std::hash::Hash;
 pub(crate) use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock, Weak};
 
 pub(crate) use crate::base::{schema, spec, value};

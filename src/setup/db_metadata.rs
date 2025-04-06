@@ -295,15 +295,12 @@ pub struct MetadataTableSetup {
 }
 
 #[async_trait]
-impl ResourceSetupStatusCheck for MetadataTableSetup {
-    type Key = ();
-    type State = ();
-
-    fn key(&self) -> &Self::Key {
+impl ResourceSetupStatusCheck<(), ()> for MetadataTableSetup {
+    fn key(&self) -> &() {
         &()
     }
 
-    fn desired_state(&self) -> Option<&Self::State> {
+    fn desired_state(&self) -> Option<&()> {
         Some(&())
     }
 

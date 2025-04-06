@@ -259,13 +259,9 @@ pub fn check_flow_setup_status(
             )
         })?;
         target_setup_state_updates.push((resource_id.clone(), v.desired.clone()));
-        let (desired_state, desired_common) = match v.desired {
-            Some(desired) => (
-                (!desired.common.setup_by_user).then_some(desired.state),
-                Some(desired.common),
-            ),
-            None => (None, None),
-        };
+        let desired_state = v
+            .desired
+            .and_then(|state| (!state.common.setup_by_user).then_some(state.state));
         let existing_without_setup_by_user = CombinedState {
             current: v
                 .existing
@@ -295,11 +291,7 @@ pub fn check_flow_setup_status(
                 )?,
                 _ => bail!("Unexpected factory type for {}", resource_id.target_kind),
             };
-            target_resources.push(TargetResourceSetupStatusCheck {
-                target_kind: resource_id.target_kind.clone(),
-                common: desired_common,
-                status_check,
-            });
+            target_resources.push(TargetResourceSetupStatusCheck { status_check });
         }
     }
     Ok(FlowSetupStatusCheck {
@@ -356,9 +348,12 @@ pub fn drop_setup(
     })
 }
 
-async fn maybe_update_resource_setup(
+async fn maybe_update_resource_setup<
+    K: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash,
+    S: Debug + Clone + Serialize + DeserializeOwned,
+>(
     write: &mut impl std::io::Write,
-    resource: &(impl ResourceSetupStatusCheck + ?Sized),
+    resource: &(impl ResourceSetupStatusCheck<K, S> + ?Sized),
 ) -> Result<()> {
     if resource.change_type() != SetupChangeType::NoChange {
         writeln!(write, "{}:", resource.describe_resource(),)?;

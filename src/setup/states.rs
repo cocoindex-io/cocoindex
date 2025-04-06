@@ -17,6 +17,7 @@ use indenter::indented;
 use std::fmt::Debug;
 use std::fmt::{Display, Write};
 use std::hash::Hash;
+use std::marker::PhantomData;
 
 use super::db_metadata;
 use crate::execution::db_tracking_setup;
@@ -214,15 +215,16 @@ pub enum SetupChangeType {
 }
 
 #[async_trait]
-pub trait ResourceSetupStatusCheck: Debug + Send + Sync {
-    type Key: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash;
-    type State: Debug + Clone + Serialize + DeserializeOwned;
-
+pub trait ResourceSetupStatusCheck<K, S>: Debug + Send + Sync
+where
+    K: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash,
+    S: Debug + Clone + Serialize + DeserializeOwned,
+{
     fn describe_resource(&self) -> String;
 
-    fn key(&self) -> &Self::Key;
+    fn key(&self) -> &K;
 
-    fn desired_state(&self) -> Option<&Self::State>;
+    fn desired_state(&self) -> Option<&S>;
 
     fn describe_changes(&self) -> Vec<String>;
 
@@ -230,6 +232,37 @@ pub trait ResourceSetupStatusCheck: Debug + Send + Sync {
 
     async fn apply_change(&self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[async_trait]
+impl<K, S> ResourceSetupStatusCheck<K, S> for std::convert::Infallible
+where
+    K: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash,
+    S: Debug + Clone + Serialize + DeserializeOwned,
+{
+    fn describe_resource(&self) -> String {
+        unreachable!()
+    }
+
+    fn key(&self) -> &K {
+        unreachable!()
+    }
+
+    fn desired_state(&self) -> Option<&S> {
+        unreachable!()
+    }
+
+    fn describe_changes(&self) -> Vec<String> {
+        unreachable!()
+    }
+
+    fn change_type(&self) -> SetupChangeType {
+        unreachable!()
+    }
+
+    async fn apply_change(&self) -> Result<()> {
+        unreachable!()
     }
 }
 
@@ -248,18 +281,17 @@ pub trait ObjectSetupStatusCheck {
 
 #[derive(Debug)]
 pub struct TargetResourceSetupStatusCheck {
-    pub target_kind: String,
-    pub common: Option<TargetSetupStateCommon>,
-    pub status_check: Box<
-        dyn ResourceSetupStatusCheck<Key = serde_json::Value, State = serde_json::Value>
-            + Send
-            + Sync,
-    >,
+    pub status_check:
+        Box<dyn ResourceSetupStatusCheck<serde_json::Value, serde_json::Value> + Send + Sync>,
 }
 
 impl std::fmt::Display for TargetResourceSetupStatusCheck {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", FormattedResourceSetup(self.status_check.as_ref()))
+        write!(
+            f,
+            "{}",
+            FormattedResourceSetup(self.status_check.as_ref(), PhantomData::default())
+        )
     }
 }
 
@@ -326,10 +358,18 @@ impl<StatusCheck: ObjectSetupStatusCheck> std::fmt::Display
     }
 }
 
-pub struct FormattedResourceSetup<'a, Check: ResourceSetupStatusCheck + ?Sized>(&'a Check);
+pub struct FormattedResourceSetup<
+    'a,
+    K: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash,
+    S: Debug + Clone + Serialize + DeserializeOwned,
+    Check: ResourceSetupStatusCheck<K, S> + ?Sized,
+>(&'a Check, PhantomData<(K, S)>);
 
-impl<Change: ResourceSetupStatusCheck + ?Sized> std::fmt::Display
-    for FormattedResourceSetup<'_, Change>
+impl<K, S, Check> std::fmt::Display for FormattedResourceSetup<'_, K, S, Check>
+where
+    K: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash,
+    S: Debug + Clone + Serialize + DeserializeOwned,
+    Check: ResourceSetupStatusCheck<K, S> + ?Sized,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let status_code = match self.0.change_type() {
@@ -377,7 +417,11 @@ impl std::fmt::Display for FormattedFlowSetupStatusCheck<'_> {
         )?;
 
         let mut f = indented(f).with_str(INDENT);
-        write!(f, "{}", FormattedResourceSetup(&flow_ssc.tracking_table))?;
+        write!(
+            f,
+            "{}",
+            FormattedResourceSetup(&flow_ssc.tracking_table, PhantomData::default())
+        )?;
 
         for target_resource in &flow_ssc.target_resources {
             writeln!(f, "{}", target_resource)?;
@@ -389,7 +433,11 @@ impl std::fmt::Display for FormattedFlowSetupStatusCheck<'_> {
 
 impl std::fmt::Display for AllSetupStatusCheck {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", FormattedResourceSetup(&self.metadata_table))?;
+        write!(
+            f,
+            "{}",
+            FormattedResourceSetup(&self.metadata_table, PhantomData::default())
+        )?;
         for (flow_name, flow_status) in &self.flows {
             write!(
                 f,

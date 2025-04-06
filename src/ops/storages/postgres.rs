@@ -736,19 +736,16 @@ fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String 
 }
 
 #[async_trait]
-impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
-    type Key = TableId;
-    type State = SetupState;
-
+impl setup::ResourceSetupStatusCheck<TableId, SetupState> for SetupStatusCheck {
     fn describe_resource(&self) -> String {
         format!("Postgres table {}", self.table_id)
     }
 
-    fn key(&self) -> &Self::Key {
+    fn key(&self) -> &TableId {
         &self.table_id
     }
 
-    fn desired_state(&self) -> Option<&Self::State> {
+    fn desired_state(&self) -> Option<&SetupState> {
         self.desired_state.as_ref()
     }
 
@@ -960,8 +957,7 @@ impl StorageFactoryBase for Arc<Factory> {
         key: TableId,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
-    ) -> Result<impl setup::ResourceSetupStatusCheck<Key = TableId, State = SetupState> + 'static>
-    {
+    ) -> Result<impl setup::ResourceSetupStatusCheck<TableId, SetupState> + 'static> {
         Ok(SetupStatusCheck::new(self.clone(), key, desired, existing))
     }
 

@@ -295,9 +295,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         key: Self::Key,
         desired_state: Option<Self::SetupState>,
         existing_states: setup::CombinedState<Self::SetupState>,
-    ) -> Result<
-        impl setup::ResourceSetupStatusCheck<Key = Self::Key, State = Self::SetupState> + 'static,
-    >;
+    ) -> Result<impl setup::ResourceSetupStatusCheck<Self::Key, Self::SetupState> + 'static>;
 
     fn check_state_compatibility(
         &self,
@@ -317,17 +315,14 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
 }
 
 struct ResourceSetupStatusCheckWrapper<T: StorageFactoryBase> {
-    inner:
-        Box<dyn setup::ResourceSetupStatusCheck<Key = T::Key, State = T::SetupState> + Send + Sync>,
+    inner: Box<dyn setup::ResourceSetupStatusCheck<T::Key, T::SetupState> + Send + Sync>,
     key_json: serde_json::Value,
     state_json: Option<serde_json::Value>,
 }
 
 impl<T: StorageFactoryBase> ResourceSetupStatusCheckWrapper<T> {
     fn new(
-        inner: Box<
-            dyn setup::ResourceSetupStatusCheck<Key = T::Key, State = T::SetupState> + Send + Sync,
-        >,
+        inner: Box<dyn setup::ResourceSetupStatusCheck<T::Key, T::SetupState> + Send + Sync>,
     ) -> Result<Self> {
         Ok(Self {
             key_json: serde_json::to_value(inner.key())?,
@@ -347,19 +342,18 @@ impl<T: StorageFactoryBase> Debug for ResourceSetupStatusCheckWrapper<T> {
 }
 
 #[async_trait]
-impl<T: StorageFactoryBase> setup::ResourceSetupStatusCheck for ResourceSetupStatusCheckWrapper<T> {
-    type Key = serde_json::Value;
-    type State = serde_json::Value;
-
+impl<T: StorageFactoryBase> setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value>
+    for ResourceSetupStatusCheckWrapper<T>
+{
     fn describe_resource(&self) -> String {
         self.inner.describe_resource()
     }
 
-    fn key(&self) -> &Self::Key {
+    fn key(&self) -> &serde_json::Value {
         &self.key_json
     }
 
-    fn desired_state(&self) -> Option<&Self::State> {
+    fn desired_state(&self) -> Option<&serde_json::Value> {
         self.state_json.as_ref()
     }
 
@@ -410,9 +404,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         existing_states: setup::CombinedState<serde_json::Value>,
     ) -> Result<
         Box<
-            dyn setup::ResourceSetupStatusCheck<Key = serde_json::Value, State = serde_json::Value>
-                + Send
-                + Sync,
+            dyn setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value> + Send + Sync,
         >,
     > {
         let key: T::Key = serde_json::from_value(key.clone())?;
