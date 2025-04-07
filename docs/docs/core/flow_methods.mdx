@@ -12,25 +12,34 @@ After a flow is defined as discussed in [Flow Definition](/docs/core/flow_def), 
 
 It can be achieved in two ways:
 
+*   Use [CocoIndex CLI](/docs/core/cli).
+
 *   Use APIs provided by the library.
     You have a `cocoindex.Flow` object after defining the flow in your code, and you can interact with it later.
 
-*   Use [CocoIndex CLI](/docs/core/cli).
-
-We'll focus on the first way in this document.
-The following sections assume you have a `demo_flow`:
+The following sections assume you have a flow `demo_flow`:
 
 <Tabs>
 <TabItem value="python" label="Python" default>
 
-```python
+```python title="main.py"
 @cocoindex.flow_def(name="DemoFlow")
 def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-  ...
+    ...
 ```
 
 It creates a `demo_flow` object in `cocoindex.Flow` type.
+To enable CLI, you also need to make sure you have a main function decorated with `@cocoindex.main_fn()`:
 
+
+```python title="main.py"
+@cocoindex.main_fn()
+def main():
+    ...
+
+if __name__ == "__main__":
+    main()
+```
 </TabItem>
 </Tabs>
 
@@ -61,18 +70,23 @@ This is to achieve best efficiency.
 
 ### One time update
 
-:::tip
+<Tabs>
+<TabItem value="shell" label="Shell" default>
 
-CLI equivalence: `cocoindex update`
+The `cocoindex update` subcommand creates/updates data in the target storage.
 
-:::
+Once it's done, the target data is fresh up to the moment when the function is called.
+
+```sh
+python main.py cocoindex update
+```
+
+</TabItem>
+<TabItem value="python" label="Python">
 
 The `update()` async method creates/updates data in the target storage.
 
 Once the function returns, the target data is fresh up to the moment when the function is called.
-
-<Tabs>
-<TabItem value="python" label="Python" default>
 
 ```python
 stats = await demo_flow.update()
@@ -84,12 +98,6 @@ print(stats)
 
 ### Live update
 
-:::tip
-
-CLI equivalence: `cocoindex update -L`
-
-:::
-
 A data source may enable one or multiple *change capture mechanisms*:
 
 *   Configured with a [refresh interval](flow_def#refresh-interval), which is generally applicable to all data sources.
@@ -99,6 +107,21 @@ A data source may enable one or multiple *change capture mechanisms*:
     See documentations for specific data sources.
 
 Change capture mechanisms enable CocoIndex to continuously capture changes from the source data and update the target data accordingly, under live update mode.
+
+<Tabs>
+<TabItem value="shell" label="Shell" default>
+
+To perform live update, run the `cocoindex update` subcommand with `-L` option:
+
+```sh
+python main.py cocoindex update -L
+```
+
+If there's at least one data source with change capture mechanism enabled, it will keep running until the aborted (e.g. by `Ctrl-C`).
+Otherwise, it falls back to the same behavior as one time update, and will finish after a one-time update is done.
+
+</TabItem>
+<TabItem value="python" label="Python">
 
 To perform live update, you need to create a `cocoindex.FlowLiveUpdater` object using the `cocoindex.Flow` object.
 It takes an optional `cocoindex.FlowLiveUpdaterOptions` option, with the following fields:
@@ -113,18 +136,12 @@ Note that `cocoindex.FlowLiveUpdater` provides a unified interface for both one-
 It only performs live update when `live_mode` is `True`, and only for sources with change capture mechanisms enabled.
 If a source has multiple change capture mechanisms enabled, all will take effect to trigger updates.
 
-<Tabs>
-<TabItem value="python" label="Python" default>
-
 This creates a `cocoindex.FlowLiveUpdater` object, with an optional `cocoindex.FlowLiveUpdaterOptions` option:
 
 ```python
 my_updater = cocoindex.FlowLiveUpdater(
     demo_flow, cocoindex.FlowLiveUpdaterOptions(print_stats=True))
 ```
-
-</TabItem>
-</Tabs>
 
 A `FlowLiveUpdater` object supports the following methods:
 
@@ -134,9 +151,6 @@ A `FlowLiveUpdater` object supports the following methods:
     *   A one time update is done, and live update is not enabled:
         either `live_mode` is `False`, or all data sources have no change capture mechanisms enabled.
 *   `update_stats()`: It returns the stats of the updater.
-
-<Tabs>
-<TabItem value="python" label="Python" default>
 
 ```python
 my_updater = cocoindex.FlowLiveUpdater(demo_flow)
@@ -175,14 +189,29 @@ with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
 
 ## Evaluate the flow
 
-:::tip
-
-CLI equivalence: `cocoindex evaluate`
-
-:::
-
 CocoIndex allows you to run the transformations defined by the flow without updating the target storage.
-The `evaluate_and_dump()` method supports this by dumping flow outputs to files.
+
+<Tabs>
+<TabItem value="shell" label="Shell" default>
+
+The `cocoindex evaluate` subcommand runs the transformation and dumps flow outputs.
+It takes the following options:
+
+*   `--output-dir` (optional): The directory to dump the result to. If not provided, it will use `eval_{flow_name}_{timestamp}`.
+*   `--no-cache` (optional): By default, we use already-cached intermediate data if available.
+    This flag will turn it off.
+    Note that we only read existing cached data without updating the cache, even if it's turned on.
+
+Example:
+
+```sh
+python main.py cocoindex evaluate --output-dir ./eval_output
+```
+
+</TabItem>
+<TabItem value="python" label="Python">
+
+The `evaluate_and_dump()` method runs the transformation and dumps flow outputs to files.
 
 It takes a `EvaluateAndDumpOptions` dataclass as input to configure, with the following fields:
 
@@ -190,8 +219,7 @@ It takes a `EvaluateAndDumpOptions` dataclass as input to configure, with the fo
 *   `use_cache` (type: `bool`, default: `True`): Use already-cached intermediate data if available.
     Note that we only read existing cached data without updating the cache, even if it's turned on.
 
-<Tabs>
-<TabItem value="python" label="Python" default>
+Example:
 
 ```python
 demo_flow.evaluate_and_dump(EvaluateAndDumpOptions(output_dir="./eval_output"))
