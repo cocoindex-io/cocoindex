@@ -125,11 +125,11 @@ def update(flow_name: str | None, live: bool, quiet: bool):
     "-o", "--output-dir", type=str, required=False,
     help="The directory to dump the output to.")
 @click.option(
-    "-c", "--use-cache", is_flag=True, show_default=True, default=True,
+    "--cache/--no-cache", is_flag=True, show_default=True, default=True,
     help="Use already-cached intermediate data if available. "
          "Note that we only reuse existing cached data without updating the cache "
          "even if it's turned on.")
-def evaluate(flow_name: str | None, output_dir: str | None, use_cache: bool = True):
+def evaluate(flow_name: str | None, output_dir: str | None, cache: bool = True):
     """
     Evaluate the flow and dump flow outputs to files.
 
@@ -139,7 +139,7 @@ def evaluate(flow_name: str | None, output_dir: str | None, use_cache: bool = Tr
     fl = _flow_by_name(flow_name)
     if output_dir is None:
         output_dir = f"eval_{fl.name}_{datetime.datetime.now().strftime('%y%m%d_%H%M%S')}"
-    options = flow.EvaluateAndDumpOptions(output_dir=output_dir, use_cache=use_cache)
+    options = flow.EvaluateAndDumpOptions(output_dir=output_dir, use_cache=cache)
     fl.evaluate_and_dump(options)
 
 _default_server_settings = lib.ServerSettings.from_env()
