@@ -282,12 +282,9 @@ impl Display for CollectionId {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetupState {}
-
 impl StorageFactoryBase for Arc<Factory> {
     type Spec = Spec;
-    type SetupState = SetupState;
+    type SetupState = ();
     type Key = String;
 
     fn name(&self) -> &str {
@@ -306,7 +303,6 @@ impl StorageFactoryBase for Arc<Factory> {
         // TODO(Anush008): Add as a field to the Spec
         let url = "http://localhost:6334/";
         let collection_name = spec.collection_name.clone();
-        let setup_state = SetupState {};
         let executors = async move {
             let executor = Arc::new(Executor::new(
                 url,
@@ -323,16 +319,16 @@ impl StorageFactoryBase for Arc<Factory> {
         Ok(ExportTargetBuildOutput {
             executor: executors.boxed(),
             setup_key: collection_name,
-            desired_setup_state: setup_state,
+            desired_setup_state: (),
         })
     }
 
     fn check_setup_status(
         &self,
         _key: String,
-        _desired: Option<SetupState>,
-        _existing: setup::CombinedState<SetupState>,
-    ) -> Result<impl setup::ResourceSetupStatusCheck<String, SetupState> + 'static> {
+        _desired: Option<()>,
+        _existing: setup::CombinedState<()>,
+    ) -> Result<impl setup::ResourceSetupStatusCheck<String, ()> + 'static> {
         Err(anyhow!(
             "Set `setup_by_user` to `true` to use Qdrant storage"
         )) as Result<Infallible, _>
@@ -340,8 +336,8 @@ impl StorageFactoryBase for Arc<Factory> {
 
     fn check_state_compatibility(
         &self,
-        _desired: &SetupState,
-        _existing: &SetupState,
+        _desired: &(),
+        _existing: &(),
     ) -> Result<SetupStateCompatibility> {
         Ok(SetupStateCompatibility::Compatible)
     }
