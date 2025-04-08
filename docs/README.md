@@ -2,7 +2,7 @@
     <img src="https://cocoindex.io/images/github.svg" alt="CocoIndex">
 </p>
 
-<h2 align="center">CocoIndex Documentation [https://cocoindex.io/docs/](https://cocoindex.io/docs/)</h2>
+<h2 align="center">CocoIndex Documentation https://cocoindex.io/docs </h2>
 
 <div align="center">
 
