@@ -9,11 +9,14 @@ use crate::setup;
 use anyhow::{bail, Result};
 use futures::FutureExt;
 use qdrant_client::qdrant::vectors_output::VectorsOptions;
-use qdrant_client::qdrant::{NamedVectors, PointStruct, UpsertPointsBuilder, Value as QdrantValue};
+use qdrant_client::qdrant::{
+    NamedVectors, PointId, PointStruct, UpsertPointsBuilder, Value as QdrantValue,
+};
 use qdrant_client::qdrant::{Query, QueryPointsBuilder, ScoredPoint};
 use qdrant_client::Qdrant;
 use serde::Serialize;
 use serde_json::json;
+use uuid::Uuid;
 
 fn key_value_fields_iter<'a>(
     key_fields_schema: &[FieldSchema],
@@ -45,8 +48,8 @@ pub struct Executor {
 
 impl Executor {
     fn new(
-        url: &str,
-        collection_name: &str,
+        url: String,
+        collection_name: String,
         key_fields_schema: Vec<FieldSchema>,
         value_fields_schema: Vec<FieldSchema>,
     ) -> Result<Self> {
@@ -56,11 +59,11 @@ impl Executor {
             .cloned()
             .collect::<Vec<_>>();
         Ok(Self {
-            client: Qdrant::from_url(url).build()?,
+            client: Qdrant::from_url(&url).build()?,
             key_fields_schema,
             value_fields_schema,
             all_fields,
-            collection_name: collection_name.to_string(),
+            collection_name,
         })
     }
 }
@@ -71,12 +74,11 @@ impl ExportTargetExecutor for Executor {
         let mut points: Vec<PointStruct> = Vec::with_capacity(mutation.upserts.len());
         for upsert in mutation.upserts.iter() {
             let key_fields = key_value_fields_iter(&self.key_fields_schema, &upsert.key)?;
-            let key_fields = key_values_to_payload(key_fields, &self.key_fields_schema)?;
-            let (mut payload, vectors) =
+            let point_id = key_to_point_id(key_fields)?;
+            let (payload, vectors) =
                 values_to_payload(&upsert.value.fields, &self.value_fields_schema)?;
-            payload.extend(key_fields);
 
-            points.push(PointStruct::new(1, vectors, payload));
+            points.push(PointStruct::new(point_id, vectors, payload));
         }
 
         self.client
@@ -85,27 +87,20 @@ impl ExportTargetExecutor for Executor {
         Ok(())
     }
 }
+fn key_to_point_id(key_values: &[KeyValue]) -> Result<PointId> {
+    let point_id = if let Some(key_value) = key_values.first() {
+        match key_value {
+            KeyValue::Str(v) => PointId::from(v.to_string()),
+            KeyValue::Int64(v) => PointId::from(*v as u64),
+            KeyValue::Uuid(v) => PointId::from(v.to_string()),
+            _ => bail!("Unsupported Qdrant Point ID key type"),
+        }
+    } else {
+        let uuid = Uuid::new_v4().to_string();
+        PointId::from(uuid)
+    };
 
-fn key_values_to_payload(
-    key_fields: &[KeyValue],
-    schema: &[FieldSchema],
-) -> Result<HashMap<String, QdrantValue>> {
-    let mut payload = HashMap::with_capacity(key_fields.len());
-
-    for (key_value, field_schema) in key_fields.iter().zip(schema.iter()) {
-        let json_value = match key_value {
-            KeyValue::Bytes(v) => String::from_utf8_lossy(v).into(),
-            KeyValue::Str(v) => v.to_string().into(),
-            KeyValue::Bool(v) => (*v).into(),
-            KeyValue::Int64(v) => (*v).into(),
-            KeyValue::Uuid(v) => v.to_string().into(),
-            KeyValue::Range(v) => json!({ "start": v.start, "end": v.end }),
-            _ => bail!("Unsupported key value type"),
-        };
-        payload.insert(field_schema.name.clone(), json_value.into());
-    }
-
-    Ok(payload)
+    Ok(point_id)
 }
 
 fn values_to_payload(
@@ -303,10 +298,11 @@ impl StorageFactoryBase for Arc<Factory> {
         // TODO(Anush008): Add as a field to the Spec
         let url = "http://localhost:6334/";
         let collection_name = spec.collection_name.clone();
+
         let executors = async move {
             let executor = Arc::new(Executor::new(
-                url,
-                &spec.collection_name.clone(),
+                url.to_string(),
+                spec.collection_name.clone(),
                 key_fields_schema,
                 value_fields_schema,
             )?);
