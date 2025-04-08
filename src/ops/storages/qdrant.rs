@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::fmt::Display;
 use std::sync::Arc;
 
@@ -6,12 +7,9 @@ use crate::base::spec::*;
 use crate::ops::sdk::*;
 use crate::setup;
 use anyhow::{bail, Result};
-use derivative::Derivative;
 use futures::FutureExt;
 use qdrant_client::qdrant::vectors_output::VectorsOptions;
-use qdrant_client::qdrant::{
-    NamedVectors, PointStruct, UpsertPointsBuilder, Value as QdrantValue,
-};
+use qdrant_client::qdrant::{NamedVectors, PointStruct, UpsertPointsBuilder, Value as QdrantValue};
 use qdrant_client::qdrant::{Query, QueryPointsBuilder, ScoredPoint};
 use qdrant_client::Qdrant;
 use serde::Serialize;
@@ -90,7 +88,7 @@ impl ExportTargetExecutor for Executor {
 
 fn key_values_to_payload(
     key_fields: &[KeyValue],
-    schema: &Vec<FieldSchema>,
+    schema: &[FieldSchema],
 ) -> Result<HashMap<String, QdrantValue>> {
     let mut payload = HashMap::with_capacity(key_fields.len());
 
@@ -111,8 +109,8 @@ fn key_values_to_payload(
 }
 
 fn values_to_payload(
-    value_fields: &Vec<Value>,
-    schema: &Vec<FieldSchema>,
+    value_fields: &[Value],
+    schema: &[FieldSchema],
 ) -> Result<(HashMap<String, QdrantValue>, NamedVectors)> {
     let mut payload = HashMap::with_capacity(value_fields.len());
     let mut vectors = NamedVectors::default();
@@ -287,58 +285,10 @@ impl Display for CollectionId {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetupState {}
 
-#[derive(Derivative)]
-#[derivative(Debug)]
-pub struct SetupStatusCheck {
-    #[derivative(Debug = "ignore")]
-    table_id: CollectionId,
-
-    desired_state: Option<SetupState>,
-}
-
-impl SetupStatusCheck {
-    fn new(table_id: CollectionId, desired_state: Option<SetupState>) -> Self {
-        Self {
-            table_id,
-            desired_state,
-        }
-    }
-}
-
-#[async_trait]
-impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
-    type Key = CollectionId;
-    type State = SetupState;
-
-    fn describe_resource(&self) -> String {
-        format!("Qdrant collection {}", self.table_id)
-    }
-
-    fn key(&self) -> &Self::Key {
-        &self.table_id
-    }
-
-    fn desired_state(&self) -> Option<&Self::State> {
-        self.desired_state.as_ref()
-    }
-
-    fn describe_changes(&self) -> Vec<String> {
-        vec![]
-    }
-
-    fn change_type(&self) -> setup::SetupChangeType {
-        setup::SetupChangeType::NoChange
-    }
-
-    async fn apply_change(&self) -> Result<()> {
-        Ok(())
-    }
-}
-
 impl StorageFactoryBase for Arc<Factory> {
     type Spec = Spec;
     type SetupState = SetupState;
-    type Key = CollectionId;
+    type Key = String;
 
     fn name(&self) -> &str {
         "Qdrant"
@@ -352,21 +302,15 @@ impl StorageFactoryBase for Arc<Factory> {
         value_fields_schema: Vec<FieldSchema>,
         _storage_options: IndexOptions,
         _context: Arc<FlowInstanceContext>,
-    ) -> Result<(
-        (CollectionId, SetupState),
-        ExecutorFuture<'static, (Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>,
-    )> {
+    ) -> Result<ExportTargetBuildOutput<Self>> {
         // TODO(Anush008): Add as a field to the Spec
         let url = "http://localhost:6334/";
-        let collection_name = spec.collection_name;
-        let table_id = CollectionId {
-            collection_name: collection_name.to_owned(),
-        };
+        let collection_name = spec.collection_name.clone();
         let setup_state = SetupState {};
         let executors = async move {
             let executor = Arc::new(Executor::new(
                 url,
-                &collection_name,
+                &spec.collection_name.clone(),
                 key_fields_schema,
                 value_fields_schema,
             )?);
@@ -376,18 +320,22 @@ impl StorageFactoryBase for Arc<Factory> {
                 Some(query_target as Arc<dyn QueryTarget>),
             ))
         };
-        Ok(((table_id, setup_state), executors.boxed()))
+        Ok(ExportTargetBuildOutput {
+            executor: executors.boxed(),
+            setup_key: collection_name,
+            desired_setup_state: setup_state,
+        })
     }
 
     fn check_setup_status(
         &self,
-        key: CollectionId,
-        desired: Option<SetupState>,
+        _key: String,
+        _desired: Option<SetupState>,
         _existing: setup::CombinedState<SetupState>,
-    ) -> Result<
-        impl setup::ResourceSetupStatusCheck<Key = CollectionId, State = SetupState> + 'static,
-    > {
-        Ok(SetupStatusCheck::new(key, desired))
+    ) -> Result<impl setup::ResourceSetupStatusCheck<String, SetupState> + 'static> {
+        Err(anyhow!(
+            "Set `setup_by_user` to `true` to use Qdrant storage"
+        )) as Result<Infallible, _>
     }
 
     fn check_state_compatibility(
