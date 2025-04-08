@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Simple example for cocoindex: build embedding index based on local PDF files."
 requires-python = ">=3.10"
 dependencies = [
-    "cocoindex>=0.1.10",
+    "cocoindex>=0.1.19",
     "python-dotenv>=1.0.1",
     "marker-pdf>=1.5.2",
 ]
