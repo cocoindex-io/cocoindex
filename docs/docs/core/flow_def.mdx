@@ -1,6 +1,6 @@
 ---
 title: Flow Definition
-description: CocoIndex Flow Definition
+description: Define a CocoIndex flow, by specifying source, transformations and storages, and connect input/output data of them.
 ---
 
 import Tabs from '@theme/Tabs';
@@ -8,7 +8,8 @@ import TabItem from '@theme/TabItem';
 
 # CocoIndex Flow Definition
 
-In CocoIndex, to define an indexing flow, you provide a function to construct the flow, by adding operations and connecting them with fields.
+In CocoIndex, to define an indexing flow, you provide a function to import source, transform data and put them into target storage (sinks).
+You connect input/output of these operations with fields of data scopes.
 
 ## Entry Point
 
@@ -22,7 +23,7 @@ The easiest way is to use the `@cocoindex.flow_def` decorator:
 ```python
 @cocoindex.flow_def(name="DemoFlow")
 def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-  ...
+    ...
 ```
 
 This `@cocoindex.flow_def` decorator declares this function as a CocoIndex flow definition.
@@ -36,14 +37,14 @@ Alternatively, for more flexibility (e.g. you want to do this conditionally or g
 
 ```python
 def demo_flow_def(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-  ...
+    ...
 
 # Add the flow definition to the flow registry.
 demo_flow = cocoindex.flow.add_flow_def("DemoFlow", demo_flow_def)
 ```
 
 In both cases, `demo_flow` will be an object with `cocoindex.Flow` class type.
-See [Flow Methods](/docs/core/flow_methods) for more details on it.
+See [Flow Running](/docs/core/flow_methods) for more details on it.
 
 </TabItem>
 </Tabs>
@@ -52,9 +53,9 @@ See [Flow Methods](/docs/core/flow_methods) for more details on it.
 
 The `FlowBuilder` object is the starting point to construct a flow.
 
-### Import From Source
+### Import from source
 
-`FlowBuilder` provides a `from_source()` method to import data from external sources.
+`FlowBuilder` provides a `add_source()` method to import data from external sources.
 A *source spec* needs to be provided for any import operation, to describe the source and parameters related to the source.
 Import must happen at the top level, and the field created by import must be in the top-level struct.
 
@@ -64,18 +65,51 @@ Import must happen at the top level, and the field created by import must be in 
 ```python
 @cocoindex.flow_def(name="DemoFlow")
 def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-  data_scope["documents"] = flow_builder.from_source(DemoSourceSpec(...))
-  ......
+    data_scope["documents"] = flow_builder.add_source(DemoSourceSpec(...))
+    ......
 ```
 
 </TabItem>
 </Tabs>
 
-`from_source()` returns a `DataSlice`. Once external data sources are imported, you can further transform them using methods exposed by these data objects, as discussed in the following sections.
+`add_source()` returns a `DataSlice`. Once external data sources are imported, you can further transform them using methods exposed by these data objects, as discussed in the following sections.
 
 We'll describe different data objects in next few sections.
-Note that the actual value of data is not available at the time when we define the flow: it's only available at runtime.
+
+:::note
+
+The actual value of data is not available at the time when we define the flow: it's only available at runtime.
 In a flow definition, you can use a data representation as input for operations, but not access the actual value.
+
+:::
+
+#### Refresh interval
+
+You can provide a `refresh_interval` argument.
+When present, in the [live update mode](/docs/core/flow_methods#live-update), the data source will be refreshed by specified interval.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+The `refresh_interval` argument is of type `datetime.timedelta`. For example, this refreshes the data source every 1 minute:
+
+```python
+@cocoindex.flow_def(name="DemoFlow")
+def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+    data_scope["documents"] = flow_builder.add_source(
+        DemoSourceSpec(...), refresh_interval=datetime.timedelta(minutes=1))
+    ......
+```
+
+</TabItem>
+</Tabs>
+
+:::info
+
+In live update mode, for each refresh, CocoIndex will traverse the data source to figure out the changes,
+and only perform transformations on changed source keys.
+
+:::
 
 ## Data Scope
 
@@ -84,7 +118,13 @@ A data scope has a bunch of fields and collectors, and users can add new fields 
 
 ### Get or Add a Field
 
-Get or add a field of a data scope (which is a data slice). Note that you cannot override an existing field.
+You can get or add a field of a data scope (which is a data slice). 
+
+:::note
+
+You cannot override an existing field.
+
+:::
 
 <Tabs>
 <TabItem value="python" label="Python" default>
@@ -95,20 +135,20 @@ Getting and setting a field of a data scope is done by the `[]` operator with a 
 @cocoindex.flow_def(name="DemoFlow")
 def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
 
-  # Add "documents" to the top-level data scope.
-  data_scope["documents"] = flow_builder.from_source(DemoSourceSpec(...))
+    # Add "documents" to the top-level data scope.
+    data_scope["documents"] = flow_builder.add_source(DemoSourceSpec(...))
 
-  # Each row of "documents" is a child scope.
-  with data_scope["documents"].row() as document:
+    # Each row of "documents" is a child scope.
+    with data_scope["documents"].row() as document:
 
-    # Get "content" from the document scope, transform, and add "summary" to scope.
-    document["summary"] = field1_row["content"].transform(DemoFunctionSpec(...))
+        # Get "content" from the document scope, transform, and add "summary" to scope.
+        document["summary"] = field1_row["content"].transform(DemoFunctionSpec(...))
 ```
 
 </TabItem>
 </Tabs>
 
-### Add a Collector
+### Add a collector
 
 See [Data Collector](#data-collector) below for more details.
 
@@ -132,17 +172,17 @@ Other arguments can be passed in as positional arguments or keyword arguments, a
 ```python
 @cocoindex.flow_def(name="DemoFlow")
 def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-  ...
-  data_scope["field2"] = data_scope["field1"].transform(
-                             DemoFunctionSpec(...),
-                             arg1, arg2, ..., key0=kwarg0, key1=kwarg1, ...)
-  ...
+    ...
+    data_scope["field2"] = data_scope["field1"].transform(
+                               DemoFunctionSpec(...),
+                               arg1, arg2, ..., key0=kwarg0, key1=kwarg1, ...)
+    ...
 ```
 
 </TabItem>
 </Tabs>
 
-### For Each Row
+### For each row
 
 If the data slice has `Table` type, you can call `row()` method to obtain a child scope representing each row, to apply operations on each row.
 
@@ -161,14 +201,28 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 </TabItem>
 </Tabs>
 
-### Get a Sub Field
+### Get a sub field
 
 If the data slice has `Struct` type, you can obtain a data slice on a specific sub field of it, similar to getting a field of a data scope.
 
 ## Data Collector
 
-A **data collector** can be added from a specific data scope, and it collects multiple entries of data, represented by data slices in the same or children scope.
+A **data collector** can be added from a specific data scope, and it collects multiple entries of data from the same or children scope.
+
+### Collect
+
 Call its `collect()` method to collect a specific entry, which can have multiple fields.
+Each field has a name as specified by the argument name, and a value in one of the following representations:
+
+*   A `DataSlice`.
+*   An enum `cocoindex.GeneratedField.UUID` indicating its value is an UUID automatically generated by the engine.
+    The uuid will remain stable when other collected input values are unchanged.
+
+    :::note
+
+    An automatically generated UUID field is allowed to appear at most once.
+
+    :::
 
 For example,
 
@@ -178,21 +232,22 @@ For example,
 ```python
 @cocoindex.flow_def(name="DemoFlow")
 def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-  ...
-  demo_collector = data_scope.add_collector()
-  with data_scope["documents"].row() as document:
     ...
-    demo_collector.collect(filename=document["filename"], summary=document["summary"])
-
-  ...
+    demo_collector = data_scope.add_collector()
+    with data_scope["documents"].row() as document:
+        ...
+        demo_collector.collect(id=cocoindex.GeneratedField.UUID,
+                               filename=document["filename"],
+                               summary=document["summary"])
+    ...
 ```
 
 </TabItem>
 </Tabs>
 
-Here the collector is in the top-level data scope, and it collects `filename` and `summary` fields from each row of `documents` field.
-
-To specify what to do with the collected data, call a specific method on the collector.
+Here the collector is in the top-level data scope.
+It collects `filename` and `summary` fields from each row of `documents`,
+and generates a `id` field with UUID and remains stable when `filename` and `summary` are unchanged.
 
 ### Export
 
@@ -206,6 +261,10 @@ Export must happen at the top level of a flow, i.e. not within any child scopes 
 *   `target_spec`: the storage spec as the export target.
 *   `primary_key_fields` (optional): the fields to be used as primary key. Types of the fields must be supported as key fields. See [Key Types](data_types#key-types) for more details.
 *   `vector_index` (optional): the fields to create vector index. Each item is a tuple of a field name and a similarity metric. See [Vector Type](data_types#vector-type) for more details about supported similarity metrics.
+*   `setup_by_user` (optional):
+     whether the export target is setup by user.
+     By default, CocoIndex is managing the target setup (surfaced by the `cocoindex setup` CLI subcommand), e.g. create related tables/collections/etc. with compatible schema, and update them upon change.
+     If `True`, the export target will be managed by users, and users are responsible for creating the target and updating it upon change.
 
 <Tabs>
 <TabItem value="python" label="Python" default>
@@ -213,13 +272,13 @@ Export must happen at the top level of a flow, i.e. not within any child scopes 
 ```python
 @cocoindex.flow_def(name="DemoFlow")
 def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-  ...
-  demo_collector = data_scope.add_collector()
-  ...
-  demo_collector.export(
-      "demo_storage", DemoStorageSpec(...),
-      primary_key_fields=["field1"],
-      vector_index=[("field2", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
+    ...
+    demo_collector = data_scope.add_collector()
+    ...
+    demo_collector.export(
+        "demo_storage", DemoStorageSpec(...),
+        primary_key_fields=["field1"],
+        vector_index=[("field2", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 ```
 
 </TabItem>

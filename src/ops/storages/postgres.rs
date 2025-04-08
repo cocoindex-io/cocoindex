@@ -1,19 +1,13 @@
-use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
-use std::future::Future;
-use std::ops::Bound;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use crate::prelude::*;
 
 use crate::base::spec::{self, *};
 use crate::ops::sdk::*;
 use crate::service::error::{shared_ok, SharedError, SharedResultExt};
+use crate::setup;
 use crate::utils::db::ValidIdentifier;
-use crate::{get_lib_context, setup};
-use anyhow::{anyhow, bail, Result};
 use async_trait::async_trait;
 use derivative::Derivative;
-use futures::future::Shared;
+use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
@@ -21,6 +15,7 @@ use serde::Serialize;
 use sqlx::postgres::types::PgRange;
 use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
+use std::ops::Bound;
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +77,9 @@ fn bind_key_field<'arg>(
         KeyValue::Uuid(v) => {
             builder.push_bind(v);
         }
+        KeyValue::Date(v) => {
+            builder.push_bind(v);
+        }
         KeyValue::Struct(fields) => {
             builder.push_bind(sqlx::types::Json(fields));
         }
@@ -121,6 +119,18 @@ fn bind_value_field<'arg>(
                 });
             }
             BasicValue::Uuid(v) => {
+                builder.push_bind(v);
+            }
+            BasicValue::Date(v) => {
+                builder.push_bind(v);
+            }
+            BasicValue::Time(v) => {
+                builder.push_bind(v);
+            }
+            BasicValue::LocalDateTime(v) => {
+                builder.push_bind(v);
+            }
+            BasicValue::OffsetDateTime(v) => {
                 builder.push_bind(v);
             }
             BasicValue::Json(v) => {
@@ -196,6 +206,18 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
                 BasicValueType::Uuid => row
                     .try_get::<Option<Uuid>, _>(field_idx)?
                     .map(BasicValue::Uuid),
+                BasicValueType::Date => row
+                    .try_get::<Option<chrono::NaiveDate>, _>(field_idx)?
+                    .map(BasicValue::Date),
+                BasicValueType::Time => row
+                    .try_get::<Option<chrono::NaiveTime>, _>(field_idx)?
+                    .map(BasicValue::Time),
+                BasicValueType::LocalDateTime => row
+                    .try_get::<Option<chrono::NaiveDateTime>, _>(field_idx)?
+                    .map(BasicValue::LocalDateTime),
+                BasicValueType::OffsetDateTime => row
+                    .try_get::<Option<chrono::DateTime<chrono::FixedOffset>>, _>(field_idx)?
+                    .map(BasicValue::OffsetDateTime),
                 BasicValueType::Json => row
                     .try_get::<Option<serde_json::Value>, _>(field_idx)?
                     .map(|v| BasicValue::Json(Arc::from(v))),
@@ -430,12 +452,8 @@ fn distance_to_similarity(metric: VectorSimilarityMetric, distance: f64) -> f64 
 }
 
 pub struct Factory {
-    db_pools: Mutex<
-        HashMap<
-            Option<String>,
-            Shared<Pin<Box<dyn Future<Output = Result<PgPool, SharedError>> + Send>>>,
-        >,
-    >,
+    db_pools:
+        Mutex<HashMap<Option<String>, Shared<BoxFuture<'static, Result<PgPool, SharedError>>>>>,
 }
 
 impl Default for Factory {
@@ -666,6 +684,10 @@ fn to_column_type_sql(column_type: &ValueType) -> Cow<'static, str> {
             BasicValueType::Float64 => "double precision".into(),
             BasicValueType::Range => "int8range".into(),
             BasicValueType::Uuid => "uuid".into(),
+            BasicValueType::Date => "date".into(),
+            BasicValueType::Time => "time".into(),
+            BasicValueType::LocalDateTime => "timestamp".into(),
+            BasicValueType::OffsetDateTime => "timestamp with time zone".into(),
             BasicValueType::Json => "jsonb".into(),
             BasicValueType::Vector(vec_schema) => {
                 if convertible_to_pgvector(vec_schema) {
@@ -714,19 +736,16 @@ fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String 
 }
 
 #[async_trait]
-impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
-    type Key = TableId;
-    type State = SetupState;
-
+impl setup::ResourceSetupStatusCheck<TableId, SetupState> for SetupStatusCheck {
     fn describe_resource(&self) -> String {
         format!("Postgres table {}", self.table_id)
     }
 
-    fn key(&self) -> &Self::Key {
+    fn key(&self) -> &TableId {
         &self.table_id
     }
 
-    fn desired_state(&self) -> Option<&Self::State> {
+    fn desired_state(&self) -> Option<&SetupState> {
         self.desired_state.as_ref()
     }
 
@@ -899,10 +918,7 @@ impl StorageFactoryBase for Arc<Factory> {
         value_fields_schema: Vec<FieldSchema>,
         storage_options: IndexOptions,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<(
-        (TableId, SetupState),
-        ExecutorFuture<'static, (Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>,
-    )> {
+    ) -> Result<ExportTargetBuildOutput<Self>> {
         let table_id = TableId {
             database_url: spec.database_url.clone(),
             table_name: spec
@@ -929,7 +945,11 @@ impl StorageFactoryBase for Arc<Factory> {
                 Some(query_target as Arc<dyn QueryTarget>),
             ))
         };
-        Ok(((table_id, setup_state), executors.boxed()))
+        Ok(ExportTargetBuildOutput {
+            executor: executors.boxed(),
+            setup_key: table_id,
+            desired_setup_state: setup_state,
+        })
     }
 
     fn check_setup_status(
@@ -937,8 +957,7 @@ impl StorageFactoryBase for Arc<Factory> {
         key: TableId,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
-    ) -> Result<impl setup::ResourceSetupStatusCheck<Key = TableId, State = SetupState> + 'static>
-    {
+    ) -> Result<impl setup::ResourceSetupStatusCheck<TableId, SetupState> + 'static> {
         Ok(SetupStatusCheck::new(self.clone(), key, desired, existing))
     }
 
@@ -980,12 +999,7 @@ impl Factory {
                         shared_ok(if let Some(database_url) = database_url {
                             PgPool::connect(&database_url).await?
                         } else {
-                            get_lib_context()
-                                .ok_or_else(|| {
-                                    SharedError::new(anyhow!("Cocoindex is not initialized"))
-                                })?
-                                .pool
-                                .clone()
+                            get_lib_context().map_err(SharedError::new)?.pool.clone()
                         })
                     };
                     let shared_fut = pool_fut.boxed().shared();

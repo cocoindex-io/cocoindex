@@ -18,3 +18,6 @@ dist/
 /Cargo.lock
 
 *.egg-info/
+
+# Output of `cocoindex eval`
+examples/**/eval_*

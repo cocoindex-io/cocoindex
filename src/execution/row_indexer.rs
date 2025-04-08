@@ -1,77 +1,21 @@
-use anyhow::Result;
-use futures::future::{join, join_all, try_join, try_join_all};
-use itertools::Itertools;
-use log::error;
-use serde::Serialize;
+use crate::prelude::*;
+
+use futures::future::try_join_all;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-use super::db_tracking::{self, read_source_tracking_info, TrackedTargetKey};
+use super::db_tracking::{self, read_source_tracking_info_for_processing, TrackedTargetKey};
 use super::db_tracking_setup;
+use super::evaluator::{evaluate_source_entry, ScopeValueBuilder};
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, StoredMemoizationInfo};
+use super::stats;
+
 use crate::base::schema;
 use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
-use crate::ops::interface::{ExportTargetMutation, ExportTargetUpsertEntry};
+use crate::ops::interface::{ExportTargetMutation, ExportTargetUpsertEntry, Ordinal};
 use crate::utils::db::WriteAction;
 use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
-
-use super::evaluator::{evaluate_source_entry, ScopeValueBuilder};
-
-#[derive(Debug, Serialize, Default)]
-pub struct UpdateStats {
-    pub num_insertions: AtomicUsize,
-    pub num_deletions: AtomicUsize,
-    pub num_already_exists: AtomicUsize,
-    pub num_errors: AtomicUsize,
-}
-
-impl std::fmt::Display for UpdateStats {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let num_source_rows = self.num_insertions.load(Relaxed)
-            + self.num_deletions.load(Relaxed)
-            + self.num_already_exists.load(Relaxed);
-        write!(f, "{num_source_rows} source rows processed",)?;
-        if self.num_errors.load(Relaxed) > 0 {
-            write!(f, " with {} ERRORS", self.num_errors.load(Relaxed))?;
-        }
-        write!(
-            f,
-            ": {} added, {} removed, {} already exists",
-            self.num_insertions.load(Relaxed),
-            self.num_deletions.load(Relaxed),
-            self.num_already_exists.load(Relaxed)
-        )?;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub struct SourceUpdateInfo {
-    pub source_name: String,
-    pub stats: UpdateStats,
-}
-
-impl std::fmt::Display for SourceUpdateInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.source_name, self.stats)
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub struct IndexUpdateInfo {
-    pub sources: Vec<SourceUpdateInfo>,
-}
-
-impl std::fmt::Display for IndexUpdateInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for source in self.sources.iter() {
-            writeln!(f, "{}", source)?;
-        }
-        Ok(())
-    }
-}
 
 pub fn extract_primary_key(
     primary_key_def: &AnalyzedPrimaryKeyDef,
@@ -93,9 +37,79 @@ pub fn extract_primary_key(
     Ok(key)
 }
 
-enum WithApplyStatus<T = ()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum SourceVersionKind {
+    #[default]
+    NonExistent,
+    DifferentLogic,
+    CurrentLogic,
+    Deleted,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SourceVersion {
+    pub ordinal: Option<Ordinal>,
+    pub kind: SourceVersionKind,
+}
+
+impl SourceVersion {
+    pub fn from_stored(
+        stored_ordinal: Option<i64>,
+        stored_fp: &Option<Vec<u8>>,
+        curr_fp: Fingerprint,
+    ) -> Self {
+        Self {
+            ordinal: stored_ordinal.map(Ordinal),
+            kind: match &stored_fp {
+                Some(stored_fp) => {
+                    if stored_fp.as_slice() == curr_fp.0.as_slice() {
+                        SourceVersionKind::CurrentLogic
+                    } else {
+                        SourceVersionKind::DifferentLogic
+                    }
+                }
+                None => SourceVersionKind::NonExistent,
+            },
+        }
+    }
+
+    pub fn from_current(ordinal: Option<Ordinal>) -> Self {
+        Self {
+            ordinal,
+            kind: SourceVersionKind::CurrentLogic,
+        }
+    }
+
+    pub fn for_deletion(&self) -> Self {
+        Self {
+            ordinal: self.ordinal,
+            kind: SourceVersionKind::Deleted,
+        }
+    }
+
+    pub fn should_skip(
+        &self,
+        target: &SourceVersion,
+        update_stats: Option<&stats::UpdateStats>,
+    ) -> bool {
+        let should_skip = match (self.ordinal, target.ordinal) {
+            (Some(orginal), Some(target_ordinal)) => {
+                orginal > target_ordinal || (orginal == target_ordinal && self.kind >= target.kind)
+            }
+            _ => false,
+        };
+        if should_skip {
+            if let Some(update_stats) = update_stats {
+                update_stats.num_skipped.inc(1);
+            }
+        }
+        should_skip
+    }
+}
+
+pub enum SkippedOr<T> {
     Normal(T),
-    Collapsed,
+    Skipped(SourceVersion),
 }
 
 #[derive(Default)]
@@ -134,13 +148,15 @@ struct PrecommitOutput {
 async fn precommit_source_tracking_info(
     source_id: i32,
     source_key_json: &serde_json::Value,
-    source_ordinal: Option<i64>,
+    source_version: &SourceVersion,
+    logic_fp: Fingerprint,
     data: Option<PrecommitData<'_>>,
     process_timestamp: &chrono::DateTime<chrono::Utc>,
     db_setup: &db_tracking_setup::TrackingTableSetupState,
     export_ops: &[AnalyzedExportOp],
+    update_stats: &stats::UpdateStats,
     pool: &PgPool,
-) -> Result<WithApplyStatus<PrecommitOutput>> {
+) -> Result<SkippedOr<PrecommitOutput>> {
     let mut txn = pool.begin().await?;
 
     let tracking_info = db_tracking::read_source_tracking_info_for_precommit(
@@ -150,15 +166,17 @@ async fn precommit_source_tracking_info(
         &mut *txn,
     )
     .await?;
-    let tracking_info_exists = tracking_info.is_some();
-    if source_ordinal.is_some()
-        && tracking_info
-            .as_ref()
-            .and_then(|info| info.processed_source_ordinal)
-            > source_ordinal
-    {
-        return Ok(WithApplyStatus::Collapsed);
+    if let Some(tracking_info) = &tracking_info {
+        let existing_source_version = SourceVersion::from_stored(
+            tracking_info.processed_source_ordinal,
+            &tracking_info.process_logic_fingerprint,
+            logic_fp,
+        );
+        if existing_source_version.should_skip(source_version, Some(update_stats)) {
+            return Ok(SkippedOr::Skipped(existing_source_version));
+        }
     }
+    let tracking_info_exists = tracking_info.is_some();
     let process_ordinal = (tracking_info
         .as_ref()
         .map(|info| info.max_process_ordinal)
@@ -226,17 +244,20 @@ async fn precommit_source_tracking_info(
                         .fields
                         .push(value.fields[*field as usize].clone());
                 }
-                let curr_fp = Some(
-                    Fingerprinter::default()
-                        .with(&field_values)?
-                        .into_fingerprint(),
-                );
-
                 let existing_target_keys = target_info.existing_keys_info.remove(&primary_key_json);
                 let existing_staging_target_keys = target_info
                     .existing_staging_keys_info
                     .remove(&primary_key_json);
 
+                let curr_fp = if !export_op.value_stable {
+                    Some(
+                        Fingerprinter::default()
+                            .with(&field_values)?
+                            .into_fingerprint(),
+                    )
+                } else {
+                    None
+                };
                 if existing_target_keys
                     .as_ref()
                     .map(|keys| !keys.is_empty() && keys.iter().all(|(_, fp)| fp == &curr_fp))
@@ -320,7 +341,7 @@ async fn precommit_source_tracking_info(
 
     txn.commit().await?;
 
-    Ok(WithApplyStatus::Normal(PrecommitOutput {
+    Ok(SkippedOr::Normal(PrecommitOutput {
         metadata: PrecommitMetadata {
             source_entry_exists: data.is_some(),
             process_ordinal,
@@ -334,13 +355,13 @@ async fn precommit_source_tracking_info(
 async fn commit_source_tracking_info(
     source_id: i32,
     source_key_json: &serde_json::Value,
-    source_ordinal: Option<i64>,
+    source_version: &SourceVersion,
     logic_fingerprint: &[u8],
     precommit_metadata: PrecommitMetadata,
     process_timestamp: &chrono::DateTime<chrono::Utc>,
     db_setup: &db_tracking_setup::TrackingTableSetupState,
     pool: &PgPool,
-) -> Result<WithApplyStatus<()>> {
+) -> Result<()> {
     let mut txn = pool.begin().await?;
 
     let tracking_info = db_tracking::read_source_tracking_info_for_commit(
@@ -354,7 +375,7 @@ async fn commit_source_tracking_info(
     if tracking_info.as_ref().and_then(|info| info.process_ordinal)
         >= Some(precommit_metadata.process_ordinal)
     {
-        return Ok(WithApplyStatus::Collapsed);
+        return Ok(());
     }
 
     let cleaned_staging_target_keys = tracking_info
@@ -396,7 +417,7 @@ async fn commit_source_tracking_info(
             source_id,
             source_key_json,
             cleaned_staging_target_keys,
-            source_ordinal,
+            source_version.ordinal.map(|o| o.into()),
             logic_fingerprint,
             precommit_metadata.process_ordinal,
             process_timestamp.timestamp_micros(),
@@ -414,12 +435,12 @@ async fn commit_source_tracking_info(
 
     txn.commit().await?;
 
-    Ok(WithApplyStatus::Normal(()))
+    Ok(())
 }
 
 pub async fn evaluate_source_entry_with_memory(
     plan: &ExecutionPlan,
-    source_op: &AnalyzedSourceOp,
+    import_op: &AnalyzedImportOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
     options: EvaluationMemoryOptions,
@@ -427,8 +448,8 @@ pub async fn evaluate_source_entry_with_memory(
 ) -> Result<Option<ScopeValueBuilder>> {
     let stored_info = if options.enable_cache || !options.evaluation_only {
         let source_key_json = serde_json::to_value(key)?;
-        let existing_tracking_info = read_source_tracking_info(
-            source_op.source_id,
+        let existing_tracking_info = read_source_tracking_info_for_processing(
+            import_op.source_id,
             &source_key_json,
             &plan.tracking_table_setup,
             pool,
@@ -441,93 +462,94 @@ pub async fn evaluate_source_entry_with_memory(
         None
     };
     let memory = EvaluationMemory::new(chrono::Utc::now(), stored_info, options);
-    let data_builder = evaluate_source_entry(plan, source_op, schema, key, &memory).await?;
-    Ok(data_builder)
+    let source_value = match import_op.executor.get_value(key).await? {
+        Some(d) => d,
+        None => return Ok(None),
+    };
+    let output = evaluate_source_entry(plan, import_op, schema, key, source_value, &memory).await?;
+    Ok(Some(output))
 }
 
-pub async fn update_source_entry(
+pub async fn update_source_row(
     plan: &ExecutionPlan,
-    source_op: &AnalyzedSourceOp,
+    import_op: &AnalyzedImportOp,
     schema: &schema::DataSchema,
     key: &value::KeyValue,
-    only_for_deletion: bool,
+    source_value: Option<FieldValues>,
+    source_version: &SourceVersion,
     pool: &PgPool,
-    stats: &UpdateStats,
-) -> Result<()> {
+    update_stats: &stats::UpdateStats,
+) -> Result<SkippedOr<()>> {
     let source_key_json = serde_json::to_value(key)?;
     let process_timestamp = chrono::Utc::now();
 
     // Phase 1: Evaluate with memoization info.
-
-    // TODO: Skip if the source is not newer and the processing logic is not changed.
-    let existing_tracking_info = read_source_tracking_info(
-        source_op.source_id,
+    let existing_tracking_info = read_source_tracking_info_for_processing(
+        import_op.source_id,
         &source_key_json,
         &plan.tracking_table_setup,
         pool,
     )
     .await?;
     let already_exists = existing_tracking_info.is_some();
-    let memoization_info = existing_tracking_info
-        .and_then(|info| info.memoization_info.map(|info| info.0))
-        .flatten();
-    let evaluation_memory = EvaluationMemory::new(
-        process_timestamp,
-        memoization_info,
-        EvaluationMemoryOptions {
-            enable_cache: true,
-            evaluation_only: false,
-        },
-    );
-    let value_builder = if !only_for_deletion {
-        evaluate_source_entry(plan, source_op, schema, key, &evaluation_memory).await?
-    } else {
-        None
+    let memoization_info = match existing_tracking_info {
+        Some(info) => {
+            let existing_version = SourceVersion::from_stored(
+                info.processed_source_ordinal,
+                &info.process_logic_fingerprint,
+                plan.logic_fingerprint,
+            );
+            if existing_version.should_skip(source_version, Some(update_stats)) {
+                return Ok(SkippedOr::Skipped(existing_version));
+            }
+            info.memoization_info.map(|info| info.0).flatten()
+        }
+        None => Default::default(),
     };
-    let exists = value_builder.is_some();
-
-    if already_exists {
-        if exists {
-            stats.num_already_exists.fetch_add(1, Relaxed);
-        } else {
-            stats.num_deletions.fetch_add(1, Relaxed);
-        }
-    } else if exists {
-        stats.num_insertions.fetch_add(1, Relaxed);
-    } else {
-        return Ok(());
-    }
-
-    let memoization_info = evaluation_memory.into_stored()?;
-    let (source_ordinal, precommit_data) = match &value_builder {
-        Some(scope_value) => {
-            (
-                // TODO: Generate the actual source ordinal.
-                Some(1),
-                Some(PrecommitData {
-                    scope_value,
-                    memoization_info: &memoization_info,
-                }),
+    let (output, stored_mem_info) = match source_value {
+        Some(source_value) => {
+            let evaluation_memory = EvaluationMemory::new(
+                process_timestamp,
+                memoization_info,
+                EvaluationMemoryOptions {
+                    enable_cache: true,
+                    evaluation_only: false,
+                },
+            );
+            let output = evaluate_source_entry(
+                plan,
+                import_op,
+                schema,
+                key,
+                source_value,
+                &evaluation_memory,
             )
+            .await?;
+            (Some(output), evaluation_memory.into_stored()?)
         }
-        None => (None, None),
+        None => Default::default(),
     };
 
     // Phase 2 (precommit): Update with the memoization info and stage target keys.
     let precommit_output = precommit_source_tracking_info(
-        source_op.source_id,
+        import_op.source_id,
         &source_key_json,
-        source_ordinal,
-        precommit_data,
+        source_version,
+        plan.logic_fingerprint,
+        output.as_ref().map(|scope_value| PrecommitData {
+            scope_value,
+            memoization_info: &stored_mem_info,
+        }),
         &process_timestamp,
         &plan.tracking_table_setup,
         &plan.export_ops,
+        update_stats,
         pool,
     )
     .await?;
     let precommit_output = match precommit_output {
-        WithApplyStatus::Normal(output) => output,
-        WithApplyStatus::Collapsed => return Ok(()),
+        SkippedOr::Normal(output) => output,
+        SkippedOr::Skipped(source_version) => return Ok(SkippedOr::Skipped(source_version)),
     };
 
     // Phase 3: Apply changes to the target storage, including upserting new target records and removing existing ones.
@@ -549,10 +571,10 @@ pub async fn update_source_entry(
 
     // Phase 4: Update the tracking record.
     commit_source_tracking_info(
-        source_op.source_id,
+        import_op.source_id,
         &source_key_json,
-        source_ordinal,
-        &plan.logic_fingerprint,
+        source_version,
+        &plan.logic_fingerprint.0,
         precommit_output.metadata,
         &process_timestamp,
         &plan.tracking_table_setup,
@@ -560,83 +582,15 @@ pub async fn update_source_entry(
     )
     .await?;
 
-    Ok(())
-}
-
-async fn update_source_entry_with_err_handling(
-    plan: &ExecutionPlan,
-    source_op: &AnalyzedSourceOp,
-    schema: &schema::DataSchema,
-    key: &value::KeyValue,
-    only_for_deletion: bool,
-    pool: &PgPool,
-    stats: &UpdateStats,
-) {
-    let r = update_source_entry(plan, source_op, schema, key, only_for_deletion, pool, stats).await;
-    if let Err(e) = r {
-        stats.num_errors.fetch_add(1, Relaxed);
-        error!("{:?}", e.context("Error in indexing a source row"));
+    if already_exists {
+        if output.is_some() {
+            update_stats.num_repreocesses.inc(1);
+        } else {
+            update_stats.num_deletions.inc(1);
+        }
+    } else if output.is_some() {
+        update_stats.num_insertions.inc(1);
     }
-}
 
-async fn update_source(
-    source_name: &str,
-    plan: &ExecutionPlan,
-    source_op: &AnalyzedSourceOp,
-    schema: &schema::DataSchema,
-    pool: &PgPool,
-) -> Result<SourceUpdateInfo> {
-    let (keys, existing_keys_json) = try_join(
-        source_op.executor.list_keys(),
-        db_tracking::list_source_tracking_keys(
-            source_op.source_id,
-            &plan.tracking_table_setup,
-            pool,
-        ),
-    )
-    .await?;
-
-    let stats = UpdateStats::default();
-    let upsert_futs = join_all(keys.iter().map(|key| {
-        update_source_entry_with_err_handling(plan, source_op, schema, key, false, pool, &stats)
-    }));
-    let deleted_keys = existing_keys_json
-        .into_iter()
-        .map(|existing_key_json| {
-            value::Value::<value::ScopeValue>::from_json(
-                existing_key_json.source_key,
-                &source_op.primary_key_type,
-            )?
-            .as_key()
-        })
-        .filter_ok(|existing_key| !keys.contains(existing_key))
-        .collect::<Result<Vec<_>>>()?;
-    let delete_futs = join_all(deleted_keys.iter().map(|key| {
-        update_source_entry_with_err_handling(plan, source_op, schema, key, true, pool, &stats)
-    }));
-    join(upsert_futs, delete_futs).await;
-
-    Ok(SourceUpdateInfo {
-        source_name: source_name.to_string(),
-        stats,
-    })
-}
-
-pub async fn update(
-    plan: &ExecutionPlan,
-    schema: &schema::DataSchema,
-    pool: &PgPool,
-) -> Result<IndexUpdateInfo> {
-    let source_update_stats = try_join_all(
-        plan.source_ops
-            .iter()
-            .map(|source_op| async move {
-                update_source(source_op.name.as_str(), plan, source_op, schema, pool).await
-            })
-            .collect::<Vec<_>>(),
-    )
-    .await?;
-    Ok(IndexUpdateInfo {
-        sources: source_update_stats,
-    })
+    Ok(SkippedOr::Normal(()))
 }

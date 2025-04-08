@@ -1,8 +1,7 @@
-use std::ops::Deref;
-
-use serde::{Deserialize, Serialize};
+use crate::prelude::*;
 
 use super::schema::{EnrichedValueType, FieldSchema};
+use std::ops::Deref;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -163,6 +162,19 @@ pub struct OpSpec {
     pub spec: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SourceRefreshOptions {
+    pub refresh_interval: Option<std::time::Duration>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportOpSpec {
+    pub source: OpSpec,
+
+    #[serde(default)]
+    pub refresh_options: SourceRefreshOptions,
+}
+
 /// Transform data using a given operator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformOpSpec {
@@ -219,6 +231,7 @@ pub struct ExportOpSpec {
     pub collector_name: FieldName,
     pub target: OpSpec,
     pub index_options: IndexOptions,
+    pub setup_by_user: bool,
 }
 
 /// A reactive operation reacts on given input values.
@@ -244,7 +257,7 @@ pub struct FlowInstanceSpec {
     pub name: String,
 
     #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
-    pub source_ops: Vec<NamedSpec<OpSpec>>,
+    pub import_ops: Vec<NamedSpec<ImportOpSpec>>,
 
     #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
     pub reactive_ops: Vec<NamedSpec<ReactiveOpSpec>>,

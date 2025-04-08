@@ -15,20 +15,27 @@ This makes schema of data processed by CocoIndex clear, and easily determine the
 
 This is the list of all basic types supported by CocoIndex:
 
-| Type | Type in Python | Original Type in Python |
-|------|-----------------|--------------------------|
-| bytes | `bytes` | `bytes` |
-| str | `str` | `str` |
-| bool | `bool` | `bool` |
-| int64 | `int` | `int` |
-| float32 | `cocoindex.typing.Float32` |`float` | 
-| float64 |  `cocoindex.typing.Float64` |`float` |
-| range | `cocoindex.typing.Range`  | `tuple[int, int]` |
-| uuid | `uuid.UUId` | `uuid.UUID` |
-| vector[*type*, *N*?] |`Annotated[list[type], cocoindex.typing.Vector(dim=N)]` | `list[type]` | 
-| json | `cocoindex.typing.Json` | Any type convertible to JSON by `json` package | 
+| Type | Description |Type in Python | Original Type in Python |
+|------|-------------|---------------|-------------------------|
+| Bytes | | `bytes` | `bytes` |
+| Str | | `str` | `str` |
+| Bool | | `bool` | `bool` |
+| Int64 | | `int` | `int` |
+| Float32 | | `cocoindex.typing.Float32` |`float` | 
+| Float64 | |  `cocoindex.typing.Float64` |`float` |
+| Range | | `cocoindex.typing.Range`  | `tuple[int, int]` |
+| Uuid | | `uuid.UUId` | `uuid.UUID` |
+| Date | | `datetime.date` | `datetime.date` |
+| Time | | `datetime.time` | `datetime.time` |
+| LocalDatetime | Date and time without timezone | `cocoindex.typing.LocalDateTime` | `datetime.datetime` |
+| OffsetDatetime | Date and time with a timezone offset | `cocoindex.typing.OffsetDateTime` | `datetime.datetime` |
+| Vector[*type*, *N*?] | |`Annotated[list[type], cocoindex.typing.Vector(dim=N)]` | `list[type]` | 
+| Json | | `cocoindex.typing.Json` | Any type convertible to JSON by `json` package | 
 
-For some types, CocoIndex Python SDK provides annotated types with finer granularity than Python's original type, e.g. `Float32` and `Float64` for `float`, and `vector` has dimension information.
+For some types, CocoIndex Python SDK provides annotated types with finer granularity than Python's original type, e.g.
+*   *Float32* and *Float64* for `float`, with different precision.
+*   *LocalDateTime* and *OffsetDateTime* for `datetime.datetime`, with different timezone awareness.
+*   *Vector* has dimension information.
 
 When defining [custom functions](/docs/core/custom_function), use the specific types as type annotations for arguments and return values.
 So CocoIndex will have information about the specific type.
@@ -75,6 +82,7 @@ Currently, the following types are supported as types for key fields:
 - `int64`
 - `range`
 - `uuid`
+- `date`
 - Struct with all fields being key types
 
 ### Vector Type

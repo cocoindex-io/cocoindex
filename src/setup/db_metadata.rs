@@ -1,15 +1,9 @@
-use std::{collections::HashMap, sync::LazyLock};
-
-use anyhow::Result;
-use axum::async_trait;
-use axum::http::StatusCode;
-use log::warn;
-use sqlx::PgPool;
-
-use crate::utils::db::WriteAction;
-use crate::{get_lib_context, service::error::ApiError};
+use crate::prelude::*;
 
 use super::{ResourceSetupStatusCheck, SetupChangeType, StateChange};
+use crate::utils::db::WriteAction;
+use axum::http::StatusCode;
+use sqlx::PgPool;
 
 const SETUP_METADATA_TABLE_NAME: &str = "cocoindex_setup_metadata";
 pub const FLOW_VERSION_RESOURCE_TYPE: &str = "__FlowVersion";
@@ -301,17 +295,13 @@ pub struct MetadataTableSetup {
 }
 
 #[async_trait]
-impl ResourceSetupStatusCheck for MetadataTableSetup {
-    type Key = ();
-    type State = ();
-
-    fn key(&self) -> &Self::Key {
+impl ResourceSetupStatusCheck<(), ()> for MetadataTableSetup {
+    fn key(&self) -> &() {
         &()
     }
 
-    fn desired_state(&self) -> Option<&Self::State> {
-        warn!("Metadata table is unexpected to have a state");
-        None
+    fn desired_state(&self) -> Option<&()> {
+        Some(&())
     }
 
     fn describe_resource(&self) -> String {
@@ -340,9 +330,7 @@ impl ResourceSetupStatusCheck for MetadataTableSetup {
         if !self.metadata_table_missing {
             return Ok(());
         }
-        let pool = &get_lib_context()
-            .ok_or_else(|| anyhow::anyhow!("Library not initialized"))?
-            .pool;
+        let pool = &get_lib_context()?.pool;
         let query_str = format!(
             "CREATE TABLE IF NOT EXISTS {SETUP_METADATA_TABLE_NAME} (
                 flow_name TEXT NOT NULL,

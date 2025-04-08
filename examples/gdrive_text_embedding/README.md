@@ -1,4 +1,6 @@
-Simple example for cocoindex: build embedding index based on Google Drive files.
+This example builds embedding index based on Google Drive files.
+It continuously updates the index as files are added / updated / deleted in the source folders:
+it keeps the index in sync with the source folders effortlessly.
 
 ## Prerequisite
 
@@ -25,35 +27,39 @@ Before running the example, you need to:
 
 Install dependencies:
 
-```bash
+```sh
 pip install -e .
 ```
 
 Setup:
 
-```bash
+```sh
 python main.py cocoindex setup
-```
-
-Update index:
-
-```bash
-python main.py cocoindex update
 ```
 
 Run:
 
-```bash
+```sh
 python main.py
 ```
+
+During running, it will keep observing changes in the source folders and update the index automatically.
+At the same time, it accepts queries from the terminal, and performs search on top of the up-to-date index.
+
 
 ## CocoInsight 
 CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
 
 Run CocoInsight to understand your RAG data pipeline:
 
-```
+```sh
 python main.py cocoindex server -c https://cocoindex.io
+```
+
+You can also add a `-L` flag to make the server keep updating the index to reflect source changes at the same time:
+
+```sh
+python main.py cocoindex server -c https://cocoindex.io -L
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).

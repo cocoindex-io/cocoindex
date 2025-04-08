@@ -4,8 +4,10 @@ Flow is the main interface for building and running flows.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import inspect
+import datetime
 from typing import Any, Callable, Sequence, TypeVar, get_origin
 from threading import Lock
 from enum import Enum
@@ -64,10 +66,17 @@ def _spec_kind(spec: Any) -> str:
 
 def _dump_engine_object(v: Any) -> Any:
     """Recursively dump an object for engine. Engine side uses `Pythonzized` to catch."""
-    if isinstance(v, type) or get_origin(v) is not None:
+    if v is None:
+        return None
+    elif isinstance(v, type) or get_origin(v) is not None:
         return encode_enriched_type(v)
     elif isinstance(v, Enum):
         return v.value
+    elif isinstance(v, datetime.timedelta):
+        total_secs = v.total_seconds()
+        secs = int(total_secs)
+        nanos = int((total_secs - secs) * 1e9)
+        return {'secs': secs, 'nanos': nanos}
     elif hasattr(v, '__dict__'):
         return {k: _dump_engine_object(v) for k, v in v.__dict__.items()}
     elif isinstance(v, (list, tuple)):
@@ -254,7 +263,7 @@ class DataCollector:
         self._flow_builder_state = flow_builder_state
         self._engine_data_collector = data_collector
 
-    def collect(self, **kwargs: DataSlice | GeneratedField):
+    def collect(self, **kwargs):
         """
         Collect data into the collector.
         """
@@ -269,14 +278,16 @@ class DataCollector:
                 else:
                     raise ValueError(f"Unexpected generated field: {v}")
             else:
-                regular_kwargs.append((k, _data_slice_state(v).engine_data_slice))
+                regular_kwargs.append(
+                    (k, self._flow_builder_state.get_data_slice(v)))
 
         self._flow_builder_state.engine_flow_builder.collect(
             self._engine_data_collector, regular_kwargs, auto_uuid_field)
 
     def export(self, name: str, target_spec: op.StorageSpec, /, *,
               primary_key_fields: Sequence[str] | None = None,
-              vector_index: Sequence[tuple[str, vector.VectorSimilarityMetric]] = ()):
+              vector_index: Sequence[tuple[str, vector.VectorSimilarityMetric]] = (),
+              setup_by_user: bool = False):
         """
         Export the collected data to the specified target.
         """
@@ -288,7 +299,7 @@ class DataCollector:
             for field_name, metric in vector_index]
         self._flow_builder_state.engine_flow_builder.export(
             name, _spec_kind(target_spec), _dump_engine_object(target_spec),
-            index_options, self._engine_data_collector)
+            index_options, self._engine_data_collector, setup_by_user)
 
 
 _flow_name_builder = _NameBuilder()
@@ -313,6 +324,13 @@ class _FlowBuilderState:
             return v._state.engine_data_slice
         return self.engine_flow_builder.constant(encode_enriched_type(type(v)), v)
 
+@dataclass
+class _SourceRefreshOptions:
+    """
+    Options for refreshing a source.
+    """
+    refresh_interval: datetime.timedelta | None = None
+
 class FlowBuilder:
     """
     A flow builder is used to build a flow.
@@ -328,7 +346,10 @@ class FlowBuilder:
     def __repr__(self):
         return repr(self._state.engine_flow_builder)
 
-    def add_source(self, spec: op.SourceSpec, /, name: str | None = None) -> DataSlice:
+    def add_source(self, spec: op.SourceSpec, /, *,
+            name: str | None = None,
+            refresh_interval: datetime.timedelta | None = None,
+        ) -> DataSlice:
         """
         Add a source to the flow.
         """
@@ -340,9 +361,62 @@ class FlowBuilder:
                 target_scope,
                 self._state.field_name_builder.build_name(
                     name, prefix=_to_snake_case(_spec_kind(spec))+'_'),
+                _dump_engine_object(_SourceRefreshOptions(refresh_interval=refresh_interval)),
             ),
             name
         )
+
+@dataclass
+class FlowLiveUpdaterOptions:
+    """
+    Options for live updating a flow.
+    """
+    live_mode: bool = True
+    print_stats: bool = False
+
+class FlowLiveUpdater:
+    """
+    A live updater for a flow.
+    """
+    _engine_live_updater: _engine.FlowLiveUpdater
+
+    def __init__(self, fl: Flow, options: FlowLiveUpdaterOptions | None = None):
+        self._engine_live_updater = _engine.FlowLiveUpdater(
+            fl._lazy_engine_flow(), _dump_engine_object(options or FlowLiveUpdaterOptions()))
+
+    def __enter__(self) -> FlowLiveUpdater:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.abort()
+        asyncio.run(self.wait())
+
+    async def __aenter__(self) -> FlowLiveUpdater:
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        self.abort()
+        await self.wait()
+
+    async def wait(self) -> None:
+        """
+        Wait for the live updater to finish.
+        """
+        await self._engine_live_updater.wait()
+
+    def abort(self) -> None:
+        """
+        Abort the live updater.
+        """
+        self._engine_live_updater.abort()
+
+    def update_stats(self) -> _engine.IndexUpdateInfo:
+        """
+        Get the index update info.
+        """
+        return self._engine_live_updater.index_update_info()
+
+
 @dataclass
 class EvaluateAndDumpOptions:
     """
@@ -382,12 +456,14 @@ class Flow:
         """
         return self._lazy_engine_flow().name()
 
-    def update(self):
+    async def update(self) -> _engine.IndexUpdateInfo:
         """
         Update the index defined by the flow.
         Once the function returns, the indice is fresh up to the moment when the function is called.
         """
-        return self._lazy_engine_flow().update()
+        updater = FlowLiveUpdater(self, FlowLiveUpdaterOptions(live_mode=False))
+        await updater.wait()
+        return updater.update_stats()
 
     def evaluate_and_dump(self, options: EvaluateAndDumpOptions):
         """
@@ -440,6 +516,13 @@ def flow_names() -> list[str]:
     with _flows_lock:
         return list(_flows.keys())
 
+def flows() -> list[Flow]:
+    """
+    Get all flows.
+    """
+    with _flows_lock:
+        return list(_flows.values())
+
 def flow_by_name(name: str) -> Flow:
     """
     Get a flow by name.
@@ -454,6 +537,19 @@ def ensure_all_flows_built() -> None:
     with _flows_lock:
         for fl in _flows.values():
             fl.internal_flow()
+
+async def update_all_flows(options: FlowLiveUpdaterOptions) -> dict[str, _engine.IndexUpdateInfo]:
+    """
+    Update all flows.
+    """
+    ensure_all_flows_built()
+    async def _update_flow(fl: Flow) -> _engine.IndexUpdateInfo:
+        updater = FlowLiveUpdater(fl, options)
+        await updater.wait()
+        return updater.update_stats()
+    fls = flows()
+    all_stats = await asyncio.gather(*(_update_flow(fl) for fl in fls))
+    return {fl.name: stats for fl, stats in zip(fls, all_stats)}
 
 _transient_flow_name_builder = _NameBuilder()
 class TransientFlow:

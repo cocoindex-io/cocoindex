@@ -1,5 +1,8 @@
+use async_stream::try_stream;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use log::warn;
+use std::borrow::Cow;
+use std::path::Path;
 use std::{path::PathBuf, sync::Arc};
 
 use crate::base::field_attrs;
@@ -14,7 +17,6 @@ pub struct Spec {
 }
 
 struct Executor {
-    root_path_str: String,
     root_path: PathBuf,
     binary: bool,
     included_glob_set: Option<GlobSet>,
@@ -22,46 +24,64 @@ struct Executor {
 }
 
 impl Executor {
-    fn is_excluded(&self, path: &str) -> bool {
+    fn is_excluded(&self, path: impl AsRef<Path> + Copy) -> bool {
         self.excluded_glob_set
             .as_ref()
             .is_some_and(|glob_set| glob_set.is_match(path))
     }
 
-    fn is_file_included(&self, path: &str) -> bool {
+    fn is_file_included(&self, path: impl AsRef<Path> + Copy) -> bool {
         self.included_glob_set
             .as_ref()
             .is_none_or(|glob_set| glob_set.is_match(path))
             && !self.is_excluded(path)
     }
-
-    async fn traverse_dir(&self, dir_path: &PathBuf, result: &mut Vec<KeyValue>) -> Result<()> {
-        for entry in std::fs::read_dir(dir_path)? {
-            let entry = entry?;
-            let path = entry.path();
-            if let Some(file_name) = path.to_str() {
-                let relative_path = &file_name[self.root_path_str.len() + 1..];
-                if path.is_dir() {
-                    if !self.is_excluded(relative_path) {
-                        Box::pin(self.traverse_dir(&path, result)).await?;
-                    }
-                } else if self.is_file_included(relative_path) {
-                    result.push(KeyValue::Str(Arc::from(relative_path)));
-                }
-            } else {
-                warn!("Skipped ill-formed file path: {}", path.display());
-            }
-        }
-        Ok(())
-    }
 }
 
 #[async_trait]
 impl SourceExecutor for Executor {
-    async fn list_keys(&self) -> Result<Vec<KeyValue>> {
-        let mut result = Vec::new();
-        self.traverse_dir(&self.root_path, &mut result).await?;
-        Ok(result)
+    fn list<'a>(
+        &'a self,
+        options: SourceExecutorListOptions,
+    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>> {
+        let root_component_size = self.root_path.components().count();
+        let mut dirs = Vec::new();
+        dirs.push(Cow::Borrowed(&self.root_path));
+        let mut new_dirs = Vec::new();
+        try_stream! {
+            while let Some(dir) = dirs.pop() {
+                let mut entries = tokio::fs::read_dir(dir.as_ref()).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let path = entry.path();
+                    let mut path_components = path.components();
+                    for _ in 0..root_component_size {
+                        path_components.next();
+                    }
+                    let relative_path = path_components.as_path();
+                    if path.is_dir() {
+                        if !self.is_excluded(relative_path) {
+                            new_dirs.push(Cow::Owned(path));
+                        }
+                    } else if self.is_file_included(relative_path) {
+                        let ordinal: Option<Ordinal> = if options.include_ordinal {
+                            Some(path.metadata()?.modified()?.try_into()?)
+                        } else {
+                            None
+                        };
+                        if let Some(relative_path) = relative_path.to_str() {
+                            yield vec![SourceRowMetadata {
+                                key: KeyValue::Str(relative_path.into()),
+                                ordinal,
+                            }];
+                        } else {
+                            warn!("Skipped ill-formed file path: {}", path.display());
+                        }
+                    }
+                }
+                dirs.extend(new_dirs.drain(..).rev());
+            }
+        }
+        .boxed()
     }
 
     async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
@@ -69,7 +89,7 @@ impl SourceExecutor for Executor {
             return Ok(None);
         }
         let path = self.root_path.join(key.str_value()?.as_ref());
-        let result = match std::fs::read(path) {
+        let value = match std::fs::read(path) {
             Ok(content) => {
                 let content = if self.binary {
                     fields_value!(content)
@@ -79,9 +99,9 @@ impl SourceExecutor for Executor {
                 Some(content)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(e.into()),
+            Err(e) => Err(e)?,
         };
-        Ok(result)
+        Ok(value)
     }
 }
 
@@ -131,7 +151,6 @@ impl SourceFactoryBase for Factory {
         _context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SourceExecutor>> {
         Ok(Box::new(Executor {
-            root_path_str: spec.path.clone(),
             root_path: PathBuf::from(spec.path),
             binary: spec.binary,
             included_glob_set: spec.included_patterns.map(build_glob_set).transpose()?,

@@ -27,7 +27,7 @@ pub struct StoredMemoizationInfo {
     pub uuids: HashMap<Fingerprint, Vec<uuid::Uuid>>,
 }
 
-pub type CacheEntryCell = Arc<async_lock::OnceCell<Result<value::Value, SharedError>>>;
+pub type CacheEntryCell = Arc<tokio::sync::OnceCell<Result<value::Value, SharedError>>>;
 enum CacheData {
     /// Existing entry in previous runs, but not in current run yet.
     Previous(serde_json::Value),
@@ -180,7 +180,7 @@ impl EvaluationMemory {
                 match &mut entry_mut.data {
                     CacheData::Previous(value) => {
                         let value = value::Value::from_json(std::mem::take(value), typ)?;
-                        let cell = Arc::new(async_lock::OnceCell::from(Ok(value)));
+                        let cell = Arc::new(tokio::sync::OnceCell::from(Ok(value)));
                         let time = entry_mut.time;
                         entry.insert(CacheEntry {
                             time,
@@ -192,7 +192,7 @@ impl EvaluationMemory {
                 }
             }
             entry => {
-                let cell = Arc::new(async_lock::OnceCell::new());
+                let cell = Arc::new(tokio::sync::OnceCell::new());
                 entry.insert_entry(CacheEntry {
                     time: self.current_time,
                     data: CacheData::Current(cell.clone()),

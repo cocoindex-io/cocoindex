@@ -11,18 +11,22 @@ We love contributions from our community! This guide explains how to get involve
 
 -   Install Rust toolchain: [docs](https://rust-lang.org/tools/install)
 
--   (Optional) Setup and activate python virtual environment
+-   (Optional) Setup Python virtual environment:
     ```bash
     virtualenv --python=$(which python3.12) .venv
+    ```
+    Activate the virtual environment, before any installings / buildings / runnings:
+
+    ```bash
     . .venv/bin/activate
     ```
 
--   Install maturin
+-   Install maturin:
     ```bash
     pip install maturin
     ```
 
--   Build the library
+-   Build the library. Run at the root of cocoindex directory:
     ```bash
     maturin develop
     ```

@@ -38,6 +38,18 @@ pub enum BasicValueType {
     /// A UUID.
     Uuid,
 
+    /// Date (without time within the current day).
+    Date,
+
+    /// Time of the day.
+    Time,
+
+    /// Local date and time, without timezone.
+    LocalDateTime,
+
+    /// Date and time with timezone.
+    OffsetDateTime,
+
     /// A JSON value.
     Json,
 
@@ -56,6 +68,10 @@ impl std::fmt::Display for BasicValueType {
             BasicValueType::Float64 => write!(f, "float64"),
             BasicValueType::Range => write!(f, "range"),
             BasicValueType::Uuid => write!(f, "uuid"),
+            BasicValueType::Date => write!(f, "date"),
+            BasicValueType::Time => write!(f, "time"),
+            BasicValueType::LocalDateTime => write!(f, "local_datetime"),
+            BasicValueType::OffsetDateTime => write!(f, "offset_datetime"),
             BasicValueType::Json => write!(f, "json"),
             BasicValueType::Vector(s) => write!(
                 f,
@@ -343,7 +359,7 @@ impl std::fmt::Display for FieldSchema {
 pub struct CollectorSchema {
     pub fields: Vec<FieldSchema>,
     /// If specified, the collector will have an automatically generated UUID field with the given index.
-    pub auto_uuid_field_idx: Option<usize>,
+    pub auto_uuid_field_idx: Option<u32>,
 }
 
 impl std::fmt::Display for CollectorSchema {

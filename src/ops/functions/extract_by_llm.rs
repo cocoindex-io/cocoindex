@@ -4,7 +4,7 @@ use std::sync::Arc;
 use schemars::schema::SchemaObject;
 use serde::Serialize;
 
-use crate::base::json_schema::ToJsonSchema;
+use crate::base::json_schema::build_json_schema;
 use crate::llm::{
     new_llm_generation_client, LlmGenerateRequest, LlmGenerationClient, LlmSpec, OutputFormat,
 };
@@ -29,7 +29,7 @@ struct Executor {
     system_prompt: String,
 }
 
-fn get_system_prompt(instructions: &Option<String>) -> String {
+fn get_system_prompt(instructions: &Option<String>, extra_instructions: Option<String>) -> String {
     let mut message =
         "You are a helpful assistant that extracts structured information from text. \
 Your task is to analyze the input text and output valid JSON that matches the specified schema. \
@@ -42,21 +42,25 @@ Output only the JSON without any additional messages or explanations."
         message.push_str(custom_instructions);
     }
 
+    if let Some(extra_instructions) = extra_instructions {
+        message.push_str("\n\n");
+        message.push_str(&extra_instructions);
+    }
+
     message
 }
 
 impl Executor {
     async fn new(spec: Spec, args: Args) -> Result<Self> {
         let client = new_llm_generation_client(spec.llm_spec).await?;
-        let output_json_schema = spec
-            .output_type
-            .to_json_schema(&client.to_json_schema_options());
+        let (output_json_schema, extra_instructions) =
+            build_json_schema(&spec.output_type, client.json_schema_options())?;
         Ok(Self {
             args,
             client,
             output_json_schema,
             output_type: spec.output_type,
-            system_prompt: get_system_prompt(&spec.instruction),
+            system_prompt: get_system_prompt(&spec.instruction, extra_instructions),
         })
     }
 }

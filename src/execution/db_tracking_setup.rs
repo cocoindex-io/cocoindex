@@ -1,7 +1,6 @@
-use crate::get_lib_context;
+use crate::prelude::*;
+
 use crate::setup::{CombinedState, ResourceSetupStatusCheck, SetupChangeType};
-use anyhow::Result;
-use axum::async_trait;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -83,19 +82,16 @@ impl TrackingTableSetupStatusCheck {
 }
 
 #[async_trait]
-impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
-    type Key = ();
-    type State = TrackingTableSetupState;
-
+impl ResourceSetupStatusCheck<(), TrackingTableSetupState> for TrackingTableSetupStatusCheck {
     fn describe_resource(&self) -> String {
         "Tracking Table".to_string()
     }
 
-    fn key(&self) -> &Self::Key {
+    fn key(&self) -> &() {
         &()
     }
 
-    fn desired_state(&self) -> Option<&Self::State> {
+    fn desired_state(&self) -> Option<&TrackingTableSetupState> {
         self.desired_state.as_ref()
     }
 
@@ -153,9 +149,7 @@ impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
     }
 
     async fn apply_change(&self) -> Result<()> {
-        let pool = &get_lib_context()
-            .ok_or(anyhow::anyhow!("CocoIndex library not initialized"))?
-            .pool;
+        let pool = &get_lib_context()?.pool;
         if let Some(desired) = &self.desired_state {
             for lagacy_name in self.legacy_table_names.iter() {
                 let query = format!(

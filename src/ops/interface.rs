@@ -1,27 +1,83 @@
+use std::time::SystemTime;
+
 use crate::base::{
     schema::*,
     spec::{IndexOptions, VectorSimilarityMetric},
     value::*,
 };
+use crate::prelude::*;
 use crate::setup;
-use anyhow::Result;
-use async_trait::async_trait;
+use chrono::TimeZone;
 use serde::Serialize;
-use std::{fmt::Debug, future::Future, pin::Pin, sync::Arc};
 
 pub struct FlowInstanceContext {
     pub flow_instance_name: String,
 }
 
-pub type ExecutorFuture<'a, E> = Pin<Box<dyn Future<Output = Result<E>> + Send + 'a>>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ordinal(pub i64);
+
+impl Into<i64> for Ordinal {
+    fn into(self) -> i64 {
+        self.0
+    }
+}
+
+impl TryFrom<SystemTime> for Ordinal {
+    type Error = anyhow::Error;
+
+    fn try_from(time: SystemTime) -> Result<Self, Self::Error> {
+        let duration = time.duration_since(std::time::UNIX_EPOCH)?;
+        Ok(duration.as_micros().try_into().map(Ordinal)?)
+    }
+}
+
+impl<TZ: TimeZone> TryFrom<chrono::DateTime<TZ>> for Ordinal {
+    type Error = anyhow::Error;
+
+    fn try_from(time: chrono::DateTime<TZ>) -> Result<Self, Self::Error> {
+        Ok(Ordinal(time.timestamp_micros()))
+    }
+}
+
+pub struct SourceRowMetadata {
+    pub key: KeyValue,
+    /// None means the ordinal is unavailable.
+    pub ordinal: Option<Ordinal>,
+}
+
+pub enum SourceValueChange {
+    /// None means value unavailable in this change - needs a separate poll by get_value() API.
+    Upsert(Option<FieldValues>),
+    Delete,
+}
+
+pub struct SourceChange {
+    /// Last update/deletion ordinal. None means unavailable.
+    pub ordinal: Option<Ordinal>,
+    pub key: KeyValue,
+    pub value: SourceValueChange,
+}
+
+#[derive(Debug, Default)]
+pub struct SourceExecutorListOptions {
+    pub include_ordinal: bool,
+}
 
 #[async_trait]
 pub trait SourceExecutor: Send + Sync {
     /// Get the list of keys for the source.
-    async fn list_keys(&self) -> Result<Vec<KeyValue>>;
+    fn list<'a>(
+        &'a self,
+        options: SourceExecutorListOptions,
+    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>>;
 
     // Get the value for the given key.
     async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>>;
+
+    async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
+        Ok(None)
+    }
 }
 
 pub trait SourceFactory {
@@ -31,7 +87,7 @@ pub trait SourceFactory {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         EnrichedValueType,
-        ExecutorFuture<'static, Box<dyn SourceExecutor>>,
+        BoxFuture<'static, Result<Box<dyn SourceExecutor>>>,
     )>;
 }
 
@@ -59,7 +115,7 @@ pub trait SimpleFunctionFactory {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         EnrichedValueType,
-        ExecutorFuture<'static, Box<dyn SimpleFunctionExecutor>>,
+        BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
     )>;
 }
 
@@ -92,15 +148,21 @@ pub enum SetupStateCompatibility {
     /// This means the resource can be updated to the desired state without any loss of data.
     Compatible,
     /// The resource is partially compatible with the desired state.
-    /// This means some existing data will be lost after applying the setup change.
+    /// This means data from some existing fields will be lost after applying the setup change.
+    /// But at least their key fields of all rows are still preserved.
     PartialCompatible,
-    /// The resource needs to be rebuilt
+    /// The resource needs to be rebuilt. After applying the setup change, all data will be gone.
     NotCompatible,
 }
 
+pub struct ExportTargetBuildOutput {
+    pub executor:
+        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
+    pub setup_key: serde_json::Value,
+    pub desired_setup_state: serde_json::Value,
+}
+
 pub trait ExportTargetFactory {
-    // The first field of the `input_schema` is the primary key field.
-    // If it has struct type, it should be converted to composite primary key.
     fn build(
         self: Arc<Self>,
         name: String,
@@ -109,11 +171,10 @@ pub trait ExportTargetFactory {
         value_fields_schema: Vec<FieldSchema>,
         storage_options: IndexOptions,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<(
-        (serde_json::Value, serde_json::Value),
-        ExecutorFuture<'static, (Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>,
-    )>;
+    ) -> Result<ExportTargetBuildOutput>;
 
+    /// Will not be called if it's setup by user.
+    /// It returns an error if the target only supports setup by user.
     fn check_setup_status(
         &self,
         key: &serde_json::Value,
@@ -121,9 +182,7 @@ pub trait ExportTargetFactory {
         existing_states: setup::CombinedState<serde_json::Value>,
     ) -> Result<
         Box<
-            dyn setup::ResourceSetupStatusCheck<Key = serde_json::Value, State = serde_json::Value>
-                + Send
-                + Sync,
+            dyn setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value> + Send + Sync,
         >,
     >;
 

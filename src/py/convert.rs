@@ -65,6 +65,10 @@ fn basic_value_to_py_object<'py>(
         value::BasicValue::Float64(v) => v.into_bound_py_any(py)?,
         value::BasicValue::Range(v) => pythonize(py, v).into_py_result()?,
         value::BasicValue::Uuid(v) => v.as_bytes().into_bound_py_any(py)?,
+        value::BasicValue::Date(v) => v.into_bound_py_any(py)?,
+        value::BasicValue::Time(v) => v.into_bound_py_any(py)?,
+        value::BasicValue::LocalDateTime(v) => v.into_bound_py_any(py)?,
+        value::BasicValue::OffsetDateTime(v) => v.into_bound_py_any(py)?,
         value::BasicValue::Json(v) => pythonize(py, v).into_py_result()?,
         value::BasicValue::Vector(v) => v
             .iter()
@@ -129,6 +133,14 @@ fn basic_value_from_py_object<'py>(
         schema::BasicValueType::Range => value::BasicValue::Range(depythonize(v)?),
         schema::BasicValueType::Uuid => {
             value::BasicValue::Uuid(uuid::Uuid::from_bytes(v.extract::<uuid::Bytes>()?))
+        }
+        schema::BasicValueType::Date => value::BasicValue::Date(v.extract::<chrono::NaiveDate>()?),
+        schema::BasicValueType::Time => value::BasicValue::Time(v.extract::<chrono::NaiveTime>()?),
+        schema::BasicValueType::LocalDateTime => {
+            value::BasicValue::LocalDateTime(v.extract::<chrono::NaiveDateTime>()?)
+        }
+        schema::BasicValueType::OffsetDateTime => {
+            value::BasicValue::OffsetDateTime(v.extract::<chrono::DateTime<chrono::FixedOffset>>()?)
         }
         schema::BasicValueType::Json => {
             value::BasicValue::Json(Arc::from(depythonize::<serde_json::Value>(v)?))

@@ -47,18 +47,7 @@ pub trait LlmGenerationClient: Send + Sync {
         request: LlmGenerateRequest<'req>,
     ) -> Result<LlmGenerateResponse>;
 
-    /// If true, the LLM only accepts a JSON schema with all fields required.
-    /// This is a limitation of LLM models such as OpenAI.
-    /// Otherwise, the LLM will accept a JSON schema with optional fields.
-    fn json_schema_fields_always_required(&self) -> bool {
-        false
-    }
-
-    fn to_json_schema_options(&self) -> ToJsonSchemaOptions {
-        ToJsonSchemaOptions {
-            fields_always_required: self.json_schema_fields_always_required(),
-        }
-    }
+    fn json_schema_options(&self) -> ToJsonSchemaOptions;
 }
 
 mod ollama;

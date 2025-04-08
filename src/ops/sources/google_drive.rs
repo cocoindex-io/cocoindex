@@ -1,18 +1,12 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, LazyLock},
-};
-
+use chrono::Duration;
 use google_drive3::{
-    api::Scope,
+    api::{File, Scope},
     yup_oauth2::{read_service_account_key, ServiceAccountAuthenticator},
     DriveHub,
 };
 use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
-use indexmap::IndexSet;
-use log::warn;
 
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
@@ -75,12 +69,14 @@ pub struct Spec {
     service_account_credential_path: String,
     binary: bool,
     root_folder_ids: Vec<String>,
+    recent_changes_poll_interval: Option<std::time::Duration>,
 }
 
 struct Executor {
     drive_hub: DriveHub<HttpsConnector<HttpConnector>>,
     binary: bool,
-    root_folder_ids: Vec<String>,
+    root_folder_ids: IndexSet<Arc<str>>,
+    recent_updates_poll_interval: Option<std::time::Duration>,
 }
 
 impl Executor {
@@ -105,7 +101,8 @@ impl Executor {
         Ok(Self {
             drive_hub,
             binary: spec.binary,
-            root_folder_ids: spec.root_folder_ids,
+            root_folder_ids: spec.root_folder_ids.into_iter().map(Arc::from).collect(),
+            recent_updates_poll_interval: spec.recent_changes_poll_interval,
         })
     }
 }
@@ -122,88 +119,165 @@ fn escape_string(s: &str) -> String {
     escaped
 }
 
+const CUTOFF_TIME_BUFFER: Duration = Duration::seconds(1);
 impl Executor {
-    async fn traverse_folder(
+    fn visit_file(
+        &self,
+        file: File,
+        new_folder_ids: &mut Vec<Arc<str>>,
+        seen_ids: &mut HashSet<Arc<str>>,
+    ) -> Result<Option<SourceRowMetadata>> {
+        if file.trashed == Some(true) {
+            return Ok(None);
+        }
+        let (id, mime_type) = match (file.id, file.mime_type) {
+            (Some(id), Some(mime_type)) => (Arc::<str>::from(id), mime_type),
+            (id, mime_type) => {
+                warn!("Skipping file with incomplete metadata: id={id:?}, mime_type={mime_type:?}",);
+                return Ok(None);
+            }
+        };
+        if !seen_ids.insert(id.clone()) {
+            return Ok(None);
+        }
+        let result = if mime_type == FOLDER_MIME_TYPE {
+            new_folder_ids.push(id);
+            None
+        } else if is_supported_file_type(&mime_type) {
+            Some(SourceRowMetadata {
+                key: KeyValue::Str(Arc::from(id)),
+                ordinal: file.modified_time.map(|t| t.try_into()).transpose()?,
+            })
+        } else {
+            None
+        };
+        Ok(result)
+    }
+
+    async fn list_files(
         &self,
         folder_id: &str,
-        visited_folder_ids: &mut IndexSet<String>,
-        result: &mut IndexSet<KeyValue>,
-    ) -> Result<()> {
-        if !visited_folder_ids.insert(folder_id.to_string()) {
-            return Ok(());
-        }
+        fields: &str,
+        next_page_token: &mut Option<String>,
+    ) -> Result<impl Iterator<Item = File>> {
         let query = format!("'{}' in parents", escape_string(folder_id));
+        let mut list_call = self
+            .drive_hub
+            .files()
+            .list()
+            .add_scope(Scope::Readonly)
+            .q(&query)
+            .param("fields", fields);
+        if let Some(next_page_token) = &next_page_token {
+            list_call = list_call.page_token(next_page_token);
+        }
+        let (_, files) = list_call.doit().await?;
+        *next_page_token = files.next_page_token;
+        let file_iter = files.files.into_iter().flat_map(|file| file.into_iter());
+        Ok(file_iter)
+    }
+
+    fn make_cutoff_time(
+        most_recent_modified_time: Option<DateTime<Utc>>,
+        list_start_time: DateTime<Utc>,
+    ) -> DateTime<Utc> {
+        let safe_upperbound = list_start_time - CUTOFF_TIME_BUFFER;
+        most_recent_modified_time
+            .map(|t| t.min(safe_upperbound))
+            .unwrap_or(safe_upperbound)
+    }
+
+    async fn get_recent_updates(
+        &self,
+        cutoff_time: &mut DateTime<Utc>,
+    ) -> Result<Vec<SourceChange>> {
+        let mut page_size: i32 = 10;
         let mut next_page_token: Option<String> = None;
-        loop {
+        let mut changes = Vec::new();
+        let mut most_recent_modified_time = None;
+        let start_time = Utc::now();
+        'paginate: loop {
             let mut list_call = self
                 .drive_hub
                 .files()
                 .list()
                 .add_scope(Scope::Readonly)
-                .q(&query);
-            if let Some(next_page_token) = &next_page_token {
-                list_call = list_call.page_token(next_page_token);
+                .param("fields", "files(id,modifiedTime,parents,trashed)")
+                .order_by("modifiedTime desc")
+                .page_size(page_size);
+            if let Some(token) = next_page_token {
+                list_call = list_call.page_token(token.as_str());
             }
             let (_, files) = list_call.doit().await?;
-            if let Some(files) = files.files {
-                for file in files {
-                    match (file.id, file.mime_type) {
-                        (Some(id), Some(mime_type)) => {
-                            if mime_type == FOLDER_MIME_TYPE {
-                                Box::pin(self.traverse_folder(&id, visited_folder_ids, result))
-                                    .await?;
-                            } else if is_supported_file_type(&mime_type) {
-                                result.insert(KeyValue::Str(Arc::from(id)));
-                            } else {
-                                warn!("Skipping file with unsupported mime type: id={id}, mime_type={mime_type}, name={:?}", file.name);
-                            }
-                        }
-                        (id, mime_type) => {
-                            warn!(
-                                "Skipping file with incomplete metadata: id={id:?}, mime_type={mime_type:?}",
-                            );
-                        }
-                    }
+            for file in files.files.into_iter().flat_map(|files| files.into_iter()) {
+                let modified_time = file.modified_time.unwrap_or_default();
+                if most_recent_modified_time.is_none() {
+                    most_recent_modified_time = Some(modified_time);
+                }
+                if modified_time <= *cutoff_time {
+                    break 'paginate;
+                }
+                let file_id = file.id.ok_or_else(|| anyhow!("File has no id"))?;
+                if self.is_file_covered(&file_id).await? {
+                    changes.push(SourceChange {
+                        ordinal: Some(modified_time.try_into()?),
+                        key: KeyValue::Str(Arc::from(file_id)),
+                        value: if file.trashed == Some(true) {
+                            SourceValueChange::Delete
+                        } else {
+                            SourceValueChange::Upsert(None)
+                        },
+                    });
                 }
             }
-            next_page_token = files.next_page_token;
-            if next_page_token.is_none() {
+            if let Some(token) = files.next_page_token {
+                next_page_token = Some(token);
+            } else {
                 break;
             }
+            // List more in a page since 2nd.
+            page_size = 100;
         }
-        Ok(())
+        *cutoff_time = Self::make_cutoff_time(most_recent_modified_time, start_time);
+        Ok(changes)
+    }
+
+    async fn is_file_covered(&self, file_id: &str) -> Result<bool> {
+        let mut next_file_id = Some(Cow::Borrowed(file_id));
+        while let Some(file_id) = next_file_id {
+            if self.root_folder_ids.contains(file_id.as_ref()) {
+                return Ok(true);
+            }
+            let (_, file) = self
+                .drive_hub
+                .files()
+                .get(&file_id)
+                .add_scope(Scope::Readonly)
+                .param("fields", "parents")
+                .doit()
+                .await?;
+            next_file_id = file
+                .parents
+                .into_iter()
+                .flat_map(|parents| parents.into_iter())
+                .map(Cow::Owned)
+                .next();
+        }
+        Ok(false)
     }
 }
 
-#[async_trait]
-impl SourceExecutor for Executor {
-    async fn list_keys(&self) -> Result<Vec<KeyValue>> {
-        let mut result = IndexSet::new();
-        for root_folder_id in &self.root_folder_ids {
-            self.traverse_folder(root_folder_id, &mut IndexSet::new(), &mut result)
-                .await?;
-        }
-        Ok(result.into_iter().collect())
-    }
+trait ResultExt<T> {
+    type OptResult;
+    fn or_not_found(self) -> Self::OptResult;
+}
 
-    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
-        let file_id = key.str_value()?;
+impl<T> ResultExt<T> for google_drive3::Result<T> {
+    type OptResult = google_drive3::Result<Option<T>>;
 
-        let file = match self
-            .drive_hub
-            .files()
-            .get(file_id)
-            .add_scope(Scope::Readonly)
-            .param("fields", "id,name,mimeType,trashed")
-            .doit()
-            .await
-        {
-            Ok((_, file)) => {
-                if file.trashed == Some(true) {
-                    return Ok(None);
-                }
-                file
-            }
+    fn or_not_found(self) -> Self::OptResult {
+        match self {
+            Ok(value) => Ok(Some(value)),
             Err(google_drive3::Error::BadRequest(err_msg))
                 if err_msg
                     .get("error")
@@ -211,12 +285,70 @@ impl SourceExecutor for Executor {
                     .and_then(|code| code.as_i64())
                     == Some(404) =>
             {
-                return Ok(None);
+                Ok(None)
             }
-            Err(e) => Err(e)?,
-        };
+            Err(e) => Err(e),
+        }
+    }
+}
 
-        let (mime_type, resp_body) = if let Some(export_mime_type) = file
+#[async_trait]
+impl SourceExecutor for Executor {
+    fn list<'a>(
+        &'a self,
+        options: SourceExecutorListOptions,
+    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>> {
+        let mut seen_ids = HashSet::new();
+        let mut folder_ids = self.root_folder_ids.clone();
+        let fields = format!(
+            "files(id,name,mimeType,trashed{})",
+            if options.include_ordinal {
+                ",modifiedTime"
+            } else {
+                ""
+            }
+        );
+        let mut new_folder_ids = Vec::new();
+        try_stream! {
+            while let Some(folder_id) = folder_ids.pop() {
+                let mut next_page_token = None;
+                loop {
+                    let mut curr_rows = Vec::new();
+                    let files = self
+                        .list_files(&folder_id, &fields, &mut next_page_token)
+                        .await?;
+                    for file in files {
+                        curr_rows.extend(self.visit_file(file, &mut new_folder_ids, &mut seen_ids)?);
+                    }
+                    if !curr_rows.is_empty() {
+                        yield curr_rows;
+                    }
+                    if next_page_token.is_none() {
+                        break;
+                    }
+                }
+                folder_ids.extend(new_folder_ids.drain(..).rev());
+            }
+        }
+        .boxed()
+    }
+
+    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
+        let file_id = key.str_value()?;
+        let resp = self
+            .drive_hub
+            .files()
+            .get(file_id)
+            .add_scope(Scope::Readonly)
+            .param("fields", "id,name,mimeType,trashed")
+            .doit()
+            .await
+            .or_not_found()?;
+        let file = match resp {
+            Some((_, file)) if file.trashed != Some(true) => file,
+            _ => return Ok(None),
+        };
+        let type_n_body = if let Some(export_mime_type) = file
             .mime_type
             .as_ref()
             .and_then(|mime_type| EXPORT_MIME_TYPES.get(mime_type.as_str()))
@@ -226,40 +358,73 @@ impl SourceExecutor for Executor {
             } else {
                 export_mime_type.text
             };
-            let content = self
-                .drive_hub
+            self.drive_hub
                 .files()
                 .export(file_id, target_mime_type)
                 .add_scope(Scope::Readonly)
                 .doit()
-                .await?
-                .into_body();
-            (Some(target_mime_type.to_string()), content)
+                .await
+                .or_not_found()?
+                .map(|content| (Some(target_mime_type.to_string()), content.into_body()))
         } else {
-            let (resp, _) = self
-                .drive_hub
+            self.drive_hub
                 .files()
                 .get(file_id)
                 .add_scope(Scope::Readonly)
                 .param("alt", "media")
                 .doit()
-                .await?;
-            (file.mime_type, resp.into_body())
+                .await
+                .or_not_found()?
+                .map(|(resp, _)| (file.mime_type, resp.into_body()))
         };
-        let content = resp_body.collect().await?;
+        let value = match type_n_body {
+            Some((mime_type, resp_body)) => {
+                let content = resp_body.collect().await?;
 
-        let fields = vec![
-            file.name.unwrap_or_default().into(),
-            mime_type.into(),
-            if self.binary {
-                content.to_bytes().to_vec().into()
-            } else {
-                String::from_utf8_lossy(&content.to_bytes())
-                    .to_string()
-                    .into()
-            },
-        ];
-        Ok(Some(FieldValues { fields }))
+                let fields = vec![
+                    file.name.unwrap_or_default().into(),
+                    mime_type.into(),
+                    if self.binary {
+                        content.to_bytes().to_vec().into()
+                    } else {
+                        String::from_utf8_lossy(&content.to_bytes())
+                            .to_string()
+                            .into()
+                    },
+                ];
+                Some(FieldValues { fields })
+            }
+            None => None,
+        };
+        Ok(value)
+    }
+
+    async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
+        let poll_interval = if let Some(poll_interval) = self.recent_updates_poll_interval {
+            poll_interval
+        } else {
+            return Ok(None);
+        };
+        let mut cutoff_time = Utc::now() - CUTOFF_TIME_BUFFER;
+        let mut interval = tokio::time::interval(poll_interval);
+        interval.tick().await;
+        let stream = stream! {
+            loop {
+                interval.tick().await;
+                let changes = self.get_recent_updates(&mut cutoff_time).await;
+                match changes {
+                    Ok(changes) => {
+                        for change in changes {
+                            yield change;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error getting recent updates: {e}");
+                    }
+                }
+            }
+        };
+        Ok(Some(stream.boxed()))
     }
 }
 

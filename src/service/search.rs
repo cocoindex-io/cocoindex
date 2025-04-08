@@ -27,35 +27,26 @@ pub async fn search(
     Query(query): Query<SearchParams>,
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<QueryResponse>, ApiError> {
-    let query_handler = lib_context.with_flow_context(&flow_name, |flow_ctx| {
-        Ok(match &query.handler {
-            Some(handler) => flow_ctx
-                .query_handlers
-                .get(handler)
-                .ok_or_else(|| {
-                    ApiError::new(
-                        &format!("Query handler not found: {handler}"),
-                        StatusCode::NOT_FOUND,
-                    )
-                })?
-                .clone(),
-            None => {
-                if flow_ctx.query_handlers.is_empty() {
-                    return Err(ApiError::new(
-                        &format!("No query handler found for flow: {flow_name}"),
-                        StatusCode::NOT_FOUND,
-                    ));
-                } else if flow_ctx.query_handlers.len() == 1 {
-                    flow_ctx.query_handlers.values().next().unwrap().clone()
-                } else {
-                    return Err(ApiError::new(
-                        "Found multiple query handlers for flow {}",
-                        StatusCode::BAD_REQUEST,
-                    ));
-                }
+    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
+    let query_handler = match &query.handler {
+        Some(handler) => flow_ctx.get_query_handler(handler)?,
+        None => {
+            let query_handlers = flow_ctx.query_handlers.lock().unwrap();
+            if query_handlers.is_empty() {
+                return Err(ApiError::new(
+                    &format!("No query handler found for flow: {flow_name}"),
+                    StatusCode::NOT_FOUND,
+                ));
+            } else if query_handlers.len() == 1 {
+                query_handlers.values().next().unwrap().clone()
+            } else {
+                return Err(ApiError::new(
+                    "Found multiple query handlers for flow {}",
+                    StatusCode::BAD_REQUEST,
+                ));
             }
-        })
-    })??;
+        }
+    };
     let (results, info) = query_handler
         .search(query.query, query.limit, query.field, query.metric)
         .await?;

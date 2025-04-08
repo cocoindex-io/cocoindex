@@ -1,12 +1,8 @@
-use std::sync::Arc;
+use crate::prelude::*;
 
-use serde::Serialize;
-
-use crate::base::schema::ValueType;
-use crate::base::value;
 use crate::execution::db_tracking_setup;
 use crate::ops::interface::*;
-use crate::utils::fingerprint::Fingerprinter;
+use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AnalyzedLocalFieldReference {
@@ -55,12 +51,13 @@ pub struct AnalyzedOpOutput {
     pub field_idx: u32,
 }
 
-pub struct AnalyzedSourceOp {
+pub struct AnalyzedImportOp {
     pub name: String,
     pub source_id: i32,
     pub executor: Box<dyn SourceExecutor>,
     pub output: AnalyzedOpOutput,
-    pub primary_key_type: ValueType,
+    pub primary_key_type: schema::ValueType,
+    pub refresh_options: spec::SourceRefreshOptions,
 }
 
 pub struct AnalyzedFunctionExecInfo {
@@ -69,7 +66,7 @@ pub struct AnalyzedFunctionExecInfo {
 
     /// Fingerprinter of the function's behavior.
     pub fingerprinter: Fingerprinter,
-    pub output_type: ValueType,
+    pub output_type: schema::ValueType,
 }
 
 pub struct AnalyzedTransformOp {
@@ -106,9 +103,12 @@ pub struct AnalyzedExportOp {
     pub executor: Arc<dyn ExportTargetExecutor>,
     pub query_target: Option<Arc<dyn QueryTarget>>,
     pub primary_key_def: AnalyzedPrimaryKeyDef,
-    pub primary_key_type: ValueType,
+    pub primary_key_type: schema::ValueType,
     /// idx for value fields - excluding the primary key field.
     pub value_fields: Vec<u32>,
+    /// If true, value is never changed on the same primary key.
+    /// This is guaranteed if the primary key contains auto-generated UUIDs.
+    pub value_stable: bool,
 }
 
 pub enum AnalyzedReactiveOp {
@@ -123,9 +123,9 @@ pub struct AnalyzedOpScope {
 
 pub struct ExecutionPlan {
     pub tracking_table_setup: db_tracking_setup::TrackingTableSetupState,
-    pub logic_fingerprint: Vec<u8>,
+    pub logic_fingerprint: Fingerprint,
 
-    pub source_ops: Vec<AnalyzedSourceOp>,
+    pub import_ops: Vec<AnalyzedImportOp>,
     pub op_scope: AnalyzedOpScope,
     pub export_ops: Vec<AnalyzedExportOp>,
 }

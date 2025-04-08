@@ -2,9 +2,9 @@ use crate::{lib_context::LibContext, service};
 
 use anyhow::Result;
 use axum::{routing, Router};
-use futures::FutureExt;
+use futures::{future::BoxFuture, FutureExt};
 use serde::Deserialize;
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -21,7 +21,7 @@ pub struct ServerSettings {
 pub async fn init_server(
     lib_context: Arc<LibContext>,
     settings: ServerSettings,
-) -> Result<Pin<Box<dyn Future<Output = ()> + Send>>> {
+) -> Result<BoxFuture<'static, ()>> {
     let mut cors = CorsLayer::default();
     if let Some(ui_cors_origin) = &settings.cors_origin {
         cors = cors

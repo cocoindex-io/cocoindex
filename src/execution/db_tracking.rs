@@ -1,6 +1,8 @@
+use crate::prelude::*;
+
 use super::{db_tracking_setup::TrackingTableSetupState, memoization::StoredMemoizationInfo};
 use crate::utils::{db::WriteAction, fingerprint::Fingerprint};
-use anyhow::Result;
+use futures::Stream;
 use sqlx::PgPool;
 
 /// (target_key, process_ordinal, fingerprint)
@@ -9,26 +11,21 @@ pub type TrackedTargetKey = (serde_json::Value, i64, Option<Fingerprint>);
 pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKey>)>;
 
 #[derive(sqlx::FromRow, Debug)]
-pub struct SourceTrackingInfo {
-    pub max_process_ordinal: i64,
-    pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
+pub struct SourceTrackingInfoForProcessing {
     pub memoization_info: Option<sqlx::types::Json<Option<StoredMemoizationInfo>>>,
 
     pub processed_source_ordinal: Option<i64>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
-    pub process_ordinal: Option<i64>,
-    pub process_time_micros: Option<i64>,
-    pub target_keys: Option<sqlx::types::Json<TrackedTargetKeyForSource>>,
 }
 
-pub async fn read_source_tracking_info(
+pub async fn read_source_tracking_info_for_processing(
     source_id: i32,
     source_key_json: &serde_json::Value,
     db_setup: &TrackingTableSetupState,
     pool: &PgPool,
-) -> Result<Option<SourceTrackingInfo>> {
+) -> Result<Option<SourceTrackingInfoForProcessing>> {
     let query_str = format!(
-        "SELECT max_process_ordinal, staging_target_keys, memoization_info, processed_source_ordinal, process_logic_fingerprint, process_ordinal, process_time_micros, target_keys FROM {} WHERE source_id = $1 AND source_key = $2",
+        "SELECT memoization_info, processed_source_ordinal, process_logic_fingerprint FROM {} WHERE source_id = $1 AND source_key = $2",
         db_setup.table_name
     );
     let tracking_info = sqlx::query_as(&query_str)
@@ -46,6 +43,7 @@ pub struct SourceTrackingInfoForPrecommit {
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
 
     pub processed_source_ordinal: Option<i64>,
+    pub process_logic_fingerprint: Option<Vec<u8>>,
     pub process_ordinal: Option<i64>,
     pub target_keys: Option<sqlx::types::Json<TrackedTargetKeyForSource>>,
 }
@@ -57,7 +55,7 @@ pub async fn read_source_tracking_info_for_precommit(
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<Option<SourceTrackingInfoForPrecommit>> {
     let query_str = format!(
-        "SELECT max_process_ordinal, staging_target_keys, processed_source_ordinal, process_ordinal, target_keys FROM {} WHERE source_id = $1 AND source_key = $2",
+        "SELECT max_process_ordinal, staging_target_keys, processed_source_ordinal, process_logic_fingerprint, process_ordinal, target_keys FROM {} WHERE source_id = $1 AND source_key = $2",
         db_setup.table_name
     );
     let precommit_tracking_info = sqlx::query_as(&query_str)
@@ -183,22 +181,33 @@ pub async fn delete_source_tracking_info(
 }
 
 #[derive(sqlx::FromRow, Debug)]
-pub struct SourceTrackingKey {
+pub struct TrackedSourceKeyMetadata {
     pub source_key: serde_json::Value,
+    pub processed_source_ordinal: Option<i64>,
+    pub process_logic_fingerprint: Option<Vec<u8>>,
 }
 
-pub async fn list_source_tracking_keys(
-    source_id: i32,
-    db_setup: &TrackingTableSetupState,
-    pool: &PgPool,
-) -> Result<Vec<SourceTrackingKey>> {
-    let query_str = format!(
-        "SELECT source_key FROM {} WHERE source_id = $1",
+pub struct ListTrackedSourceKeyMetadataState {
+    query_str: String,
+}
+
+impl ListTrackedSourceKeyMetadataState {
+    pub fn new() -> Self {
+        Self {
+            query_str: String::new(),
+        }
+    }
+
+    pub fn list<'a>(
+        &'a mut self,
+        source_id: i32,
+        db_setup: &'a TrackingTableSetupState,
+        pool: &'a PgPool,
+    ) -> impl Stream<Item = Result<TrackedSourceKeyMetadata, sqlx::Error>> + 'a {
+        self.query_str = format!(
+        "SELECT source_key, processed_source_ordinal, process_logic_fingerprint FROM {} WHERE source_id = $1",
         db_setup.table_name
     );
-    let keys: Vec<SourceTrackingKey> = sqlx::query_as(&query_str)
-        .bind(source_id)
-        .fetch_all(pool)
-        .await?;
-    Ok(keys)
+        sqlx::query_as(&self.query_str).bind(source_id).fetch(pool)
+    }
 }

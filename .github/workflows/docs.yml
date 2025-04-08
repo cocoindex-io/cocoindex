@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - docs/**
+      - ".github/workflows/docs.yml"
   push:
     branches: [main]
     paths:
       - docs/**
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -38,8 +40,9 @@ jobs:
         run: yarn build
 
   deploy-precheck:
-    runs-on: ubuntu-latest
     if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    environment: docs-release
     outputs:
       gh-deploy-key: ${{ steps.gh-deploy-key.outputs.defined }}
     steps:
@@ -53,6 +56,7 @@ jobs:
     needs: [deploy-precheck]
     if: ${{ needs.deploy-precheck.outputs.gh-deploy-key == 'true' }}
     runs-on: ubuntu-latest
+    environment: docs-release
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,9 +78,11 @@ jobs:
         env:
           USE_SSH: true
         run: |
-          export COCOINDEX_DOCS_POSTHOG_API_KEY=${{ secrets.COCOINDEX_DOCS_POSTHOG_API_KEY }}
-          export COCOINDEX_DOCS_MIXPANEL_API_KEY=${{ secrets.COCOINDEX_DOCS_MIXPANEL_API_KEY }}
-          git config --global user.email "cocoindex.io@gmail.com"
-          git config --global user.name "CocoIndex"
+          export COCOINDEX_DOCS_POSTHOG_API_KEY=${{ vars.COCOINDEX_DOCS_POSTHOG_API_KEY }}
+          export COCOINDEX_DOCS_MIXPANEL_API_KEY=${{ vars.COCOINDEX_DOCS_MIXPANEL_API_KEY }}
+          export COCOINDEX_DOCS_ALGOLIA_APP_ID=${{ vars.COCOINDEX_DOCS_ALGOLIA_APP_ID }}
+          export COCOINDEX_DOCS_ALGOLIA_API_KEY=${{ vars.COCOINDEX_DOCS_ALGOLIA_API_KEY }}
+          git config --global user.email "${{ vars.COCOINDEX_DOCS_DEPLOY_USER_EMAIL }}"
+          git config --global user.name "${{ vars.COCOINDEX_DOCS_DEPLOY_USER_NAME }}"
           yarn install --frozen-lockfile
           yarn deploy

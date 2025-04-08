@@ -172,3 +172,7 @@
   background: var(--ifm-menu-link-sublist-icon) 50% / 1rem 1rem;
 }
 
+.navbar__item.navbar-github-link{
+  display: block;
+  width: 120px;
+}

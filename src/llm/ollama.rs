@@ -75,4 +75,12 @@ impl LlmGenerationClient for Client {
             text: json.response,
         })
     }
+
+    fn json_schema_options(&self) -> super::ToJsonSchemaOptions {
+        super::ToJsonSchemaOptions {
+            fields_always_required: false,
+            supports_format: true,
+            extract_descriptions: true,
+        }
+    }
 }

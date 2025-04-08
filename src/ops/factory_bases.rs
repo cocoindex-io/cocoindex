@@ -1,12 +1,6 @@
-use std::collections::HashMap;
+use crate::prelude::*;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::Arc;
-
-use anyhow::Result;
-use axum::async_trait;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 
 use super::interface::*;
 use super::registry::*;
@@ -14,7 +8,6 @@ use crate::api_bail;
 use crate::api_error;
 use crate::base::schema::*;
 use crate::base::spec::*;
-use crate::base::value;
 use crate::builder::plan::AnalyzedValueMapping;
 use crate::setup;
 // SourceFactoryBase
@@ -208,7 +201,7 @@ impl<T: SourceFactoryBase> SourceFactory for T {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         EnrichedValueType,
-        ExecutorFuture<'static, Box<dyn SourceExecutor>>,
+        BoxFuture<'static, Result<Box<dyn SourceExecutor>>>,
     )> {
         let spec: T::Spec = serde_json::from_value(spec)?;
         let output_schema = self.get_output_schema(&spec, &context)?;
@@ -259,7 +252,7 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         EnrichedValueType,
-        ExecutorFuture<'static, Box<dyn SimpleFunctionExecutor>>,
+        BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
     )> {
         let spec: T::Spec = serde_json::from_value(spec)?;
         let mut args_resolver = OpArgsResolver::new(&input_schema)?;
@@ -269,6 +262,13 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
         let executor = self.build_executor(spec, resolved_input_schema, context);
         Ok((output_schema, executor))
     }
+}
+
+pub struct ExportTargetBuildOutput<F: StorageFactoryBase + ?Sized> {
+    pub executor:
+        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
+    pub setup_key: F::Key,
+    pub desired_setup_state: F::SetupState,
 }
 
 pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
@@ -286,19 +286,16 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         value_fields_schema: Vec<FieldSchema>,
         storage_options: IndexOptions,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<(
-        (Self::Key, Self::SetupState),
-        ExecutorFuture<'static, (Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>,
-    )>;
+    ) -> Result<ExportTargetBuildOutput<Self>>;
 
+    /// Will not be called if it's setup by user.
+    /// It returns an error if the target only supports setup by user.
     fn check_setup_status(
         &self,
         key: Self::Key,
         desired_state: Option<Self::SetupState>,
         existing_states: setup::CombinedState<Self::SetupState>,
-    ) -> Result<
-        impl setup::ResourceSetupStatusCheck<Key = Self::Key, State = Self::SetupState> + 'static,
-    >;
+    ) -> Result<impl setup::ResourceSetupStatusCheck<Self::Key, Self::SetupState> + 'static>;
 
     fn check_state_compatibility(
         &self,
@@ -318,17 +315,14 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
 }
 
 struct ResourceSetupStatusCheckWrapper<T: StorageFactoryBase> {
-    inner:
-        Box<dyn setup::ResourceSetupStatusCheck<Key = T::Key, State = T::SetupState> + Send + Sync>,
+    inner: Box<dyn setup::ResourceSetupStatusCheck<T::Key, T::SetupState> + Send + Sync>,
     key_json: serde_json::Value,
     state_json: Option<serde_json::Value>,
 }
 
 impl<T: StorageFactoryBase> ResourceSetupStatusCheckWrapper<T> {
     fn new(
-        inner: Box<
-            dyn setup::ResourceSetupStatusCheck<Key = T::Key, State = T::SetupState> + Send + Sync,
-        >,
+        inner: Box<dyn setup::ResourceSetupStatusCheck<T::Key, T::SetupState> + Send + Sync>,
     ) -> Result<Self> {
         Ok(Self {
             key_json: serde_json::to_value(inner.key())?,
@@ -348,19 +342,18 @@ impl<T: StorageFactoryBase> Debug for ResourceSetupStatusCheckWrapper<T> {
 }
 
 #[async_trait]
-impl<T: StorageFactoryBase> setup::ResourceSetupStatusCheck for ResourceSetupStatusCheckWrapper<T> {
-    type Key = serde_json::Value;
-    type State = serde_json::Value;
-
+impl<T: StorageFactoryBase> setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value>
+    for ResourceSetupStatusCheckWrapper<T>
+{
     fn describe_resource(&self) -> String {
         self.inner.describe_resource()
     }
 
-    fn key(&self) -> &Self::Key {
+    fn key(&self) -> &serde_json::Value {
         &self.key_json
     }
 
-    fn desired_state(&self) -> Option<&Self::State> {
+    fn desired_state(&self) -> Option<&serde_json::Value> {
         self.state_json.as_ref()
     }
 
@@ -386,12 +379,9 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         value_fields_schema: Vec<FieldSchema>,
         storage_options: IndexOptions,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<(
-        (serde_json::Value, serde_json::Value),
-        ExecutorFuture<'static, (Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>,
-    )> {
+    ) -> Result<interface::ExportTargetBuildOutput> {
         let spec: T::Spec = serde_json::from_value(spec)?;
-        let ((setup_key, setup_state), executors) = StorageFactoryBase::build(
+        let build_output = StorageFactoryBase::build(
             self,
             name,
             spec,
@@ -400,13 +390,11 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             storage_options,
             context,
         )?;
-        Ok((
-            (
-                serde_json::to_value(setup_key)?,
-                serde_json::to_value(setup_state)?,
-            ),
-            executors,
-        ))
+        Ok(interface::ExportTargetBuildOutput {
+            executor: build_output.executor,
+            setup_key: serde_json::to_value(build_output.setup_key)?,
+            desired_setup_state: serde_json::to_value(build_output.desired_setup_state)?,
+        })
     }
 
     fn check_setup_status(
@@ -416,9 +404,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         existing_states: setup::CombinedState<serde_json::Value>,
     ) -> Result<
         Box<
-            dyn setup::ResourceSetupStatusCheck<Key = serde_json::Value, State = serde_json::Value>
-                + Send
-                + Sync,
+            dyn setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value> + Send + Sync,
         >,
     > {
         let key: T::Key = serde_json::from_value(key.clone())?;

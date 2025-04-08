@@ -1,6 +1,7 @@
 import typing
 import collections
 import dataclasses
+import datetime
 import types
 import inspect
 import uuid
@@ -26,6 +27,8 @@ Float32 = Annotated[float, TypeKind('Float32')]
 Float64 = Annotated[float, TypeKind('Float64')]
 Range = Annotated[tuple[int, int], TypeKind('Range')]
 Json = Annotated[Any, TypeKind('Json')]
+LocalDateTime = Annotated[datetime.datetime, TypeKind('LocalDateTime')]
+OffsetDateTime = Annotated[datetime.datetime, TypeKind('OffsetDateTime')]
 
 COLLECTION_TYPES = ('Table', 'List')
 
@@ -133,6 +136,12 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
             kind = 'Float64'
         elif t is uuid.UUID:
             kind = 'Uuid'
+        elif t is datetime.date:
+            kind = 'Date'
+        elif t is datetime.time:
+            kind = 'Time'
+        elif t is datetime.datetime:
+            kind = 'OffsetDateTime'
         else:
             raise ValueError(f"type unsupported yet: {t}")
 
