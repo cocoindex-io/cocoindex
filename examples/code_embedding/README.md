@@ -7,9 +7,9 @@ In this example, we will build an embedding index for a codebase using CocoIndex
 
 Please give [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a star to support us if you like our work. Thank you so much with a warm coconut hug 🥥🤗. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
-You can find a detailed blog post with step by step tutorial and explanations [here](https://cocoindex.io/blogs/index-code-base-for-rag).
-
-[![Watch the video](https://github.com/user-attachments/assets/00799cae-7937-441b-92ad-c667b4437879)](https://youtu.be/G3WstvhHO24?si=Bnxu67Ax5Lv8b-J2)
+## Tutorials
+- Blog with step by step tutorial [here](https://cocoindex.io/blogs/index-code-base-for-rag).
+- Video walkthrough [here](https://youtu.be/G3WstvhHO24?si=Bnxu67Ax5Lv8b-J2)
 
 
 ## Prerequisite
