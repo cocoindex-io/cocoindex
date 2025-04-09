@@ -9,6 +9,8 @@ Please give [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a s
 
 You can find a detailed blog post with step by step tutorial and explanations [here](https://cocoindex.io/blogs/index-code-base-for-rag).
 
+[![Watch the video](https://github.com/user-attachments/assets/00799cae-7937-441b-92ad-c667b4437879)](https://youtu.be/G3WstvhHO24?si=Bnxu67Ax5Lv8b-J2)
+
 
 ## Prerequisite
 [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
