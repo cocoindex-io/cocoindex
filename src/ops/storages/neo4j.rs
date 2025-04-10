@@ -427,9 +427,6 @@ struct SetupStatusCheck {
     graph_pool: Arc<GraphPool>,
     conn_spec: Neo4jConnectionSpec,
 
-    key: GraphRelationship,
-    desired_state: Option<RelationshipSetupState>,
-
     data_clear: Option<DataClearAction>,
     rel_constraint_to_delete: IndexSet<String>,
     rel_constraint_to_create: IndexMap<String, KeyConstraint>,
@@ -473,7 +470,7 @@ impl SetupStatusCheck {
 
         let mut rel_constraint_to_create = IndexMap::new();
         let mut node_constraint_to_create = IndexMap::new();
-        if let Some(desired_state) = &desired_state {
+        if let Some(desired_state) = desired_state {
             let rel_constraint = KeyConstraint {
                 label: key.relationship.clone(),
                 field_name: desired_state.key_field_name.clone(),
@@ -485,8 +482,7 @@ impl SetupStatusCheck {
                 .map(|c| rel_constraint.field_name == c.key_field_name)
                 .unwrap_or(false)
             {
-                rel_constraint_to_create
-                    .insert(desired_state.key_constraint_name.clone(), rel_constraint);
+                rel_constraint_to_create.insert(desired_state.key_constraint_name, rel_constraint);
             }
 
             old_node_constraints.swap_remove(&desired_state.src_node.key_constraint_name);
@@ -543,8 +539,6 @@ impl SetupStatusCheck {
         Self {
             graph_pool,
             conn_spec,
-            key,
-            desired_state,
             data_clear,
             rel_constraint_to_delete,
             rel_constraint_to_create,
@@ -556,19 +550,7 @@ impl SetupStatusCheck {
 }
 
 #[async_trait]
-impl ResourceSetupStatusCheck<GraphRelationship, RelationshipSetupState> for SetupStatusCheck {
-    fn describe_resource(&self) -> String {
-        format!("Neo4j relationship {}", self.key.relationship)
-    }
-
-    fn key(&self) -> &GraphRelationship {
-        &self.key
-    }
-
-    fn desired_state(&self) -> Option<&RelationshipSetupState> {
-        self.desired_state.as_ref()
-    }
-
+impl ResourceSetupStatusCheck for SetupStatusCheck {
     fn describe_changes(&self) -> Vec<String> {
         let mut result = vec![];
         if let Some(data_clear) = &self.data_clear {
@@ -753,8 +735,7 @@ impl StorageFactoryBase for RelationshipFactory {
         desired: Option<RelationshipSetupState>,
         existing: CombinedState<RelationshipSetupState>,
         auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<impl ResourceSetupStatusCheck<GraphRelationship, RelationshipSetupState> + 'static>
-    {
+    ) -> Result<impl ResourceSetupStatusCheck + 'static> {
         let conn_spec = auth_registry.get::<Neo4jConnectionSpec>(&key.connection)?;
         Ok(SetupStatusCheck::new(
             key,
@@ -776,5 +757,9 @@ impl StorageFactoryBase for RelationshipFactory {
             SetupStateCompatibility::NotCompatible
         };
         Ok(compatibility)
+    }
+
+    fn describe_resource(&self, key: &GraphRelationship) -> Result<String> {
+        Ok(format!("Neo4j relationship {}", key.relationship))
     }
 }

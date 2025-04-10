@@ -182,17 +182,15 @@ pub trait ExportTargetFactory {
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
         auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<
-        Box<
-            dyn setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value> + Send + Sync,
-        >,
-    >;
+    ) -> Result<Box<dyn setup::ResourceSetupStatusCheck>>;
 
     fn check_state_compatibility(
         &self,
         desired_state: &serde_json::Value,
         existing_state: &serde_json::Value,
     ) -> Result<SetupStateCompatibility>;
+
+    fn describe_resource(&self, key: &serde_json::Value) -> Result<String>;
 }
 
 #[derive(Clone)]
