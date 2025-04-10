@@ -30,3 +30,5 @@ pub(crate) use crate::{api_bail, api_error};
 pub(crate) use anyhow::{anyhow, bail};
 pub(crate) use async_stream::{stream, try_stream};
 pub(crate) use log::{debug, error, info, trace, warn};
+
+pub(crate) use derivative::Derivative;

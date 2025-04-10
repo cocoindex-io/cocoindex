@@ -21,13 +21,13 @@ impl AnalyzedFlow {
         flow_instance: crate::base::spec::FlowInstanceSpec,
         existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
         registry: &ExecutorFactoryRegistry,
-        auth_registry: Arc<AuthRegistry>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<Self> {
         let ctx = analyzer::build_flow_instance_context(&flow_instance.name, auth_registry);
         let (data_schema, execution_plan_fut, desired_state) =
             analyzer::analyze_flow(&flow_instance, &ctx, existing_flow_ss, registry)?;
         let setup_status_check =
-            setup::check_flow_setup_status(Some(&desired_state), existing_flow_ss)?;
+            setup::check_flow_setup_status(Some(&desired_state), existing_flow_ss, auth_registry)?;
         let execution_plan = if setup_status_check.is_up_to_date() {
             Some(
                 async move {
@@ -73,7 +73,7 @@ impl AnalyzedTransientFlow {
     pub async fn from_transient_flow(
         transient_flow: spec::TransientFlowSpec,
         registry: &ExecutorFactoryRegistry,
-        auth_registry: Arc<AuthRegistry>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<Self> {
         let ctx = analyzer::build_flow_instance_context(&transient_flow.name, auth_registry);
         let (output_type, data_schema, execution_plan_fut) =

@@ -1029,11 +1029,11 @@ impl AnalyzerContext<'_> {
 
 pub fn build_flow_instance_context(
     flow_inst_name: &str,
-    auth_registry: Arc<AuthRegistry>,
+    auth_registry: &Arc<AuthRegistry>,
 ) -> Arc<FlowInstanceContext> {
     Arc::new(FlowInstanceContext {
         flow_instance_name: flow_inst_name.to_string(),
-        auth_registry,
+        auth_registry: auth_registry.clone(),
     })
 }
 

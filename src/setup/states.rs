@@ -230,9 +230,7 @@ where
 
     fn change_type(&self) -> SetupChangeType;
 
-    async fn apply_change(&self) -> Result<()> {
-        Ok(())
-    }
+    async fn apply_change(&self) -> Result<()>;
 }
 
 #[async_trait]

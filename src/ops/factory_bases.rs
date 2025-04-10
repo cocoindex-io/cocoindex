@@ -295,6 +295,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         key: Self::Key,
         desired_state: Option<Self::SetupState>,
         existing_states: setup::CombinedState<Self::SetupState>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<impl setup::ResourceSetupStatusCheck<Self::Key, Self::SetupState> + 'static>;
 
     fn check_state_compatibility(
@@ -402,6 +403,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<
         Box<
             dyn setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value> + Send + Sync,
@@ -412,8 +414,13 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             .map(|v| serde_json::from_value(v.clone()))
             .transpose()?;
         let existing_states = from_json_combined_state(existing_states)?;
-        let status_check =
-            StorageFactoryBase::check_setup_status(self, key, desired_state, existing_states)?;
+        let status_check = StorageFactoryBase::check_setup_status(
+            self,
+            key,
+            desired_state,
+            existing_states,
+            auth_registry,
+        )?;
         Ok(Box::new(ResourceSetupStatusCheckWrapper::<T>::new(
             Box::new(status_check),
         )?))

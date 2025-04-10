@@ -1,7 +1,5 @@
-use std::convert::Infallible;
-
 use crate::prelude::*;
-use crate::setup::ResourceSetupStatusCheck;
+use crate::setup::{ResourceSetupStatusCheck, SetupChangeType};
 use crate::{ops::sdk::*, setup::CombinedState};
 
 use neo4rs::{BoltType, ConfigBuilder, Graph};
@@ -25,8 +23,8 @@ pub struct NodeSpec {
 
 #[derive(Debug, Deserialize)]
 pub struct RelationshipSpec {
-    connection: Neo4jConnectionSpec,
-    relationship_label: String,
+    connection: AuthEntryReference,
+    relationship: String,
     source_node: NodeSpec,
     target_node: NodeSpec,
 }
@@ -34,7 +32,6 @@ pub struct RelationshipSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 struct GraphKey {
     uri: String,
-    user: String,
     db: String,
 }
 
@@ -42,7 +39,6 @@ impl GraphKey {
     fn from_spec(spec: &Neo4jConnectionSpec) -> Self {
         Self {
             uri: spec.uri.clone(),
-            user: spec.user.clone(),
             db: spec.db.clone().unwrap_or_else(|| DEFAULT_DB.to_string()),
         }
     }
@@ -50,19 +46,20 @@ impl GraphKey {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct GraphRelationship {
-    graph: GraphKey,
+    connection: AuthEntryReference,
     relationship: String,
 }
 
 impl GraphRelationship {
     fn from_spec(spec: &RelationshipSpec) -> Self {
         Self {
-            graph: GraphKey::from_spec(&spec.connection),
-            relationship: spec.relationship_label.clone(),
+            connection: spec.connection.clone(),
+            relationship: spec.relationship.clone(),
         }
     }
 }
 
+#[derive(Default)]
 pub struct GraphPool {
     graphs: Mutex<HashMap<GraphKey, Arc<OnceCell<Arc<Graph>>>>>,
 }
@@ -248,7 +245,7 @@ impl RelationshipStorageExecutor {
     ) -> Self {
         let delete_cypher = format!(
             r#"
-OPTIONAL MATCH (old_src)-[old_rel:{rel_label} {{{rel_key_field_name}: ${REL_ID_PARAM}}}]->(old_tgt)
+OPTIONAL MATCH (old_src)-[old_rel:{rel_type} {{{rel_key_field_name}: ${REL_ID_PARAM}}}]->(old_tgt)
 
 DELETE old_rel
 
@@ -271,7 +268,7 @@ CALL {{
   RETURN 0 AS _2
 }}            
             "#,
-            rel_label = spec.relationship_label,
+            rel_type = spec.relationship,
             rel_key_field_name = key_field.name,
         );
 
@@ -284,14 +281,14 @@ CALL {{
             r#"
 MERGE (new_src:{src_node_label} {{{src_node_key_field_name}: ${SRC_ID_PARAM}}})
 MERGE (new_tgt:{tgt_node_label} {{{tgt_node_key_field_name}: ${TGT_ID_PARAM}}})
-MERGE (new_src)-[new_rel:{rel_label} {{id: ${REL_ID_PARAM}}}]->(new_tgt)
+MERGE (new_src)-[new_rel:{rel_type} {{id: ${REL_ID_PARAM}}}]->(new_tgt)
 {optional_set_rel_props}
             "#,
             src_node_label = spec.source_node.label,
             src_node_key_field_name = spec.source_node.field_name,
             tgt_node_label = spec.target_node.label,
             tgt_node_key_field_name = spec.target_node.field_name,
-            rel_label = spec.relationship_label,
+            rel_type = spec.relationship,
         );
         Self {
             graph,
@@ -358,13 +355,324 @@ impl ExportTargetExecutor for RelationshipStorageExecutor {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RelationshipSetupState {
+pub struct NodeSetupState {
+    label: String,
     key_field_name: String,
+    key_constraint_name: String,
 }
 
+impl NodeSetupState {
+    fn from_spec(spec: &NodeSpec) -> Self {
+        Self {
+            label: spec.label.clone(),
+            key_field_name: spec.field_name.clone(),
+            key_constraint_name: format!("n__{}__{}", spec.label, spec.field_name),
+        }
+    }
+
+    fn is_compatible(&self, other: &Self) -> bool {
+        self.label == other.label && self.key_field_name == other.key_field_name
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelationshipSetupState {
+    key_field_name: String,
+    key_constraint_name: String,
+    src_node: NodeSetupState,
+    tgt_node: NodeSetupState,
+}
+
+impl RelationshipSetupState {
+    fn from_spec(spec: &RelationshipSpec, key_field_name: String) -> Self {
+        Self {
+            key_field_name,
+            key_constraint_name: format!("r__{}__key", spec.relationship),
+            src_node: NodeSetupState::from_spec(&spec.source_node),
+            tgt_node: NodeSetupState::from_spec(&spec.target_node),
+        }
+    }
+
+    fn is_compatible(&self, other: &Self) -> bool {
+        self.key_field_name == other.key_field_name
+            && self.src_node.is_compatible(&other.src_node)
+            && self.tgt_node.is_compatible(&other.tgt_node)
+    }
+}
+
+#[derive(Debug)]
+struct DataClearAction {
+    rel_type: String,
+    node_labels: IndexSet<String>,
+}
+
+#[derive(Debug)]
+struct KeyConstraint {
+    label: String,
+    field_name: String,
+}
+
+impl KeyConstraint {
+    fn from_node_setup_state(state: &NodeSetupState) -> Self {
+        Self {
+            label: state.label.clone(),
+            field_name: state.key_field_name.clone(),
+        }
+    }
+}
+
+#[derive(Derivative)]
+#[derivative(Debug)]
+struct SetupStatusCheck {
+    #[derivative(Debug = "ignore")]
+    graph_pool: Arc<GraphPool>,
+    conn_spec: Neo4jConnectionSpec,
+
+    key: GraphRelationship,
+    desired_state: Option<RelationshipSetupState>,
+
+    data_clear: Option<DataClearAction>,
+    rel_constraint_to_delete: IndexSet<String>,
+    rel_constraint_to_create: IndexMap<String, KeyConstraint>,
+    node_constraint_to_delete: IndexSet<String>,
+    node_constraint_to_create: IndexMap<String, KeyConstraint>,
+
+    change_type: SetupChangeType,
+}
+
+impl SetupStatusCheck {
+    fn new(
+        key: GraphRelationship,
+        graph_pool: Arc<GraphPool>,
+        conn_spec: Neo4jConnectionSpec,
+        desired_state: Option<RelationshipSetupState>,
+        existing: CombinedState<RelationshipSetupState>,
+    ) -> Self {
+        let data_clear = existing
+            .current
+            .as_ref()
+            .filter(|existing_current| {
+                !desired_state
+                    .as_ref()
+                    .map(|desired| desired.is_compatible(existing_current))
+                    .unwrap_or(false)
+            })
+            .map(|existing_current| DataClearAction {
+                rel_type: key.relationship.clone(),
+                node_labels: std::iter::once(existing_current.src_node.label.clone())
+                    .chain(std::iter::once(existing_current.tgt_node.label.clone()))
+                    .collect(),
+            });
+
+        let mut old_rel_constraints = IndexSet::new();
+        let mut old_node_constraints = IndexSet::new();
+        for existing_version in existing.possible_versions() {
+            old_rel_constraints.insert(existing_version.key_constraint_name.clone());
+            old_node_constraints.insert(existing_version.src_node.key_constraint_name.clone());
+            old_node_constraints.insert(existing_version.tgt_node.key_constraint_name.clone());
+        }
+
+        let mut rel_constraint_to_create = IndexMap::new();
+        let mut node_constraint_to_create = IndexMap::new();
+        if let Some(desired_state) = &desired_state {
+            let rel_constraint = KeyConstraint {
+                label: key.relationship.clone(),
+                field_name: desired_state.key_field_name.clone(),
+            };
+            old_rel_constraints.swap_remove(&desired_state.key_constraint_name);
+            if !existing
+                .current
+                .as_ref()
+                .map(|c| rel_constraint.field_name == c.key_field_name)
+                .unwrap_or(false)
+            {
+                rel_constraint_to_create
+                    .insert(desired_state.key_constraint_name.clone(), rel_constraint);
+            }
+
+            old_node_constraints.swap_remove(&desired_state.src_node.key_constraint_name);
+            if !existing
+                .current
+                .as_ref()
+                .map(|c| {
+                    c.src_node.is_compatible(&desired_state.src_node)
+                        || c.tgt_node.is_compatible(&desired_state.tgt_node)
+                })
+                .unwrap_or(false)
+            {
+                node_constraint_to_create.insert(
+                    desired_state.src_node.key_constraint_name.clone(),
+                    KeyConstraint::from_node_setup_state(&desired_state.src_node),
+                );
+            }
+
+            old_node_constraints.swap_remove(&desired_state.tgt_node.key_constraint_name);
+            if !existing
+                .current
+                .as_ref()
+                .map(|c| c.src_node.is_compatible(&desired_state.src_node))
+                .unwrap_or(false)
+            {
+                node_constraint_to_create.insert(
+                    desired_state.tgt_node.key_constraint_name.clone(),
+                    KeyConstraint::from_node_setup_state(&desired_state.tgt_node),
+                );
+            }
+        }
+
+        let rel_constraint_to_delete = old_rel_constraints;
+        let node_constraint_to_delete = old_node_constraints;
+
+        let change_type = if data_clear.is_none()
+            && rel_constraint_to_delete.is_empty()
+            && rel_constraint_to_create.is_empty()
+            && node_constraint_to_delete.is_empty()
+            && node_constraint_to_create.is_empty()
+        {
+            SetupChangeType::NoChange
+        } else if data_clear.is_none()
+            && rel_constraint_to_delete.is_empty()
+            && node_constraint_to_delete.is_empty()
+        {
+            SetupChangeType::Create
+        } else if rel_constraint_to_create.is_empty() && node_constraint_to_create.is_empty() {
+            SetupChangeType::Delete
+        } else {
+            SetupChangeType::Update
+        };
+
+        Self {
+            graph_pool,
+            conn_spec,
+            key,
+            desired_state,
+            data_clear,
+            rel_constraint_to_delete,
+            rel_constraint_to_create,
+            node_constraint_to_delete,
+            node_constraint_to_create,
+            change_type,
+        }
+    }
+}
+
+#[async_trait]
+impl ResourceSetupStatusCheck<GraphRelationship, RelationshipSetupState> for SetupStatusCheck {
+    fn describe_resource(&self) -> String {
+        format!("Neo4j relationship {}", self.key.relationship)
+    }
+
+    fn key(&self) -> &GraphRelationship {
+        &self.key
+    }
+
+    fn desired_state(&self) -> Option<&RelationshipSetupState> {
+        self.desired_state.as_ref()
+    }
+
+    fn describe_changes(&self) -> Vec<String> {
+        let mut result = vec![];
+        if let Some(data_clear) = &self.data_clear {
+            result.push(format!(
+                "Clear data for relationship {}; nodes {})",
+                data_clear.rel_type,
+                data_clear.node_labels.iter().join(", "),
+            ));
+        }
+        for name in &self.rel_constraint_to_delete {
+            result.push(format!("Delete relationship constraint {}", name));
+        }
+        for (name, rel_constraint) in self.rel_constraint_to_create.iter() {
+            result.push(format!(
+                "Create UNIQUE CONSTRAINT {} ON RELATIONSHIP {} (key: {})",
+                name, rel_constraint.label, rel_constraint.field_name,
+            ));
+        }
+        for name in &self.node_constraint_to_delete {
+            result.push(format!("Delete node constraint {}", name));
+        }
+        for (name, node_constraint) in self.node_constraint_to_create.iter() {
+            result.push(format!(
+                "Create UNIQUE CONSTRAINT {} ON NODE {} (key: {})",
+                name, node_constraint.label, node_constraint.field_name,
+            ));
+        }
+        result
+    }
+
+    fn change_type(&self) -> SetupChangeType {
+        self.change_type
+    }
+
+    async fn apply_change(&self) -> Result<()> {
+        let graph = self.graph_pool.get_graph(&self.conn_spec).await?;
+
+        if let Some(data_clear) = &self.data_clear {
+            let delete_rel_query = neo4rs::query(&format!(
+                r#"
+                    CALL {{
+                      MATCH ()-[r:{rel_type}]->()
+                      WITH r
+                      DELETE r
+                    }} IN TRANSACTIONS
+                "#,
+                rel_type = data_clear.rel_type
+            ));
+            graph.run(delete_rel_query).await?;
+
+            for node_label in &data_clear.node_labels {
+                let delete_node_query = neo4rs::query(&format!(
+                    r#"
+                        CALL {{
+                          MATCH (n:{node_label})
+                          WHERE NOT (n)--()
+                          DELETE n
+                        }} IN TRANSACTIONS
+                    "#,
+                    node_label = node_label
+                ));
+                graph.run(delete_node_query).await?;
+            }
+        }
+
+        for name in
+            (self.rel_constraint_to_delete.iter()).chain(self.node_constraint_to_delete.iter())
+        {
+            graph
+                .run(neo4rs::query(&format!("DROP CONSTRAINT {name}")))
+                .await?;
+        }
+
+        for (name, constraint) in self.node_constraint_to_create.iter() {
+            graph
+                .run(neo4rs::query(&format!(
+                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR (n:{label}) REQUIRE n.{field_name} IS UNIQUE",
+                    label = constraint.label,
+                    field_name = constraint.field_name
+                )))
+                .await?;
+        }
+
+        for (name, constraint) in self.rel_constraint_to_create.iter() {
+            graph
+                .run(neo4rs::query(&format!(
+                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR ()-[e:{label}]-() REQUIRE e.{field_name} IS UNIQUE",
+                    label = constraint.label,
+                    field_name = constraint.field_name
+                )))
+                .await?;
+        }
+        Ok(())
+    }
+}
 /// Factory for Neo4j relationships
 pub struct RelationshipFactory {
     graph_pool: Arc<GraphPool>,
+}
+
+impl RelationshipFactory {
+    pub fn new(graph_pool: Arc<GraphPool>) -> Self {
+        Self { graph_pool }
+    }
 }
 
 impl StorageFactoryBase for RelationshipFactory {
@@ -383,7 +691,7 @@ impl StorageFactoryBase for RelationshipFactory {
         key_fields_schema: Vec<FieldSchema>,
         value_fields_schema: Vec<FieldSchema>,
         _storage_options: IndexOptions,
-        _context: Arc<FlowInstanceContext>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<ExportTargetBuildOutput<Self>> {
         let setup_key = GraphRelationship::from_spec(&spec);
         let key_field_schema = {
@@ -392,10 +700,8 @@ impl StorageFactoryBase for RelationshipFactory {
             }
             key_fields_schema.into_iter().next().unwrap()
         };
-        let desired_setup_state = RelationshipSetupState {
-            key_field_name: key_field_schema.name.clone(),
-        };
-
+        let desired_setup_state =
+            RelationshipSetupState::from_spec(&spec, key_field_schema.name.clone());
         let mut src_field_info = None;
         let mut tgt_field_info = None;
         let mut rel_value_fields_info = vec![];
@@ -418,8 +724,11 @@ impl StorageFactoryBase for RelationshipFactory {
         let tgt_field_info = tgt_field_info.ok_or_else(|| {
             anyhow::anyhow!("Target key field {} not found", spec.target_node.field_name)
         })?;
+        let conn_spec = context
+            .auth_registry
+            .get::<Neo4jConnectionSpec>(&spec.connection)?;
         let executor = async move {
-            let graph = self.graph_pool.get_graph(&spec.connection).await?;
+            let graph = self.graph_pool.get_graph(&conn_spec).await?;
             let executor = Arc::new(RelationshipStorageExecutor::new(
                 graph,
                 spec,
@@ -440,12 +749,20 @@ impl StorageFactoryBase for RelationshipFactory {
 
     fn check_setup_status(
         &self,
-        _key: GraphRelationship,
-        _desired: Option<RelationshipSetupState>,
-        _existing: CombinedState<RelationshipSetupState>,
+        key: GraphRelationship,
+        desired: Option<RelationshipSetupState>,
+        existing: CombinedState<RelationshipSetupState>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<impl ResourceSetupStatusCheck<GraphRelationship, RelationshipSetupState> + 'static>
     {
-        Err(anyhow::anyhow!("Not supported")) as Result<Infallible, _>
+        let conn_spec = auth_registry.get::<Neo4jConnectionSpec>(&key.connection)?;
+        Ok(SetupStatusCheck::new(
+            key,
+            self.graph_pool.clone(),
+            conn_spec,
+            desired,
+            existing,
+        ))
     }
 
     fn check_state_compatibility(
@@ -453,7 +770,7 @@ impl StorageFactoryBase for RelationshipFactory {
         desired: &RelationshipSetupState,
         existing: &RelationshipSetupState,
     ) -> Result<SetupStateCompatibility> {
-        let compatibility = if desired.key_field_name == existing.key_field_name {
+        let compatibility = if desired.is_compatible(existing) {
             SetupStateCompatibility::Compatible
         } else {
             SetupStateCompatibility::NotCompatible

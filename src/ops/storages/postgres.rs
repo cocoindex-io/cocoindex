@@ -957,6 +957,7 @@ impl StorageFactoryBase for Arc<Factory> {
         key: TableId,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
+        _auth_registry: &Arc<AuthRegistry>,
     ) -> Result<impl setup::ResourceSetupStatusCheck<TableId, SetupState> + 'static> {
         Ok(SetupStatusCheck::new(self.clone(), key, desired, existing))
     }

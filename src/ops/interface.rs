@@ -181,6 +181,7 @@ pub trait ExportTargetFactory {
         key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<
         Box<
             dyn setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value> + Send + Sync,
