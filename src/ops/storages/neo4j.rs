@@ -663,7 +663,7 @@ impl StorageFactoryBase for RelationshipFactory {
     type Key = GraphRelationship;
 
     fn name(&self) -> &str {
-        "Neo4j"
+        "Neo4jRelationship"
     }
 
     fn build(
