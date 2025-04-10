@@ -2,11 +2,13 @@
 Utilities to convert between Python and engine values.
 """
 import dataclasses
+import datetime
 import inspect
 import uuid
 
-from typing import Any, Callable
-from .typing import analyze_type_info, COLLECTION_TYPES
+from enum import Enum
+from typing import Any, Callable, get_origin
+from .typing import analyze_type_info, encode_enriched_type, COLLECTION_TYPES
 
 def to_engine_value(value: Any) -> Any:
     """Convert a Python value to an engine value."""
@@ -100,3 +102,24 @@ def _make_engine_struct_value_converter(
 
     return lambda values: dst_dataclass_type(
         *(converter(values) for converter in field_value_converters))
+
+def dump_engine_object(v: Any) -> Any:
+    """Recursively dump an object for engine. Engine side uses `Pythonized` to catch."""
+    if v is None:
+        return None
+    elif isinstance(v, type) or get_origin(v) is not None:
+        return encode_enriched_type(v)
+    elif isinstance(v, Enum):
+        return v.value
+    elif isinstance(v, datetime.timedelta):
+        total_secs = v.total_seconds()
+        secs = int(total_secs)
+        nanos = int((total_secs - secs) * 1e9)
+        return {'secs': secs, 'nanos': nanos}
+    elif hasattr(v, '__dict__'):
+        return {k: dump_engine_object(v) for k, v in v.__dict__.items()}
+    elif isinstance(v, (list, tuple)):
+        return [dump_engine_object(item) for item in v]
+    elif isinstance(v, dict):
+        return {k: dump_engine_object(v) for k, v in v.items()}
+    return v

@@ -8,7 +8,8 @@ import asyncio
 import re
 import inspect
 import datetime
-from typing import Any, Callable, Sequence, TypeVar, get_origin
+
+from typing import Any, Callable, Sequence, TypeVar
 from threading import Lock
 from enum import Enum
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 from . import _engine
 from . import vector
 from . import op
+from .convert import dump_engine_object
 from .typing import encode_enriched_type
 
 class _NameBuilder:
@@ -63,27 +65,6 @@ def _create_data_slice(
 
 def _spec_kind(spec: Any) -> str:
     return spec.__class__.__name__
-
-def _dump_engine_object(v: Any) -> Any:
-    """Recursively dump an object for engine. Engine side uses `Pythonzized` to catch."""
-    if v is None:
-        return None
-    elif isinstance(v, type) or get_origin(v) is not None:
-        return encode_enriched_type(v)
-    elif isinstance(v, Enum):
-        return v.value
-    elif isinstance(v, datetime.timedelta):
-        total_secs = v.total_seconds()
-        secs = int(total_secs)
-        nanos = int((total_secs - secs) * 1e9)
-        return {'secs': secs, 'nanos': nanos}
-    elif hasattr(v, '__dict__'):
-        return {k: _dump_engine_object(v) for k, v in v.__dict__.items()}
-    elif isinstance(v, (list, tuple)):
-        return [_dump_engine_object(item) for item in v]
-    elif isinstance(v, dict):
-        return {k: _dump_engine_object(v) for k, v in v.items()}
-    return v
 
 T = TypeVar('T')
 
@@ -176,6 +157,7 @@ class DataSlice:
         """
         Apply a function to the data slice.
         """
+        transform_args: list[tuple[Any, str | None]]
         transform_args = [(self._state.engine_data_slice, None)]
         transform_args += [(self._state.flow_builder_state.get_data_slice(v), None) for v in args]
         transform_args += [(self._state.flow_builder_state.get_data_slice(v), k)
@@ -187,7 +169,7 @@ class DataSlice:
             lambda target_scope, name:
                 flow_builder_state.engine_flow_builder.transform(
                     _spec_kind(fn_spec),
-                    _dump_engine_object(fn_spec),
+                    dump_engine_object(fn_spec),
                     transform_args,
                     target_scope,
                     flow_builder_state.field_name_builder.build_name(
@@ -298,7 +280,7 @@ class DataCollector:
             {"field_name": field_name, "metric": metric.value}
             for field_name, metric in vector_index]
         self._flow_builder_state.engine_flow_builder.export(
-            name, _spec_kind(target_spec), _dump_engine_object(target_spec),
+            name, _spec_kind(target_spec), dump_engine_object(target_spec),
             index_options, self._engine_data_collector, setup_by_user)
 
 
@@ -357,11 +339,11 @@ class FlowBuilder:
             self._state,
             lambda target_scope, name: self._state.engine_flow_builder.add_source(
                 _spec_kind(spec),
-                _dump_engine_object(spec),
+                dump_engine_object(spec),
                 target_scope,
                 self._state.field_name_builder.build_name(
                     name, prefix=_to_snake_case(_spec_kind(spec))+'_'),
-                _dump_engine_object(_SourceRefreshOptions(refresh_interval=refresh_interval)),
+                dump_engine_object(_SourceRefreshOptions(refresh_interval=refresh_interval)),
             ),
             name
         )
@@ -382,7 +364,7 @@ class FlowLiveUpdater:
 
     def __init__(self, fl: Flow, options: FlowLiveUpdaterOptions | None = None):
         self._engine_live_updater = _engine.FlowLiveUpdater(
-            fl._lazy_engine_flow(), _dump_engine_object(options or FlowLiveUpdaterOptions()))
+            fl._lazy_engine_flow(), dump_engine_object(options or FlowLiveUpdaterOptions()))
 
     def __enter__(self) -> FlowLiveUpdater:
         return self
@@ -469,7 +451,7 @@ class Flow:
         """
         Evaluate the flow and dump flow outputs to files.
         """
-        return self._lazy_engine_flow().evaluate_and_dump(_dump_engine_object(options))
+        return self._lazy_engine_flow().evaluate_and_dump(dump_engine_object(options))
 
     def internal_flow(self) -> _engine.Flow:
         """
