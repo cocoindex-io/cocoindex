@@ -347,9 +347,11 @@ impl FlowBuilder {
             .get(name)
             .cloned();
         let root_data_scope = Arc::new(Mutex::new(DataScopeBuilder::new()));
+        let flow_inst_context =
+            build_flow_instance_context(name, lib_context.auth_registry.clone());
         let result = Self {
             lib_context,
-            flow_inst_context: build_flow_instance_context(name),
+            flow_inst_context,
             existing_flow_ss,
 
             root_data_scope_ref: DataScopeRef(Arc::new(DataScopeRefInfo {
@@ -648,6 +650,7 @@ impl FlowBuilder {
                     spec,
                     self.existing_flow_ss.as_ref(),
                     &crate::ops::executor_factory_registry(),
+                    self.lib_context.auth_registry.clone(),
                 ))
             })
             .into_py_result()?;
@@ -688,6 +691,7 @@ impl FlowBuilder {
                 get_runtime().block_on(super::AnalyzedTransientFlow::from_transient_flow(
                     spec,
                     &crate::ops::executor_factory_registry(),
+                    self.lib_context.auth_registry.clone(),
                 ))
             })
             .into_py_result()?;

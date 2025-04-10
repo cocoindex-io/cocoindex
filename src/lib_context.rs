@@ -63,6 +63,7 @@ static TOKIO_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| Runtime::new().unwrap
 pub struct LibContext {
     pub pool: PgPool,
     pub flows: Mutex<BTreeMap<String, Arc<FlowContext>>>,
+    pub auth_registry: Arc<AuthRegistry>,
     pub all_setup_states: RwLock<setup::AllSetupState<setup::ExistingMode>>,
 }
 
@@ -103,6 +104,7 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         pool,
         all_setup_states: RwLock::new(all_setup_states),
         flows: Mutex::new(BTreeMap::new()),
+        auth_registry: Arc::new(AuthRegistry::new()),
     })
 }
 

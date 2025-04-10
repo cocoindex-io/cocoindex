@@ -12,6 +12,7 @@ use serde::Serialize;
 
 pub struct FlowInstanceContext {
     pub flow_instance_name: String,
+    pub auth_registry: Arc<AuthRegistry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

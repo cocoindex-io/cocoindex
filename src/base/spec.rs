@@ -282,3 +282,8 @@ pub struct SimpleSemanticsQueryHandlerSpec {
     pub query_transform_flow: TransientFlowSpec,
     pub default_similarity_metric: VectorSimilarityMetric,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct AuthEntryReference {
+    pub key: String,
+}

@@ -1,17 +1,10 @@
-use std::sync::Arc;
+use crate::prelude::*;
 
 use super::{analyzer, plan};
 use crate::{
-    api_error,
-    base::{schema, spec},
     ops::registry::ExecutorFactoryRegistry,
     service::error::{shared_ok, SharedError, SharedResultExt},
     setup::{self, ObjectSetupStatusCheck},
-};
-use anyhow::Result;
-use futures::{
-    future::{BoxFuture, Shared},
-    FutureExt,
 };
 
 pub struct AnalyzedFlow {
@@ -28,8 +21,9 @@ impl AnalyzedFlow {
         flow_instance: crate::base::spec::FlowInstanceSpec,
         existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
         registry: &ExecutorFactoryRegistry,
+        auth_registry: Arc<AuthRegistry>,
     ) -> Result<Self> {
-        let ctx = analyzer::build_flow_instance_context(&flow_instance.name);
+        let ctx = analyzer::build_flow_instance_context(&flow_instance.name, auth_registry);
         let (data_schema, execution_plan_fut, desired_state) =
             analyzer::analyze_flow(&flow_instance, &ctx, existing_flow_ss, registry)?;
         let setup_status_check =
@@ -79,8 +73,9 @@ impl AnalyzedTransientFlow {
     pub async fn from_transient_flow(
         transient_flow: spec::TransientFlowSpec,
         registry: &ExecutorFactoryRegistry,
+        auth_registry: Arc<AuthRegistry>,
     ) -> Result<Self> {
-        let ctx = analyzer::build_flow_instance_context(&transient_flow.name);
+        let ctx = analyzer::build_flow_instance_context(&transient_flow.name, auth_registry);
         let (output_type, data_schema, execution_plan_fut) =
             analyzer::analyze_transient_flow(&transient_flow, &ctx, registry)?;
         Ok(Self {
