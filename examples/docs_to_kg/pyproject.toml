@@ -1,0 +1,6 @@
+[project]
+name = "manuals-to-kg"
+version = "0.1.0"
+description = "Simple example for cocoindex: extract triples from files and build knowledge graph."
+requires-python = ">=3.10"
+dependencies = ["cocoindex>=0.1.19", "python-dotenv>=1.0.1"]
