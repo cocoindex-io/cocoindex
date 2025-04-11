@@ -59,11 +59,11 @@ impl FlowContext {
 }
 
 static TOKIO_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| Runtime::new().unwrap());
+static AUTH_REGISTRY: LazyLock<Arc<AuthRegistry>> = LazyLock::new(|| Arc::new(AuthRegistry::new()));
 
 pub struct LibContext {
     pub pool: PgPool,
     pub flows: Mutex<BTreeMap<String, Arc<FlowContext>>>,
-    pub auth_registry: Arc<AuthRegistry>,
     pub all_setup_states: RwLock<setup::AllSetupState<setup::ExistingMode>>,
 }
 
@@ -87,6 +87,10 @@ pub fn get_runtime() -> &'static Runtime {
     &TOKIO_RUNTIME
 }
 
+pub fn get_auth_registry() -> &'static Arc<AuthRegistry> {
+    &AUTH_REGISTRY
+}
+
 static LIB_INIT: OnceLock<()> = OnceLock::new();
 pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
     LIB_INIT.get_or_init(|| {
@@ -104,7 +108,6 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         pool,
         all_setup_states: RwLock::new(all_setup_states),
         flows: Mutex::new(BTreeMap::new()),
-        auth_registry: Arc::new(AuthRegistry::new()),
     })
 }
 

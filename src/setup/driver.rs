@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{lib_context::get_auth_registry, prelude::*};
 
 use indexmap::IndexMap;
 use serde::de::DeserializeOwned;
@@ -213,7 +213,6 @@ fn group_resource_states<'a>(
 pub fn check_flow_setup_status(
     desired_state: Option<&FlowSetupState<DesiredMode>>,
     existing_state: Option<&FlowSetupState<ExistingMode>>,
-    auth_registry: &Arc<AuthRegistry>,
 ) -> Result<FlowSetupStatusCheck> {
     let metadata_change = diff_state(
         existing_state.map(|e| &e.metadata),
@@ -294,7 +293,7 @@ pub fn check_flow_setup_status(
                 &resource_id.key,
                 target_state,
                 existing_without_setup_by_user,
-                auth_registry,
+                get_auth_registry(),
             )?)
         };
         target_resources.push(ResourceSetupInfo {
@@ -316,18 +315,13 @@ pub fn check_flow_setup_status(
 pub fn sync_setup(
     flows: &BTreeMap<String, Arc<FlowContext>>,
     all_setup_state: &AllSetupState<ExistingMode>,
-    auth_registry: &Arc<AuthRegistry>,
 ) -> Result<AllSetupStatusCheck> {
     let mut flow_status_checks = BTreeMap::new();
     for (flow_name, flow_context) in flows {
         let existing_state = all_setup_state.flows.get(flow_name);
         flow_status_checks.insert(
             flow_name.clone(),
-            check_flow_setup_status(
-                Some(&flow_context.flow.desired_state),
-                existing_state,
-                auth_registry,
-            )?,
+            check_flow_setup_status(Some(&flow_context.flow.desired_state), existing_state)?,
         );
     }
     Ok(AllSetupStatusCheck {
@@ -342,7 +336,6 @@ pub fn sync_setup(
 pub fn drop_setup(
     flow_names: impl IntoIterator<Item = String>,
     all_setup_state: &AllSetupState<ExistingMode>,
-    auth_registry: &Arc<AuthRegistry>,
 ) -> Result<AllSetupStatusCheck> {
     if !all_setup_state.has_metadata_table {
         api_bail!("CocoIndex metadata table is missing.");
@@ -352,7 +345,7 @@ pub fn drop_setup(
         if let Some(existing_state) = all_setup_state.flows.get(&flow_name) {
             flow_status_checks.insert(
                 flow_name,
-                check_flow_setup_status(None, Some(existing_state), auth_registry)?,
+                check_flow_setup_status(None, Some(existing_state))?,
             );
         }
     }

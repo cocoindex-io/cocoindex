@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use crate::base::spec::VectorSimilarityMetric;
 use crate::execution::query;
-use crate::lib_context::{clear_lib_context, init_lib_context};
+use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
 use crate::ops::interface::QueryResults;
 use crate::ops::py_factory::PyOpArgSchema;
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
@@ -282,8 +282,7 @@ fn sync_setup() -> PyResult<SetupStatusCheck> {
     let lib_context = get_lib_context().into_py_result()?;
     let flows = lib_context.flows.lock().unwrap();
     let all_setup_states = lib_context.all_setup_states.read().unwrap();
-    let setup_status = setup::sync_setup(&flows, &all_setup_states, &lib_context.auth_registry)
-        .into_py_result()?;
+    let setup_status = setup::sync_setup(&flows, &all_setup_states).into_py_result()?;
     Ok(SetupStatusCheck(setup_status))
 }
 
@@ -291,8 +290,7 @@ fn sync_setup() -> PyResult<SetupStatusCheck> {
 fn drop_setup(flow_names: Vec<String>) -> PyResult<SetupStatusCheck> {
     let lib_context = get_lib_context().into_py_result()?;
     let all_setup_states = lib_context.all_setup_states.read().unwrap();
-    let setup_status = setup::drop_setup(flow_names, &all_setup_states, &lib_context.auth_registry)
-        .into_py_result()?;
+    let setup_status = setup::drop_setup(flow_names, &all_setup_states).into_py_result()?;
     Ok(SetupStatusCheck(setup_status))
 }
 
@@ -323,9 +321,7 @@ fn apply_setup_changes(py: Python<'_>, setup_status: &SetupStatusCheck) -> PyRes
 
 #[pyfunction]
 fn add_auth_entry(key: String, value: Pythonized<serde_json::Value>) -> PyResult<()> {
-    let lib_context = get_lib_context().into_py_result()?;
-    lib_context
-        .auth_registry
+    get_auth_registry()
         .add(key, value.into_inner())
         .into_py_result()?;
     Ok(())

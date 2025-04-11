@@ -4,9 +4,10 @@ use std::{collections::HashMap, future::Future, sync::Arc};
 
 use super::plan::*;
 use crate::execution::db_tracking_setup;
+use crate::lib_context::get_auth_registry;
 use crate::setup::{
-    self, AuthRegistry, DesiredMode, FlowSetupMetadata, FlowSetupState, ResourceIdentifier,
-    SourceSetupState, TargetSetupState, TargetSetupStateCommon,
+    self, DesiredMode, FlowSetupMetadata, FlowSetupState, ResourceIdentifier, SourceSetupState,
+    TargetSetupState, TargetSetupStateCommon,
 };
 use crate::utils::fingerprint::Fingerprinter;
 use crate::{
@@ -1027,13 +1028,10 @@ impl AnalyzerContext<'_> {
     }
 }
 
-pub fn build_flow_instance_context(
-    flow_inst_name: &str,
-    auth_registry: &Arc<AuthRegistry>,
-) -> Arc<FlowInstanceContext> {
+pub fn build_flow_instance_context(flow_inst_name: &str) -> Arc<FlowInstanceContext> {
     Arc::new(FlowInstanceContext {
         flow_instance_name: flow_inst_name.to_string(),
-        auth_registry: auth_registry.clone(),
+        auth_registry: get_auth_registry().clone(),
     })
 }
 
