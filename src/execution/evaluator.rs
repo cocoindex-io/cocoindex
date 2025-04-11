@@ -142,7 +142,7 @@ impl<'a> ScopeKey<'a> {
         match *self {
             ScopeKey::None => 0,
             ScopeKey::MapKey(_) => 1,
-            ScopeKey::ListIndex(_) => 1,
+            ScopeKey::ListIndex(_) => 0,
         }
     }
 }
