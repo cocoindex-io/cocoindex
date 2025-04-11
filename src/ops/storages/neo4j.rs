@@ -275,6 +275,8 @@ CALL {{
   DELETE old_tgt
   RETURN 0 AS _2
 }}            
+
+FINISH
             "#,
             rel_type = spec.relationship,
             rel_key_field_name = key_field.name,
@@ -289,14 +291,25 @@ CALL {{
             r#"
 MERGE (new_src:{src_node_label} {{{src_node_key_field_name}: ${SRC_ID_PARAM}}})
 MERGE (new_tgt:{tgt_node_label} {{{tgt_node_key_field_name}: ${TGT_ID_PARAM}}})
-MERGE (new_src)-[new_rel:{rel_type} {{id: ${REL_ID_PARAM}}}]->(new_tgt)
+MERGE (new_src)-[new_rel:{rel_type} {{{rel_key_field_name}: ${REL_ID_PARAM}}}]->(new_tgt)
 {optional_set_rel_props}
+
+FINISH
             "#,
             src_node_label = spec.source.label,
-            src_node_key_field_name = spec.source.field_name,
+            src_node_key_field_name = spec
+                .nodes
+                .get(&spec.source.label)
+                .and_then(|node| node.key_field_name.as_ref().map(|n| n.as_str()))
+                .unwrap_or_else(|| DEFAULT_KEY_FIELD_NAME),
             tgt_node_label = spec.target.label,
-            tgt_node_key_field_name = spec.target.field_name,
+            tgt_node_key_field_name = spec
+                .nodes
+                .get(&spec.target.label)
+                .and_then(|node| node.key_field_name.as_ref().map(|n| n.as_str()))
+                .unwrap_or_else(|| DEFAULT_KEY_FIELD_NAME),
             rel_type = spec.relationship,
+            rel_key_field_name = key_field.name,
         );
         Self {
             graph,
@@ -358,6 +371,7 @@ impl ExportTargetExecutor for RelationshipStorageExecutor {
 
         let mut txn = self.graph.start_txn().await?;
         txn.run_queries(queries).await?;
+        txn.commit().await?;
         Ok(())
     }
 }
@@ -479,11 +493,7 @@ impl SetupStatusCheck {
             })
             .map(|existing_current| DataClearAction {
                 rel_type: key.relationship.clone(),
-                node_labels: existing_current
-                    .nodes
-                    .values()
-                    .map(|node| node.key_constraint_name.clone())
-                    .collect(),
+                node_labels: existing_current.nodes.keys().cloned().collect(),
             });
 
         let mut old_rel_constraints = IndexSet::new();
@@ -572,7 +582,7 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
         let mut result = vec![];
         if let Some(data_clear) = &self.data_clear {
             result.push(format!(
-                "Clear data for relationship {}; nodes {})",
+                "Clear data for relationship {}; nodes {}",
                 data_clear.rel_type,
                 data_clear.node_labels.iter().join(", "),
             ));
