@@ -18,15 +18,21 @@ class Neo4jConnectionSpec:
     db: str | None = None
 
 @dataclass
-class Neo4jNodeSpec:
+class Neo4jRelationshipEndSpec:
     """Spec for a Neo4j node type."""
     field_name: str
     label: str
+
+@dataclass
+class Neo4jRelationshipNodeSpec:
+    """Spec for a Neo4j node type."""
+    key_field_name: str | None = None
 
 class Neo4jRelationship(op.StorageSpec):
     """Graph storage powered by Neo4j."""
 
     connection: AuthEntryReference
     relationship: str
-    source_node: Neo4jNodeSpec
-    target_node: Neo4jNodeSpec
+    source: Neo4jRelationshipEndSpec
+    target: Neo4jRelationshipEndSpec
+    nodes: dict[str, Neo4jRelationshipNodeSpec]

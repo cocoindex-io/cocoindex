@@ -16,17 +16,25 @@ pub struct Neo4jConnectionSpec {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct NodeSpec {
+pub struct RelationshipEndSpec {
     field_name: String,
     label: String,
+}
+
+const DEFAULT_KEY_FIELD_NAME: &str = "value";
+
+#[derive(Debug, Deserialize)]
+pub struct RelationshipNodeSpec {
+    key_field_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RelationshipSpec {
     connection: AuthEntryReference,
     relationship: String,
-    source_node: NodeSpec,
-    target_node: NodeSpec,
+    source: RelationshipEndSpec,
+    target: RelationshipEndSpec,
+    nodes: BTreeMap<String, RelationshipNodeSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -284,10 +292,10 @@ MERGE (new_tgt:{tgt_node_label} {{{tgt_node_key_field_name}: ${TGT_ID_PARAM}}})
 MERGE (new_src)-[new_rel:{rel_type} {{id: ${REL_ID_PARAM}}}]->(new_tgt)
 {optional_set_rel_props}
             "#,
-            src_node_label = spec.source_node.label,
-            src_node_key_field_name = spec.source_node.field_name,
-            tgt_node_label = spec.target_node.label,
-            tgt_node_key_field_name = spec.target_node.field_name,
+            src_node_label = spec.source.label,
+            src_node_key_field_name = spec.source.field_name,
+            tgt_node_label = spec.target.label,
+            tgt_node_key_field_name = spec.target.field_name,
             rel_type = spec.relationship,
         );
         Self {
@@ -355,31 +363,34 @@ impl ExportTargetExecutor for RelationshipStorageExecutor {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NodeSetupState {
-    label: String,
+pub struct NodeLabelSetupState {
     key_field_name: String,
     key_constraint_name: String,
 }
 
-impl NodeSetupState {
-    fn from_spec(spec: &NodeSpec) -> Self {
+impl NodeLabelSetupState {
+    fn from_spec(label: &str, spec: &RelationshipNodeSpec) -> Self {
+        let key_field_name = spec
+            .key_field_name
+            .to_owned()
+            .unwrap_or_else(|| DEFAULT_KEY_FIELD_NAME.to_string());
+        let key_constraint_name = format!("n__{}__{}", label, key_field_name);
         Self {
-            label: spec.label.clone(),
-            key_field_name: spec.field_name.clone(),
-            key_constraint_name: format!("n__{}__{}", spec.label, spec.field_name),
+            key_field_name,
+            key_constraint_name,
         }
     }
 
     fn is_compatible(&self, other: &Self) -> bool {
-        self.label == other.label && self.key_field_name == other.key_field_name
+        self.key_field_name == other.key_field_name
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelationshipSetupState {
     key_field_name: String,
     key_constraint_name: String,
-    src_node: NodeSetupState,
-    tgt_node: NodeSetupState,
+    #[serde(default)]
+    nodes: BTreeMap<String, NodeLabelSetupState>,
 }
 
 impl RelationshipSetupState {
@@ -387,15 +398,28 @@ impl RelationshipSetupState {
         Self {
             key_field_name,
             key_constraint_name: format!("r__{}__key", spec.relationship),
-            src_node: NodeSetupState::from_spec(&spec.source_node),
-            tgt_node: NodeSetupState::from_spec(&spec.target_node),
+            nodes: spec
+                .nodes
+                .iter()
+                .map(|(label, node)| (label.clone(), NodeLabelSetupState::from_spec(label, node)))
+                .collect(),
         }
     }
 
-    fn is_compatible(&self, other: &Self) -> bool {
-        self.key_field_name == other.key_field_name
-            && self.src_node.is_compatible(&other.src_node)
-            && self.tgt_node.is_compatible(&other.tgt_node)
+    fn check_compatible(&self, existing: &Self) -> SetupStateCompatibility {
+        if self.key_field_name != existing.key_field_name {
+            SetupStateCompatibility::NotCompatible
+        } else if existing.nodes.iter().any(|(label, existing_node)| {
+            !self
+                .nodes
+                .get(label)
+                .map_or(false, |node| node.is_compatible(existing_node))
+        }) {
+            // If any node's key field change of some node label gone, we have to clear relationship.
+            SetupStateCompatibility::NotCompatible
+        } else {
+            SetupStateCompatibility::Compatible
+        }
     }
 }
 
@@ -412,9 +436,9 @@ struct KeyConstraint {
 }
 
 impl KeyConstraint {
-    fn from_node_setup_state(state: &NodeSetupState) -> Self {
+    fn new(label: String, state: &NodeLabelSetupState) -> Self {
         Self {
-            label: state.label.clone(),
+            label: label,
             field_name: state.key_field_name.clone(),
         }
     }
@@ -448,15 +472,17 @@ impl SetupStatusCheck {
             .current
             .as_ref()
             .filter(|existing_current| {
-                !desired_state
-                    .as_ref()
-                    .map(|desired| desired.is_compatible(existing_current))
-                    .unwrap_or(false)
+                desired_state.as_ref().map_or(true, |desired| {
+                    desired.check_compatible(existing_current)
+                        == SetupStateCompatibility::NotCompatible
+                })
             })
             .map(|existing_current| DataClearAction {
                 rel_type: key.relationship.clone(),
-                node_labels: std::iter::once(existing_current.src_node.label.clone())
-                    .chain(std::iter::once(existing_current.tgt_node.label.clone()))
+                node_labels: existing_current
+                    .nodes
+                    .values()
+                    .map(|node| node.key_constraint_name.clone())
                     .collect(),
             });
 
@@ -464,8 +490,9 @@ impl SetupStatusCheck {
         let mut old_node_constraints = IndexSet::new();
         for existing_version in existing.possible_versions() {
             old_rel_constraints.insert(existing_version.key_constraint_name.clone());
-            old_node_constraints.insert(existing_version.src_node.key_constraint_name.clone());
-            old_node_constraints.insert(existing_version.tgt_node.key_constraint_name.clone());
+            for (_, node) in existing_version.nodes.iter() {
+                old_node_constraints.insert(node.key_constraint_name.clone());
+            }
         }
 
         let mut rel_constraint_to_create = IndexMap::new();
@@ -485,33 +512,23 @@ impl SetupStatusCheck {
                 rel_constraint_to_create.insert(desired_state.key_constraint_name, rel_constraint);
             }
 
-            old_node_constraints.swap_remove(&desired_state.src_node.key_constraint_name);
-            if !existing
-                .current
-                .as_ref()
-                .map(|c| {
-                    c.src_node.is_compatible(&desired_state.src_node)
-                        || c.tgt_node.is_compatible(&desired_state.tgt_node)
-                })
-                .unwrap_or(false)
-            {
-                node_constraint_to_create.insert(
-                    desired_state.src_node.key_constraint_name.clone(),
-                    KeyConstraint::from_node_setup_state(&desired_state.src_node),
-                );
-            }
-
-            old_node_constraints.swap_remove(&desired_state.tgt_node.key_constraint_name);
-            if !existing
-                .current
-                .as_ref()
-                .map(|c| c.src_node.is_compatible(&desired_state.src_node))
-                .unwrap_or(false)
-            {
-                node_constraint_to_create.insert(
-                    desired_state.tgt_node.key_constraint_name.clone(),
-                    KeyConstraint::from_node_setup_state(&desired_state.tgt_node),
-                );
+            for (label, node) in desired_state.nodes.iter() {
+                old_node_constraints.swap_remove(&node.key_constraint_name);
+                if !existing
+                    .current
+                    .as_ref()
+                    .map(|c| {
+                        c.nodes
+                            .get(label)
+                            .map_or(false, |existing_node| node.is_compatible(existing_node))
+                    })
+                    .unwrap_or(false)
+                {
+                    node_constraint_to_create.insert(
+                        node.key_constraint_name.clone(),
+                        KeyConstraint::new(label.clone(), node),
+                    );
+                }
             }
         }
 
@@ -565,7 +582,7 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
         }
         for (name, rel_constraint) in self.rel_constraint_to_create.iter() {
             result.push(format!(
-                "Create UNIQUE CONSTRAINT {} ON RELATIONSHIP {} (key: {})",
+                "Create KEY CONSTRAINT {} ON RELATIONSHIP {} (key: {})",
                 name, rel_constraint.label, rel_constraint.field_name,
             ));
         }
@@ -574,7 +591,7 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
         }
         for (name, node_constraint) in self.node_constraint_to_create.iter() {
             result.push(format!(
-                "Create UNIQUE CONSTRAINT {} ON NODE {} (key: {})",
+                "Create KEY CONSTRAINT {} ON NODE {} (key: {})",
                 name, node_constraint.label, node_constraint.field_name,
             ));
         }
@@ -692,19 +709,19 @@ impl StorageFactoryBase for RelationshipFactory {
                 field_idx,
                 field_schema,
             };
-            if field_info.field_schema.name == spec.source_node.field_name {
+            if field_info.field_schema.name == spec.source.field_name {
                 src_field_info = Some(field_info);
-            } else if field_info.field_schema.name == spec.target_node.field_name {
+            } else if field_info.field_schema.name == spec.target.field_name {
                 tgt_field_info = Some(field_info);
             } else {
                 rel_value_fields_info.push(field_info);
             }
         }
         let src_field_info = src_field_info.ok_or_else(|| {
-            anyhow::anyhow!("Source key field {} not found", spec.source_node.field_name)
+            anyhow::anyhow!("Source key field {} not found", spec.source.field_name)
         })?;
         let tgt_field_info = tgt_field_info.ok_or_else(|| {
-            anyhow::anyhow!("Target key field {} not found", spec.target_node.field_name)
+            anyhow::anyhow!("Target key field {} not found", spec.target.field_name)
         })?;
         let conn_spec = context
             .auth_registry
@@ -751,12 +768,7 @@ impl StorageFactoryBase for RelationshipFactory {
         desired: &RelationshipSetupState,
         existing: &RelationshipSetupState,
     ) -> Result<SetupStateCompatibility> {
-        let compatibility = if desired.is_compatible(existing) {
-            SetupStateCompatibility::Compatible
-        } else {
-            SetupStateCompatibility::NotCompatible
-        };
-        Ok(compatibility)
+        Ok(desired.check_compatible(existing))
     }
 
     fn describe_resource(&self, key: &GraphRelationship) -> Result<String> {
