@@ -9,9 +9,9 @@ import cocoindex
 @dataclasses.dataclass
 class Relationship:
     """Describe a relationship between two nodes."""
-    source: str
-    relationship_name: str
-    target: str
+    subject: str
+    predicate: str
+    object: str
 
 @dataclasses.dataclass
 class Relationships:
@@ -52,23 +52,29 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
                     instruction=(
                         "Please extract relationships from CocoIndex documents. "
                         "Focus on concepts and ingnore specific examples. "
-                        "Each relationship should be a tuple of (source, relationship, target).")))
+                        "Each relationship should be a tuple of (subject, predicate, object).")))
 
             with chunk["relationships"]["relationships"].row() as relationship:
                 relationships.collect(
                     id=cocoindex.GeneratedField.UUID,
-                    source=relationship["source"],
-                    relationship_name=relationship["relationship_name"],
-                    target=relationship["target"],
+                    subject=relationship["subject"],
+                    predicate=relationship["predicate"],
+                    object=relationship["object"],
                 )
 
     relationships.export(
         "relationships",
         cocoindex.storages.Neo4jRelationship(
             connection=conn_spec,
-            relationship="RELATIONSHIP",
-            source=cocoindex.storages.Neo4jRelationshipEndSpec(field_name="source", label="Entity"),
-            target=cocoindex.storages.Neo4jRelationshipEndSpec(field_name="target", label="Entity"),
+            rel_type="RELATIONSHIP",
+            source=cocoindex.storages.Neo4jRelationshipEndSpec(
+                label="Entity",
+                fields=[cocoindex.storages.Neo4jFieldMapping(field_name="subject", node_field_name="value")]
+            ),
+            target=cocoindex.storages.Neo4jRelationshipEndSpec(
+                label="Entity",
+                fields=[cocoindex.storages.Neo4jFieldMapping(field_name="object", node_field_name="value")]
+            ),
             nodes={
                 "Entity": cocoindex.storages.Neo4jRelationshipNodeSpec(key_field_name="value"),
             },

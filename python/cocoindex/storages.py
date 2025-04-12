@@ -18,10 +18,18 @@ class Neo4jConnectionSpec:
     db: str | None = None
 
 @dataclass
+class Neo4jFieldMapping:
+    """Mapping for a Neo4j field."""
+    field_name: str
+    # Field name for the node in the Knowledge Graph.
+    # If unspecified, it's the same as `field_name`.
+    node_field_name: str | None = None
+
+@dataclass
 class Neo4jRelationshipEndSpec:
     """Spec for a Neo4j node type."""
-    field_name: str
     label: str
+    fields: list[Neo4jFieldMapping]
 
 @dataclass
 class Neo4jRelationshipNodeSpec:
@@ -32,7 +40,7 @@ class Neo4jRelationship(op.StorageSpec):
     """Graph storage powered by Neo4j."""
 
     connection: AuthEntryReference
-    relationship: str
+    rel_type: str
     source: Neo4jRelationshipEndSpec
     target: Neo4jRelationshipEndSpec
     nodes: dict[str, Neo4jRelationshipNodeSpec]
