@@ -295,13 +295,16 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         key: Self::Key,
         desired_state: Option<Self::SetupState>,
         existing_states: setup::CombinedState<Self::SetupState>,
-    ) -> Result<impl setup::ResourceSetupStatusCheck<Self::Key, Self::SetupState> + 'static>;
+        auth_registry: &Arc<AuthRegistry>,
+    ) -> Result<impl setup::ResourceSetupStatusCheck + 'static>;
 
     fn check_state_compatibility(
         &self,
         desired_state: &Self::SetupState,
         existing_state: &Self::SetupState,
     ) -> Result<SetupStateCompatibility>;
+
+    fn describe_resource(&self, key: &Self::Key) -> Result<String>;
 
     fn register(self, registry: &mut ExecutorFactoryRegistry) -> Result<()>
     where
@@ -311,62 +314,6 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
             self.name().to_string(),
             ExecutorFactory::ExportTarget(Arc::new(self)),
         )
-    }
-}
-
-struct ResourceSetupStatusCheckWrapper<T: StorageFactoryBase> {
-    inner: Box<dyn setup::ResourceSetupStatusCheck<T::Key, T::SetupState> + Send + Sync>,
-    key_json: serde_json::Value,
-    state_json: Option<serde_json::Value>,
-}
-
-impl<T: StorageFactoryBase> ResourceSetupStatusCheckWrapper<T> {
-    fn new(
-        inner: Box<dyn setup::ResourceSetupStatusCheck<T::Key, T::SetupState> + Send + Sync>,
-    ) -> Result<Self> {
-        Ok(Self {
-            key_json: serde_json::to_value(inner.key())?,
-            state_json: inner
-                .desired_state()
-                .map(serde_json::to_value)
-                .transpose()?,
-            inner,
-        })
-    }
-}
-
-impl<T: StorageFactoryBase> Debug for ResourceSetupStatusCheckWrapper<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&self.inner, f)
-    }
-}
-
-#[async_trait]
-impl<T: StorageFactoryBase> setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value>
-    for ResourceSetupStatusCheckWrapper<T>
-{
-    fn describe_resource(&self) -> String {
-        self.inner.describe_resource()
-    }
-
-    fn key(&self) -> &serde_json::Value {
-        &self.key_json
-    }
-
-    fn desired_state(&self) -> Option<&serde_json::Value> {
-        self.state_json.as_ref()
-    }
-
-    fn describe_changes(&self) -> Vec<String> {
-        self.inner.describe_changes()
-    }
-
-    fn change_type(&self) -> setup::SetupChangeType {
-        self.inner.change_type()
-    }
-
-    async fn apply_change(&self) -> Result<()> {
-        self.inner.apply_change().await
     }
 }
 
@@ -402,21 +349,26 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
-    ) -> Result<
-        Box<
-            dyn setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value> + Send + Sync,
-        >,
-    > {
+        auth_registry: &Arc<AuthRegistry>,
+    ) -> Result<Box<dyn setup::ResourceSetupStatusCheck>> {
         let key: T::Key = serde_json::from_value(key.clone())?;
         let desired_state: Option<T::SetupState> = desired_state
             .map(|v| serde_json::from_value(v.clone()))
             .transpose()?;
         let existing_states = from_json_combined_state(existing_states)?;
-        let status_check =
-            StorageFactoryBase::check_setup_status(self, key, desired_state, existing_states)?;
-        Ok(Box::new(ResourceSetupStatusCheckWrapper::<T>::new(
-            Box::new(status_check),
-        )?))
+        let status_check = StorageFactoryBase::check_setup_status(
+            self,
+            key,
+            desired_state,
+            existing_states,
+            auth_registry,
+        )?;
+        Ok(Box::new(status_check))
+    }
+
+    fn describe_resource(&self, key: &serde_json::Value) -> Result<String> {
+        let key: T::Key = serde_json::from_value(key.clone())?;
+        StorageFactoryBase::describe_resource(self, &key)
     }
 
     fn check_state_compatibility(

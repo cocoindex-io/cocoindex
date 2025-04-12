@@ -736,19 +736,7 @@ fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String 
 }
 
 #[async_trait]
-impl setup::ResourceSetupStatusCheck<TableId, SetupState> for SetupStatusCheck {
-    fn describe_resource(&self) -> String {
-        format!("Postgres table {}", self.table_id)
-    }
-
-    fn key(&self) -> &TableId {
-        &self.table_id
-    }
-
-    fn desired_state(&self) -> Option<&SetupState> {
-        self.desired_state.as_ref()
-    }
-
+impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
     fn describe_changes(&self) -> Vec<String> {
         let mut descriptions = vec![];
         if self.drop_existing {
@@ -957,7 +945,8 @@ impl StorageFactoryBase for Arc<Factory> {
         key: TableId,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
-    ) -> Result<impl setup::ResourceSetupStatusCheck<TableId, SetupState> + 'static> {
+        _auth_registry: &Arc<AuthRegistry>,
+    ) -> Result<impl setup::ResourceSetupStatusCheck + 'static> {
         Ok(SetupStatusCheck::new(self.clone(), key, desired, existing))
     }
 
@@ -985,6 +974,10 @@ impl StorageFactoryBase for Arc<Factory> {
             SetupStateCompatibility::NotCompatible
         };
         Ok(compatibility)
+    }
+
+    fn describe_resource(&self, key: &TableId) -> Result<String> {
+        Ok(format!("Postgres table {}", key.table_name))
     }
 }
 

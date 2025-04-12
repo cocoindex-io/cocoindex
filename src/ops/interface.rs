@@ -12,6 +12,7 @@ use serde::Serialize;
 
 pub struct FlowInstanceContext {
     pub flow_instance_name: String,
+    pub auth_registry: Arc<AuthRegistry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -180,17 +181,16 @@ pub trait ExportTargetFactory {
         key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
-    ) -> Result<
-        Box<
-            dyn setup::ResourceSetupStatusCheck<serde_json::Value, serde_json::Value> + Send + Sync,
-        >,
-    >;
+        auth_registry: &Arc<AuthRegistry>,
+    ) -> Result<Box<dyn setup::ResourceSetupStatusCheck>>;
 
     fn check_state_compatibility(
         &self,
         desired_state: &serde_json::Value,
         existing_state: &serde_json::Value,
     ) -> Result<SetupStateCompatibility>;
+
+    fn describe_resource(&self, key: &serde_json::Value) -> Result<String>;
 }
 
 #[derive(Clone)]

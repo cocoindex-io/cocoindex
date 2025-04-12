@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use crate::base::spec::VectorSimilarityMetric;
 use crate::execution::query;
-use crate::lib_context::{clear_lib_context, init_lib_context};
+use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
 use crate::ops::interface::QueryResults;
 use crate::ops::py_factory::PyOpArgSchema;
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
@@ -319,6 +319,14 @@ fn apply_setup_changes(py: Python<'_>, setup_status: &SetupStatusCheck) -> PyRes
     })
 }
 
+#[pyfunction]
+fn add_auth_entry(key: String, value: Pythonized<serde_json::Value>) -> PyResult<()> {
+    get_auth_registry()
+        .add(key, value.into_inner())
+        .into_py_result()?;
+    Ok(())
+}
+
 /// A Python module implemented in Rust.
 #[pymodule]
 #[pyo3(name = "_engine")]
@@ -331,6 +339,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(drop_setup, m)?)?;
     m.add_function(wrap_pyfunction!(apply_setup_changes, m)?)?;
     m.add_function(wrap_pyfunction!(flow_names_with_setup, m)?)?;
+    m.add_function(wrap_pyfunction!(add_auth_entry, m)?)?;
 
     m.add_class::<builder::flow_builder::FlowBuilder>()?;
     m.add_class::<builder::flow_builder::DataCollector>()?;

@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{lib_context::get_auth_registry, prelude::*};
 
 use indexmap::IndexMap;
 use serde::de::DeserializeOwned;
@@ -12,8 +12,8 @@ use std::{
 
 use super::{
     db_metadata, CombinedState, DesiredMode, ExistingMode, FlowSetupState, FlowSetupStatusCheck,
-    ObjectSetupStatusCheck, ObjectStatus, ResourceIdentifier, ResourceSetupStatusCheck,
-    SetupChangeType, StateChange, TargetResourceSetupStatusCheck, TargetSetupState,
+    ObjectSetupStatusCheck, ObjectStatus, ResourceIdentifier, ResourceSetupInfo,
+    ResourceSetupStatusCheck, SetupChangeType, StateChange, TargetSetupState,
 };
 use super::{AllSetupState, AllSetupStatusCheck};
 use crate::execution::db_tracking_setup;
@@ -243,7 +243,6 @@ pub fn check_flow_setup_status(
             .collect(),
     );
 
-    let mut target_setup_state_updates = Vec::new();
     let mut target_resources = Vec::new();
 
     let grouped_target_resources = group_resource_states(
@@ -258,8 +257,13 @@ pub fn check_flow_setup_status(
                 resource_id.target_kind
             )
         })?;
-        target_setup_state_updates.push((resource_id.clone(), v.desired.clone()));
-        let desired_state = v
+
+        let factory = match factory {
+            ExecutorFactory::ExportTarget(factory) => factory,
+            _ => bail!("Unexpected factory type for {}", resource_id.target_kind),
+        };
+        let state = v.desired.clone();
+        let target_state = v
             .desired
             .and_then(|state| (!state.common.setup_by_user).then_some(state.state));
         let existing_without_setup_by_user = CombinedState {
@@ -279,28 +283,32 @@ pub fn check_flow_setup_status(
                 })
                 .collect(),
         };
-        let never_setup_by_sys = desired_state.is_none()
+        let never_setup_by_sys = target_state.is_none()
             && existing_without_setup_by_user.current.is_none()
             && existing_without_setup_by_user.staging.is_empty();
-        if !never_setup_by_sys {
-            let status_check = match factory {
-                ExecutorFactory::ExportTarget(factory) => factory.check_setup_status(
-                    &resource_id.key,
-                    desired_state,
-                    existing_without_setup_by_user,
-                )?,
-                _ => bail!("Unexpected factory type for {}", resource_id.target_kind),
-            };
-            target_resources.push(TargetResourceSetupStatusCheck { status_check });
-        }
+        let status_check = if never_setup_by_sys {
+            None
+        } else {
+            Some(factory.check_setup_status(
+                &resource_id.key,
+                target_state,
+                existing_without_setup_by_user,
+                get_auth_registry(),
+            )?)
+        };
+        target_resources.push(ResourceSetupInfo {
+            key: resource_id.clone(),
+            state,
+            description: factory.describe_resource(&resource_id.key)?,
+            status_check,
+        });
     }
     Ok(FlowSetupStatusCheck {
         status: to_object_status(existing_state, desired_state)?,
         seen_flow_metadata_version: existing_state.and_then(|s| s.seen_flow_metadata_version),
         metadata_change,
-        tracking_table: tracking_table_change,
+        tracking_table: tracking_table_change.into_setup_info(),
         target_resources,
-        target_setup_state_updates,
     })
 }
 
@@ -319,7 +327,8 @@ pub fn sync_setup(
     Ok(AllSetupStatusCheck {
         metadata_table: db_metadata::MetadataTableSetup {
             metadata_table_missing: !all_setup_state.has_metadata_table,
-        },
+        }
+        .into_setup_info(),
         flows: flow_status_checks,
     })
 }
@@ -343,26 +352,26 @@ pub fn drop_setup(
     Ok(AllSetupStatusCheck {
         metadata_table: db_metadata::MetadataTableSetup {
             metadata_table_missing: false,
-        },
+        }
+        .into_setup_info(),
         flows: flow_status_checks,
     })
 }
 
-async fn maybe_update_resource_setup<
-    K: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash,
-    S: Debug + Clone + Serialize + DeserializeOwned,
->(
+async fn maybe_update_resource_setup<K, S, C: ResourceSetupStatusCheck>(
     write: &mut impl std::io::Write,
-    resource: &(impl ResourceSetupStatusCheck<K, S> + ?Sized),
+    resource: &ResourceSetupInfo<K, S, C>,
 ) -> Result<()> {
-    if resource.change_type() != SetupChangeType::NoChange {
-        writeln!(write, "{}:", resource.describe_resource(),)?;
-        for change in resource.describe_changes() {
-            writeln!(write, "  - {}", change)?;
+    if let Some(status_check) = &resource.status_check {
+        if status_check.change_type() != SetupChangeType::NoChange {
+            writeln!(write, "{}:", resource.description)?;
+            for change in status_check.describe_changes() {
+                writeln!(write, "  - {}", change)?;
+            }
+            write!(write, "Pushing...")?;
+            status_check.apply_change().await?;
+            writeln!(write, "DONE")?;
         }
-        write!(write, "Pushing...")?;
-        resource.apply_change().await?;
-        writeln!(write, "DONE")?;
     }
     Ok(())
 }
@@ -401,7 +410,13 @@ pub async fn apply_changes(
                     .transpose()?,
             );
         }
-        if flow_status.tracking_table.change_type() != SetupChangeType::NoChange {
+        if flow_status
+            .tracking_table
+            .status_check
+            .as_ref()
+            .map(|c| c.change_type() != SetupChangeType::NoChange)
+            .unwrap_or_default()
+        {
             state_updates.insert(
                 db_metadata::ResourceTypeKey::new(
                     MetadataRecordType::TrackingTable.to_string(),
@@ -409,18 +424,20 @@ pub async fn apply_changes(
                 ),
                 flow_status
                     .tracking_table
-                    .desired_state()
+                    .state
+                    .as_ref()
                     .map(serde_json::to_value)
                     .transpose()?,
             );
         }
-        for (resource_id, state_update) in &flow_status.target_setup_state_updates {
+        for target_resource in &flow_status.target_resources {
             state_updates.insert(
                 db_metadata::ResourceTypeKey::new(
-                    MetadataRecordType::Target(resource_id.target_kind.clone()).to_string(),
-                    resource_id.key.clone(),
+                    MetadataRecordType::Target(target_resource.key.target_kind.clone()).to_string(),
+                    target_resource.key.key.clone(),
                 ),
-                state_update
+                target_resource
+                    .state
                     .as_ref()
                     .map(serde_json::to_value)
                     .transpose()?,
@@ -438,7 +455,7 @@ pub async fn apply_changes(
         maybe_update_resource_setup(write, &flow_status.tracking_table).await?;
 
         for target_resource in &flow_status.target_resources {
-            maybe_update_resource_setup(write, target_resource.status_check.as_ref()).await?;
+            maybe_update_resource_setup(write, target_resource).await?;
         }
 
         let is_deletion = flow_status.status == ObjectStatus::Deleted;

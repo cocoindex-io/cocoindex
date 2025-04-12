@@ -347,9 +347,10 @@ impl FlowBuilder {
             .get(name)
             .cloned();
         let root_data_scope = Arc::new(Mutex::new(DataScopeBuilder::new()));
+        let flow_inst_context = build_flow_instance_context(name);
         let result = Self {
             lib_context,
-            flow_inst_context: build_flow_instance_context(name),
+            flow_inst_context,
             existing_flow_ss,
 
             root_data_scope_ref: DataScopeRef(Arc::new(DataScopeRefInfo {

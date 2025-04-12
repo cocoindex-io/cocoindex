@@ -4,6 +4,7 @@ use std::{collections::HashMap, future::Future, sync::Arc};
 
 use super::plan::*;
 use crate::execution::db_tracking_setup;
+use crate::lib_context::get_auth_registry;
 use crate::setup::{
     self, DesiredMode, FlowSetupMetadata, FlowSetupState, ResourceIdentifier, SourceSetupState,
     TargetSetupState, TargetSetupStateCommon,
@@ -1030,6 +1031,7 @@ impl AnalyzerContext<'_> {
 pub fn build_flow_instance_context(flow_inst_name: &str) -> Arc<FlowInstanceContext> {
     Arc::new(FlowInstanceContext {
         flow_instance_name: flow_inst_name.to_string(),
+        auth_registry: get_auth_registry().clone(),
     })
 }
 

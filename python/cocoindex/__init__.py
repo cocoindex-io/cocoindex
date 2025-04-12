@@ -7,5 +7,6 @@ from .flow import EvaluateAndDumpOptions, GeneratedField
 from .flow import update_all_flows, FlowLiveUpdater, FlowLiveUpdaterOptions
 from .llm import LlmSpec, LlmApiType
 from .vector import VectorSimilarityMetric
+from .auth_registry import AuthEntryReference, add_auth_entry, ref_auth_entry
 from .lib import *
 from ._engine import OpArgSchema

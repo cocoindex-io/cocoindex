@@ -59,6 +59,7 @@ impl FlowContext {
 }
 
 static TOKIO_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| Runtime::new().unwrap());
+static AUTH_REGISTRY: LazyLock<Arc<AuthRegistry>> = LazyLock::new(|| Arc::new(AuthRegistry::new()));
 
 pub struct LibContext {
     pub pool: PgPool,
@@ -84,6 +85,10 @@ impl LibContext {
 
 pub fn get_runtime() -> &'static Runtime {
     &TOKIO_RUNTIME
+}
+
+pub fn get_auth_registry() -> &'static Arc<AuthRegistry> {
+    &AUTH_REGISTRY
 }
 
 static LIB_INIT: OnceLock<()> = OnceLock::new();
