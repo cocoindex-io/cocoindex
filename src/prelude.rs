@@ -24,6 +24,7 @@ pub(crate) use crate::lib_context::{get_lib_context, get_runtime, FlowContext, L
 pub(crate) use crate::ops::interface;
 pub(crate) use crate::service::error::ApiError;
 pub(crate) use crate::setup::AuthRegistry;
+pub(crate) use crate::utils::retriable;
 
 pub(crate) use crate::{api_bail, api_error};
 

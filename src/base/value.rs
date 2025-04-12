@@ -533,6 +533,23 @@ impl From<KeyValue> for Value {
     }
 }
 
+impl From<&KeyValue> for Value {
+    fn from(value: &KeyValue) -> Self {
+        match value {
+            KeyValue::Bytes(v) => Value::Basic(BasicValue::Bytes(v.clone())),
+            KeyValue::Str(v) => Value::Basic(BasicValue::Str(v.clone())),
+            KeyValue::Bool(v) => Value::Basic(BasicValue::Bool(*v)),
+            KeyValue::Int64(v) => Value::Basic(BasicValue::Int64(*v)),
+            KeyValue::Range(v) => Value::Basic(BasicValue::Range(*v)),
+            KeyValue::Uuid(v) => Value::Basic(BasicValue::Uuid(*v)),
+            KeyValue::Date(v) => Value::Basic(BasicValue::Date(*v)),
+            KeyValue::Struct(v) => Value::Struct(FieldValues {
+                fields: v.iter().map(Value::from).collect(),
+            }),
+        }
+    }
+}
+
 impl From<FieldValues> for Value {
     fn from(value: FieldValues) -> Self {
         Value::Struct(value)

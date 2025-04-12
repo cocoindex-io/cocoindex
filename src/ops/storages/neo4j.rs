@@ -92,6 +92,16 @@ impl GraphRelationship {
     }
 }
 
+impl retriable::IsRetryable for neo4rs::Error {
+    fn is_retryable(&self) -> bool {
+        match self {
+            neo4rs::Error::ConnectionError => true,
+            neo4rs::Error::Neo4j(e) => e.kind() == neo4rs::Neo4jErrorKind::Transient,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct GraphPool {
     graphs: Mutex<HashMap<GraphKey, Arc<OnceCell<Arc<Graph>>>>>,
@@ -172,7 +182,7 @@ fn json_value_to_bolt_value(value: &serde_json::Value) -> Result<BoltType> {
     Ok(bolt_value)
 }
 
-fn key_to_bolt(key: KeyValue, schema: &schema::ValueType) -> Result<BoltType> {
+fn key_to_bolt(key: &KeyValue, schema: &schema::ValueType) -> Result<BoltType> {
     value_to_bolt(&key.into(), schema)
 }
 
@@ -362,18 +372,18 @@ FINISH
             tgt_fields,
         })
     }
-}
 
-#[async_trait]
-impl ExportTargetExecutor for RelationshipStorageExecutor {
-    async fn apply_mutation(&self, mutation: ExportTargetMutation) -> Result<()> {
+    fn build_queries_to_apply_mutation(
+        &self,
+        mutation: &ExportTargetMutation,
+    ) -> Result<Vec<neo4rs::Query>> {
         let mut queries = vec![];
-        for upsert in mutation.upserts {
-            let rel_id_bolt = key_to_bolt(upsert.key, &self.key_field.value_type.typ)?;
+        for upsert in mutation.upserts.iter() {
+            let rel_id_bolt = key_to_bolt(&upsert.key, &self.key_field.value_type.typ)?;
             queries
                 .push(neo4rs::query(&self.delete_cypher).param(REL_ID_PARAM, rel_id_bolt.clone()));
 
-            let value = upsert.value;
+            let value = &upsert.value;
             let mut insert_cypher = neo4rs::query(&self.insert_cypher)
                 .param(REL_ID_PARAM, rel_id_bolt)
                 .param(
@@ -425,17 +435,31 @@ impl ExportTargetExecutor for RelationshipStorageExecutor {
             }
             queries.push(insert_cypher);
         }
-        for delete_key in mutation.delete_keys {
+        for delete_key in mutation.delete_keys.iter() {
             queries.push(neo4rs::query(&self.delete_cypher).param(
                 REL_ID_PARAM,
                 key_to_bolt(delete_key, &self.key_field.value_type.typ)?,
             ));
         }
+        Ok(queries)
+    }
+}
 
-        let mut txn = self.graph.start_txn().await?;
-        txn.run_queries(queries).await?;
-        txn.commit().await?;
-        Ok(())
+#[async_trait]
+impl ExportTargetExecutor for RelationshipStorageExecutor {
+    async fn apply_mutation(&self, mutation: ExportTargetMutation) -> Result<()> {
+        retriable::run(
+            || async {
+                let queries = self.build_queries_to_apply_mutation(&mutation)?;
+                let mut txn = self.graph.start_txn().await?;
+                txn.run_queries(queries.clone()).await?;
+                txn.commit().await?;
+                retriable::Ok(())
+            },
+            retriable::RunOptions::default(),
+        )
+        .await
+        .map_err(Into::<anyhow::Error>::into)
     }
 }
 
