@@ -7,7 +7,7 @@ description: CocoIndex Built-in Storages
 
 ## Postgres
 
-`Postgres` exports data to Postgres database (with pgvector extension).
+Exports data to Postgres database (with pgvector extension).
 
 The spec takes the following fields:
 
@@ -17,10 +17,10 @@ The spec takes the following fields:
 
 ## Qdrant
 
-`Qdrant` exports data to a [Qdrant](https://qdrant.tech/) collection.
+Exports data to a [Qdrant](https://qdrant.tech/) collection.
 
 The spec takes the following fields:
 
-*   `qdrant_url` (type: `str`, required): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance. Defaults to http://localhost:6334/.
+*   `qdrant_url` (type: `str`, required): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance. Defaults to `http://localhost:6334/`.
 
 *   `collection` (type: `str`, required): The name of the collection to export the data to.

@@ -174,10 +174,7 @@ impl std::fmt::Display for KeyValue {
 }
 
 impl KeyValue {
-    pub fn fields_iter<'a>(
-        &'a self,
-        num_fields: usize,
-    ) -> Result<impl Iterator<Item = &'a KeyValue>> {
+    pub fn fields_iter(&self, num_fields: usize) -> Result<impl Iterator<Item = &KeyValue>> {
         let slice = if num_fields == 1 {
             std::slice::from_ref(self)
         } else {

@@ -36,6 +36,7 @@ fn key_value_fields_iter<'a>(
 #[derive(Debug, Deserialize, Clone)]
 pub struct Spec {
     collection_name: String,
+    grpc_url: String,
 }
 
 pub struct Executor {
@@ -193,29 +194,53 @@ fn into_value(point: &ScoredPoint, schema: &FieldSchema) -> Result<Value> {
                     .get(field_name)
                     .map(|v| BasicValue::Json(Arc::from(v.clone().into_json()))),
 
-                BasicValueType::Vector(_) => {
-                    let vectors_options = point.vectors.clone().unwrap().vectors_options.unwrap();
-
-                    match vectors_options {
+                BasicValueType::Vector(_) => point
+                    .vectors
+                    .as_ref()
+                    .and_then(|v| v.vectors_options.as_ref())
+                    .and_then(|vectors_options| match vectors_options {
                         VectorsOptions::Vector(vector) => {
-                            let x = vector
+                            let values = vector
                                 .data
-                                .into_iter()
-                                .map(BasicValue::Float32)
+                                .iter()
+                                .map(|f| BasicValue::Float32(*f))
                                 .collect::<Vec<_>>();
-                            Some(BasicValue::Vector(Arc::from(x)))
+                            Some(BasicValue::Vector(Arc::from(values)))
                         }
                         VectorsOptions::Vectors(vectors) => {
-                            let vector = vectors.vectors[field_name].clone();
-                            let x = vector
-                                .data
-                                .into_iter()
-                                .map(BasicValue::Float32)
-                                .collect::<Vec<_>>();
-                            Some(BasicValue::Vector(Arc::from(x)))
+                            vectors.vectors.get(field_name).map(|vector| {
+                                let values = vector
+                                    .data
+                                    .iter()
+                                    .map(|f| BasicValue::Float32(*f))
+                                    .collect::<Vec<_>>();
+                                BasicValue::Vector(Arc::from(values))
+                            })
                         }
-                    }
-                }
+                    }),
+
+                BasicValueType::Date
+                | BasicValueType::LocalDateTime
+                | BasicValueType::OffsetDateTime
+                | BasicValueType::Time
+                | BasicValueType::Uuid => point.payload.get(field_name).and_then(|v| {
+                    v.as_str()
+                        .map(|s| BasicValue::Str(Arc::from(s.to_string())))
+                }),
+                BasicValueType::Range => point.payload.get(field_name).and_then(|v| {
+                    v.as_struct().and_then(|s| {
+                        let start = s.fields.get("start").and_then(|f| f.as_integer());
+                        let end = s.fields.get("end").and_then(|f| f.as_integer());
+
+                        match (start, end) {
+                            (Some(start), Some(end)) => Some(BasicValue::Range(RangeValue {
+                                start: start as usize,
+                                end: end as usize,
+                            })),
+                            _ => None,
+                        }
+                    })
+                }),
                 _ => {
                     anyhow::bail!("Unsupported value type")
                 }
@@ -243,7 +268,8 @@ impl QueryTarget for Executor {
                     .query(Query::new_nearest(query.vector))
                     .limit(query.limit as u64)
                     .using(query.vector_field_name)
-                    .with_payload(true),
+                    .with_payload(true)
+                    .with_vectors(true),
             )
             .await?
             .result;
@@ -300,8 +326,6 @@ impl StorageFactoryBase for Arc<Factory> {
         _storage_options: IndexOptions,
         _context: Arc<FlowInstanceContext>,
     ) -> Result<ExportTargetBuildOutput<Self>> {
-        // TODO(Anush008): Add as a field to the Spec
-
         if key_fields_schema.len() > 1 {
             api_bail!(
                 "Expected only one primary key for the point ID. Got {}.",
@@ -309,12 +333,11 @@ impl StorageFactoryBase for Arc<Factory> {
             )
         }
 
-        let url = "http://localhost:6334/";
         let collection_name = spec.collection_name.clone();
 
         let executors = async move {
             let executor = Arc::new(Executor::new(
-                url.to_string(),
+                spec.grpc_url,
                 spec.collection_name.clone(),
                 key_fields_schema,
                 value_fields_schema,

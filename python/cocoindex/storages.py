@@ -16,6 +16,7 @@ class Qdrant(op.StorageSpec):
     """Storage powered by Qdrant - https://qdrant.tech/."""
 
     collection_name: str
+    grpc_url: str = "http://localhost:6334/"
 
 @dataclass
 class Neo4jConnectionSpec:
