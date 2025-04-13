@@ -28,6 +28,8 @@ curl  -X PUT \
 }'
 ```
 
+You can view the collections and data with the Qdrant dashboard at <http://localhost:6333/dashboard>.
+
 ## Run
 
 Install dependencies:
@@ -47,8 +49,6 @@ Update index:
 ```bash
 python main.py cocoindex update
 ```
-
-You can now view the data in the Qdrant dashboard at <http://localhost:6333/dashboard>.
 
 Run:
 

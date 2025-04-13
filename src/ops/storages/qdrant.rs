@@ -61,6 +61,12 @@ impl Executor {
             .chain(value_fields_schema.iter())
             .cloned()
             .collect::<Vec<_>>();
+
+        // Hotfix to resolve
+        // `no process-level CryptoProvider available -- call CryptoProvider::install_default() before this point`
+        // when using HTTPS URLs.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         Ok(Self {
             client: Qdrant::from_url(&url)
                 .api_key(api_key)
