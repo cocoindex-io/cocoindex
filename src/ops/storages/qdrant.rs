@@ -82,7 +82,7 @@ impl ExportTargetExecutor for Executor {
         }
 
         self.client
-            .upsert_points(UpsertPointsBuilder::new(&self.collection_name, points))
+            .upsert_points(UpsertPointsBuilder::new(&self.collection_name, points).wait(true))
             .await?;
         Ok(())
     }
@@ -115,7 +115,7 @@ fn values_to_payload(
 
         match value {
             Value::Basic(basic_value) => {
-                let json_value = match basic_value {
+                let json_value: serde_json::Value = match basic_value {
                     BasicValue::Bytes(v) => String::from_utf8_lossy(v).into(),
                     BasicValue::Str(v) => v.clone().to_string().into(),
                     BasicValue::Bool(v) => (*v).into(),
@@ -123,12 +123,17 @@ fn values_to_payload(
                     BasicValue::Float32(v) => (*v as f64).into(),
                     BasicValue::Float64(v) => (*v).into(),
                     BasicValue::Range(v) => json!({ "start": v.start, "end": v.end }),
+                    BasicValue::Uuid(v) => v.to_string().into(),
+                    BasicValue::Date(v) => v.to_string().into(),
+                    BasicValue::LocalDateTime(v) => v.to_string().into(),
+                    BasicValue::Time(v) => v.to_string().into(),
+                    BasicValue::OffsetDateTime(v) => v.to_string().into(),
+                    BasicValue::Json(v) => (**v).clone(),
                     BasicValue::Vector(v) => {
                         let vector = convert_to_vector(v.to_vec());
                         vectors = vectors.add_vector(field_name, vector);
                         continue;
                     }
-                    _ => bail!("Unsupported BasicValue type in Value::Basic"),
                 };
                 payload.insert(field_name.clone(), json_value.into());
             }
@@ -296,6 +301,14 @@ impl StorageFactoryBase for Arc<Factory> {
         _context: Arc<FlowInstanceContext>,
     ) -> Result<ExportTargetBuildOutput<Self>> {
         // TODO(Anush008): Add as a field to the Spec
+
+        if key_fields_schema.len() > 1 {
+            api_bail!(
+                "Expected only one primary key for the point ID. Got {}.",
+                key_fields_schema.len()
+            )
+        }
+
         let url = "http://localhost:6334/";
         let collection_name = spec.collection_name.clone();
 
@@ -324,7 +337,8 @@ impl StorageFactoryBase for Arc<Factory> {
         _key: String,
         _desired: Option<()>,
         _existing: setup::CombinedState<()>,
-    ) -> Result<impl setup::ResourceSetupStatusCheck<String, ()> + 'static> {
+        _auth_registry: &Arc<AuthRegistry>,
+    ) -> Result<impl setup::ResourceSetupStatusCheck + 'static> {
         Err(anyhow!(
             "Set `setup_by_user` to `true` to use Qdrant storage"
         )) as Result<Infallible, _>
@@ -336,5 +350,9 @@ impl StorageFactoryBase for Arc<Factory> {
         _existing: &(),
     ) -> Result<SetupStateCompatibility> {
         Ok(SetupStateCompatibility::Compatible)
+    }
+
+    fn describe_resource(&self, key: &String) -> Result<String> {
+        Ok(format!("Qdrant collection {}", key))
     }
 }
