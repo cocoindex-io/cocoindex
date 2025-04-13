@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 
 from . import op
+from . import index
 from .auth_registry import AuthEntryReference
 
 class Postgres(op.StorageSpec):
@@ -42,7 +43,7 @@ class Neo4jRelationshipEndSpec:
 class Neo4jRelationshipNodeSpec:
     """Spec for a Neo4j node type."""
     key_field_name: str | None = None
-
+    index_options: index.IndexOptions | None = None
 class Neo4jRelationship(op.StorageSpec):
     """Graph storage powered by Neo4j."""
 

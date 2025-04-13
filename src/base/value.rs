@@ -174,6 +174,21 @@ impl std::fmt::Display for KeyValue {
 }
 
 impl KeyValue {
+    pub fn fields_iter<'a>(
+        &'a self,
+        num_fields: usize,
+    ) -> Result<impl Iterator<Item = &'a KeyValue>> {
+        let slice = if num_fields == 1 {
+            std::slice::from_ref(self)
+        } else {
+            match self {
+                KeyValue::Struct(v) => v,
+                _ => api_bail!("Invalid key value type"),
+            }
+        };
+        Ok(slice.iter())
+    }
+
     fn parts_from_str(
         values_iter: &mut impl Iterator<Item = String>,
         schema: &ValueType,
@@ -528,6 +543,23 @@ impl From<KeyValue> for Value {
             KeyValue::Date(v) => Value::Basic(BasicValue::Date(v)),
             KeyValue::Struct(v) => Value::Struct(FieldValues {
                 fields: v.into_iter().map(Value::from).collect(),
+            }),
+        }
+    }
+}
+
+impl From<&KeyValue> for Value {
+    fn from(value: &KeyValue) -> Self {
+        match value {
+            KeyValue::Bytes(v) => Value::Basic(BasicValue::Bytes(v.clone())),
+            KeyValue::Str(v) => Value::Basic(BasicValue::Str(v.clone())),
+            KeyValue::Bool(v) => Value::Basic(BasicValue::Bool(*v)),
+            KeyValue::Int64(v) => Value::Basic(BasicValue::Int64(*v)),
+            KeyValue::Range(v) => Value::Basic(BasicValue::Range(*v)),
+            KeyValue::Uuid(v) => Value::Basic(BasicValue::Uuid(*v)),
+            KeyValue::Date(v) => Value::Basic(BasicValue::Date(*v)),
+            KeyValue::Struct(v) => Value::Struct(FieldValues {
+                fields: v.iter().map(Value::from).collect(),
             }),
         }
     }

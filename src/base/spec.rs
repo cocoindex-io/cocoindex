@@ -204,11 +204,21 @@ pub struct CollectOpSpec {
     pub auto_uuid_field: Option<FieldName>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VectorSimilarityMetric {
     CosineSimilarity,
     L2Distance,
     InnerProduct,
+}
+
+impl std::fmt::Display for VectorSimilarityMetric {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VectorSimilarityMetric::CosineSimilarity => write!(f, "Cosine"),
+            VectorSimilarityMetric::L2Distance => write!(f, "L2"),
+            VectorSimilarityMetric::InnerProduct => write!(f, "InnerProduct"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

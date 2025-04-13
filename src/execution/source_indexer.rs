@@ -87,7 +87,7 @@ impl SourceIndexingContext {
         processing_sem: Arc<Semaphore>,
         pool: PgPool,
     ) {
-        let process = async move {
+        let process = async {
             let permit = processing_sem.acquire().await?;
             let plan = self.flow.get_execution_plan().await?;
             let import_op = &plan.import_ops[self.source_idx];
@@ -157,6 +157,7 @@ impl SourceIndexingContext {
             anyhow::Ok(())
         };
         if let Err(e) = process.await {
+            update_stats.num_errors.inc(1);
             error!("{:?}", e.context("Error in processing a source row"));
         }
     }

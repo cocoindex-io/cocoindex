@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from threading import Lock
 
 from . import flow as fl
-from . import vector
+from . import index
 from . import _engine
 
 _handlers_lock = Lock()
@@ -14,7 +14,7 @@ class SimpleSemanticsQueryInfo:
     """
     Additional information about the query.
     """
-    similarity_metric: vector.VectorSimilarityMetric
+    similarity_metric: index.VectorSimilarityMetric
     query_vector: list[float]
     vector_field_name: str
 
@@ -39,7 +39,7 @@ class SimpleSemanticsQueryHandler:
         flow: fl.Flow,
         target_name: str,
         query_transform_flow: Callable[..., fl.DataSlice],
-        default_similarity_metric: vector.VectorSimilarityMetric = vector.VectorSimilarityMetric.COSINE_SIMILARITY) -> None:
+        default_similarity_metric: index.VectorSimilarityMetric = index.VectorSimilarityMetric.COSINE_SIMILARITY) -> None:
 
         engine_handler = None
         lock = Lock()
@@ -66,7 +66,7 @@ class SimpleSemanticsQueryHandler:
         return self._lazy_query_handler()
 
     def search(self, query: str, limit: int, vector_field_name: str | None = None,
-               similarity_matric: vector.VectorSimilarityMetric | None = None) -> tuple[list[QueryResult], SimpleSemanticsQueryInfo]:
+               similarity_matric: index.VectorSimilarityMetric | None = None) -> tuple[list[QueryResult], SimpleSemanticsQueryInfo]:
         """
         Search the index with the given query, limit, vector field name, and similarity metric.
         """
@@ -76,7 +76,7 @@ class SimpleSemanticsQueryHandler:
         fields = [field['name'] for field in internal_results['fields']]
         results = [QueryResult(data=dict(zip(fields, result['data'])),  score=result['score']) for result in internal_results['results']]
         info = SimpleSemanticsQueryInfo(
-            similarity_metric=vector.VectorSimilarityMetric(internal_info['similarity_metric']),
+            similarity_metric=index.VectorSimilarityMetric(internal_info['similarity_metric']),
             query_vector=internal_info['query_vector'],
             vector_field_name=internal_info['vector_field_name']
         )
