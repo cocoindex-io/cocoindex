@@ -204,7 +204,7 @@ pub struct CollectOpSpec {
     pub auto_uuid_field: Option<FieldName>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VectorSimilarityMetric {
     CosineSimilarity,
     L2Distance,
