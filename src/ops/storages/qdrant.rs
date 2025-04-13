@@ -37,6 +37,7 @@ fn key_value_fields_iter<'a>(
 pub struct Spec {
     collection_name: String,
     grpc_url: String,
+    api_key: Option<String>,
 }
 
 pub struct Executor {
@@ -51,6 +52,7 @@ impl Executor {
     fn new(
         url: String,
         collection_name: String,
+        api_key: Option<String>,
         key_fields_schema: Vec<FieldSchema>,
         value_fields_schema: Vec<FieldSchema>,
     ) -> Result<Self> {
@@ -60,7 +62,10 @@ impl Executor {
             .cloned()
             .collect::<Vec<_>>();
         Ok(Self {
-            client: Qdrant::from_url(&url).build()?,
+            client: Qdrant::from_url(&url)
+                .api_key(api_key)
+                .skip_compatibility_check()
+                .build()?,
             key_fields_schema,
             value_fields_schema,
             all_fields,
@@ -339,6 +344,7 @@ impl StorageFactoryBase for Arc<Factory> {
             let executor = Arc::new(Executor::new(
                 spec.grpc_url,
                 spec.collection_name.clone(),
+                spec.api_key,
                 key_fields_schema,
                 value_fields_schema,
             )?);

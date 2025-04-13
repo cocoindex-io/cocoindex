@@ -21,9 +21,11 @@ Exports data to a [Qdrant](https://qdrant.tech/) collection.
 
 The spec takes the following fields:
 
-*   `grpc_url` (type: `str`, required): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance. Defaults to `http://localhost:6334/`.
-
 *   `collection_name` (type: `str`, required): The name of the collection to export the data to.
+
+*   `grpc_url` (type: `str`, optional): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance. Defaults to `http://localhost:6334/`.
+
+*   `api_key` (type: `str`, optional). API key to authenticate requests with.
 
 The field name for the vector embeddings must match the [vector name](https://qdrant.tech/documentation/concepts/vectors/#named-vectors) used when the collection was created.
 

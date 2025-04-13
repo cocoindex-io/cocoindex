@@ -17,6 +17,7 @@ class Qdrant(op.StorageSpec):
 
     collection_name: str
     grpc_url: str = "http://localhost:6334/"
+    api_key: str | None = None
 
 @dataclass
 class Neo4jConnectionSpec:
