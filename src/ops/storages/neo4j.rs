@@ -39,8 +39,7 @@ pub struct RelationshipEndSpec {
 
 #[derive(Debug, Deserialize)]
 pub struct RelationshipNodeSpec {
-    #[serde(default)]
-    key_field_name: String,
+    index_options: spec::IndexOptions,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,22 +49,6 @@ pub struct RelationshipSpec {
     source: RelationshipEndSpec,
     target: RelationshipEndSpec,
     nodes: BTreeMap<String, RelationshipNodeSpec>,
-}
-
-impl RelationshipSpec {
-    fn get_src_label_info(&self) -> Result<&RelationshipNodeSpec> {
-        Ok(self
-            .nodes
-            .get(self.source.label.as_str())
-            .ok_or_else(|| api_error!("Source label `{}` not found", self.source.label))?)
-    }
-
-    fn get_tgt_label_info(&self) -> Result<&RelationshipNodeSpec> {
-        Ok(self
-            .nodes
-            .get(self.target.label.as_str())
-            .ok_or_else(|| api_error!("Target label `{}` not found", self.target.label))?)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -143,8 +126,8 @@ struct AnalyzedGraphFieldMapping {
     value_type: schema::ValueType,
 }
 
-struct AnalyzedGraphFields {
-    key_field: AnalyzedGraphFieldMapping,
+struct AnalyzedNodeLabelInfo {
+    key_fields: Vec<AnalyzedGraphFieldMapping>,
     value_fields: Vec<AnalyzedGraphFieldMapping>,
 }
 struct RelationshipStorageExecutor {
@@ -152,11 +135,15 @@ struct RelationshipStorageExecutor {
     delete_cypher: String,
     insert_cypher: String,
 
-    key_field: FieldSchema,
+    key_field_params: Vec<String>,
+    key_fields: Vec<FieldSchema>,
     value_fields: Vec<AnalyzedGraphFieldMapping>,
 
-    src_fields: AnalyzedGraphFields,
-    tgt_fields: AnalyzedGraphFields,
+    src_key_field_params: Vec<String>,
+    src_fields: AnalyzedNodeLabelInfo,
+
+    tgt_key_field_params: Vec<String>,
+    tgt_fields: AnalyzedNodeLabelInfo,
 }
 
 fn json_value_to_bolt_value(value: &serde_json::Value) -> Result<BoltType> {
@@ -304,25 +291,54 @@ fn value_to_bolt(value: &Value, schema: &schema::ValueType) -> Result<BoltType> 
     Ok(bolt_value)
 }
 
-const REL_ID_PARAM: &str = "rel_id";
+const REL_KEY_PARAM_PREFIX: &str = "rel_key";
 const REL_PROPS_PARAM: &str = "rel_props";
-const SRC_ID_PARAM: &str = "source_id";
+const SRC_KEY_PARAM_PREFIX: &str = "source_key";
 const SRC_PROPS_PARAM: &str = "source_props";
-const TGT_ID_PARAM: &str = "target_id";
+const TGT_KEY_PARAM_PREFIX: &str = "target_key";
 const TGT_PROPS_PARAM: &str = "target_props";
 
 impl RelationshipStorageExecutor {
+    fn build_key_field_params_n_literal<'a>(
+        param_prefix: &str,
+        key_fields: impl Iterator<Item = &'a spec::FieldName>,
+    ) -> (Vec<String>, String) {
+        let (params, items): (Vec<String>, Vec<String>) = key_fields
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let param = format!("{}_{}", param_prefix, i);
+                let item = format!("{}: ${}", name, param);
+                (param, item)
+            })
+            .unzip();
+        (params, format!("{{{}}}", items.into_iter().join(", ")))
+    }
+
     fn new(
         graph: Arc<Graph>,
         spec: RelationshipSpec,
-        key_field: FieldSchema,
+        key_fields: Vec<FieldSchema>,
         value_fields: Vec<AnalyzedGraphFieldMapping>,
-        src_fields: AnalyzedGraphFields,
-        tgt_fields: AnalyzedGraphFields,
+        src_fields: AnalyzedNodeLabelInfo,
+        tgt_fields: AnalyzedNodeLabelInfo,
     ) -> Result<Self> {
+        let (key_field_params, key_fields_literal) = Self::build_key_field_params_n_literal(
+            REL_KEY_PARAM_PREFIX,
+            key_fields.iter().map(|f| &f.name),
+        );
+        let (src_key_field_params, src_key_fields_literal) = Self::build_key_field_params_n_literal(
+            SRC_KEY_PARAM_PREFIX,
+            src_fields.key_fields.iter().map(|f| &f.field_name),
+        );
+        let (tgt_key_field_params, tgt_key_fields_literal) = Self::build_key_field_params_n_literal(
+            TGT_KEY_PARAM_PREFIX,
+            tgt_fields.key_fields.iter().map(|f| &f.field_name),
+        );
+
         let delete_cypher = format!(
             r#"
-OPTIONAL MATCH (old_src)-[old_rel:{rel_type} {{{rel_key_field_name}: ${REL_ID_PARAM}}}]->(old_tgt)
+OPTIONAL MATCH (old_src)-[old_rel:{rel_type} {key_fields_literal}]->(old_tgt)
 
 DELETE old_rel
 
@@ -348,38 +364,34 @@ CALL {{
 FINISH
             "#,
             rel_type = spec.rel_type,
-            rel_key_field_name = key_field.name,
         );
 
         let insert_cypher = format!(
             r#"
-MERGE (new_src:{src_node_label} {{{src_node_key_field_name}: ${SRC_ID_PARAM}}})
+MERGE (new_src:{src_node_label} {src_key_fields_literal})
 {optional_set_src_props}
 
-MERGE (new_tgt:{tgt_node_label} {{{tgt_node_key_field_name}: ${TGT_ID_PARAM}}})
+MERGE (new_tgt:{tgt_node_label} {tgt_key_fields_literal})
 {optional_set_tgt_props}
 
-MERGE (new_src)-[new_rel:{rel_type} {{{rel_key_field_name}: ${REL_ID_PARAM}}}]->(new_tgt)
+MERGE (new_src)-[new_rel:{rel_type} {key_fields_literal}]->(new_tgt)
 {optional_set_rel_props}
 
 FINISH
             "#,
             src_node_label = spec.source.label,
-            src_node_key_field_name = spec.get_src_label_info()?.key_field_name,
             optional_set_src_props = if src_fields.value_fields.is_empty() {
                 "".to_string()
             } else {
                 format!("SET new_src += ${SRC_PROPS_PARAM}\n")
             },
             tgt_node_label = spec.target.label,
-            tgt_node_key_field_name = spec.get_tgt_label_info()?.key_field_name,
             optional_set_tgt_props = if tgt_fields.value_fields.is_empty() {
                 "".to_string()
             } else {
                 format!("SET new_tgt += ${TGT_PROPS_PARAM}\n")
             },
             rel_type = spec.rel_type,
-            rel_key_field_name = key_field.name,
             optional_set_rel_props = if value_fields.is_empty() {
                 "".to_string()
             } else {
@@ -390,11 +402,41 @@ FINISH
             graph,
             delete_cypher,
             insert_cypher,
-            key_field,
+            key_field_params,
+            key_fields,
             value_fields,
+            src_key_field_params,
             src_fields,
+            tgt_key_field_params,
             tgt_fields,
         })
+    }
+
+    fn bind_key_field_params<'a>(
+        query: neo4rs::Query,
+        params: &[String],
+        type_val: impl Iterator<Item = (&'a schema::ValueType, &'a value::Value)>,
+    ) -> Result<neo4rs::Query> {
+        let mut query = query;
+        for (i, (typ, val)) in type_val.enumerate() {
+            query = query.param(&params[i], value_to_bolt(val, typ)?);
+        }
+        Ok(query)
+    }
+
+    fn bind_rel_key_field_params(
+        &self,
+        query: neo4rs::Query,
+        val: &KeyValue,
+    ) -> Result<neo4rs::Query> {
+        let mut query = query;
+        for (i, val) in val.fields_iter(self.key_fields.len())?.enumerate() {
+            query = query.param(
+                &self.key_field_params[i],
+                key_to_bolt(val, &self.key_fields[i].value_type.typ)?,
+            );
+        }
+        Ok(query)
     }
 
     fn build_queries_to_apply_mutation(
@@ -403,27 +445,30 @@ FINISH
     ) -> Result<Vec<neo4rs::Query>> {
         let mut queries = vec![];
         for upsert in mutation.upserts.iter() {
-            let rel_id_bolt = key_to_bolt(&upsert.key, &self.key_field.value_type.typ)?;
-            queries
-                .push(neo4rs::query(&self.delete_cypher).param(REL_ID_PARAM, rel_id_bolt.clone()));
+            queries.push(
+                self.bind_rel_key_field_params(neo4rs::query(&self.delete_cypher), &upsert.key)?,
+            );
 
             let value = &upsert.value;
-            let mut insert_cypher = neo4rs::query(&self.insert_cypher)
-                .param(REL_ID_PARAM, rel_id_bolt)
-                .param(
-                    SRC_ID_PARAM,
-                    value_to_bolt(
-                        &value.fields[self.src_fields.key_field.field_idx],
-                        &self.src_fields.key_field.value_type,
-                    )?,
-                )
-                .param(
-                    TGT_ID_PARAM,
-                    value_to_bolt(
-                        &value.fields[self.tgt_fields.key_field.field_idx],
-                        &self.tgt_fields.key_field.value_type,
-                    )?,
-                );
+            let mut insert_cypher =
+                self.bind_rel_key_field_params(neo4rs::query(&self.insert_cypher), &upsert.key)?;
+            insert_cypher = Self::bind_key_field_params(
+                insert_cypher,
+                &self.src_key_field_params,
+                self.src_fields
+                    .key_fields
+                    .iter()
+                    .map(|f| (&f.value_type, &value.fields[f.field_idx])),
+            )?;
+            insert_cypher = Self::bind_key_field_params(
+                insert_cypher,
+                &self.tgt_key_field_params,
+                self.tgt_fields
+                    .key_fields
+                    .iter()
+                    .map(|f| (&f.value_type, &value.fields[f.field_idx])),
+            )?;
+
             if !self.src_fields.value_fields.is_empty() {
                 insert_cypher = insert_cypher.param(
                     SRC_PROPS_PARAM,
@@ -460,10 +505,9 @@ FINISH
             queries.push(insert_cypher);
         }
         for delete_key in mutation.delete_keys.iter() {
-            queries.push(neo4rs::query(&self.delete_cypher).param(
-                REL_ID_PARAM,
-                key_to_bolt(delete_key, &self.key_field.value_type.typ)?,
-            ));
+            queries.push(
+                self.bind_rel_key_field_params(neo4rs::query(&self.delete_cypher), delete_key)?,
+            );
         }
         Ok(queries)
     }
@@ -489,35 +533,51 @@ impl ExportTargetExecutor for RelationshipStorageExecutor {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeLabelSetupState {
-    key_field_name: String,
+    key_field_names: Vec<String>,
     key_constraint_name: String,
+    vector_indexes: HashMap<String, spec::VectorIndexDef>,
 }
 
 impl NodeLabelSetupState {
     fn from_spec(label: &str, spec: &RelationshipNodeSpec) -> Self {
-        let key_constraint_name = format!("n__{}__{}", label, spec.key_field_name);
+        let key_constraint_name = format!("n__{}__unique", label);
         Self {
-            key_field_name: spec.key_field_name.clone(),
+            key_field_names: spec
+                .index_options
+                .primary_key_fields
+                .clone()
+                .unwrap_or_default(),
             key_constraint_name,
+            vector_indexes: spec
+                .index_options
+                .vector_index_defs
+                .iter()
+                .map(|v| {
+                    (
+                        format!("n__{}__{}__{}", label, v.field_name.clone(), v.metric),
+                        v.clone(),
+                    )
+                })
+                .collect(),
         }
     }
 
     fn is_compatible(&self, other: &Self) -> bool {
-        self.key_field_name == other.key_field_name
+        self.key_field_names == other.key_field_names
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelationshipSetupState {
-    key_field_name: String,
+    key_field_names: Vec<String>,
     key_constraint_name: String,
     #[serde(default)]
     nodes: BTreeMap<String, NodeLabelSetupState>,
 }
 
 impl RelationshipSetupState {
-    fn from_spec(spec: &RelationshipSpec, key_field_name: String) -> Self {
+    fn from_spec(spec: &RelationshipSpec, key_field_names: Vec<String>) -> Self {
         Self {
-            key_field_name,
+            key_field_names,
             key_constraint_name: format!("r__{}__key", spec.rel_type),
             nodes: spec
                 .nodes
@@ -528,7 +588,7 @@ impl RelationshipSetupState {
     }
 
     fn check_compatible(&self, existing: &Self) -> SetupStateCompatibility {
-        if self.key_field_name != existing.key_field_name {
+        if self.key_field_names != existing.key_field_names {
             SetupStateCompatibility::NotCompatible
         } else if existing.nodes.iter().any(|(label, existing_node)| {
             !self
@@ -553,14 +613,14 @@ struct DataClearAction {
 #[derive(Debug)]
 struct KeyConstraint {
     label: String,
-    field_name: String,
+    field_names: Vec<String>,
 }
 
 impl KeyConstraint {
     fn new(label: String, state: &NodeLabelSetupState) -> Self {
         Self {
             label: label,
-            field_name: state.key_field_name.clone(),
+            field_names: state.key_field_names.clone(),
         }
     }
 }
@@ -617,20 +677,20 @@ impl SetupStatusCheck {
         if let Some(desired_state) = desired_state {
             let rel_constraint = KeyConstraint {
                 label: key.relationship.clone(),
-                field_name: desired_state.key_field_name.clone(),
+                field_names: desired_state.key_field_names.clone(),
             };
-            old_rel_constraints.swap_remove(&desired_state.key_constraint_name);
+            old_rel_constraints.shift_remove(&desired_state.key_constraint_name);
             if !existing
                 .current
                 .as_ref()
-                .map(|c| rel_constraint.field_name == c.key_field_name)
+                .map(|c| rel_constraint.field_names == c.key_field_names)
                 .unwrap_or(false)
             {
                 rel_constraint_to_create.insert(desired_state.key_constraint_name, rel_constraint);
             }
 
             for (label, node) in desired_state.nodes.iter() {
-                old_node_constraints.swap_remove(&node.key_constraint_name);
+                old_node_constraints.shift_remove(&node.key_constraint_name);
                 if !existing
                     .current
                     .as_ref()
@@ -700,7 +760,9 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
         for (name, rel_constraint) in self.rel_constraint_to_create.iter() {
             result.push(format!(
                 "Create KEY CONSTRAINT {} ON RELATIONSHIP {} (key: {})",
-                name, rel_constraint.label, rel_constraint.field_name,
+                name,
+                rel_constraint.label,
+                rel_constraint.field_names.join(", "),
             ));
         }
         for name in &self.node_constraint_to_delete {
@@ -709,7 +771,9 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
         for (name, node_constraint) in self.node_constraint_to_create.iter() {
             result.push(format!(
                 "Create KEY CONSTRAINT {} ON NODE {} (key: {})",
-                name, node_constraint.label, node_constraint.field_name,
+                name,
+                node_constraint.label,
+                node_constraint.field_names.join(", "),
             ));
         }
         result
@@ -720,6 +784,18 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
     }
 
     async fn apply_change(&self) -> Result<()> {
+        let build_composite_field_names = |qualifier: &str, field_names: &[String]| -> String {
+            let strs = field_names
+                .iter()
+                .map(|name| format!("{qualifier}.{name}"))
+                .join(", ");
+            if field_names.len() == 1 {
+                strs
+            } else {
+                format!("({})", strs)
+            }
+        };
+
         let graph = self.graph_pool.get_graph(&self.conn_spec).await?;
 
         if let Some(data_clear) = &self.data_clear {
@@ -761,9 +837,9 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
         for (name, constraint) in self.node_constraint_to_create.iter() {
             graph
                 .run(neo4rs::query(&format!(
-                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR (n:{label}) REQUIRE n.{field_name} IS UNIQUE",
+                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR (n:{label}) REQUIRE {field_names} IS UNIQUE",
                     label = constraint.label,
-                    field_name = constraint.field_name
+                    field_names = build_composite_field_names("n", &constraint.field_names)
                 )))
                 .await?;
         }
@@ -771,9 +847,9 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
         for (name, constraint) in self.rel_constraint_to_create.iter() {
             graph
                 .run(neo4rs::query(&format!(
-                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR ()-[e:{label}]-() REQUIRE e.{field_name} IS UNIQUE",
+                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR ()-[e:{label}]-() REQUIRE {field_names} IS UNIQUE",
                     label = constraint.label,
-                    field_name = constraint.field_name
+                    field_names = build_composite_field_names("e", &constraint.field_names)
                 )))
                 .await?;
         }
@@ -788,6 +864,87 @@ pub struct RelationshipFactory {
 impl RelationshipFactory {
     pub fn new(graph_pool: Arc<GraphPool>) -> Self {
         Self { graph_pool }
+    }
+}
+
+struct NodeLabelAnalyzer<'a> {
+    label_name: &'a str,
+    fields: IndexMap<&'a str, AnalyzedGraphFieldMapping>,
+    remaining_fields: HashMap<&'a str, &'a FieldMapping>,
+    index_options: &'a IndexOptions,
+}
+
+impl<'a> NodeLabelAnalyzer<'a> {
+    fn new(rel_spec: &'a RelationshipSpec, rel_end_spec: &'a RelationshipEndSpec) -> Result<Self> {
+        let node_spec = rel_spec.nodes.get(&rel_end_spec.label).ok_or_else(|| {
+            anyhow!(
+                "Node label `{}` not found in relationship spec",
+                rel_end_spec.label
+            )
+        })?;
+        Ok(Self {
+            label_name: rel_end_spec.label.as_str(),
+            fields: IndexMap::new(),
+            remaining_fields: rel_end_spec
+                .fields
+                .iter()
+                .map(|f| (f.field_name.as_str(), f))
+                .collect(),
+            index_options: &node_spec.index_options,
+        })
+    }
+
+    fn process_field(&mut self, field_idx: usize, field_schema: &FieldSchema) -> bool {
+        let field_info = match self.remaining_fields.remove(field_schema.name.as_str()) {
+            Some(field_info) => field_info,
+            None => return false,
+        };
+        self.fields.insert(
+            field_info.get_node_field_name().as_str(),
+            AnalyzedGraphFieldMapping {
+                field_idx,
+                field_name: field_info.get_node_field_name().clone(),
+                value_type: field_schema.value_type.typ.clone(),
+            },
+        );
+        true
+    }
+
+    fn build(self) -> Result<AnalyzedNodeLabelInfo> {
+        if !self.remaining_fields.is_empty() {
+            anyhow::bail!(
+                "Fields not mapped for  Node label `{}`: {}",
+                self.label_name,
+                self.remaining_fields.keys().join(", ")
+            );
+        }
+        let mut fields = self.fields;
+        let mut key_fields = vec![];
+        for key_field in self
+            .index_options
+            .primary_key_fields
+            .iter()
+            .flat_map(|f| f.iter())
+        {
+            let e = fields.shift_remove(key_field.as_str()).ok_or_else(|| {
+                anyhow!(
+                    "Key field `{}` not mapped in Node label `{}`",
+                    key_field,
+                    self.label_name
+                )
+            })?;
+            key_fields.push(e);
+        }
+        if key_fields.is_empty() {
+            anyhow::bail!(
+                "No key fields specified for Node label `{}`",
+                self.label_name
+            );
+        }
+        Ok(AnalyzedNodeLabelInfo {
+            key_fields,
+            value_fields: fields.into_values().collect(),
+        })
     }
 }
 
@@ -810,72 +967,18 @@ impl StorageFactoryBase for RelationshipFactory {
         context: Arc<FlowInstanceContext>,
     ) -> Result<ExportTargetBuildOutput<Self>> {
         let setup_key = GraphRelationship::from_spec(&spec);
-        let key_field_schema = {
-            if key_fields_schema.len() != 1 {
-                anyhow::bail!("Neo4j only supports a single key field");
-            }
-            key_fields_schema.into_iter().next().unwrap()
-        };
-        let desired_setup_state =
-            RelationshipSetupState::from_spec(&spec, key_field_schema.name.clone());
+        let desired_setup_state = RelationshipSetupState::from_spec(
+            &spec,
+            key_fields_schema.iter().map(|f| f.name.clone()).collect(),
+        );
 
+        let mut src_label_analyzer = NodeLabelAnalyzer::new(&spec, &spec.source)?;
+        let mut tgt_label_analyzer = NodeLabelAnalyzer::new(&spec, &spec.target)?;
         let mut rel_value_fields_info = vec![];
-        let mut src_key_field_info = None;
-        let mut src_value_fields_info = vec![];
-        let mut tgt_key_field_info = None;
-        let mut tgt_value_fields_info = vec![];
-
-        let mut field_name_to_src_field_info = spec
-            .source
-            .fields
-            .iter()
-            .map(|field| (field.field_name.as_str(), field))
-            .collect::<HashMap<_, _>>();
-        let mut field_name_to_tgt_field_info = spec
-            .target
-            .fields
-            .iter()
-            .map(|field| (field.field_name.as_str(), field))
-            .collect::<HashMap<_, _>>();
-
-        let src_label_info = spec.get_src_label_info()?;
-        let tgt_label_info = spec.get_tgt_label_info()?;
         for (field_idx, field_schema) in value_fields_schema.into_iter().enumerate() {
-            let src_field_info = field_name_to_src_field_info.remove(field_schema.name.as_str());
-            let tgt_field_info = field_name_to_tgt_field_info.remove(field_schema.name.as_str());
-            if let Some(src_field_info) = src_field_info {
-                let field_mapping = AnalyzedGraphFieldMapping {
-                    field_idx,
-                    field_name: src_field_info.get_node_field_name().clone(),
-                    value_type: field_schema.value_type.typ.clone(),
-                };
-                let node_field_name = src_field_info
-                    .node_field_name
-                    .as_ref()
-                    .unwrap_or(&src_field_info.field_name);
-                if &src_label_info.key_field_name == node_field_name {
-                    src_key_field_info = Some(field_mapping);
-                } else {
-                    src_value_fields_info.push(field_mapping);
-                }
-            }
-            if let Some(tgt_field_info) = tgt_field_info {
-                let field_mapping = AnalyzedGraphFieldMapping {
-                    field_idx,
-                    field_name: tgt_field_info.get_node_field_name().clone(),
-                    value_type: field_schema.value_type.typ.clone(),
-                };
-                let node_field_name = tgt_field_info
-                    .node_field_name
-                    .as_ref()
-                    .unwrap_or(&tgt_field_info.field_name);
-                if &tgt_label_info.key_field_name == node_field_name {
-                    tgt_key_field_info = Some(field_mapping);
-                } else {
-                    tgt_value_fields_info.push(field_mapping);
-                }
-            }
-            if src_field_info.is_none() && tgt_field_info.is_none() {
+            if !src_label_analyzer.process_field(field_idx, &field_schema)
+                && !tgt_label_analyzer.process_field(field_idx, &field_schema)
+            {
                 rel_value_fields_info.push(AnalyzedGraphFieldMapping {
                     field_idx,
                     field_name: field_schema.name.clone(),
@@ -883,30 +986,9 @@ impl StorageFactoryBase for RelationshipFactory {
                 });
             }
         }
-        if !field_name_to_src_field_info.is_empty() {
-            anyhow::bail!(
-                "Source field not found: {}",
-                field_name_to_src_field_info.keys().join(", ")
-            );
-        }
-        if !field_name_to_tgt_field_info.is_empty() {
-            anyhow::bail!(
-                "Target field not found: {}",
-                field_name_to_tgt_field_info.keys().join(", ")
-            );
-        }
-        let src_key_field_info = src_key_field_info.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Source key field not found: {}",
-                src_label_info.key_field_name
-            )
-        })?;
-        let tgt_key_field_info = tgt_key_field_info.ok_or_else(|| {
-            anyhow::anyhow!(
-                "Target key field not found: {}",
-                tgt_label_info.key_field_name
-            )
-        })?;
+        let src_label_info = src_label_analyzer.build()?;
+        let tgt_label_info = tgt_label_analyzer.build()?;
+
         let conn_spec = context
             .auth_registry
             .get::<ConnectionSpec>(&spec.connection)?;
@@ -915,16 +997,10 @@ impl StorageFactoryBase for RelationshipFactory {
             let executor = Arc::new(RelationshipStorageExecutor::new(
                 graph,
                 spec,
-                key_field_schema,
+                key_fields_schema,
                 rel_value_fields_info,
-                AnalyzedGraphFields {
-                    key_field: src_key_field_info,
-                    value_fields: src_value_fields_info,
-                },
-                AnalyzedGraphFields {
-                    key_field: tgt_key_field_info,
-                    value_fields: tgt_value_fields_info,
-                },
+                src_label_info,
+                tgt_label_info,
             )?);
             Ok((executor as Arc<dyn ExportTargetExecutor>, None))
         }

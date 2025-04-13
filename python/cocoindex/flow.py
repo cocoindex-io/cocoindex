@@ -15,7 +15,7 @@ from enum import Enum
 from dataclasses import dataclass
 
 from . import _engine
-from . import vector
+from . import index
 from . import op
 from .convert import dump_engine_object
 from .typing import encode_enriched_type
@@ -268,7 +268,7 @@ class DataCollector:
 
     def export(self, name: str, target_spec: op.StorageSpec, /, *,
               primary_key_fields: Sequence[str] | None = None,
-              vector_index: Sequence[tuple[str, vector.VectorSimilarityMetric]] = (),
+              vector_index: Sequence[tuple[str, index.VectorSimilarityMetric]] = (),
               setup_by_user: bool = False):
         """
         Export the collected data to the specified target.

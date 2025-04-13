@@ -174,6 +174,21 @@ impl std::fmt::Display for KeyValue {
 }
 
 impl KeyValue {
+    pub fn fields_iter<'a>(
+        &'a self,
+        num_fields: usize,
+    ) -> Result<impl Iterator<Item = &'a KeyValue>> {
+        let slice = if num_fields == 1 {
+            std::slice::from_ref(self)
+        } else {
+            match self {
+                KeyValue::Struct(v) => v,
+                _ => api_bail!("Invalid key value type"),
+            }
+        };
+        Ok(slice.iter())
+    }
+
     fn parts_from_str(
         values_iter: &mut impl Iterator<Item = String>,
         schema: &ValueType,

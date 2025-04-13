@@ -55,11 +55,19 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
                         "Each relationship should be a tuple of (subject, predicate, object).")))
 
             with chunk["relationships"]["relationships"].row() as relationship:
+                relationship["subject_embedding"] = relationship["subject"].transform(
+                    cocoindex.functions.SentenceTransformerEmbed(
+                        model="sentence-transformers/all-MiniLM-L6-v2"))
+                relationship["object_embedding"] = relationship["object"].transform(
+                    cocoindex.functions.SentenceTransformerEmbed(
+                        model="sentence-transformers/all-MiniLM-L6-v2"))
                 relationships.collect(
                     id=cocoindex.GeneratedField.UUID,
                     subject=relationship["subject"],
-                    predicate=relationship["predicate"],
+                    subject_embedding=relationship["subject_embedding"],
                     object=relationship["object"],
+                    object_embedding=relationship["object_embedding"],
+                    predicate=relationship["predicate"],
                 )
 
     relationships.export(
@@ -69,14 +77,34 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
             rel_type="RELATIONSHIP",
             source=cocoindex.storages.Neo4jRelationshipEndSpec(
                 label="Entity",
-                fields=[cocoindex.storages.Neo4jFieldMapping(field_name="subject", node_field_name="value")]
+                fields=[
+                    cocoindex.storages.Neo4jFieldMapping(
+                        field_name="subject", node_field_name="value"),
+                    cocoindex.storages.Neo4jFieldMapping(
+                        field_name="subject_embedding", node_field_name="embedding"),
+                ]
             ),
             target=cocoindex.storages.Neo4jRelationshipEndSpec(
                 label="Entity",
-                fields=[cocoindex.storages.Neo4jFieldMapping(field_name="object", node_field_name="value")]
+                fields=[
+                    cocoindex.storages.Neo4jFieldMapping(
+                        field_name="object", node_field_name="value"),
+                    cocoindex.storages.Neo4jFieldMapping(
+                        field_name="object_embedding", node_field_name="embedding"),
+                ]
             ),
             nodes={
-                "Entity": cocoindex.storages.Neo4jRelationshipNodeSpec(key_field_name="value"),
+                "Entity": cocoindex.storages.Neo4jRelationshipNodeSpec(
+                    index_options=cocoindex.IndexOptions(
+                        primary_key_fields=["value"],
+                        vector_index_defs=[
+                            cocoindex.VectorIndexDef(
+                                field_name="embedding",
+                                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+                            ),
+                        ],
+                    ),
+                ),
             },
         ),
         primary_key_fields=["id"],
