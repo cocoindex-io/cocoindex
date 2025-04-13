@@ -21,6 +21,12 @@ Exports data to a [Qdrant](https://qdrant.tech/) collection.
 
 The spec takes the following fields:
 
-*   `qdrant_url` (type: `str`, required): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance. Defaults to `http://localhost:6334/`.
+*   `grpc_url` (type: `str`, required): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance. Defaults to `http://localhost:6334/`.
 
-*   `collection` (type: `str`, required): The name of the collection to export the data to.
+*   `collection_name` (type: `str`, required): The name of the collection to export the data to.
+
+The field name for the vector embeddings must match the [vector name](https://qdrant.tech/documentation/concepts/vectors/#named-vectors) used when the collection was created.
+
+If no primary key is set during export, a random UUID is used as the Qdrant point ID.
+
+You can find an end-to-end example [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding).
