@@ -1,5 +1,5 @@
 [project]
-name = "text-embedding"
+name = "text-embedding-qdrant"
 version = "0.1.0"
 description = "Simple example for cocoindex: build embedding index based on local text files."
 requires-python = ">=3.10"

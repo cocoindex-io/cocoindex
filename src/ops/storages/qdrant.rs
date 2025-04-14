@@ -10,7 +10,8 @@ use anyhow::{bail, Result};
 use futures::FutureExt;
 use qdrant_client::qdrant::vectors_output::VectorsOptions;
 use qdrant_client::qdrant::{
-    NamedVectors, PointId, PointStruct, UpsertPointsBuilder, Value as QdrantValue,
+    DeletePointsBuilder, NamedVectors, PointId, PointStruct, PointsIdsList, UpsertPointsBuilder,
+    Value as QdrantValue,
 };
 use qdrant_client::qdrant::{Query, QueryPointsBuilder, ScoredPoint};
 use qdrant_client::Qdrant;
@@ -77,6 +78,23 @@ impl ExportTargetExecutor for Executor {
         self.client
             .upsert_points(UpsertPointsBuilder::new(&self.collection_name, points).wait(true))
             .await?;
+
+        let ids = mutation
+            .delete_keys
+            .iter()
+            .map(key_to_point_id)
+            .collect::<Result<Vec<_>>>()?;
+
+        if !ids.is_empty() {
+            self.client
+                .delete_points(
+                    DeletePointsBuilder::new(&self.collection_name)
+                        .points(PointsIdsList { ids })
+                        .wait(true),
+                )
+                .await?;
+        }
+
         Ok(())
     }
 }
