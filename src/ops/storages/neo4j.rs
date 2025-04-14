@@ -632,7 +632,7 @@ impl RelationshipSetupState {
         spec: &RelationshipSpec,
         key_field_names: Vec<String>,
         index_options: &IndexOptions,
-        rel_value_fields_info: &Vec<AnalyzedGraphFieldMapping>,
+        rel_value_fields_info: &[AnalyzedGraphFieldMapping],
         src_label_info: &AnalyzedNodeLabelInfo,
         tgt_label_info: &AnalyzedNodeLabelInfo,
     ) -> Result<Self> {
