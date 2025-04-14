@@ -16,22 +16,6 @@ use qdrant_client::qdrant::{Query, QueryPointsBuilder, ScoredPoint};
 use qdrant_client::Qdrant;
 use serde::Serialize;
 use serde_json::json;
-use uuid::Uuid;
-
-fn key_value_fields_iter<'a>(
-    key_fields_schema: &[FieldSchema],
-    key_value: &'a KeyValue,
-) -> Result<&'a [KeyValue]> {
-    let slice = if key_fields_schema.len() == 1 {
-        std::slice::from_ref(key_value)
-    } else {
-        match key_value {
-            KeyValue::Struct(fields) => fields,
-            _ => anyhow::bail!("expect struct key value"),
-        }
-    };
-    Ok(slice)
-}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Spec {
@@ -43,7 +27,6 @@ pub struct Spec {
 pub struct Executor {
     client: Qdrant,
     collection_name: String,
-    key_fields_schema: Vec<FieldSchema>,
     value_fields_schema: Vec<FieldSchema>,
     all_fields: Vec<FieldSchema>,
 }
@@ -72,7 +55,6 @@ impl Executor {
                 .api_key(api_key)
                 .skip_compatibility_check()
                 .build()?,
-            key_fields_schema,
             value_fields_schema,
             all_fields,
             collection_name,
@@ -85,8 +67,7 @@ impl ExportTargetExecutor for Executor {
     async fn apply_mutation(&self, mutation: ExportTargetMutation) -> Result<()> {
         let mut points: Vec<PointStruct> = Vec::with_capacity(mutation.upserts.len());
         for upsert in mutation.upserts.iter() {
-            let key_fields = key_value_fields_iter(&self.key_fields_schema, &upsert.key)?;
-            let point_id = key_to_point_id(key_fields)?;
+            let point_id = key_to_point_id(&upsert.key)?;
             let (payload, vectors) =
                 values_to_payload(&upsert.value.fields, &self.value_fields_schema)?;
 
@@ -99,17 +80,12 @@ impl ExportTargetExecutor for Executor {
         Ok(())
     }
 }
-fn key_to_point_id(key_values: &[KeyValue]) -> Result<PointId> {
-    let point_id = if let Some(key_value) = key_values.first() {
-        match key_value {
-            KeyValue::Str(v) => PointId::from(v.to_string()),
-            KeyValue::Int64(v) => PointId::from(*v as u64),
-            KeyValue::Uuid(v) => PointId::from(v.to_string()),
-            _ => bail!("Unsupported Qdrant Point ID key type"),
-        }
-    } else {
-        let uuid = Uuid::new_v4().to_string();
-        PointId::from(uuid)
+fn key_to_point_id(key_value: &KeyValue) -> Result<PointId> {
+    let point_id = match key_value {
+        KeyValue::Str(v) => PointId::from(v.to_string()),
+        KeyValue::Int64(v) => PointId::from(*v as u64),
+        KeyValue::Uuid(v) => PointId::from(v.to_string()),
+        e => bail!("Invalid Qdrant point ID: {e}"),
     };
 
     Ok(point_id)
@@ -337,9 +313,9 @@ impl StorageFactoryBase for Arc<Factory> {
         _storage_options: IndexOptions,
         _context: Arc<FlowInstanceContext>,
     ) -> Result<ExportTargetBuildOutput<Self>> {
-        if key_fields_schema.len() > 1 {
+        if key_fields_schema.len() != 1 {
             api_bail!(
-                "Expected only one primary key for the point ID. Got {}.",
+                "Expected one primary key field for the point ID. Got {}.",
                 key_fields_schema.len()
             )
         }
