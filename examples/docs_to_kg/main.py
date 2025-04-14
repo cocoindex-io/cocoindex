@@ -13,11 +13,6 @@ class Relationship:
     predicate: str
     object: str
 
-@dataclasses.dataclass
-class Relationships:
-    """Describe a relationship between two nodes."""
-    relationships: list[Relationship]
-
 @cocoindex.flow_def(name="DocsToKG")
 def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     """
@@ -48,13 +43,16 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
                 cocoindex.functions.ExtractByLlm(
                     llm_spec=cocoindex.LlmSpec(
                         api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
-                    output_type=Relationships,
+                    # Replace by this spec below, to use Ollama API instead of OpenAI
+                    #   llm_spec=cocoindex.LlmSpec(
+                    #       api_type=cocoindex.LlmApiType.OLLAMA, model="llama3.2"),
+                    output_type=list[Relationship],
                     instruction=(
                         "Please extract relationships from CocoIndex documents. "
                         "Focus on concepts and ingnore specific examples. "
                         "Each relationship should be a tuple of (subject, predicate, object).")))
 
-            with chunk["relationships"]["relationships"].row() as relationship:
+            with chunk["relationships"].row() as relationship:
                 relationship["subject_embedding"] = relationship["subject"].transform(
                     cocoindex.functions.SentenceTransformerEmbed(
                         model="sentence-transformers/all-MiniLM-L6-v2"))

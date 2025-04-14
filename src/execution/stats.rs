@@ -81,9 +81,15 @@ impl UpdateStats {
 
 impl std::fmt::Display for UpdateStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut messages = Vec::new();
+        let num_errors = self.num_errors.get();
+        if num_errors > 0 {
+            messages.push(format!("{num_errors} source rows FAILED"));
+        }
+
         let num_skipped = self.num_skipped.get();
         if num_skipped > 0 {
-            write!(f, "{} rows skipped", num_skipped)?;
+            messages.push(format!("{} source rows SKIPPED", num_skipped));
         }
 
         let num_insertions = self.num_insertions.get();
@@ -91,24 +97,17 @@ impl std::fmt::Display for UpdateStats {
         let num_reprocesses = self.num_repreocesses.get();
         let num_source_rows = num_insertions + num_deletions + num_reprocesses;
         if num_source_rows > 0 {
-            if num_skipped > 0 {
-                write!(f, "; ")?;
-            }
-            write!(f, "{num_source_rows} source rows processed",)?;
-
-            let num_errors = self.num_errors.get();
-            if num_errors > 0 {
-                write!(f, " with {num_errors} ERRORS",)?;
-            }
-            write!(
-                f,
-                ": {num_insertions} added, {num_deletions} removed, {num_reprocesses} repocessed",
-            )?;
+            messages.push(format!(
+                "{num_source_rows} source rows processed: {num_insertions} ADDED, {num_deletions} REMOVED, {num_reprocesses} REPROCESSED",
+            ));
         }
 
-        if num_skipped == 0 && num_source_rows == 0 {
-            write!(f, "no changes")?;
+        if !messages.is_empty() {
+            write!(f, "{}", messages.join("; "))?;
+        } else {
+            write!(f, "No changes")?;
         }
+
         Ok(())
     }
 }

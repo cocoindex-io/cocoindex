@@ -1,14 +1,12 @@
-use std::borrow::Cow;
-use std::sync::Arc;
+use crate::prelude::*;
 
-use schemars::schema::SchemaObject;
-use serde::Serialize;
-
-use crate::base::json_schema::build_json_schema;
 use crate::llm::{
     new_llm_generation_client, LlmGenerateRequest, LlmGenerationClient, LlmSpec, OutputFormat,
 };
 use crate::ops::sdk::*;
+use base::json_schema::build_json_schema;
+use schemars::schema::SchemaObject;
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Spec {
@@ -25,8 +23,8 @@ struct Executor {
     args: Args,
     client: Box<dyn LlmGenerationClient>,
     output_json_schema: SchemaObject,
-    output_type: EnrichedValueType,
     system_prompt: String,
+    value_extractor: base::json_schema::ValueExtractor,
 }
 
 fn get_system_prompt(instructions: &Option<String>, extra_instructions: Option<String>) -> String {
@@ -53,14 +51,13 @@ Output only the JSON without any additional messages or explanations."
 impl Executor {
     async fn new(spec: Spec, args: Args) -> Result<Self> {
         let client = new_llm_generation_client(spec.llm_spec).await?;
-        let (output_json_schema, extra_instructions) =
-            build_json_schema(&spec.output_type, client.json_schema_options())?;
+        let schema_output = build_json_schema(spec.output_type, client.json_schema_options())?;
         Ok(Self {
             args,
             client,
-            output_json_schema,
-            output_type: spec.output_type,
-            system_prompt: get_system_prompt(&spec.instruction, extra_instructions),
+            output_json_schema: schema_output.schema,
+            system_prompt: get_system_prompt(&spec.instruction, schema_output.extra_instructions),
+            value_extractor: schema_output.value_extractor,
         })
     }
 }
@@ -87,7 +84,7 @@ impl SimpleFunctionExecutor for Executor {
         };
         let res = self.client.generate(req).await?;
         let json_value: serde_json::Value = serde_json::from_str(res.text.as_str())?;
-        let value = Value::from_json(json_value, &self.output_type.typ)?;
+        let value = self.value_extractor.extract_value(json_value)?;
         Ok(value)
     }
 }

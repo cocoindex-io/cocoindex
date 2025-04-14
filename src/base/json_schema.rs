@@ -1,8 +1,6 @@
-use crate::utils::immutable::RefList;
+use crate::prelude::*;
 
-use super::{schema, spec::FieldName};
-use anyhow::Result;
-use indexmap::IndexMap;
+use crate::utils::immutable::RefList;
 use schemars::schema::{
     ArrayValidation, InstanceType, ObjectValidation, Schema, SchemaObject, SingleOrVec,
 };
@@ -19,6 +17,9 @@ pub struct ToJsonSchemaOptions {
 
     /// If true, extract descriptions to a separate extra instruction.
     pub extract_descriptions: bool,
+
+    /// If true, the top level must be a JSON object.
+    pub top_level_must_be_object: bool,
 }
 
 struct JsonSchemaBuilder {
@@ -38,7 +39,7 @@ impl JsonSchemaBuilder {
         &mut self,
         schema: &mut SchemaObject,
         description: impl ToString,
-        field_path: RefList<'_, &'_ FieldName>,
+        field_path: RefList<'_, &'_ spec::FieldName>,
     ) {
         if self.options.extract_descriptions {
             let mut fields: Vec<_> = field_path.iter().map(|f| f.as_str()).collect();
@@ -53,7 +54,7 @@ impl JsonSchemaBuilder {
     fn for_basic_value_type(
         &mut self,
         basic_type: &schema::BasicValueType,
-        field_path: RefList<'_, &'_ FieldName>,
+        field_path: RefList<'_, &'_ spec::FieldName>,
     ) -> SchemaObject {
         let mut schema = SchemaObject::default();
         match basic_type {
@@ -171,7 +172,7 @@ impl JsonSchemaBuilder {
     fn for_struct_schema(
         &mut self,
         struct_schema: &schema::StructSchema,
-        field_path: RefList<'_, &'_ FieldName>,
+        field_path: RefList<'_, &'_ spec::FieldName>,
     ) -> SchemaObject {
         let mut schema = SchemaObject::default();
         if let Some(description) = &struct_schema.description {
@@ -213,7 +214,7 @@ impl JsonSchemaBuilder {
     fn for_value_type(
         &mut self,
         value_type: &schema::ValueType,
-        field_path: RefList<'_, &'_ FieldName>,
+        field_path: RefList<'_, &'_ spec::FieldName>,
     ) -> SchemaObject {
         match value_type {
             schema::ValueType::Basic(b) => self.for_basic_value_type(b, field_path),
@@ -234,7 +235,7 @@ impl JsonSchemaBuilder {
     fn for_enriched_value_type(
         &mut self,
         enriched_value_type: &schema::EnrichedValueType,
-        field_path: RefList<'_, &'_ FieldName>,
+        field_path: RefList<'_, &'_ spec::FieldName>,
     ) -> SchemaObject {
         self.for_value_type(&enriched_value_type.typ, field_path)
     }
@@ -262,11 +263,69 @@ impl JsonSchemaBuilder {
     }
 }
 
+pub struct ValueExtractor {
+    value_type: schema::ValueType,
+    object_wrapper_field_name: Option<String>,
+}
+
+impl ValueExtractor {
+    pub fn extract_value(&self, json_value: serde_json::Value) -> Result<value::Value> {
+        let unwrapped_json_value =
+            if let Some(object_wrapper_field_name) = &self.object_wrapper_field_name {
+                match json_value {
+                    serde_json::Value::Object(mut o) => o
+                        .remove(object_wrapper_field_name)
+                        .unwrap_or(serde_json::Value::Null),
+                    _ => {
+                        bail!("Field `{}` not found", object_wrapper_field_name)
+                    }
+                }
+            } else {
+                json_value
+            };
+        let result = value::Value::from_json(unwrapped_json_value, &self.value_type)?;
+        Ok(result)
+    }
+}
+
+pub struct BuildJsonSchemaOutput {
+    pub schema: SchemaObject,
+    pub extra_instructions: Option<String>,
+    pub value_extractor: ValueExtractor,
+}
+
 pub fn build_json_schema(
-    value_type: &schema::EnrichedValueType,
+    value_type: schema::EnrichedValueType,
     options: ToJsonSchemaOptions,
-) -> Result<(SchemaObject, Option<String>)> {
+) -> Result<BuildJsonSchemaOutput> {
     let mut builder = JsonSchemaBuilder::new(options);
-    let schema = builder.for_enriched_value_type(value_type, RefList::Nil);
-    Ok((schema, builder.build_extra_instructions()?))
+    let (schema, object_wrapper_field_name) = if builder.options.top_level_must_be_object
+        && !matches!(value_type.typ, schema::ValueType::Struct(_))
+    {
+        let object_wrapper_field_name = "value".to_string();
+        let wrapper_struct = schema::StructSchema {
+            fields: Arc::new(vec![schema::FieldSchema {
+                name: object_wrapper_field_name.clone(),
+                value_type: value_type.clone(),
+            }]),
+            description: None,
+        };
+        (
+            builder.for_struct_schema(&wrapper_struct, RefList::Nil),
+            Some(object_wrapper_field_name),
+        )
+    } else {
+        (
+            builder.for_enriched_value_type(&value_type, RefList::Nil),
+            None,
+        )
+    };
+    Ok(BuildJsonSchemaOutput {
+        schema,
+        extra_instructions: builder.build_extra_instructions()?,
+        value_extractor: ValueExtractor {
+            value_type: value_type.typ,
+            object_wrapper_field_name,
+        },
+    })
 }
