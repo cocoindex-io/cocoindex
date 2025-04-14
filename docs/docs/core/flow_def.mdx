@@ -259,8 +259,10 @@ Export must happen at the top level of a flow, i.e. not within any child scopes 
 
 *   `name`: the name to identify the export target.
 *   `target_spec`: the storage spec as the export target.
-*   `primary_key_fields` (optional): the fields to be used as primary key. Types of the fields must be supported as key fields. See [Key Types](data_types#key-types) for more details.
-*   `vector_index` (optional): the fields to create vector index. Each item is a tuple of a field name and a similarity metric. See [Vector Type](data_types#vector-type) for more details about supported similarity metrics.
+*   `primary_key_fields` (`Sequence[str]`): the fields to be used as primary key. Types of the fields must be supported as key fields. See [Key Types](data_types#key-types) for more details.
+*   `vector_indexes` (`Sequence[VectorIndexDef]`, optional): the fields to create vector index. `VectorIndexDef` has the following fields:
+    *   `field_name`: the field to create vector index.
+    *   `metric`: the similarity metric to use. See [Vector Type](data_types#vector-type) for more details about supported similarity metrics.
 *   `setup_by_user` (optional):
      whether the export target is setup by user.
      By default, CocoIndex is managing the target setup (surfaced by the `cocoindex setup` CLI subcommand), e.g. create related tables/collections/etc. with compatible schema, and update them upon change.

@@ -63,7 +63,10 @@ def pdf_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
         "doc_embeddings",
         cocoindex.storages.Postgres(),
         primary_key_fields=["id"],
-        vector_index=[("embedding", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
+        vector_indexes=[
+            cocoindex.VectorIndexDef(
+                field_name="embedding",
+                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 
 query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
     name="SemanticsSearch",

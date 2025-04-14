@@ -35,8 +35,8 @@ class Neo4jRelationshipEndSpec:
 @dataclass
 class Neo4jRelationshipNodeSpec:
     """Spec for a Neo4j node type."""
-    key_field_name: str | None = None
-    index_options: index.IndexOptions | None = None
+    primary_key_fields: list[str]
+    vector_indexes: list[index.VectorIndexDef] | None = None
 class Neo4jRelationship(op.StorageSpec):
     """Graph storage powered by Neo4j."""
 

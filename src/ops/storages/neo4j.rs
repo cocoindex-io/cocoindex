@@ -39,6 +39,7 @@ pub struct RelationshipEndSpec {
 
 #[derive(Debug, Deserialize)]
 pub struct RelationshipNodeSpec {
+    #[serde(flatten)]
     index_options: spec::IndexOptions,
 }
 
@@ -586,7 +587,7 @@ impl NodeLabelSetupState {
             key_constraint_name,
             vector_indexes: spec
                 .index_options
-                .vector_index_defs
+                .vector_indexes
                 .iter()
                 .map(|v| -> Result<_> {
                     Ok((
@@ -639,7 +640,7 @@ impl RelationshipSetupState {
             key_field_names,
             key_constraint_name: format!("r__{}__key", spec.rel_type),
             vector_indexes: index_options
-                .vector_index_defs
+                .vector_indexes
                 .iter()
                 .map(|v| -> Result<_> {
                     Ok((

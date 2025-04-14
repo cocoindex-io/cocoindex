@@ -267,21 +267,27 @@ class DataCollector:
             self._engine_data_collector, regular_kwargs, auto_uuid_field)
 
     def export(self, name: str, target_spec: op.StorageSpec, /, *,
-              primary_key_fields: Sequence[str] | None = None,
+              primary_key_fields: Sequence[str],
+              vector_indexes: Sequence[index.VectorIndexDef] = (),
               vector_index: Sequence[tuple[str, index.VectorSimilarityMetric]] = (),
               setup_by_user: bool = False):
         """
         Export the collected data to the specified target.
+
+        `vector_index` is for backward compatibility only. Please use `vector_indexes` instead.
         """
-        index_options: dict[str, Any] = {}
-        if primary_key_fields is not None:
-            index_options["primary_key_fields"] = primary_key_fields
-        index_options["vector_index_defs"] = [
-            {"field_name": field_name, "metric": metric.value}
-            for field_name, metric in vector_index]
+        # For backward compatibility only.
+        if len(vector_indexes) == 0 and len(vector_index) > 0:
+            vector_indexes = [index.VectorIndexDef(field_name=field_name, metric=metric)
+                             for field_name, metric in vector_index]
+
+        index_options = index.IndexOptions(
+            primary_key_fields=primary_key_fields,
+            vector_indexes=vector_indexes,
+        )
         self._flow_builder_state.engine_flow_builder.export(
             name, _spec_kind(target_spec), dump_engine_object(target_spec),
-            index_options, self._engine_data_collector, setup_by_user)
+            dump_engine_object(index_options), self._engine_data_collector, setup_by_user)
 
 
 _flow_name_builder = _NameBuilder()

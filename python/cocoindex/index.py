@@ -1,6 +1,6 @@
 from enum import Enum
 from dataclasses import dataclass
-
+from typing import Sequence
 class VectorSimilarityMetric(Enum):
     COSINE_SIMILARITY = "CosineSimilarity"
     L2_DISTANCE = "L2Distance"
@@ -19,5 +19,5 @@ class IndexOptions:
     """
     Options for an index.
     """
-    primary_key_fields: list[str] | None = None
-    vector_index_defs: list[VectorIndexDef] | None = None
+    primary_key_fields: Sequence[str]
+    vector_indexes: Sequence[VectorIndexDef] = ()

@@ -508,7 +508,7 @@ impl SetupState {
                 .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
                 .collect(),
             vector_indexes: index_options
-                .vector_index_defs
+                .vector_indexes
                 .iter()
                 .map(|v| (to_vector_index_name(&table_id.table_name, v), v.clone()))
                 .collect(),
@@ -611,11 +611,11 @@ impl SetupStatusCheck {
                             .value_fields_schema
                             .iter()
                             .filter(|(field_name, schema)| {
-                                existing.possible_versions().any(|v| {
+                                !existing.current.as_ref().map_or(false, |v| {
                                     v.value_fields_schema
                                         .get(*field_name)
                                         .map(to_column_type_sql)
-                                        != Some(to_column_type_sql(schema))
+                                        == Some(to_column_type_sql(schema))
                                 })
                             })
                             .map(|(k, v)| (k.clone(), v.clone()))
@@ -639,9 +639,10 @@ impl SetupStatusCheck {
                         .vector_indexes
                         .iter()
                         .filter(|(name, def)| {
-                            existing
-                                .possible_versions()
-                                .any(|v| v.vector_indexes.get(*name) != Some(def))
+                            !existing
+                                .current
+                                .as_ref()
+                                .map_or(false, |v| v.vector_indexes.get(*name) != Some(def))
                         })
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
@@ -879,7 +880,7 @@ impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
                 let sql = format!(
                     "CREATE INDEX IF NOT EXISTS {} ON {} {}",
                     index_name,
-                    index_spec.field_name,
+                    self.table_id.table_name,
                     to_index_spec_sql(index_spec)
                 );
                 sqlx::query(&sql).execute(&db_pool).await?;
