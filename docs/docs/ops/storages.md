@@ -36,7 +36,7 @@ doc_embeddings.export(
     "doc_embeddings",
     cocoindex.storages.Qdrant(
         collection_name="cocoindex",
-        grpc_url="http://xyz-example.cloud-region.cloud-provider.cloud.qdrant.io:6334/",
+        grpc_url="https://xyz-example.cloud-region.cloud-provider.cloud.qdrant.io:6334/",
         api_key="<your-api-key-here>",
     ),
     primary_key_fields=["id_field"],
