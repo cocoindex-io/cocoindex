@@ -259,14 +259,11 @@ Export must happen at the top level of a flow, i.e. not within any child scopes 
 
 *   `name`: the name to identify the export target.
 *   `target_spec`: the storage spec as the export target.
-*   `primary_key_fields` (`Sequence[str]`): the fields to be used as primary key. Types of the fields must be supported as key fields. See [Key Types](data_types#key-types) for more details.
-*   `vector_indexes` (`Sequence[VectorIndexDef]`, optional): the fields to create vector index. `VectorIndexDef` has the following fields:
-    *   `field_name`: the field to create vector index.
-    *   `metric`: the similarity metric to use. See [Vector Type](data_types#vector-type) for more details about supported similarity metrics.
 *   `setup_by_user` (optional):
      whether the export target is setup by user.
      By default, CocoIndex is managing the target setup (surfaced by the `cocoindex setup` CLI subcommand), e.g. create related tables/collections/etc. with compatible schema, and update them upon change.
      If `True`, the export target will be managed by users, and users are responsible for creating the target and updating it upon change.
+*   Fields to configure [storage indexes](#storage-indexes). `primary_key_fields` is required, and all others are optional.
 
 <Tabs>
 <TabItem value="python" label="Python" default>
@@ -280,7 +277,7 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
     demo_collector.export(
         "demo_storage", DemoStorageSpec(...),
         primary_key_fields=["field1"],
-        vector_index=[("field2", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
+        vector_indexes=[cocoindex.VectorIndexDef("field2", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 ```
 
 </TabItem>
@@ -289,3 +286,77 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 The target storage is managed by CocoIndex, i.e. it'll be created by [CocoIndex CLI](/docs/core/cli) when you run `cocoindex setup`, and the data will be automatically updated (including stale data removal) when updating the index.
 The `name` for the same storage should remain stable across different runs.
 If it changes, CocoIndex will treat it as an old storage removed and a new one created, and perform setup changes and reindexing accordingly.
+
+#### Storage Indexes
+
+Many storage supports indexes, to boost efficiency in retrieving data.
+CocoIndex provides a common way to configure indexes for various storages.
+
+*   *Primary key*. `primary_key_fields` (`Sequence[str]`): the fields to be used as primary key. Types of the fields must be supported as key fields. See [Key Types](data_types#key-types) for more details.
+*   *Vector index*. `vector_indexes` (`Sequence[VectorIndexDef]`): the fields to create vector index. `VectorIndexDef` has the following fields:
+    *   `field_name`: the field to create vector index.
+    *   `metric`: the similarity metric to use. See [Vector Type](data_types#vector-type) for more details about supported similarity metrics.
+
+
+## Miscellaneous
+
+### Auth Registry
+
+CocoIndex manages an auth registry. It's an in-memory key-value store, mainly to store authentication information for a backend.
+
+Operation spec is the default way to configure a backend. But it has the following limitations:
+
+*   The spec isn't supposed to contain secret information, and it's frequently shown in various places, e.g. `cocoindex show`.
+*   Once an operation is removed after flow definition code change, the spec is also gone.
+    But we still need to be able to drop the backend (e.g. a table) by `cocoindex setup` or `cocoindex drop`.
+
+
+Auth registry is introduced to solve the problems above. It works as follows:
+
+*   You can create new **auth entry** by a key and a value.
+*   You can references the entry by the key, and pass it as part of spec for certain operations. e.g. `Neo4jRelationship` takes `connection` field in the form of auth entry reference.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+You can add an auth entry by `cocoindex.add_auth_entry()` function, which returns a `cocoindex.AuthEntryReference`:
+
+```python
+my_graph_conn = cocoindex.add_auth_entry(
+    "my_graph_conn",
+    cocoindex.storages.Neo4jConnectionSpec(
+            uri="bolt://localhost:7687",
+            user="neo4j",
+            password="cocoindex",
+    ))
+```
+
+Then reference it when building a spec that takes an auth entry:
+
+*   You can either reference by the `AuthEntryReference` object directly:
+
+    ```python
+    demo_collector.export(
+        "MyGraph",
+        cocoindex.storages.Neo4jRelationship(connection=my_graph_conn, ...)
+    )
+    ```
+
+*   You can also reference it by the key string, using `cocoindex.ref_auth_entry()` function:
+
+    ```python
+    demo_collector.export(
+        "MyGraph",
+        cocoindex.storages.Neo4jRelationship(connection=cocoindex.ref_auth_entry("my_graph_conn"), ...))
+    ```
+
+</TabItem>
+</Tabs>
+
+Note that CocoIndex backends use the key of an auth entry to identify the backend.
+
+*   Keep the key stable.
+    If the key doesn't change, it's considered to be the same backend (even if the underlying way to connect/authenticate change).
+
+*   If a key is no longer referenced in any operation spec, keep it until the next `cocoindex setup` or `cocoindex drop`,
+    so that when cocoindex will be able to perform cleanups.

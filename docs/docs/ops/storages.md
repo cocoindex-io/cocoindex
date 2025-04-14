@@ -45,3 +45,39 @@ doc_embeddings.export(
 ```
 
 You can find an end-to-end example [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_qdrant).
+
+## Neo4j
+
+### Setup
+
+If you don't have a Postgres database, you can start a Postgres SQL database for cocoindex using our docker compose config:
+
+```bash
+docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/neo4j.yaml) up -d
+```
+
+### Neo4jRelationship
+
+The `Neo4jRelationship` storage exports each row as a relationship to Neo4j Knowledge Graph.
+When you collect rows for `Neo4jRelationship`, fields will be mapped to a relationship and source/target nodes for the relationship:
+
+*   You can explicitly specify fields mapped to source/target nodes.
+*   All remaining fields will be mapped to relationship properties by default.
+
+
+The spec takes the following fields:
+
+*   `connection` (type: [auth reference](../core/flow_def#auth-registry) to `Neo4jConnectionSpec`): The connection to the Neo4j database. `Neo4jConnectionSpec` has the following fields:
+    *   `uri` (type: `str`): The URI of the Neo4j database to use as the internal storage, e.g. `bolt://localhost:7687`.
+    *   `user` (type: `str`): Username for the Neo4j database.
+    *   `password` (type: `str`): Password for the Neo4j database.
+    *   `db` (type: `str`, optional): The name of the Neo4j database to use as the internal storage, e.g. `neo4j`.
+*   `rel_type` (type: `str`): The type of the relationship.
+*   `source`/`target` (type: `Neo4jRelationshipEndSpec`): The source/target node of the relationship, with the following fields:
+    *   `label` (type: `str`): The label of the node.
+    *   `fields` (type: `list[Neo4jFieldMapping]`): Map fields from the collector to nodes in Neo4j, with the following fields:
+        *   `field_name` (type: `str`): The name of the field in the collected row.
+        *   `node_field_name` (type: `str`, optional): The name of the field to use as the node field. If unspecified, will use the same as `field_name`.
+*   `nodes` (type: `dict[str, Neo4jRelationshipNodeSpec]`): This configures indexes for different node labels. Key is the node label. The value `Neo4jRelationshipNodeSpec` has the following fields to configure [storage indexes](../core/flow_def#storage-indexes) for the node.
+        *   `primary_key_fields` is required.
+        *   `vector_indexes` is also supported and optional.
