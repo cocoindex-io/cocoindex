@@ -15,7 +15,6 @@ use qdrant_client::qdrant::{
 };
 use qdrant_client::qdrant::{Query, QueryPointsBuilder, ScoredPoint};
 use qdrant_client::Qdrant;
-use serde::Serialize;
 use serde_json::json;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -129,11 +128,11 @@ fn values_to_payload(
                     BasicValue::Float32(v) => (*v as f64).into(),
                     BasicValue::Float64(v) => (*v).into(),
                     BasicValue::Range(v) => json!({ "start": v.start, "end": v.end }),
-                    BasicValue::Uuid(v) => v.to_string().into(),
-                    BasicValue::Date(v) => v.to_string().into(),
-                    BasicValue::LocalDateTime(v) => v.to_string().into(),
-                    BasicValue::Time(v) => v.to_string().into(),
-                    BasicValue::OffsetDateTime(v) => v.to_string().into(),
+                    BasicValue::Uuid(v) => json!({ "uuid": v.to_string() }),
+                    BasicValue::Date(v) => json!({ "date": v.to_string() }),
+                    BasicValue::LocalDateTime(v) => json!({ "local_datetime": v.to_string() }),
+                    BasicValue::Time(v) => json!({ "time": v.to_string() }),
+                    BasicValue::OffsetDateTime(v) => json!({ "offset_datetime": v.to_string() }),
                     BasicValue::Json(v) => (**v).clone(),
                     BasicValue::Vector(v) => {
                         let vector = convert_to_vector(v.to_vec());
@@ -224,13 +223,59 @@ fn into_value(point: &ScoredPoint, schema: &FieldSchema) -> Result<Value> {
                         }
                     }),
 
-                BasicValueType::Date
-                | BasicValueType::LocalDateTime
-                | BasicValueType::OffsetDateTime
-                | BasicValueType::Time
-                | BasicValueType::Uuid => point.payload.get(field_name).and_then(|v| {
-                    v.as_str()
-                        .map(|s| BasicValue::Str(Arc::from(s.to_string())))
+                BasicValueType::Uuid => point.payload.get(field_name).and_then(|v| {
+                    v.as_struct().and_then(|s| {
+                        s.fields
+                            .get("uuid")?
+                            .as_str()?
+                            .parse()
+                            .ok()
+                            .map(BasicValue::Uuid)
+                    })
+                }),
+
+                BasicValueType::Date => point.payload.get(field_name).and_then(|v| {
+                    v.as_struct().and_then(|s| {
+                        s.fields
+                            .get("date")?
+                            .as_str()?
+                            .parse()
+                            .ok()
+                            .map(BasicValue::Date)
+                    })
+                }),
+
+                BasicValueType::Time => point.payload.get(field_name).and_then(|v| {
+                    v.as_struct().and_then(|s| {
+                        s.fields
+                            .get("time")?
+                            .as_str()?
+                            .parse()
+                            .ok()
+                            .map(BasicValue::Time)
+                    })
+                }),
+
+                BasicValueType::LocalDateTime => point.payload.get(field_name).and_then(|v| {
+                    v.as_struct().and_then(|s| {
+                        s.fields
+                            .get("local_datetime")?
+                            .as_str()?
+                            .parse()
+                            .ok()
+                            .map(BasicValue::LocalDateTime)
+                    })
+                }),
+
+                BasicValueType::OffsetDateTime => point.payload.get(field_name).and_then(|v| {
+                    v.as_struct().and_then(|s| {
+                        s.fields
+                            .get("offset_datetime")?
+                            .as_str()?
+                            .parse()
+                            .ok()
+                            .map(BasicValue::OffsetDateTime)
+                    })
                 }),
                 BasicValueType::Range => point.payload.get(field_name).and_then(|v| {
                     v.as_struct().and_then(|s| {
@@ -368,9 +413,7 @@ impl StorageFactoryBase for Arc<Factory> {
         _existing: setup::CombinedState<()>,
         _auth_registry: &Arc<AuthRegistry>,
     ) -> Result<impl setup::ResourceSetupStatusCheck + 'static> {
-        Err(anyhow!(
-            "Set `setup_by_user` to `true` to use Qdrant storage"
-        )) as Result<Infallible, _>
+        Err(anyhow!("Set `setup_by_user` to `true` to export to Qdrant")) as Result<Infallible, _>
     }
 
     fn check_state_compatibility(
