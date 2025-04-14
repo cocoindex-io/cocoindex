@@ -27,8 +27,21 @@ The spec takes the following fields:
 
 *   `api_key` (type: `str`, optional). API key to authenticate requests with.
 
-The field name for the vector embeddings must match the [vector name](https://qdrant.tech/documentation/concepts/vectors/#named-vectors) used when the collection was created.
+Before exporting, you must create a collection with a [vector name](https://qdrant.tech/documentation/concepts/vectors/#named-vectors) that matches the vector field name in CocoIndex, and set `setup_by_user=True` during export.
 
-If no primary key is set during export, a random UUID is used as the Qdrant point ID.
+Example:
 
-You can find an end-to-end example [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding).
+```python
+doc_embeddings.export(
+    "doc_embeddings",
+    cocoindex.storages.Qdrant(
+        collection_name="cocoindex",
+        grpc_url="http://xyz-example.cloud-region.cloud-provider.cloud.qdrant.io:6334/",
+        api_key="<your-api-key-here>",
+    ),
+    primary_key_fields=["id_field"],
+    setup_by_user=True,
+)
+```
+
+You can find an end-to-end example [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_qdrant).
