@@ -37,9 +37,9 @@ impl From<anyhow::Error> for Error {
     }
 }
 
-impl Into<anyhow::Error> for Error {
-    fn into(self) -> anyhow::Error {
-        self.error
+impl From<Error> for anyhow::Error {
+    fn from(val: Error) -> Self {
+        val.error
     }
 }
 

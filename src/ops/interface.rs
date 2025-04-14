@@ -18,9 +18,9 @@ pub struct FlowInstanceContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Ordinal(pub i64);
 
-impl Into<i64> for Ordinal {
-    fn into(self) -> i64 {
-        self.0
+impl From<Ordinal> for i64 {
+    fn from(val: Ordinal) -> Self {
+        val.0
     }
 }
 
@@ -68,10 +68,10 @@ pub struct SourceExecutorListOptions {
 #[async_trait]
 pub trait SourceExecutor: Send + Sync {
     /// Get the list of keys for the source.
-    fn list<'a>(
-        &'a self,
+    fn list(
+        &self,
         options: SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>>;
+    ) -> BoxStream<'_, Result<Vec<SourceRowMetadata>>>;
 
     // Get the value for the given key.
     async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>>;

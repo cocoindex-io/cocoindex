@@ -40,10 +40,10 @@ impl Executor {
 
 #[async_trait]
 impl SourceExecutor for Executor {
-    fn list<'a>(
-        &'a self,
+    fn list(
+        &self,
         options: SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>> {
+    ) -> BoxStream<'_, Result<Vec<SourceRowMetadata>>> {
         let root_component_size = self.root_path.components().count();
         let mut dirs = Vec::new();
         dirs.push(Cow::Borrowed(&self.root_path));

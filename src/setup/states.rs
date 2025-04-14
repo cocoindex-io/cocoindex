@@ -293,8 +293,7 @@ impl<K, S, C: ResourceSetupStatusCheck> std::fmt::Display for ResourceSetupInfo<
 impl<K, S, C: ResourceSetupStatusCheck> ResourceSetupInfo<K, S, C> {
     pub fn is_up_to_date(&self) -> bool {
         self.status_check
-            .as_ref()
-            .map_or(true, |c| c.change_type() == SetupChangeType::NoChange)
+            .as_ref().is_none_or(|c| c.change_type() == SetupChangeType::NoChange)
     }
 }
 

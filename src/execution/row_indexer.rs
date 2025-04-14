@@ -502,7 +502,7 @@ pub async fn update_source_row(
             if existing_version.should_skip(source_version, Some(update_stats)) {
                 return Ok(SkippedOr::Skipped(existing_version));
             }
-            info.memoization_info.map(|info| info.0).flatten()
+            info.memoization_info.and_then(|info| info.0)
         }
         None => Default::default(),
     };

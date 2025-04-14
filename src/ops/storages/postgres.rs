@@ -611,7 +611,7 @@ impl SetupStatusCheck {
                             .value_fields_schema
                             .iter()
                             .filter(|(field_name, schema)| {
-                                !existing.current.as_ref().map_or(false, |v| {
+                                !existing.current.as_ref().is_some_and(|v| {
                                     v.value_fields_schema
                                         .get(*field_name)
                                         .map(to_column_type_sql)
@@ -641,8 +641,7 @@ impl SetupStatusCheck {
                         .filter(|(name, def)| {
                             !existing
                                 .current
-                                .as_ref()
-                                .map_or(false, |v| v.vector_indexes.get(*name) != Some(def))
+                                .as_ref().is_some_and(|v| v.vector_indexes.get(*name) != Some(def))
                         })
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),

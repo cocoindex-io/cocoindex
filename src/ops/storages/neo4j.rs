@@ -149,7 +149,7 @@ struct RelationshipStorageExecutor {
 
 fn json_value_to_bolt_value(value: &serde_json::Value) -> Result<BoltType> {
     let bolt_value = match value {
-        serde_json::Value::Null => BoltType::Null(neo4rs::BoltNull::default()),
+        serde_json::Value::Null => BoltType::Null(neo4rs::BoltNull),
         serde_json::Value::Bool(v) => BoltType::Boolean(neo4rs::BoltBoolean::new(*v)),
         serde_json::Value::Number(v) => {
             if let Some(i) = v.as_i64() {
@@ -163,7 +163,7 @@ fn json_value_to_bolt_value(value: &serde_json::Value) -> Result<BoltType> {
         serde_json::Value::String(v) => BoltType::String(neo4rs::BoltString::new(v)),
         serde_json::Value::Array(v) => BoltType::List(neo4rs::BoltList {
             value: v
-                .into_iter()
+                .iter()
                 .map(json_value_to_bolt_value)
                 .collect::<Result<_>>()?,
         }),
@@ -220,7 +220,7 @@ fn basic_value_to_bolt(value: &BasicValue, schema: &BasicValueType) -> Result<Bo
         BasicValue::Bytes(v) => {
             BoltType::Bytes(neo4rs::BoltBytes::new(bytes::Bytes::from_owner(v.clone())))
         }
-        BasicValue::Str(v) => BoltType::String(neo4rs::BoltString::new(&v)),
+        BasicValue::Str(v) => BoltType::String(neo4rs::BoltString::new(v)),
         BasicValue::Bool(v) => BoltType::Boolean(neo4rs::BoltBoolean::new(*v)),
         BasicValue::Int64(v) => BoltType::Integer(neo4rs::BoltInteger::new(*v)),
         BasicValue::Float64(v) => BoltType::Float(neo4rs::BoltFloat::new(*v)),
@@ -242,7 +242,7 @@ fn basic_value_to_bolt(value: &BasicValue, schema: &BasicValueType) -> Result<Bo
         BasicValue::Vector(v) => match schema {
             BasicValueType::Vector(t) => BoltType::List(neo4rs::BoltList {
                 value: v
-                    .into_iter()
+                    .iter()
                     .map(|v| basic_value_to_bolt(v, &t.element_type))
                     .collect::<Result<_>>()?,
             }),
@@ -255,9 +255,9 @@ fn basic_value_to_bolt(value: &BasicValue, schema: &BasicValueType) -> Result<Bo
 
 fn value_to_bolt(value: &Value, schema: &schema::ValueType) -> Result<BoltType> {
     let bolt_value = match value {
-        Value::Null => BoltType::Null(neo4rs::BoltNull::default()),
+        Value::Null => BoltType::Null(neo4rs::BoltNull),
         Value::Basic(v) => match schema {
-            ValueType::Basic(t) => basic_value_to_bolt(v, &t)?,
+            ValueType::Basic(t) => basic_value_to_bolt(v, t)?,
             _ => anyhow::bail!("Non-basic type got basic value: {}", schema),
         },
         Value::Struct(v) => match schema {
@@ -267,7 +267,7 @@ fn value_to_bolt(value: &Value, schema: &schema::ValueType) -> Result<BoltType> 
         Value::Collection(v) | Value::List(v) => match schema {
             ValueType::Collection(t) => BoltType::List(neo4rs::BoltList {
                 value: v
-                    .into_iter()
+                    .iter()
                     .map(|v| field_values_to_bolt(v.0.fields.iter(), t.row.fields.iter()))
                     .collect::<Result<_>>()?,
             }),
@@ -276,7 +276,7 @@ fn value_to_bolt(value: &Value, schema: &schema::ValueType) -> Result<BoltType> 
         Value::Table(v) => match schema {
             ValueType::Collection(t) => BoltType::List(neo4rs::BoltList {
                 value: v
-                    .into_iter()
+                    .iter()
                     .map(|(k, v)| {
                         field_values_to_bolt(
                             std::iter::once(&Into::<value::Value>::into(k.clone()))
@@ -681,8 +681,7 @@ impl RelationshipSetupState {
         } else if existing.nodes.iter().any(|(label, existing_node)| {
             !self
                 .nodes
-                .get(label)
-                .map_or(false, |node| node.is_compatible(existing_node))
+                .get(label).is_some_and(|node| node.is_compatible(existing_node))
         }) {
             // If any node's key field change of some node label gone, we have to clear relationship.
             SetupStateCompatibility::NotCompatible
@@ -747,7 +746,7 @@ impl SetupStatusCheck {
             .current
             .as_ref()
             .filter(|existing_current| {
-                desired_state.as_ref().map_or(true, |desired| {
+                desired_state.as_ref().is_none_or(|desired| {
                     desired.check_compatible(existing_current)
                         == SetupStateCompatibility::NotCompatible
                 })
@@ -793,7 +792,7 @@ impl SetupStatusCheck {
 
             for (index_name, vector_index) in desired_state.vector_indexes.into_iter() {
                 old_rel_indexes.shift_remove(&index_name);
-                if !existing.current.as_ref().map_or(false, |c| {
+                if !existing.current.as_ref().is_some_and(|c| {
                     Some(&vector_index) == c.vector_indexes.get(&index_name)
                 }) {
                     rel_index_to_create.insert(index_name, vector_index);
@@ -807,8 +806,7 @@ impl SetupStatusCheck {
                     .as_ref()
                     .map(|c| {
                         c.nodes
-                            .get(&label)
-                            .map_or(false, |existing_node| node.is_compatible(existing_node))
+                            .get(&label).is_some_and(|existing_node| node.is_compatible(existing_node))
                     })
                     .unwrap_or(false)
                 {
@@ -820,8 +818,8 @@ impl SetupStatusCheck {
 
                 for (index_name, vector_index) in node.vector_indexes.into_iter() {
                     old_node_indexes.shift_remove(&index_name);
-                    if !existing.current.as_ref().map_or(false, |c| {
-                        c.nodes.get(&label).map_or(false, |n| {
+                    if !existing.current.as_ref().is_some_and(|c| {
+                        c.nodes.get(&label).is_some_and(|n| {
                             Some(&vector_index) == n.vector_indexes.get(&index_name)
                         })
                     }) {
@@ -1189,8 +1187,8 @@ impl StorageFactoryBase for RelationshipFactory {
         let mut tgt_label_analyzer = NodeLabelAnalyzer::new(&spec, &spec.target)?;
         let mut rel_value_fields_info = vec![];
         for (field_idx, field_schema) in value_fields_schema.iter().enumerate() {
-            if !src_label_analyzer.process_field(field_idx, &field_schema)
-                && !tgt_label_analyzer.process_field(field_idx, &field_schema)
+            if !src_label_analyzer.process_field(field_idx, field_schema)
+                && !tgt_label_analyzer.process_field(field_idx, field_schema)
             {
                 rel_value_fields_info.push(AnalyzedGraphFieldMapping {
                     field_idx,

@@ -145,7 +145,7 @@ impl Executor {
             None
         } else if is_supported_file_type(&mime_type) {
             Some(SourceRowMetadata {
-                key: KeyValue::Str(Arc::from(id)),
+                key: KeyValue::Str(id),
                 ordinal: file.modified_time.map(|t| t.try_into()).transpose()?,
             })
         } else {
@@ -294,10 +294,10 @@ impl<T> ResultExt<T> for google_drive3::Result<T> {
 
 #[async_trait]
 impl SourceExecutor for Executor {
-    fn list<'a>(
-        &'a self,
+    fn list(
+        &self,
         options: SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>> {
+    ) -> BoxStream<'_, Result<Vec<SourceRowMetadata>>> {
         let mut seen_ids = HashSet::new();
         let mut folder_ids = self.root_folder_ids.clone();
         let fields = format!(

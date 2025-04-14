@@ -202,7 +202,7 @@ impl FlowLiveUpdater {
             )
             .map(|(import_op, stats)| stats::SourceUpdateInfo {
                 source_name: import_op.name.clone(),
-                stats: (&**stats).clone(),
+                stats: (**stats).clone(),
             })
             .collect(),
         }
