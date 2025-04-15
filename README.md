@@ -103,6 +103,7 @@ Go to the [examples directory](examples) to try out with any of the examples, fo
 | [Manuals LLM Extraction](examples/manuals_llm_extraction) | Extract structured information from a manual using LLM |
 | [Google Drive Text Embedding](examples/gdrive_text_embedding) | Index text documents from Google Drive |
 | [Docs to Knowledge Graph](examples/docs_to_kg) | Extract relationships from Markdown documents and build a knowledge graph |
+| [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |
 
 More coming and stay tuned! If there's any specific examples you would like to see, please let us know in our [Discord community](https://discord.com/invite/zpA9S2DR7s) 🌱.
 
