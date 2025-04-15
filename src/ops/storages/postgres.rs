@@ -650,10 +650,10 @@ impl SetupStatusCheck {
                         .vector_indexes
                         .iter()
                         .filter(|(name, def)| {
-                            !existing
-                                .current
-                                .as_ref()
-                                .is_some_and(|v| v.vector_indexes.get(*name) != Some(def))
+                            !existing.always_exists()
+                                || existing
+                                    .possible_versions()
+                                    .any(|v| v.vector_indexes.get(*name) != Some(def))
                         })
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
