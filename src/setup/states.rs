@@ -38,12 +38,12 @@ impl StateMode for DesiredMode {
 }
 
 #[derive(Debug, Clone)]
-pub struct CombinedState<T: Debug + Clone> {
+pub struct CombinedState<T> {
     pub current: Option<T>,
     pub staging: Vec<StateChange<T>>,
 }
 
-impl<T: Debug + Clone> CombinedState<T> {
+impl<T> CombinedState<T> {
     pub fn possible_versions(&self) -> impl Iterator<Item = &T> {
         self.current
             .iter()
@@ -294,7 +294,7 @@ impl<K, S, C: ResourceSetupStatusCheck> ResourceSetupInfo<K, S, C> {
     pub fn is_up_to_date(&self) -> bool {
         self.status_check
             .as_ref()
-            .map_or(true, |c| c.change_type() == SetupChangeType::NoChange)
+            .is_none_or(|c| c.change_type() == SetupChangeType::NoChange)
     }
 }
 

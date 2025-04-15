@@ -83,7 +83,10 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
         "doc_embeddings",
         cocoindex.storages.Postgres(),
         primary_key_fields=["filename", "location"],
-        vector_index=[("embedding", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
+        vector_indexes=[
+            cocoindex.VectorIndexDef(
+                field_name="embedding",
+                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 ```
 
 It defines an index flow like this:
@@ -100,6 +103,7 @@ Go to the [examples directory](examples) to try out with any of the examples, fo
 | [Manuals LLM Extraction](examples/manuals_llm_extraction) | Extract structured information from a manual using LLM |
 | [Google Drive Text Embedding](examples/gdrive_text_embedding) | Index text documents from Google Drive |
 | [Docs to Knowledge Graph](examples/docs_to_kg) | Extract relationships from Markdown documents and build a knowledge graph |
+| [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |
 
 More coming and stay tuned! If there's any specific examples you would like to see, please let us know in our [Discord community](https://discord.com/invite/zpA9S2DR7s) 🌱.
 

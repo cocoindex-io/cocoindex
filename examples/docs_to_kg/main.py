@@ -93,15 +93,13 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
             ),
             nodes={
                 "Entity": cocoindex.storages.Neo4jRelationshipNodeSpec(
-                    index_options=cocoindex.IndexOptions(
-                        primary_key_fields=["value"],
-                        vector_index_defs=[
-                            cocoindex.VectorIndexDef(
-                                field_name="embedding",
-                                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-                            ),
-                        ],
-                    ),
+                    primary_key_fields=["value"],
+                    vector_indexes=[
+                        cocoindex.VectorIndexDef(
+                            field_name="embedding",
+                            metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+                        ),
+                    ],
                 ),
             },
         ),

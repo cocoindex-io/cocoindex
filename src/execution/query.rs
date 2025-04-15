@@ -40,7 +40,7 @@ impl SimpleSemanticsQueryHandler {
             .position(|export_op| export_op.name == target_name)
             .unwrap();
         let export_op = &flow.flow_instance.export_ops[export_op_idx];
-        let vector_index_defs = &export_op.spec.index_options.vector_index_defs;
+        let vector_indexes = &export_op.spec.index_options.vector_indexes;
         let execution_plan = flow.get_execution_plan().await?;
         let analyzed_export_op = &execution_plan.export_ops[export_op_idx];
         Ok(Self {
@@ -55,8 +55,8 @@ impl SimpleSemanticsQueryHandler {
             },
             query_transform_flow,
             default_similarity_metric,
-            default_vector_field_name: if vector_index_defs.len() == 1 {
-                Some(vector_index_defs[0].field_name.clone())
+            default_vector_field_name: if vector_indexes.len() == 1 {
+                Some(vector_indexes[0].field_name.clone())
             } else {
                 None
             },

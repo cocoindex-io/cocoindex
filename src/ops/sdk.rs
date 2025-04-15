@@ -76,7 +76,7 @@ impl<'a> StructSchemaBuilder<'a> {
         }
     }
 
-    pub fn set_description(&mut self, description: impl Into<Arc<str>>) {
+    pub fn _set_description(&mut self, description: impl Into<Arc<str>>) {
         self.target.description = Some(description.into());
     }
 
@@ -88,12 +88,12 @@ impl<'a> StructSchemaBuilder<'a> {
         SchemaBuilderFieldRef(AnalyzedLocalFieldReference { fields_idx })
     }
 
-    pub fn add_struct_field<'b>(
-        &'b mut self,
+    pub fn _add_struct_field(
+        &mut self,
         name: impl Into<FieldName>,
         nullable: bool,
         attrs: Arc<BTreeMap<String, serde_json::Value>>,
-    ) -> (StructSchemaBuilder<'b>, SchemaBuilderFieldRef) {
+    ) -> (StructSchemaBuilder<'_>, SchemaBuilderFieldRef) {
         let field_schema = FieldSchema::new(
             name.into(),
             EnrichedValueType {

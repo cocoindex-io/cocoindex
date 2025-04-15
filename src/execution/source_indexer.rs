@@ -177,7 +177,7 @@ impl SourceIndexingContext {
             row_state.touched_generation = scan_generation;
             if row_state
                 .source_version
-                .should_skip(&source_version, Some(&update_stats))
+                .should_skip(&source_version, Some(update_stats))
             {
                 return None;
             }

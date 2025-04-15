@@ -6,6 +6,12 @@ pub struct AuthRegistry {
     entries: RwLock<HashMap<String, serde_json::Value>>,
 }
 
+impl Default for AuthRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AuthRegistry {
     pub fn new() -> Self {
         Self {

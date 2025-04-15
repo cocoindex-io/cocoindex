@@ -232,7 +232,7 @@ pub struct IndexOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_key_fields: Option<Vec<FieldName>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub vector_index_defs: Vec<VectorIndexDef>,
+    pub vector_indexes: Vec<VectorIndexDef>,
 }
 
 /// Store data to a given sink.

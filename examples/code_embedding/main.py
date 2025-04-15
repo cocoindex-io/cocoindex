@@ -41,7 +41,10 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
         "code_embeddings",
         cocoindex.storages.Postgres(),
         primary_key_fields=["filename", "location"],
-        vector_index=[("embedding", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
+        vector_indexes=[
+            cocoindex.VectorIndexDef(
+                field_name="embedding",
+                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 
 
 query_handler = cocoindex.query.SimpleSemanticsQueryHandler(

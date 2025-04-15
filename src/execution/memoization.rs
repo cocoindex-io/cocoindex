@@ -112,7 +112,7 @@ impl EvaluationMemory {
             }),
             uuids: Mutex::new(
                 (!options.evaluation_only)
-                    .then(|| stored_uuids)
+                    .then_some(stored_uuids)
                     .flatten()
                     .into_iter()
                     .flat_map(|iter| iter.into_iter())

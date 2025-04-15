@@ -13,6 +13,7 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
     functions::extract_by_llm::Factory.register(registry)?;
 
     Arc::new(storages::postgres::Factory::default()).register(registry)?;
+    Arc::new(storages::qdrant::Factory::default()).register(registry)?;
 
     let neo4j_pool = Arc::new(storages::neo4j::GraphPool::default());
     storages::neo4j::RelationshipFactory::new(neo4j_pool).register(registry)?;
