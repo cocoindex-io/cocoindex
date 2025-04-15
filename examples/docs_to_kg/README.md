@@ -12,7 +12,7 @@ Please give [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a s
 Before running the example, you need to:
 
 *   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
-*   [Install Neo4j](https://cocoindex.io/docs/getting_started/installation#-install-neo4j) if you don't have one.
+*   [Install Neo4j](https://cocoindex.io/docs/ops/storages#neo4j) if you don't have one.
 *   Install / configure LLM API. In this example we use OpenAI. You need to [configure OpenAI API key](https://cocoindex.io/docs/ai/llm#openai) before running the example. Alternatively, you can also follow the comments in source code to switch to Ollama, which runs LLM model locally, and get it ready following [this guide](https://cocoindex.io/docs/ai/llm#ollama).
 
 ## Run
