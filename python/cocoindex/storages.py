@@ -1,5 +1,6 @@
 """All builtin storages."""
 from dataclasses import dataclass
+from typing import Sequence
 
 from . import op
 from . import index
@@ -44,8 +45,9 @@ class Neo4jRelationshipEndSpec:
 @dataclass
 class Neo4jRelationshipNodeSpec:
     """Spec for a Neo4j node type."""
-    primary_key_fields: list[str]
-    vector_indexes: list[index.VectorIndexDef] | None = None
+    primary_key_fields: Sequence[str]
+    vector_indexes: Sequence[index.VectorIndexDef] = ()
+
 class Neo4jRelationship(op.StorageSpec):
     """Graph storage powered by Neo4j."""
 
