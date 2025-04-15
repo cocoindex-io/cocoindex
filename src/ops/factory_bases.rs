@@ -264,17 +264,23 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
     }
 }
 
-pub struct ExportTargetBuildOutput<F: StorageFactoryBase + ?Sized> {
-    pub executor:
-        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
+pub struct TypedExportTargetExecutors<F: StorageFactoryBase + ?Sized> {
+    pub export_context: Arc<F::ExportContext>,
+    pub query_target: Option<Arc<dyn QueryTarget>>,
+}
+
+pub struct TypedExportTargetBuildOutput<F: StorageFactoryBase + ?Sized> {
+    pub executors: BoxFuture<'static, Result<TypedExportTargetExecutors<F>>>,
     pub setup_key: F::Key,
     pub desired_setup_state: F::SetupState,
 }
 
+#[async_trait]
 pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
     type Spec: DeserializeOwned + Send + Sync;
     type Key: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash + Send + Sync;
     type SetupState: Debug + Clone + Serialize + DeserializeOwned + Send + Sync;
+    type ExportContext: Send + Sync + 'static;
 
     fn name(&self) -> &str;
 
@@ -286,7 +292,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         value_fields_schema: Vec<FieldSchema>,
         storage_options: IndexOptions,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<ExportTargetBuildOutput<Self>>;
+    ) -> Result<TypedExportTargetBuildOutput<Self>>;
 
     /// Will not be called if it's setup by user.
     /// It returns an error if the target only supports setup by user.
@@ -315,8 +321,14 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
             ExecutorFactory::ExportTarget(Arc::new(self)),
         )
     }
+
+    async fn apply_mutation(
+        &self,
+        mutations: Vec<ExportTargetMutationWithContext<'async_trait, Self::ExportContext>>,
+    ) -> Result<()>;
 }
 
+#[async_trait]
 impl<T: StorageFactoryBase> ExportTargetFactory for T {
     fn build(
         self: Arc<Self>,
@@ -337,10 +349,17 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             storage_options,
             context,
         )?;
+        let executors = async move {
+            let executors = build_output.executors.await?;
+            Ok(interface::ExportTargetExecutors {
+                export_context: executors.export_context,
+                query_target: executors.query_target,
+            })
+        };
         Ok(interface::ExportTargetBuildOutput {
-            executor: build_output.executor,
             setup_key: serde_json::to_value(build_output.setup_key)?,
             desired_setup_state: serde_json::to_value(build_output.desired_setup_state)?,
+            executors: executors.boxed(),
         })
     }
 
@@ -382,6 +401,25 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             &serde_json::from_value(existing_state.clone())?,
         )?;
         Ok(result)
+    }
+
+    async fn apply_mutation(
+        &self,
+        mutations: Vec<ExportTargetMutationWithContext<'async_trait, dyn Any + Send + Sync>>,
+    ) -> Result<()> {
+        let mutations = mutations
+            .into_iter()
+            .map(|m| {
+                anyhow::Ok(ExportTargetMutationWithContext {
+                    mutation: m.mutation,
+                    export_context: m
+                        .export_context
+                        .downcast_ref::<T::ExportContext>()
+                        .ok_or_else(|| anyhow!("Unexpected export context type"))?,
+                })
+            })
+            .collect::<Result<_>>()?;
+        StorageFactoryBase::apply_mutation(self, mutations).await
     }
 }
 

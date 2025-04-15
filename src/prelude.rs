@@ -12,6 +12,7 @@ pub(crate) use futures::{FutureExt, StreamExt};
 pub(crate) use indexmap::{IndexMap, IndexSet};
 pub(crate) use itertools::Itertools;
 pub(crate) use serde::{de::DeserializeOwned, Deserialize, Serialize};
+pub(crate) use std::any::Any;
 pub(crate) use std::borrow::Cow;
 pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 pub(crate) use std::hash::Hash;

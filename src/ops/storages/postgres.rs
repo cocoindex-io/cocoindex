@@ -262,8 +262,8 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
     Ok(final_value)
 }
 
-pub struct Executor {
-    db_pool: PgPool,
+pub struct ExportContext {
+    database_url: Option<String>,
     table_name: ValidIdentifier,
     key_fields_schema: Vec<FieldSchema>,
     value_fields_schema: Vec<FieldSchema>,
@@ -274,9 +274,9 @@ pub struct Executor {
     delete_sql_prefix: String,
 }
 
-impl Executor {
+impl ExportContext {
     fn new(
-        db_pool: PgPool,
+        database_url: Option<String>,
         table_name: String,
         key_fields_schema: Vec<FieldSchema>,
         value_fields_schema: Vec<FieldSchema>,
@@ -304,7 +304,7 @@ impl Executor {
             .collect::<Vec<_>>();
         let table_name = ValidIdentifier::try_from(table_name)?;
         Ok(Self {
-            db_pool,
+            database_url,
             key_fields_schema,
             value_fields_schema,
             all_fields_comma_separated: all_fields
@@ -325,13 +325,14 @@ impl Executor {
     }
 }
 
-#[async_trait]
-impl ExportTargetExecutor for Executor {
-    async fn apply_mutation(&self, mutation: ExportTargetMutation) -> Result<()> {
+impl ExportContext {
+    async fn upsert(
+        &self,
+        upserts: &[interface::ExportTargetUpsertEntry],
+        txn: &mut sqlx::PgTransaction<'_>,
+    ) -> Result<()> {
         let num_parameters = self.key_fields_schema.len() + self.value_fields_schema.len();
-        let mut txn = self.db_pool.begin().await?;
-
-        for upsert_chunk in mutation.upserts.chunks(BIND_LIMIT / num_parameters) {
+        for upsert_chunk in upserts.chunks(BIND_LIMIT / num_parameters) {
             let mut query_builder = sqlx::QueryBuilder::new(&self.upsert_sql_prefix);
             for (i, upsert) in upsert_chunk.iter().enumerate() {
                 if i > 0 {
@@ -365,11 +366,18 @@ impl ExportTargetExecutor for Executor {
                 query_builder.push(")");
             }
             query_builder.push(&self.upsert_sql_suffix);
-            query_builder.build().execute(&mut *txn).await?;
+            query_builder.build().execute(&mut **txn).await?;
         }
+        Ok(())
+    }
 
+    async fn delete(
+        &self,
+        delete_keys: &[KeyValue],
+        txn: &mut sqlx::PgTransaction<'_>,
+    ) -> Result<()> {
         // TODO: Find a way to batch delete.
-        for delete_key in mutation.delete_keys.iter() {
+        for delete_key in delete_keys.iter() {
             let mut query_builder = sqlx::QueryBuilder::new("");
             query_builder.push(&self.delete_sql_prefix);
             for (i, (schema, value)) in self
@@ -385,26 +393,28 @@ impl ExportTargetExecutor for Executor {
                 query_builder.push("=");
                 bind_key_field(&mut query_builder, value)?;
             }
-            query_builder.build().execute(&mut *txn).await?;
+            query_builder.build().execute(&mut **txn).await?;
         }
-
-        txn.commit().await?;
-
         Ok(())
     }
 }
 
 static SCORE_FIELD_NAME: &str = "__score";
 
+struct PostgresQueryTarget {
+    db_pool: PgPool,
+    context: Arc<ExportContext>,
+}
+
 #[async_trait]
-impl QueryTarget for Executor {
+impl QueryTarget for PostgresQueryTarget {
     async fn search(&self, query: VectorMatchQuery) -> Result<QueryResults> {
         let query_str = format!(
             "SELECT {} {} $1 AS {SCORE_FIELD_NAME}, {} FROM {} ORDER BY {SCORE_FIELD_NAME} LIMIT $2",
             ValidIdentifier::try_from(query.vector_field_name)?,
             to_distance_operator(query.similarity_metric),
-            self.all_fields_comma_separated,
-            self.table_name,
+            self.context.all_fields_comma_separated,
+            self.context.table_name,
         );
         let results = sqlx::query(&query_str)
             .bind(pgvector::Vector::from(query.vector))
@@ -415,9 +425,10 @@ impl QueryTarget for Executor {
             .map(|r| -> Result<QueryResult> {
                 let score: f64 = distance_to_similarity(query.similarity_metric, r.try_get(0)?);
                 let data = self
+                    .context
                     .key_fields_schema
                     .iter()
-                    .chain(self.value_fields_schema.iter())
+                    .chain(self.context.value_fields_schema.iter())
                     .enumerate()
                     .map(|(idx, schema)| from_pg_value(&r, idx + 1, &schema.value_type.typ))
                     .collect::<Result<Vec<_>>>()?;
@@ -427,7 +438,7 @@ impl QueryTarget for Executor {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(QueryResults {
-            fields: self.all_fields.clone(),
+            fields: self.context.all_fields.clone(),
             results,
         })
     }
@@ -641,7 +652,8 @@ impl SetupStatusCheck {
                         .filter(|(name, def)| {
                             !existing
                                 .current
-                                .as_ref().is_some_and(|v| v.vector_indexes.get(*name) != Some(def))
+                                .as_ref()
+                                .is_some_and(|v| v.vector_indexes.get(*name) != Some(def))
                         })
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
@@ -821,7 +833,7 @@ impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
     async fn apply_change(&self) -> Result<()> {
         let db_pool = self
             .factory
-            .get_db_pool(self.table_id.database_url.clone())
+            .get_db_pool(&self.table_id.database_url)
             .await?;
         let table_name = &self.table_id.table_name;
         if self.drop_existing {
@@ -889,10 +901,12 @@ impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
     }
 }
 
+#[async_trait]
 impl StorageFactoryBase for Arc<Factory> {
     type Spec = Spec;
     type SetupState = SetupState;
     type Key = TableId;
+    type ExportContext = ExportContext;
 
     fn name(&self) -> &str {
         "Postgres"
@@ -906,7 +920,7 @@ impl StorageFactoryBase for Arc<Factory> {
         value_fields_schema: Vec<FieldSchema>,
         storage_options: IndexOptions,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<ExportTargetBuildOutput<Self>> {
+    ) -> Result<TypedExportTargetBuildOutput<Self>> {
         let table_id = TableId {
             database_url: spec.database_url.clone(),
             table_name: spec
@@ -920,23 +934,26 @@ impl StorageFactoryBase for Arc<Factory> {
             &storage_options,
         );
         let table_name = table_id.table_name.clone();
+        let export_context = Arc::new(ExportContext::new(
+            spec.database_url.clone(),
+            table_name,
+            key_fields_schema,
+            value_fields_schema,
+        )?);
         let executors = async move {
-            let executor = Arc::new(Executor::new(
-                self.get_db_pool(spec.database_url).await?,
-                table_name,
-                key_fields_schema,
-                value_fields_schema,
-            )?);
-            let query_target = executor.clone();
-            Ok((
-                executor as Arc<dyn ExportTargetExecutor>,
-                Some(query_target as Arc<dyn QueryTarget>),
-            ))
+            let query_target = Arc::new(PostgresQueryTarget {
+                db_pool: self.get_db_pool(&spec.database_url).await?,
+                context: export_context.clone(),
+            });
+            Ok(TypedExportTargetExecutors {
+                export_context: export_context.clone(),
+                query_target: Some(query_target as Arc<dyn QueryTarget>),
+            })
         };
-        Ok(ExportTargetBuildOutput {
-            executor: executors.boxed(),
+        Ok(TypedExportTargetBuildOutput {
             setup_key: table_id,
             desired_setup_state: setup_state,
+            executors: executors.boxed(),
         })
     }
 
@@ -979,27 +996,59 @@ impl StorageFactoryBase for Arc<Factory> {
     fn describe_resource(&self, key: &TableId) -> Result<String> {
         Ok(format!("Postgres table {}", key.table_name))
     }
+
+    async fn apply_mutation(
+        &self,
+        mutations: Vec<ExportTargetMutationWithContext<'async_trait, ExportContext>>,
+    ) -> Result<()> {
+        let mut mut_groups_by_db_url = HashMap::new();
+        for mutation in mutations.iter() {
+            mut_groups_by_db_url
+                .entry(mutation.export_context.database_url.clone())
+                .or_insert_with(Vec::new)
+                .push(mutation);
+        }
+        for (db_url, mut_groups) in mut_groups_by_db_url.iter() {
+            let db_pool = self.get_db_pool(db_url).await?;
+            let mut txn = db_pool.begin().await?;
+            for mut_group in mut_groups.iter() {
+                mut_group
+                    .export_context
+                    .upsert(&mut_group.mutation.upserts, &mut txn)
+                    .await?;
+            }
+            for mut_group in mut_groups.iter() {
+                mut_group
+                    .export_context
+                    .delete(&mut_group.mutation.delete_keys, &mut txn)
+                    .await?;
+            }
+            txn.commit().await?;
+        }
+        Ok(())
+    }
 }
 
 impl Factory {
-    async fn get_db_pool(&self, database_url: Option<String>) -> Result<PgPool> {
+    async fn get_db_pool(&self, database_url: &Option<String>) -> Result<PgPool> {
         let pool_fut = {
             let mut db_pools = self.db_pools.lock().unwrap();
-            match db_pools.entry(database_url) {
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    let database_url = entry.key().clone();
-                    let pool_fut = async {
+            if let Some(shared_fut) = db_pools.get(database_url) {
+                shared_fut.clone()
+            } else {
+                let pool_fut = {
+                    let database_url = database_url.clone();
+                    async move {
                         shared_ok(if let Some(database_url) = database_url {
                             PgPool::connect(&database_url).await?
                         } else {
                             get_lib_context().map_err(SharedError::new)?.pool.clone()
                         })
-                    };
-                    let shared_fut = pool_fut.boxed().shared();
-                    entry.insert(shared_fut.clone());
-                    shared_fut
-                }
-                std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
+                    }
+                };
+                let shared_fut = pool_fut.boxed().shared();
+                db_pools.insert(database_url.clone(), shared_fut.clone());
+                shared_fut
             }
         };
         Ok(pool_fut.await.std_result()?)

@@ -138,9 +138,10 @@ impl ExportTargetMutation {
     }
 }
 
-#[async_trait]
-pub trait ExportTargetExecutor: Send + Sync {
-    async fn apply_mutation(&self, mutation: ExportTargetMutation) -> Result<()>;
+#[derive(Debug)]
+pub struct ExportTargetMutationWithContext<'ctx, T: ?Sized + Send + Sync> {
+    pub mutation: ExportTargetMutation,
+    pub export_context: &'ctx T,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,14 +157,18 @@ pub enum SetupStateCompatibility {
     NotCompatible,
 }
 
+pub struct ExportTargetExecutors {
+    pub export_context: Arc<dyn Any + Send + Sync>,
+    pub query_target: Option<Arc<dyn QueryTarget>>,
+}
 pub struct ExportTargetBuildOutput {
-    pub executor:
-        BoxFuture<'static, Result<(Arc<dyn ExportTargetExecutor>, Option<Arc<dyn QueryTarget>>)>>,
+    pub executors: BoxFuture<'static, Result<ExportTargetExecutors>>,
     pub setup_key: serde_json::Value,
     pub desired_setup_state: serde_json::Value,
 }
 
-pub trait ExportTargetFactory {
+#[async_trait]
+pub trait ExportTargetFactory: Send + Sync {
     fn build(
         self: Arc<Self>,
         name: String,
@@ -191,6 +196,11 @@ pub trait ExportTargetFactory {
     ) -> Result<SetupStateCompatibility>;
 
     fn describe_resource(&self, key: &serde_json::Value) -> Result<String>;
+
+    async fn apply_mutation(
+        &self,
+        mutations: Vec<ExportTargetMutationWithContext<'async_trait, dyn Any + Send + Sync>>,
+    ) -> Result<()>;
 }
 
 #[derive(Clone)]
