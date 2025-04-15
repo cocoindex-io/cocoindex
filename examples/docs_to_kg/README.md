@@ -42,8 +42,8 @@ python main.py cocoindex update
 After the knowledge graph is build, you can explore the knowledge graph you built in Neo4j Browser.
 
 For the dev enviroment, you can connect neo4j browser using credentials:
-- username: neo4j
-- password: cocoindex
+- username: `neo4j`
+- password: `cocoindex`
 which is pre-configured in the our docker compose [config.yaml](https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/neo4j.yaml).
 
 You can open it at [http://localhost:7474](http://localhost:7474), and run the following Cypher query to get all relationships:
