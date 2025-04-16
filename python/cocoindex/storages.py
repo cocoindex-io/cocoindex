@@ -21,7 +21,7 @@ class Qdrant(op.StorageSpec):
     api_key: str | None = None
 
 @dataclass
-class Neo4jConnectionSpec:
+class Neo4jConnection:
     """Connection spec for Neo4j."""
     uri: str
     user: str
@@ -37,22 +37,36 @@ class Neo4jFieldMapping:
     node_field_name: str | None = None
 
 @dataclass
-class Neo4jRelationshipEndSpec:
+class Neo4jRelationshipEnd:
     """Spec for a Neo4j node type."""
     label: str
     fields: list[Neo4jFieldMapping]
 
 @dataclass
-class Neo4jRelationshipNodeSpec:
+class Neo4jRelationshipNode:
     """Spec for a Neo4j node type."""
     primary_key_fields: Sequence[str]
     vector_indexes: Sequence[index.VectorIndexDef] = ()
 
-class Neo4jRelationship(op.StorageSpec):
+@dataclass
+class Neo4jNode:
+    """Spec for a Neo4j node type."""
+    kind = "Node"
+
+    label: str
+
+@dataclass
+class Neo4jRelationship:
+    """Spec for a Neo4j relationship."""
+    kind = "Relationship"
+
+    rel_type: str
+    source: Neo4jRelationshipEnd
+    target: Neo4jRelationshipEnd
+    nodes: dict[str, Neo4jRelationshipNode]
+
+class Neo4j(op.StorageSpec):
     """Graph storage powered by Neo4j."""
 
     connection: AuthEntryReference
-    rel_type: str
-    source: Neo4jRelationshipEndSpec
-    target: Neo4jRelationshipEndSpec
-    nodes: dict[str, Neo4jRelationshipNodeSpec]
+    mapping: Neo4jNode | Neo4jRelationship
