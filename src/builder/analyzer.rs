@@ -444,16 +444,20 @@ impl DataScopeBuilder {
         schema: CollectorSchema,
     ) -> Result<AnalyzedLocalCollectorReference> {
         let mut collectors = self.collectors.lock().unwrap();
-        let collector_idx = collectors.len() as u32;
-        match collectors.entry(collector_name) {
+        let existing_len = collectors.len();
+        let idx = match collectors.entry(collector_name) {
             indexmap::map::Entry::Occupied(mut entry) => {
                 entry.get_mut().merge_schema(&schema)?;
+                entry.index()
             }
             indexmap::map::Entry::Vacant(entry) => {
                 entry.insert(CollectorBuilder::new(Arc::new(schema)));
+                existing_len
             }
-        }
-        Ok(AnalyzedLocalCollectorReference { collector_idx })
+        };
+        Ok(AnalyzedLocalCollectorReference {
+            collector_idx: idx as u32,
+        })
     }
 
     pub fn into_data_schema(self) -> Result<DataSchema> {

@@ -63,7 +63,7 @@ class Neo4jRelationship:
     rel_type: str
     source: Neo4jRelationshipEnd
     target: Neo4jRelationshipEnd
-    nodes: dict[str, Neo4jRelationshipNode]
+    nodes: dict[str, Neo4jRelationshipNode] | None = None
 
 class Neo4j(op.StorageSpec):
     """Graph storage powered by Neo4j."""

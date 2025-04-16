@@ -56,7 +56,7 @@ pub struct RelationshipSpec {
     rel_type: String,
     source: RelationshipEndSpec,
     target: RelationshipEndSpec,
-    nodes: BTreeMap<String, RelationshipNodeSpec>,
+    nodes: Option<BTreeMap<String, RelationshipNodeSpec>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -693,7 +693,7 @@ impl RelationshipSetupState {
                         rel_spec.rel_type
                     )
                 })?;
-                for (label, node) in rel_spec.nodes.iter() {
+                for (label, node) in rel_spec.nodes.iter().flatten() {
                     sub_components.push(ComponentState {
                         object_label: ElementType::Node(label.clone()),
                         index_def: IndexDef::KeyConstraint {
@@ -720,7 +720,13 @@ impl RelationshipSetupState {
                         });
                     }
                 }
-                dependent_node_labels.extend(rel_spec.nodes.keys().cloned());
+                dependent_node_labels.extend(
+                    rel_spec
+                        .nodes
+                        .iter()
+                        .flat_map(|nodes| nodes.keys())
+                        .cloned(),
+                );
             }
         };
         Ok(Self {
@@ -1069,7 +1075,8 @@ impl<'a> DependentNodeLabelAnalyzer<'a> {
                 .collect(),
             index_options: rel_spec
                 .nodes
-                .get(&rel_end_spec.label)
+                .as_ref()
+                .and_then(|nodes| nodes.get(&rel_end_spec.label))
                 .and_then(|node_spec| Some(&node_spec.index_options)),
         })
     }
