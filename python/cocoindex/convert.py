@@ -117,7 +117,10 @@ def dump_engine_object(v: Any) -> Any:
         nanos = int((total_secs - secs) * 1e9)
         return {'secs': secs, 'nanos': nanos}
     elif hasattr(v, '__dict__'):
-        return {k: dump_engine_object(v) for k, v in v.__dict__.items()}
+        s = {k: dump_engine_object(v) for k, v in v.__dict__.items()}
+        if hasattr(v, 'kind') and 'kind' not in s:
+            s['kind'] = v.kind
+        return s
     elif isinstance(v, (list, tuple)):
         return [dump_engine_object(item) for item in v]
     elif isinstance(v, dict):

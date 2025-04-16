@@ -21,7 +21,7 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
 
     conn_spec = cocoindex.add_auth_entry(
         "Neo4jConnection",
-        cocoindex.storages.Neo4jConnectionSpec(
+        cocoindex.storages.Neo4jConnection(
             uri="bolt://localhost:7687",
             user="neo4j",
             password="cocoindex",
@@ -70,38 +70,40 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
 
     relationships.export(
         "relationships",
-        cocoindex.storages.Neo4jRelationship(
+        cocoindex.storages.Neo4j(
             connection=conn_spec,
-            rel_type="RELATIONSHIP",
-            source=cocoindex.storages.Neo4jRelationshipEndSpec(
-                label="Entity",
-                fields=[
-                    cocoindex.storages.Neo4jFieldMapping(
-                        field_name="subject", node_field_name="value"),
-                    cocoindex.storages.Neo4jFieldMapping(
-                        field_name="subject_embedding", node_field_name="embedding"),
-                ]
-            ),
-            target=cocoindex.storages.Neo4jRelationshipEndSpec(
-                label="Entity",
-                fields=[
-                    cocoindex.storages.Neo4jFieldMapping(
-                        field_name="object", node_field_name="value"),
-                    cocoindex.storages.Neo4jFieldMapping(
-                        field_name="object_embedding", node_field_name="embedding"),
-                ]
-            ),
-            nodes={
-                "Entity": cocoindex.storages.Neo4jRelationshipNodeSpec(
-                    primary_key_fields=["value"],
-                    vector_indexes=[
-                        cocoindex.VectorIndexDef(
-                            field_name="embedding",
-                            metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-                        ),
-                    ],
+            mapping=cocoindex.storages.Neo4jRelationship(
+                rel_type="RELATIONSHIP",
+                source=cocoindex.storages.Neo4jRelationshipEnd(
+                    label="Entity",
+                    fields=[
+                        cocoindex.storages.Neo4jFieldMapping(
+                            field_name="subject", node_field_name="value"),
+                        cocoindex.storages.Neo4jFieldMapping(
+                            field_name="subject_embedding", node_field_name="embedding"),
+                    ]
                 ),
-            },
+                target=cocoindex.storages.Neo4jRelationshipEnd(
+                    label="Entity",
+                    fields=[
+                        cocoindex.storages.Neo4jFieldMapping(
+                            field_name="object", node_field_name="value"),
+                        cocoindex.storages.Neo4jFieldMapping(
+                            field_name="object_embedding", node_field_name="embedding"),
+                    ]
+                ),
+                nodes={
+                    "Entity": cocoindex.storages.Neo4jRelationshipNode(
+                        primary_key_fields=["value"],
+                        vector_indexes=[
+                            cocoindex.VectorIndexDef(
+                                field_name="embedding",
+                                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+                            ),
+                        ],
+                    ),
+                },
+            ),
         ),
         primary_key_fields=["id"],
     )

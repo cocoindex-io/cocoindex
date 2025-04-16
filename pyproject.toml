@@ -18,3 +18,6 @@ bindings = "pyo3"
 python-source = "python"
 module-name = "cocoindex._engine"
 features = ["pyo3/extension-module"]
+
+[project.optional-dependencies]
+test = ["pytest"]
