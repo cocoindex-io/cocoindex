@@ -244,6 +244,7 @@ pub fn check_flow_setup_status(
     );
 
     let mut target_resources = Vec::new();
+    let mut unknown_resources = Vec::new();
 
     let grouped_target_resources = group_resource_states(
         desired_state.iter().flat_map(|d| d.targets.iter()),
@@ -251,13 +252,13 @@ pub fn check_flow_setup_status(
     )?;
     let registry = executor_factory_registry();
     for (resource_id, v) in grouped_target_resources.into_iter() {
-        let factory = registry.get(&resource_id.target_kind).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Target resource type not found: {}",
-                resource_id.target_kind
-            )
-        })?;
-
+        let factory = match registry.get(&resource_id.target_kind) {
+            Some(factory) => factory,
+            None => {
+                unknown_resources.push(resource_id.clone());
+                continue;
+            }
+        };
         let factory = match factory {
             ExecutorFactory::ExportTarget(factory) => factory,
             _ => bail!("Unexpected factory type for {}", resource_id.target_kind),
@@ -309,6 +310,7 @@ pub fn check_flow_setup_status(
         metadata_change,
         tracking_table: tracking_table_change.into_setup_info(),
         target_resources,
+        unknown_resources,
     })
 }
 

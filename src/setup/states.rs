@@ -274,7 +274,7 @@ impl<K, S, C: ResourceSetupStatusCheck> std::fmt::Display for ResourceSetupInfo<
             Some(SetupChangeType::Invalid) => "INVALID",
             None => "USER MANAGED",
         };
-        write!(f, "[ {:^9} ] {}\n\n", status_code, self.description)?;
+        writeln!(f, "[ {:^9} ] {}", status_code, self.description)?;
         if let Some(status_check) = &self.status_check {
             let changes = status_check.describe_changes();
             if !changes.is_empty() {
@@ -283,9 +283,9 @@ impl<K, S, C: ResourceSetupStatusCheck> std::fmt::Display for ResourceSetupInfo<
                 for change in changes {
                     writeln!(f, "  - {}", change)?;
                 }
+                writeln!(f)?;
             }
         }
-        writeln!(f)?;
         Ok(())
     }
 }
@@ -323,6 +323,8 @@ pub struct FlowSetupStatusCheck {
     pub target_resources: Vec<
         ResourceSetupInfo<ResourceIdentifier, TargetSetupState, Box<dyn ResourceSetupStatusCheck>>,
     >,
+
+    pub unknown_resources: Vec<ResourceIdentifier>,
 }
 
 impl ObjectSetupStatusCheck for FlowSetupStatusCheck {
@@ -383,18 +385,17 @@ impl std::fmt::Display for FormattedFlowSetupStatusCheck<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let flow_ssc = self.1;
 
-        write!(
-            f,
-            "{} Flow: {}\n\n",
-            ObjectSetupStatusCode(flow_ssc),
-            self.0
-        )?;
+        write!(f, "{} Flow: {}\n", ObjectSetupStatusCode(flow_ssc), self.0)?;
 
         let mut f = indented(f).with_str(INDENT);
         write!(f, "{}", flow_ssc.tracking_table)?;
 
         for target_resource in &flow_ssc.target_resources {
-            writeln!(f, "{}", target_resource)?;
+            write!(f, "{}", target_resource)?;
+        }
+
+        for resource in &flow_ssc.unknown_resources {
+            writeln!(f, "[  UNKNOWN  ] {resource}")?;
         }
 
         Ok(())
@@ -403,9 +404,9 @@ impl std::fmt::Display for FormattedFlowSetupStatusCheck<'_> {
 
 impl std::fmt::Display for AllSetupStatusCheck {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.metadata_table)?;
+        writeln!(f, "{}", self.metadata_table)?;
         for (flow_name, flow_status) in &self.flows {
-            write!(
+            writeln!(
                 f,
                 "{}",
                 FormattedFlowSetupStatusCheck(flow_name, flow_status)
