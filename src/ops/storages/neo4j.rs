@@ -132,8 +132,10 @@ struct AnalyzedNodeLabelInfo {
     key_fields: Vec<AnalyzedGraphFieldMapping>,
     value_fields: Vec<AnalyzedGraphFieldMapping>,
 }
-struct RelationshipStorageExecutor {
+pub struct RelationshipExportContext {
+    connection_ref: AuthEntryReference,
     graph: Arc<Graph>,
+
     delete_cypher: String,
     insert_cypher: String,
 
@@ -300,7 +302,7 @@ const SRC_PROPS_PARAM: &str = "source_props";
 const TGT_KEY_PARAM_PREFIX: &str = "target_key";
 const TGT_PROPS_PARAM: &str = "target_props";
 
-impl RelationshipStorageExecutor {
+impl RelationshipExportContext {
     fn build_key_field_params_n_literal<'a>(
         param_prefix: &str,
         key_fields: impl Iterator<Item = &'a spec::FieldName>,
@@ -401,6 +403,7 @@ FINISH
             },
         );
         Ok(Self {
+            connection_ref: spec.connection,
             graph,
             delete_cypher,
             insert_cypher,
@@ -441,95 +444,79 @@ FINISH
         Ok(query)
     }
 
-    fn build_queries_to_apply_mutation(
+    fn add_upsert_queries(
         &self,
-        mutation: &ExportTargetMutation,
-    ) -> Result<Vec<neo4rs::Query>> {
-        let mut queries = vec![];
-        for upsert in mutation.upserts.iter() {
-            queries.push(
-                self.bind_rel_key_field_params(neo4rs::query(&self.delete_cypher), &upsert.key)?,
-            );
+        upsert: &ExportTargetUpsertEntry,
+        queries: &mut Vec<neo4rs::Query>,
+    ) -> Result<()> {
+        queries
+            .push(self.bind_rel_key_field_params(neo4rs::query(&self.delete_cypher), &upsert.key)?);
 
-            let value = &upsert.value;
-            let mut insert_cypher =
-                self.bind_rel_key_field_params(neo4rs::query(&self.insert_cypher), &upsert.key)?;
-            insert_cypher = Self::bind_key_field_params(
-                insert_cypher,
-                &self.src_key_field_params,
-                self.src_fields
-                    .key_fields
-                    .iter()
-                    .map(|f| (&f.value_type, &value.fields[f.field_idx])),
-            )?;
-            insert_cypher = Self::bind_key_field_params(
-                insert_cypher,
-                &self.tgt_key_field_params,
-                self.tgt_fields
-                    .key_fields
-                    .iter()
-                    .map(|f| (&f.value_type, &value.fields[f.field_idx])),
-            )?;
+        let value = &upsert.value;
+        let mut insert_cypher =
+            self.bind_rel_key_field_params(neo4rs::query(&self.insert_cypher), &upsert.key)?;
+        insert_cypher = Self::bind_key_field_params(
+            insert_cypher,
+            &self.src_key_field_params,
+            self.src_fields
+                .key_fields
+                .iter()
+                .map(|f| (&f.value_type, &value.fields[f.field_idx])),
+        )?;
+        insert_cypher = Self::bind_key_field_params(
+            insert_cypher,
+            &self.tgt_key_field_params,
+            self.tgt_fields
+                .key_fields
+                .iter()
+                .map(|f| (&f.value_type, &value.fields[f.field_idx])),
+        )?;
 
-            if !self.src_fields.value_fields.is_empty() {
-                insert_cypher = insert_cypher.param(
-                    SRC_PROPS_PARAM,
-                    mapped_field_values_to_bolt(
-                        self.src_fields
-                            .value_fields
-                            .iter()
-                            .map(|f| &value.fields[f.field_idx]),
-                        self.src_fields.value_fields.iter(),
-                    )?,
-                );
-            }
-            if !self.tgt_fields.value_fields.is_empty() {
-                insert_cypher = insert_cypher.param(
-                    TGT_PROPS_PARAM,
-                    mapped_field_values_to_bolt(
-                        self.tgt_fields
-                            .value_fields
-                            .iter()
-                            .map(|f| &value.fields[f.field_idx]),
-                        self.tgt_fields.value_fields.iter(),
-                    )?,
-                );
-            }
-            if !self.value_fields.is_empty() {
-                insert_cypher = insert_cypher.param(
-                    REL_PROPS_PARAM,
-                    mapped_field_values_to_bolt(
-                        self.value_fields.iter().map(|f| &value.fields[f.field_idx]),
-                        self.value_fields.iter(),
-                    )?,
-                );
-            }
-            queries.push(insert_cypher);
-        }
-        for delete_key in mutation.delete_keys.iter() {
-            queries.push(
-                self.bind_rel_key_field_params(neo4rs::query(&self.delete_cypher), delete_key)?,
+        if !self.src_fields.value_fields.is_empty() {
+            insert_cypher = insert_cypher.param(
+                SRC_PROPS_PARAM,
+                mapped_field_values_to_bolt(
+                    self.src_fields
+                        .value_fields
+                        .iter()
+                        .map(|f| &value.fields[f.field_idx]),
+                    self.src_fields.value_fields.iter(),
+                )?,
             );
         }
-        Ok(queries)
+        if !self.tgt_fields.value_fields.is_empty() {
+            insert_cypher = insert_cypher.param(
+                TGT_PROPS_PARAM,
+                mapped_field_values_to_bolt(
+                    self.tgt_fields
+                        .value_fields
+                        .iter()
+                        .map(|f| &value.fields[f.field_idx]),
+                    self.tgt_fields.value_fields.iter(),
+                )?,
+            );
+        }
+        if !self.value_fields.is_empty() {
+            insert_cypher = insert_cypher.param(
+                REL_PROPS_PARAM,
+                mapped_field_values_to_bolt(
+                    self.value_fields.iter().map(|f| &value.fields[f.field_idx]),
+                    self.value_fields.iter(),
+                )?,
+            );
+        }
+        queries.push(insert_cypher);
+        Ok(())
     }
-}
 
-#[async_trait]
-impl ExportTargetExecutor for RelationshipStorageExecutor {
-    async fn apply_mutation(&self, mutation: ExportTargetMutation) -> Result<()> {
-        retriable::run(
-            || async {
-                let queries = self.build_queries_to_apply_mutation(&mutation)?;
-                let mut txn = self.graph.start_txn().await?;
-                txn.run_queries(queries.clone()).await?;
-                txn.commit().await?;
-                retriable::Ok(())
-            },
-            retriable::RunOptions::default(),
-        )
-        .await
-        .map_err(Into::<anyhow::Error>::into)
+    fn add_delete_queries(
+        &self,
+        delete_key: &value::KeyValue,
+        queries: &mut Vec<neo4rs::Query>,
+    ) -> Result<()> {
+        queries
+            .push(self.bind_rel_key_field_params(neo4rs::query(&self.delete_cypher), delete_key)?);
+        Ok(())
     }
 }
 
@@ -1016,10 +1003,12 @@ impl<'a> NodeLabelAnalyzer<'a> {
     }
 }
 
+#[async_trait]
 impl StorageFactoryBase for RelationshipFactory {
     type Spec = RelationshipSpec;
     type SetupState = RelationshipSetupState;
     type Key = GraphRelationship;
+    type ExportContext = RelationshipExportContext;
 
     fn name(&self) -> &str {
         "Neo4jRelationship"
@@ -1033,7 +1022,7 @@ impl StorageFactoryBase for RelationshipFactory {
         value_fields_schema: Vec<FieldSchema>,
         index_options: IndexOptions,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<ExportTargetBuildOutput<Self>> {
+    ) -> Result<TypedExportTargetBuildOutput<Self>> {
         let setup_key = GraphRelationship::from_spec(&spec);
 
         let mut src_label_analyzer = NodeLabelAnalyzer::new(&spec, &spec.source)?;
@@ -1065,9 +1054,9 @@ impl StorageFactoryBase for RelationshipFactory {
         let conn_spec = context
             .auth_registry
             .get::<ConnectionSpec>(&spec.connection)?;
-        let executor = async move {
+        let executors = async move {
             let graph = self.graph_pool.get_graph(&conn_spec).await?;
-            let executor = Arc::new(RelationshipStorageExecutor::new(
+            let executor = Arc::new(RelationshipExportContext::new(
                 graph,
                 spec,
                 key_fields_schema,
@@ -1075,11 +1064,14 @@ impl StorageFactoryBase for RelationshipFactory {
                 src_label_info,
                 tgt_label_info,
             )?);
-            Ok((executor as Arc<dyn ExportTargetExecutor>, None))
+            Ok(TypedExportTargetExecutors {
+                export_context: executor,
+                query_target: None,
+            })
         }
         .boxed();
-        Ok(ExportTargetBuildOutput {
-            executor,
+        Ok(TypedExportTargetBuildOutput {
+            executors,
             setup_key,
             desired_setup_state,
         })
@@ -1121,5 +1113,46 @@ impl StorageFactoryBase for RelationshipFactory {
 
     fn describe_resource(&self, key: &GraphRelationship) -> Result<String> {
         Ok(format!("Neo4j relationship {}", key.relationship))
+    }
+
+    async fn apply_mutation(
+        &self,
+        mutations: Vec<ExportTargetMutationWithContext<'async_trait, RelationshipExportContext>>,
+    ) -> Result<()> {
+        let mut muts_by_graph = HashMap::new();
+        for mut_with_ctx in mutations.iter() {
+            muts_by_graph
+                .entry(&mut_with_ctx.export_context.connection_ref)
+                .or_insert_with(Vec::new)
+                .push(mut_with_ctx);
+        }
+        for muts in muts_by_graph.values() {
+            let graph = &muts[0].export_context.graph;
+            retriable::run(
+                || async {
+                    let mut queries = vec![];
+                    for mut_with_ctx in muts.iter() {
+                        let export_ctx = &mut_with_ctx.export_context;
+                        for upsert in mut_with_ctx.mutation.upserts.iter() {
+                            export_ctx.add_upsert_queries(upsert, &mut queries)?;
+                        }
+                    }
+                    for mut_with_ctx in muts.iter() {
+                        let export_ctx = &mut_with_ctx.export_context;
+                        for delete_key in mut_with_ctx.mutation.delete_keys.iter() {
+                            export_ctx.add_delete_queries(delete_key, &mut queries)?;
+                        }
+                    }
+                    let mut txn = graph.start_txn().await?;
+                    txn.run_queries(queries).await?;
+                    txn.commit().await?;
+                    retriable::Ok(())
+                },
+                retriable::RunOptions::default(),
+            )
+            .await
+            .map_err(Into::<anyhow::Error>::into)?
+        }
+        Ok(())
     }
 }

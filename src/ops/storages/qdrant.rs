@@ -24,14 +24,14 @@ pub struct Spec {
     api_key: Option<String>,
 }
 
-pub struct Executor {
+pub struct ExportContext {
     client: Qdrant,
     collection_name: String,
     value_fields_schema: Vec<FieldSchema>,
     all_fields: Vec<FieldSchema>,
 }
 
-impl Executor {
+impl ExportContext {
     fn new(
         url: String,
         collection_name: String,
@@ -60,10 +60,7 @@ impl Executor {
             collection_name,
         })
     }
-}
 
-#[async_trait]
-impl ExportTargetExecutor for Executor {
     async fn apply_mutation(&self, mutation: ExportTargetMutation) -> Result<()> {
         let mut points: Vec<PointStruct> = Vec::with_capacity(mutation.upserts.len());
         for upsert in mutation.upserts.iter() {
@@ -280,7 +277,7 @@ fn into_value(point: &ScoredPoint, schema: &FieldSchema) -> Result<Value> {
 }
 
 #[async_trait]
-impl QueryTarget for Executor {
+impl QueryTarget for ExportContext {
     async fn search(&self, query: VectorMatchQuery) -> Result<QueryResults> {
         let points = self
             .client
@@ -329,10 +326,12 @@ impl Display for CollectionId {
     }
 }
 
+#[async_trait]
 impl StorageFactoryBase for Arc<Factory> {
     type Spec = Spec;
     type SetupState = ();
     type Key = String;
+    type ExportContext = ExportContext;
 
     fn name(&self) -> &str {
         "Qdrant"
@@ -346,7 +345,7 @@ impl StorageFactoryBase for Arc<Factory> {
         value_fields_schema: Vec<FieldSchema>,
         _storage_options: IndexOptions,
         _context: Arc<FlowInstanceContext>,
-    ) -> Result<ExportTargetBuildOutput<Self>> {
+    ) -> Result<TypedExportTargetBuildOutput<Self>> {
         if key_fields_schema.len() != 1 {
             api_bail!(
                 "Expected one primary key field for the point ID. Got {}.",
@@ -356,22 +355,22 @@ impl StorageFactoryBase for Arc<Factory> {
 
         let collection_name = spec.collection_name.clone();
 
+        let export_context = Arc::new(ExportContext::new(
+            spec.grpc_url,
+            spec.collection_name.clone(),
+            spec.api_key,
+            key_fields_schema,
+            value_fields_schema,
+        )?);
+        let query_target = export_context.clone();
         let executors = async move {
-            let executor = Arc::new(Executor::new(
-                spec.grpc_url,
-                spec.collection_name.clone(),
-                spec.api_key,
-                key_fields_schema,
-                value_fields_schema,
-            )?);
-            let query_target = executor.clone();
-            Ok((
-                executor as Arc<dyn ExportTargetExecutor>,
-                Some(query_target as Arc<dyn QueryTarget>),
-            ))
+            Ok(TypedExportTargetExecutors {
+                export_context,
+                query_target: Some(query_target as Arc<dyn QueryTarget>),
+            })
         };
-        Ok(ExportTargetBuildOutput {
-            executor: executors.boxed(),
+        Ok(TypedExportTargetBuildOutput {
+            executors: executors.boxed(),
             setup_key: collection_name,
             desired_setup_state: (),
         })
@@ -397,5 +396,18 @@ impl StorageFactoryBase for Arc<Factory> {
 
     fn describe_resource(&self, key: &String) -> Result<String> {
         Ok(format!("Qdrant collection {}", key))
+    }
+
+    async fn apply_mutation(
+        &self,
+        mutations: Vec<ExportTargetMutationWithContext<'async_trait, ExportContext>>,
+    ) -> Result<()> {
+        for mutation_w_ctx in mutations.into_iter() {
+            mutation_w_ctx
+                .export_context
+                .apply_mutation(mutation_w_ctx.mutation)
+                .await?;
+        }
+        Ok(())
     }
 }

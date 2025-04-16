@@ -100,7 +100,7 @@ pub struct AnalyzedExportOp {
     pub name: String,
     pub target_id: i32,
     pub input: AnalyzedLocalCollectorReference,
-    pub executor: Arc<dyn ExportTargetExecutor>,
+    pub export_context: Arc<dyn Any + Send + Sync>,
     pub query_target: Option<Arc<dyn QueryTarget>>,
     pub primary_key_def: AnalyzedPrimaryKeyDef,
     pub primary_key_type: schema::ValueType,
@@ -109,6 +109,11 @@ pub struct AnalyzedExportOp {
     /// If true, value is never changed on the same primary key.
     /// This is guaranteed if the primary key contains auto-generated UUIDs.
     pub value_stable: bool,
+}
+
+pub struct AnalyzedExportTargetOpGroup {
+    pub target_factory: Arc<dyn ExportTargetFactory + Send + Sync>,
+    pub op_idx: Vec<usize>,
 }
 
 pub enum AnalyzedReactiveOp {
@@ -128,6 +133,7 @@ pub struct ExecutionPlan {
     pub import_ops: Vec<AnalyzedImportOp>,
     pub op_scope: AnalyzedOpScope,
     pub export_ops: Vec<AnalyzedExportOp>,
+    pub export_op_groups: Vec<AnalyzedExportTargetOpGroup>,
 }
 
 pub struct TransientExecutionPlan {

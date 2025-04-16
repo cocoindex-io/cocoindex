@@ -554,16 +554,26 @@ pub async fn update_source_row(
 
     // Phase 3: Apply changes to the target storage, including upserting new target records and removing existing ones.
     let mut target_mutations = precommit_output.target_mutations;
-    let apply_futs = plan.export_ops.iter().filter_map(|export_op| {
-        target_mutations
-            .remove(&export_op.target_id)
-            .and_then(|mutation| {
-                if !mutation.is_empty() {
-                    Some(export_op.executor.apply_mutation(mutation))
-                } else {
-                    None
-                }
+    let apply_futs = plan.export_op_groups.iter().filter_map(|export_op_group| {
+        let mutations_w_ctx: Vec<_> = export_op_group
+            .op_idx
+            .iter()
+            .filter_map(|export_op_idx| {
+                let export_op = &plan.export_ops[*export_op_idx];
+                target_mutations
+                    .remove(&export_op.target_id)
+                    .filter(|m| !m.is_empty())
+                    .map(|mutation| interface::ExportTargetMutationWithContext {
+                        mutation,
+                        export_context: export_op.export_context.as_ref(),
+                    })
             })
+            .collect();
+        (!mutations_w_ctx.is_empty()).then(|| {
+            export_op_group
+                .target_factory
+                .apply_mutation(mutations_w_ctx)
+        })
     });
 
     // TODO: Handle errors.

@@ -816,20 +816,11 @@ impl AnalyzerContext<'_> {
         &self,
         scope: &mut DataScopeBuilder,
         export_op: NamedSpec<ExportOpSpec>,
+        export_factory: Arc<dyn ExportTargetFactory>,
         setup_state: Option<&mut FlowSetupState<DesiredMode>>,
         existing_target_states: &HashMap<&ResourceIdentifier, Vec<&TargetSetupState>>,
     ) -> Result<impl Future<Output = Result<AnalyzedExportOp>> + Send> {
         let export_target = export_op.spec.target;
-        let export_factory = match self.registry.get(&export_target.kind) {
-            Some(ExecutorFactory::ExportTarget(export_executor)) => export_executor,
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Export target kind not found: {}",
-                    export_target.kind
-                ))
-            }
-        };
-
         let spec = serde_json::Value::Object(export_target.spec.clone());
         let (local_collector_ref, collector_schema) =
             scope.consume_collector(&export_op.spec.collector_name)?;
@@ -986,8 +977,8 @@ impl AnalyzerContext<'_> {
             .unwrap_or(false);
         Ok(async move {
             trace!("Start building executor for export op `{}`", export_op.name);
-            let (executor, query_target) = setup_output
-                .executor
+            let executors = setup_output
+                .executors
                 .await
                 .with_context(|| format!("Analyzing export op: {}", export_op.name))?;
             trace!(
@@ -999,8 +990,8 @@ impl AnalyzerContext<'_> {
                 name,
                 target_id: target_id.unwrap_or_default(),
                 input: local_collector_ref,
-                executor,
-                query_target,
+                export_context: executors.export_context,
+                query_target: executors.query_target,
                 primary_key_def,
                 primary_key_type,
                 value_fields: value_fields_idx,
@@ -1127,18 +1118,36 @@ pub fn analyze_flow(
         &flow_inst.reactive_ops,
         RefList::Nil,
     )?;
-    let export_ops_futs = flow_inst
-        .export_ops
-        .iter()
-        .map(|export_op| {
-            analyzer_ctx.analyze_export_op(
-                root_exec_scope.data,
-                export_op.clone(),
-                Some(&mut setup_state),
-                &target_states_by_name_type,
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
+
+    let mut target_groups = IndexMap::<String, AnalyzedExportTargetOpGroup>::new();
+    let mut export_ops_futs = vec![];
+    for (idx, export_op) in flow_inst.export_ops.iter().enumerate() {
+        let target_kind = export_op.spec.target.kind.clone();
+        let export_factory = match registry.get(&target_kind) {
+            Some(ExecutorFactory::ExportTarget(export_executor)) => export_executor,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Export target kind not found: {}",
+                    export_op.spec.target.kind
+                ))
+            }
+        };
+        export_ops_futs.push(analyzer_ctx.analyze_export_op(
+            root_exec_scope.data,
+            export_op.clone(),
+            export_factory.clone(),
+            Some(&mut setup_state),
+            &target_states_by_name_type,
+        )?);
+        target_groups
+            .entry(target_kind)
+            .or_insert_with(|| AnalyzedExportTargetOpGroup {
+                target_factory: export_factory.clone(),
+                op_idx: vec![],
+            })
+            .op_idx
+            .push(idx);
+    }
 
     let tracking_table_setup = setup_state.tracking_table.clone();
     let data_schema = root_data_scope.into_data_schema()?;
@@ -1160,6 +1169,7 @@ pub fn analyze_flow(
             import_ops,
             op_scope,
             export_ops,
+            export_op_groups: target_groups.into_values().collect(),
         })
     };
 
