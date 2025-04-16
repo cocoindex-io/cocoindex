@@ -5,6 +5,11 @@ import dataclasses
 from dotenv import load_dotenv
 import cocoindex
 
+@dataclasses.dataclass
+class DocumentSummary:
+    """Describe a summary of a document."""
+    title: str
+    summary: str
 
 @dataclasses.dataclass
 class Relationship:
@@ -31,12 +36,24 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
         cocoindex.sources.LocalFile(path="../../docs/docs/core",
                                     included_patterns=["*.md", "*.mdx"]))
 
-    relationships = data_scope.add_collector()
+    document_node = data_scope.add_collector()
+    entity_relationship = data_scope.add_collector()
+    entity_mention = data_scope.add_collector()
 
     with data_scope["documents"].row() as doc:
         doc["chunks"] = doc["content"].transform(
             cocoindex.functions.SplitRecursively(),
             language="markdown", chunk_size=10000)
+
+        doc["summary"] = doc["content"].transform(
+            cocoindex.functions.ExtractByLlm(
+                llm_spec=cocoindex.LlmSpec(
+                    api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
+                output_type=DocumentSummary,
+                instruction="Please summarize the content of the document."))
+        document_node.collect(
+            filename=doc["filename"], title=doc["summary"]["title"],
+            summary=doc["summary"]["summary"])
 
         with doc["chunks"].row() as chunk:
             chunk["relationships"] = chunk["text"].transform(
@@ -59,7 +76,7 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
                 relationship["object_embedding"] = relationship["object"].transform(
                     cocoindex.functions.SentenceTransformerEmbed(
                         model="sentence-transformers/all-MiniLM-L6-v2"))
-                relationships.collect(
+                entity_relationship.collect(
                     id=cocoindex.GeneratedField.UUID,
                     subject=relationship["subject"],
                     subject_embedding=relationship["subject_embedding"],
@@ -67,9 +84,23 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
                     object_embedding=relationship["object_embedding"],
                     predicate=relationship["predicate"],
                 )
-
-    relationships.export(
-        "relationships",
+                entity_mention.collect(
+                    id=cocoindex.GeneratedField.UUID, entity=relationship["subject"],
+                    filename=doc["filename"], location=chunk["location"],
+                )
+                entity_mention.collect(
+                    id=cocoindex.GeneratedField.UUID, entity=relationship["object"],
+                    filename=doc["filename"], location=chunk["location"],
+                )
+    document_node.export(
+        "document_node",
+        cocoindex.storages.Neo4j(
+            connection=conn_spec,
+            mapping=cocoindex.storages.Neo4jNode(label="Document")),
+        primary_key_fields=["filename"],
+    )
+    entity_relationship.export(
+        "entity_relationship",
         cocoindex.storages.Neo4j(
             connection=conn_spec,
             mapping=cocoindex.storages.Neo4jRelationship(
@@ -103,6 +134,25 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
                         ],
                     ),
                 },
+            ),
+        ),
+        primary_key_fields=["id"],
+    )
+    entity_mention.export(
+        "entity_mention",
+        cocoindex.storages.Neo4j(
+            connection=conn_spec,
+            mapping=cocoindex.storages.Neo4jRelationship(
+                rel_type="MENTION",
+                source=cocoindex.storages.Neo4jRelationshipEnd(
+                    label="Document",
+                    fields=[cocoindex.storages.Neo4jFieldMapping("filename")],
+                ),
+                target=cocoindex.storages.Neo4jRelationshipEnd(
+                    label="Entity",
+                    fields=[cocoindex.storages.Neo4jFieldMapping(
+                        field_name="entity", node_field_name="value")],
+                ),
             ),
         ),
         primary_key_fields=["id"],
