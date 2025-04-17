@@ -726,8 +726,7 @@ impl AnalyzerContext<'_> {
                                 enable_cache,
                                 behavior_version,
                                 fingerprinter: Fingerprinter::default()
-                                    .with(&reactive_op.name)?
-                                    .with(&reactive_op.spec)?
+                                    .with(&op.op)?
                                     .with(&behavior_version)?
                                     .with(&output_type.without_attrs())?,
                                 output_type: output_type.typ.clone(),
