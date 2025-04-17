@@ -396,6 +396,8 @@ impl ExportContext {
             RowMappingSpec::Node(node_spec) => {
                 let delete_cypher = formatdoc! {"
                     OPTIONAL MATCH (old_node:{label} {key_fields_literal})
+                    WITH old_node
+                    WHERE NOT (old_node)--()
                     DELETE old_node
                     FINISH
                     ",
@@ -894,11 +896,17 @@ impl components::Operator for SetupComponentOperator {
                 metric,
                 vector_size,
             } => {
-                format!(
-                    r#"CREATE VECTOR INDEX {name} IF NOT EXISTS FOR {matcher} ON {qualifier}.{field_name} OPTIONS
-                       {{ indexConfig: {{`vector.dimensions`: {vector_size}, `vector.similarity_function`: '{metric}'}}}}"#,
+                formatdoc! {"
+                    CREATE VECTOR INDEX {name} IF NOT EXISTS
+                    FOR {matcher} ON {qualifier}.{field_name}
+                    OPTIONS {{
+                        indexConfig: {{
+                            `vector.dimensions`: {vector_size},
+                            `vector.similarity_function`: '{metric}'
+                        }}
+                    }}",
                     name = key.name,
-                )
+                }
             }
         });
         Ok(graph.run(query).await?)
@@ -1013,30 +1021,33 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
     async fn apply_change(&self) -> Result<()> {
         let graph = self.graph_pool.get_graph(&self.conn_spec).await?;
         if let Some(data_clear) = &self.data_clear {
-            let delete_rel_query = neo4rs::query(&format!(
-                r#"
+            let delete_rel_query = neo4rs::query(&formatdoc! {"
                     CALL {{
-                      MATCH {matcher}
-                      WITH {var_name}
-                      DELETE {var_name}
+                        MATCH {matcher}
+                        WITH {var_name}
+                        {optional_orphan_condition}
+                        DELETE {var_name}
                     }} IN TRANSACTIONS
-                "#,
+                ",
                 matcher = data_clear.core_elem_type.matcher(CORE_ELEMENT_MATCHER_VAR),
                 var_name = CORE_ELEMENT_MATCHER_VAR,
-            ));
+                optional_orphan_condition = match data_clear.core_elem_type {
+                    ElementType::Node(_) => format!("WHERE NOT ({CORE_ELEMENT_MATCHER_VAR})--()"),
+                    _ => "".to_string(),
+                },
+            });
             graph.run(delete_rel_query).await?;
 
             for node_label in &data_clear.dependent_node_labels {
-                let delete_node_query = neo4rs::query(&format!(
-                    r#"
+                let delete_node_query = neo4rs::query(&formatdoc! {"
                         CALL {{
-                          MATCH (n:{node_label})
-                          WHERE NOT (n)--()
-                          DELETE n
+                            MATCH (n:{node_label})
+                            WHERE NOT (n)--()
+                            DELETE n
                         }} IN TRANSACTIONS
-                    "#,
+                    ",
                     node_label = node_label
-                ));
+                });
                 graph.run(delete_node_query).await?;
             }
         }
