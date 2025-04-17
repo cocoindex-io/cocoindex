@@ -9,6 +9,7 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
     sources::local_file::Factory.register(registry)?;
     sources::google_drive::Factory.register(registry)?;
 
+    functions::parse_json::Factory.register(registry)?;
     functions::split_recursively::Factory.register(registry)?;
     functions::extract_by_llm::Factory.register(registry)?;
 

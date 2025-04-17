@@ -5,6 +5,9 @@ import sentence_transformers
 from .typing import Float32, Vector, TypeAttr
 from . import op, llm
 
+class ParseJson(op.FunctionSpec):
+    """Parse a text into a JSON object."""
+
 class SplitRecursively(op.FunctionSpec):
     """Split a document (in string) recursively."""
 
