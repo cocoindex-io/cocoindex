@@ -961,19 +961,22 @@ impl SetupStatusCheck {
         desired_state: Option<&RelationshipSetupState>,
         existing: &CombinedState<RelationshipSetupState>,
     ) -> Self {
-        let data_clear = existing
-            .current
-            .as_ref()
-            .filter(|existing_current| {
-                desired_state.as_ref().is_none_or(|desired| {
-                    desired.check_compatible(existing_current)
-                        == SetupStateCompatibility::NotCompatible
-                })
-            })
-            .map(|existing_current| DataClearAction {
-                core_elem_type: key.typ.clone(),
-                dependent_node_labels: existing_current.dependent_node_labels.clone(),
-            });
+        let mut core_elem_type_to_clear = None;
+        let mut dependent_node_labels_to_clear = IndexSet::new();
+        for v in existing.possible_versions() {
+            if desired_state.as_ref().is_none_or(|desired| {
+                desired.check_compatible(v) == SetupStateCompatibility::NotCompatible
+            }) {
+                if core_elem_type_to_clear.is_none() {
+                    core_elem_type_to_clear = Some(key.typ.clone());
+                }
+                dependent_node_labels_to_clear.extend(v.dependent_node_labels.iter().cloned());
+            }
+        }
+        let data_clear = core_elem_type_to_clear.map(|core_elem_type| DataClearAction {
+            core_elem_type,
+            dependent_node_labels: dependent_node_labels_to_clear.into_iter().collect(),
+        });
 
         let change_type = match (desired_state, existing.possible_versions().next()) {
             (Some(_), Some(_)) => {
@@ -1027,7 +1030,7 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
     async fn apply_change(&self) -> Result<()> {
         let graph = self.graph_pool.get_graph(&self.conn_spec).await?;
         if let Some(data_clear) = &self.data_clear {
-            let delete_rel_query = neo4rs::query(&formatdoc! {"
+            let delete_query = neo4rs::query(&formatdoc! {"
                     CALL {{
                         MATCH {matcher}
                         WITH {var_name}
@@ -1042,7 +1045,7 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
                     _ => "".to_string(),
                 },
             });
-            graph.run(delete_rel_query).await?;
+            graph.run(delete_query).await?;
 
             for node_label in &data_clear.dependent_node_labels {
                 let delete_node_query = neo4rs::query(&formatdoc! {"
