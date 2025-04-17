@@ -1,7 +1,7 @@
 name: cocoindex-neo4j
 services:
   neo4j:
-    image: neo4j:latest
+    image: neo4j:5-enterprise
     volumes:
         - /$HOME/neo4j/logs:/logs
         - /$HOME/neo4j/config:/config
@@ -10,6 +10,15 @@ services:
     environment:
         - NEO4J_AUTH=neo4j/cocoindex
         - NEO4J_PLUGINS='["graph-data-science"]'
+        - NEO4J_ACCEPT_LICENSE_AGREEMENT=eval
+
+        # Uncomment to enable query logging
+        # - NEO4J_db_logs_query_enabled=VERBOSE
+        # - NEO4J_db_logs_query_transaction_enabled=VERBOSE
+        # - NEO4J_db_logs_query_parameter__logging__enabled=true
+        # - NEO4J_dbms_logs_http_enabled=true
+        # - NEO4J_server_logs_debug_enabled=true
+
     ports:
       - "7474:7474"
       - "7687:7687"

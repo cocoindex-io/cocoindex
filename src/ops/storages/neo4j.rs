@@ -696,12 +696,14 @@ impl RelationshipSetupState {
                     )
                 })?;
                 for (label, node) in rel_spec.nodes.iter().flatten() {
-                    sub_components.push(ComponentState {
-                        object_label: ElementType::Node(label.clone()),
-                        index_def: IndexDef::KeyConstraint {
-                            field_names: key_field_names.clone(),
-                        },
-                    });
+                    if let Some(primary_key_fields) = &node.index_options.primary_key_fields {
+                        sub_components.push(ComponentState {
+                            object_label: ElementType::Node(label.clone()),
+                            index_def: IndexDef::KeyConstraint {
+                                field_names: primary_key_fields.clone(),
+                            },
+                        });
+                    }
                     for index_def in &node.index_options.vector_indexes {
                         sub_components.push(ComponentState {
                             object_label: ElementType::Node(label.clone()),
@@ -885,8 +887,12 @@ impl components::Operator for SetupComponentOperator {
         let matcher = state.object_label.matcher(qualifier);
         let query = neo4rs::query(&match &state.index_def {
             IndexDef::KeyConstraint { field_names } => {
+                let key_type = match &state.object_label {
+                    ElementType::Node(_) => "NODE",
+                    ElementType::Relationship(_) => "RELATIONSHIP",
+                };
                 format!(
-                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR {matcher} REQUIRE {field_names} IS UNIQUE",
+                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR {matcher} REQUIRE {field_names} IS {key_type} KEY",
                     name=key.name,
                     field_names=build_composite_field_names(qualifier, &field_names),
                 )
