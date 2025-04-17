@@ -58,7 +58,7 @@ pub struct TrackingTableSetupStatusCheck {
 
     pub legacy_table_names: Vec<String>,
 
-    pub min_existing_version_ids: Option<i32>,
+    pub min_existing_version_id: Option<i32>,
     pub source_ids_to_delete: Vec<i32>,
 }
 
@@ -75,7 +75,10 @@ impl TrackingTableSetupStatusCheck {
                 .into_iter()
                 .cloned()
                 .collect(),
-            min_existing_version_ids: existing.possible_versions().map(|v| v.version_id).min(),
+            min_existing_version_id: existing
+                .always_exists()
+                .then(|| existing.possible_versions().map(|v| v.version_id).min())
+                .flatten(),
             source_ids_to_delete,
         }
     }
@@ -102,7 +105,7 @@ impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
                 self.legacy_table_names.join(", ")
             ));
         }
-        match (self.min_existing_version_ids, &self.desired_state) {
+        match (self.min_existing_version_id, &self.desired_state) {
             (None, Some(state)) => {
                 changes.push(format!("Create the tracking table: {}. ", state.table_name))
             }
@@ -131,7 +134,7 @@ impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
     }
 
     fn change_type(&self) -> SetupChangeType {
-        match (self.min_existing_version_ids, &self.desired_state) {
+        match (self.min_existing_version_id, &self.desired_state) {
             (None, Some(_)) => SetupChangeType::Create,
             (Some(min_version_id), Some(desired)) => {
                 if min_version_id == desired.version_id && self.legacy_table_names.is_empty() {
@@ -158,11 +161,11 @@ impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
                 sqlx::query(&query).execute(pool).await?;
             }
 
-            if self.min_existing_version_ids != Some(desired.version_id) {
+            if self.min_existing_version_id != Some(desired.version_id) {
                 upgrade_tracking_table(
                     pool,
                     &desired.table_name,
-                    self.min_existing_version_ids.unwrap_or(0),
+                    self.min_existing_version_id.unwrap_or(0),
                     desired.version_id,
                 )
                 .await?;
