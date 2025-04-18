@@ -5,6 +5,17 @@ description: CocoIndex Built-in Functions
 
 # CocoIndex Built-in Functions
 
+## ParseJson
+
+`ParseJson` parses a given text to JSON.
+
+The spec takes the following fields:
+
+*   `text` (type: `str`, required): The source text to parse.
+*   `language` (type: `str`, optional): The language of the source text.  Only `json` is supported now.  Default to `json`.
+
+Return type: `Json`
+
 ## SplitRecursively
 
 `SplitRecursively` splits a document into chunks of a given size.
