@@ -19,7 +19,7 @@ pub struct ConnectionSpec {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct FieldMapping {
+pub struct GraphFieldMappingSpec {
     field_name: FieldName,
 
     /// Field name for the node in the Knowledge Graph.
@@ -28,48 +28,48 @@ pub struct FieldMapping {
     node_field_name: Option<FieldName>,
 }
 
-impl FieldMapping {
+impl GraphFieldMappingSpec {
     fn get_node_field_name(&self) -> &FieldName {
         self.node_field_name.as_ref().unwrap_or(&self.field_name)
     }
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RelationshipEndSpec {
+pub struct GraphRelationshipEndSpec {
     label: String,
-    fields: Vec<FieldMapping>,
+    fields: Vec<GraphFieldMappingSpec>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RelationshipNodeSpec {
+pub struct GraphRelationshipNodeSpec {
     #[serde(flatten)]
     index_options: spec::IndexOptions,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct NodeSpec {
+pub struct GraphNodeSpec {
     label: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RelationshipSpec {
+pub struct GraphRelationshipSpec {
     rel_type: String,
-    source: RelationshipEndSpec,
-    target: RelationshipEndSpec,
-    nodes: Option<BTreeMap<String, RelationshipNodeSpec>>,
+    source: GraphRelationshipEndSpec,
+    target: GraphRelationshipEndSpec,
+    nodes: Option<BTreeMap<String, GraphRelationshipNodeSpec>>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind")]
-pub enum RowMappingSpec {
-    Relationship(RelationshipSpec),
-    Node(NodeSpec),
+pub enum GraphMappingSpec {
+    Relationship(GraphRelationshipSpec),
+    Node(GraphNodeSpec),
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
     connection: AuthEntryReference,
-    mapping: RowMappingSpec,
+    mapping: GraphMappingSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -101,10 +101,12 @@ impl ElementType {
         }
     }
 
-    fn from_mapping_spec(spec: &RowMappingSpec) -> Self {
+    fn from_mapping_spec(spec: &GraphMappingSpec) -> Self {
         match spec {
-            RowMappingSpec::Relationship(spec) => ElementType::Relationship(spec.rel_type.clone()),
-            RowMappingSpec::Node(spec) => ElementType::Node(spec.label.clone()),
+            GraphMappingSpec::Relationship(spec) => {
+                ElementType::Relationship(spec.rel_type.clone())
+            }
+            GraphMappingSpec::Node(spec) => ElementType::Node(spec.label.clone()),
         }
     }
 
@@ -393,7 +395,7 @@ impl ExportContext {
             key_fields.iter().map(|f| &f.name),
         );
         let result = match spec.mapping {
-            RowMappingSpec::Node(node_spec) => {
+            GraphMappingSpec::Node(node_spec) => {
                 let delete_cypher = formatdoc! {"
                     OPTIONAL MATCH (old_node:{label} {key_fields_literal})
                     WITH old_node
@@ -433,7 +435,7 @@ impl ExportContext {
                     tgt_fields: None,
                 }
             }
-            RowMappingSpec::Relationship(rel_spec) => {
+            GraphMappingSpec::Relationship(rel_spec) => {
                 let delete_cypher = formatdoc! {"
                     OPTIONAL MATCH (old_src)-[old_rel:{rel_type} {key_fields_literal}]->(old_tgt)
 
@@ -687,8 +689,8 @@ impl RelationshipSetupState {
         }
         let mut dependent_node_labels = vec![];
         match &spec.mapping {
-            RowMappingSpec::Node(_) => {}
-            RowMappingSpec::Relationship(rel_spec) => {
+            GraphMappingSpec::Node(_) => {}
+            GraphMappingSpec::Relationship(rel_spec) => {
                 let (src_label_info, tgt_label_info) = end_nodes_label_info.ok_or_else(|| {
                     anyhow!(
                         "Expect `end_nodes_label_info` existing for relationship `{}`",
@@ -1079,12 +1081,15 @@ impl Factory {
 struct DependentNodeLabelAnalyzer<'a> {
     label_name: &'a str,
     fields: IndexMap<&'a str, AnalyzedGraphFieldMapping>,
-    remaining_fields: HashMap<&'a str, &'a FieldMapping>,
+    remaining_fields: HashMap<&'a str, &'a GraphFieldMappingSpec>,
     index_options: Option<&'a IndexOptions>,
 }
 
 impl<'a> DependentNodeLabelAnalyzer<'a> {
-    fn new(rel_spec: &'a RelationshipSpec, rel_end_spec: &'a RelationshipEndSpec) -> Result<Self> {
+    fn new(
+        rel_spec: &'a GraphRelationshipSpec,
+        rel_end_spec: &'a GraphRelationshipEndSpec,
+    ) -> Result<Self> {
         Ok(Self {
             label_name: rel_end_spec.label.as_str(),
             fields: IndexMap::new(),
@@ -1181,7 +1186,7 @@ impl StorageFactoryBase for Factory {
         let setup_key = GraphElement::from_spec(&spec);
 
         let (value_fields_info, rel_end_label_info) = match &spec.mapping {
-            RowMappingSpec::Node(_) => (
+            GraphMappingSpec::Node(_) => (
                 value_fields_schema
                     .into_iter()
                     .enumerate()
@@ -1193,7 +1198,7 @@ impl StorageFactoryBase for Factory {
                     .collect(),
                 None,
             ),
-            RowMappingSpec::Relationship(rel_spec) => {
+            GraphMappingSpec::Relationship(rel_spec) => {
                 let mut src_label_analyzer =
                     DependentNodeLabelAnalyzer::new(&rel_spec, &rel_spec.source)?;
                 let mut tgt_label_analyzer =

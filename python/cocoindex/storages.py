@@ -29,7 +29,7 @@ class Neo4jConnection:
     db: str | None = None
 
 @dataclass
-class Neo4jFieldMapping:
+class GraphFieldMapping:
     """Mapping for a Neo4j field."""
     field_name: str
     # Field name for the node in the Knowledge Graph.
@@ -37,36 +37,36 @@ class Neo4jFieldMapping:
     node_field_name: str | None = None
 
 @dataclass
-class Neo4jRelationshipEnd:
+class GraphRelationshipEnd:
     """Spec for a Neo4j node type."""
     label: str
-    fields: list[Neo4jFieldMapping]
+    fields: list[GraphFieldMapping]
 
 @dataclass
-class Neo4jRelationshipNode:
+class GraphRelationshipNode:
     """Spec for a Neo4j node type."""
     primary_key_fields: Sequence[str]
     vector_indexes: Sequence[index.VectorIndexDef] = ()
 
 @dataclass
-class Neo4jNode:
+class GraphNode:
     """Spec for a Neo4j node type."""
     kind = "Node"
 
     label: str
 
 @dataclass
-class Neo4jRelationship:
+class GraphRelationship:
     """Spec for a Neo4j relationship."""
     kind = "Relationship"
 
     rel_type: str
-    source: Neo4jRelationshipEnd
-    target: Neo4jRelationshipEnd
-    nodes: dict[str, Neo4jRelationshipNode] | None = None
+    source: GraphRelationshipEnd
+    target: GraphRelationshipEnd
+    nodes: dict[str, GraphRelationshipNode] | None = None
 
 class Neo4j(op.StorageSpec):
     """Graph storage powered by Neo4j."""
 
     connection: AuthEntryReference
-    mapping: Neo4jNode | Neo4jRelationship
+    mapping: GraphNode | GraphRelationship
