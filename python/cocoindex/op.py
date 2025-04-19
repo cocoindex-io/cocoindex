@@ -5,9 +5,9 @@ import asyncio
 import dataclasses
 import inspect
 
-from typing import get_type_hints, Protocol, Any, Callable, dataclass_transform
+from typing import get_type_hints, Protocol, Any, Callable, Awaitable, dataclass_transform
 from enum import Enum
-from threading import Lock
+from functools import partial
 
 from .typing import encode_enriched_type
 from .convert import to_engine_value, make_engine_value_converter
@@ -61,7 +61,7 @@ class _FunctionExecutorFactory:
         return (encode_enriched_type(result_type), executor)
 
 
-_gpu_dispatch_lock = Lock()
+_gpu_dispatch_lock = asyncio.Lock()
 
 @dataclasses.dataclass
 class OpArgs:
@@ -75,11 +75,15 @@ class OpArgs:
     cache: bool = False
     behavior_version: int | None = None
 
+def _to_async_call(call: Callable) -> Callable[..., Awaitable[Any]]:
+    if inspect.iscoroutinefunction(call):
+        return call
+    return lambda *args, **kwargs: asyncio.to_thread(lambda: call(*args, **kwargs))
+
 def _register_op_factory(
         category: OpCategory,
         expected_args: list[tuple[str, inspect.Parameter]],
         expected_return,
-        is_async: bool,
         executor_cls: type,
         spec_cls: type,
         op_args: OpArgs,
@@ -97,10 +101,12 @@ def _register_op_factory(
     class _WrappedClass(executor_cls, _Fallback):
         _args_converters: list[Callable[[Any], Any]]
         _kwargs_converters: dict[str, Callable[[str, Any], Any]]
+        _acall: Callable
 
         def __init__(self, spec):
             super().__init__()
             self.spec = spec
+            self._acall = _to_async_call(super().__call__)
 
         def analyze(self, *args, **kwargs):
             """
@@ -157,31 +163,19 @@ def _register_op_factory(
             else:
                 return expected_return
 
-        def prepare(self):
+        async def prepare(self):
             """
             Prepare for execution.
             It's executed after `analyze` and before any `__call__` execution.
             """
-            setup_method = getattr(executor_cls, 'prepare', None)
+            setup_method = getattr(super(), 'prepare', None)
             if setup_method is not None:
-                setup_method(self)
+                await _to_async_call(setup_method)()
 
-        def __call__(self, *args, **kwargs):
+        async def __call__(self, *args, **kwargs):
             converted_args = (converter(arg) for converter, arg in zip(self._args_converters, args))
             converted_kwargs = {arg_name: self._kwargs_converters[arg_name](arg)
                                 for arg_name, arg in kwargs.items()}
-            if is_async:
-                async def _inner():
-                    if op_args.gpu:
-                        await asyncio.to_thread(_gpu_dispatch_lock.acquire)
-                    try:
-                        output = await super(_WrappedClass, self).__call__(
-                            *converted_args, **converted_kwargs)
-                    finally:
-                        if op_args.gpu:
-                            _gpu_dispatch_lock.release()
-                    return to_engine_value(output)
-                return _inner()
 
             if op_args.gpu:
                 # For GPU executions, data-level parallelism is applied, so we don't want to
@@ -189,10 +183,10 @@ def _register_op_factory(
                 # Besides, multiprocessing is more appropriate for pytorch.
                 # For now, we use a lock to ensure only one task is executed at a time.
                 # TODO: Implement multi-processing dispatching.
-                with _gpu_dispatch_lock:
-                    output = super().__call__(*converted_args, **converted_kwargs)
+                async with _gpu_dispatch_lock:
+                    output = await self._acall(*converted_args, **converted_kwargs)
             else:
-                output = super().__call__(*converted_args, **converted_kwargs)
+                output = await self._acall(*converted_args, **converted_kwargs)
             return to_engine_value(output)
 
     _WrappedClass.__name__ = executor_cls.__name__
@@ -203,9 +197,7 @@ def _register_op_factory(
 
     if category == OpCategory.FUNCTION:
         _engine.register_function_factory(
-            spec_cls.__name__,
-            _FunctionExecutorFactory(spec_cls, _WrappedClass),
-            is_async)
+            spec_cls.__name__, _FunctionExecutorFactory(spec_cls, _WrappedClass))
     else:
         raise ValueError(f"Unsupported executor type {category}")
 
@@ -230,7 +222,6 @@ def executor_class(**args) -> Callable[[type], type]:
             category=spec_cls._op_category,
             expected_args=list(sig.parameters.items())[1:],  # First argument is `self`
             expected_return=sig.return_annotation,
-            is_async=inspect.iscoroutinefunction(cls.__call__),
             executor_cls=cls,
             spec_cls=spec_cls,
             op_args=op_args)
@@ -266,7 +257,6 @@ def function(**args) -> Callable[[Callable], FunctionSpec]:
             category=OpCategory.FUNCTION,
             expected_args=list(sig.parameters.items()),
             expected_return=sig.return_annotation,
-            is_async=inspect.iscoroutinefunction(fn),
             executor_cls=_Executor,
             spec_cls=_Spec,
             op_args=op_args)

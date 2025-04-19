@@ -39,7 +39,6 @@ impl PyOpArgSchema {
 
 struct PyFunctionExecutor {
     py_function_executor: Py<PyAny>,
-    is_async: bool,
     py_exec_ctx: Arc<crate::py::PythonExecutionContext>,
 
     num_positional_args: usize,
@@ -91,36 +90,22 @@ impl PyFunctionExecutor {
 impl SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
     async fn evaluate(&self, input: Vec<value::Value>) -> Result<value::Value> {
         let self = self.clone();
-        let result = if self.is_async {
-            let result_fut = Python::with_gil(|py| -> Result<_> {
-                let result = self.call_py_fn(py, input)?;
-                let task_locals = pyo3_async_runtimes::TaskLocals::new(
-                    self.py_exec_ctx.event_loop.bind(py).clone(),
-                );
-                Ok(pyo3_async_runtimes::into_future_with_locals(
-                    &task_locals,
-                    result,
-                )?)
-            })?;
-            let result = result_fut.await?;
-            Python::with_gil(|py| -> Result<_> {
-                Ok(py::value_from_py_object(
-                    &self.result_type.typ,
-                    &result.into_bound(py),
-                )?)
-            })?
-        } else {
-            tokio::task::spawn_blocking(move || {
-                Python::with_gil(|py| -> Result<_> {
-                    Ok(py::value_from_py_object(
-                        &self.result_type.typ,
-                        &self.call_py_fn(py, input)?,
-                    )?)
-                })
-            })
-            .await??
-        };
-        Ok(result)
+        let result_fut = Python::with_gil(|py| -> Result<_> {
+            let result_coro = self.call_py_fn(py, input)?;
+            let task_locals =
+                pyo3_async_runtimes::TaskLocals::new(self.py_exec_ctx.event_loop.bind(py).clone());
+            Ok(pyo3_async_runtimes::into_future_with_locals(
+                &task_locals,
+                result_coro,
+            )?)
+        })?;
+        let result = result_fut.await?;
+        Python::with_gil(|py| -> Result<_> {
+            Ok(py::value_from_py_object(
+                &self.result_type.typ,
+                &result.into_bound(py),
+            )?)
+        })
     }
 
     fn enable_cache(&self) -> bool {
@@ -134,7 +119,6 @@ impl SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
 
 pub(crate) struct PyFunctionFactory {
     pub py_function_factory: Py<PyAny>,
-    pub is_async: bool,
 }
 
 impl SimpleFunctionFactory for PyFunctionFactory {
@@ -195,31 +179,33 @@ impl SimpleFunctionFactory for PyFunctionFactory {
                     .as_ref()
                     .ok_or_else(|| anyhow!("Python execution context is missing"))?
                     .clone();
-                let executor = tokio::task::spawn_blocking(move || -> Result<_> {
-                    let (enable_cache, behavior_version) =
-                        Python::with_gil(|py| -> anyhow::Result<_> {
-                            executor.call_method(py, "prepare", (), None)?;
-                            let enable_cache = executor
-                                .call_method(py, "enable_cache", (), None)?
-                                .extract::<bool>(py)?;
-                            let behavior_version = executor
-                                .call_method(py, "behavior_version", (), None)?
-                                .extract::<Option<u32>>(py)?;
-                            Ok((enable_cache, behavior_version))
-                        })?;
-                    Ok(Box::new(Arc::new(PyFunctionExecutor {
-                        py_function_executor: executor,
-                        is_async: self.is_async,
-                        py_exec_ctx,
-                        num_positional_args,
-                        kw_args_names,
-                        result_type,
-                        enable_cache,
-                        behavior_version,
-                    })) as Box<dyn SimpleFunctionExecutor>)
-                })
-                .await??;
-                Ok(executor)
+                let (prepare_fut, enable_cache, behavior_version) =
+                    Python::with_gil(|py| -> anyhow::Result<_> {
+                        let prepare_coro = executor.call_method(py, "prepare", (), None)?;
+                        let prepare_fut = pyo3_async_runtimes::into_future_with_locals(
+                            &pyo3_async_runtimes::TaskLocals::new(
+                                py_exec_ctx.event_loop.bind(py).clone(),
+                            ),
+                            prepare_coro.into_bound(py),
+                        )?;
+                        let enable_cache = executor
+                            .call_method(py, "enable_cache", (), None)?
+                            .extract::<bool>(py)?;
+                        let behavior_version = executor
+                            .call_method(py, "behavior_version", (), None)?
+                            .extract::<Option<u32>>(py)?;
+                        Ok((prepare_fut, enable_cache, behavior_version))
+                    })?;
+                prepare_fut.await?;
+                Ok(Box::new(Arc::new(PyFunctionExecutor {
+                    py_function_executor: executor,
+                    py_exec_ctx,
+                    num_positional_args,
+                    kw_args_names,
+                    result_type,
+                    enable_cache,
+                    behavior_version,
+                })) as Box<dyn SimpleFunctionExecutor>)
             }
         };
 

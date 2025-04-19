@@ -68,14 +68,9 @@ fn stop(py: Python<'_>) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn register_function_factory(
-    name: String,
-    py_function_factory: Py<PyAny>,
-    is_async: bool,
-) -> PyResult<()> {
+fn register_function_factory(name: String, py_function_factory: Py<PyAny>) -> PyResult<()> {
     let factory = PyFunctionFactory {
         py_function_factory,
-        is_async,
     };
     register_factory(name, ExecutorFactory::SimpleFunction(Arc::new(factory))).into_py_result()
 }
