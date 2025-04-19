@@ -14,7 +14,7 @@ use crate::{
     builder::plan,
     py,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use super::interface::{FlowInstanceContext, SimpleFunctionExecutor, SimpleFunctionFactory};
 
@@ -39,6 +39,9 @@ impl PyOpArgSchema {
 
 struct PyFunctionExecutor {
     py_function_executor: Py<PyAny>,
+    is_async: bool,
+    py_exec_ctx: Arc<crate::py::PythonExecutionContext>,
+
     num_positional_args: usize,
     kw_args_names: Vec<Py<PyString>>,
     result_type: schema::EnrichedValueType,
@@ -47,47 +50,76 @@ struct PyFunctionExecutor {
     behavior_version: Option<u32>,
 }
 
+impl PyFunctionExecutor {
+    fn call_py_fn<'py>(
+        &self,
+        py: Python<'py>,
+        input: Vec<value::Value>,
+    ) -> Result<pyo3::Bound<'py, pyo3::PyAny>> {
+        let mut args = Vec::with_capacity(self.num_positional_args);
+        for v in input[0..self.num_positional_args].iter() {
+            args.push(py::value_to_py_object(py, v)?);
+        }
+
+        let kwargs = if self.kw_args_names.is_empty() {
+            None
+        } else {
+            let mut kwargs = Vec::with_capacity(self.kw_args_names.len());
+            for (name, v) in self
+                .kw_args_names
+                .iter()
+                .zip(input[self.num_positional_args..].iter())
+            {
+                kwargs.push((name.bind(py), py::value_to_py_object(py, v)?));
+            }
+            Some(kwargs)
+        };
+
+        let result = self.py_function_executor.call(
+            py,
+            PyTuple::new(py, args.into_iter())?,
+            kwargs
+                .map(|kwargs| -> Result<_> { Ok(kwargs.into_py_dict(py)?) })
+                .transpose()?
+                .as_ref(),
+        )?;
+        Ok(result.into_bound(py))
+    }
+}
+
 #[async_trait]
 impl SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
     async fn evaluate(&self, input: Vec<value::Value>) -> Result<value::Value> {
         let self = self.clone();
-        let result = tokio::task::spawn_blocking(move || {
+        let result = if self.is_async {
+            let result_fut = Python::with_gil(|py| -> Result<_> {
+                let result = self.call_py_fn(py, input)?;
+                let task_locals = pyo3_async_runtimes::TaskLocals::new(
+                    self.py_exec_ctx.event_loop.bind(py).clone(),
+                );
+                Ok(pyo3_async_runtimes::into_future_with_locals(
+                    &task_locals,
+                    result,
+                )?)
+            })?;
+            let result = result_fut.await?;
             Python::with_gil(|py| -> Result<_> {
-                let mut args = Vec::with_capacity(self.num_positional_args);
-                for v in input[0..self.num_positional_args].iter() {
-                    args.push(py::value_to_py_object(py, v)?);
-                }
-
-                let kwargs = if self.kw_args_names.is_empty() {
-                    None
-                } else {
-                    let mut kwargs = Vec::with_capacity(self.kw_args_names.len());
-                    for (name, v) in self
-                        .kw_args_names
-                        .iter()
-                        .zip(input[self.num_positional_args..].iter())
-                    {
-                        kwargs.push((name.bind(py), py::value_to_py_object(py, v)?));
-                    }
-                    Some(kwargs)
-                };
-
-                let result = self.py_function_executor.call(
-                    py,
-                    PyTuple::new(py, args.into_iter())?,
-                    kwargs
-                        .map(|kwargs| -> Result<_> { Ok(kwargs.into_py_dict(py)?) })
-                        .transpose()?
-                        .as_ref(),
-                )?;
-
                 Ok(py::value_from_py_object(
                     &self.result_type.typ,
-                    result.bind(py),
+                    &result.into_bound(py),
                 )?)
+            })?
+        } else {
+            tokio::task::spawn_blocking(move || {
+                Python::with_gil(|py| -> Result<_> {
+                    Ok(py::value_from_py_object(
+                        &self.result_type.typ,
+                        &self.call_py_fn(py, input)?,
+                    )?)
+                })
             })
-        })
-        .await??;
+            .await??
+        };
         Ok(result)
     }
 
@@ -102,6 +134,7 @@ impl SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
 
 pub(crate) struct PyFunctionFactory {
     pub py_function_factory: Py<PyAny>,
+    pub is_async: bool,
 }
 
 impl SimpleFunctionFactory for PyFunctionFactory {
@@ -109,7 +142,7 @@ impl SimpleFunctionFactory for PyFunctionFactory {
         self: Arc<Self>,
         spec: serde_json::Value,
         input_schema: Vec<schema::OpArgSchema>,
-        _context: Arc<FlowInstanceContext>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<(
         schema::EnrichedValueType,
         BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
@@ -157,6 +190,11 @@ impl SimpleFunctionFactory for PyFunctionFactory {
         let executor_fut = {
             let result_type = result_type.clone();
             async move {
+                let py_exec_ctx = context
+                    .py_exec_ctx
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("Python execution context is missing"))?
+                    .clone();
                 let executor = tokio::task::spawn_blocking(move || -> Result<_> {
                     let (enable_cache, behavior_version) =
                         Python::with_gil(|py| -> anyhow::Result<_> {
@@ -171,6 +209,8 @@ impl SimpleFunctionFactory for PyFunctionFactory {
                         })?;
                     Ok(Box::new(Arc::new(PyFunctionExecutor {
                         py_function_executor: executor,
+                        is_async: self.is_async,
+                        py_exec_ctx,
                         num_positional_args,
                         kw_args_names,
                         result_type,

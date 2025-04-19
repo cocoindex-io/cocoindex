@@ -1023,10 +1023,14 @@ impl AnalyzerContext<'_> {
     }
 }
 
-pub fn build_flow_instance_context(flow_inst_name: &str) -> Arc<FlowInstanceContext> {
+pub fn build_flow_instance_context(
+    flow_inst_name: &str,
+    py_exec_ctx: Option<crate::py::PythonExecutionContext>,
+) -> Arc<FlowInstanceContext> {
     Arc::new(FlowInstanceContext {
         flow_instance_name: flow_inst_name.to_string(),
         auth_registry: get_auth_registry().clone(),
+        py_exec_ctx: py_exec_ctx.map(Arc::new),
     })
 }
 

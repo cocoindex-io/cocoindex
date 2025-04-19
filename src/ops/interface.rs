@@ -13,6 +13,7 @@ use serde::Serialize;
 pub struct FlowInstanceContext {
     pub flow_instance_name: String,
     pub auth_registry: Arc<AuthRegistry>,
+    pub py_exec_ctx: Option<Arc<crate::py::PythonExecutionContext>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

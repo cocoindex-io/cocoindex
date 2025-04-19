@@ -1,6 +1,7 @@
 """
 Facilities for defining cocoindex operations.
 """
+import asyncio
 import dataclasses
 import inspect
 
@@ -78,6 +79,7 @@ def _register_op_factory(
         category: OpCategory,
         expected_args: list[tuple[str, inspect.Parameter]],
         expected_return,
+        is_async: bool,
         executor_cls: type,
         spec_cls: type,
         op_args: OpArgs,
@@ -168,6 +170,19 @@ def _register_op_factory(
             converted_args = (converter(arg) for converter, arg in zip(self._args_converters, args))
             converted_kwargs = {arg_name: self._kwargs_converters[arg_name](arg)
                                 for arg_name, arg in kwargs.items()}
+            if is_async:
+                async def _inner():
+                    if op_args.gpu:
+                        await asyncio.to_thread(_gpu_dispatch_lock.acquire)
+                    try:
+                        output = await super(_WrappedClass, self).__call__(
+                            *converted_args, **converted_kwargs)
+                    finally:
+                        if op_args.gpu:
+                            _gpu_dispatch_lock.release()
+                    return to_engine_value(output)
+                return _inner()
+
             if op_args.gpu:
                 # For GPU executions, data-level parallelism is applied, so we don't want to
                 # execute different tasks in parallel.
@@ -189,7 +204,8 @@ def _register_op_factory(
     if category == OpCategory.FUNCTION:
         _engine.register_function_factory(
             spec_cls.__name__,
-            _FunctionExecutorFactory(spec_cls, _WrappedClass))
+            _FunctionExecutorFactory(spec_cls, _WrappedClass),
+            is_async)
     else:
         raise ValueError(f"Unsupported executor type {category}")
 
@@ -214,6 +230,7 @@ def executor_class(**args) -> Callable[[type], type]:
             category=spec_cls._op_category,
             expected_args=list(sig.parameters.items())[1:],  # First argument is `self`
             expected_return=sig.return_annotation,
+            is_async=inspect.iscoroutinefunction(cls.__call__),
             executor_cls=cls,
             spec_cls=spec_cls,
             op_args=op_args)
@@ -249,6 +266,7 @@ def function(**args) -> Callable[[Callable], FunctionSpec]:
             category=OpCategory.FUNCTION,
             expected_args=list(sig.parameters.items()),
             expected_return=sig.return_annotation,
+            is_async=inspect.iscoroutinefunction(fn),
             executor_cls=_Executor,
             spec_cls=_Spec,
             op_args=op_args)

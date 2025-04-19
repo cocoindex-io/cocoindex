@@ -16,6 +16,16 @@ use std::collections::btree_map;
 mod convert;
 pub use convert::*;
 
+pub struct PythonExecutionContext {
+    pub event_loop: Py<PyAny>,
+}
+
+impl PythonExecutionContext {
+    pub fn new(_py: Python<'_>, event_loop: Py<PyAny>) -> Self {
+        Self { event_loop }
+    }
+}
+
 pub trait IntoPyResult<T> {
     fn into_py_result(self) -> PyResult<T>;
 }
@@ -58,9 +68,14 @@ fn stop(py: Python<'_>) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn register_function_factory(name: String, py_function_factory: Py<PyAny>) -> PyResult<()> {
+fn register_function_factory(
+    name: String,
+    py_function_factory: Py<PyAny>,
+    is_async: bool,
+) -> PyResult<()> {
     let factory = PyFunctionFactory {
         py_function_factory,
+        is_async,
     };
     register_factory(name, ExecutorFactory::SimpleFunction(Arc::new(factory))).into_py_result()
 }
