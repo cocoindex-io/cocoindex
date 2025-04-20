@@ -714,6 +714,9 @@ impl AnalyzerContext<'_> {
                             .data
                             .add_field(reactive_op.name.clone(), &output_type)?;
                         let reactive_op = reactive_op.clone();
+                        let logic_fingerprinter = Fingerprinter::default()
+                            .with(&op.op)?
+                            .with(&output_type.without_attrs())?;
                         async move {
                             trace!("Start building executor for transform op `{}`", reactive_op.name);
                             let executor = executor.await.with_context(|| {
@@ -725,11 +728,8 @@ impl AnalyzerContext<'_> {
                             let function_exec_info = AnalyzedFunctionExecInfo {
                                 enable_cache,
                                 behavior_version,
-                                fingerprinter: Fingerprinter::default()
-                                    .with(&reactive_op.name)?
-                                    .with(&reactive_op.spec)?
-                                    .with(&behavior_version)?
-                                    .with(&output_type.without_attrs())?,
+                                fingerprinter: logic_fingerprinter
+                                    .with(&behavior_version)?,
                                 output_type: output_type.typ.clone(),
                             };
                             if function_exec_info.enable_cache
@@ -1023,10 +1023,14 @@ impl AnalyzerContext<'_> {
     }
 }
 
-pub fn build_flow_instance_context(flow_inst_name: &str) -> Arc<FlowInstanceContext> {
+pub fn build_flow_instance_context(
+    flow_inst_name: &str,
+    py_exec_ctx: Option<crate::py::PythonExecutionContext>,
+) -> Arc<FlowInstanceContext> {
     Arc::new(FlowInstanceContext {
         flow_instance_name: flow_inst_name.to_string(),
         auth_registry: get_auth_registry().clone(),
+        py_exec_ctx: py_exec_ctx.map(Arc::new),
     })
 }
 

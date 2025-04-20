@@ -29,44 +29,44 @@ class Neo4jConnection:
     db: str | None = None
 
 @dataclass
-class Neo4jFieldMapping:
-    """Mapping for a Neo4j field."""
-    field_name: str
+class TargetFieldMapping:
+    """Mapping for a graph element (node or relationship) field."""
+    source: str
     # Field name for the node in the Knowledge Graph.
     # If unspecified, it's the same as `field_name`.
-    node_field_name: str | None = None
+    target: str | None = None
 
 @dataclass
-class Neo4jRelationshipEnd:
-    """Spec for a Neo4j node type."""
+class NodeReferenceMapping:
+    """Spec for a referenced graph node, usually as part of a relationship."""
     label: str
-    fields: list[Neo4jFieldMapping]
+    fields: list[TargetFieldMapping]
 
 @dataclass
-class Neo4jRelationshipNode:
-    """Spec for a Neo4j node type."""
+class NodeStorageSpec:
+    """Storage spec for a graph node."""
     primary_key_fields: Sequence[str]
     vector_indexes: Sequence[index.VectorIndexDef] = ()
 
 @dataclass
-class Neo4jNode:
-    """Spec for a Neo4j node type."""
+class NodeMapping:
+    """Spec to map a row to a graph node."""
     kind = "Node"
 
     label: str
 
 @dataclass
-class Neo4jRelationship:
-    """Spec for a Neo4j relationship."""
+class RelationshipMapping:
+    """Spec to map a row to a graph relationship."""
     kind = "Relationship"
 
     rel_type: str
-    source: Neo4jRelationshipEnd
-    target: Neo4jRelationshipEnd
-    nodes: dict[str, Neo4jRelationshipNode] | None = None
+    source: NodeReferenceMapping
+    target: NodeReferenceMapping
+    nodes_storage_spec: dict[str, NodeStorageSpec] | None = None
 
 class Neo4j(op.StorageSpec):
     """Graph storage powered by Neo4j."""
 
     connection: AuthEntryReference
-    mapping: Neo4jNode | Neo4jRelationship
+    mapping: NodeMapping | RelationshipMapping

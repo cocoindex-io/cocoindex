@@ -17,6 +17,7 @@ use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
 use std::ops::Bound;
 use uuid::Uuid;
+use bytes::Bytes;
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
@@ -175,7 +176,7 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
             let basic_value = match basic_type {
                 BasicValueType::Bytes => row
                     .try_get::<Option<Vec<u8>>, _>(field_idx)?
-                    .map(|v| BasicValue::Bytes(Arc::from(v))),
+                    .map(|v| BasicValue::Bytes(Bytes::from(v))),
                 BasicValueType::Str => row
                     .try_get::<Option<String>, _>(field_idx)?
                     .map(|v| BasicValue::Str(Arc::from(v))),
@@ -855,7 +856,8 @@ impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
                 TableUpsertionAction::Create { keys, values } => {
                     let mut fields = (keys
                         .iter()
-                        .map(|(k, v)| format!("{} {} NOT NULL", k, to_column_type_sql(v))))
+                        .map(|(k, v)| format!("{} {} NOT NULL", k, to_column_type_sql(v)))
+                    )
                     .chain(
                         values
                             .iter()

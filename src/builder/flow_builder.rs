@@ -347,7 +347,7 @@ impl FlowBuilder {
             .get(name)
             .cloned();
         let root_data_scope = Arc::new(Mutex::new(DataScopeBuilder::new()));
-        let flow_inst_context = build_flow_instance_context(name);
+        let flow_inst_context = build_flow_instance_context(name, None);
         let result = Self {
             lib_context,
             flow_inst_context,
@@ -636,17 +636,22 @@ impl FlowBuilder {
         }))
     }
 
-    pub fn build_flow(&self, py: Python<'_>) -> PyResult<py::Flow> {
+    pub fn build_flow(&self, py: Python<'_>, py_event_loop: Py<PyAny>) -> PyResult<py::Flow> {
         let spec = spec::FlowInstanceSpec {
             name: self.flow_instance_name.clone(),
             import_ops: self.import_ops.clone(),
             reactive_ops: self.reactive_ops.clone(),
             export_ops: self.export_ops.clone(),
         };
+        let flow_instance_ctx = build_flow_instance_context(
+            &self.flow_instance_name,
+            Some(crate::py::PythonExecutionContext::new(py, py_event_loop)),
+        );
         let analyzed_flow = py
             .allow_threads(|| {
                 get_runtime().block_on(super::AnalyzedFlow::from_flow_instance(
                     spec,
+                    flow_instance_ctx,
                     self.existing_flow_ss.as_ref(),
                     &crate::ops::executor_factory_registry(),
                 ))
@@ -669,7 +674,11 @@ impl FlowBuilder {
         Ok(py::Flow(flow_ctx))
     }
 
-    pub fn build_transient_flow(&self, py: Python<'_>) -> PyResult<py::TransientFlow> {
+    pub fn build_transient_flow(
+        &self,
+        py: Python<'_>,
+        py_event_loop: Py<PyAny>,
+    ) -> PyResult<py::TransientFlow> {
         if self.direct_input_fields.is_empty() {
             return Err(PyException::new_err("expect at least one direct input"));
         }
@@ -684,11 +693,13 @@ impl FlowBuilder {
             reactive_ops: self.reactive_ops.clone(),
             output_value: direct_output_value.clone(),
         };
+        let py_ctx = crate::py::PythonExecutionContext::new(py, py_event_loop);
         let analyzed_flow = py
             .allow_threads(|| {
                 get_runtime().block_on(super::AnalyzedTransientFlow::from_transient_flow(
                     spec,
                     &crate::ops::executor_factory_registry(),
+                    Some(py_ctx),
                 ))
             })
             .into_py_result()?;

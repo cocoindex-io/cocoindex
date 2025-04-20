@@ -14,6 +14,7 @@
 use crate::prelude::*;
 
 use indenter::indented;
+use owo_colors::{AnsiColors, OwoColorize};
 use std::fmt::Debug;
 use std::fmt::{Display, Write};
 use std::hash::Hash;
@@ -274,14 +275,17 @@ impl<K, S, C: ResourceSetupStatusCheck> std::fmt::Display for ResourceSetupInfo<
             Some(SetupChangeType::Invalid) => "INVALID",
             None => "USER MANAGED",
         };
-        writeln!(f, "[ {:^9} ] {}", status_code, self.description)?;
+        let status_str = format!("[ {:^9} ]", status_code);
+        let status_full = status_str.color(AnsiColors::Cyan);
+        let desc_colored = self.description.color(AnsiColors::BrightWhite);
+        writeln!(f, "{} {}", status_full, desc_colored)?;
         if let Some(status_check) = &self.status_check {
             let changes = status_check.describe_changes();
             if !changes.is_empty() {
                 let mut f = indented(f).with_str(INDENT);
-                writeln!(f, "TODO:")?;
+                writeln!(f, "{}", "TODO:".color(AnsiColors::BrightBlack))?;
                 for change in changes {
-                    writeln!(f, "  - {}", change)?;
+                    writeln!(f, "  - {}", change.color(AnsiColors::BrightBlack))?;
                 }
                 writeln!(f)?;
             }
@@ -385,7 +389,12 @@ impl std::fmt::Display for FormattedFlowSetupStatusCheck<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let flow_ssc = self.1;
 
-        write!(f, "{} Flow: {}\n", ObjectSetupStatusCode(flow_ssc), self.0)?;
+        write!(
+            f,
+            "{} {}\n",
+            ObjectSetupStatusCode(flow_ssc).to_string().color(AnsiColors::Cyan),
+            format!("Flow: {}", self.0).color(AnsiColors::White)
+        )?;
 
         let mut f = indented(f).with_str(INDENT);
         write!(f, "{}", flow_ssc.tracking_table)?;

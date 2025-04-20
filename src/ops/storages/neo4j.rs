@@ -1,4 +1,8 @@
 use crate::prelude::*;
+
+use super::spec::{
+    GraphElementMapping, NodeReferenceMapping, RelationshipMapping, TargetFieldMapping,
+};
 use crate::setup::components::{self, State};
 use crate::setup::{ResourceSetupStatusCheck, SetupChangeType};
 use crate::{ops::sdk::*, setup::CombinedState};
@@ -19,57 +23,9 @@ pub struct ConnectionSpec {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct FieldMapping {
-    field_name: FieldName,
-
-    /// Field name for the node in the Knowledge Graph.
-    /// If unspecified, it's the same as `field_name`.
-    #[serde(default)]
-    node_field_name: Option<FieldName>,
-}
-
-impl FieldMapping {
-    fn get_node_field_name(&self) -> &FieldName {
-        self.node_field_name.as_ref().unwrap_or(&self.field_name)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RelationshipEndSpec {
-    label: String,
-    fields: Vec<FieldMapping>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RelationshipNodeSpec {
-    #[serde(flatten)]
-    index_options: spec::IndexOptions,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct NodeSpec {
-    label: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RelationshipSpec {
-    rel_type: String,
-    source: RelationshipEndSpec,
-    target: RelationshipEndSpec,
-    nodes: Option<BTreeMap<String, RelationshipNodeSpec>>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind")]
-pub enum RowMappingSpec {
-    Relationship(RelationshipSpec),
-    Node(NodeSpec),
-}
-
-#[derive(Debug, Deserialize)]
 pub struct Spec {
-    connection: AuthEntryReference,
-    mapping: RowMappingSpec,
+    connection: spec::AuthEntryReference,
+    mapping: GraphElementMapping,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -101,10 +57,12 @@ impl ElementType {
         }
     }
 
-    fn from_mapping_spec(spec: &RowMappingSpec) -> Self {
+    fn from_mapping_spec(spec: &GraphElementMapping) -> Self {
         match spec {
-            RowMappingSpec::Relationship(spec) => ElementType::Relationship(spec.rel_type.clone()),
-            RowMappingSpec::Node(spec) => ElementType::Node(spec.label.clone()),
+            GraphElementMapping::Relationship(spec) => {
+                ElementType::Relationship(spec.rel_type.clone())
+            }
+            GraphElementMapping::Node(spec) => ElementType::Node(spec.label.clone()),
         }
     }
 
@@ -393,9 +351,11 @@ impl ExportContext {
             key_fields.iter().map(|f| &f.name),
         );
         let result = match spec.mapping {
-            RowMappingSpec::Node(node_spec) => {
+            GraphElementMapping::Node(node_spec) => {
                 let delete_cypher = formatdoc! {"
                     OPTIONAL MATCH (old_node:{label} {key_fields_literal})
+                    WITH old_node
+                    WHERE NOT (old_node)--()
                     DELETE old_node
                     FINISH
                     ",
@@ -431,7 +391,7 @@ impl ExportContext {
                     tgt_fields: None,
                 }
             }
-            RowMappingSpec::Relationship(rel_spec) => {
+            GraphElementMapping::Relationship(rel_spec) => {
                 let delete_cypher = formatdoc! {"
                     OPTIONAL MATCH (old_src)-[old_rel:{rel_type} {key_fields_literal}]->(old_tgt)
 
@@ -513,7 +473,7 @@ impl ExportContext {
                     create_order: 1,
                     delete_cypher,
                     insert_cypher,
-                    delete_before_upsert: true,
+                    delete_before_upsert: false, // true
                     key_field_params,
                     key_fields,
                     value_fields,
@@ -685,21 +645,23 @@ impl RelationshipSetupState {
         }
         let mut dependent_node_labels = vec![];
         match &spec.mapping {
-            RowMappingSpec::Node(_) => {}
-            RowMappingSpec::Relationship(rel_spec) => {
+            GraphElementMapping::Node(_) => {}
+            GraphElementMapping::Relationship(rel_spec) => {
                 let (src_label_info, tgt_label_info) = end_nodes_label_info.ok_or_else(|| {
                     anyhow!(
                         "Expect `end_nodes_label_info` existing for relationship `{}`",
                         rel_spec.rel_type
                     )
                 })?;
-                for (label, node) in rel_spec.nodes.iter().flatten() {
-                    sub_components.push(ComponentState {
-                        object_label: ElementType::Node(label.clone()),
-                        index_def: IndexDef::KeyConstraint {
-                            field_names: key_field_names.clone(),
-                        },
-                    });
+                for (label, node) in rel_spec.nodes_storage_spec.iter().flatten() {
+                    if let Some(primary_key_fields) = &node.index_options.primary_key_fields {
+                        sub_components.push(ComponentState {
+                            object_label: ElementType::Node(label.clone()),
+                            index_def: IndexDef::KeyConstraint {
+                                field_names: primary_key_fields.clone(),
+                            },
+                        });
+                    }
                     for index_def in &node.index_options.vector_indexes {
                         sub_components.push(ComponentState {
                             object_label: ElementType::Node(label.clone()),
@@ -722,7 +684,7 @@ impl RelationshipSetupState {
                 }
                 dependent_node_labels.extend(
                     rel_spec
-                        .nodes
+                        .nodes_storage_spec
                         .iter()
                         .flat_map(|nodes| nodes.keys())
                         .cloned(),
@@ -883,8 +845,12 @@ impl components::Operator for SetupComponentOperator {
         let matcher = state.object_label.matcher(qualifier);
         let query = neo4rs::query(&match &state.index_def {
             IndexDef::KeyConstraint { field_names } => {
+                let key_type = match &state.object_label {
+                    ElementType::Node(_) => "NODE",
+                    ElementType::Relationship(_) => "RELATIONSHIP",
+                };
                 format!(
-                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR {matcher} REQUIRE {field_names} IS UNIQUE",
+                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR {matcher} REQUIRE {field_names} IS {key_type} KEY",
                     name=key.name,
                     field_names=build_composite_field_names(qualifier, &field_names),
                 )
@@ -894,11 +860,17 @@ impl components::Operator for SetupComponentOperator {
                 metric,
                 vector_size,
             } => {
-                format!(
-                    r#"CREATE VECTOR INDEX {name} IF NOT EXISTS FOR {matcher} ON {qualifier}.{field_name} OPTIONS
-                       {{ indexConfig: {{`vector.dimensions`: {vector_size}, `vector.similarity_function`: '{metric}'}}}}"#,
+                formatdoc! {"
+                    CREATE VECTOR INDEX {name} IF NOT EXISTS
+                    FOR {matcher} ON {qualifier}.{field_name}
+                    OPTIONS {{
+                        indexConfig: {{
+                            `vector.dimensions`: {vector_size},
+                            `vector.similarity_function`: '{metric}'
+                        }}
+                    }}",
                     name = key.name,
-                )
+                }
             }
         });
         Ok(graph.run(query).await?)
@@ -947,19 +919,22 @@ impl SetupStatusCheck {
         desired_state: Option<&RelationshipSetupState>,
         existing: &CombinedState<RelationshipSetupState>,
     ) -> Self {
-        let data_clear = existing
-            .current
-            .as_ref()
-            .filter(|existing_current| {
-                desired_state.as_ref().is_none_or(|desired| {
-                    desired.check_compatible(existing_current)
-                        == SetupStateCompatibility::NotCompatible
-                })
-            })
-            .map(|existing_current| DataClearAction {
-                core_elem_type: key.typ.clone(),
-                dependent_node_labels: existing_current.dependent_node_labels.clone(),
-            });
+        let mut core_elem_type_to_clear = None;
+        let mut dependent_node_labels_to_clear = IndexSet::new();
+        for v in existing.possible_versions() {
+            if desired_state.as_ref().is_none_or(|desired| {
+                desired.check_compatible(v) == SetupStateCompatibility::NotCompatible
+            }) {
+                if core_elem_type_to_clear.is_none() {
+                    core_elem_type_to_clear = Some(key.typ.clone());
+                }
+                dependent_node_labels_to_clear.extend(v.dependent_node_labels.iter().cloned());
+            }
+        }
+        let data_clear = core_elem_type_to_clear.map(|core_elem_type| DataClearAction {
+            core_elem_type,
+            dependent_node_labels: dependent_node_labels_to_clear.into_iter().collect(),
+        });
 
         let change_type = match (desired_state, existing.possible_versions().next()) {
             (Some(_), Some(_)) => {
@@ -1013,30 +988,33 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
     async fn apply_change(&self) -> Result<()> {
         let graph = self.graph_pool.get_graph(&self.conn_spec).await?;
         if let Some(data_clear) = &self.data_clear {
-            let delete_rel_query = neo4rs::query(&format!(
-                r#"
+            let delete_query = neo4rs::query(&formatdoc! {"
                     CALL {{
-                      MATCH {matcher}
-                      WITH {var_name}
-                      DELETE {var_name}
+                        MATCH {matcher}
+                        WITH {var_name}
+                        {optional_orphan_condition}
+                        DELETE {var_name}
                     }} IN TRANSACTIONS
-                "#,
+                ",
                 matcher = data_clear.core_elem_type.matcher(CORE_ELEMENT_MATCHER_VAR),
                 var_name = CORE_ELEMENT_MATCHER_VAR,
-            ));
-            graph.run(delete_rel_query).await?;
+                optional_orphan_condition = match data_clear.core_elem_type {
+                    ElementType::Node(_) => format!("WHERE NOT ({CORE_ELEMENT_MATCHER_VAR})--()"),
+                    _ => "".to_string(),
+                },
+            });
+            graph.run(delete_query).await?;
 
             for node_label in &data_clear.dependent_node_labels {
-                let delete_node_query = neo4rs::query(&format!(
-                    r#"
+                let delete_node_query = neo4rs::query(&formatdoc! {"
                         CALL {{
-                          MATCH (n:{node_label})
-                          WHERE NOT (n)--()
-                          DELETE n
+                            MATCH (n:{node_label})
+                            WHERE NOT (n)--()
+                            DELETE n
                         }} IN TRANSACTIONS
-                    "#,
+                    ",
                     node_label = node_label
-                ));
+                });
                 graph.run(delete_node_query).await?;
             }
         }
@@ -1059,22 +1037,25 @@ impl Factory {
 struct DependentNodeLabelAnalyzer<'a> {
     label_name: &'a str,
     fields: IndexMap<&'a str, AnalyzedGraphFieldMapping>,
-    remaining_fields: HashMap<&'a str, &'a FieldMapping>,
+    remaining_fields: HashMap<&'a str, &'a TargetFieldMapping>,
     index_options: Option<&'a IndexOptions>,
 }
 
 impl<'a> DependentNodeLabelAnalyzer<'a> {
-    fn new(rel_spec: &'a RelationshipSpec, rel_end_spec: &'a RelationshipEndSpec) -> Result<Self> {
+    fn new(
+        rel_spec: &'a RelationshipMapping,
+        rel_end_spec: &'a NodeReferenceMapping,
+    ) -> Result<Self> {
         Ok(Self {
             label_name: rel_end_spec.label.as_str(),
             fields: IndexMap::new(),
             remaining_fields: rel_end_spec
                 .fields
                 .iter()
-                .map(|f| (f.field_name.as_str(), f))
+                .map(|f| (f.source.as_str(), f))
                 .collect(),
             index_options: rel_spec
-                .nodes
+                .nodes_storage_spec
                 .as_ref()
                 .and_then(|nodes| nodes.get(&rel_end_spec.label))
                 .and_then(|node_spec| Some(&node_spec.index_options)),
@@ -1087,10 +1068,10 @@ impl<'a> DependentNodeLabelAnalyzer<'a> {
             None => return false,
         };
         self.fields.insert(
-            field_info.get_node_field_name().as_str(),
+            field_info.get_target().as_str(),
             AnalyzedGraphFieldMapping {
                 field_idx,
-                field_name: field_info.get_node_field_name().clone(),
+                field_name: field_info.get_target().clone(),
                 value_type: field_schema.value_type.typ.clone(),
             },
         );
@@ -1161,7 +1142,7 @@ impl StorageFactoryBase for Factory {
         let setup_key = GraphElement::from_spec(&spec);
 
         let (value_fields_info, rel_end_label_info) = match &spec.mapping {
-            RowMappingSpec::Node(_) => (
+            GraphElementMapping::Node(_) => (
                 value_fields_schema
                     .into_iter()
                     .enumerate()
@@ -1173,7 +1154,7 @@ impl StorageFactoryBase for Factory {
                     .collect(),
                 None,
             ),
-            RowMappingSpec::Relationship(rel_spec) => {
+            GraphElementMapping::Relationship(rel_spec) => {
                 let mut src_label_analyzer =
                     DependentNodeLabelAnalyzer::new(&rel_spec, &rel_spec.source)?;
                 let mut tgt_label_analyzer =

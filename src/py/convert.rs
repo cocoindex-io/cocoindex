@@ -6,7 +6,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::Arc; 
+use bytes::Bytes;
 
 use super::IntoPyResult;
 use crate::base::{schema, value};
@@ -123,7 +124,7 @@ fn basic_value_from_py_object<'py>(
 ) -> PyResult<value::BasicValue> {
     let result = match typ {
         schema::BasicValueType::Bytes => {
-            value::BasicValue::Bytes(Arc::from(v.extract::<Vec<u8>>()?))
+            value::BasicValue::Bytes(Bytes::from(v.extract::<Vec<u8>>()?))
         }
         schema::BasicValueType::Str => value::BasicValue::Str(Arc::from(v.extract::<String>()?)),
         schema::BasicValueType::Bool => value::BasicValue::Bool(v.extract::<bool>()?),

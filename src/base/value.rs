@@ -1,5 +1,5 @@
 use crate::{api_bail, api_error};
-
+use bytes::Bytes;
 use super::schema::*;
 use anyhow::Result;
 use base64::prelude::*;
@@ -73,7 +73,7 @@ impl<'de> Deserialize<'de> for RangeValue {
 /// Value of key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum KeyValue {
-    Bytes(Arc<[u8]>),
+    Bytes(Bytes),
     Str(Arc<str>),
     Bool(bool),
     Int64(i64),
@@ -83,15 +83,15 @@ pub enum KeyValue {
     Struct(Vec<KeyValue>),
 }
 
-impl From<Arc<[u8]>> for KeyValue {
-    fn from(value: Arc<[u8]>) -> Self {
+impl From<Bytes> for KeyValue {
+    fn from(value: Bytes) -> Self {
         KeyValue::Bytes(value)
     }
 }
 
 impl From<Vec<u8>> for KeyValue {
     fn from(value: Vec<u8>) -> Self {
-        KeyValue::Bytes(Arc::from(value))
+        KeyValue::Bytes(Bytes::from(value))
     }
 }
 
@@ -197,7 +197,7 @@ impl KeyValue {
                     .ok_or_else(|| api_error!("Key parts less than expected"))?;
                 match basic_type {
                     BasicValueType::Bytes { .. } => {
-                        KeyValue::Bytes(Arc::from(BASE64_STANDARD.decode(v)?))
+                        KeyValue::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
                     }
                     BasicValueType::Str { .. } => KeyValue::Str(Arc::from(v)),
                     BasicValueType::Bool => KeyValue::Bool(v.parse()?),
@@ -275,7 +275,7 @@ impl KeyValue {
         }
     }
 
-    pub fn bytes_value(&self) -> Result<&Arc<[u8]>> {
+    pub fn bytes_value(&self) -> Result<&Bytes> {
         match self {
             KeyValue::Bytes(v) => Ok(v),
             _ => anyhow::bail!("expected bytes value, but got {}", self.kind_str()),
@@ -342,7 +342,7 @@ impl KeyValue {
 
 #[derive(Debug, Clone)]
 pub enum BasicValue {
-    Bytes(Arc<[u8]>),
+    Bytes(Bytes),
     Str(Arc<str>),
     Bool(bool),
     Int64(i64),
@@ -358,15 +358,15 @@ pub enum BasicValue {
     Vector(Arc<[BasicValue]>),
 }
 
-impl From<Arc<[u8]>> for BasicValue {
-    fn from(value: Arc<[u8]>) -> Self {
+impl From<Bytes> for BasicValue {
+    fn from(value: Bytes) -> Self {
         BasicValue::Bytes(value)
     }
 }
 
 impl From<Vec<u8>> for BasicValue {
     fn from(value: Vec<u8>) -> Self {
-        BasicValue::Bytes(Arc::from(value))
+        BasicValue::Bytes(Bytes::from(value))
     }
 }
 
@@ -674,7 +674,7 @@ impl<VS> Value<VS> {
         }
     }
 
-    pub fn as_bytes(&self) -> Result<&Arc<[u8]>> {
+    pub fn as_bytes(&self) -> Result<&Bytes> {
         match self {
             Value::Basic(BasicValue::Bytes(v)) => Ok(v),
             _ => anyhow::bail!("expected bytes value, but got {}", self.kind()),
@@ -870,7 +870,7 @@ impl BasicValue {
     pub fn from_json(value: serde_json::Value, schema: &BasicValueType) -> Result<Self> {
         let result = match (value, schema) {
             (serde_json::Value::String(v), BasicValueType::Bytes { .. }) => {
-                BasicValue::Bytes(Arc::from(BASE64_STANDARD.decode(v)?))
+                BasicValue::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
             }
             (serde_json::Value::String(v), BasicValueType::Str { .. }) => {
                 BasicValue::Str(Arc::from(v))

@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{ops::interface::FlowInstanceContext, prelude::*};
 
 use super::{analyzer, plan};
 use crate::{
@@ -19,12 +19,16 @@ pub struct AnalyzedFlow {
 impl AnalyzedFlow {
     pub async fn from_flow_instance(
         flow_instance: crate::base::spec::FlowInstanceSpec,
+        flow_instance_ctx: Arc<FlowInstanceContext>,
         existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
         registry: &ExecutorFactoryRegistry,
     ) -> Result<Self> {
-        let ctx = analyzer::build_flow_instance_context(&flow_instance.name);
-        let (data_schema, execution_plan_fut, desired_state) =
-            analyzer::analyze_flow(&flow_instance, &ctx, existing_flow_ss, registry)?;
+        let (data_schema, execution_plan_fut, desired_state) = analyzer::analyze_flow(
+            &flow_instance,
+            &flow_instance_ctx,
+            existing_flow_ss,
+            registry,
+        )?;
         let setup_status_check =
             setup::check_flow_setup_status(Some(&desired_state), existing_flow_ss)?;
         let execution_plan = if setup_status_check.is_up_to_date() {
@@ -72,8 +76,9 @@ impl AnalyzedTransientFlow {
     pub async fn from_transient_flow(
         transient_flow: spec::TransientFlowSpec,
         registry: &ExecutorFactoryRegistry,
+        py_exec_ctx: Option<crate::py::PythonExecutionContext>,
     ) -> Result<Self> {
-        let ctx = analyzer::build_flow_instance_context(&transient_flow.name);
+        let ctx = analyzer::build_flow_instance_context(&transient_flow.name, py_exec_ctx);
         let (output_type, data_schema, execution_plan_fut) =
             analyzer::analyze_transient_flow(&transient_flow, &ctx, registry)?;
         Ok(Self {

@@ -183,11 +183,7 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         if type_info.elem_type is None:
             raise ValueError(f"{type_info.kind} type must have an element type")
         row_type_info = analyze_type_info(type_info.elem_type)
-        if row_type_info.dataclass_type is None:
-            raise ValueError(f"{type_info.kind} type must have a dataclass type")
-        encoded_type['row'] = {
-            'fields': _encode_fields_schema(row_type_info.dataclass_type),
-        }
+        encoded_type['row'] = _encode_type(row_type_info)
 
     return encoded_type
 

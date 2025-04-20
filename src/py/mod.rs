@@ -16,6 +16,16 @@ use std::collections::btree_map;
 mod convert;
 pub use convert::*;
 
+pub struct PythonExecutionContext {
+    pub event_loop: Py<PyAny>,
+}
+
+impl PythonExecutionContext {
+    pub fn new(_py: Python<'_>, event_loop: Py<PyAny>) -> Self {
+        Self { event_loop }
+    }
+}
+
 pub trait IntoPyResult<T> {
     fn into_py_result(self) -> PyResult<T>;
 }

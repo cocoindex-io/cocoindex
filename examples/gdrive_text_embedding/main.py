@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 
+import asyncio
 import cocoindex
 import datetime
 import os
@@ -73,5 +74,4 @@ async def _run():
 
 if __name__ == "__main__":
     load_dotenv(override=True)
-    import asyncio
     asyncio.run(_run())
