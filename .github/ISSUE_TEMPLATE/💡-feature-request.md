@@ -5,16 +5,15 @@ title: "[FEATURE]"
 labels: ''
 type: 'feature'
 assignees: ''
-
 ---
 
 **What is the use case?**
 
 **Describe the solution you'd like**
-A clear and concise description of what you want to happen.
-
-**Describe alternatives you've considered**
-A clear and concise description of any alternative solutions or features you've considered.
 
 **Additional context**
-Add any other context or screenshots about the feature request here.
+
+
+---
+Dear Contributors ❤️ :  Please leave a comment `I'm taking this issue` to help other contributors that are interested taking this issue know that you are already on it 🙏. We love your contribution! 
+Our [discord server] (https://discord.com/invite/zpA9S2DR7s) is always open :)
