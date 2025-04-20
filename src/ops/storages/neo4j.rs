@@ -1,4 +1,8 @@
 use crate::prelude::*;
+
+use super::spec::{
+    GraphElementMapping, NodeReferenceMapping, RelationshipMapping, TargetFieldMapping,
+};
 use crate::setup::components::{self, State};
 use crate::setup::{ResourceSetupStatusCheck, SetupChangeType};
 use crate::{ops::sdk::*, setup::CombinedState};
@@ -19,57 +23,9 @@ pub struct ConnectionSpec {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct GraphFieldMappingSpec {
-    field_name: FieldName,
-
-    /// Field name for the node in the Knowledge Graph.
-    /// If unspecified, it's the same as `field_name`.
-    #[serde(default)]
-    node_field_name: Option<FieldName>,
-}
-
-impl GraphFieldMappingSpec {
-    fn get_node_field_name(&self) -> &FieldName {
-        self.node_field_name.as_ref().unwrap_or(&self.field_name)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GraphRelationshipEndSpec {
-    label: String,
-    fields: Vec<GraphFieldMappingSpec>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GraphRelationshipNodeSpec {
-    #[serde(flatten)]
-    index_options: spec::IndexOptions,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GraphNodeSpec {
-    label: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GraphRelationshipSpec {
-    rel_type: String,
-    source: GraphRelationshipEndSpec,
-    target: GraphRelationshipEndSpec,
-    nodes: Option<BTreeMap<String, GraphRelationshipNodeSpec>>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind")]
-pub enum GraphMappingSpec {
-    Relationship(GraphRelationshipSpec),
-    Node(GraphNodeSpec),
-}
-
-#[derive(Debug, Deserialize)]
 pub struct Spec {
-    connection: AuthEntryReference,
-    mapping: GraphMappingSpec,
+    connection: spec::AuthEntryReference,
+    mapping: GraphElementMapping,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -101,12 +57,12 @@ impl ElementType {
         }
     }
 
-    fn from_mapping_spec(spec: &GraphMappingSpec) -> Self {
+    fn from_mapping_spec(spec: &GraphElementMapping) -> Self {
         match spec {
-            GraphMappingSpec::Relationship(spec) => {
+            GraphElementMapping::Relationship(spec) => {
                 ElementType::Relationship(spec.rel_type.clone())
             }
-            GraphMappingSpec::Node(spec) => ElementType::Node(spec.label.clone()),
+            GraphElementMapping::Node(spec) => ElementType::Node(spec.label.clone()),
         }
     }
 
@@ -283,7 +239,9 @@ fn mapped_field_values_to_bolt<'a>(
 
 fn basic_value_to_bolt(value: &BasicValue, schema: &BasicValueType) -> Result<BoltType> {
     let bolt_value = match value {
-        BasicValue::Bytes(v) => BoltType::Bytes(neo4rs::BoltBytes::new(v.clone())),
+        BasicValue::Bytes(v) => {
+            BoltType::Bytes(neo4rs::BoltBytes::new(bytes::Bytes::from_owner(v.clone())))
+        }
         BasicValue::Str(v) => BoltType::String(neo4rs::BoltString::new(v)),
         BasicValue::Bool(v) => BoltType::Boolean(neo4rs::BoltBoolean::new(*v)),
         BasicValue::Int64(v) => BoltType::Integer(neo4rs::BoltInteger::new(*v)),
@@ -393,7 +351,7 @@ impl ExportContext {
             key_fields.iter().map(|f| &f.name),
         );
         let result = match spec.mapping {
-            GraphMappingSpec::Node(node_spec) => {
+            GraphElementMapping::Node(node_spec) => {
                 let delete_cypher = formatdoc! {"
                     OPTIONAL MATCH (old_node:{label} {key_fields_literal})
                     WITH old_node
@@ -433,7 +391,7 @@ impl ExportContext {
                     tgt_fields: None,
                 }
             }
-            GraphMappingSpec::Relationship(rel_spec) => {
+            GraphElementMapping::Relationship(rel_spec) => {
                 let delete_cypher = formatdoc! {"
                     OPTIONAL MATCH (old_src)-[old_rel:{rel_type} {key_fields_literal}]->(old_tgt)
 
@@ -515,7 +473,7 @@ impl ExportContext {
                     create_order: 1,
                     delete_cypher,
                     insert_cypher,
-                    delete_before_upsert: true,
+                    delete_before_upsert: false, // true
                     key_field_params,
                     key_fields,
                     value_fields,
@@ -687,15 +645,15 @@ impl RelationshipSetupState {
         }
         let mut dependent_node_labels = vec![];
         match &spec.mapping {
-            GraphMappingSpec::Node(_) => {}
-            GraphMappingSpec::Relationship(rel_spec) => {
+            GraphElementMapping::Node(_) => {}
+            GraphElementMapping::Relationship(rel_spec) => {
                 let (src_label_info, tgt_label_info) = end_nodes_label_info.ok_or_else(|| {
                     anyhow!(
                         "Expect `end_nodes_label_info` existing for relationship `{}`",
                         rel_spec.rel_type
                     )
                 })?;
-                for (label, node) in rel_spec.nodes.iter().flatten() {
+                for (label, node) in rel_spec.nodes_storage_spec.iter().flatten() {
                     if let Some(primary_key_fields) = &node.index_options.primary_key_fields {
                         sub_components.push(ComponentState {
                             object_label: ElementType::Node(label.clone()),
@@ -726,7 +684,7 @@ impl RelationshipSetupState {
                 }
                 dependent_node_labels.extend(
                     rel_spec
-                        .nodes
+                        .nodes_storage_spec
                         .iter()
                         .flat_map(|nodes| nodes.keys())
                         .cloned(),
@@ -1079,14 +1037,14 @@ impl Factory {
 struct DependentNodeLabelAnalyzer<'a> {
     label_name: &'a str,
     fields: IndexMap<&'a str, AnalyzedGraphFieldMapping>,
-    remaining_fields: HashMap<&'a str, &'a GraphFieldMappingSpec>,
+    remaining_fields: HashMap<&'a str, &'a TargetFieldMapping>,
     index_options: Option<&'a IndexOptions>,
 }
 
 impl<'a> DependentNodeLabelAnalyzer<'a> {
     fn new(
-        rel_spec: &'a GraphRelationshipSpec,
-        rel_end_spec: &'a GraphRelationshipEndSpec,
+        rel_spec: &'a RelationshipMapping,
+        rel_end_spec: &'a NodeReferenceMapping,
     ) -> Result<Self> {
         Ok(Self {
             label_name: rel_end_spec.label.as_str(),
@@ -1094,10 +1052,10 @@ impl<'a> DependentNodeLabelAnalyzer<'a> {
             remaining_fields: rel_end_spec
                 .fields
                 .iter()
-                .map(|f| (f.field_name.as_str(), f))
+                .map(|f| (f.source.as_str(), f))
                 .collect(),
             index_options: rel_spec
-                .nodes
+                .nodes_storage_spec
                 .as_ref()
                 .and_then(|nodes| nodes.get(&rel_end_spec.label))
                 .and_then(|node_spec| Some(&node_spec.index_options)),
@@ -1110,10 +1068,10 @@ impl<'a> DependentNodeLabelAnalyzer<'a> {
             None => return false,
         };
         self.fields.insert(
-            field_info.get_node_field_name().as_str(),
+            field_info.get_target().as_str(),
             AnalyzedGraphFieldMapping {
                 field_idx,
-                field_name: field_info.get_node_field_name().clone(),
+                field_name: field_info.get_target().clone(),
                 value_type: field_schema.value_type.typ.clone(),
             },
         );
@@ -1184,7 +1142,7 @@ impl StorageFactoryBase for Factory {
         let setup_key = GraphElement::from_spec(&spec);
 
         let (value_fields_info, rel_end_label_info) = match &spec.mapping {
-            GraphMappingSpec::Node(_) => (
+            GraphElementMapping::Node(_) => (
                 value_fields_schema
                     .into_iter()
                     .enumerate()
@@ -1196,7 +1154,7 @@ impl StorageFactoryBase for Factory {
                     .collect(),
                 None,
             ),
-            GraphMappingSpec::Relationship(rel_spec) => {
+            GraphElementMapping::Relationship(rel_spec) => {
                 let mut src_label_analyzer =
                     DependentNodeLabelAnalyzer::new(&rel_spec, &rel_spec.source)?;
                 let mut tgt_label_analyzer =

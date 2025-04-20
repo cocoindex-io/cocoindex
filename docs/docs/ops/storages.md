@@ -70,24 +70,24 @@ The `Neo4j` storage exports each row as a relationship to Neo4j Knowledge Graph.
     *   `password` (type: `str`): Password for the Neo4j database.
     *   `db` (type: `str`, optional): The name of the Neo4j database to use as the internal storage, e.g. `neo4j`.
 *   `mapping`: The mapping from collected row to nodes or relationships of the graph. 2 variations are supported:
-    *   `cocoindex.storages.GraphNode`: each collected row is mapped to a node in the graph. It has the following fields:
+    *   `cocoindex.storages.NodeMapping`: Each collected row is mapped to a node in the graph. It has the following fields:
         *   `label`: The label of the node.
-    *   `cocoindex.storages.GraphRelationship`: each collected row is mapped to a relationship in the graph,
+    *   `cocoindex.storages.RelationshipMapping`: Each collected row is mapped to a relationship in the graph,
         With the following fields:
 
         *   `rel_type` (type: `str`): The type of the relationship.
-        *   `source`/`target` (type: `cocoindex.storages.GraphRelationshipEnd`): The source/target node of the relationship, with the following fields:
+        *   `source`/`target` (type: `cocoindex.storages.NodeReferenceMapping`): The source/target node of the relationship, with the following fields:
             *   `label` (type: `str`): The label of the node.
-            *   `fields` (type: `list[cocoindex.storages.GraphFieldMapping]`): Map fields from the collector to nodes in Neo4j, with the following fields:
-                *   `field_name` (type: `str`): The name of the field in the collected row.
-                *   `node_field_name` (type: `str`, optional): The name of the field to use as the node field. If unspecified, will use the same as `field_name`.
+            *   `fields` (type: `Sequence[cocoindex.storages.TargetFieldMapping]`): Map fields from the collector to nodes in Neo4j, with the following fields:
+                *   `source` (type: `str`): The name of the field in the collected row.
+                *   `target` (type: `str`, optional): The name of the field to use as the node field. If unspecified, will use the same as `source`.
 
             :::info
 
-            All fields specified in `fields` will be mapped to properties of source/target nodes. All remaining fields will be mapped to relationship properties by default.
+            All fields specified in `fields.source` will be mapped to properties of source/target nodes. All remaining fields will be mapped to relationship properties by default.
 
             :::
 
-        *   `nodes` (type: `dict[str, cocoindex.storages.GraphRelationshipNode]`): This configures indexes for different node labels. Key is the node label. The value type `GraphRelationshipNode` has the following fields to configure [storage indexes](../core/flow_def#storage-indexes) for the node.
+        *   `nodes_storage_spec` (type: `dict[str, cocoindex.storages.NodeStorageSpec]`): This configures indexes for different node labels. Key is the node label. The value type `NodeStorageSpec` has the following fields to configure [storage indexes](../core/flow_def#storage-indexes) for the node.
                 *   `primary_key_fields` is required.
                 *   `vector_indexes` is also supported and optional.

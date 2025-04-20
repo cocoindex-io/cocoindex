@@ -96,35 +96,35 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
         "document_node",
         cocoindex.storages.Neo4j(
             connection=conn_spec,
-            mapping=cocoindex.storages.GraphNode(label="Document")),
+            mapping=cocoindex.storages.NodeMapping(label="Document")),
         primary_key_fields=["filename"],
     )
     entity_relationship.export(
         "entity_relationship",
         cocoindex.storages.Neo4j(
             connection=conn_spec,
-            mapping=cocoindex.storages.GraphRelationship(
+            mapping=cocoindex.storages.RelationshipMapping(
                 rel_type="RELATIONSHIP",
-                source=cocoindex.storages.GraphRelationshipEnd(
+                source=cocoindex.storages.NodeReferenceMapping(
                     label="Entity",
                     fields=[
-                        cocoindex.storages.GraphFieldMapping(
-                            field_name="subject", node_field_name="value"),
-                        cocoindex.storages.GraphFieldMapping(
-                            field_name="subject_embedding", node_field_name="embedding"),
+                        cocoindex.storages.TargetFieldMapping(
+                            source="subject", target="value"),
+                        cocoindex.storages.TargetFieldMapping(
+                            source="subject_embedding", target="embedding"),
                     ]
                 ),
-                target=cocoindex.storages.GraphRelationshipEnd(
+                target=cocoindex.storages.NodeReferenceMapping(
                     label="Entity",
                     fields=[
-                        cocoindex.storages.GraphFieldMapping(
-                            field_name="object", node_field_name="value"),
-                        cocoindex.storages.GraphFieldMapping(
-                            field_name="object_embedding", node_field_name="embedding"),
+                        cocoindex.storages.TargetFieldMapping(
+                            source="object", target="value"),
+                        cocoindex.storages.TargetFieldMapping(
+                            source="object_embedding", target="embedding"),
                     ]
                 ),
-                nodes={
-                    "Entity": cocoindex.storages.GraphRelationshipNode(
+                nodes_storage_spec={
+                    "Entity": cocoindex.storages.NodeStorageSpec(
                         primary_key_fields=["value"],
                         vector_indexes=[
                             cocoindex.VectorIndexDef(
@@ -142,16 +142,16 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
         "entity_mention",
         cocoindex.storages.Neo4j(
             connection=conn_spec,
-            mapping=cocoindex.storages.GraphRelationship(
+            mapping=cocoindex.storages.RelationshipMapping(
                 rel_type="MENTION",
-                source=cocoindex.storages.GraphRelationshipEnd(
+                source=cocoindex.storages.NodeReferenceMapping(
                     label="Document",
-                    fields=[cocoindex.storages.GraphFieldMapping("filename")],
+                    fields=[cocoindex.storages.TargetFieldMapping("filename")],
                 ),
-                target=cocoindex.storages.GraphRelationshipEnd(
+                target=cocoindex.storages.NodeReferenceMapping(
                     label="Entity",
-                    fields=[cocoindex.storages.GraphFieldMapping(
-                        field_name="entity", node_field_name="value")],
+                    fields=[cocoindex.storages.TargetFieldMapping(
+                        source="entity", target="value")],
                 ),
             ),
         ),
