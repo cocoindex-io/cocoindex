@@ -16,5 +16,5 @@ assignees: ''
 
 
 ---
-Contributors ❤️ :  Please consider drop a comment `I'm taking this issue` to help other contributors know that someone are already on it 🙏. 
+Contributors ❤️ :  Please consider drop a comment `i'm working on this issue` to help other contributors know that someone are already on it 🙏. 
 
