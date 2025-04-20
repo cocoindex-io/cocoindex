@@ -19,7 +19,7 @@ from . import index
 from . import op
 from .convert import dump_engine_object
 from .typing import encode_enriched_type
-from .runtime import op_execution_context
+from .runtime import execution_context
 
 class _NameBuilder:
     _existing_names: set[str]
@@ -378,7 +378,7 @@ class FlowLiveUpdater:
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.abort()
-        asyncio.run(self.wait())
+        execution_context.run(self.wait())
 
     async def __aenter__(self) -> FlowLiveUpdater:
         return self
@@ -476,7 +476,7 @@ def _create_lazy_flow(name: str | None, fl_def: Callable[[FlowBuilder, DataScope
         root_scope = DataScope(
             flow_builder_state, flow_builder_state.engine_flow_builder.root_scope())
         fl_def(FlowBuilder(flow_builder_state), root_scope)
-        return flow_builder_state.engine_flow_builder.build_flow(op_execution_context.event_loop)
+        return flow_builder_state.engine_flow_builder.build_flow(execution_context.event_loop)
 
     return Flow(_create_engine_flow)
 
@@ -572,7 +572,7 @@ class TransientFlow:
         flow_builder_state.engine_flow_builder.set_direct_output(
             _data_slice_state(output).engine_data_slice)
         self._engine_flow = flow_builder_state.engine_flow_builder.build_transient_flow(
-            op_execution_context.event_loop)
+            execution_context.event_loop)
 
     def __str__(self):
         return str(self._engine_flow)
