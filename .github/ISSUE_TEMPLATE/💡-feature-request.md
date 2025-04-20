@@ -16,5 +16,5 @@ assignees: ''
 
 
 ---
-Dear Contributors ❤️ :  Please leave a comment `I'm taking this issue` to help other contributors that are interested taking this issue know that you are already on it 🙏. We love your contribution! 
+Dear Contributors ❤️ :  Please leave a comment `I'm taking this issue` to help other contributors that are interested taking this issue know that you are already on it 🙏. 
 Our [discord server] (https://discord.com/invite/zpA9S2DR7s) is always open :)
