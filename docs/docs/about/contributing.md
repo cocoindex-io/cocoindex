@@ -16,11 +16,11 @@ We use [GitHub Issues](https://github.com/cocoindex-io/cocoindex/issues) to trac
 We tag issues with the ["good first issue"](https://github.com/cocoindex-io/cocoindex/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) label for beginner contributors.
 
 ## How to Contribute 
-- If you decide to work on an issue, please comment on the issue **`I'm working on it`** to helping other contributors avoid duplicating work.
-- Our [discord server](https://discord.com/invite/zpA9S2DR7s) are constantly open. If you are unsure about anything, either leaving a message under a issue or asking in the discord server will work!
+- If you decide to work on an issue, we recommend you to comment on the issue **`I'm working on it`** to helping other contributors avoid duplicating work.
+- Our [discord server](https://discord.com/invite/zpA9S2DR7s) are constantly open. If you are unsure about anything, either leaving a message under an issue or asking in the discord server will work!
 
 ## Start hacking! Setting Up Development Environment 
-Followinng the steps below to get cocoindex build on latest codebase locally - if you are making changes to cocoindex funcionality and want to test it out.
+Following the steps below to get cocoindex build on latest codebase locally - if you are making changes to cocoindex funcionality and want to test it out.
 
 -   Install Rust toolchain: [docs](https://rust-lang.org/tools/install)
 
