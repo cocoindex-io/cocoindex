@@ -269,15 +269,23 @@ pub struct TypedExportTargetExecutors<F: StorageFactoryBase + ?Sized> {
     pub query_target: Option<Arc<dyn QueryTarget>>,
 }
 
-pub struct TypedExportTargetBuildOutput<F: StorageFactoryBase + ?Sized> {
+pub struct TypedExportDataCollectionBuildOutput<F: StorageFactoryBase + ?Sized> {
     pub executors: BoxFuture<'static, Result<TypedExportTargetExecutors<F>>>,
     pub setup_key: F::Key,
     pub desired_setup_state: F::SetupState,
+}
+pub struct TypedExportDataCollectionSpec<F: StorageFactoryBase + ?Sized> {
+    pub name: String,
+    pub spec: F::Spec,
+    pub key_fields_schema: Vec<FieldSchema>,
+    pub value_fields_schema: Vec<FieldSchema>,
+    pub index_options: IndexOptions,
 }
 
 #[async_trait]
 pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
     type Spec: DeserializeOwned + Send + Sync;
+    type DeclarationSpec: DeserializeOwned + Send + Sync;
     type Key: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash + Send + Sync;
     type SetupState: Debug + Clone + Serialize + DeserializeOwned + Send + Sync;
     type ExportContext: Send + Sync + 'static;
@@ -286,13 +294,13 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
 
     fn build(
         self: Arc<Self>,
-        name: String,
-        spec: Self::Spec,
-        key_fields_schema: Vec<FieldSchema>,
-        value_fields_schema: Vec<FieldSchema>,
-        storage_options: IndexOptions,
+        data_collections: Vec<TypedExportDataCollectionSpec<Self>>,
+        declarations: Vec<Self::DeclarationSpec>,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<TypedExportTargetBuildOutput<Self>>;
+    ) -> Result<(
+        Vec<TypedExportDataCollectionBuildOutput<Self>>,
+        Vec<(Self::Key, Self::SetupState)>,
+    )>;
 
     /// Will not be called if it's setup by user.
     /// It returns an error if the target only supports setup by user.
@@ -332,35 +340,56 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
 impl<T: StorageFactoryBase> ExportTargetFactory for T {
     fn build(
         self: Arc<Self>,
-        name: String,
-        spec: serde_json::Value,
-        key_fields_schema: Vec<FieldSchema>,
-        value_fields_schema: Vec<FieldSchema>,
-        storage_options: IndexOptions,
+        data_collections: Vec<interface::ExportDataCollectionSpec>,
+        declarations: Vec<serde_json::Value>,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<interface::ExportTargetBuildOutput> {
-        let spec: T::Spec = serde_json::from_value(spec)?;
-        let build_output = StorageFactoryBase::build(
+    ) -> Result<(
+        Vec<interface::ExportDataCollectionBuildOutput>,
+        Vec<(serde_json::Value, serde_json::Value)>,
+    )> {
+        let (data_coll_output, decl_output) = StorageFactoryBase::build(
             self,
-            name,
-            spec,
-            key_fields_schema,
-            value_fields_schema,
-            storage_options,
+            data_collections
+                .into_iter()
+                .map(|d| {
+                    anyhow::Ok(TypedExportDataCollectionSpec {
+                        name: d.name,
+                        spec: serde_json::from_value(d.spec)?,
+                        key_fields_schema: d.key_fields_schema,
+                        value_fields_schema: d.value_fields_schema,
+                        index_options: d.index_options,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            declarations
+                .into_iter()
+                .map(|d| anyhow::Ok(serde_json::from_value(d)?))
+                .collect::<Result<Vec<_>>>()?,
             context,
         )?;
-        let executors = async move {
-            let executors = build_output.executors.await?;
-            Ok(interface::ExportTargetExecutors {
-                export_context: executors.export_context,
-                query_target: executors.query_target,
+
+        let data_coll_output = data_coll_output
+            .into_iter()
+            .map(|d| {
+                Ok(interface::ExportDataCollectionBuildOutput {
+                    executors: async move {
+                        let executors = d.executors.await?;
+                        Ok(interface::ExportTargetExecutors {
+                            export_context: executors.export_context,
+                            query_target: executors.query_target,
+                        })
+                    }
+                    .boxed(),
+                    setup_key: serde_json::to_value(d.setup_key)?,
+                    desired_setup_state: serde_json::to_value(d.desired_setup_state)?,
+                })
             })
-        };
-        Ok(interface::ExportTargetBuildOutput {
-            setup_key: serde_json::to_value(build_output.setup_key)?,
-            desired_setup_state: serde_json::to_value(build_output.desired_setup_state)?,
-            executors: executors.boxed(),
-        })
+            .collect::<Result<Vec<_>>>()?;
+        let decl_output = decl_output
+            .into_iter()
+            .map(|(key, state)| Ok((serde_json::to_value(key)?, serde_json::to_value(state)?)))
+            .collect::<Result<Vec<_>>>()?;
+        Ok((data_coll_output, decl_output))
     }
 
     fn check_setup_status(
