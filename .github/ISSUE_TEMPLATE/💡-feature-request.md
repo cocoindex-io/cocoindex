@@ -18,3 +18,7 @@ A clear and concise description of any alternative solutions or features you've 
 
 **Additional context**
 Add any other context or screenshots about the feature request here.
+
+---
+[Contributing Guide](https://cocoindex.io/docs/about/contributing)
+For changes that takes more than a day, we recommend you to leave a comment on the issue like **`I'm working on it`**  or **`Can I work on this issue?`** to avoid duplicating work.
