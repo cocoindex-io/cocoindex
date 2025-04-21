@@ -12,6 +12,7 @@ use crate::setup;
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::collections::btree_map;
+use std::fmt::Write;
 
 mod convert;
 pub use convert::*;
@@ -26,6 +27,24 @@ impl PythonExecutionContext {
     }
 }
 
+pub trait FromPyResult<T> {
+    fn from_py_result(self, py: Python<'_>) -> anyhow::Result<T>;
+}
+
+impl<T> FromPyResult<T> for Result<T, PyErr> {
+    fn from_py_result(self, py: Python<'_>) -> anyhow::Result<T> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(err) => {
+                let mut err_str = format!("Error calling Python function: {}", err);
+                if let Some(tb) = err.traceback(py) {
+                    write!(&mut err_str, "\n{}", tb.format()?)?;
+                }
+                Err(anyhow::anyhow!(err_str))
+            }
+        }
+    }
+}
 pub trait IntoPyResult<T> {
     fn into_py_result(self) -> PyResult<T>;
 }
