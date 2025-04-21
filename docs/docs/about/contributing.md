@@ -5,7 +5,7 @@ description: Learn how to contribute to CocoIndex
 
 # Contributing
 
-[CocoIndex](https://github.com/cocoindex-io/cocoindex) is an open source project. We love contributions from our community! We are respectful, open and friendly. This guide explains how to get involved and contribute to [CocoIndex](https://github.com/cocoindex-io/cocoindex).
+[CocoIndex](https://github.com/cocoindex-io/cocoindex) is an open source project. We are respectful, open and friendly. This guide explains how to get involved and contribute to [CocoIndex](https://github.com/cocoindex-io/cocoindex).
 
 ## Issues:
 
@@ -16,8 +16,9 @@ We use [GitHub Issues](https://github.com/cocoindex-io/cocoindex/issues) to trac
 We tag issues with the ["good first issue"](https://github.com/cocoindex-io/cocoindex/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) label for beginner contributors.
 
 ## How to Contribute 
-- If you decide to work on an issue, we recommend you to comment on the issue **`I'm working on it`** to helping other contributors avoid duplicating work.
-- Our [discord server](https://discord.com/invite/zpA9S2DR7s) are constantly open. If you are unsure about anything, either leaving a message under a issue or asking in the discord server will work!
+- If you decide to work on an issue, for changes that takes more than a day, we recommend you to leave a comment on the issue like **`I'm working on it`**  or **`Can I work on this issue?`** to avoid duplicating work.
+- For larger features, we recommend you to discuss with us first in our [discord server](https://discord.com/invite/zpA9S2DR7s) to coordinate the design and work.
+- Our [discord server](https://discord.com/invite/zpA9S2DR7s) are constantly open. If you are unsure about anything, it is a good place to discuss! We'd love to collaborate and will always be friendly.
 
 ## Start hacking! Setting Up Development Environment 
 Following the steps below to get cocoindex build on latest codebase locally - if you are making changes to cocoindex funcionality and want to test it out.
