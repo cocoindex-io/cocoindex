@@ -97,24 +97,21 @@ pub struct FlowLiveUpdater(pub Arc<tokio::sync::RwLock<execution::FlowLiveUpdate
 
 #[pymethods]
 impl FlowLiveUpdater {
-    #[new]
-    pub fn new(
-        py: Python<'_>,
+    #[staticmethod]
+    pub fn create<'py>(
+        py: Python<'py>,
         flow: &Flow,
         options: Pythonized<execution::FlowLiveUpdaterOptions>,
-    ) -> PyResult<Self> {
-        py.allow_threads(|| {
-            let live_updater = get_runtime()
-                .block_on(async {
-                    let live_updater = execution::FlowLiveUpdater::start(
-                        flow.0.clone(),
-                        &get_lib_context()?.pool,
-                        options.into_inner(),
-                    )
-                    .await?;
-                    anyhow::Ok(live_updater)
-                })
-                .into_py_result()?;
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let flow = flow.0.clone();
+        future_into_py(py, async move {
+            let live_updater = execution::FlowLiveUpdater::start(
+                flow,
+                &get_lib_context().into_py_result()?.pool,
+                options.into_inner(),
+            )
+            .await
+            .into_py_result()?;
             Ok(Self(Arc::new(tokio::sync::RwLock::new(live_updater))))
         })
     }

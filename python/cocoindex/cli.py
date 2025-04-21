@@ -4,6 +4,7 @@ import datetime
 
 from . import flow, lib
 from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
+from .runtime import execution_context
 
 @click.group()
 def cli():
@@ -113,11 +114,13 @@ def update(flow_name: str | None, live: bool, quiet: bool):
     Update the index to reflect the latest data from data sources.
     """
     options = flow.FlowLiveUpdaterOptions(live_mode=live, print_stats=not quiet)
-    if flow_name is None:
-        asyncio.run(flow.update_all_flows(options))
-    else:
-        updater = flow.FlowLiveUpdater(_flow_by_name(flow_name), options)
-        asyncio.run(updater.wait())
+    async def _update():
+        if flow_name is None:
+            await flow.update_all_flows(options)
+        else:
+            updater = await flow.FlowLiveUpdater.create(_flow_by_name(flow_name), options)
+            await updater.wait()
+    execution_context.run(_update())
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
@@ -167,7 +170,7 @@ def server(address: str, live_update: bool, quiet: bool, cors_origin: str | None
     lib.start_server(lib.ServerSettings(address=address, cors_origin=cors_origin))
     if live_update:
         options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
-        asyncio.run(flow.update_all_flows(options))
+        execution_context.run(flow.update_all_flows(options))
     input("Press Enter to stop...")
 
 
