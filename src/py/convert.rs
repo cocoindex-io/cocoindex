@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use pyo3::types::{PyList, PyTuple};
+use pyo3::types::{PyDateAccess, PyDateTime, PyDelta, PyTimeAccess, PyTzInfoAccess};
 use pyo3::IntoPyObjectExt;
 use pyo3::{exceptions::PyException, prelude::*};
 use pythonize::{depythonize, pythonize};
@@ -70,6 +71,9 @@ fn basic_value_to_py_object<'py>(
         value::BasicValue::Time(v) => v.into_bound_py_any(py)?,
         value::BasicValue::LocalDateTime(v) => v.into_bound_py_any(py)?,
         value::BasicValue::OffsetDateTime(v) => v.into_bound_py_any(py)?,
+        value::BasicValue::TimeDelta(v) => {
+            PyDelta::new(py, 0, v.num_seconds() as i32, v.subsec_micros())?.into_bound_py_any(py)?
+        }
         value::BasicValue::Json(v) => pythonize(py, v).into_py_result()?,
         value::BasicValue::Vector(v) => v
             .iter()
@@ -142,6 +146,13 @@ fn basic_value_from_py_object<'py>(
         }
         schema::BasicValueType::OffsetDateTime => {
             value::BasicValue::OffsetDateTime(v.extract::<chrono::DateTime<chrono::FixedOffset>>()?)
+        }
+        schema::BasicValueType::TimeDelta => {
+            let delta = v.extract::<&PyDelta>()?;
+            value::BasicValue::TimeDelta(
+                chrono::Duration::seconds(delta.get_days() as i64 * 86400 + delta.get_seconds() as i64)
+                    + chrono::Duration::microseconds(delta.get_microseconds() as i64),
+            )
         }
         schema::BasicValueType::Json => {
             value::BasicValue::Json(Arc::from(depythonize::<serde_json::Value>(v)?))

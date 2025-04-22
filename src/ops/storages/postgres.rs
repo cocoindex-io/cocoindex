@@ -134,6 +134,9 @@ fn bind_value_field<'arg>(
             BasicValue::OffsetDateTime(v) => {
                 builder.push_bind(v);
             }
+            BasicValue::TimeDelta(v) => {
+                builder.push_bind(v);
+            }
             BasicValue::Json(v) => {
                 builder.push_bind(sqlx::types::Json(&**v));
             }
@@ -219,6 +222,9 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
                 BasicValueType::OffsetDateTime => row
                     .try_get::<Option<chrono::DateTime<chrono::FixedOffset>>, _>(field_idx)?
                     .map(BasicValue::OffsetDateTime),
+                BasicValueType::TimeDelta => row
+                    .try_get::<Option<chrono::Duration>, _>(field_idx)?
+                    .map(BasicValue::TimeDelta),
                 BasicValueType::Json => row
                     .try_get::<Option<serde_json::Value>, _>(field_idx)?
                     .map(|v| BasicValue::Json(Arc::from(v))),
@@ -701,6 +707,7 @@ fn to_column_type_sql(column_type: &ValueType) -> Cow<'static, str> {
             BasicValueType::Time => "time".into(),
             BasicValueType::LocalDateTime => "timestamp".into(),
             BasicValueType::OffsetDateTime => "timestamp with time zone".into(),
+            BasicValueType::TimeDelta => "interval".into(),
             BasicValueType::Json => "jsonb".into(),
             BasicValueType::Vector(vec_schema) => {
                 if convertible_to_pgvector(vec_schema) {
