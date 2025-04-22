@@ -1,6 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
-use std::sync::Mutex;
-use std::{collections::HashMap, future::Future, sync::Arc};
+use crate::prelude::*;
 
 use super::plan::*;
 use crate::execution::db_tracking_setup;
@@ -11,16 +9,12 @@ use crate::setup::{
 };
 use crate::utils::fingerprint::Fingerprinter;
 use crate::{
-    api_bail, api_error,
-    base::{schema::*, spec::*, value},
+    base::{schema::*, spec::*},
     ops::{interface::*, registry::*},
     utils::immutable::RefList,
 };
-use anyhow::{anyhow, bail, Context, Result};
 use futures::future::{try_join3, BoxFuture};
 use futures::{future::try_join_all, FutureExt};
-use indexmap::IndexMap;
-use log::{trace, warn};
 
 #[derive(Debug)]
 pub(super) enum ValueTypeBuilder {
@@ -595,6 +589,14 @@ fn add_collector(
     })
 }
 
+struct ExportDataFieldsInfo {
+    local_collector_ref: AnalyzedLocalCollectorReference,
+    primary_key_def: AnalyzedPrimaryKeyDef,
+    primary_key_type: ValueType,
+    value_fields_idx: Vec<u32>,
+    value_stable: bool,
+}
+
 impl AnalyzerContext<'_> {
     pub(super) fn analyze_import_op(
         &self,
@@ -816,192 +818,225 @@ impl AnalyzerContext<'_> {
         Ok(result_fut)
     }
 
-    pub(super) fn analyze_export_op(
+    fn analyze_export_op(
         &self,
-        scope: &mut DataScopeBuilder,
-        export_op: NamedSpec<ExportOpSpec>,
-        export_factory: Arc<dyn ExportTargetFactory>,
-        setup_state: Option<&mut FlowSetupState<DesiredMode>>,
+        export_op: &NamedSpec<ExportOpSpec>,
+        export_factory: &dyn ExportTargetFactory,
+        data_coll_output: ExportDataCollectionBuildOutput,
+        data_fields_info: ExportDataFieldsInfo,
+        flow_setup_state: &mut FlowSetupState<DesiredMode>,
         existing_target_states: &HashMap<&ResourceIdentifier, Vec<&TargetSetupState>>,
     ) -> Result<impl Future<Output = Result<AnalyzedExportOp>> + Send> {
-        let export_target = export_op.spec.target;
-        let spec = serde_json::Value::Object(export_target.spec.clone());
-        let (local_collector_ref, collector_schema) =
-            scope.consume_collector(&export_op.spec.collector_name)?;
-        let (
-            key_fields_schema,
-            value_fields_schema,
-            primary_key_def,
-            primary_key_type,
-            value_fields_idx,
-        ) = match &export_op.spec.index_options.primary_key_fields {
-            Some(fields) => {
-                let pk_fields_idx = fields
-                    .iter()
-                    .map(|f| {
-                        collector_schema
-                            .fields
-                            .iter()
-                            .position(|field| &field.name == f)
-                            .map(|idx| idx as u32)
-                            .ok_or_else(|| anyhow!("field not found: {}", f))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-
-                let key_fields_schema = pk_fields_idx
-                    .iter()
-                    .map(|idx| collector_schema.fields[*idx as usize].clone())
-                    .collect::<Vec<_>>();
-                let primary_key_type = if pk_fields_idx.len() == 1 {
-                    key_fields_schema[0].value_type.typ.clone()
-                } else {
-                    ValueType::Struct(StructSchema {
-                        fields: Arc::from(key_fields_schema.clone()),
-                        description: None,
-                    })
-                };
-                let mut value_fields_schema: Vec<FieldSchema> = vec![];
-                let mut value_fields_idx = vec![];
-                for (idx, field) in collector_schema.fields.iter().enumerate() {
-                    if !pk_fields_idx.contains(&(idx as u32)) {
-                        value_fields_schema.push(field.clone());
-                        value_fields_idx.push(idx as u32);
-                    }
-                }
-                (
-                    key_fields_schema,
-                    value_fields_schema,
-                    AnalyzedPrimaryKeyDef::Fields(pk_fields_idx),
-                    primary_key_type,
-                    value_fields_idx,
-                )
-            }
-            None => {
-                // TODO: Support auto-generate primary key
-                api_bail!("Primary key fields must be specified")
-            }
-        };
-
-        let setup_output = export_factory.clone().build(
-            export_op.name.clone(),
-            spec,
-            key_fields_schema,
-            value_fields_schema,
-            export_op.spec.index_options,
-            self.flow_ctx.clone(),
-        )?;
         let resource_id = ResourceIdentifier {
-            key: setup_output.setup_key.clone(),
-            target_kind: export_target.kind.clone(),
+            key: data_coll_output.setup_key.clone(),
+            target_kind: export_op.spec.target.kind.clone(),
         };
         let existing_target_states = existing_target_states.get(&resource_id);
-        let target_id = setup_state
-            .map(|setup_state| -> Result<i32> {
-                let mut compatible_target_ids = HashSet::<Option<i32>>::new();
-                let mut reusable_schema_version_ids = HashSet::<Option<i32>>::new();
-                for existing_state in existing_target_states.iter().flat_map(|v| v.iter()) {
-                    let compatibility =
-                        if export_op.spec.setup_by_user == existing_state.common.setup_by_user {
-                            export_factory.check_state_compatibility(
-                                &setup_output.desired_setup_state,
-                                &existing_state.state,
-                            )?
-                        } else {
-                            SetupStateCompatibility::NotCompatible
-                        };
-                    let compatible_target_id =
-                        if compatibility != SetupStateCompatibility::NotCompatible {
-                            reusable_schema_version_ids.insert(
-                                (compatibility == SetupStateCompatibility::Compatible)
-                                    .then_some(existing_state.common.schema_version_id),
-                            );
-                            Some(existing_state.common.target_id)
-                        } else {
-                            None
-                        };
-                    compatible_target_ids.insert(compatible_target_id);
-                }
-
-                let target_id = if compatible_target_ids.len() == 1 {
-                    compatible_target_ids.into_iter().next().flatten()
+        let mut compatible_target_ids = HashSet::<Option<i32>>::new();
+        let mut reusable_schema_version_ids = HashSet::<Option<i32>>::new();
+        for existing_state in existing_target_states.iter().flat_map(|v| v.iter()) {
+            let compatibility =
+                if export_op.spec.setup_by_user == existing_state.common.setup_by_user {
+                    export_factory.check_state_compatibility(
+                        &data_coll_output.desired_setup_state,
+                        &existing_state.state,
+                    )?
                 } else {
-                    if compatible_target_ids.len() > 1 {
-                        warn!("Multiple target states with the same key schema found");
-                    }
-                    None
+                    SetupStateCompatibility::NotCompatible
                 };
-                let target_id = target_id.unwrap_or_else(|| {
-                    setup_state.metadata.last_target_id += 1;
-                    setup_state.metadata.last_target_id
+            let compatible_target_id = if compatibility != SetupStateCompatibility::NotCompatible {
+                reusable_schema_version_ids.insert(
+                    (compatibility == SetupStateCompatibility::Compatible)
+                        .then_some(existing_state.common.schema_version_id),
+                );
+                Some(existing_state.common.target_id)
+            } else {
+                None
+            };
+            compatible_target_ids.insert(compatible_target_id);
+        }
+
+        let target_id = if compatible_target_ids.len() == 1 {
+            compatible_target_ids.into_iter().next().flatten()
+        } else {
+            if compatible_target_ids.len() > 1 {
+                warn!("Multiple target states with the same key schema found");
+            }
+            None
+        };
+        let target_id = target_id.unwrap_or_else(|| {
+            flow_setup_state.metadata.last_target_id += 1;
+            flow_setup_state.metadata.last_target_id
+        });
+        let max_schema_version_id = existing_target_states
+            .iter()
+            .flat_map(|v| v.iter())
+            .map(|s| s.common.max_schema_version_id)
+            .max()
+            .unwrap_or(0);
+        let schema_version_id = if reusable_schema_version_ids.len() == 1 {
+            reusable_schema_version_ids
+                .into_iter()
+                .next()
+                .unwrap()
+                .unwrap_or(max_schema_version_id + 1)
+        } else {
+            max_schema_version_id + 1
+        };
+        match flow_setup_state.targets.entry(resource_id) {
+            indexmap::map::Entry::Occupied(entry) => {
+                api_bail!(
+                    "Target resource already exists: kind = {}, key = {}",
+                    entry.key().target_kind,
+                    entry.key().key
+                );
+            }
+            indexmap::map::Entry::Vacant(entry) => {
+                entry.insert(TargetSetupState {
+                    common: TargetSetupStateCommon {
+                        target_id,
+                        schema_version_id,
+                        max_schema_version_id: max_schema_version_id.max(schema_version_id),
+                        setup_by_user: export_op.spec.setup_by_user,
+                    },
+                    state: data_coll_output.desired_setup_state,
                 });
-                let max_schema_version_id = existing_target_states
-                    .iter()
-                    .flat_map(|v| v.iter())
-                    .map(|s| s.common.max_schema_version_id)
-                    .max()
-                    .unwrap_or(0);
-                let schema_version_id = if reusable_schema_version_ids.len() == 1 {
-                    reusable_schema_version_ids
-                        .into_iter()
-                        .next()
-                        .unwrap()
-                        .unwrap_or(max_schema_version_id + 1)
-                } else {
-                    max_schema_version_id + 1
-                };
-                match setup_state.targets.entry(resource_id) {
-                    indexmap::map::Entry::Occupied(entry) => {
-                        api_bail!(
-                            "Target resource already exists: kind = {}, key = {}",
-                            entry.key().target_kind,
-                            entry.key().key
-                        );
-                    }
-                    indexmap::map::Entry::Vacant(entry) => {
-                        entry.insert(TargetSetupState {
-                            common: TargetSetupStateCommon {
-                                target_id,
-                                schema_version_id,
-                                max_schema_version_id: max_schema_version_id.max(schema_version_id),
-                                setup_by_user: export_op.spec.setup_by_user,
-                            },
-                            state: setup_output.desired_setup_state,
-                        });
-                    }
-                }
-                Ok(target_id)
-            })
-            .transpose()?;
-
-        let value_stable = collector_schema
-            .auto_uuid_field_idx
-            .map(|uuid_idx| match &primary_key_def {
-                AnalyzedPrimaryKeyDef::Fields(fields) => fields.contains(&uuid_idx),
-            })
-            .unwrap_or(false);
+            }
+        }
+        let op_name = export_op.name.clone();
         Ok(async move {
-            trace!("Start building executor for export op `{}`", export_op.name);
-            let executors = setup_output
+            trace!("Start building executor for export op `{op_name}`");
+            let executors = data_coll_output
                 .executors
                 .await
-                .with_context(|| format!("Analyzing export op: {}", export_op.name))?;
-            trace!(
-                "Finished building executor for export op `{}`",
-                export_op.name
-            );
-            let name = export_op.name;
+                .with_context(|| format!("Analyzing export op: {op_name}"))?;
+            trace!("Finished building executor for export op `{op_name}`");
             Ok(AnalyzedExportOp {
-                name,
-                target_id: target_id.unwrap_or_default(),
-                input: local_collector_ref,
+                name: op_name,
+                target_id,
+                input: data_fields_info.local_collector_ref,
                 export_context: executors.export_context,
                 query_target: executors.query_target,
-                primary_key_def,
-                primary_key_type,
-                value_fields: value_fields_idx,
-                value_stable,
+                primary_key_def: data_fields_info.primary_key_def,
+                primary_key_type: data_fields_info.primary_key_type,
+                value_fields: data_fields_info.value_fields_idx,
+                value_stable: data_fields_info.value_stable,
             })
         })
+    }
+
+    fn analyze_export_op_group(
+        &self,
+        scope: &mut DataScopeBuilder,
+        flow_inst: &FlowInstanceSpec,
+        export_op_group: &AnalyzedExportTargetOpGroup,
+        flow_setup_state: &mut FlowSetupState<DesiredMode>,
+        existing_target_states: &HashMap<&ResourceIdentifier, Vec<&TargetSetupState>>,
+    ) -> Result<Vec<impl Future<Output = Result<AnalyzedExportOp>> + Send>> {
+        let mut collection_specs = Vec::<interface::ExportDataCollectionSpec>::new();
+        let mut data_fields_infos = Vec::<ExportDataFieldsInfo>::new();
+        for idx in export_op_group.op_idx.iter() {
+            let export_op = &flow_inst.export_ops[*idx];
+            let (local_collector_ref, collector_schema) =
+                scope.consume_collector(&export_op.spec.collector_name)?;
+            let (key_fields_schema, value_fields_schema, data_collection_info) =
+                match &export_op.spec.index_options.primary_key_fields {
+                    Some(fields) => {
+                        let pk_fields_idx = fields
+                            .iter()
+                            .map(|f| {
+                                collector_schema
+                                    .fields
+                                    .iter()
+                                    .position(|field| &field.name == f)
+                                    .map(|idx| idx as u32)
+                                    .ok_or_else(|| anyhow!("field not found: {}", f))
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+
+                        let key_fields_schema = pk_fields_idx
+                            .iter()
+                            .map(|idx| collector_schema.fields[*idx as usize].clone())
+                            .collect::<Vec<_>>();
+                        let primary_key_type = if pk_fields_idx.len() == 1 {
+                            key_fields_schema[0].value_type.typ.clone()
+                        } else {
+                            ValueType::Struct(StructSchema {
+                                fields: Arc::from(key_fields_schema.clone()),
+                                description: None,
+                            })
+                        };
+                        let mut value_fields_schema: Vec<FieldSchema> = vec![];
+                        let mut value_fields_idx = vec![];
+                        for (idx, field) in collector_schema.fields.iter().enumerate() {
+                            if !pk_fields_idx.contains(&(idx as u32)) {
+                                value_fields_schema.push(field.clone());
+                                value_fields_idx.push(idx as u32);
+                            }
+                        }
+                        let value_stable = collector_schema
+                            .auto_uuid_field_idx
+                            .as_ref()
+                            .map(|uuid_idx| pk_fields_idx.contains(uuid_idx))
+                            .unwrap_or(false);
+                        (
+                            key_fields_schema,
+                            value_fields_schema,
+                            ExportDataFieldsInfo {
+                                local_collector_ref,
+                                primary_key_def: AnalyzedPrimaryKeyDef::Fields(pk_fields_idx),
+                                primary_key_type,
+                                value_fields_idx,
+                                value_stable,
+                            },
+                        )
+                    }
+                    None => {
+                        // TODO: Support auto-generate primary key
+                        api_bail!("Primary key fields must be specified")
+                    }
+                };
+            collection_specs.push(interface::ExportDataCollectionSpec {
+                name: export_op.name.clone(),
+                spec: serde_json::Value::Object(export_op.spec.target.spec.clone()),
+                key_fields_schema,
+                value_fields_schema,
+                index_options: export_op.spec.index_options.clone(),
+            });
+            data_fields_infos.push(data_collection_info);
+        }
+        let (data_collections_output, _) = export_op_group.target_factory.clone().build(
+            collection_specs,
+            vec![],
+            self.flow_ctx.clone(),
+        )?;
+        if data_collections_output.len() != data_fields_infos.len() {
+            api_bail!(
+                "Data collection output length mismatch: expect {}, got {}",
+                data_fields_infos.len(),
+                data_collections_output.len()
+            );
+        }
+
+        let result = export_op_group
+            .op_idx
+            .iter()
+            .zip(data_collections_output.into_iter())
+            .zip(data_fields_infos.into_iter())
+            .map(|((idx, data_coll_output), data_fields_info)| {
+                let export_op = &flow_inst.export_ops[*idx];
+                Ok(self.analyze_export_op(
+                    export_op,
+                    export_op_group.target_factory.as_ref(),
+                    data_coll_output,
+                    data_fields_info,
+                    flow_setup_state,
+                    existing_target_states,
+                )?)
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(result)
     }
 
     fn analyze_op_scope(
@@ -1128,7 +1163,6 @@ pub fn analyze_flow(
     )?;
 
     let mut target_groups = IndexMap::<String, AnalyzedExportTargetOpGroup>::new();
-    let mut export_ops_futs = vec![];
     for (idx, export_op) in flow_inst.export_ops.iter().enumerate() {
         let target_kind = export_op.spec.target.kind.clone();
         let export_factory = match registry.get(&target_kind) {
@@ -1140,13 +1174,6 @@ pub fn analyze_flow(
                 ))
             }
         };
-        export_ops_futs.push(analyzer_ctx.analyze_export_op(
-            root_exec_scope.data,
-            export_op.clone(),
-            export_factory.clone(),
-            Some(&mut setup_state),
-            &target_states_by_name_type,
-        )?);
         target_groups
             .entry(target_kind)
             .or_insert_with(|| AnalyzedExportTargetOpGroup {
@@ -1155,6 +1182,17 @@ pub fn analyze_flow(
             })
             .op_idx
             .push(idx);
+    }
+
+    let mut export_ops_futs = vec![];
+    for group in target_groups.values() {
+        export_ops_futs.extend(analyzer_ctx.analyze_export_op_group(
+            root_exec_scope.data,
+            flow_inst,
+            group,
+            &mut setup_state,
+            &target_states_by_name_type,
+        )?);
     }
 
     let tracking_table_setup = setup_state.tracking_table.clone();

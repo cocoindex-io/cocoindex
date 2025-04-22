@@ -1122,6 +1122,7 @@ impl<'a> DependentNodeLabelAnalyzer<'a> {
 #[async_trait]
 impl StorageFactoryBase for Factory {
     type Spec = Spec;
+    type DeclarationSpec = ();
     type SetupState = RelationshipSetupState;
     type Key = GraphElement;
     type ExportContext = ExportContext;
@@ -1132,82 +1133,89 @@ impl StorageFactoryBase for Factory {
 
     fn build(
         self: Arc<Self>,
-        _name: String,
-        spec: Spec,
-        key_fields_schema: Vec<FieldSchema>,
-        value_fields_schema: Vec<FieldSchema>,
-        index_options: IndexOptions,
+        data_collections: Vec<TypedExportDataCollectionSpec<Self>>,
+        _declarations: Vec<()>,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<TypedExportTargetBuildOutput<Self>> {
-        let setup_key = GraphElement::from_spec(&spec);
+    ) -> Result<(
+        Vec<TypedExportDataCollectionBuildOutput<Self>>,
+        Vec<(GraphElement, RelationshipSetupState)>,
+    )> {
+        let data_coll_output = data_collections
+            .into_iter()
+            .map(|d| {
+                let setup_key = GraphElement::from_spec(&d.spec);
 
-        let (value_fields_info, rel_end_label_info) = match &spec.mapping {
-            GraphElementMapping::Node(_) => (
-                value_fields_schema
-                    .into_iter()
-                    .enumerate()
-                    .map(|(field_idx, field_schema)| AnalyzedGraphFieldMapping {
-                        field_idx,
-                        field_name: field_schema.name.clone(),
-                        value_type: field_schema.value_type.typ.clone(),
-                    })
-                    .collect(),
-                None,
-            ),
-            GraphElementMapping::Relationship(rel_spec) => {
-                let mut src_label_analyzer =
-                    DependentNodeLabelAnalyzer::new(&rel_spec, &rel_spec.source)?;
-                let mut tgt_label_analyzer =
-                    DependentNodeLabelAnalyzer::new(&rel_spec, &rel_spec.target)?;
-                let mut value_fields_info = vec![];
-                for (field_idx, field_schema) in value_fields_schema.iter().enumerate() {
-                    if !src_label_analyzer.process_field(field_idx, field_schema)
-                        && !tgt_label_analyzer.process_field(field_idx, field_schema)
-                    {
-                        value_fields_info.push(AnalyzedGraphFieldMapping {
-                            field_idx,
-                            field_name: field_schema.name.clone(),
-                            value_type: field_schema.value_type.typ.clone(),
-                        });
+                let (value_fields_info, rel_end_label_info) = match &d.spec.mapping {
+                    GraphElementMapping::Node(_) => (
+                        d.value_fields_schema
+                            .into_iter()
+                            .enumerate()
+                            .map(|(field_idx, field_schema)| AnalyzedGraphFieldMapping {
+                                field_idx,
+                                field_name: field_schema.name.clone(),
+                                value_type: field_schema.value_type.typ.clone(),
+                            })
+                            .collect(),
+                        None,
+                    ),
+                    GraphElementMapping::Relationship(rel_spec) => {
+                        let mut src_label_analyzer =
+                            DependentNodeLabelAnalyzer::new(&rel_spec, &rel_spec.source)?;
+                        let mut tgt_label_analyzer =
+                            DependentNodeLabelAnalyzer::new(&rel_spec, &rel_spec.target)?;
+                        let mut value_fields_info = vec![];
+                        for (field_idx, field_schema) in d.value_fields_schema.iter().enumerate() {
+                            if !src_label_analyzer.process_field(field_idx, field_schema)
+                                && !tgt_label_analyzer.process_field(field_idx, field_schema)
+                            {
+                                value_fields_info.push(AnalyzedGraphFieldMapping {
+                                    field_idx,
+                                    field_name: field_schema.name.clone(),
+                                    value_type: field_schema.value_type.typ.clone(),
+                                });
+                            }
+                        }
+                        let src_label_info = src_label_analyzer.build()?;
+                        let tgt_label_info = tgt_label_analyzer.build()?;
+                        (value_fields_info, Some((src_label_info, tgt_label_info)))
                     }
+                };
+
+                let desired_setup_state = RelationshipSetupState::new(
+                    &d.spec,
+                    d.key_fields_schema.iter().map(|f| f.name.clone()).collect(),
+                    &d.index_options,
+                    &value_fields_info,
+                    rel_end_label_info.as_ref(),
+                )?;
+
+                let conn_spec = context
+                    .auth_registry
+                    .get::<ConnectionSpec>(&d.spec.connection)?;
+                let factory = self.clone();
+                let executors = async move {
+                    let graph = factory.graph_pool.get_graph(&conn_spec).await?;
+                    let executor = Arc::new(ExportContext::new(
+                        graph,
+                        d.spec,
+                        d.key_fields_schema,
+                        value_fields_info,
+                        rel_end_label_info,
+                    )?);
+                    Ok(TypedExportTargetExecutors {
+                        export_context: executor,
+                        query_target: None,
+                    })
                 }
-                let src_label_info = src_label_analyzer.build()?;
-                let tgt_label_info = tgt_label_analyzer.build()?;
-                (value_fields_info, Some((src_label_info, tgt_label_info)))
-            }
-        };
-
-        let desired_setup_state = RelationshipSetupState::new(
-            &spec,
-            key_fields_schema.iter().map(|f| f.name.clone()).collect(),
-            &index_options,
-            &value_fields_info,
-            rel_end_label_info.as_ref(),
-        )?;
-
-        let conn_spec = context
-            .auth_registry
-            .get::<ConnectionSpec>(&spec.connection)?;
-        let executors = async move {
-            let graph = self.graph_pool.get_graph(&conn_spec).await?;
-            let executor = Arc::new(ExportContext::new(
-                graph,
-                spec,
-                key_fields_schema,
-                value_fields_info,
-                rel_end_label_info,
-            )?);
-            Ok(TypedExportTargetExecutors {
-                export_context: executor,
-                query_target: None,
+                .boxed();
+                Ok(TypedExportDataCollectionBuildOutput {
+                    executors,
+                    setup_key,
+                    desired_setup_state,
+                })
             })
-        }
-        .boxed();
-        Ok(TypedExportTargetBuildOutput {
-            executors,
-            setup_key,
-            desired_setup_state,
-        })
+            .collect::<Result<Vec<_>>>()?;
+        Ok((data_coll_output, vec![]))
     }
 
     fn check_setup_status(

@@ -6,6 +6,7 @@ use crate::service::error::{shared_ok, SharedError, SharedResultExt};
 use crate::setup;
 use crate::utils::db::ValidIdentifier;
 use async_trait::async_trait;
+use bytes::Bytes;
 use derivative::Derivative;
 use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
@@ -17,7 +18,6 @@ use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
 use std::ops::Bound;
 use uuid::Uuid;
-use bytes::Bytes;
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
@@ -856,8 +856,7 @@ impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
                 TableUpsertionAction::Create { keys, values } => {
                     let mut fields = (keys
                         .iter()
-                        .map(|(k, v)| format!("{} {} NOT NULL", k, to_column_type_sql(v)))
-                    )
+                        .map(|(k, v)| format!("{} {} NOT NULL", k, to_column_type_sql(v))))
                     .chain(
                         values
                             .iter()
@@ -906,6 +905,7 @@ impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
 #[async_trait]
 impl StorageFactoryBase for Arc<Factory> {
     type Spec = Spec;
+    type DeclarationSpec = ();
     type SetupState = SetupState;
     type Key = TableId;
     type ExportContext = ExportContext;
@@ -916,47 +916,55 @@ impl StorageFactoryBase for Arc<Factory> {
 
     fn build(
         self: Arc<Self>,
-        name: String,
-        spec: Spec,
-        key_fields_schema: Vec<FieldSchema>,
-        value_fields_schema: Vec<FieldSchema>,
-        storage_options: IndexOptions,
+        data_collections: Vec<TypedExportDataCollectionSpec<Self>>,
+        _declarations: Vec<()>,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<TypedExportTargetBuildOutput<Self>> {
-        let table_id = TableId {
-            database_url: spec.database_url.clone(),
-            table_name: spec
-                .table_name
-                .unwrap_or_else(|| format!("{}__{}", context.flow_instance_name, name)),
-        };
-        let setup_state = SetupState::new(
-            &table_id,
-            &key_fields_schema,
-            &value_fields_schema,
-            &storage_options,
-        );
-        let table_name = table_id.table_name.clone();
-        let export_context = Arc::new(ExportContext::new(
-            spec.database_url.clone(),
-            table_name,
-            key_fields_schema,
-            value_fields_schema,
-        )?);
-        let executors = async move {
-            let query_target = Arc::new(PostgresQueryTarget {
-                db_pool: self.get_db_pool(&spec.database_url).await?,
-                context: export_context.clone(),
-            });
-            Ok(TypedExportTargetExecutors {
-                export_context: export_context.clone(),
-                query_target: Some(query_target as Arc<dyn QueryTarget>),
+    ) -> Result<(
+        Vec<TypedExportDataCollectionBuildOutput<Self>>,
+        Vec<(TableId, SetupState)>,
+    )> {
+        let data_coll_output = data_collections
+            .into_iter()
+            .map(|d| {
+                let table_id = TableId {
+                    database_url: d.spec.database_url.clone(),
+                    table_name: d
+                        .spec
+                        .table_name
+                        .unwrap_or_else(|| format!("{}__{}", context.flow_instance_name, d.name)),
+                };
+                let setup_state = SetupState::new(
+                    &table_id,
+                    &d.key_fields_schema,
+                    &d.value_fields_schema,
+                    &d.index_options,
+                );
+                let table_name = table_id.table_name.clone();
+                let export_context = Arc::new(ExportContext::new(
+                    d.spec.database_url.clone(),
+                    table_name,
+                    d.key_fields_schema,
+                    d.value_fields_schema,
+                )?);
+                let factory = self.clone();
+                let executors = async move {
+                    let query_target = Arc::new(PostgresQueryTarget {
+                        db_pool: factory.get_db_pool(&d.spec.database_url).await?,
+                        context: export_context.clone(),
+                    });
+                    Ok(TypedExportTargetExecutors {
+                        export_context: export_context.clone(),
+                        query_target: Some(query_target as Arc<dyn QueryTarget>),
+                    })
+                };
+                Ok(TypedExportDataCollectionBuildOutput {
+                    setup_key: table_id,
+                    desired_setup_state: setup_state,
+                    executors: executors.boxed(),
+                })
             })
-        };
-        Ok(TypedExportTargetBuildOutput {
-            setup_key: table_id,
-            desired_setup_state: setup_state,
-            executors: executors.boxed(),
-        })
+            .collect::<Result<Vec<_>>>()?;
+        Ok((data_coll_output, vec![]))
     }
 
     fn check_setup_status(

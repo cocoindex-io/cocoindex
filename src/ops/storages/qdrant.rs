@@ -3,7 +3,6 @@ use std::convert::Infallible;
 use std::fmt::Display;
 use std::sync::Arc;
 
-use crate::base::spec::*;
 use crate::ops::sdk::*;
 use crate::setup;
 use anyhow::{bail, Result};
@@ -329,6 +328,7 @@ impl Display for CollectionId {
 #[async_trait]
 impl StorageFactoryBase for Arc<Factory> {
     type Spec = Spec;
+    type DeclarationSpec = ();
     type SetupState = ();
     type Key = String;
     type ExportContext = ExportContext;
@@ -339,41 +339,47 @@ impl StorageFactoryBase for Arc<Factory> {
 
     fn build(
         self: Arc<Self>,
-        _name: String,
-        spec: Spec,
-        key_fields_schema: Vec<FieldSchema>,
-        value_fields_schema: Vec<FieldSchema>,
-        _storage_options: IndexOptions,
+        data_collections: Vec<TypedExportDataCollectionSpec<Self>>,
+        _declarations: Vec<()>,
         _context: Arc<FlowInstanceContext>,
-    ) -> Result<TypedExportTargetBuildOutput<Self>> {
-        if key_fields_schema.len() != 1 {
-            api_bail!(
-                "Expected one primary key field for the point ID. Got {}.",
-                key_fields_schema.len()
-            )
-        }
+    ) -> Result<(
+        Vec<TypedExportDataCollectionBuildOutput<Self>>,
+        Vec<(String, ())>,
+    )> {
+        let data_coll_output = data_collections
+            .into_iter()
+            .map(|d| {
+                if d.key_fields_schema.len() != 1 {
+                    api_bail!(
+                        "Expected one primary key field for the point ID. Got {}.",
+                        d.key_fields_schema.len()
+                    )
+                }
 
-        let collection_name = spec.collection_name.clone();
+                let collection_name = d.spec.collection_name.clone();
 
-        let export_context = Arc::new(ExportContext::new(
-            spec.grpc_url,
-            spec.collection_name.clone(),
-            spec.api_key,
-            key_fields_schema,
-            value_fields_schema,
-        )?);
-        let query_target = export_context.clone();
-        let executors = async move {
-            Ok(TypedExportTargetExecutors {
-                export_context,
-                query_target: Some(query_target as Arc<dyn QueryTarget>),
+                let export_context = Arc::new(ExportContext::new(
+                    d.spec.grpc_url,
+                    d.spec.collection_name.clone(),
+                    d.spec.api_key,
+                    d.key_fields_schema,
+                    d.value_fields_schema,
+                )?);
+                let query_target = export_context.clone();
+                let executors = async move {
+                    Ok(TypedExportTargetExecutors {
+                        export_context,
+                        query_target: Some(query_target as Arc<dyn QueryTarget>),
+                    })
+                };
+                Ok(TypedExportDataCollectionBuildOutput {
+                    executors: executors.boxed(),
+                    setup_key: collection_name,
+                    desired_setup_state: (),
+                })
             })
-        };
-        Ok(TypedExportTargetBuildOutput {
-            executors: executors.boxed(),
-            setup_key: collection_name,
-            desired_setup_state: (),
-        })
+            .collect::<Result<Vec<_>>>()?;
+        Ok((data_coll_output, vec![]))
     }
 
     fn check_setup_status(

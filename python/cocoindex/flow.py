@@ -369,9 +369,22 @@ class FlowLiveUpdater:
     """
     _engine_live_updater: _engine.FlowLiveUpdater
 
-    def __init__(self, fl: Flow, options: FlowLiveUpdaterOptions | None = None):
-        self._engine_live_updater = _engine.FlowLiveUpdater(
-            fl._lazy_engine_flow(), dump_engine_object(options or FlowLiveUpdaterOptions()))
+    def __init__(self, arg: Flow | _engine.FlowLiveUpdater, options: FlowLiveUpdaterOptions | None = None):
+        if isinstance(arg, _engine.FlowLiveUpdater):
+            self._engine_live_updater = arg
+        else:
+            self._engine_live_updater = execution_context.run(_engine.FlowLiveUpdater(
+                arg.internal_flow(), dump_engine_object(options or FlowLiveUpdaterOptions())))
+
+    @staticmethod
+    async def create(fl: Flow, options: FlowLiveUpdaterOptions | None = None) -> FlowLiveUpdater:
+        """
+        Create a live updater for a flow.
+        """
+        engine_live_updater = await _engine.FlowLiveUpdater.create(
+            await fl.ainternal_flow(),
+            dump_engine_object(options or FlowLiveUpdaterOptions()))
+        return FlowLiveUpdater(engine_live_updater)
 
     def __enter__(self) -> FlowLiveUpdater:
         return self
@@ -450,7 +463,7 @@ class Flow:
         Update the index defined by the flow.
         Once the function returns, the indice is fresh up to the moment when the function is called.
         """
-        updater = FlowLiveUpdater(self, FlowLiveUpdaterOptions(live_mode=False))
+        updater = await FlowLiveUpdater.create(self, FlowLiveUpdaterOptions(live_mode=False))
         await updater.wait()
         return updater.update_stats()
 
@@ -465,6 +478,12 @@ class Flow:
         Get the engine flow.
         """
         return self._lazy_engine_flow()
+
+    async def ainternal_flow(self) -> _engine.Flow:
+        """
+        Get the engine flow. The async version.
+        """
+        return await asyncio.to_thread(self.internal_flow)
 
 def _create_lazy_flow(name: str | None, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
     """
@@ -523,17 +542,23 @@ def ensure_all_flows_built() -> None:
     """
     Ensure all flows are built.
     """
-    with _flows_lock:
-        for fl in _flows.values():
-            fl.internal_flow()
+    for fl in flows():
+        fl.internal_flow()
+
+async def aensure_all_flows_built() -> None:
+    """
+    Ensure all flows are built.
+    """
+    for fl in flows():
+        await fl.ainternal_flow()
 
 async def update_all_flows(options: FlowLiveUpdaterOptions) -> dict[str, _engine.IndexUpdateInfo]:
     """
     Update all flows.
     """
-    ensure_all_flows_built()
+    await aensure_all_flows_built()
     async def _update_flow(fl: Flow) -> _engine.IndexUpdateInfo:
-        updater = FlowLiveUpdater(fl, options)
+        updater = await FlowLiveUpdater.create(fl, options)
         await updater.wait()
         return updater.update_stats()
     fls = flows()

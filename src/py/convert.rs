@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use pyo3::types::{PyList, PyTuple};
 use pyo3::IntoPyObjectExt;
 use pyo3::{exceptions::PyException, prelude::*};
@@ -6,8 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::ops::Deref;
-use std::sync::Arc; 
-use bytes::Bytes;
+use std::sync::Arc;
 
 use super::IntoPyResult;
 use crate::base::{schema, value};

@@ -101,7 +101,8 @@ def main_fn(
                 try:
                     if _should_run_cli():
                         # Schedule to a separate thread as it invokes nested event loop.
-                        return await asyncio.to_thread(_run_cli)
+                        # return await asyncio.to_thread(_run_cli)
+                        return _run_cli()
                     return await fn(*args, **kwargs)
                 finally:
                     stop()
