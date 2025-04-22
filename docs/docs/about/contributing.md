@@ -51,6 +51,7 @@ Following the steps below to get cocoindex build on latest codebase locally - if
     ```
 
 ## Submit Your Code
+CocoIndex is committed to the highest standards of code quality. Please ensure your code is thoroughly tested before submitting a PR.
 
 To submit your code:
 
