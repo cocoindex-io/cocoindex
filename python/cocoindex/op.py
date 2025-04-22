@@ -18,7 +18,7 @@ class OpCategory(Enum):
     FUNCTION = "function"
     SOURCE = "source"
     STORAGE = "storage"
-
+    DECLARATION = "declaration"
 @dataclass_transform()
 class SpecMeta(type):
     """Meta class for spec classes."""
@@ -40,6 +40,10 @@ class FunctionSpec(metaclass=SpecMeta, category=OpCategory.FUNCTION): # pylint: 
 
 class StorageSpec(metaclass=SpecMeta, category=OpCategory.STORAGE): # pylint: disable=too-few-public-methods
     """A storage spec. All its subclass can be instantiated similar to a dataclass, i.e. ClassName(field1=value1, field2=value2, ...)"""
+
+class DeclarationSpec(metaclass=SpecMeta, category=OpCategory.DECLARATION): # pylint: disable=too-few-public-methods
+    """A declaration spec. All its subclass can be instantiated similar to a dataclass, i.e. ClassName(field1=value1, field2=value2, ...)"""
+    kind: str
 
 class Executor(Protocol):
     """An executor for an operation."""

@@ -274,6 +274,9 @@ pub struct FlowInstanceSpec {
 
     #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
     pub export_ops: Vec<NamedSpec<ExportOpSpec>>,
+
+    #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
+    pub declarations: Vec<OpSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

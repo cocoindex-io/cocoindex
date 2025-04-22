@@ -290,6 +290,12 @@ class DataCollector:
             name, _spec_kind(target_spec), dump_engine_object(target_spec),
             dump_engine_object(index_options), self._engine_data_collector, setup_by_user)
 
+    def declare(self, spec: op.DeclarationSpec):
+        """
+        Add a declaration to the flow.
+        """
+        self._flow_builder_state.engine_flow_builder.declare(dump_engine_object(spec))
+
 
 _flow_name_builder = _NameBuilder()
 

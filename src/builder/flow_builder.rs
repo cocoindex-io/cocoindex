@@ -331,6 +331,8 @@ pub struct FlowBuilder {
     import_ops: Vec<NamedSpec<spec::ImportOpSpec>>,
     export_ops: Vec<NamedSpec<spec::ExportOpSpec>>,
 
+    declarations: Vec<spec::OpSpec>,
+
     next_generated_op_id: usize,
 }
 
@@ -369,6 +371,8 @@ impl FlowBuilder {
 
             direct_input_fields: vec![],
             direct_output_value: None,
+
+            declarations: vec![],
 
             next_generated_op_id: 0,
         };
@@ -612,6 +616,11 @@ impl FlowBuilder {
         Ok(())
     }
 
+    pub fn declare(&mut self, op_spec: py::Pythonized<spec::OpSpec>) -> PyResult<()> {
+        self.declarations.push(op_spec.into_inner());
+        Ok(())
+    }
+
     pub fn scope_field(
         &self,
         scope: DataScopeRef,
@@ -642,6 +651,7 @@ impl FlowBuilder {
             import_ops: self.import_ops.clone(),
             reactive_ops: self.reactive_ops.clone(),
             export_ops: self.export_ops.clone(),
+            declarations: self.declarations.clone(),
         };
         let flow_instance_ctx = build_flow_instance_context(
             &self.flow_instance_name,
