@@ -372,14 +372,14 @@ impl<StatusCheck: ObjectSetupStatusCheck> std::fmt::Display
             f,
             "[ {:^9} ]",
             match self.0.status() {
-                ObjectStatus::New => "NEW",
+                ObjectStatus::New => "TO CREATE",
                 ObjectStatus::Existing =>
                     if self.0.is_up_to_date() {
                         "READY"
                     } else {
-                        "UPDATED"
+                        "TO UPDATE"
                     },
-                ObjectStatus::Deleted => "DELETED",
+                ObjectStatus::Deleted => "TO DELETE",
                 ObjectStatus::Invalid => "INVALID",
             }
         )
