@@ -67,19 +67,25 @@ impl TrackingTableSetupStatusCheck {
         desired: Option<&TrackingTableSetupState>,
         existing: &CombinedState<TrackingTableSetupState>,
         source_ids_to_delete: Vec<i32>,
-    ) -> Self {
-        Self {
-            desired_state: desired.cloned(),
-            legacy_table_names: existing
-                .legacy_values(desired, |v| &v.table_name)
-                .into_iter()
-                .cloned()
-                .collect(),
-            min_existing_version_id: existing
-                .always_exists()
-                .then(|| existing.possible_versions().map(|v| v.version_id).min())
-                .flatten(),
-            source_ids_to_delete,
+    ) -> Option<Self> {
+        let legacy_table_names = existing
+            .legacy_values(desired, |v| &v.table_name)
+            .into_iter()
+            .cloned()
+            .collect();
+        let min_existing_version_id = existing
+            .always_exists()
+            .then(|| existing.possible_versions().map(|v| v.version_id).min())
+            .flatten();
+        if desired.is_some() || min_existing_version_id.is_some() {
+            Some(Self {
+                desired_state: desired.cloned(),
+                legacy_table_names,
+                min_existing_version_id,
+                source_ids_to_delete,
+            })
+        } else {
+            None
         }
     }
 

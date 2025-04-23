@@ -323,7 +323,7 @@ pub struct FlowSetupStatusCheck {
     pub metadata_change: Option<StateChange<FlowSetupMetadata>>,
 
     pub tracking_table:
-        ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupStatusCheck>,
+        Option<ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupStatusCheck>>,
     pub target_resources: Vec<
         ResourceSetupInfo<ResourceIdentifier, TargetSetupState, Box<dyn ResourceSetupStatusCheck>>,
     >,
@@ -338,7 +338,10 @@ impl ObjectSetupStatusCheck for FlowSetupStatusCheck {
 
     fn is_up_to_date(&self) -> bool {
         self.metadata_change.is_none()
-            && self.tracking_table.is_up_to_date()
+            && self
+                .tracking_table
+                .as_ref()
+                .is_none_or(|t| t.is_up_to_date())
             && self
                 .target_resources
                 .iter()
@@ -392,17 +395,19 @@ impl std::fmt::Display for FormattedFlowSetupStatusCheck<'_> {
         write!(
             f,
             "{} {}\n",
-            ObjectSetupStatusCode(flow_ssc).to_string().color(AnsiColors::Cyan),
+            ObjectSetupStatusCode(flow_ssc)
+                .to_string()
+                .color(AnsiColors::Cyan),
             format!("Flow: {}", self.0)
         )?;
 
         let mut f = indented(f).with_str(INDENT);
-        write!(f, "{}", flow_ssc.tracking_table)?;
-
+        if let Some(tracking_table) = &flow_ssc.tracking_table {
+            write!(f, "{}", tracking_table)?;
+        }
         for target_resource in &flow_ssc.target_resources {
             write!(f, "{}", target_resource)?;
         }
-
         for resource in &flow_ssc.unknown_resources {
             writeln!(f, "[  UNKNOWN  ] {resource}")?;
         }
