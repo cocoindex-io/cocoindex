@@ -23,12 +23,6 @@ pub struct NodeReferenceMapping {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct NodeStorageSpec {
-    #[serde(flatten)]
-    pub index_options: spec::IndexOptions,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct NodeMapping {
     pub label: String,
 }
@@ -38,7 +32,6 @@ pub struct RelationshipMapping {
     pub rel_type: String,
     pub source: NodeReferenceMapping,
     pub target: NodeReferenceMapping,
-    pub nodes_storage_spec: Option<BTreeMap<String, NodeStorageSpec>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,4 +39,17 @@ pub struct RelationshipMapping {
 pub enum GraphElementMapping {
     Relationship(RelationshipMapping),
     Node(NodeMapping),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReferencedNodeSpec {
+    pub label: String,
+
+    #[serde(flatten)]
+    pub index_options: spec::IndexOptions,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GraphDeclarations {
+    pub referenced_nodes: Vec<ReferencedNodeSpec>,
 }

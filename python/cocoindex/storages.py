@@ -43,8 +43,9 @@ class NodeReferenceMapping:
     fields: list[TargetFieldMapping]
 
 @dataclass
-class NodeStorageSpec:
+class ReferencedNode:
     """Storage spec for a graph node."""
+    label: str
     primary_key_fields: Sequence[str]
     vector_indexes: Sequence[index.VectorIndexDef] = ()
 
@@ -63,10 +64,16 @@ class RelationshipMapping:
     rel_type: str
     source: NodeReferenceMapping
     target: NodeReferenceMapping
-    nodes_storage_spec: dict[str, NodeStorageSpec] | None = None
 
 class Neo4j(op.StorageSpec):
     """Graph storage powered by Neo4j."""
 
     connection: AuthEntryReference
     mapping: NodeMapping | RelationshipMapping
+
+class Neo4jDeclarations(op.DeclarationSpec):
+    """Declarations for Neo4j."""
+
+    kind = "Neo4j"
+    connection: AuthEntryReference
+    referenced_nodes: Sequence[ReferencedNode] = ()

@@ -7,7 +7,6 @@ import inspect
 
 from typing import get_type_hints, Protocol, Any, Callable, Awaitable, dataclass_transform
 from enum import Enum
-from functools import partial
 
 from .typing import encode_enriched_type
 from .convert import to_engine_value, make_engine_value_converter
@@ -43,8 +42,6 @@ class StorageSpec(metaclass=SpecMeta, category=OpCategory.STORAGE): # pylint: di
 
 class DeclarationSpec(metaclass=SpecMeta, category=OpCategory.DECLARATION): # pylint: disable=too-few-public-methods
     """A declaration spec. All its subclass can be instantiated similar to a dataclass, i.e. ClassName(field1=value1, field2=value2, ...)"""
-    kind: str
-
 class Executor(Protocol):
     """An executor for an operation."""
     op_category: OpCategory

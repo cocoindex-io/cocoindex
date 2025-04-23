@@ -92,12 +92,30 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
                     id=cocoindex.GeneratedField.UUID, entity=relationship["object"],
                     filename=doc["filename"], location=chunk["location"],
                 )
+
     document_node.export(
         "document_node",
         cocoindex.storages.Neo4j(
             connection=conn_spec,
             mapping=cocoindex.storages.NodeMapping(label="Document")),
         primary_key_fields=["filename"],
+    )
+    flow_builder.declare(
+        cocoindex.storages.Neo4jDeclarations(
+            connection=conn_spec,
+            referenced_nodes=[
+                cocoindex.storages.ReferencedNode(
+                    label="Entity",
+                    primary_key_fields=["value"],
+                    vector_indexes=[
+                        cocoindex.VectorIndexDef(
+                            field_name="embedding",
+                            metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+                        ),
+                    ],
+                )
+            ]
+        )
     )
     entity_relationship.export(
         "entity_relationship",
@@ -123,17 +141,6 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
                             source="object_embedding", target="embedding"),
                     ]
                 ),
-                nodes_storage_spec={
-                    "Entity": cocoindex.storages.NodeStorageSpec(
-                        primary_key_fields=["value"],
-                        vector_indexes=[
-                            cocoindex.VectorIndexDef(
-                                field_name="embedding",
-                                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-                            ),
-                        ],
-                    ),
-                },
             ),
         ),
         primary_key_fields=["id"],
