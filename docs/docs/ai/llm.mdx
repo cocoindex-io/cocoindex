@@ -21,7 +21,7 @@ It has the following fields:
 *   `address` (optional): The address of the LLM API.
 
 
-## LLM API integrations
+## LLM API Integrations
 
 CocoIndex integrates with various LLM APIs for these functions.
 
@@ -77,3 +77,24 @@ cocoindex.LlmSpec(
 </TabItem>
 </Tabs>
 
+### Google Gemini
+
+To use the Gemini LLM API, you need to set the environment variable `GEMINI_API_KEY`.
+You can generate the API key from [Google AI Studio](https://aistudio.google.com/apikey).
+
+A spec for Gemini looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.GEMINI,
+    model="gemini-2.0-flash",
+)
+```
+
+</TabItem>
+</Tabs>
+
+You can find the full list of models supported by Gemini [here](https://ai.google.dev/gemini-api/docs/models).

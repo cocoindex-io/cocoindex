@@ -5,9 +5,23 @@ description: Learn how to contribute to CocoIndex
 
 # Contributing
 
-We love contributions from our community! This guide explains how to get involved and contribute to CocoIndex.
+[CocoIndex](https://github.com/cocoindex-io/cocoindex) is an open source project. We are respectful, open and friendly. This guide explains how to get involved and contribute to [CocoIndex](https://github.com/cocoindex-io/cocoindex).
 
-## Setting Up Development Environment
+## Issues:
+
+We use [GitHub Issues](https://github.com/cocoindex-io/cocoindex/issues) to track bugs and feature requests.
+
+## Good First Issues
+
+We tag issues with the ["good first issue"](https://github.com/cocoindex-io/cocoindex/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) label for beginner contributors.
+
+## How to Contribute 
+- If you decide to work on an issue, unless the PR can be sent immediately (e.g. just a few lines of code), we recommend you to leave a comment on the issue like **`I'm working on it`**  or **`Can I work on this issue?`** to avoid duplicating work.
+- For larger features, we recommend you to discuss with us first in our [Discord server](https://discord.com/invite/zpA9S2DR7s) to coordinate the design and work.
+- Our [Discord server](https://discord.com/invite/zpA9S2DR7s) are constantly open. If you are unsure about anything, it is a good place to discuss! We'd love to collaborate and will always be friendly.
+
+## Start hacking! Setting Up Development Environment 
+Following the steps below to get cocoindex build on latest codebase locally - if you are making changes to cocoindex funcionality and want to test it out.
 
 -   Install Rust toolchain: [docs](https://rust-lang.org/tools/install)
 
@@ -37,6 +51,7 @@ We love contributions from our community! This guide explains how to get involve
     ```
 
 ## Submit Your Code
+CocoIndex is committed to the highest standards of code quality. Please ensure your code is thoroughly tested before submitting a PR.
 
 To submit your code:
 
@@ -48,7 +63,6 @@ To submit your code:
 In your PR description, please include:
 - Description of the changes
 - Motivation and context
-- Test coverage details
 - Note if it's a breaking change
 - Reference any related GitHub issues
 

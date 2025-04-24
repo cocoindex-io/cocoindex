@@ -11,6 +11,7 @@ use crate::base::json_schema::ToJsonSchemaOptions;
 pub enum LlmApiType {
     Ollama,
     OpenAi,
+    Gemini,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +53,7 @@ pub trait LlmGenerationClient: Send + Sync {
 
 mod ollama;
 mod openai;
+mod gemini;
 
 pub async fn new_llm_generation_client(spec: LlmSpec) -> Result<Box<dyn LlmGenerationClient>> {
     let client = match spec.api_type {
@@ -60,6 +62,9 @@ pub async fn new_llm_generation_client(spec: LlmSpec) -> Result<Box<dyn LlmGener
         }
         LlmApiType::OpenAi => {
             Box::new(openai::Client::new(spec).await?) as Box<dyn LlmGenerationClient>
+        }
+        LlmApiType::Gemini => {
+            Box::new(gemini::Client::new(spec).await?) as Box<dyn LlmGenerationClient>
         }
     };
     Ok(client)

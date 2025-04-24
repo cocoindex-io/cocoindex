@@ -12,7 +12,7 @@ use pythonize::pythonize;
 use crate::{
     base::{schema, value},
     builder::plan,
-    py,
+    py::{self, FromPyResult},
 };
 use anyhow::{anyhow, Result};
 
@@ -74,14 +74,17 @@ impl PyFunctionExecutor {
             Some(kwargs)
         };
 
-        let result = self.py_function_executor.call(
-            py,
-            PyTuple::new(py, args.into_iter())?,
-            kwargs
-                .map(|kwargs| -> Result<_> { Ok(kwargs.into_py_dict(py)?) })
-                .transpose()?
-                .as_ref(),
-        )?;
+        let result = self
+            .py_function_executor
+            .call(
+                py,
+                PyTuple::new(py, args.into_iter())?,
+                kwargs
+                    .map(|kwargs| -> Result<_> { Ok(kwargs.into_py_dict(py)?) })
+                    .transpose()?
+                    .as_ref(),
+            )
+            .from_py_result(py)?;
         Ok(result.into_bound(py))
     }
 }
@@ -99,8 +102,9 @@ impl SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
                 result_coro,
             )?)
         })?;
-        let result = result_fut.await?;
+        let result = result_fut.await;
         Python::with_gil(|py| -> Result<_> {
+            let result = result.from_py_result(py)?;
             Ok(py::value_from_py_object(
                 &self.result_type.typ,
                 &result.into_bound(py),
@@ -156,11 +160,14 @@ impl SimpleFunctionFactory for PyFunctionFactory {
                     .iter()
                     .map(|(name, _)| PyString::new(py, name).unbind())
                     .collect::<Vec<_>>();
-                let result = self.py_function_factory.call(
-                    py,
-                    PyTuple::new(py, args.into_iter())?,
-                    Some(&kwargs.into_py_dict(py)?),
-                )?;
+                let result = self
+                    .py_function_factory
+                    .call(
+                        py,
+                        PyTuple::new(py, args.into_iter())?,
+                        Some(&kwargs.into_py_dict(py)?),
+                    )
+                    .from_py_result(py)?;
                 let (result_type, executor) = result
                     .extract::<(crate::py::Pythonized<schema::EnrichedValueType>, Py<PyAny>)>(py)?;
                 Ok((
@@ -181,7 +188,9 @@ impl SimpleFunctionFactory for PyFunctionFactory {
                     .clone();
                 let (prepare_fut, enable_cache, behavior_version) =
                     Python::with_gil(|py| -> anyhow::Result<_> {
-                        let prepare_coro = executor.call_method(py, "prepare", (), None)?;
+                        let prepare_coro = executor
+                            .call_method(py, "prepare", (), None)
+                            .from_py_result(py)?;
                         let prepare_fut = pyo3_async_runtimes::into_future_with_locals(
                             &pyo3_async_runtimes::TaskLocals::new(
                                 py_exec_ctx.event_loop.bind(py).clone(),
@@ -189,10 +198,12 @@ impl SimpleFunctionFactory for PyFunctionFactory {
                             prepare_coro.into_bound(py),
                         )?;
                         let enable_cache = executor
-                            .call_method(py, "enable_cache", (), None)?
+                            .call_method(py, "enable_cache", (), None)
+                            .from_py_result(py)?
                             .extract::<bool>(py)?;
                         let behavior_version = executor
-                            .call_method(py, "behavior_version", (), None)?
+                            .call_method(py, "behavior_version", (), None)
+                            .from_py_result(py)?
                             .extract::<Option<u32>>(py)?;
                         Ok((prepare_fut, enable_cache, behavior_version))
                     })?;

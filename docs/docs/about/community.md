@@ -29,7 +29,7 @@ Join our community channels to get help, share ideas, and connect with other dev
 
 Need help? Here are the best ways to get support:
 
-- Email us at [support@cocoindex.io](mailto:support@cocoindex.io)
+- Email us at [hi@cocoindex.io](mailto:hi@cocoindex.io)
 - Check our [documentation](https://cocoindex.io/docs)
 - Read our [blog posts](https://cocoindex.io/blogs)
-- Ask questions in our Discord community 
+- Ask questions in our [Discord Server](https://discord.com/invite/zpA9S2DR7s)

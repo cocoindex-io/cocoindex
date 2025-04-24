@@ -95,7 +95,8 @@ static LIB_INIT: OnceLock<()> = OnceLock::new();
 pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
     LIB_INIT.get_or_init(|| {
         console_subscriber::init();
-        env_logger::init();
+        let _ = env_logger::try_init();
+
         pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).unwrap();
     });
 

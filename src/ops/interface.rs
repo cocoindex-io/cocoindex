@@ -162,23 +162,31 @@ pub struct ExportTargetExecutors {
     pub export_context: Arc<dyn Any + Send + Sync>,
     pub query_target: Option<Arc<dyn QueryTarget>>,
 }
-pub struct ExportTargetBuildOutput {
+pub struct ExportDataCollectionBuildOutput {
     pub executors: BoxFuture<'static, Result<ExportTargetExecutors>>,
     pub setup_key: serde_json::Value,
     pub desired_setup_state: serde_json::Value,
+}
+
+pub struct ExportDataCollectionSpec {
+    pub name: String,
+    pub spec: serde_json::Value,
+    pub key_fields_schema: Vec<FieldSchema>,
+    pub value_fields_schema: Vec<FieldSchema>,
+    pub index_options: IndexOptions,
 }
 
 #[async_trait]
 pub trait ExportTargetFactory: Send + Sync {
     fn build(
         self: Arc<Self>,
-        name: String,
-        spec: serde_json::Value,
-        key_fields_schema: Vec<FieldSchema>,
-        value_fields_schema: Vec<FieldSchema>,
-        storage_options: IndexOptions,
+        data_collections: Vec<ExportDataCollectionSpec>,
+        declarations: Vec<serde_json::Value>,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<ExportTargetBuildOutput>;
+    ) -> Result<(
+        Vec<ExportDataCollectionBuildOutput>,
+        Vec<(serde_json::Value, serde_json::Value)>,
+    )>;
 
     /// Will not be called if it's setup by user.
     /// It returns an error if the target only supports setup by user.

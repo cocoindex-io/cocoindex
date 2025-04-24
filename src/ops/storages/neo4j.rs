@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 use super::spec::{
-    GraphElementMapping, NodeReferenceMapping, RelationshipMapping, TargetFieldMapping,
+    GraphDeclarations, GraphElementMapping, NodeReferenceMapping, TargetFieldMapping,
 };
 use crate::setup::components::{self, State};
 use crate::setup::{ResourceSetupStatusCheck, SetupChangeType};
@@ -26,6 +26,13 @@ pub struct ConnectionSpec {
 pub struct Spec {
     connection: spec::AuthEntryReference,
     mapping: GraphElementMapping,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Declaration {
+    connection: spec::AuthEntryReference,
+    #[serde(flatten)]
+    decl: GraphDeclarations,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -602,7 +609,7 @@ impl ExportContext {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RelationshipSetupState {
+pub struct SetupState {
     key_field_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     dependent_node_labels: Vec<String>,
@@ -610,90 +617,38 @@ pub struct RelationshipSetupState {
     sub_components: Vec<ComponentState>,
 }
 
-impl RelationshipSetupState {
+impl SetupState {
     fn new(
-        spec: &Spec,
+        object_label: &ElementType,
         key_field_names: Vec<String>,
         index_options: &IndexOptions,
-        value_fields_info: &[AnalyzedGraphFieldMapping],
-        end_nodes_label_info: Option<&(AnalyzedNodeLabelInfo, AnalyzedNodeLabelInfo)>,
+        field_types: &HashMap<String, schema::ValueType>,
+        dependent_node_labels: Option<Vec<String>>,
     ) -> Result<Self> {
         let mut sub_components = vec![];
         sub_components.push(ComponentState {
-            object_label: ElementType::from_mapping_spec(&spec.mapping),
+            object_label: object_label.clone(),
             index_def: IndexDef::KeyConstraint {
                 field_names: key_field_names.clone(),
             },
         });
         for index_def in index_options.vector_indexes.iter() {
             sub_components.push(ComponentState {
-                object_label: ElementType::from_mapping_spec(&spec.mapping),
+                object_label: object_label.clone(),
                 index_def: IndexDef::from_vector_index_def(
                     index_def,
-                    &value_fields_info
-                        .iter()
-                        .find(|f| f.field_name == index_def.field_name)
-                        .ok_or_else(|| {
-                            api_error!(
-                                "Unknown field name for vector index: {}",
-                                index_def.field_name
-                            )
-                        })?
-                        .value_type,
+                    field_types.get(&index_def.field_name).ok_or_else(|| {
+                        api_error!(
+                            "Unknown field name for vector index: {}",
+                            index_def.field_name
+                        )
+                    })?,
                 )?,
             });
         }
-        let mut dependent_node_labels = vec![];
-        match &spec.mapping {
-            GraphElementMapping::Node(_) => {}
-            GraphElementMapping::Relationship(rel_spec) => {
-                let (src_label_info, tgt_label_info) = end_nodes_label_info.ok_or_else(|| {
-                    anyhow!(
-                        "Expect `end_nodes_label_info` existing for relationship `{}`",
-                        rel_spec.rel_type
-                    )
-                })?;
-                for (label, node) in rel_spec.nodes_storage_spec.iter().flatten() {
-                    if let Some(primary_key_fields) = &node.index_options.primary_key_fields {
-                        sub_components.push(ComponentState {
-                            object_label: ElementType::Node(label.clone()),
-                            index_def: IndexDef::KeyConstraint {
-                                field_names: primary_key_fields.clone(),
-                            },
-                        });
-                    }
-                    for index_def in &node.index_options.vector_indexes {
-                        sub_components.push(ComponentState {
-                            object_label: ElementType::Node(label.clone()),
-                            index_def: IndexDef::from_vector_index_def(
-                                index_def,
-                                [src_label_info, tgt_label_info]
-                                    .into_iter()
-                                    .flat_map(|v| v.key_fields.iter().chain(v.value_fields.iter()))
-                                    .find(|f| f.field_name == index_def.field_name)
-                                    .map(|f| &f.value_type)
-                                    .ok_or_else(|| {
-                                        api_error!(
-                                            "Unknown field name for vector index: {}",
-                                            index_def.field_name
-                                        )
-                                    })?,
-                            )?,
-                        });
-                    }
-                }
-                dependent_node_labels.extend(
-                    rel_spec
-                        .nodes_storage_spec
-                        .iter()
-                        .flat_map(|nodes| nodes.keys())
-                        .cloned(),
-                );
-            }
-        };
         Ok(Self {
             key_field_names,
-            dependent_node_labels,
+            dependent_node_labels: dependent_node_labels.unwrap_or_default(),
             sub_components,
         })
     }
@@ -707,7 +662,7 @@ impl RelationshipSetupState {
     }
 }
 
-impl IntoIterator for RelationshipSetupState {
+impl IntoIterator for SetupState {
     type Item = ComponentState;
     type IntoIter = std::vec::IntoIter<Self::Item>;
 
@@ -715,9 +670,8 @@ impl IntoIterator for RelationshipSetupState {
         self.sub_components.into_iter()
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct DataClearAction {
-    core_elem_type: ElementType,
     dependent_node_labels: Vec<String>,
 }
 
@@ -811,7 +765,7 @@ struct SetupComponentOperator {
 impl components::Operator for SetupComponentOperator {
     type Key = ComponentKey;
     type State = ComponentState;
-    type SetupState = RelationshipSetupState;
+    type SetupState = SetupState;
 
     fn describe_key(&self, key: &Self::Key) -> String {
         format!("{} {}", key.kind.describe(), key.name)
@@ -904,6 +858,7 @@ fn build_composite_field_names(qualifier: &str, field_names: &[String]) -> Strin
 #[derive(Derivative)]
 #[derivative(Debug)]
 struct SetupStatusCheck {
+    key: GraphElement,
     #[derivative(Debug = "ignore")]
     graph_pool: Arc<GraphPool>,
     conn_spec: ConnectionSpec,
@@ -916,25 +871,20 @@ impl SetupStatusCheck {
         key: GraphElement,
         graph_pool: Arc<GraphPool>,
         conn_spec: ConnectionSpec,
-        desired_state: Option<&RelationshipSetupState>,
-        existing: &CombinedState<RelationshipSetupState>,
+        desired_state: Option<&SetupState>,
+        existing: &CombinedState<SetupState>,
     ) -> Self {
-        let mut core_elem_type_to_clear = None;
-        let mut dependent_node_labels_to_clear = IndexSet::new();
+        let mut data_clear: Option<DataClearAction> = None;
         for v in existing.possible_versions() {
             if desired_state.as_ref().is_none_or(|desired| {
                 desired.check_compatible(v) == SetupStateCompatibility::NotCompatible
             }) {
-                if core_elem_type_to_clear.is_none() {
-                    core_elem_type_to_clear = Some(key.typ.clone());
-                }
-                dependent_node_labels_to_clear.extend(v.dependent_node_labels.iter().cloned());
+                data_clear
+                    .get_or_insert_default()
+                    .dependent_node_labels
+                    .extend(v.dependent_node_labels.iter().cloned());
             }
         }
-        let data_clear = core_elem_type_to_clear.map(|core_elem_type| DataClearAction {
-            core_elem_type,
-            dependent_node_labels: dependent_node_labels_to_clear.into_iter().collect(),
-        });
 
         let change_type = match (desired_state, existing.possible_versions().next()) {
             (Some(_), Some(_)) => {
@@ -950,6 +900,7 @@ impl SetupStatusCheck {
         };
 
         Self {
+            key,
             graph_pool,
             conn_spec,
             data_clear,
@@ -963,7 +914,7 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
     fn describe_changes(&self) -> Vec<String> {
         let mut result = vec![];
         if let Some(data_clear) = &self.data_clear {
-            let mut desc = format!("Clear data for {}", data_clear.core_elem_type);
+            let mut desc = "Clear data".to_string();
             if !data_clear.dependent_node_labels.is_empty() {
                 write!(
                     &mut desc,
@@ -996,9 +947,9 @@ impl ResourceSetupStatusCheck for SetupStatusCheck {
                         DELETE {var_name}
                     }} IN TRANSACTIONS
                 ",
-                matcher = data_clear.core_elem_type.matcher(CORE_ELEMENT_MATCHER_VAR),
+                matcher = self.key.typ.matcher(CORE_ELEMENT_MATCHER_VAR),
                 var_name = CORE_ELEMENT_MATCHER_VAR,
-                optional_orphan_condition = match data_clear.core_elem_type {
+                optional_orphan_condition = match self.key.typ {
                     ElementType::Node(_) => format!("WHERE NOT ({CORE_ELEMENT_MATCHER_VAR})--()"),
                     _ => "".to_string(),
                 },
@@ -1038,13 +989,13 @@ struct DependentNodeLabelAnalyzer<'a> {
     label_name: &'a str,
     fields: IndexMap<&'a str, AnalyzedGraphFieldMapping>,
     remaining_fields: HashMap<&'a str, &'a TargetFieldMapping>,
-    index_options: Option<&'a IndexOptions>,
+    primary_key_fields: &'a Vec<String>,
 }
 
 impl<'a> DependentNodeLabelAnalyzer<'a> {
     fn new(
-        rel_spec: &'a RelationshipMapping,
         rel_end_spec: &'a NodeReferenceMapping,
+        index_options_map: &'a HashMap<String, IndexOptions>,
     ) -> Result<Self> {
         Ok(Self {
             label_name: rel_end_spec.label.as_str(),
@@ -1054,31 +1005,38 @@ impl<'a> DependentNodeLabelAnalyzer<'a> {
                 .iter()
                 .map(|f| (f.source.as_str(), f))
                 .collect(),
-            index_options: rel_spec
-                .nodes_storage_spec
-                .as_ref()
-                .and_then(|nodes| nodes.get(&rel_end_spec.label))
-                .and_then(|node_spec| Some(&node_spec.index_options)),
+            primary_key_fields: index_options_map
+                .get(&rel_end_spec.label)
+                .and_then(|o| o.primary_key_fields.as_ref())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No key fields specified for Node label `{}`",
+                        rel_end_spec.label
+                    )
+                })?,
         })
     }
 
     fn process_field(&mut self, field_idx: usize, field_schema: &FieldSchema) -> bool {
-        let field_info = match self.remaining_fields.remove(field_schema.name.as_str()) {
-            Some(field_info) => field_info,
+        let field_mapping = match self.remaining_fields.remove(field_schema.name.as_str()) {
+            Some(field_mapping) => field_mapping,
             None => return false,
         };
         self.fields.insert(
-            field_info.get_target().as_str(),
+            field_mapping.get_target().as_str(),
             AnalyzedGraphFieldMapping {
                 field_idx,
-                field_name: field_info.get_target().clone(),
+                field_name: field_mapping.get_target().clone(),
                 value_type: field_schema.value_type.typ.clone(),
             },
         );
         true
     }
 
-    fn build(self) -> Result<AnalyzedNodeLabelInfo> {
+    fn build(
+        self,
+        label_value_field_types: &mut HashMap<String, HashMap<String, schema::ValueType>>,
+    ) -> Result<AnalyzedNodeLabelInfo> {
         if !self.remaining_fields.is_empty() {
             anyhow::bail!(
                 "Fields not mapped for  Node label `{}`: {}",
@@ -1087,13 +1045,10 @@ impl<'a> DependentNodeLabelAnalyzer<'a> {
             );
         }
         let mut fields = self.fields;
-        let mut key_fields = vec![];
-        if let Some(index_options) = self.index_options {
-            for key_field in index_options
-                .primary_key_fields
-                .iter()
-                .flat_map(|f| f.iter())
-            {
+        let key_fields = self
+            .primary_key_fields
+            .iter()
+            .map(|key_field| {
                 let e = fields.shift_remove(key_field.as_str()).ok_or_else(|| {
                     anyhow!(
                         "Key field `{}` not mapped in Node label `{}`",
@@ -1101,17 +1056,17 @@ impl<'a> DependentNodeLabelAnalyzer<'a> {
                         self.label_name
                     )
                 })?;
-                key_fields.push(e);
-            }
-        } else {
-            key_fields = std::mem::take(&mut fields).into_values().collect();
-        }
-        if key_fields.is_empty() {
-            anyhow::bail!(
-                "No key fields specified for Node label `{}`",
-                self.label_name
+                Ok(e)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        label_value_field_types
+            .entry(self.label_name.to_string())
+            .or_insert_with(HashMap::new)
+            .extend(
+                fields
+                    .values()
+                    .map(|f| (f.field_name.clone(), f.value_type.clone())),
             );
-        }
         Ok(AnalyzedNodeLabelInfo {
             key_fields,
             value_fields: fields.into_values().collect(),
@@ -1122,7 +1077,8 @@ impl<'a> DependentNodeLabelAnalyzer<'a> {
 #[async_trait]
 impl StorageFactoryBase for Factory {
     type Spec = Spec;
-    type SetupState = RelationshipSetupState;
+    type DeclarationSpec = Declaration;
+    type SetupState = SetupState;
     type Key = GraphElement;
     type ExportContext = ExportContext;
 
@@ -1132,89 +1088,171 @@ impl StorageFactoryBase for Factory {
 
     fn build(
         self: Arc<Self>,
-        _name: String,
-        spec: Spec,
-        key_fields_schema: Vec<FieldSchema>,
-        value_fields_schema: Vec<FieldSchema>,
-        index_options: IndexOptions,
+        data_collections: Vec<TypedExportDataCollectionSpec<Self>>,
+        declarations: Vec<Declaration>,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<TypedExportTargetBuildOutput<Self>> {
-        let setup_key = GraphElement::from_spec(&spec);
-
-        let (value_fields_info, rel_end_label_info) = match &spec.mapping {
-            GraphElementMapping::Node(_) => (
-                value_fields_schema
-                    .into_iter()
-                    .enumerate()
-                    .map(|(field_idx, field_schema)| AnalyzedGraphFieldMapping {
-                        field_idx,
-                        field_name: field_schema.name.clone(),
-                        value_type: field_schema.value_type.typ.clone(),
-                    })
-                    .collect(),
-                None,
-            ),
-            GraphElementMapping::Relationship(rel_spec) => {
-                let mut src_label_analyzer =
-                    DependentNodeLabelAnalyzer::new(&rel_spec, &rel_spec.source)?;
-                let mut tgt_label_analyzer =
-                    DependentNodeLabelAnalyzer::new(&rel_spec, &rel_spec.target)?;
-                let mut value_fields_info = vec![];
-                for (field_idx, field_schema) in value_fields_schema.iter().enumerate() {
-                    if !src_label_analyzer.process_field(field_idx, field_schema)
-                        && !tgt_label_analyzer.process_field(field_idx, field_schema)
-                    {
-                        value_fields_info.push(AnalyzedGraphFieldMapping {
-                            field_idx,
-                            field_name: field_schema.name.clone(),
-                            value_type: field_schema.value_type.typ.clone(),
-                        });
-                    }
-                }
-                let src_label_info = src_label_analyzer.build()?;
-                let tgt_label_info = tgt_label_analyzer.build()?;
-                (value_fields_info, Some((src_label_info, tgt_label_info)))
-            }
-        };
-
-        let desired_setup_state = RelationshipSetupState::new(
-            &spec,
-            key_fields_schema.iter().map(|f| f.name.clone()).collect(),
-            &index_options,
-            &value_fields_info,
-            rel_end_label_info.as_ref(),
-        )?;
-
-        let conn_spec = context
-            .auth_registry
-            .get::<ConnectionSpec>(&spec.connection)?;
-        let executors = async move {
-            let graph = self.graph_pool.get_graph(&conn_spec).await?;
-            let executor = Arc::new(ExportContext::new(
-                graph,
-                spec,
-                key_fields_schema,
-                value_fields_info,
-                rel_end_label_info,
-            )?);
-            Ok(TypedExportTargetExecutors {
-                export_context: executor,
-                query_target: None,
+    ) -> Result<(
+        Vec<TypedExportDataCollectionBuildOutput<Self>>,
+        Vec<(GraphElement, SetupState)>,
+    )> {
+        let node_labels_index_options = data_collections
+            .iter()
+            .filter_map(|d| match &d.spec.mapping {
+                GraphElementMapping::Node(n) => Some((n.label.clone(), d.index_options.clone())),
+                _ => None,
             })
-        }
-        .boxed();
-        Ok(TypedExportTargetBuildOutput {
-            executors,
-            setup_key,
-            desired_setup_state,
-        })
+            .chain(
+                declarations
+                    .iter()
+                    .flat_map(|d| d.decl.referenced_nodes.iter())
+                    .map(|n| (n.label.clone(), n.index_options.clone())),
+            )
+            .collect::<HashMap<String, IndexOptions>>();
+        let mut label_value_field_types =
+            HashMap::<String, HashMap<String, schema::ValueType>>::new();
+        let data_coll_output = data_collections
+            .into_iter()
+            .map(|d| {
+                let setup_key = GraphElement::from_spec(&d.spec);
+
+                let (value_fields_info, rel_end_label_info, dependent_node_labels) = match &d
+                    .spec
+                    .mapping
+                {
+                    GraphElementMapping::Node(_) => (
+                        d.value_fields_schema
+                            .iter()
+                            .enumerate()
+                            .map(|(field_idx, field_schema)| AnalyzedGraphFieldMapping {
+                                field_idx,
+                                field_name: field_schema.name.clone(),
+                                value_type: field_schema.value_type.typ.clone(),
+                            })
+                            .collect(),
+                        None,
+                        None,
+                    ),
+                    GraphElementMapping::Relationship(rel_spec) => {
+                        let mut src_label_analyzer = DependentNodeLabelAnalyzer::new(
+                            &rel_spec.source,
+                            &node_labels_index_options,
+                        )?;
+                        let mut tgt_label_analyzer = DependentNodeLabelAnalyzer::new(
+                            &rel_spec.target,
+                            &node_labels_index_options,
+                        )?;
+                        let mut value_fields_info = vec![];
+                        for (field_idx, field_schema) in d.value_fields_schema.iter().enumerate() {
+                            if !src_label_analyzer.process_field(field_idx, field_schema)
+                                && !tgt_label_analyzer.process_field(field_idx, field_schema)
+                            {
+                                value_fields_info.push(AnalyzedGraphFieldMapping {
+                                    field_idx,
+                                    field_name: field_schema.name.clone(),
+                                    value_type: field_schema.value_type.typ.clone(),
+                                });
+                            }
+                        }
+                        let src_label_info =
+                            src_label_analyzer.build(&mut label_value_field_types)?;
+                        let tgt_label_info =
+                            tgt_label_analyzer.build(&mut label_value_field_types)?;
+                        let dependent_node_labels: Vec<String> = IndexSet::<&String>::from_iter([
+                            &rel_spec.source.label,
+                            &rel_spec.target.label,
+                        ])
+                        .into_iter()
+                        .cloned()
+                        .collect();
+                        (
+                            value_fields_info,
+                            Some((src_label_info, tgt_label_info)),
+                            Some(dependent_node_labels),
+                        )
+                    }
+                };
+
+                let value_field_types = value_fields_info
+                    .iter()
+                    .map(|f| (f.field_name.clone(), f.value_type.clone()))
+                    .collect::<HashMap<String, schema::ValueType>>();
+                let desired_setup_state = SetupState::new(
+                    &setup_key.typ,
+                    d.key_fields_schema.iter().map(|f| f.name.clone()).collect(),
+                    &d.index_options,
+                    &value_field_types,
+                    dependent_node_labels,
+                )?;
+
+                let conn_spec = context
+                    .auth_registry
+                    .get::<ConnectionSpec>(&d.spec.connection)?;
+                let factory = self.clone();
+                let executors = async move {
+                    let graph = factory.graph_pool.get_graph(&conn_spec).await?;
+                    let executor = Arc::new(ExportContext::new(
+                        graph,
+                        d.spec,
+                        d.key_fields_schema,
+                        value_fields_info,
+                        rel_end_label_info,
+                    )?);
+                    Ok(TypedExportTargetExecutors {
+                        export_context: executor,
+                        query_target: None,
+                    })
+                }
+                .boxed();
+                Ok(TypedExportDataCollectionBuildOutput {
+                    executors,
+                    setup_key,
+                    desired_setup_state,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let decl_output = declarations
+            .into_iter()
+            .flat_map(|d| {
+                let label_value_field_types = &label_value_field_types;
+                d.decl.referenced_nodes.into_iter().map(move |n| {
+                    let setup_key = GraphElement {
+                        connection: d.connection.clone(),
+                        typ: ElementType::Node(n.label.clone()),
+                    };
+                    let primary_key_fields = n
+                        .index_options
+                        .primary_key_fields
+                        .as_ref()
+                        .ok_or_else(|| {
+                            api_error!(
+                                "No primary key fields specified for node label `{}`",
+                                &n.label
+                            )
+                        })?
+                        .iter()
+                        .map(|f| f.clone())
+                        .collect();
+                    let setup_state = SetupState::new(
+                        &setup_key.typ,
+                        primary_key_fields,
+                        &n.index_options,
+                        label_value_field_types.get(&n.label).ok_or_else(|| {
+                            api_error!("Data for nodes with label `{}` not provided", n.label)
+                        })?,
+                        None,
+                    )?;
+                    Ok((setup_key, setup_state))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok((data_coll_output, decl_output))
     }
 
     fn check_setup_status(
         &self,
         key: GraphElement,
-        desired: Option<RelationshipSetupState>,
-        existing: CombinedState<RelationshipSetupState>,
+        desired: Option<SetupState>,
+        existing: CombinedState<SetupState>,
         auth_registry: &Arc<AuthRegistry>,
     ) -> Result<impl ResourceSetupStatusCheck + 'static> {
         let conn_spec = auth_registry.get::<ConnectionSpec>(&key.connection)?;
@@ -1238,8 +1276,8 @@ impl StorageFactoryBase for Factory {
 
     fn check_state_compatibility(
         &self,
-        desired: &RelationshipSetupState,
-        existing: &RelationshipSetupState,
+        desired: &SetupState,
+        existing: &SetupState,
     ) -> Result<SetupStateCompatibility> {
         Ok(desired.check_compatible(existing))
     }

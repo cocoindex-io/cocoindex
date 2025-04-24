@@ -12,6 +12,7 @@ use crate::setup;
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::collections::btree_map;
+use std::fmt::Write;
 
 mod convert;
 pub use convert::*;
@@ -26,6 +27,24 @@ impl PythonExecutionContext {
     }
 }
 
+pub trait FromPyResult<T> {
+    fn from_py_result(self, py: Python<'_>) -> anyhow::Result<T>;
+}
+
+impl<T> FromPyResult<T> for Result<T, PyErr> {
+    fn from_py_result(self, py: Python<'_>) -> anyhow::Result<T> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(err) => {
+                let mut err_str = format!("Error calling Python function: {}", err);
+                if let Some(tb) = err.traceback(py) {
+                    write!(&mut err_str, "\n{}", tb.format()?)?;
+                }
+                Err(anyhow::anyhow!(err_str))
+            }
+        }
+    }
+}
 pub trait IntoPyResult<T> {
     fn into_py_result(self) -> PyResult<T>;
 }
@@ -97,24 +116,21 @@ pub struct FlowLiveUpdater(pub Arc<tokio::sync::RwLock<execution::FlowLiveUpdate
 
 #[pymethods]
 impl FlowLiveUpdater {
-    #[new]
-    pub fn new(
-        py: Python<'_>,
+    #[staticmethod]
+    pub fn create<'py>(
+        py: Python<'py>,
         flow: &Flow,
         options: Pythonized<execution::FlowLiveUpdaterOptions>,
-    ) -> PyResult<Self> {
-        py.allow_threads(|| {
-            let live_updater = get_runtime()
-                .block_on(async {
-                    let live_updater = execution::FlowLiveUpdater::start(
-                        flow.0.clone(),
-                        &get_lib_context()?.pool,
-                        options.into_inner(),
-                    )
-                    .await?;
-                    anyhow::Ok(live_updater)
-                })
-                .into_py_result()?;
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let flow = flow.0.clone();
+        future_into_py(py, async move {
+            let live_updater = execution::FlowLiveUpdater::start(
+                flow,
+                &get_lib_context().into_py_result()?.pool,
+                options.into_inner(),
+            )
+            .await
+            .into_py_result()?;
             Ok(Self(Arc::new(tokio::sync::RwLock::new(live_updater))))
         })
     }
