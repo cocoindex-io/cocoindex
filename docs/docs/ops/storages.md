@@ -201,3 +201,4 @@ Neo4j also provides a declaration spec `Neo4jDeclaration`, to configure indexing
 *   `connection` (type: auth reference to `Neo4jConnectionSpec`)
 *   `relationships` (type: `Sequence[ReferencedNode]`)
 
+You can find an end-to-end example [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph)
