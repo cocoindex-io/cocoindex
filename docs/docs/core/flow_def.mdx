@@ -49,68 +49,6 @@ See [Flow Running](/docs/core/flow_methods) for more details on it.
 </TabItem>
 </Tabs>
 
-## Flow Builder
-
-The `FlowBuilder` object is the starting point to construct a flow.
-
-### Import from source
-
-`FlowBuilder` provides a `add_source()` method to import data from external sources.
-A *source spec* needs to be provided for any import operation, to describe the source and parameters related to the source.
-Import must happen at the top level, and the field created by import must be in the top-level struct.
-
-<Tabs>
-<TabItem value="python" label="Python" default>
-
-```python
-@cocoindex.flow_def(name="DemoFlow")
-def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-    data_scope["documents"] = flow_builder.add_source(DemoSourceSpec(...))
-    ......
-```
-
-</TabItem>
-</Tabs>
-
-`add_source()` returns a `DataSlice`. Once external data sources are imported, you can further transform them using methods exposed by these data objects, as discussed in the following sections.
-
-We'll describe different data objects in next few sections.
-
-:::note
-
-The actual value of data is not available at the time when we define the flow: it's only available at runtime.
-In a flow definition, you can use a data representation as input for operations, but not access the actual value.
-
-:::
-
-#### Refresh interval
-
-You can provide a `refresh_interval` argument.
-When present, in the [live update mode](/docs/core/flow_methods#live-update), the data source will be refreshed by specified interval.
-
-<Tabs>
-<TabItem value="python" label="Python" default>
-
-The `refresh_interval` argument is of type `datetime.timedelta`. For example, this refreshes the data source every 1 minute:
-
-```python
-@cocoindex.flow_def(name="DemoFlow")
-def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-    data_scope["documents"] = flow_builder.add_source(
-        DemoSourceSpec(...), refresh_interval=datetime.timedelta(minutes=1))
-    ......
-```
-
-</TabItem>
-</Tabs>
-
-:::info
-
-In live update mode, for each refresh, CocoIndex will traverse the data source to figure out the changes,
-and only perform transformations on changed source keys.
-
-:::
-
 ## Data Scope
 
 A **data scope** represents data for a certain unit, e.g. the top level scope (involving all data for a flow), for a document, or for a chunk.
@@ -157,6 +95,62 @@ See [Data Collector](#data-collector) below for more details.
 A **data slice** references a subset of data belonging to a data scope, e.g. a specific field from a data scope.
 A data slice has a certain data type, and it's the input for most operations.
 
+### Import from source
+
+To get the initial data slice, we need to start from importing data from a source.
+`FlowBuilder` provides a `add_source()` method to import data from external sources.
+A *source spec* needs to be provided for any import operation, to describe the source and parameters related to the source.
+Import must happen at the top level, and the field created by import must be in the top-level struct.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+@cocoindex.flow_def(name="DemoFlow")
+def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+    data_scope["documents"] = flow_builder.add_source(DemoSourceSpec(...))
+    ......
+```
+
+</TabItem>
+</Tabs>
+
+:::note
+
+The actual value of data is not available at the time when we define the flow: it's only available at runtime.
+In a flow definition, you can use a data representation as input for operations, but not access the actual value.
+
+:::
+
+#### Refresh interval
+
+You can provide a `refresh_interval` argument.
+When present, in the [live update mode](/docs/core/flow_methods#live-update), the data source will be refreshed by specified interval.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+The `refresh_interval` argument is of type `datetime.timedelta`. For example, this refreshes the data source every 1 minute:
+
+```python
+@cocoindex.flow_def(name="DemoFlow")
+def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+    data_scope["documents"] = flow_builder.add_source(
+        DemoSourceSpec(...), refresh_interval=datetime.timedelta(minutes=1))
+    ......
+```
+
+</TabItem>
+</Tabs>
+
+:::info
+
+In live update mode, for each refresh, CocoIndex will traverse the data source to figure out the changes,
+and only perform transformations on changed source keys.
+
+:::
+
+
 ### Transform
 
 `transform()` method transforms the data slice by a function, which creates another data slice.
@@ -164,7 +158,7 @@ A *function spec* needs to be provided for any transform operation, to describe 
 
 The function takes one or multiple data arguments.
 The first argument is the data slice to be transformed, and the `transform()` method is applied from it.
-Other arguments can be passed in as positional arguments or keyword arguments, aftert the function spec.
+Other arguments can be passed in as positional arguments or keyword arguments, after the function spec.
 
 <Tabs>
 <TabItem value="python" label="Python" default>
@@ -300,6 +294,29 @@ CocoIndex provides a common way to configure indexes for various storages.
 
 ## Miscellaneous
 
+### Target Declarations
+
+Most time a target storage is created by calling `export()` method on a collector, and this `export()` call comes with configurations needed for the target storage, e.g. options for storage indexes.
+Occasionally, you may need to specify some configurations for target storage out of the context of any specific data collector.
+
+For example, for graph database targets like `Neo4j`, you may have a data collector to export data to Neo4j relationships, which will create nodes referenced by various relationships in turn.
+These nodes don't directly come from any specific data collector (consider relationships from different data collectors may share the same nodes).
+To specify configurations for these nodes, you can *declare* spec for related node labels.
+
+`FlowBuilder` provides `declare()` method for this purpose, which takes the spec to declare, as provided by various target types.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+flow_builder.declare(
+    cocoindex.storages.Neo4jDeclarations(...)
+)
+```
+
+</TabItem>
+</Tabs>
+
 ### Auth Registry
 
 CocoIndex manages an auth registry. It's an in-memory key-value store, mainly to store authentication information for a backend.
@@ -310,11 +327,10 @@ Operation spec is the default way to configure a backend. But it has the followi
 *   Once an operation is removed after flow definition code change, the spec is also gone.
     But we still need to be able to drop the backend (e.g. a table) by `cocoindex setup` or `cocoindex drop`.
 
-
 Auth registry is introduced to solve the problems above. It works as follows:
 
 *   You can create new **auth entry** by a key and a value.
-*   You can references the entry by the key, and pass it as part of spec for certain operations. e.g. `Neo4jRelationship` takes `connection` field in the form of auth entry reference.
+*   You can references the entry by the key, and pass it as part of spec for certain operations. e.g. `Neo4j` takes `connection` field in the form of auth entry reference.
 
 <Tabs>
 <TabItem value="python" label="Python" default>
