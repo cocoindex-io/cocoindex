@@ -25,7 +25,7 @@ Here's how CocoIndex data elements map to Postgres elements during export:
 
 | CocoIndex Element | Postgres Element |
 |-------------------|------------------|
-| an export target | an unique table |
+| an export target | a unique table |
 | a collected row | a row |
 | a field | a column |
 
