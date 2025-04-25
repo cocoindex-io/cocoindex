@@ -9,7 +9,7 @@ from .auth_registry import AuthEntryReference
 class Postgres(op.StorageSpec):
     """Storage powered by Postgres and pgvector."""
 
-    database_url: str | None = None
+    database: AuthEntryReference | None = None
     table_name: str | None = None
 
 @dataclass
