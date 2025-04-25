@@ -304,7 +304,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
 
     /// Will not be called if it's setup by user.
     /// It returns an error if the target only supports setup by user.
-    fn check_setup_status(
+    async fn check_setup_status(
         &self,
         key: Self::Key,
         desired_state: Option<Self::SetupState>,
@@ -392,7 +392,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         Ok((data_coll_output, decl_output))
     }
 
-    fn check_setup_status(
+    async fn check_setup_status(
         &self,
         key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,
@@ -410,7 +410,8 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             desired_state,
             existing_states,
             auth_registry,
-        )?;
+        )
+        .await?;
         Ok(Box::new(status_check))
     }
 

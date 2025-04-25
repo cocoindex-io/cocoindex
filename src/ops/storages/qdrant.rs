@@ -382,7 +382,7 @@ impl StorageFactoryBase for Arc<Factory> {
         Ok((data_coll_output, vec![]))
     }
 
-    fn check_setup_status(
+    async fn check_setup_status(
         &self,
         _key: String,
         _desired: Option<()>,

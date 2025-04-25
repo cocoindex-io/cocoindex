@@ -190,7 +190,7 @@ pub trait ExportTargetFactory: Send + Sync {
 
     /// Will not be called if it's setup by user.
     /// It returns an error if the target only supports setup by user.
-    fn check_setup_status(
+    async fn check_setup_status(
         &self,
         key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,

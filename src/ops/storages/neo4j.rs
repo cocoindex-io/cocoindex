@@ -1248,7 +1248,7 @@ impl StorageFactoryBase for Factory {
         Ok((data_coll_output, decl_output))
     }
 
-    fn check_setup_status(
+    async fn check_setup_status(
         &self,
         key: GraphElement,
         desired: Option<SetupState>,

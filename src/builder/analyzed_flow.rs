@@ -30,7 +30,7 @@ impl AnalyzedFlow {
             registry,
         )?;
         let setup_status_check =
-            setup::check_flow_setup_status(Some(&desired_state), existing_flow_ss)?;
+            setup::check_flow_setup_status(Some(&desired_state), existing_flow_ss).await?;
         let execution_plan = if setup_status_check.is_up_to_date() {
             Some(
                 async move {

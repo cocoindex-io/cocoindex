@@ -304,20 +304,32 @@ impl SetupStatusCheck {
 }
 
 #[pyfunction]
-fn sync_setup() -> PyResult<SetupStatusCheck> {
+fn sync_setup(py: Python<'_>) -> PyResult<SetupStatusCheck> {
     let lib_context = get_lib_context().into_py_result()?;
     let flows = lib_context.flows.lock().unwrap();
     let all_setup_states = lib_context.all_setup_states.read().unwrap();
-    let setup_status = setup::sync_setup(&flows, &all_setup_states).into_py_result()?;
-    Ok(SetupStatusCheck(setup_status))
+    py.allow_threads(|| {
+        get_runtime()
+            .block_on(async {
+                let setup_status = setup::sync_setup(&flows, &all_setup_states).await?;
+                anyhow::Ok(SetupStatusCheck(setup_status))
+            })
+            .into_py_result()
+    })
 }
 
 #[pyfunction]
-fn drop_setup(flow_names: Vec<String>) -> PyResult<SetupStatusCheck> {
+fn drop_setup(py: Python<'_>, flow_names: Vec<String>) -> PyResult<SetupStatusCheck> {
     let lib_context = get_lib_context().into_py_result()?;
     let all_setup_states = lib_context.all_setup_states.read().unwrap();
-    let setup_status = setup::drop_setup(flow_names, &all_setup_states).into_py_result()?;
-    Ok(SetupStatusCheck(setup_status))
+    py.allow_threads(|| {
+        get_runtime()
+            .block_on(async {
+                let setup_status = setup::drop_setup(flow_names, &all_setup_states).await?;
+                anyhow::Ok(SetupStatusCheck(setup_status))
+            })
+            .into_py_result()
+    })
 }
 
 #[pyfunction]
