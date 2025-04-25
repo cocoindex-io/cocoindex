@@ -2,13 +2,11 @@ use crate::prelude::*;
 
 use crate::base::spec::{self, *};
 use crate::ops::sdk::*;
-use crate::service::error::{shared_ok, SharedError, SharedResultExt};
+use crate::settings::DatabaseConnectionSpec;
 use crate::setup;
 use crate::utils::db::ValidIdentifier;
 use async_trait::async_trait;
 use bytes::Bytes;
-use derivative::Derivative;
-use futures::future::{BoxFuture, Shared};
 use futures::FutureExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
@@ -21,7 +19,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
-    database_url: Option<String>,
+    database: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
     table_name: Option<String>,
 }
 const BIND_LIMIT: usize = 65535;
@@ -264,7 +262,8 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
 }
 
 pub struct ExportContext {
-    database_url: Option<String>,
+    db_ref: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
+    db_pool: PgPool,
     table_name: ValidIdentifier,
     key_fields_schema: Vec<FieldSchema>,
     value_fields_schema: Vec<FieldSchema>,
@@ -277,7 +276,8 @@ pub struct ExportContext {
 
 impl ExportContext {
     fn new(
-        database_url: Option<String>,
+        db_ref: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
+        db_pool: PgPool,
         table_name: String,
         key_fields_schema: Vec<FieldSchema>,
         value_fields_schema: Vec<FieldSchema>,
@@ -305,7 +305,8 @@ impl ExportContext {
             .collect::<Vec<_>>();
         let table_name = ValidIdentifier::try_from(table_name)?;
         Ok(Self {
-            database_url,
+            db_ref,
+            db_pool,
             key_fields_schema,
             value_fields_schema,
             all_fields_comma_separated: all_fields
@@ -463,30 +464,21 @@ fn distance_to_similarity(metric: VectorSimilarityMetric, distance: f64) -> f64 
     }
 }
 
-pub struct Factory {
-    db_pools:
-        Mutex<HashMap<Option<String>, Shared<BoxFuture<'static, Result<PgPool, SharedError>>>>>,
-}
-
-impl Default for Factory {
-    fn default() -> Self {
-        Self {
-            db_pools: Mutex::new(HashMap::new()),
-        }
-    }
-}
+#[derive(Default)]
+pub struct Factory {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct TableId {
-    database_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    database: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
     table_name: String,
 }
 
 impl std::fmt::Display for TableId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.table_name)?;
-        if let Some(database_url) = &self.database_url {
-            write!(f, " (database: {})", database_url)?;
+        if let Some(database) = &self.database {
+            write!(f, " (database: {database})")?;
         }
         Ok(())
     }
@@ -582,12 +574,10 @@ impl TableSetupAction {
     }
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Debug)]
 pub struct SetupStatusCheck {
-    #[derivative(Debug = "ignore")]
-    factory: Arc<Factory>,
-    table_id: TableId,
+    db_pool: PgPool,
+    table_name: String,
 
     desired_state: Option<SetupState>,
     drop_existing: bool,
@@ -597,8 +587,8 @@ pub struct SetupStatusCheck {
 
 impl SetupStatusCheck {
     fn new(
-        factory: Arc<Factory>,
-        table_id: TableId,
+        db_pool: PgPool,
+        table_name: String,
         desired_state: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
     ) -> Self {
@@ -676,8 +666,8 @@ impl SetupStatusCheck {
             && !existing.current.map(|s| s.uses_pgvector()).unwrap_or(false);
 
         Self {
-            factory,
-            table_id,
+            db_pool,
+            table_name,
             desired_state,
             drop_existing,
             create_pgvector_extension,
@@ -832,25 +822,21 @@ impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
     }
 
     async fn apply_change(&self) -> Result<()> {
-        let db_pool = self
-            .factory
-            .get_db_pool(&self.table_id.database_url)
-            .await?;
-        let table_name = &self.table_id.table_name;
+        let table_name = &self.table_name;
         if self.drop_existing {
             sqlx::query(&format!("DROP TABLE IF EXISTS {table_name}"))
-                .execute(&db_pool)
+                .execute(&self.db_pool)
                 .await?;
         }
         if self.create_pgvector_extension {
             sqlx::query("CREATE EXTENSION IF NOT EXISTS vector;")
-                .execute(&db_pool)
+                .execute(&self.db_pool)
                 .await?;
         }
         if let Some(desired_table_setup) = &self.desired_table_setup {
             for index_name in desired_table_setup.indexes_to_delete.iter() {
                 let sql = format!("DROP INDEX IF EXISTS {}", index_name);
-                sqlx::query(&sql).execute(&db_pool).await?;
+                sqlx::query(&sql).execute(&self.db_pool).await?;
             }
             match &desired_table_setup.table_upsertion {
                 TableUpsertionAction::Create { keys, values } => {
@@ -867,7 +853,7 @@ impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
                         fields.join(", "),
                         keys.keys().join(", ")
                     );
-                    sqlx::query(&sql).execute(&db_pool).await?;
+                    sqlx::query(&sql).execute(&self.db_pool).await?;
                 }
                 TableUpsertionAction::Update {
                     columns_to_delete,
@@ -877,33 +863,47 @@ impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
                         let sql = format!(
                             "ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}",
                         );
-                        sqlx::query(&sql).execute(&db_pool).await?;
+                        sqlx::query(&sql).execute(&self.db_pool).await?;
                     }
                     for (column_name, column_type) in columns_to_upsert.iter() {
                         let sql = format!(
                             "ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}, ADD COLUMN {column_name} {}",
                             to_column_type_sql(column_type)
                         );
-                        sqlx::query(&sql).execute(&db_pool).await?;
+                        sqlx::query(&sql).execute(&self.db_pool).await?;
                     }
                 }
             }
             for (index_name, index_spec) in desired_table_setup.indexes_to_create.iter() {
                 let sql = format!(
-                    "CREATE INDEX IF NOT EXISTS {} ON {} {}",
-                    index_name,
-                    self.table_id.table_name,
+                    "CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} {}",
                     to_index_spec_sql(index_spec)
                 );
-                sqlx::query(&sql).execute(&db_pool).await?;
+                sqlx::query(&sql).execute(&self.db_pool).await?;
             }
         }
         Ok(())
     }
 }
 
+async fn get_db_pool(
+    db_ref: Option<&spec::AuthEntryReference<DatabaseConnectionSpec>>,
+    auth_registry: &AuthRegistry,
+) -> Result<PgPool> {
+    let lib_context = get_lib_context()?;
+    let db_conn_spec = db_ref
+        .as_ref()
+        .map(|db_ref| auth_registry.get(db_ref))
+        .transpose()?;
+    let db_pool = match db_conn_spec {
+        Some(db_conn_spec) => lib_context.db_pools.get_pool(&db_conn_spec).await?,
+        None => lib_context.builtin_db_pool.clone(),
+    };
+    Ok(db_pool)
+}
+
 #[async_trait]
-impl StorageFactoryBase for Arc<Factory> {
+impl StorageFactoryBase for Factory {
     type Spec = Spec;
     type DeclarationSpec = ();
     type SetupState = SetupState;
@@ -927,7 +927,7 @@ impl StorageFactoryBase for Arc<Factory> {
             .into_iter()
             .map(|d| {
                 let table_id = TableId {
-                    database_url: d.spec.database_url.clone(),
+                    database: d.spec.database.clone(),
                     table_name: d
                         .spec
                         .table_name
@@ -940,16 +940,19 @@ impl StorageFactoryBase for Arc<Factory> {
                     &d.index_options,
                 );
                 let table_name = table_id.table_name.clone();
-                let export_context = Arc::new(ExportContext::new(
-                    d.spec.database_url.clone(),
-                    table_name,
-                    d.key_fields_schema,
-                    d.value_fields_schema,
-                )?);
-                let factory = self.clone();
+                let db_ref = d.spec.database;
+                let auth_registry = context.auth_registry.clone();
                 let executors = async move {
+                    let db_pool = get_db_pool(db_ref.as_ref(), &auth_registry).await?;
+                    let export_context = Arc::new(ExportContext::new(
+                        db_ref,
+                        db_pool.clone(),
+                        table_name,
+                        d.key_fields_schema,
+                        d.value_fields_schema,
+                    )?);
                     let query_target = Arc::new(PostgresQueryTarget {
-                        db_pool: factory.get_db_pool(&d.spec.database_url).await?,
+                        db_pool,
                         context: export_context.clone(),
                     });
                     Ok(TypedExportTargetExecutors {
@@ -972,9 +975,14 @@ impl StorageFactoryBase for Arc<Factory> {
         key: TableId,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
-        _auth_registry: &Arc<AuthRegistry>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<impl setup::ResourceSetupStatusCheck + 'static> {
-        Ok(SetupStatusCheck::new(self.clone(), key, desired, existing))
+        Ok(SetupStatusCheck::new(
+            get_db_pool(key.database.as_ref(), auth_registry).await?,
+            key.table_name,
+            desired,
+            existing,
+        ))
     }
 
     fn check_state_compatibility(
@@ -1011,15 +1019,19 @@ impl StorageFactoryBase for Arc<Factory> {
         &self,
         mutations: Vec<ExportTargetMutationWithContext<'async_trait, ExportContext>>,
     ) -> Result<()> {
-        let mut mut_groups_by_db_url = HashMap::new();
+        let mut mut_groups_by_db_ref = HashMap::new();
         for mutation in mutations.iter() {
-            mut_groups_by_db_url
-                .entry(mutation.export_context.database_url.clone())
+            mut_groups_by_db_ref
+                .entry(mutation.export_context.db_ref.clone())
                 .or_insert_with(Vec::new)
                 .push(mutation);
         }
-        for (db_url, mut_groups) in mut_groups_by_db_url.iter() {
-            let db_pool = self.get_db_pool(db_url).await?;
+        for mut_groups in mut_groups_by_db_ref.values() {
+            let db_pool = &mut_groups
+                .first()
+                .ok_or_else(|| anyhow!("empty group"))?
+                .export_context
+                .db_pool;
             let mut txn = db_pool.begin().await?;
             for mut_group in mut_groups.iter() {
                 mut_group
@@ -1036,31 +1048,5 @@ impl StorageFactoryBase for Arc<Factory> {
             txn.commit().await?;
         }
         Ok(())
-    }
-}
-
-impl Factory {
-    async fn get_db_pool(&self, database_url: &Option<String>) -> Result<PgPool> {
-        let pool_fut = {
-            let mut db_pools = self.db_pools.lock().unwrap();
-            if let Some(shared_fut) = db_pools.get(database_url) {
-                shared_fut.clone()
-            } else {
-                let pool_fut = {
-                    let database_url = database_url.clone();
-                    async move {
-                        shared_ok(if let Some(database_url) = database_url {
-                            PgPool::connect(&database_url).await?
-                        } else {
-                            get_lib_context().map_err(SharedError::new)?.pool.clone()
-                        })
-                    }
-                };
-                let shared_fut = pool_fut.boxed().shared();
-                db_pools.insert(database_url.clone(), shared_fut.clone());
-                shared_fut
-            }
-        };
-        Ok(pool_fut.await.std_result()?)
     }
 }

@@ -198,6 +198,10 @@ pub trait ExportTargetFactory: Send + Sync {
         auth_registry: &Arc<AuthRegistry>,
     ) -> Result<Box<dyn setup::ResourceSetupStatusCheck>>;
 
+    /// Normalize the key. e.g. the JSON format may change (after code change, e.g. new optional field or field ordering), even if the underlying value is not changed.
+    /// This should always return the canonical serialized form.
+    fn normalize_setup_key(&self, key: serde_json::Value) -> Result<serde_json::Value>;
+
     fn check_state_compatibility(
         &self,
         desired_state: &serde_json::Value,

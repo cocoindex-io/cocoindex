@@ -126,7 +126,7 @@ impl FlowLiveUpdater {
         future_into_py(py, async move {
             let live_updater = execution::FlowLiveUpdater::start(
                 flow,
-                &get_lib_context().into_py_result()?.pool,
+                &get_lib_context().into_py_result()?.builtin_db_pool,
                 options.into_inner(),
             )
             .await
@@ -185,7 +185,7 @@ impl Flow {
                         &exec_plan,
                         &self.0.flow.data_schema,
                         options.into_inner(),
-                        &get_lib_context()?.pool,
+                        &get_lib_context()?.builtin_db_pool,
                     )
                     .await
                 })
@@ -348,7 +348,7 @@ fn apply_setup_changes(py: Python<'_>, setup_status: &SetupStatusCheck) -> PyRes
                 setup::apply_changes(
                     &mut std::io::stdout(),
                     &setup_status.0,
-                    &get_lib_context()?.pool,
+                    &get_lib_context()?.builtin_db_pool,
                 )
                 .await
             })

@@ -109,9 +109,18 @@ pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupState<Exi
                         flow_ss.tracking_table = from_metadata_record(state, staging_changes)?;
                     }
                     MetadataRecordType::Target(target_type) => {
+                        let normalized_key = {
+                            let registry = executor_factory_registry();
+                            match registry.get(&target_type) {
+                                Some(ExecutorFactory::ExportTarget(factory)) => {
+                                    factory.normalize_setup_key(metadata_record.key)?
+                                }
+                                _ => metadata_record.key.clone(),
+                            }
+                        };
                         flow_ss.targets.insert(
                             super::ResourceIdentifier {
-                                key: metadata_record.key.clone(),
+                                key: normalized_key,
                                 target_kind: target_type,
                             },
                             from_metadata_record(state, staging_changes)?,

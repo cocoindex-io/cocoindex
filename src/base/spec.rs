@@ -322,12 +322,17 @@ impl<T> Clone for AuthEntryReference<T> {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct UntypedAuthEntryReference<T> {
+    key: T,
+}
+
 impl<T> Serialize for AuthEntryReference<T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        self.key.serialize(serializer)
+        UntypedAuthEntryReference { key: &self.key }.serialize(serializer)
     }
 }
 
@@ -336,8 +341,9 @@ impl<'de, T> Deserialize<'de> for AuthEntryReference<T> {
     where
         D: serde::Deserializer<'de>,
     {
-        Ok(Self {
-            key: String::deserialize(deserializer)?,
+        let untyped_ref = UntypedAuthEntryReference::<String>::deserialize(deserializer)?;
+        Ok(AuthEntryReference {
+            key: untyped_ref.key,
             _phantom: std::marker::PhantomData,
         })
     }

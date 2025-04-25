@@ -329,7 +329,7 @@ impl ResourceSetupStatusCheck for MetadataTableSetup {
         if !self.metadata_table_missing {
             return Ok(());
         }
-        let pool = &get_lib_context()?.pool;
+        let pool = &get_lib_context()?.builtin_db_pool;
         let query_str = format!(
             "CREATE TABLE IF NOT EXISTS {SETUP_METADATA_TABLE_NAME} (
                 flow_name TEXT NOT NULL,

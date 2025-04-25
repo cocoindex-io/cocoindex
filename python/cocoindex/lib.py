@@ -1,7 +1,6 @@
 """
 Library level functions and states.
 """
-import asyncio
 import os
 import sys
 import functools
@@ -12,6 +11,7 @@ from dataclasses import dataclass
 
 from . import _engine
 from . import flow, query, cli
+from .convert import dump_engine_object
 
 
 def _load_field(target: dict[str, str], name: str, env_name: str, required: bool = False):
@@ -23,23 +23,31 @@ def _load_field(target: dict[str, str], name: str, env_name: str, required: bool
         target[name] = value
 
 @dataclass
+class DatabaseConnectionSpec:
+    uri: str
+    user: str | None = None
+    password: str | None = None
+
+@dataclass
 class Settings:
     """Settings for the cocoindex library."""
-    database_url: str
+    database: DatabaseConnectionSpec
 
     @classmethod
     def from_env(cls) -> Self:
         """Load settings from environment variables."""
 
-        kwargs: dict[str, str] = dict()
-        _load_field(kwargs, "database_url", "COCOINDEX_DATABASE_URL", required=True)
-
-        return cls(**kwargs)
+        db_kwargs: dict[str, str] = dict()
+        _load_field(db_kwargs, "uri", "COCOINDEX_DATABASE_URL", required=True)
+        _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
+        _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
+        database = DatabaseConnectionSpec(**db_kwargs)
+        return cls(database=database)
 
 
 def init(settings: Settings):
     """Initialize the cocoindex library."""
-    _engine.init(settings.__dict__)
+    _engine.init(dump_engine_object(settings))
 
 @dataclass
 class ServerSettings:

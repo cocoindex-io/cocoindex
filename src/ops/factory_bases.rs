@@ -420,6 +420,11 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         StorageFactoryBase::describe_resource(self, &key)
     }
 
+    fn normalize_setup_key(&self, key: serde_json::Value) -> Result<serde_json::Value> {
+        let key: T::Key = serde_json::from_value(key.clone())?;
+        Ok(serde_json::to_value(key)?)
+    }
+
     fn check_state_compatibility(
         &self,
         desired_state: &serde_json::Value,

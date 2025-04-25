@@ -6,6 +6,7 @@ use crate::settings;
 use crate::setup;
 use crate::{builder::AnalyzedFlow, execution::query::SimpleSemanticsQueryHandler};
 use axum::http::StatusCode;
+use sqlx::postgres::PgConnectOptions;
 use sqlx::PgPool;
 use std::collections::BTreeMap;
 use tokio::runtime::Runtime;
@@ -61,8 +62,40 @@ impl FlowContext {
 static TOKIO_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| Runtime::new().unwrap());
 static AUTH_REGISTRY: LazyLock<Arc<AuthRegistry>> = LazyLock::new(|| Arc::new(AuthRegistry::new()));
 
+#[derive(Default)]
+pub struct DbPools {
+    pub pools: Mutex<HashMap<(String, Option<String>), Arc<tokio::sync::OnceCell<PgPool>>>>,
+}
+
+impl DbPools {
+    pub async fn get_pool(&self, conn_spec: &settings::DatabaseConnectionSpec) -> Result<PgPool> {
+        let db_pool_cell = {
+            let key = (conn_spec.uri.clone(), conn_spec.user.clone());
+            let mut db_pools = self.pools.lock().unwrap();
+            db_pools.entry(key).or_default().clone()
+        };
+        let pool = db_pool_cell
+            .get_or_try_init(|| async move {
+                let mut pg_options: PgConnectOptions = conn_spec.uri.parse()?;
+                if let Some(user) = &conn_spec.user {
+                    pg_options = pg_options.username(user);
+                }
+                if let Some(password) = &conn_spec.password {
+                    pg_options = pg_options.password(password);
+                }
+                let pool = PgPool::connect_with(pg_options)
+                    .await
+                    .context("Failed to connect to database")?;
+                anyhow::Ok(pool)
+            })
+            .await?;
+        Ok(pool.clone())
+    }
+}
+
 pub struct LibContext {
-    pub pool: PgPool,
+    pub db_pools: DbPools,
+    pub builtin_db_pool: PgPool,
     pub flows: Mutex<BTreeMap<String, Arc<FlowContext>>>,
     pub all_setup_states: RwLock<setup::AllSetupState<setup::ExistingMode>>,
 }
@@ -100,13 +133,15 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).unwrap();
     });
 
+    let db_pools = DbPools::default();
     let (pool, all_setup_states) = get_runtime().block_on(async {
-        let pool = PgPool::connect(&settings.database_url).await?;
+        let pool = db_pools.get_pool(&settings.database).await?;
         let existing_ss = setup::get_existing_setup_state(&pool).await?;
         anyhow::Ok((pool, existing_ss))
     })?;
     Ok(LibContext {
-        pool,
+        db_pools,
+        builtin_db_pool: pool,
         all_setup_states: RwLock::new(all_setup_states),
         flows: Mutex::new(BTreeMap::new()),
     })

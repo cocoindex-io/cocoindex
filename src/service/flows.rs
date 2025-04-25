@@ -155,7 +155,7 @@ pub async fn evaluate_data(
             enable_cache: true,
             evaluation_only: true,
         },
-        &lib_context.pool,
+        &lib_context.builtin_db_pool,
     )
     .await?
     .ok_or_else(|| api_error!("value not found for source at the specified key: {key:?}"))?;
@@ -173,7 +173,7 @@ pub async fn update(
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let mut live_updater = execution::FlowLiveUpdater::start(
         flow_ctx.clone(),
-        &lib_context.pool,
+        &lib_context.builtin_db_pool,
         execution::FlowLiveUpdaterOptions {
             live_mode: false,
             ..Default::default()
