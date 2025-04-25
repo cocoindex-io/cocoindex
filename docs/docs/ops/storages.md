@@ -345,6 +345,18 @@ graph TD
 ```
 
 Nodes with `Place` label in the example aren't exported explicitly using `NodeMapping`, so CocoIndex will automatically create them as long as they're still referenced by any relationship.
+You need to declare a `ReferencedNode`:
+
+```python
+flow_builder.declare(
+    cocoindex.storages.Neo4jDeclarations(
+        ...
+        referenced_nodes=[
+            cocoindex.storages.ReferencedNode(label="Place", primary_key_fields=["name"]),
+        ],
+    ),
+)
+```
 
 ### Neo4j
 
