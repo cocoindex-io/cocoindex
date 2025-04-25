@@ -1,11 +1,7 @@
 use crate::{lib_context::get_auth_registry, prelude::*};
 
-use indexmap::IndexMap;
-use serde::de::DeserializeOwned;
 use sqlx::PgPool;
 use std::{
-    borrow::Cow,
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::{Debug, Display},
     str::FromStr,
 };
@@ -456,6 +452,9 @@ pub async fn apply_changes(
 
         if let Some(tracking_table) = &flow_status.tracking_table {
             maybe_update_resource_setup(write, tracking_table).await?;
+        }
+        for target_resource in &flow_status.target_resources {
+            maybe_update_resource_setup(write, target_resource).await?;
         }
 
         let is_deletion = flow_status.status == ObjectStatus::Deleted;
