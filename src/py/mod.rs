@@ -255,14 +255,14 @@ impl SimpleSemanticsQueryHandler {
         Ok(())
     }
 
-    #[pyo3(signature = (query, limit, vector_field_name = None, similarity_matric = None))]
+    #[pyo3(signature = (query, limit, vector_field_name = None, similarity_metric = None))]
     pub fn search(
         &self,
         py: Python<'_>,
         query: String,
         limit: u32,
         vector_field_name: Option<String>,
-        similarity_matric: Option<Pythonized<VectorSimilarityMetric>>,
+        similarity_metric: Option<Pythonized<VectorSimilarityMetric>>,
     ) -> PyResult<(
         Pythonized<QueryResults>,
         Pythonized<query::SimpleSemanticsQueryInfo>,
@@ -275,7 +275,7 @@ impl SimpleSemanticsQueryHandler {
                             query,
                             limit,
                             vector_field_name,
-                            similarity_matric.map(|m| m.0),
+                            similarity_metric.map(|m| m.0),
                         )
                         .await
                 })

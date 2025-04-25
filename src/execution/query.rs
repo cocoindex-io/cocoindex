@@ -68,7 +68,7 @@ impl SimpleSemanticsQueryHandler {
         query: String,
         limit: u32,
         vector_field_name: Option<String>,
-        similarity_matric: Option<VectorSimilarityMetric>,
+        similarity_metric: Option<VectorSimilarityMetric>,
     ) -> Result<(QueryResults, SimpleSemanticsQueryInfo)> {
         let query_results = evaluate_transient_flow(
             &self.query_transform_flow,
@@ -106,7 +106,7 @@ impl SimpleSemanticsQueryHandler {
             .or(self.default_vector_field_name.clone())
             .ok_or_else(|| api_error!("vector field name must be provided"))?;
 
-        let similarity_metric = similarity_matric.unwrap_or(self.default_similarity_metric);
+        let similarity_metric = similarity_metric.unwrap_or(self.default_similarity_metric);
         let info = SimpleSemanticsQueryInfo {
             similarity_metric,
             query_vector: vector.clone(),
