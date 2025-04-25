@@ -228,20 +228,44 @@ pub struct VectorMatchQuery {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct QueryResult {
-    pub data: Vec<Value>,
+pub struct QueryResult<Row = Vec<Value>> {
+    pub data: Row,
     pub score: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct QueryResults {
+pub struct QueryResults<Row = Vec<Value>> {
     pub fields: Vec<FieldSchema>,
-    pub results: Vec<QueryResult>,
+    pub results: Vec<QueryResult<Row>>,
 }
 
+impl TryFrom<QueryResults<Vec<Value>>> for QueryResults<serde_json::Value> {
+    type Error = anyhow::Error;
+
+    fn try_from(values: QueryResults<Vec<Value>>) -> Result<Self, Self::Error> {
+        let results = values
+            .results
+            .into_iter()
+            .map(|r| {
+                let data = serde_json::to_value(TypedFieldsValue {
+                    schema: &values.fields,
+                    values_iter: r.data.iter(),
+                })?;
+                Ok(QueryResult {
+                    data,
+                    score: r.score,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(QueryResults {
+            fields: values.fields,
+            results,
+        })
+    }
+}
 #[derive(Debug, Clone, Serialize)]
 pub struct QueryResponse {
-    pub results: QueryResults,
+    pub results: QueryResults<serde_json::Value>,
     pub info: serde_json::Value,
 }
 

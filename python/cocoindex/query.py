@@ -66,15 +66,16 @@ class SimpleSemanticsQueryHandler:
         return self._lazy_query_handler()
 
     def search(self, query: str, limit: int, vector_field_name: str | None = None,
-               similarity_metric: index.VectorSimilarityMetric | None = None) -> tuple[list[QueryResult], SimpleSemanticsQueryInfo]:
+               similarity_metric: index.VectorSimilarityMetric | None = None
+               ) -> tuple[list[QueryResult], SimpleSemanticsQueryInfo]:
         """
         Search the index with the given query, limit, vector field name, and similarity metric.
         """
         internal_results, internal_info = self.internal_handler().search(
             query, limit, vector_field_name,
             similarity_metric.value if similarity_metric is not None else None)
-        fields = [field['name'] for field in internal_results['fields']]
-        results = [QueryResult(data=dict(zip(fields, result['data'])),  score=result['score']) for result in internal_results['results']]
+        results = [QueryResult(data=result['data'],  score=result['score'])
+                   for result in internal_results]
         info = SimpleSemanticsQueryInfo(
             similarity_metric=index.VectorSimilarityMetric(internal_info['similarity_metric']),
             query_vector=internal_info['query_vector'],

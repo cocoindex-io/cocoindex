@@ -1,17 +1,12 @@
-use std::sync::Arc;
+use crate::prelude::*;
 
 use axum::extract::Path;
 use axum::http::StatusCode;
-use serde::Deserialize;
 
-use axum::{extract::State, Json};
-use axum_extra::extract::Query;
-
-use crate::base::spec;
 use crate::lib_context::LibContext;
 use crate::ops::interface::QueryResponse;
-
-use super::error::ApiError;
+use axum::{extract::State, Json};
+use axum_extra::extract::Query;
 
 #[derive(Debug, Deserialize)]
 pub struct SearchParams {
@@ -51,7 +46,7 @@ pub async fn search(
         .search(query.query, query.limit, query.field, query.metric)
         .await?;
     let response = QueryResponse {
-        results,
+        results: results.try_into()?,
         info: serde_json::to_value(info).map_err(|e| {
             ApiError::new(
                 &format!("Failed to serialize query info: {e}"),
