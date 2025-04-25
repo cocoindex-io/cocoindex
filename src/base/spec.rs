@@ -296,7 +296,63 @@ pub struct SimpleSemanticsQueryHandlerSpec {
     pub default_similarity_metric: VectorSimilarityMetric,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct AuthEntryReference {
+pub struct AuthEntryReference<T> {
     pub key: String,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T> std::fmt::Debug for AuthEntryReference<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AuthEntryReference({})", self.key)
+    }
+}
+
+impl<T> std::fmt::Display for AuthEntryReference<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AuthEntryReference({})", self.key)
+    }
+}
+
+impl<T> Clone for AuthEntryReference<T> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T> Serialize for AuthEntryReference<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.key.serialize(serializer)
+    }
+}
+
+impl<'de, T> Deserialize<'de> for AuthEntryReference<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self {
+            key: String::deserialize(deserializer)?,
+            _phantom: std::marker::PhantomData,
+        })
+    }
+}
+
+impl<T> PartialEq for AuthEntryReference<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl<T> Eq for AuthEntryReference<T> {}
+
+impl<T> std::hash::Hash for AuthEntryReference<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+    }
 }

@@ -24,13 +24,13 @@ pub struct ConnectionSpec {
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
-    connection: spec::AuthEntryReference,
+    connection: spec::AuthEntryReference<ConnectionSpec>,
     mapping: GraphElementMapping,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Declaration {
-    connection: spec::AuthEntryReference,
+    connection: spec::AuthEntryReference<ConnectionSpec>,
     #[serde(flatten)]
     decl: GraphDeclarations,
 }
@@ -92,7 +92,7 @@ impl std::fmt::Display for ElementType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct GraphElement {
-    connection: AuthEntryReference,
+    connection: AuthEntryReference<ConnectionSpec>,
     typ: ElementType,
 }
 
@@ -156,7 +156,7 @@ struct AnalyzedNodeLabelInfo {
 }
 
 pub struct ExportContext {
-    connection_ref: AuthEntryReference,
+    connection_ref: AuthEntryReference<ConnectionSpec>,
     graph: Arc<Graph>,
 
     create_order: u8,

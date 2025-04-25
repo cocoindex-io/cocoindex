@@ -32,7 +32,7 @@ impl AuthRegistry {
         Ok(())
     }
 
-    pub fn get<T: DeserializeOwned>(&self, entry_ref: &spec::AuthEntryReference) -> Result<T> {
+    pub fn get<T: DeserializeOwned>(&self, entry_ref: &spec::AuthEntryReference<T>) -> Result<T> {
         let entries = self.entries.read().unwrap();
         match entries.get(&entry_ref.key) {
             Some(value) => Ok(serde_json::from_value(value.clone())?),
