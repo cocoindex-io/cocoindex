@@ -70,13 +70,13 @@ pub struct DbPools {
 impl DbPools {
     pub async fn get_pool(&self, conn_spec: &settings::DatabaseConnectionSpec) -> Result<PgPool> {
         let db_pool_cell = {
-            let key = (conn_spec.uri.clone(), conn_spec.user.clone());
+            let key = (conn_spec.url.clone(), conn_spec.user.clone());
             let mut db_pools = self.pools.lock().unwrap();
             db_pools.entry(key).or_default().clone()
         };
         let pool = db_pool_cell
             .get_or_try_init(|| async move {
-                let mut pg_options: PgConnectOptions = conn_spec.uri.parse()?;
+                let mut pg_options: PgConnectOptions = conn_spec.url.parse()?;
                 if let Some(user) = &conn_spec.user {
                     pg_options = pg_options.username(user);
                 }

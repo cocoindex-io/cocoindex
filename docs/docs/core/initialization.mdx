@@ -49,7 +49,7 @@ This takes care of the following effects:
 
 The following environment variables are supported:
 
-*   `COCOINDEX_DATABASE_URL` (required): The URI of the Postgres database to use as the internal storage, e.g. `postgres://cocoindex:cocoindex@localhost/cocoindex`
+*   `COCOINDEX_DATABASE_URL` (required): The URL of the Postgres database to use as the internal storage, e.g. `postgres://cocoindex:cocoindex@localhost/cocoindex`
 *   `COCOINDEX_DATABASE_USER` (optional): The username for the Postgres database. If not provided, username will come from `COCOINDEX_DATABASE_URL`.
 *   `COCOINDEX_DATABASE_PASSWORD` (optional): The password for the Postgres database. If not provided, password will come from `COCOINDEX_DATABASE_URL`.
 
@@ -66,9 +66,9 @@ It takes a `Settings` object as argument, which is a dataclass that contains the
 #### DatabaseConnectionSpec
 
 `DatabaseConnectionSpec` has the following fields:
-*   `uri` (type: `str`, required): The URI of the Postgres database to use as the internal storage, e.g. `postgres://cocoindex:cocoindex@localhost/cocoindex`.
-*   `user` (type: `str`, optional): The username for the Postgres database. If not provided, username will come from `uri`.
-*   `password` (type: `str`, optional): The password for the Postgres database. If not provided, password will come from `uri`.
+*   `url` (type: `str`, required): The URL of the Postgres database to use as the internal storage, e.g. `postgres://cocoindex:cocoindex@localhost/cocoindex`.
+*   `user` (type: `str`, optional): The username for the Postgres database. If not provided, username will come from `url`.
+*   `password` (type: `str`, optional): The password for the Postgres database. If not provided, password will come from `url`.
 
 ### Example
 
@@ -83,7 +83,7 @@ def main():
   cocoindex.init(
       cocoindex.Settings(
           database=cocoindex.DatabaseConnectionSpec(
-              uri="postgres://cocoindex:cocoindex@localhost/cocoindex"
+              url="postgres://cocoindex:cocoindex@localhost/cocoindex"
   )))
   ...
 

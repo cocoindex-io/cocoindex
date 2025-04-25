@@ -24,7 +24,7 @@ def _load_field(target: dict[str, str], name: str, env_name: str, required: bool
 
 @dataclass
 class DatabaseConnectionSpec:
-    uri: str
+    url: str
     user: str | None = None
     password: str | None = None
 
@@ -38,7 +38,7 @@ class Settings:
         """Load settings from environment variables."""
 
         db_kwargs: dict[str, str] = dict()
-        _load_field(db_kwargs, "uri", "COCOINDEX_DATABASE_URL", required=True)
+        _load_field(db_kwargs, "url", "COCOINDEX_DATABASE_URL", required=True)
         _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
         _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
         database = DatabaseConnectionSpec(**db_kwargs)

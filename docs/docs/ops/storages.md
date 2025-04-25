@@ -379,7 +379,7 @@ Please read and agree the license before starting the instance.
 The `Neo4j` storage exports each row as a relationship to Neo4j Knowledge Graph. The spec takes the following fields:
 
 *   `connection` (type: [auth reference](../core/flow_def#auth-registry) to `Neo4jConnectionSpec`): The connection to the Neo4j database. `Neo4jConnectionSpec` has the following fields:
-    *   `uri` (type: `str`): The URI of the Neo4j database to use as the internal storage, e.g. `bolt://localhost:7687`.
+    *   `url` (type: `str`): The URI of the Neo4j database to use as the internal storage, e.g. `bolt://localhost:7687`.
     *   `user` (type: `str`): Username for the Neo4j database.
     *   `password` (type: `str`): Password for the Neo4j database.
     *   `db` (type: `str`, optional): The name of the Neo4j database to use as the internal storage, e.g. `neo4j`.
