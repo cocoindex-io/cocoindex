@@ -118,7 +118,52 @@ Note that the label used in different `NodeMapping`s should be unique.
 
 *   `label` (type: `str`): The label of the node.
 
-For example, if you have a data collector that collects rows with fields `id`, `name` and `gender`, it can be exported to a node with label `Person` and properties `id` `name` and `gender`.
+For example, consider we have collected the following rows:
+
+<small>
+
+| filename | summary |
+|----------|---------|
+| chapter1.md | At the beginning, ... |
+| chapter2.md | In the second day, ... |
+
+</small>
+
+We can export them to nodes under label `Document` like this:
+
+```python
+document_collector.export(
+    ...
+    cocoindex.storages.Neo4j(
+        ...
+        mapping=cocoindex.storages.NodeMapping(label="Document"),
+    ),
+    primary_key_fields=["filename"],
+)
+```
+
+The collected rows will be mapped to nodes in knowledge database like this:
+
+```mermaid
+graph TD
+  Doc_Chapter1@{
+    shape: rounded
+    label: "**[Document]**
+            **filename\\*: chapter1.md**
+            summary: At the beginning, ..."
+    classDef: node
+  }
+
+  Doc_Chapter2@{
+    shape: rounded
+    label: "**[Document]**
+            **filename\\*: chapter2.md**
+            summary: In the second day, ..."
+    classDef: node
+  }
+
+  classDef node font-size:8pt,text-align:left,stroke-width:2;
+```
 
 #### Relationships
 
@@ -152,9 +197,92 @@ Note that the type used in different `RelationshipMapping`s should be unique.
 
 All fields in the collector that are not used in mappings for source or target node fields will be mapped to relationship properties.
 
+For example, consider we have collected the following rows, to describe places mentioned in each file, along with embeddings of the places:
+
+<small>
+
+| doc_filename | place_name | place_embedding | location |
+|----------|-------|-----------------|-----------------|
+| chapter1.md | Crystal Palace | [0.1, 0.5, ...] | 12 |
+| chapter2.md | Magic Forest | [0.4, 0.2, ...] | 23 |
+| chapter2.md | Crystal Palace | [0.1, 0.5, ...] | 56 |
+
+</small>
+
+We can export them to relationships under type `MENTION` like this:
+
+```python
+doc_place_collector.export(
+    ...
+    cocoindex.storages.Neo4j(
+        ...
+        mapping=cocoindex.storages.RelationshipMapping(
+            rel_type="MENTION",
+            source=cocoindex.storages.NodeReferenceMapping(
+                label="Document",
+                fields=[cocoindex.storages.TargetFieldMapping(source="doc_filename", target="filename")],
+            ),
+            target=cocoindex.storages.NodeReferenceMapping(
+                label="Place",
+                fields=[
+                    cocoindex.storages.TargetFieldMapping(source="place_name", target="name"),
+                    cocoindex.storages.TargetFieldMapping(source="place_embedding", target="embedding"),
+                ],
+            ),
+        ),
+    ),
+    ...
+)
+```
+
+The `doc_filename` field is mapped to `Document.filename` property for the source node, while `place_name` and `place_embedding` are mapped to `Place.name` and `Place.embedding` properties for the target node.
+The remaining field `location` becomes a property of the relationship.
+For the data above, we get a bunch of relationships like this:
+
+```mermaid
+graph TD
+  Doc_Chapter1@{
+    shape: rounded
+    label: "**[Document]**
+            **filename\\*: chapter1.md**"
+    classDef: nodeRef
+  }
+
+  Doc_Chapter2@{
+    shape: rounded
+    label: "**[Document]**
+            **filename\\*: chapter2.md**"
+    classDef: nodeRef
+  }
+
+  Place_CrystalPalace@{
+    shape: rounded
+    label: "**[Place]**
+            **name\\*: Crystal Palace**
+            embedding: [0.1, 0.5, ...]"
+    classDef: nodeRef
+  }
+
+  Place_MagicForest@{
+    shape: rounded
+    label: "**[Place]**
+            **name\\*: Magic Forest**
+            embedding: [0.4, 0.2, ...]"
+    classDef: nodeRef
+  }
+
+  Doc_Chapter1:::nodeRef -- **[MENTION]**{location:12} --> Place_CrystalPalace:::nodeRef
+  Doc_Chapter2:::nodeRef -- **[MENTION]**{location:23} --> Place_MagicForest:::nodeRef
+  Doc_Chapter2:::nodeRef -- **[MENTION]**{location:56} --> Place_CrystalPalace:::nodeRef
+
+  classDef nodeRef font-size:8pt,text-align:left,fill:transparent,stroke-width:1,stroke-dasharray:5 5;
+
+```
+
+
 #### Nodes only referenced by relationships
 
-If a node appears as source or target of a relationship, but not exported using `NodeMapping`, CocoIndex will automatically create and keep these nodes until it's no longer referenced by any relationships.
+If a node appears as source or target of a relationship, but not exported using `NodeMapping`, CocoIndex will automatically create and keep these nodes until they're no longer referenced by any relationships.
 
 :::note Merge of node values
 
@@ -170,6 +298,53 @@ The following options are supported:
 *   `primary_key_fields` (required)
 *   `vector_indexes` (optional)
 
+Using the same example above.
+After combining exported nodes and relationships, we get the knowledge graph with all information:
+
+```mermaid
+graph TD
+  Doc_Chapter1@{
+    shape: rounded
+    label: "**[Document]**
+            **filename\\*: chapter1.md**
+            summary: At the beginning, ..."
+    classDef: node
+  }
+
+  Doc_Chapter2@{
+    shape: rounded
+    label: "**[Document]**
+            **filename\\*: chapter2.md**
+            summary: In the second day, ..."
+    classDef: node
+  }
+
+  Place_CrystalPalace@{
+    shape: rounded
+    label: "**[Place]**
+            **name\\*: Crystal Palace**
+            embedding: [0.1, 0.5, ...]"
+    classDef: nodeRef
+  }
+
+  Place_MagicForest@{
+    shape: rounded
+    label: "**[Place]**
+            **name\\*: Magic Forest**
+            embedding: [0.4, 0.2, ...]"
+    classDef: nodeRef
+  }
+
+  Doc_Chapter1:::node -- **[MENTION]**{location:12} --> Place_CrystalPalace:::nodeRef
+  Doc_Chapter2:::node -- **[MENTION]**{location:23} --> Place_MagicForest:::nodeRef
+  Doc_Chapter2:::node -- **[MENTION]**{location:56} --> Place_CrystalPalace:::nodeRef
+
+  classDef node font-size:8pt,text-align:left,stroke-width:2;
+  classDef nodeRef font-size:8pt,text-align:left,fill:transparent,stroke-width:1,stroke-dasharray:5 5;
+
+```
+
+Nodes with `Place` label in the example aren't exported explicitly using `NodeMapping`, so CocoIndex will automatically create them as long as they're still referenced by any relationship.
 
 ### Neo4j
 
