@@ -42,6 +42,7 @@ impl StateMode for DesiredMode {
 pub struct CombinedState<T> {
     pub current: Option<T>,
     pub staging: Vec<StateChange<T>>,
+    pub legacy_state_key: Option<serde_json::Value>,
 }
 
 impl<T> CombinedState<T> {
@@ -73,6 +74,7 @@ impl<T: Debug + Clone> Default for CombinedState<T> {
         Self {
             current: None,
             staging: vec![],
+            legacy_state_key: None,
         }
     }
 }
@@ -263,6 +265,8 @@ pub struct ResourceSetupInfo<K, S, C: ResourceSetupStatusCheck> {
 
     /// If `None`, the resource is managed by users.
     pub status_check: Option<C>,
+
+    pub legacy_key: Option<K>,
 }
 
 impl<K, S, C: ResourceSetupStatusCheck> std::fmt::Display for ResourceSetupInfo<K, S, C> {

@@ -420,7 +420,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         StorageFactoryBase::describe_resource(self, &key)
     }
 
-    fn normalize_setup_key(&self, key: serde_json::Value) -> Result<serde_json::Value> {
+    fn normalize_setup_key(&self, key: &serde_json::Value) -> Result<serde_json::Value> {
         let key: T::Key = serde_json::from_value(key.clone())?;
         Ok(serde_json::to_value(key)?)
     }
@@ -478,5 +478,6 @@ fn from_json_combined_state<T: Debug + Clone + Serialize + DeserializeOwned>(
                 })
             })
             .collect::<Result<_>>()?,
+        legacy_state_key: existing_states.legacy_state_key,
     })
 }

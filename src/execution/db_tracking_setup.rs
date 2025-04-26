@@ -97,6 +97,7 @@ impl TrackingTableSetupStatusCheck {
             state: self.desired_state.clone(),
             description: "Tracking Table".to_string(),
             status_check: Some(self),
+            legacy_key: None,
         }
     }
 }

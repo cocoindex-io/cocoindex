@@ -65,6 +65,7 @@ impl<D: Operator> StatusCheck<D> {
                     }
                 })
                 .collect(),
+            legacy_state_key: existing.legacy_state_key,
         };
         let mut keys_to_delete = IndexSet::new();
         let mut states_to_upsert = vec![];

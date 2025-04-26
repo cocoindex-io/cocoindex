@@ -179,10 +179,30 @@ async fn delete_state(
     Ok(())
 }
 
+pub struct StateUpdateInfo {
+    pub desired_state: Option<serde_json::Value>,
+    pub legacy_key: Option<ResourceTypeKey>,
+}
+
+impl StateUpdateInfo {
+    pub fn new(
+        desired_state: Option<&impl Serialize>,
+        legacy_key: Option<ResourceTypeKey>,
+    ) -> Result<Self> {
+        Ok(Self {
+            desired_state: desired_state
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()?,
+            legacy_key,
+        })
+    }
+}
+
 pub async fn stage_changes_for_flow(
     flow_name: &str,
     seen_metadata_version: Option<u64>,
-    state_updates: &HashMap<ResourceTypeKey, Option<serde_json::Value>>,
+    resource_update_info: &HashMap<ResourceTypeKey, StateUpdateInfo>,
     pool: &PgPool,
 ) -> Result<u64> {
     let mut txn = pool.begin().await?;
@@ -210,39 +230,43 @@ pub async fn stage_changes_for_flow(
     )
     .await?;
 
-    for (type_id, desired_state) in state_updates {
+    for (type_id, update_info) in resource_update_info {
         let existing = existing_records.remove(type_id);
-        let change = match desired_state {
+        let change = match &update_info.desired_state {
             Some(desired_state) => StateChange::Upsert(desired_state.clone()),
             None => StateChange::Delete,
         };
-        match existing {
+        let mut new_staging_changes = vec![];
+        if let Some(legacy_key) = &update_info.legacy_key {
+            if let Some(legacy_record) = existing_records.remove(&legacy_key) {
+                new_staging_changes.extend(legacy_record.staging_changes.0);
+                delete_state(flow_name, legacy_key, &mut *txn).await?;
+            }
+        }
+        let (action, existing_staging_changes) = match existing {
             Some(existing) => {
-                if existing.staging_changes.0.iter().all(|c| c != &change) {
-                    let mut staging_changes = existing.staging_changes.0;
-                    staging_changes.push(change);
-                    upsert_staging_changes(
-                        flow_name,
-                        type_id,
-                        staging_changes,
-                        &mut *txn,
-                        WriteAction::Update,
-                    )
-                    .await?;
+                let existing_staging_changes = existing.staging_changes.0;
+                if existing_staging_changes.iter().all(|c| c != &change) {
+                    new_staging_changes.push(change);
                 }
+                (WriteAction::Update, existing_staging_changes)
             }
             None => {
-                if desired_state.is_some() {
-                    upsert_staging_changes(
-                        flow_name,
-                        type_id,
-                        vec![change],
-                        &mut *txn,
-                        WriteAction::Insert,
-                    )
-                    .await?;
+                if update_info.desired_state.is_some() {
+                    new_staging_changes.push(change);
                 }
+                (WriteAction::Insert, vec![])
             }
+        };
+        if !new_staging_changes.is_empty() {
+            upsert_staging_changes(
+                flow_name,
+                type_id,
+                [existing_staging_changes, new_staging_changes].concat(),
+                &mut *txn,
+                action,
+            )
+            .await?;
         }
     }
     txn.commit().await?;
@@ -252,7 +276,7 @@ pub async fn stage_changes_for_flow(
 pub async fn commit_changes_for_flow(
     flow_name: &str,
     curr_metadata_version: u64,
-    state_updates: HashMap<ResourceTypeKey, Option<serde_json::Value>>,
+    state_updates: HashMap<ResourceTypeKey, StateUpdateInfo>,
     delete_version: bool,
     pool: &PgPool,
 ) -> Result<()> {
@@ -265,8 +289,8 @@ pub async fn commit_changes_for_flow(
             StatusCode::CONFLICT,
         ))?;
     }
-    for (type_id, desired_state) in state_updates {
-        match desired_state {
+    for (type_id, update_info) in state_updates {
+        match update_info.desired_state {
             Some(desired_state) => {
                 upsert_state(
                     flow_name,
@@ -301,6 +325,7 @@ impl MetadataTableSetup {
             state: None,
             description: "CocoIndex Metadata Table".to_string(),
             status_check: Some(self),
+            legacy_key: None,
         }
     }
 }

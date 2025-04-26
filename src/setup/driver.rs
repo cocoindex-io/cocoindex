@@ -57,6 +57,7 @@ impl std::str::FromStr for MetadataRecordType {
 fn from_metadata_record<S: DeserializeOwned + Debug + Clone>(
     state: Option<serde_json::Value>,
     staging_changes: sqlx::types::Json<Vec<StateChange<serde_json::Value>>>,
+    legacy_state_key: Option<serde_json::Value>,
 ) -> Result<CombinedState<S>> {
     let current: Option<S> = state.map(serde_json::from_value).transpose()?;
     let staging: Vec<StateChange<S>> = (staging_changes.0.into_iter())
@@ -67,7 +68,11 @@ fn from_metadata_record<S: DeserializeOwned + Debug + Clone>(
             })
         })
         .collect::<Result<_>>()?;
-    Ok(CombinedState { current, staging })
+    Ok(CombinedState {
+        current,
+        staging,
+        legacy_state_key,
+    })
 }
 
 pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupState<ExistingMode>> {
@@ -103,27 +108,33 @@ pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupState<Exi
                             db_metadata::parse_flow_version(&state);
                     }
                     MetadataRecordType::FlowMetadata => {
-                        flow_ss.metadata = from_metadata_record(state, staging_changes)?;
+                        flow_ss.metadata = from_metadata_record(state, staging_changes, None)?;
                     }
                     MetadataRecordType::TrackingTable => {
-                        flow_ss.tracking_table = from_metadata_record(state, staging_changes)?;
+                        flow_ss.tracking_table =
+                            from_metadata_record(state, staging_changes, None)?;
                     }
                     MetadataRecordType::Target(target_type) => {
                         let normalized_key = {
                             let registry = executor_factory_registry();
                             match registry.get(&target_type) {
                                 Some(ExecutorFactory::ExportTarget(factory)) => {
-                                    factory.normalize_setup_key(metadata_record.key)?
+                                    factory.normalize_setup_key(&metadata_record.key)?
                                 }
                                 _ => metadata_record.key.clone(),
                             }
                         };
+                        let combined_state = from_metadata_record(
+                            state,
+                            staging_changes,
+                            (normalized_key != metadata_record.key).then_some(metadata_record.key),
+                        )?;
                         flow_ss.targets.insert(
                             super::ResourceIdentifier {
                                 key: normalized_key,
                                 target_kind: target_type,
                             },
-                            from_metadata_record(state, staging_changes)?,
+                            combined_state,
                         );
                     }
                 }
@@ -202,6 +213,20 @@ fn group_resource_states<'a>(
         let entry = entry.or_default();
         if let Some(current) = &state.current {
             entry.existing.current = Some(current.clone());
+        }
+        if let Some(legacy_state_key) = &state.legacy_state_key {
+            if !entry
+                .existing
+                .legacy_state_key
+                .as_ref()
+                .map_or(false, |v| v == legacy_state_key)
+            {
+                warn!(
+                    "inconsistent legacy key: {:?}, {:?}",
+                    key, entry.existing.legacy_state_key
+                );
+            }
+            entry.existing.legacy_state_key = Some(legacy_state_key.clone());
         }
         for s in state.staging.iter() {
             match s {
@@ -288,6 +313,7 @@ pub async fn check_flow_setup_status(
                     StateChange::Delete => Some(StateChange::Delete),
                 })
                 .collect(),
+            legacy_state_key: v.existing.legacy_state_key.clone(),
         };
         let never_setup_by_sys = target_state.is_none()
             && existing_without_setup_by_user.current.is_none()
@@ -311,6 +337,13 @@ pub async fn check_flow_setup_status(
             state,
             description: factory.describe_resource(&resource_id.key)?,
             status_check,
+            legacy_key: v
+                .existing
+                .legacy_state_key
+                .map(|legacy_state_key| ResourceIdentifier {
+                    target_kind: resource_id.target_kind.clone(),
+                    key: legacy_state_key,
+                }),
         });
     }
     Ok(FlowSetupStatusCheck {
@@ -406,19 +439,16 @@ pub async fn apply_changes(
         };
         write!(write, "\n{verb} flow {flow_name}:\n")?;
 
-        let mut state_updates =
-            HashMap::<db_metadata::ResourceTypeKey, Option<serde_json::Value>>::new();
+        let mut update_info =
+            HashMap::<db_metadata::ResourceTypeKey, db_metadata::StateUpdateInfo>::new();
 
         if let Some(metadata_change) = &flow_status.metadata_change {
-            state_updates.insert(
+            update_info.insert(
                 db_metadata::ResourceTypeKey::new(
                     MetadataRecordType::FlowMetadata.to_string(),
                     serde_json::Value::Null,
                 ),
-                metadata_change
-                    .desired_state()
-                    .map(serde_json::to_value)
-                    .transpose()?,
+                db_metadata::StateUpdateInfo::new(metadata_change.desired_state(), None)?,
             );
         }
         if let Some(tracking_table) = &flow_status.tracking_table {
@@ -428,37 +458,37 @@ pub async fn apply_changes(
                 .map(|c| c.change_type() != SetupChangeType::NoChange)
                 .unwrap_or_default()
             {
-                state_updates.insert(
+                update_info.insert(
                     db_metadata::ResourceTypeKey::new(
                         MetadataRecordType::TrackingTable.to_string(),
                         serde_json::Value::Null,
                     ),
-                    tracking_table
-                        .state
-                        .as_ref()
-                        .map(serde_json::to_value)
-                        .transpose()?,
+                    db_metadata::StateUpdateInfo::new(tracking_table.state.as_ref(), None)?,
                 );
             }
         }
         for target_resource in &flow_status.target_resources {
-            state_updates.insert(
+            update_info.insert(
                 db_metadata::ResourceTypeKey::new(
                     MetadataRecordType::Target(target_resource.key.target_kind.clone()).to_string(),
                     target_resource.key.key.clone(),
                 ),
-                target_resource
-                    .state
-                    .as_ref()
-                    .map(serde_json::to_value)
-                    .transpose()?,
+                db_metadata::StateUpdateInfo::new(
+                    target_resource.state.as_ref(),
+                    target_resource.legacy_key.as_ref().map(|k| {
+                        db_metadata::ResourceTypeKey::new(
+                            MetadataRecordType::Target(k.target_kind.clone()).to_string(),
+                            k.key.clone(),
+                        )
+                    }),
+                )?,
             );
         }
 
         let new_version_id = db_metadata::stage_changes_for_flow(
             flow_name,
             flow_status.seen_flow_metadata_version,
-            &state_updates,
+            &update_info,
             pool,
         )
         .await?;
@@ -474,7 +504,7 @@ pub async fn apply_changes(
         db_metadata::commit_changes_for_flow(
             flow_name,
             new_version_id,
-            state_updates,
+            update_info,
             is_deletion,
             pool,
         )
