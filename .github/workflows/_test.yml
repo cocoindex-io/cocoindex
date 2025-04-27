@@ -1,0 +1,40 @@
+name: Run Tests
+
+on:
+    workflow_call:
+        inputs:
+            platform:
+                required: true
+                type: string
+
+jobs:
+    rust:
+        strategy:
+            matrix:
+                python-version: [3.11, 3.13]
+        runs-on: ${{ inputs.platform }}
+        steps:
+        - uses: actions/checkout@v4
+
+        - run: rustup toolchain install stable --profile minimal
+        - name: Rust Cache
+          uses: Swatinem/rust-cache@v2.7.3
+        - name: Build
+          run: cargo build --verbose
+        - name: Run Rust tests
+          run: cargo test --verbose
+
+        - uses: actions/setup-python@v5
+          with:
+            python-version: ${{ matrix.python-version }}
+            cache: 'pip'
+
+        - name: Install dependencies
+          run: |
+            pip3 install .
+            pip3 install pytest
+
+        - name: Run Python tests
+          run: |
+            cd python
+            pytest cocoindex/tests
