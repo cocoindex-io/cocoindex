@@ -38,10 +38,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
-      - name: Run tests
-        uses: ./.github/workflows/_test.yml
-        with:
-          platform: ${{ matrix.platform.runner }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -50,3 +46,6 @@ jobs:
           sccache: 'true'
           manylinux: auto
           container: ${{ matrix.platform.container }}
+  test:
+    name: Run test
+    uses: ./.github/workflows/_test.yml

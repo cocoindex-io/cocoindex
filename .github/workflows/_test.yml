@@ -2,17 +2,14 @@ name: Run Tests
 
 on:
     workflow_call:
-        inputs:
-            platform:
-                required: true
-                type: string
 
 jobs:
     rust:
         strategy:
             matrix:
                 python-version: [3.11, 3.13]
-        runs-on: ${{ inputs.platform }}
+                platform: [ubuntu-latest, macos-latest]
+        runs-on: ${{ matrix.platform }}
         steps:
         - uses: actions/checkout@v4
 
