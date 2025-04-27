@@ -16,8 +16,6 @@ jobs:
         - run: rustup toolchain install stable --profile minimal
         - name: Rust Cache
           uses: Swatinem/rust-cache@v2.7.3
-        - name: Build
-          run: cargo build --verbose
         - name: Run Rust tests
           run: cargo test --verbose
 
@@ -25,13 +23,12 @@ jobs:
           with:
             python-version: ${{ matrix.python-version }}
             cache: 'pip'
-
-        - name: Install dependencies
+        - name: Install Python dependencies
           run: |
-            pip3 install .
-            pip3 install pytest
-
+            pip3 install maturin pytest
+        - name: Build Python bindings
+          run: |
+            maturin develop
         - name: Run Python tests
           run: |
-            cd python
-            pytest cocoindex/tests
+            pytest python/cocoindex/tests
