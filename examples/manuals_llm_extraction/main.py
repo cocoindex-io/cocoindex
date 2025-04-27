@@ -98,6 +98,10 @@ def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: coco
                 # Replace by this spec below, to use Gemini API model
                 #   llm_spec=cocoindex.LlmSpec(
                 #       api_type=cocoindex.LlmApiType.GEMINI, model="gemini-2.0-flash"),
+
+                # Replace by this spec below, to use Anthropic API model
+                #   llm_spec=cocoindex.LlmSpec(
+                #       api_type=cocoindex.LlmApiType.ANTHROPIC, model="claude-3-5-sonnet-latest"),
                 output_type=ModuleInfo,
                 instruction="Please extract Python module information from the manual."))
         doc["module_summary"] = doc["module_info"].transform(summarize_module)

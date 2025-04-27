@@ -6,6 +6,7 @@ class LlmApiType(Enum):
     OPENAI = "OpenAi"
     OLLAMA = "Ollama"
     GEMINI = "Gemini"
+    ANTHROPIC = "Anthropic"
 
 @dataclass
 class LlmSpec:

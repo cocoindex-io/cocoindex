@@ -12,6 +12,7 @@ pub enum LlmApiType {
     Ollama,
     OpenAi,
     Gemini,
+    Anthropic,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +55,7 @@ pub trait LlmGenerationClient: Send + Sync {
 mod ollama;
 mod openai;
 mod gemini;
+mod anthropic;
 
 pub async fn new_llm_generation_client(spec: LlmSpec) -> Result<Box<dyn LlmGenerationClient>> {
     let client = match spec.api_type {
@@ -65,6 +67,9 @@ pub async fn new_llm_generation_client(spec: LlmSpec) -> Result<Box<dyn LlmGener
         }
         LlmApiType::Gemini => {
             Box::new(gemini::Client::new(spec).await?) as Box<dyn LlmGenerationClient>
+        }
+        LlmApiType::Anthropic => {
+            Box::new(anthropic::Client::new(spec).await?) as Box<dyn LlmGenerationClient>
         }
     };
     Ok(client)
