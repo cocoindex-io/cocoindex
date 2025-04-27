@@ -40,5 +40,4 @@ jobs:
             source .venv/bin/activate
             pip install maturin pytest
             maturin develop
-            cd python
-            pytest cocoindex/tests
+            pytest python/cocoindex/tests
