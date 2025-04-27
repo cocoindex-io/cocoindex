@@ -14,9 +14,6 @@ dist/
 
 .DS_Store
 
-# Lock files for dependencies should be ignored for library
-/Cargo.lock
-
 *.egg-info/
 
 # Output of `cocoindex eval`
