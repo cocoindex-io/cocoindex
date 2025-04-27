@@ -34,9 +34,9 @@ jobs:
         - uses: actions/cache@v4
           with:
             path: .venv
-            key: ${{ runner.os }}-python-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+            key: ${{ runner.os }}-pythonenv-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
             restore-keys: |
-              ${{ runner.os }}-python-${{ matrix.python-version }}-
+              ${{ runner.os }}-pythonenv-${{ matrix.python-version }}-
         - name: Python build & test
           run: |
             python -m venv .venv
