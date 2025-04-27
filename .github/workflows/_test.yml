@@ -3,6 +3,9 @@ name: Run Tests
 on:
     workflow_call:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
     rust:
         strategy:
@@ -16,19 +19,27 @@ jobs:
         - run: rustup toolchain install stable --profile minimal
         - name: Rust Cache
           uses: Swatinem/rust-cache@v2.7.3
-        - name: Run Rust tests
+        - name: Rust build
+          run: cargo build --verbose
+        - name: Rust tests
           run: cargo test --verbose
 
         - uses: actions/setup-python@v5
           with:
             python-version: ${{ matrix.python-version }}
             cache: 'pip'
-        - name: Install Python dependencies
+        - name: Install Python global dependencies
           run: |
-            pip3 install maturin pytest
-        - name: Build Python bindings
+            pip install maturin pytest
+        - uses: actions/cache@v4
+          with:
+            path: .venv
+            key: ${{ runner.os }}-python-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+            restore-keys: |
+              ${{ runner.os }}-python-${{ matrix.python-version }}-
+        - name: Python build & test
           run: |
+            python -m venv .venv
+            source .venv/bin/activate
             maturin develop
-        - name: Run Python tests
-          run: |
             pytest python/cocoindex/tests
