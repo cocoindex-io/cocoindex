@@ -7,7 +7,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-    rust:
+    build-test:
         strategy:
             matrix:
                 python-version: [3.11, 3.13]
