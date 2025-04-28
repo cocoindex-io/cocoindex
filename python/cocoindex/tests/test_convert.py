@@ -239,10 +239,24 @@ def test_roundtrip_ltable():
     decoded = build_engine_value_decoder(t)(encoded)
     assert decoded == value
 
-def test_roundtrip_ktable():
+def test_roundtrip_ktable_str_key():
     t = dict[str, Order]
     value = {"K1": Order("O1", "item1", 10.0), "K2": Order("O2", "item2", 20.0)}
     encoded = encode_engine_value(value)
     assert encoded == [["K1", "O1", "item1", 10.0, "default_extra"], ["K2", "O2", "item2", 20.0, "default_extra"]]
+    decoded = build_engine_value_decoder(t)(encoded)
+    assert decoded == value
+
+def test_roundtrip_ktable_struct_key():
+    @dataclass(frozen=True)
+    class OrderKey:
+        shop_id: str
+        version: int
+
+    t = dict[OrderKey, Order]
+    value = {OrderKey("A", 3): Order("O1", "item1", 10.0), OrderKey("B", 4): Order("O2", "item2", 20.0)}
+    encoded = encode_engine_value(value)
+    assert encoded == [[["A", 3], "O1", "item1", 10.0, "default_extra"],
+                       [["B", 4], "O2", "item2", 20.0, "default_extra"]]
     decoded = build_engine_value_decoder(t)(encoded)
     assert decoded == value
