@@ -52,11 +52,31 @@ def ls(show_all: bool):
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
-def show(flow_name: str | None):
+@click.option("--no-color", is_flag=True, help="Disable colored output.")
+def show(flow_name: str | None, no_color: bool):
     """
-    Show the flow spec.
+    Show the flow spec in a readable format with colored output.
     """
-    click.echo(str(_flow_by_name(flow_name)))
+    flow = _flow_by_name(flow_name)
+    flow_str = str(flow)
+
+    for line in flow_str.splitlines():
+        line = line.rstrip()
+        if not line:
+            click.echo(line, color=not no_color)
+            continue
+
+        if line.startswith("Flow:") or line in ("Sources:", "Processing:", "Targets:"):
+            click.secho(line, fg="cyan", bold=True, color=not no_color)
+            continue
+
+        if ":" in line:
+            key, value = line.split(":", 1)
+            click.secho(f"{key}:", fg="green", nl=False, color=not no_color)
+            click.secho(value, fg="yellow", color=not no_color)
+            continue
+
+        click.secho(line, fg="yellow", color=not no_color)
 
 @cli.command()
 def setup():
