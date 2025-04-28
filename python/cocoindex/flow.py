@@ -8,6 +8,7 @@ import asyncio
 import re
 import inspect
 import datetime
+import json
 
 from typing import Any, Callable, Sequence, TypeVar
 from threading import Lock
@@ -452,7 +453,59 @@ class Flow:
         self._lazy_engine_flow = _lazy_engine_flow
 
     def __str__(self):
-        return str(self._lazy_engine_flow())
+        try:
+            flow_spec_str = str(self._lazy_engine_flow())
+            flow_spec = json.loads(flow_spec_str)
+            return self._format_flow(flow_spec)
+        except json.JSONDecodeError:
+            return f"Flow (spec not parseable): {flow_spec_str}"
+
+    def _format_flow(self, flow_dict: dict) -> str:
+        lines = [f"Flow: {flow_dict.get('name', 'Unnamed')}"]
+
+        def build_hierarchy(data, parent_key='', hierarchy=None):
+            if hierarchy is None:
+                hierarchy = {}
+
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    full_key = f"{parent_key}.{key}" if parent_key else key
+                    build_hierarchy(value, full_key, hierarchy)
+            elif isinstance(data, list):
+                for index, item in enumerate(data):
+                    build_hierarchy(item, f"{parent_key}[{index}]", hierarchy)
+            else:
+                keys = parent_key.split('.')
+                current_level = hierarchy
+                for k in keys[:-1]:
+                    if k not in current_level:
+                        current_level[k] = {}
+                    current_level = current_level[k]
+                current_level[keys[-1]] = data
+
+            return hierarchy
+
+        def store_hierarchy(hierarchy, lines, parent_key='', indent=0):
+            for key, value in hierarchy.items():
+                child_key = f"- {key}" if parent_key else key
+                if isinstance(value, dict):
+                    lines.append(' ' * indent + f"{child_key}:")
+                    store_hierarchy(value, lines, key, indent + 2)
+                else:
+                    lines.append(' ' * indent + f"{child_key}: {value}")
+
+        # Import Operations
+        lines.append("\nSources:")
+        store_hierarchy(build_hierarchy(flow_dict.get("import_ops", [])), lines)
+            
+        # Reactive Operations
+        lines.append("\nProcessing:")
+        store_hierarchy(build_hierarchy(flow_dict.get("reactive_ops", [])), lines)
+
+        # Export Operations
+        lines.append("\nTargets:")
+        store_hierarchy(build_hierarchy(flow_dict.get("export_ops", [])), lines)
+        return "\n".join(lines)
 
     def __repr__(self):
         return repr(self._lazy_engine_flow())
