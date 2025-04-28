@@ -8,7 +8,7 @@ import uuid
 
 from enum import Enum
 from typing import Any, Callable, get_origin
-from .typing import analyze_type_info, encode_enriched_type, COLLECTION_TYPES
+from .typing import analyze_type_info, encode_enriched_type, TABLE_TYPES
 
 def to_engine_value(value: Any) -> Any:
     """Convert a Python value to an engine value."""
@@ -40,7 +40,7 @@ def make_engine_value_converter(
     src_type_kind = src_type['kind']
 
     if dst_annotation is inspect.Parameter.empty:
-        if src_type_kind == 'Struct' or src_type_kind in COLLECTION_TYPES:
+        if src_type_kind == 'Struct' or src_type_kind in TABLE_TYPES:
             raise ValueError(f"Missing type annotation for `{''.join(field_path)}`."
                              f"It's required for {src_type_kind} type.")
         return lambda value: value
@@ -56,7 +56,7 @@ def make_engine_value_converter(
         return _make_engine_struct_value_converter(
             field_path, src_type['fields'], dst_type_info.dataclass_type)
 
-    if src_type_kind in COLLECTION_TYPES:
+    if src_type_kind in TABLE_TYPES:
         field_path.append('[*]')
         elem_type_info = analyze_type_info(dst_type_info.elem_type)
         if elem_type_info.dataclass_type is None:

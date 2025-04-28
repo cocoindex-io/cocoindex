@@ -30,29 +30,29 @@ Json = Annotated[Any, TypeKind('Json')]
 LocalDateTime = Annotated[datetime.datetime, TypeKind('LocalDateTime')]
 OffsetDateTime = Annotated[datetime.datetime, TypeKind('OffsetDateTime')]
 
-COLLECTION_TYPES = ('Table', 'List')
+TABLE_TYPES = ('KTable', 'LTable')
 
 R = TypeVar("R")
 
 if TYPE_CHECKING:
-    Table = Annotated[list[R], TypeKind('Table')]
-    List = Annotated[list[R], TypeKind('List')]
+    KTable = Annotated[list[R], TypeKind('KTable')]
+    LTable = Annotated[list[R], TypeKind('LTable')]
 else:
     # pylint: disable=too-few-public-methods
-    class Table:  # type: ignore[unreachable]
+    class KTable:  # type: ignore[unreachable]
         """
-        A Table type, which has a list of rows. The first field of each row is the key.
+        A KTable type, which is a table that the first field is the key.
         """
         def __class_getitem__(cls, item: type[R]):
-            return Annotated[list[item], TypeKind('Table')]
+            return Annotated[list[item], TypeKind('KTable')]
 
     # pylint: disable=too-few-public-methods
-    class List:  # type: ignore[unreachable]
+    class LTable:  # type: ignore[unreachable]
         """
-        A List type, which has a list of ordered rows.
+        A LTable type, which is a table that has a list of ordered rows.
         """
         def __class_getitem__(cls, item: type[R]):
-            return Annotated[list[item], TypeKind('List')]
+            return Annotated[list[item], TypeKind('LTable')]
 
 @dataclasses.dataclass
 class AnalyzedTypeInfo:
@@ -113,8 +113,8 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         dataclass_type = t
     elif base_type is collections.abc.Sequence or base_type is list:
         if kind is None:
-            kind = 'Vector' if vector_info is not None else 'List'
-        elif not (kind == 'Vector' or kind in COLLECTION_TYPES):
+            kind = 'Vector' if vector_info is not None else 'LTable'
+        elif not (kind == 'Vector' or kind in TABLE_TYPES):
             raise ValueError(f"Unexpected type kind for list: {kind}")
 
         args = typing.get_args(t)
@@ -123,7 +123,7 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         elem_type = args[0]
     elif kind is None:
         if base_type is collections.abc.Sequence or base_type is list:
-            kind = 'Vector' if vector_info is not None else 'List'
+            kind = 'Vector' if vector_info is not None else 'LTable'
         elif t is bytes:
             kind = 'Bytes'
         elif t is str:
@@ -179,7 +179,7 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         encoded_type['element_type'] = _encode_type(analyze_type_info(type_info.elem_type))
         encoded_type['dimension'] = type_info.vector_info.dim
 
-    elif type_info.kind in COLLECTION_TYPES:
+    elif type_info.kind in TABLE_TYPES:
         if type_info.elem_type is None:
             raise ValueError(f"{type_info.kind} type must have an element type")
         row_type_info = analyze_type_info(type_info.elem_type)

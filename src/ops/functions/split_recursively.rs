@@ -550,7 +550,7 @@ impl SimpleFunctionExecutor for Executor {
             .map(|(range, text)| (range.into(), fields_value!(Arc::<str>::from(text)).into()))
             .collect();
 
-        Ok(Value::Table(table))
+        Ok(Value::KTable(table))
     }
 }
 
@@ -596,12 +596,11 @@ impl SimpleFunctionFactoryBase for Factory {
             "text",
             make_output_type(BasicValueType::Str),
         ));
-        let output_schema =
-            make_output_type(CollectionSchema::new(CollectionKind::Table, struct_schema))
-                .with_attr(
-                    field_attrs::CHUNK_BASE_TEXT,
-                    serde_json::to_value(args_resolver.get_analyze_value(&args.text))?,
-                );
+        let output_schema = make_output_type(TableSchema::new(TableKind::KTable, struct_schema))
+            .with_attr(
+                field_attrs::CHUNK_BASE_TEXT,
+                serde_json::to_value(args_resolver.get_analyze_value(&args.text))?,
+            );
         Ok((args, output_schema))
     }
 

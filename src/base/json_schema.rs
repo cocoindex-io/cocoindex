@@ -219,7 +219,7 @@ impl JsonSchemaBuilder {
         match value_type {
             schema::ValueType::Basic(b) => self.for_basic_value_type(b, field_path),
             schema::ValueType::Struct(s) => self.for_struct_schema(s, field_path),
-            schema::ValueType::Collection(c) => SchemaObject {
+            schema::ValueType::Table(c) => SchemaObject {
                 instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Array))),
                 array: Some(Box::new(ArrayValidation {
                     items: Some(SingleOrVec::Single(Box::new(

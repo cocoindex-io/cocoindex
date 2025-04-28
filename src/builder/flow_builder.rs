@@ -129,7 +129,7 @@ impl DataScopeRef {
                 .typ;
         }
         let scope_builder = match field_typ {
-            ValueTypeBuilder::Collection(collection_type) => collection_type.sub_scope.clone(),
+            ValueTypeBuilder::Table(table_type) => table_type.sub_scope.clone(),
             _ => api_bail!("expect collection type"),
         };
 
@@ -243,7 +243,7 @@ impl DataSlice {
         }))
     }
 
-    pub fn collection_entry_scope(&self) -> PyResult<DataScopeRef> {
+    pub fn table_row_scope(&self) -> PyResult<DataScopeRef> {
         let field_path = match self.value.as_ref() {
             spec::ValueMapping::Field(v) => &v.field_path,
             _ => return Err(PyException::new_err("expect field path")),
@@ -902,9 +902,9 @@ impl FlowBuilder {
 
         let (_, field_type) = scope.data.analyze_field_path(field_path)?;
         let sub_scope = match &field_type.typ {
-            ValueTypeBuilder::Collection(collection_type) => &collection_type.sub_scope,
+            ValueTypeBuilder::Table(table_type) => &table_type.sub_scope,
             t => api_bail!(
-                "expect collection type, got {}",
+                "expect table type, got {}",
                 TryInto::<schema::ValueType>::try_into(t)?
             ),
         };

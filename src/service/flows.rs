@@ -137,11 +137,11 @@ pub async fn evaluate_data(
     let plan = flow_ctx.flow.get_execution_plan().await?;
     let import_op = &plan.import_ops[import_op_idx];
     let field_schema = &schema.fields[import_op.output.field_idx as usize];
-    let collection_schema = match &field_schema.value_type.typ {
-        schema::ValueType::Collection(collection) => collection,
+    let table_schema = match &field_schema.value_type.typ {
+        schema::ValueType::Table(table) => table,
         _ => api_bail!("field is not a table: {}", query.field),
     };
-    let key_field = collection_schema
+    let key_field = table_schema
         .key_field()
         .ok_or_else(|| api_error!("field {} does not have a key", query.field))?;
     let key = value::KeyValue::from_strs(query.key, &key_field.value_type.typ)?;

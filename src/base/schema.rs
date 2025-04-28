@@ -116,51 +116,51 @@ impl std::fmt::Display for StructSchema {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum CollectionKind {
-    /// A generic collection can have any row type.
-    Collection,
+pub enum TableKind {
+    /// An table with unordered rows, without key.
+    UTable,
     /// A table's first field is the key.
-    Table,
-    /// A list is a table whose key type is int64 starting from 0 continuously..
-    List,
+    KTable,
+    /// A table whose rows orders are preserved.
+    LTable,
 }
 
-impl std::fmt::Display for CollectionKind {
+impl std::fmt::Display for TableKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CollectionKind::Collection => write!(f, "Collection"),
-            CollectionKind::Table => write!(f, "Table"),
-            CollectionKind::List => write!(f, "List"),
+            TableKind::UTable => write!(f, "Table"),
+            TableKind::KTable => write!(f, "KTable"),
+            TableKind::LTable => write!(f, "LTable"),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CollectionSchema {
-    pub kind: CollectionKind,
+pub struct TableSchema {
+    pub kind: TableKind,
     pub row: StructSchema,
 
     #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
     pub collectors: Vec<NamedSpec<Arc<CollectorSchema>>>,
 }
 
-impl CollectionSchema {
+impl TableSchema {
     pub fn has_key(&self) -> bool {
         match self.kind {
-            CollectionKind::Table => true,
-            CollectionKind::Collection | CollectionKind::List => false,
+            TableKind::KTable => true,
+            TableKind::UTable | TableKind::LTable => false,
         }
     }
 
     pub fn key_type(&self) -> Option<&EnrichedValueType> {
         match self.kind {
-            CollectionKind::Table => self
+            TableKind::KTable => self
                 .row
                 .fields
                 .first()
                 .as_ref()
                 .map(|field| &field.value_type),
-            CollectionKind::Collection | CollectionKind::List => None,
+            TableKind::UTable | TableKind::LTable => None,
         }
     }
 
@@ -180,7 +180,7 @@ impl CollectionSchema {
     }
 }
 
-impl std::fmt::Display for CollectionSchema {
+impl std::fmt::Display for TableSchema {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}({}", self.kind, self.row)?;
         for collector in self.collectors.iter() {
@@ -191,8 +191,8 @@ impl std::fmt::Display for CollectionSchema {
     }
 }
 
-impl CollectionSchema {
-    pub fn new(kind: CollectionKind, row: StructSchema) -> Self {
+impl TableSchema {
+    pub fn new(kind: TableKind, row: StructSchema) -> Self {
         Self {
             kind,
             row,
@@ -202,8 +202,8 @@ impl CollectionSchema {
 
     pub fn key_field(&self) -> Option<&FieldSchema> {
         match self.kind {
-            CollectionKind::Table => Some(self.row.fields.first().unwrap()),
-            CollectionKind::Collection | CollectionKind::List => None,
+            TableKind::KTable => Some(self.row.fields.first().unwrap()),
+            TableKind::UTable | TableKind::LTable => None,
         }
     }
 }
@@ -217,7 +217,7 @@ pub enum ValueType {
     Basic(BasicValueType),
 
     #[serde(untagged)]
-    Collection(CollectionSchema),
+    Table(TableSchema),
 }
 
 impl ValueType {
@@ -225,7 +225,7 @@ impl ValueType {
         match self {
             ValueType::Basic(_) => None,
             ValueType::Struct(_) => None,
-            ValueType::Collection(c) => c.key_type(),
+            ValueType::Table(c) => c.key_type(),
         }
     }
 
@@ -234,7 +234,7 @@ impl ValueType {
         match self {
             ValueType::Basic(a) => ValueType::Basic(a.clone()),
             ValueType::Struct(a) => ValueType::Struct(a.without_attrs()),
-            ValueType::Collection(a) => ValueType::Collection(a.without_attrs()),
+            ValueType::Table(a) => ValueType::Table(a.without_attrs()),
         }
     }
 }
@@ -307,7 +307,7 @@ impl std::fmt::Display for ValueType {
         match self {
             ValueType::Basic(b) => write!(f, "{}", b),
             ValueType::Struct(s) => write!(f, "{}", s),
-            ValueType::Collection(c) => write!(f, "{}", c),
+            ValueType::Table(c) => write!(f, "{}", c),
         }
     }
 }
