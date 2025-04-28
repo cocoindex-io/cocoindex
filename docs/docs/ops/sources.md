@@ -28,7 +28,7 @@ The spec takes the following fields:
 
 ### Schema
 
-The output is a table with the following sub fields:
+The output is a [KTable](/docs/core/data_types#ktable) with the following sub fields:
 *   `filename` (key, type: `str`): the filename of the file, including the path, relative to the root directory, e.g. `"dir1/file1.md"`
 *   `content` (type: `str` if `binary` is `False`, otherwise `bytes`): the content of the file
 
@@ -78,7 +78,7 @@ The spec takes the following fields:
 
 ### Schema
 
-The output is a table with the following sub fields:
+The output is a [KTable](/docs/core/data_types#ktable) with the following sub fields:
 
 *   `file_id` (key, type: `str`): the ID of the file in Google Drive.
 *   `filename` (type: `str`): the filename of the file, without the path, e.g. `"file1.md"`

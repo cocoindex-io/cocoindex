@@ -112,11 +112,12 @@ Notes:
     *   `doc`, representing each row of `documents`.
     *   `chunk`, representing each row of `chunks`.
 
-3.  A *data source* extracts data from an external source. In this example, the `LocalFile` data source defines a table, each row has `"filename"` and `"content"` fields.
+3.  A *data source* extracts data from an external source.
+    In this example, the `LocalFile` data source imports local files as a KTable (table with a key field, see [KTable](../core/data_types#ktable) for details), each row has `"filename"` and `"content"` fields.
 
-4. After defining the table, we extended a new field `"chunks"` to each row by *transforming* the `"content"` field using `SplitRecursively`. The output of the `SplitRecursively` is also a table representing each chunk of the document, with `"location"` and `"text"` fields.
+4. After defining the KTable, we extended a new field `"chunks"` to each row by *transforming* the `"content"` field using `SplitRecursively`. The output of the `SplitRecursively` is also a KTable representing each chunk of the document, with `"location"` and `"text"` fields.
 
-5. After defining the table, we extended a new field `"embedding"` to each row by *transforming* the `"text"` field using `SentenceTransformerEmbed`.
+5. After defining the KTable, we extended a new field `"embedding"` to each row by *transforming* the `"text"` field using `SentenceTransformerEmbed`.
 
 6. In CocoIndex, a *collector* collects multiple entries of data together. In this example, the `doc_embeddings` collector collects data from all `chunk`s across all `doc`s, and using the collected data to build a vector index `"doc_embeddings"`, using `Postgres`.
 
