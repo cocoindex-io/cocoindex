@@ -31,38 +31,22 @@ LocalDateTime = Annotated[datetime.datetime, TypeKind('LocalDateTime')]
 OffsetDateTime = Annotated[datetime.datetime, TypeKind('OffsetDateTime')]
 
 TABLE_TYPES = ('KTable', 'LTable')
+KEY_FIELD_NAME = '_key'
 
-R = TypeVar("R")
 
-if TYPE_CHECKING:
-    KTable = Annotated[list[R], TypeKind('KTable')]
-    LTable = Annotated[list[R], TypeKind('LTable')]
-else:
-    # pylint: disable=too-few-public-methods
-    class KTable:  # type: ignore[unreachable]
-        """
-        A KTable type, which is a table that the first field is the key.
-        """
-        def __class_getitem__(cls, item: type[R]):
-            return Annotated[list[item], TypeKind('KTable')]
-
-    # pylint: disable=too-few-public-methods
-    class LTable:  # type: ignore[unreachable]
-        """
-        A LTable type, which is a table that has a list of ordered rows.
-        """
-        def __class_getitem__(cls, item: type[R]):
-            return Annotated[list[item], TypeKind('LTable')]
-
+ElementType = type | tuple[type, type]
 @dataclasses.dataclass
 class AnalyzedTypeInfo:
     """
     Analyzed info of a Python type.
     """
     kind: str
-    vector_info: Vector | None
-    elem_type: type | None
-    dataclass_type: type | None
+    vector_info: Vector | None      # For Vector
+    elem_type: ElementType | None   # For Vector and Table
+
+    key_type: type | None           # For element of KTable
+    dataclass_type: type | None     # For Struct
+
     attrs: dict[str, Any] | None
     nullable: bool = False
 
@@ -70,6 +54,12 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
     """
     Analyze a Python type and return the analyzed info.
     """
+    if isinstance(t, tuple) and len(t) == 2:
+        key_type, value_type = t
+        result = analyze_type_info(value_type)
+        result.key_type = key_type
+        return result
+
     annotations: tuple[Annotation, ...] = ()
     base_type = None
     nullable = False
@@ -105,6 +95,7 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
 
     dataclass_type = None
     elem_type = None
+    key_type = None
     if isinstance(t, type) and dataclasses.is_dataclass(t):
         if kind is None:
             kind = 'Struct'
@@ -121,6 +112,10 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         if len(args) != 1:
             raise ValueError(f"{kind} must have exactly one type argument")
         elem_type = args[0]
+    elif base_type is collections.abc.Mapping or base_type is dict:
+        kind = 'KTable'
+        args = typing.get_args(t)
+        elem_type = (args[0], args[1])
     elif kind is None:
         if base_type is collections.abc.Sequence or base_type is list:
             kind = 'Vector' if vector_info is not None else 'LTable'
@@ -145,20 +140,26 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         else:
             raise ValueError(f"type unsupported yet: {t}")
 
-    return AnalyzedTypeInfo(kind=kind, vector_info=vector_info, elem_type=elem_type,
-                            dataclass_type=dataclass_type, attrs=attrs, nullable=nullable)
+    return AnalyzedTypeInfo(kind=kind, vector_info=vector_info,
+                            elem_type=elem_type, key_type=key_type, dataclass_type=dataclass_type,
+                            attrs=attrs, nullable=nullable)
 
-def _encode_fields_schema(dataclass_type: type) -> list[dict[str, Any]]:
+def _encode_fields_schema(dataclass_type: type, key_type: type | None = None) -> list[dict[str, Any]]:
     result = []
-    for field in dataclasses.fields(dataclass_type):
+    def add_field(name: str, t) -> None:
         try:
-            type_info = encode_enriched_type_info(analyze_type_info(field.type))
+            type_info = encode_enriched_type_info(analyze_type_info(t))
         except ValueError as e:
             e.add_note(f"Failed to encode annotation for field - "
-                       f"{dataclass_type.__name__}.{field.name}: {field.type}")
+                       f"{dataclass_type.__name__}.{name}: {t}")
             raise
-        type_info['name'] = field.name
+        type_info['name'] = name
         result.append(type_info)
+
+    if key_type is not None:
+        add_field(KEY_FIELD_NAME, key_type)
+    for field in dataclasses.fields(dataclass_type):
+        add_field(field.name, field.type)
     return result
 
 def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
@@ -167,7 +168,7 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
     if type_info.kind == 'Struct':
         if type_info.dataclass_type is None:
             raise ValueError("Struct type must have a dataclass type")
-        encoded_type['fields'] = _encode_fields_schema(type_info.dataclass_type)
+        encoded_type['fields'] = _encode_fields_schema(type_info.dataclass_type, type_info.key_type)
         if doc := inspect.getdoc(type_info.dataclass_type):
             encoded_type['description'] = doc
 
