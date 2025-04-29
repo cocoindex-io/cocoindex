@@ -37,7 +37,7 @@ class TargetFieldMapping:
     target: str | None = None
 
 @dataclass
-class NodeReferenceMapping:
+class NodeFromFields:
     """Spec for a referenced graph node, usually as part of a relationship."""
     label: str
     fields: list[TargetFieldMapping]
@@ -50,30 +50,37 @@ class ReferencedNode:
     vector_indexes: Sequence[index.VectorIndexDef] = ()
 
 @dataclass
-class NodeMapping:
+class Nodes:
     """Spec to map a row to a graph node."""
     kind = "Node"
 
     label: str
 
 @dataclass
-class RelationshipMapping:
+class Relationships:
     """Spec to map a row to a graph relationship."""
     kind = "Relationship"
 
     rel_type: str
-    source: NodeReferenceMapping
-    target: NodeReferenceMapping
+    source: NodeFromFields
+    target: NodeFromFields
+
+# For backwards compatibility only
+NodeMapping = Nodes
+RelationshipMapping = Relationships
+NodeReferenceMapping = NodeFromFields
 
 class Neo4j(op.StorageSpec):
     """Graph storage powered by Neo4j."""
 
     connection: AuthEntryReference
-    mapping: NodeMapping | RelationshipMapping
+    mapping: Nodes | Relationships
 
-class Neo4jDeclarations(op.DeclarationSpec):
+class Neo4jDeclaration(op.DeclarationSpec):
     """Declarations for Neo4j."""
 
     kind = "Neo4j"
     connection: AuthEntryReference
-    referenced_nodes: Sequence[ReferencedNode] = ()
+    nodes_label: str
+    primary_key_fields: Sequence[str]
+    vector_indexes: Sequence[index.VectorIndexDef] = ()

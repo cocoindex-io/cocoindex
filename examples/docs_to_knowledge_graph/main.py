@@ -93,35 +93,31 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
         "document_node",
         cocoindex.storages.Neo4j(
             connection=conn_spec,
-            mapping=cocoindex.storages.NodeMapping(label="Document")),
+            mapping=cocoindex.storages.Nodes(label="Document")),
         primary_key_fields=["filename"],
     )
     # Declare reference Node to reference entity node in a relationship
     flow_builder.declare(
-        cocoindex.storages.Neo4jDeclarations(
+        cocoindex.storages.Neo4jDeclaration(
             connection=conn_spec,
-            referenced_nodes=[
-                cocoindex.storages.ReferencedNode(
-                    label="Entity",
-                    primary_key_fields=["value"],
-                )
-            ]
+            nodes_label="Entity",
+            primary_key_fields=["value"],
         )
     )
     entity_relationship.export(
         "entity_relationship",
         cocoindex.storages.Neo4j(
             connection=conn_spec,
-            mapping=cocoindex.storages.RelationshipMapping(
+            mapping=cocoindex.storages.Relationships(
                 rel_type="RELATIONSHIP",
-                source=cocoindex.storages.NodeReferenceMapping(
+                source=cocoindex.storages.NodeFromFields(
                     label="Entity",
                     fields=[
                         cocoindex.storages.TargetFieldMapping(
                             source="subject", target="value"),
                     ]
                 ),
-                target=cocoindex.storages.NodeReferenceMapping(
+                target=cocoindex.storages.NodeFromFields(
                     label="Entity",
                     fields=[
                         cocoindex.storages.TargetFieldMapping(
@@ -136,13 +132,13 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
         "entity_mention",
         cocoindex.storages.Neo4j(
             connection=conn_spec,
-            mapping=cocoindex.storages.RelationshipMapping(
+            mapping=cocoindex.storages.Relationships(
                 rel_type="MENTION",
-                source=cocoindex.storages.NodeReferenceMapping(
+                source=cocoindex.storages.NodeFromFields(
                     label="Document",
                     fields=[cocoindex.storages.TargetFieldMapping("filename")],
                 ),
-                target=cocoindex.storages.NodeReferenceMapping(
+                target=cocoindex.storages.NodeFromFields(
                     label="Entity",
                     fields=[cocoindex.storages.TargetFieldMapping(
                         source="entity", target="value")],
