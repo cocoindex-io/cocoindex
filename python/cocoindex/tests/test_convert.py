@@ -2,9 +2,10 @@ import uuid
 import datetime
 from dataclasses import dataclass, make_dataclass
 import pytest
+import cocoindex
 from cocoindex.typing import encode_enriched_type
 from cocoindex.convert import encode_engine_value, make_engine_value_decoder
-
+from typing import Literal
 @dataclass
 class Order:
     order_id: str
@@ -260,3 +261,20 @@ def test_roundtrip_ktable_struct_key():
                        [["B", 4], "O2", "item2", 20.0, "default_extra"]]
     decoded = build_engine_value_decoder(t)(encoded)
     assert decoded == value
+
+IntVectorType = cocoindex.Vector[int, Literal[5]]
+def test_vector_as_vector() -> None:
+    value: IntVectorType = [1, 2, 3, 4, 5]
+    encoded = encode_engine_value(value)
+    assert encoded == [1, 2, 3, 4, 5]
+    decoded = build_engine_value_decoder(IntVectorType)(encoded)
+    assert decoded == value
+
+ListIntType = list[int]
+def test_vector_as_list() -> None:
+    value: ListIntType = [1, 2, 3, 4, 5]
+    encoded = encode_engine_value(value)
+    assert encoded == [1, 2, 3, 4, 5]
+    decoded = build_engine_value_decoder(ListIntType)(encoded)
+    assert decoded == value
+

@@ -5,9 +5,9 @@ import datetime
 import types
 import inspect
 import uuid
-from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING, overload
+from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING, overload, Sequence, Protocol, Generic, Literal
 
-class Vector(NamedTuple):
+class VectorInfo(NamedTuple):
     dim: int | None
 
 class TypeKind(NamedTuple):
@@ -21,7 +21,7 @@ class TypeAttr:
         self.key = key
         self.value = value
 
-Annotation = Vector | TypeKind | TypeAttr
+Annotation = TypeKind | TypeAttr | VectorInfo
 
 Float32 = Annotated[float, TypeKind('Float32')]
 Float64 = Annotated[float, TypeKind('Float64')]
@@ -30,18 +30,42 @@ Json = Annotated[Any, TypeKind('Json')]
 LocalDateTime = Annotated[datetime.datetime, TypeKind('LocalDateTime')]
 OffsetDateTime = Annotated[datetime.datetime, TypeKind('OffsetDateTime')]
 
+if TYPE_CHECKING:
+    T_co = TypeVar('T_co', covariant=True)
+    Dim_co = TypeVar('Dim_co', bound=int, covariant=True)
+
+    class Vector(Sequence[T_co], Generic[T_co, Dim_co], Protocol):
+        """Vector[T, Dim] is a special typing alias for a list[T] with optional dimension info"""
+else:
+    class Vector:  # type: ignore[unreachable]
+        """ A special typing alias for a list[T] with optional dimension info """
+        def __class_getitem__(self, params):
+            if not isinstance(params, tuple):
+                # Only element type provided
+                elem_type = params
+                return Annotated[list[elem_type], VectorInfo(dim=None)]
+            else:
+                # Element type and dimension provided
+                elem_type, dim = params
+                if typing.get_origin(dim) is Literal:
+                    dim = typing.get_args(dim)[0]  # Extract the literal value
+                return Annotated[list[elem_type], VectorInfo(dim=dim)]
+
 TABLE_TYPES = ('KTable', 'LTable')
 KEY_FIELD_NAME = '_key'
 
-
 ElementType = type | tuple[type, type]
+
+def _is_struct_type(t) -> bool:
+    return isinstance(t, type) and dataclasses.is_dataclass(t)
+
 @dataclasses.dataclass
 class AnalyzedTypeInfo:
     """
     Analyzed info of a Python type.
     """
     kind: str
-    vector_info: Vector | None      # For Vector
+    vector_info: VectorInfo | None  # For Vector
     elem_type: ElementType | None   # For Vector and Table
 
     key_type: type | None           # For element of KTable
@@ -88,7 +112,7 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
             if attrs is None:
                 attrs = dict()
             attrs[attr.key] = attr.value
-        elif isinstance(attr, Vector):
+        elif isinstance(attr, VectorInfo):
             vector_info = attr
         elif isinstance(attr, TypeKind):
             kind = attr.kind
@@ -96,30 +120,33 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
     dataclass_type = None
     elem_type = None
     key_type = None
-    if isinstance(t, type) and dataclasses.is_dataclass(t):
+    if _is_struct_type(t):
         if kind is None:
             kind = 'Struct'
         elif kind != 'Struct':
             raise ValueError(f"Unexpected type kind for struct: {kind}")
         dataclass_type = t
     elif base_type is collections.abc.Sequence or base_type is list:
+        args = typing.get_args(t)
+        elem_type = args[0]
+
         if kind is None:
-            kind = 'Vector' if vector_info is not None else 'LTable'
+            if _is_struct_type(elem_type):
+                kind = 'LTable'
+                if vector_info is not None:
+                    raise ValueError("Vector element must be a simple type, not a struct")
+            else:
+                kind = 'Vector'
+                if vector_info is None:
+                    vector_info = VectorInfo(dim=None)
         elif not (kind == 'Vector' or kind in TABLE_TYPES):
             raise ValueError(f"Unexpected type kind for list: {kind}")
-
-        args = typing.get_args(t)
-        if len(args) != 1:
-            raise ValueError(f"{kind} must have exactly one type argument")
-        elem_type = args[0]
     elif base_type is collections.abc.Mapping or base_type is dict:
-        kind = 'KTable'
         args = typing.get_args(t)
         elem_type = (args[0], args[1])
+        kind = 'KTable'
     elif kind is None:
-        if base_type is collections.abc.Sequence or base_type is list:
-            kind = 'Vector' if vector_info is not None else 'LTable'
-        elif t is bytes:
+        if t is bytes:
             kind = 'Bytes'
         elif t is str:
             kind = 'Str'
