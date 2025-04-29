@@ -463,48 +463,33 @@ class Flow:
     def _format_flow(self, flow_dict: dict) -> str:
         lines = [f"Flow: {flow_dict.get('name', 'Unnamed')}"]
 
-        def build_hierarchy(data, parent_key='', hierarchy=None):
-            if hierarchy is None:
-                hierarchy = {}
-
+        def format_data(data, indent=0):
             if isinstance(data, dict):
                 for key, value in data.items():
-                    full_key = f"{parent_key}.{key}" if parent_key else key
-                    build_hierarchy(value, full_key, hierarchy)
+                    if isinstance(value, list) or isinstance(value, dict):
+                        lines.append(' ' * indent + f"- {key}:")
+                        format_data(value, indent + 2)
+                    else:
+                        lines.append(' ' * indent + f"- {key}: {value}")
             elif isinstance(data, list):
-                for index, item in enumerate(data):
-                    build_hierarchy(item, f"{parent_key}[{index}]", hierarchy)
+                for i, item in enumerate(data):
+                    if isinstance(item, list) or isinstance(item, dict):
+                        lines.append(' ' * indent + f"- [{i}]:")
+                        format_data(item, indent + 2)
+                    else:
+                        lines.append(' ' * indent + f"- [{i}]: {item}")
             else:
-                keys = parent_key.split('.')
-                current_level = hierarchy
-                for k in keys[:-1]:
-                    if k not in current_level:
-                        current_level[k] = {}
-                    current_level = current_level[k]
-                current_level[keys[-1]] = data
+                lines.append(' ' * indent + f"{data}")
 
-            return hierarchy
-
-        def store_hierarchy(hierarchy, lines, parent_key='', indent=0):
-            for key, value in hierarchy.items():
-                child_key = f"- {key}" if parent_key else key
-                if isinstance(value, dict):
-                    lines.append(' ' * indent + f"{child_key}:")
-                    store_hierarchy(value, lines, key, indent + 2)
-                else:
-                    lines.append(' ' * indent + f"{child_key}: {value}")
-
-        # Import Operations
         lines.append("\nSources:")
-        store_hierarchy(build_hierarchy(flow_dict.get("import_ops", [])), lines)
-            
-        # Reactive Operations
-        lines.append("\nProcessing:")
-        store_hierarchy(build_hierarchy(flow_dict.get("reactive_ops", [])), lines)
+        format_data(flow_dict.get("import_ops", []))
 
-        # Export Operations
+        lines.append("\nProcessing:")
+        format_data(flow_dict.get("reactive_ops", []))
+
         lines.append("\nTargets:")
-        store_hierarchy(build_hierarchy(flow_dict.get("export_ops", [])), lines)
+        format_data(flow_dict.get("export_ops", []))
+
         return "\n".join(lines)
 
     def __repr__(self):
