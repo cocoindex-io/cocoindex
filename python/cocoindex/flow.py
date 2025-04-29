@@ -453,12 +453,12 @@ class Flow:
         self._lazy_engine_flow = _lazy_engine_flow
 
     def __str__(self):
+        flow_spec_str = str(self._lazy_engine_flow())
         try:
-            flow_spec_str = str(self._lazy_engine_flow())
             flow_spec = json.loads(flow_spec_str)
             return self._format_flow(flow_spec)
         except json.JSONDecodeError:
-            return f"Flow (spec not parseable): {flow_spec_str}"
+            return flow_spec_str
 
     def _format_flow(self, flow_dict: dict) -> str:
         lines = [f"Flow: {flow_dict.get('name', 'Unnamed')}"]
