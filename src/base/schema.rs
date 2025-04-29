@@ -120,8 +120,10 @@ pub enum TableKind {
     /// An table with unordered rows, without key.
     UTable,
     /// A table's first field is the key.
+    #[serde(alias = "Table")]
     KTable,
     /// A table whose rows orders are preserved.
+    #[serde(alias = "List")]
     LTable,
 }
 
