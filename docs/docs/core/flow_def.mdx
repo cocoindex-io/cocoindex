@@ -1,6 +1,7 @@
 ---
 title: Flow Definition
 description: Define a CocoIndex flow, by specifying source, transformations and storages, and connect input/output data of them.
+toc_max_heading_level: 4
 ---
 
 import Tabs from '@theme/Tabs';
@@ -281,16 +282,32 @@ The target storage is managed by CocoIndex, i.e. it'll be created by [CocoIndex 
 The `name` for the same storage should remain stable across different runs.
 If it changes, CocoIndex will treat it as an old storage removed and a new one created, and perform setup changes and reindexing accordingly.
 
-#### Storage Indexes
+## Storage Indexes
 
 Many storage supports indexes, to boost efficiency in retrieving data.
 CocoIndex provides a common way to configure indexes for various storages.
 
-*   *Primary key*. `primary_key_fields` (`Sequence[str]`): the fields to be used as primary key. Types of the fields must be supported as key fields. See [Key Types](data_types#key-types) for more details.
-*   *Vector index*. `vector_indexes` (`Sequence[VectorIndexDef]`): the fields to create vector index. `VectorIndexDef` has the following fields:
-    *   `field_name`: the field to create vector index.
-    *   `metric`: the similarity metric to use. See [Vector Type](data_types#vector-type) for more details about supported similarity metrics.
+### Primary Key
 
+*Primary key* is specified by `primary_key_fields` (`Sequence[str]`).
+Types of the fields must be key types. See [Key Types](data_types#key-types) for more details.
+
+### Vector Index
+
+*Vector index* is specified by `vector_indexes` (`Sequence[VectorIndexDef]`). `VectorIndexDef` has the following fields:
+
+    *   `field_name`: the field to create vector index.
+    *   `metric`: the similarity metric to use.
+
+#### Similarity Metrics
+
+Following metrics are supported:
+
+| Metric Name | Description | Similarity Order |
+|-------------|-------------|------------------|
+| CosineSimilarity | [Cosine similarity](https://en.wikipedia.org/wiki/Cosine_similarity) | Larger is more similar |
+| L2Distance | [L2 distance (a.k.a. Euclidean distance)](https://en.wikipedia.org/wiki/Euclidean_distance) | Smaller is more similar |
+| InnerProduct | [Inner product](https://en.wikipedia.org/wiki/Inner_product_space) | Larger is more similar |
 
 ## Miscellaneous
 
