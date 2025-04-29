@@ -14,6 +14,8 @@ from typing import Any, Callable, Sequence, TypeVar
 from threading import Lock
 from enum import Enum
 from dataclasses import dataclass
+from rich.text import Text
+from rich.console import Console
 
 from . import _engine
 from . import index
@@ -452,45 +454,60 @@ class Flow:
             return engine_flow
         self._lazy_engine_flow = _lazy_engine_flow
 
-    def __str__(self):
-        flow_spec_str = str(self._lazy_engine_flow())
-        try:
-            flow_spec = json.loads(flow_spec_str)
-            return self._format_flow(flow_spec)
-        except json.JSONDecodeError:
-            return flow_spec_str
+    def _format_flow(self, flow_dict: dict) -> Text:
+        output = Text()
 
-    def _format_flow(self, flow_dict: dict) -> str:
-        lines = [f"Flow: {flow_dict.get('name', 'Unnamed')}"]
+        def add_line(content, indent=0, style=None, end="\n"):
+            output.append(" " * indent)
+            output.append(content, style=style)
+            output.append(end)
+
+        # Header
+        flow_name = flow_dict.get("name", "Unnamed")
+        add_line(f"Flow: {flow_name}", style="bold cyan")
 
         def format_data(data, indent=0):
             if isinstance(data, dict):
                 for key, value in data.items():
-                    if isinstance(value, list) or isinstance(value, dict):
-                        lines.append(' ' * indent + f"- {key}:")
+                    if isinstance(value, (dict, list)):
+                        add_line(f"- {key}:", indent, style="green")
                         format_data(value, indent + 2)
                     else:
-                        lines.append(' ' * indent + f"- {key}: {value}")
+                        add_line(f"- {key}:", indent, style="green", end="")
+                        add_line(f" {value}", style="yellow")
             elif isinstance(data, list):
                 for i, item in enumerate(data):
-                    if isinstance(item, list) or isinstance(item, dict):
-                        lines.append(' ' * indent + f"- [{i}]:")
+                    if isinstance(item, (dict, list)):
+                        add_line(f"- [{i}]:", indent, style="green")
                         format_data(item, indent + 2)
                     else:
-                        lines.append(' ' * indent + f"- [{i}]: {item}")
+                        add_line(f"- [{i}]:", indent, style="green", end="")
+                        add_line(f" {item}", style="yellow")
             else:
-                lines.append(' ' * indent + f"{data}")
+                add_line(str(data), indent, style="yellow")
 
-        lines.append("\nSources:")
-        format_data(flow_dict.get("import_ops", []))
+        # Section
+        for section_title, section_key in [
+            ("Sources:", "import_ops"),
+            ("Processing:", "reactive_ops"),
+            ("Targets:", "export_ops"),
+        ]:
+            add_line("")
+            add_line(section_title, style="bold cyan")
+            format_data(flow_dict.get(section_key, []), indent=0)
 
-        lines.append("\nProcessing:")
-        format_data(flow_dict.get("reactive_ops", []))
+        return output
 
-        lines.append("\nTargets:")
-        format_data(flow_dict.get("export_ops", []))
+    def _render_text(self) -> Text:
+        flow_spec_str = str(self._lazy_engine_flow())
+        try:
+            flow_dict = json.loads(flow_spec_str)
+            return self._format_flow(flow_dict)
+        except json.JSONDecodeError:
+            return Text(flow_spec_str)
 
-        return "\n".join(lines)
+    def __str__(self):
+        return str(self._render_text())
 
     def __repr__(self):
         return repr(self._lazy_engine_flow())
