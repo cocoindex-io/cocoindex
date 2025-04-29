@@ -13,7 +13,10 @@ class DocumentSummary:
 
 @dataclasses.dataclass
 class Relationship:
-    """Describe a relationship between two entities."""
+    """
+    Describe a relationship between two entities.
+    Subject and object should be Core CocoIndex concepts only, should be nouns. For example, `CocoIndex`, `Incremental Processing`, `ETL`,  `Data` etc.
+    """
     subject: str
     predicate: str
     object: str
@@ -62,8 +65,8 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
                     output_type=list[Relationship],
                     instruction=(
                         "Please extract relationships from CocoIndex documents. "
-                        "Focus on concepts and ingnore specific examples. "
-                        "Each relationship should be a tuple of (subject, predicate, object).")))
+                        "Focus on concepts and ignore examples and code. "
+                        )))
 
         with doc["relationships"].row() as relationship:
             # relationship between two entities
