@@ -139,8 +139,8 @@ impl SourceFactoryBase for Factory {
             ),
         ));
 
-        Ok(make_output_type(CollectionSchema::new(
-            CollectionKind::Table,
+        Ok(make_output_type(TableSchema::new(
+            TableKind::KTable,
             struct_schema,
         )))
     }

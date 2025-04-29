@@ -29,9 +29,9 @@ impl TypeCore for StructSchema {
     }
 }
 
-impl TypeCore for CollectionSchema {
+impl TypeCore for TableSchema {
     fn into_type(self) -> ValueType {
-        ValueType::Collection(self)
+        ValueType::Table(self)
     }
 }
 

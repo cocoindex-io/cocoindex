@@ -12,14 +12,14 @@ on:
       - src/**
       - python/**
       - "*.toml"
-      - ".github/workflows/CI.yml"
+      - ".github/workflows/*.yml"
   push:
     branches: [main]
     paths:
       - src/**
       - python/**
       - "*.toml"
-      - ".github/workflows/CI.yml"
+      - ".github/workflows/*.yml"
   workflow_dispatch:
 
 permissions:
@@ -46,3 +46,6 @@ jobs:
           sccache: 'true'
           manylinux: auto
           container: ${{ matrix.platform.container }}
+  test:
+    name: Run test
+    uses: ./.github/workflows/_test.yml

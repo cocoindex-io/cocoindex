@@ -20,7 +20,7 @@ use futures::{future::try_join_all, FutureExt};
 pub(super) enum ValueTypeBuilder {
     Basic(BasicValueType),
     Struct(StructSchemaBuilder),
-    Collection(CollectionSchemaBuilder),
+    Table(TableSchemaBuilder),
 }
 
 impl TryFrom<&ValueType> for ValueTypeBuilder {
@@ -30,9 +30,7 @@ impl TryFrom<&ValueType> for ValueTypeBuilder {
         match value_type {
             ValueType::Basic(basic_type) => Ok(ValueTypeBuilder::Basic(basic_type.clone())),
             ValueType::Struct(struct_type) => Ok(ValueTypeBuilder::Struct(struct_type.try_into()?)),
-            ValueType::Collection(collection_type) => {
-                Ok(ValueTypeBuilder::Collection(collection_type.try_into()?))
-            }
+            ValueType::Table(table_type) => Ok(ValueTypeBuilder::Table(table_type.try_into()?)),
         }
     }
 }
@@ -44,9 +42,7 @@ impl TryInto<ValueType> for &ValueTypeBuilder {
         match self {
             ValueTypeBuilder::Basic(basic_type) => Ok(ValueType::Basic(basic_type.clone())),
             ValueTypeBuilder::Struct(struct_type) => Ok(ValueType::Struct(struct_type.try_into()?)),
-            ValueTypeBuilder::Collection(collection_type) => {
-                Ok(ValueType::Collection(collection_type.try_into()?))
-            }
+            ValueTypeBuilder::Table(table_type) => Ok(ValueType::Table(table_type.try_into()?)),
         }
     }
 }
@@ -113,15 +109,15 @@ impl TryInto<StructSchema> for &StructSchemaBuilder {
 }
 
 #[derive(Debug)]
-pub(super) struct CollectionSchemaBuilder {
-    pub kind: CollectionKind,
+pub(super) struct TableSchemaBuilder {
+    pub kind: TableKind,
     pub sub_scope: Arc<Mutex<DataScopeBuilder>>,
 }
 
-impl TryFrom<&CollectionSchema> for CollectionSchemaBuilder {
+impl TryFrom<&TableSchema> for TableSchemaBuilder {
     type Error = anyhow::Error;
 
-    fn try_from(schema: &CollectionSchema) -> Result<Self> {
+    fn try_from(schema: &TableSchema) -> Result<Self> {
         Ok(Self {
             kind: schema.kind,
             sub_scope: Arc::new(Mutex::new(DataScopeBuilder {
@@ -138,10 +134,10 @@ impl TryFrom<&CollectionSchema> for CollectionSchemaBuilder {
     }
 }
 
-impl TryInto<CollectionSchema> for &CollectionSchemaBuilder {
+impl TryInto<TableSchema> for &TableSchemaBuilder {
     type Error = anyhow::Error;
 
-    fn try_into(self) -> Result<CollectionSchema> {
+    fn try_into(self) -> Result<TableSchema> {
         let sub_scope = self.sub_scope.lock().unwrap();
         let row = (&sub_scope.data).try_into()?;
         let collectors = sub_scope
@@ -154,7 +150,7 @@ impl TryInto<CollectionSchema> for &CollectionSchemaBuilder {
                 spec: schema.schema.clone(),
             })
             .collect();
-        Ok(CollectionSchema {
+        Ok(TableSchema {
             kind: self.kind,
             row,
             collectors,
@@ -177,27 +173,27 @@ fn try_make_common_value_type(
             let common_schema = try_merge_struct_schemas(struct_type1, struct_type2)?;
             ValueType::Struct(common_schema)
         }
-        (ValueType::Collection(collection_type1), ValueType::Collection(collection_type2)) => {
-            if collection_type1.kind != collection_type2.kind {
+        (ValueType::Table(table_type1), ValueType::Table(table_type2)) => {
+            if table_type1.kind != table_type2.kind {
                 api_bail!(
                     "Collection types are not compatible: {} vs {}",
-                    collection_type1,
-                    collection_type2
+                    table_type1,
+                    table_type2
                 );
             }
-            let row = try_merge_struct_schemas(&collection_type1.row, &collection_type2.row)?;
+            let row = try_merge_struct_schemas(&table_type1.row, &table_type2.row)?;
 
-            if collection_type1.collectors.len() != collection_type2.collectors.len() {
+            if table_type1.collectors.len() != table_type2.collectors.len() {
                 api_bail!(
                     "Collection types are not compatible as they have different collectors count: {} vs {}",
-                    collection_type1,
-                    collection_type2
+                    table_type1,
+                    table_type2
                 );
             }
-            let collectors = collection_type1
+            let collectors = table_type1
                 .collectors
                 .iter()
-                .zip(collection_type2.collectors.iter())
+                .zip(table_type2.collectors.iter())
                 .map(|(c1, c2)| -> Result<_> {
                     if c1.name != c2.name {
                         api_bail!(
@@ -214,13 +210,13 @@ fn try_make_common_value_type(
                 })
                 .collect::<Result<_>>()?;
 
-            ValueType::Collection(CollectionSchema {
-                kind: collection_type1.kind,
+            ValueType::Table(TableSchema {
+                kind: table_type1.kind,
                 row,
                 collectors,
             })
         }
-        (t1 @ (ValueType::Basic(_) | ValueType::Struct(_) | ValueType::Collection(_)), t2) => {
+        (t1 @ (ValueType::Basic(_) | ValueType::Struct(_) | ValueType::Table(_)), t2) => {
             api_bail!("Unmatched types:\n  {t1}\n  {t2}\n",)
         }
     };
@@ -764,7 +760,7 @@ impl AnalyzerContext<'_> {
                 let (local_field_ref, value_type) =
                     scope.data.analyze_field_path(&op.field_path)?;
                 let sub_scope = match &value_type.typ {
-                    ValueTypeBuilder::Collection(collection_type) => &collection_type.sub_scope,
+                    ValueTypeBuilder::Table(table_type) => &table_type.sub_scope,
                     _ => api_bail!(
                         "ForEach only works on collection, field {} is not",
                         op.field_path

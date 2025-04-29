@@ -41,7 +41,7 @@ class SentenceTransformerEmbedExecutor:
         args = self.spec.args or {}
         self._model = sentence_transformers.SentenceTransformer(self.spec.model, **args)
         dim = self._model.get_sentence_embedding_dimension()
-        return Annotated[list[Float32], Vector(dim=dim), TypeAttr("cocoindex.io/vector_origin_text", text.analyzed_value)]
+        return Annotated[Vector[Float32, dim], TypeAttr("cocoindex.io/vector_origin_text", text.analyzed_value)]
 
     def __call__(self, text: str) -> list[Float32]:
         return self._model.encode(text).tolist()

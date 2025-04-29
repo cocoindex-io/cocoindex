@@ -550,7 +550,7 @@ impl SimpleFunctionExecutor for Executor {
             .map(|(range, text)| (range.into(), fields_value!(Arc::<str>::from(text)).into()))
             .collect();
 
-        Ok(Value::Table(table))
+        Ok(Value::KTable(table))
     }
 }
 
@@ -596,12 +596,11 @@ impl SimpleFunctionFactoryBase for Factory {
             "text",
             make_output_type(BasicValueType::Str),
         ));
-        let output_schema =
-            make_output_type(CollectionSchema::new(CollectionKind::Table, struct_schema))
-                .with_attr(
-                    field_attrs::CHUNK_BASE_TEXT,
-                    serde_json::to_value(args_resolver.get_analyze_value(&args.text))?,
-                );
+        let output_schema = make_output_type(TableSchema::new(TableKind::KTable, struct_schema))
+            .with_attr(
+                field_attrs::CHUNK_BASE_TEXT,
+                serde_json::to_value(args_resolver.get_analyze_value(&args.text))?,
+            );
         Ok((args, output_schema))
     }
 
@@ -617,7 +616,7 @@ impl SimpleFunctionFactoryBase for Factory {
 
 #[cfg(test)]
 mod tests {
-    use super::*; 
+    use super::*;
 
     // Helper function to assert chunk text and its consistency with the range within the original text.
     fn assert_chunk_text_consistency(
@@ -629,16 +628,28 @@ mod tests {
         // Extract text using the chunk's range from the original full text.
         let extracted_text = actual_chunk.0.extract_str(full_text);
         // Assert that the expected text matches the text provided in the chunk.
-        assert_eq!(actual_chunk.1, expected_text, "Provided chunk text mismatch - {}", context);
+        assert_eq!(
+            actual_chunk.1, expected_text,
+            "Provided chunk text mismatch - {}",
+            context
+        );
         // Assert that the expected text also matches the text extracted using the chunk's range.
-        assert_eq!(extracted_text, expected_text, "Range inconsistency: extracted text mismatch - {}", context);
+        assert_eq!(
+            extracted_text, expected_text,
+            "Range inconsistency: extracted text mismatch - {}",
+            context
+        );
     }
 
     // Creates a default RecursiveChunker for testing, assuming no language-specific parsing.
-    fn create_test_chunker(text: &str, chunk_size: usize, chunk_overlap: usize) -> RecursiveChunker {
+    fn create_test_chunker(
+        text: &str,
+        chunk_size: usize,
+        chunk_overlap: usize,
+    ) -> RecursiveChunker {
         RecursiveChunker {
             full_text: text,
-            lang_config: None, 
+            lang_config: None,
             chunk_size,
             chunk_overlap,
         }
@@ -646,14 +657,14 @@ mod tests {
 
     #[test]
     fn test_translate_bytes_to_chars_simple() {
-        let text = "abc😄def"; 
-        let mut start1 = 0; 
-        let mut end1 = 3;   
-        let mut start2 = 3; 
-        let mut end2 = 7;   
-        let mut start3 = 7; 
-        let mut end3 = 10;  
-        let mut end_full = text.len(); 
+        let text = "abc😄def";
+        let mut start1 = 0;
+        let mut end1 = 3;
+        let mut start2 = 3;
+        let mut end2 = 7;
+        let mut start3 = 7;
+        let mut end3 = 10;
+        let mut end_full = text.len();
 
         let offsets = vec![
             &mut start1,
@@ -667,22 +678,24 @@ mod tests {
 
         translate_bytes_to_chars(text, offsets.into_iter());
 
-        assert_eq!(start1, 0); 
-        assert_eq!(end1, 3);   
-        assert_eq!(start2, 3); 
-        assert_eq!(end2, 4);   
-        assert_eq!(start3, 4); 
-        assert_eq!(end3, 7);   
-        assert_eq!(end_full, 7); 
+        assert_eq!(start1, 0);
+        assert_eq!(end1, 3);
+        assert_eq!(start2, 3);
+        assert_eq!(end2, 4);
+        assert_eq!(start3, 4);
+        assert_eq!(end3, 7);
+        assert_eq!(end_full, 7);
     }
 
     #[test]
     fn test_basic_split_no_overlap() {
         let text = "Linea 1.\nLinea 2.\n\nLinea 3.";
-        let chunker = create_test_chunker(text, 15, 0); 
-        
-        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk { next_regexp_sep_id: 0 });
-        
+        let chunker = create_test_chunker(text, 15, 0);
+
+        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
+            next_regexp_sep_id: 0,
+        });
+
         assert!(result.is_ok());
         let chunks = result.unwrap();
 
@@ -693,74 +706,85 @@ mod tests {
 
         // Test splitting when chunk_size forces breaks within segments.
         let text2 = "A very very long text that needs to be split.";
-        let chunker2 = create_test_chunker(text2, 20, 0); 
-        let result2 = chunker2.split_root_chunk(ChunkKind::RegexpSepChunk { next_regexp_sep_id: 0 });
-        
+        let chunker2 = create_test_chunker(text2, 20, 0);
+        let result2 = chunker2.split_root_chunk(ChunkKind::RegexpSepChunk {
+            next_regexp_sep_id: 0,
+        });
+
         assert!(result2.is_ok());
         let chunks2 = result2.unwrap();
 
         // Expect multiple chunks, likely split by spaces due to chunk_size.
-        assert!(chunks2.len() > 1); 
-        assert_chunk_text_consistency(text2, &chunks2[0], "A very very long", "Test 2, Chunk 0"); 
-        assert!(chunks2[0].1.len() <= 20); 
+        assert!(chunks2.len() > 1);
+        assert_chunk_text_consistency(text2, &chunks2[0], "A very very long", "Test 2, Chunk 0");
+        assert!(chunks2[0].1.len() <= 20);
     }
     #[test]
     fn test_basic_split_with_overlap() {
         let text = "This is a test text that is a bit longer to see how the overlap works.";
-        let chunker = create_test_chunker(text, 20, 5); 
-        
-        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk { next_regexp_sep_id: 0 });
-        
+        let chunker = create_test_chunker(text, 20, 5);
+
+        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
+            next_regexp_sep_id: 0,
+        });
+
         assert!(result.is_ok());
         let chunks = result.unwrap();
-        
-        assert!(chunks.len() > 1); 
+
+        assert!(chunks.len() > 1);
 
         if chunks.len() >= 2 {
             let _chunk1_text = chunks[0].1;
             let _chunk2_text = chunks[1].1;
-            
-            assert!(chunks[0].1.len() <= 25); 
+
+            assert!(chunks[0].1.len() <= 25);
         }
     }
     #[test]
     fn test_split_trims_whitespace() {
         let text = "  \n First chunk. \n\n  Second chunk with spaces at the end.   \n";
-        let chunker = create_test_chunker(text, 30, 0); 
-        
-        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk { next_regexp_sep_id: 0 });
-        
-        assert!(result.is_ok());
-        let chunks = result.unwrap();
+        let chunker = create_test_chunker(text, 30, 0);
 
-        assert_eq!(chunks.len(), 3); 
-        
-        // Only assert chunk 0 using the new helper, as chunks 1 and 2 have shown inconsistent split points/content.
-        assert_chunk_text_consistency(text, &chunks[0], "  \n First chunk.", "Whitespace Test, Chunk 0");
+        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
+            next_regexp_sep_id: 0,
+        });
 
-        // TODO: Assertions for chunks[1] and chunks[2] are commented out because
-        // the exact split point between them (byte 48 or 49) and their resulting
-        // content ("...espacio"/"s al final." vs "...espacios"/"al final.")
-        // has proven inconsistent across test runs.
-        // This indicates a possible bug or non-deterministic behavior in the
-        // flush_small_chunks or process_sub_chunks logic that needs investigation
-        // in the main code.
-    }
-    #[test]
-    fn test_split_discards_empty_chunks() {
-        let text = "Chunk 1.\n\n   \n\nChunk 2.\n\n------\n\nChunk 3.";
-        let chunker = create_test_chunker(text, 10, 0); 
-        
-        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk { next_regexp_sep_id: 0 });
-        
         assert!(result.is_ok());
         let chunks = result.unwrap();
 
         assert_eq!(chunks.len(), 3);
-        
+
+        assert_chunk_text_consistency(
+            text,
+            &chunks[0],
+            "  \n First chunk.",
+            "Whitespace Test, Chunk 0",
+        );
+        assert_chunk_text_consistency(
+            text,
+            &chunks[1],
+            "  Second chunk with spaces at",
+            "Whitespace Test, Chunk 1",
+        );
+        assert_chunk_text_consistency(text, &chunks[2], "the end.", "Whitespace Test, Chunk 2");
+    }
+    #[test]
+    fn test_split_discards_empty_chunks() {
+        let text = "Chunk 1.\n\n   \n\nChunk 2.\n\n------\n\nChunk 3.";
+        let chunker = create_test_chunker(text, 10, 0);
+
+        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
+            next_regexp_sep_id: 0,
+        });
+
+        assert!(result.is_ok());
+        let chunks = result.unwrap();
+
+        assert_eq!(chunks.len(), 3);
+
         // Expect only the chunks with actual alphanumeric content.
         assert_chunk_text_consistency(text, &chunks[0], "Chunk 1.", "Discard Test, Chunk 0");
-        assert_chunk_text_consistency(text, &chunks[1], "Chunk 2.", "Discard Test, Chunk 1"); 
-        assert_chunk_text_consistency(text, &chunks[2], "Chunk 3.", "Discard Test, Chunk 2"); 
+        assert_chunk_text_consistency(text, &chunks[1], "Chunk 2.", "Discard Test, Chunk 1");
+        assert_chunk_text_consistency(text, &chunks[2], "Chunk 3.", "Discard Test, Chunk 2");
     }
 }

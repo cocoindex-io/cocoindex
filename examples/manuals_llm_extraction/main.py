@@ -40,7 +40,7 @@ class ArgInfo:
 class MethodInfo:
     """Information about a method."""
     name: str
-    args: cocoindex.typing.List[ArgInfo]
+    args: list[ArgInfo]
     description: str
 
 @dataclasses.dataclass
@@ -48,15 +48,15 @@ class ClassInfo:
     """Information about a class."""
     name: str
     description: str
-    methods: cocoindex.typing.List[MethodInfo]
+    methods: list[MethodInfo]
 
 @dataclasses.dataclass
 class ModuleInfo:
     """Information about a Python module."""
     title: str
     description: str
-    classes: cocoindex.typing.Table[ClassInfo]
-    methods: cocoindex.typing.Table[MethodInfo]
+    classes: list[ClassInfo]
+    methods: list[MethodInfo]
 
 @dataclasses.dataclass
 class ModuleSummary:

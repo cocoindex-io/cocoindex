@@ -95,14 +95,14 @@ pub fn value_to_py_object<'py>(py: Python<'py>, v: &value::Value) -> PyResult<Bo
         value::Value::Null => py.None().into_bound(py),
         value::Value::Basic(v) => basic_value_to_py_object(py, v)?,
         value::Value::Struct(v) => field_values_to_py_object(py, v.fields.iter())?,
-        value::Value::Collection(v) | value::Value::List(v) => {
+        value::Value::UTable(v) | value::Value::LTable(v) => {
             let rows = v
                 .iter()
                 .map(|v| field_values_to_py_object(py, v.0.fields.iter()))
                 .collect::<PyResult<Vec<_>>>()?;
             PyList::new(py, rows)?.into_any()
         }
-        value::Value::Table(v) => {
+        value::Value::KTable(v) => {
             let rows = v
                 .iter()
                 .map(|(k, v)| {
@@ -192,20 +192,20 @@ pub fn value_from_py_object<'py>(
             schema::ValueType::Struct(schema) => {
                 value::Value::Struct(field_values_from_py_object(schema, v)?)
             }
-            schema::ValueType::Collection(schema) => {
+            schema::ValueType::Table(schema) => {
                 let list = v.extract::<Vec<Bound<'py, PyAny>>>()?;
                 let values = list
                     .into_iter()
                     .map(|v| field_values_from_py_object(&schema.row, &v))
                     .collect::<PyResult<Vec<_>>>()?;
                 match schema.kind {
-                    schema::CollectionKind::Collection => {
-                        value::Value::Collection(values.into_iter().map(|v| v.into()).collect())
+                    schema::TableKind::UTable => {
+                        value::Value::UTable(values.into_iter().map(|v| v.into()).collect())
                     }
-                    schema::CollectionKind::List => {
-                        value::Value::List(values.into_iter().map(|v| v.into()).collect())
+                    schema::TableKind::LTable => {
+                        value::Value::LTable(values.into_iter().map(|v| v.into()).collect())
                     }
-                    schema::CollectionKind::Table => value::Value::Table(
+                    schema::TableKind::KTable => value::Value::KTable(
                         values
                             .into_iter()
                             .map(|v| {

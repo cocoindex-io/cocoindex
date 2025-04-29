@@ -293,17 +293,17 @@ fn value_to_bolt(value: &Value, schema: &schema::ValueType) -> Result<BoltType> 
             ValueType::Struct(t) => field_values_to_bolt(v.fields.iter(), t.fields.iter())?,
             _ => anyhow::bail!("Non-struct type got struct value: {}", schema),
         },
-        Value::Collection(v) | Value::List(v) => match schema {
-            ValueType::Collection(t) => BoltType::List(neo4rs::BoltList {
+        Value::UTable(v) | Value::LTable(v) => match schema {
+            ValueType::Table(t) => BoltType::List(neo4rs::BoltList {
                 value: v
                     .iter()
                     .map(|v| field_values_to_bolt(v.0.fields.iter(), t.row.fields.iter()))
                     .collect::<Result<_>>()?,
             }),
-            _ => anyhow::bail!("Non-collection type got collection value: {}", schema),
+            _ => anyhow::bail!("Non-table type got table value: {}", schema),
         },
-        Value::Table(v) => match schema {
-            ValueType::Collection(t) => BoltType::List(neo4rs::BoltList {
+        Value::KTable(v) => match schema {
+            ValueType::Table(t) => BoltType::List(neo4rs::BoltList {
                 value: v
                     .iter()
                     .map(|(k, v)| {

@@ -1,8 +1,8 @@
-use crate::{api_bail, api_error};
-use bytes::Bytes;
 use super::schema::*;
+use crate::{api_bail, api_error};
 use anyhow::Result;
 use base64::prelude::*;
+use bytes::Bytes;
 use chrono::Offset;
 use log::warn;
 use serde::{
@@ -517,9 +517,9 @@ pub enum Value<VS = ScopeValue> {
     Null,
     Basic(BasicValue),
     Struct(FieldValues<VS>),
-    Collection(Vec<VS>),
-    Table(BTreeMap<KeyValue, VS>),
-    List(Vec<VS>),
+    UTable(Vec<VS>),
+    KTable(BTreeMap<KeyValue, VS>),
+    LTable(Vec<VS>),
 }
 
 impl<T: Into<BasicValue>> From<T> for Value {
@@ -592,11 +592,11 @@ impl<VS> Value<VS> {
                     .map(|v| Value::<VS>::from_alternative(v))
                     .collect(),
             }),
-            Value::Collection(v) => Value::Collection(v.into_iter().map(|v| v.into()).collect()),
-            Value::Table(v) => {
-                Value::Table(v.into_iter().map(|(k, v)| (k.clone(), v.into())).collect())
+            Value::UTable(v) => Value::UTable(v.into_iter().map(|v| v.into()).collect()),
+            Value::KTable(v) => {
+                Value::KTable(v.into_iter().map(|(k, v)| (k.clone(), v.into())).collect())
             }
-            Value::List(v) => Value::List(v.into_iter().map(|v| v.into()).collect()),
+            Value::LTable(v) => Value::LTable(v.into_iter().map(|v| v.into()).collect()),
         }
     }
 
@@ -614,9 +614,11 @@ impl<VS> Value<VS> {
                     .map(|v| Value::<VS>::from_alternative_ref(v))
                     .collect(),
             }),
-            Value::Collection(v) => Value::Collection(v.iter().map(|v| v.into()).collect()),
-            Value::Table(v) => Value::Table(v.iter().map(|(k, v)| (k.clone(), v.into())).collect()),
-            Value::List(v) => Value::List(v.iter().map(|v| v.into()).collect()),
+            Value::UTable(v) => Value::UTable(v.iter().map(|v| v.into()).collect()),
+            Value::KTable(v) => {
+                Value::KTable(v.iter().map(|(k, v)| (k.clone(), v.into())).collect())
+            }
+            Value::LTable(v) => Value::LTable(v.iter().map(|v| v.into()).collect()),
         }
     }
 
@@ -633,7 +635,7 @@ impl<VS> Value<VS> {
                     .map(|v| v.into_key())
                     .collect::<Result<Vec<_>>>()?,
             ),
-            Value::Null | Value::Collection(_) | Value::Table(_) | Value::List(_) => {
+            Value::Null | Value::UTable(_) | Value::KTable(_) | Value::LTable(_) => {
                 anyhow::bail!("invalid key value type")
             }
         };
@@ -649,7 +651,7 @@ impl<VS> Value<VS> {
                     .map(|v| v.as_key())
                     .collect::<Result<Vec<_>>>()?,
             ),
-            Value::Null | Value::Collection(_) | Value::Table(_) | Value::List(_) => {
+            Value::Null | Value::UTable(_) | Value::KTable(_) | Value::LTable(_) => {
                 anyhow::bail!("invalid key value type")
             }
         };
@@ -660,10 +662,10 @@ impl<VS> Value<VS> {
         match self {
             Value::Null => "null",
             Value::Basic(v) => v.kind(),
-            Value::Struct(_) => "struct",
-            Value::Collection(_) => "collection",
-            Value::Table(_) => "table",
-            Value::List(_) => "list",
+            Value::Struct(_) => "Struct",
+            Value::UTable(_) => "UTable",
+            Value::KTable(_) => "KTable",
+            Value::LTable(_) => "LTable",
         }
     }
 
@@ -741,13 +743,6 @@ impl<VS> Value<VS> {
         match self {
             Value::Struct(v) => Ok(v),
             _ => anyhow::bail!("expected struct value, but got {}", self.kind()),
-        }
-    }
-
-    pub fn as_collection(&self) -> Result<&Vec<VS>> {
-        match self {
-            Value::Collection(v) => Ok(v),
-            _ => anyhow::bail!("expected collection value, but got {}", self.kind()),
         }
     }
 }
@@ -939,15 +934,15 @@ impl serde::Serialize for Value<ScopeValue> {
             Value::Null => serializer.serialize_none(),
             Value::Basic(v) => v.serialize(serializer),
             Value::Struct(v) => v.serialize(serializer),
-            Value::Collection(v) => v.serialize(serializer),
-            Value::Table(m) => {
+            Value::UTable(v) => v.serialize(serializer),
+            Value::KTable(m) => {
                 let mut seq = serializer.serialize_seq(Some(m.len()))?;
                 for (k, v) in m.iter() {
                     seq.serialize_element(&TableEntry(k, v))?;
                 }
                 seq.end()
             }
-            Value::List(v) => v.serialize(serializer),
+            Value::LTable(v) => v.serialize(serializer),
         }
     }
 }
@@ -975,15 +970,15 @@ where
             (v, ValueType::Struct(s)) => {
                 Value::<VS>::Struct(FieldValues::<VS>::from_json(v, &s.fields)?)
             }
-            (serde_json::Value::Array(v), ValueType::Collection(s)) => match s.kind {
-                CollectionKind::Collection => {
+            (serde_json::Value::Array(v), ValueType::Table(s)) => match s.kind {
+                TableKind::UTable => {
                     let rows = v
                         .into_iter()
                         .map(|v| Ok(FieldValues::from_json(v, &s.row.fields)?.into()))
                         .collect::<Result<Vec<_>>>()?;
-                    Value::List(rows)
+                    Value::LTable(rows)
                 }
-                CollectionKind::Table => {
+                TableKind::KTable => {
                     let rows = v
                         .into_iter()
                         .map(|v| {
@@ -1027,14 +1022,14 @@ where
                             }
                         })
                         .collect::<Result<BTreeMap<_, _>>>()?;
-                    Value::Table(rows)
+                    Value::KTable(rows)
                 }
-                CollectionKind::List => {
+                TableKind::LTable => {
                     let rows = v
                         .into_iter()
                         .map(|v| Ok(FieldValues::from_json(v, &s.row.fields)?.into()))
                         .collect::<Result<Vec<_>>>()?;
-                    Value::List(rows)
+                    Value::LTable(rows)
                 }
             },
             (v, t) => {
@@ -1061,7 +1056,7 @@ impl Serialize for TypedValue<'_> {
                 values_iter: field_values.fields.iter(),
             }
             .serialize(serializer),
-            (ValueType::Collection(c), Value::Collection(rows) | Value::List(rows)) => {
+            (ValueType::Table(c), Value::UTable(rows) | Value::LTable(rows)) => {
                 let mut seq = serializer.serialize_seq(Some(rows.len()))?;
                 for row in rows {
                     seq.serialize_element(&TypedFieldsValue {
@@ -1071,7 +1066,7 @@ impl Serialize for TypedValue<'_> {
                 }
                 seq.end()
             }
-            (ValueType::Collection(c), Value::Table(rows)) => {
+            (ValueType::Table(c), Value::KTable(rows)) => {
                 let mut seq = serializer.serialize_seq(Some(rows.len()))?;
                 for (k, v) in rows {
                     seq.serialize_element(&TypedFieldsValue {

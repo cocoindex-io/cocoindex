@@ -473,8 +473,8 @@ impl SourceFactoryBase for Factory {
                 serde_json::to_value(mime_type_field.to_field_ref())?,
             ),
         ));
-        Ok(make_output_type(CollectionSchema::new(
-            CollectionKind::Table,
+        Ok(make_output_type(TableSchema::new(
+            TableKind::KTable,
             struct_schema,
         )))
     }

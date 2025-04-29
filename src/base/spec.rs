@@ -185,7 +185,7 @@ pub struct TransformOpSpec {
 /// Apply reactive operations to each row of the input field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForEachOpSpec {
-    /// Mapping that provides a collection of rows to apply reactive operations to.
+    /// Mapping that provides a table to apply reactive operations to.
     pub field_path: FieldPath,
     pub op_scope: ReactiveOpScope,
 }

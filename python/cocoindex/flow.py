@@ -142,9 +142,9 @@ class DataSlice:
 
     def row(self) -> DataScope:
         """
-        Return a scope representing each entry of the collection.
+        Return a scope representing each row of the table.
         """
-        row_scope = self._state.engine_data_slice.collection_entry_scope()
+        row_scope = self._state.engine_data_slice.table_row_scope()
         return DataScope(self._state.flow_builder_state, row_scope)
 
     def for_each(self, f: Callable[[DataScope], None]) -> None:

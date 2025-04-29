@@ -1,12 +1,11 @@
-import dataclasses
 import uuid
 import datetime
 from dataclasses import dataclass, make_dataclass
 import pytest
+import cocoindex
 from cocoindex.typing import encode_enriched_type
-from cocoindex.convert import to_engine_value
-from cocoindex.convert import make_engine_value_converter
-
+from cocoindex.convert import encode_engine_value, make_engine_value_decoder
+from typing import Literal
 @dataclass
 class Order:
     order_id: str
@@ -26,7 +25,7 @@ class Basket:
 class Customer:
     name: str
     order: Order
-    tags: list[Tag] = None
+    tags: list[Tag] | None = None
 
 @dataclass
 class NestedStruct:
@@ -34,63 +33,63 @@ class NestedStruct:
     orders: list[Order]
     count: int = 0
 
-def build_engine_value_converter(engine_type_in_py, python_type=None):
+def build_engine_value_decoder(engine_type_in_py, python_type=None):
     """
     Helper to build a converter for the given engine-side type (as represented in Python).
     If python_type is not specified, uses engine_type_in_py as the target.
     """
     engine_type = encode_enriched_type(engine_type_in_py)["type"]
-    return make_engine_value_converter([], engine_type, python_type or engine_type_in_py)
+    return make_engine_value_decoder([], engine_type, python_type or engine_type_in_py)
 
-def test_to_engine_value_basic_types():
-    assert to_engine_value(123) == 123
-    assert to_engine_value(3.14) == 3.14
-    assert to_engine_value("hello") == "hello"
-    assert to_engine_value(True) is True
+def test_encode_engine_value_basic_types():
+    assert encode_engine_value(123) == 123
+    assert encode_engine_value(3.14) == 3.14
+    assert encode_engine_value("hello") == "hello"
+    assert encode_engine_value(True) is True
 
-def test_to_engine_value_uuid():
+def test_encode_engine_value_uuid():
     u = uuid.uuid4()
-    assert to_engine_value(u) == u.bytes
+    assert encode_engine_value(u) == u.bytes
 
-def test_to_engine_value_date_time_types():
+def test_encode_engine_value_date_time_types():
     d = datetime.date(2024, 1, 1)
-    assert to_engine_value(d) == d
+    assert encode_engine_value(d) == d
     t = datetime.time(12, 30)
-    assert to_engine_value(t) == t
+    assert encode_engine_value(t) == t
     dt = datetime.datetime(2024, 1, 1, 12, 30)
-    assert to_engine_value(dt) == dt
+    assert encode_engine_value(dt) == dt
 
-def test_to_engine_value_struct():
+def test_encode_engine_value_struct():
     order = Order(order_id="O123", name="mixed nuts", price=25.0)
-    assert to_engine_value(order) == ["O123", "mixed nuts", 25.0, "default_extra"]
+    assert encode_engine_value(order) == ["O123", "mixed nuts", 25.0, "default_extra"]
 
-def test_to_engine_value_list_of_structs():
+def test_encode_engine_value_list_of_structs():
     orders = [Order("O1", "item1", 10.0), Order("O2", "item2", 20.0)]
-    assert to_engine_value(orders) == [["O1", "item1", 10.0, "default_extra"], ["O2", "item2", 20.0, "default_extra"]]
+    assert encode_engine_value(orders) == [["O1", "item1", 10.0, "default_extra"], ["O2", "item2", 20.0, "default_extra"]]
 
-def test_to_engine_value_struct_with_list():
+def test_encode_engine_value_struct_with_list():
     basket = Basket(items=["apple", "banana"])
-    assert to_engine_value(basket) == [["apple", "banana"]]
+    assert encode_engine_value(basket) == [["apple", "banana"]]
 
-def test_to_engine_value_nested_struct():
+def test_encode_engine_value_nested_struct():
     customer = Customer(name="Alice", order=Order("O1", "item1", 10.0))
-    assert to_engine_value(customer) == ["Alice", ["O1", "item1", 10.0, "default_extra"], None]
+    assert encode_engine_value(customer) == ["Alice", ["O1", "item1", 10.0, "default_extra"], None]
 
-def test_to_engine_value_empty_list():
-    assert to_engine_value([]) == []
-    assert to_engine_value([[]]) == [[]]
+def test_encode_engine_value_empty_list():
+    assert encode_engine_value([]) == []
+    assert encode_engine_value([[]]) == [[]]
 
-def test_to_engine_value_tuple():
-    assert to_engine_value(()) == []
-    assert to_engine_value((1, 2, 3)) == [1, 2, 3]
-    assert to_engine_value(((1, 2), (3, 4))) == [[1, 2], [3, 4]]
-    assert to_engine_value(([],)) == [[]]
-    assert to_engine_value(((),)) == [[]]
+def test_encode_engine_value_tuple():
+    assert encode_engine_value(()) == []
+    assert encode_engine_value((1, 2, 3)) == [1, 2, 3]
+    assert encode_engine_value(((1, 2), (3, 4))) == [[1, 2], [3, 4]]
+    assert encode_engine_value(([],)) == [[]]
+    assert encode_engine_value(((),)) == [[]]
 
-def test_to_engine_value_none():
-    assert to_engine_value(None) is None
+def test_encode_engine_value_none():
+    assert encode_engine_value(None) is None
 
-def test_make_engine_value_converter_basic_types():
+def test_make_engine_value_decoder_basic_types():
     for engine_type_in_py, value in [
         (int, 42),
         (float, 3.14),
@@ -98,11 +97,11 @@ def test_make_engine_value_converter_basic_types():
         (bool, True),
         # (type(None), None),  # Removed unsupported NoneType
     ]:
-        converter = build_engine_value_converter(engine_type_in_py)
-        assert converter(value) == value
+        decoder = build_engine_value_decoder(engine_type_in_py)
+        assert decoder(value) == value
 
 @pytest.mark.parametrize(
-    "converter_type, engine_val, expected",
+    "data_type, engine_val, expected",
     [
         # All fields match
         (Order, ["O123", "mixed nuts", 25.0, "default_extra"], Order("O123", "mixed nuts", 25.0, "default_extra")),
@@ -120,30 +119,30 @@ def test_make_engine_value_converter_basic_types():
         (Customer, ["Alice", ["O1", "item1", 10.0, "default_extra"], [["vip"]], "extra"], Customer("Alice", Order("O1", "item1", 10.0, "default_extra"), [Tag("vip")])),
     ]
 )
-def test_struct_conversion_cases(converter_type, engine_val, expected):
-    converter = build_engine_value_converter(converter_type)
-    assert converter(engine_val) == expected
+def test_struct_decoder_cases(data_type, engine_val, expected):
+    decoder = build_engine_value_decoder(data_type)
+    assert decoder(engine_val) == expected
 
-def test_make_engine_value_converter_collections():
+def test_make_engine_value_decoder_collections():
     # List of structs
-    converter = build_engine_value_converter(list[Order])
+    decoder = build_engine_value_decoder(list[Order])
     engine_val = [
         ["O1", "item1", 10.0, "default_extra"],
         ["O2", "item2", 20.0, "default_extra"]
     ]
-    assert converter(engine_val) == [Order("O1", "item1", 10.0, "default_extra"), Order("O2", "item2", 20.0, "default_extra")]
+    assert decoder(engine_val) == [Order("O1", "item1", 10.0, "default_extra"), Order("O2", "item2", 20.0, "default_extra")]
     # Struct with list field
-    converter = build_engine_value_converter(Customer)
+    decoder = build_engine_value_decoder(Customer)
     engine_val = ["Alice", ["O1", "item1", 10.0, "default_extra"], [["vip"], ["premium"]]]
-    assert converter(engine_val) == Customer("Alice", Order("O1", "item1", 10.0, "default_extra"), [Tag("vip"), Tag("premium")])
+    assert decoder(engine_val) == Customer("Alice", Order("O1", "item1", 10.0, "default_extra"), [Tag("vip"), Tag("premium")])
     # Struct with struct field
-    converter = build_engine_value_converter(NestedStruct)
+    decoder = build_engine_value_decoder(NestedStruct)
     engine_val = [
         ["Alice", ["O1", "item1", 10.0, "default_extra"], [["vip"]]],
         [["O1", "item1", 10.0, "default_extra"], ["O2", "item2", 20.0, "default_extra"]],
         2
     ]
-    assert converter(engine_val) == NestedStruct(
+    assert decoder(engine_val) == NestedStruct(
         Customer("Alice", Order("O1", "item1", 10.0, "default_extra"), [Tag("vip")]),
         [Order("O1", "item1", 10.0, "default_extra"), Order("O2", "item2", 20.0, "default_extra")],
         2
@@ -227,8 +226,55 @@ def make_python_order(fields, defaults=None):
 def test_field_position_cases(engine_fields, python_fields, python_defaults, engine_val, expected_python_val):
     EngineOrder = make_engine_order(engine_fields)
     PythonOrder = make_python_order(python_fields, python_defaults)
-    converter = build_engine_value_converter(EngineOrder, PythonOrder)
+    decoder = build_engine_value_decoder(EngineOrder, PythonOrder)
     # Map field names to expected values
     expected_dict = dict(zip([f[0] for f in python_fields], expected_python_val))
     # Instantiate using keyword arguments (order doesn't matter)
-    assert converter(engine_val) == PythonOrder(**expected_dict)
+    assert decoder(engine_val) == PythonOrder(**expected_dict)
+
+def test_roundtrip_ltable():
+    t = list[Order]
+    value = [Order("O1", "item1", 10.0), Order("O2", "item2", 20.0)]
+    encoded = encode_engine_value(value)
+    assert encoded == [["O1", "item1", 10.0, "default_extra"], ["O2", "item2", 20.0, "default_extra"]]
+    decoded = build_engine_value_decoder(t)(encoded)
+    assert decoded == value
+
+def test_roundtrip_ktable_str_key():
+    t = dict[str, Order]
+    value = {"K1": Order("O1", "item1", 10.0), "K2": Order("O2", "item2", 20.0)}
+    encoded = encode_engine_value(value)
+    assert encoded == [["K1", "O1", "item1", 10.0, "default_extra"], ["K2", "O2", "item2", 20.0, "default_extra"]]
+    decoded = build_engine_value_decoder(t)(encoded)
+    assert decoded == value
+
+def test_roundtrip_ktable_struct_key():
+    @dataclass(frozen=True)
+    class OrderKey:
+        shop_id: str
+        version: int
+
+    t = dict[OrderKey, Order]
+    value = {OrderKey("A", 3): Order("O1", "item1", 10.0), OrderKey("B", 4): Order("O2", "item2", 20.0)}
+    encoded = encode_engine_value(value)
+    assert encoded == [[["A", 3], "O1", "item1", 10.0, "default_extra"],
+                       [["B", 4], "O2", "item2", 20.0, "default_extra"]]
+    decoded = build_engine_value_decoder(t)(encoded)
+    assert decoded == value
+
+IntVectorType = cocoindex.Vector[int, Literal[5]]
+def test_vector_as_vector() -> None:
+    value: IntVectorType = [1, 2, 3, 4, 5]
+    encoded = encode_engine_value(value)
+    assert encoded == [1, 2, 3, 4, 5]
+    decoded = build_engine_value_decoder(IntVectorType)(encoded)
+    assert decoded == value
+
+ListIntType = list[int]
+def test_vector_as_list() -> None:
+    value: ListIntType = [1, 2, 3, 4, 5]
+    encoded = encode_engine_value(value)
+    assert encoded == [1, 2, 3, 4, 5]
+    decoded = build_engine_value_decoder(ListIntType)(encoded)
+    assert decoded == value
+

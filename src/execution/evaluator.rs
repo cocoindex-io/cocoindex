@@ -60,7 +60,7 @@ impl ScopeValueBuilder {
 
     fn augmented_from(
         source: &value::ScopeValue,
-        schema: &schema::CollectionSchema,
+        schema: &schema::TableSchema,
     ) -> Result<Self> {
         let val_index_base = if schema.has_key() { 1 } else { 0 };
         let len = schema.row.fields.len() - val_index_base;
@@ -98,19 +98,17 @@ fn augmented_value(
                     .collect::<Result<Vec<_>>>()?,
             })
         }
-        (value::Value::Collection(v), schema::ValueType::Collection(t)) => {
-            value::Value::Collection(
-                v.iter()
-                    .map(|v| ScopeValueBuilder::augmented_from(v, t))
-                    .collect::<Result<Vec<_>>>()?,
-            )
-        }
-        (value::Value::Table(v), schema::ValueType::Collection(t)) => value::Value::Table(
+        (value::Value::UTable(v), schema::ValueType::Table(t)) => value::Value::UTable(
+            v.iter()
+                .map(|v| ScopeValueBuilder::augmented_from(v, t))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        (value::Value::KTable(v), schema::ValueType::Table(t)) => value::Value::KTable(
             v.iter()
                 .map(|(k, v)| Ok((k.clone(), ScopeValueBuilder::augmented_from(v, t)?)))
                 .collect::<Result<BTreeMap<_, _>>>()?,
         ),
-        (value::Value::List(v), schema::ValueType::Collection(t)) => value::Value::List(
+        (value::Value::LTable(v), schema::ValueType::Table(t)) => value::Value::LTable(
             v.iter()
                 .map(|v| ScopeValueBuilder::augmented_from(v, t))
                 .collect::<Result<Vec<_>>>()?,
@@ -121,11 +119,11 @@ fn augmented_value(
 }
 
 enum ScopeKey<'a> {
-    /// For root struct and generic collection.
+    /// For root struct and UTable.
     None,
-    /// For table row.
+    /// For KTable row.
     MapKey(&'a value::KeyValue),
-    /// For list item.
+    /// For LTable row.
     ListIndex(usize),
 }
 
@@ -340,14 +338,14 @@ async fn evaluate_op_scope(
 
             AnalyzedReactiveOp::ForEach(op) => {
                 let target_field_schema = head_scope.get_field_schema(&op.local_field_ref)?;
-                let collection_schema = match &target_field_schema.value_type.typ {
-                    schema::ValueType::Collection(cs) => cs,
-                    _ => bail!("Expect target field to be a collection"),
+                let table_schema = match &target_field_schema.value_type.typ {
+                    schema::ValueType::Table(cs) => cs,
+                    _ => bail!("Expect target field to be a table"),
                 };
 
                 let target_field = head_scope.get_value_field_builder(&op.local_field_ref);
                 let task_futs = match target_field {
-                    value::Value::Collection(v) => v
+                    value::Value::UTable(v) => v
                         .iter()
                         .map(|item| {
                             evaluate_child_op_scope(
@@ -356,13 +354,13 @@ async fn evaluate_op_scope(
                                 ScopeEntry {
                                     key: ScopeKey::None,
                                     value: item,
-                                    schema: &collection_schema.row,
+                                    schema: &table_schema.row,
                                 },
                                 memory,
                             )
                         })
                         .collect::<Vec<_>>(),
-                    value::Value::Table(v) => v
+                    value::Value::KTable(v) => v
                         .iter()
                         .map(|(k, v)| {
                             evaluate_child_op_scope(
@@ -371,13 +369,13 @@ async fn evaluate_op_scope(
                                 ScopeEntry {
                                     key: ScopeKey::MapKey(k),
                                     value: v,
-                                    schema: &collection_schema.row,
+                                    schema: &table_schema.row,
                                 },
                                 memory,
                             )
                         })
                         .collect::<Vec<_>>(),
-                    value::Value::List(v) => v
+                    value::Value::LTable(v) => v
                         .iter()
                         .enumerate()
                         .map(|(i, item)| {
@@ -387,14 +385,14 @@ async fn evaluate_op_scope(
                                 ScopeEntry {
                                     key: ScopeKey::ListIndex(i),
                                     value: item,
-                                    schema: &collection_schema.row,
+                                    schema: &table_schema.row,
                                 },
                                 memory,
                             )
                         })
                         .collect::<Vec<_>>(),
                     _ => {
-                        bail!("Target field type is expected to be a collection");
+                        bail!("Target field type is expected to be a table");
                     }
                 };
                 try_join_all(task_futs)
@@ -455,21 +453,21 @@ pub async fn evaluate_source_entry(
         schema: root_schema,
     };
 
-    let collection_schema = match &root_schema.fields[import_op.output.field_idx as usize]
+    let table_schema = match &root_schema.fields[import_op.output.field_idx as usize]
         .value_type
         .typ
     {
-        schema::ValueType::Collection(cs) => cs,
+        schema::ValueType::Table(cs) => cs,
         _ => {
             bail!("Expect source output to be a table")
         }
     };
 
     let scope_value =
-        ScopeValueBuilder::augmented_from(&value::ScopeValue(source_value), collection_schema)?;
+        ScopeValueBuilder::augmented_from(&value::ScopeValue(source_value), table_schema)?;
     root_scope_entry.define_field_w_builder(
         &import_op.output,
-        value::Value::Table(BTreeMap::from([(key.clone(), scope_value)])),
+        value::Value::KTable(BTreeMap::from([(key.clone(), scope_value)])),
     );
 
     evaluate_op_scope(

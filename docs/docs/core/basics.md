@@ -21,9 +21,9 @@ An indexing flow involves source data and transformed data (either as an interme
 
 Each piece of data has a **data type**, falling into one of the following categories:
 
-*   Basic type.
-*   Struct type: a collection of **fields**, each with a name and a type.
-*   Collection type: a collection of **rows**, each of which is a struct with specified schema. A collection type can be a table (which has a key field) or a list (ordered but without key field).
+*   *Basic type*.
+*   *Struct type*: a collection of **fields**, each with a name and a type.
+*   *Table type*: a collection of **rows**, each of which is a struct with specified schema. A table type can be a *KTable* (which has a key field) or a *LTable* (ordered but without key field).
 
 An indexing flow always has a top-level struct, containing all data within and managed by the flow.
 

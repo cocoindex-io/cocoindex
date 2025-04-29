@@ -32,7 +32,7 @@ Input data:
     To see all supported language names and extensions, see [the code](https://github.com/search?q=org%3Acocoindex-io+lang%3Arust++%22static+TREE_SITTER_LANGUAGE_BY_LANG%22&type=code).
     If it's unspecified or the specified language is not supported, it will be treated as plain text.
 
-Return type: `Table`, each row represents a chunk, with the following sub fields:
+Return type: [KTable](/docs/core/data_types#ktable), each row represents a chunk, with the following sub fields:
 
 *   `location` (type: `range`): The location of the chunk.
 *   `text` (type: `str`): The text of the chunk.

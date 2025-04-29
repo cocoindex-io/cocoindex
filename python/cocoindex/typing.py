@@ -5,9 +5,9 @@ import datetime
 import types
 import inspect
 import uuid
-from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING, overload
+from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING, overload, Sequence, Protocol, Generic, Literal
 
-class Vector(NamedTuple):
+class VectorInfo(NamedTuple):
     dim: int | None
 
 class TypeKind(NamedTuple):
@@ -21,7 +21,7 @@ class TypeAttr:
         self.key = key
         self.value = value
 
-Annotation = Vector | TypeKind | TypeAttr
+Annotation = TypeKind | TypeAttr | VectorInfo
 
 Float32 = Annotated[float, TypeKind('Float32')]
 Float64 = Annotated[float, TypeKind('Float64')]
@@ -30,29 +30,34 @@ Json = Annotated[Any, TypeKind('Json')]
 LocalDateTime = Annotated[datetime.datetime, TypeKind('LocalDateTime')]
 OffsetDateTime = Annotated[datetime.datetime, TypeKind('OffsetDateTime')]
 
-COLLECTION_TYPES = ('Table', 'List')
-
-R = TypeVar("R")
-
 if TYPE_CHECKING:
-    Table = Annotated[list[R], TypeKind('Table')]
-    List = Annotated[list[R], TypeKind('List')]
-else:
-    # pylint: disable=too-few-public-methods
-    class Table:  # type: ignore[unreachable]
-        """
-        A Table type, which has a list of rows. The first field of each row is the key.
-        """
-        def __class_getitem__(cls, item: type[R]):
-            return Annotated[list[item], TypeKind('Table')]
+    T_co = TypeVar('T_co', covariant=True)
+    Dim_co = TypeVar('Dim_co', bound=int, covariant=True)
 
-    # pylint: disable=too-few-public-methods
-    class List:  # type: ignore[unreachable]
-        """
-        A List type, which has a list of ordered rows.
-        """
-        def __class_getitem__(cls, item: type[R]):
-            return Annotated[list[item], TypeKind('List')]
+    class Vector(Sequence[T_co], Generic[T_co, Dim_co], Protocol):
+        """Vector[T, Dim] is a special typing alias for a list[T] with optional dimension info"""
+else:
+    class Vector:  # type: ignore[unreachable]
+        """ A special typing alias for a list[T] with optional dimension info """
+        def __class_getitem__(self, params):
+            if not isinstance(params, tuple):
+                # Only element type provided
+                elem_type = params
+                return Annotated[list[elem_type], VectorInfo(dim=None)]
+            else:
+                # Element type and dimension provided
+                elem_type, dim = params
+                if typing.get_origin(dim) is Literal:
+                    dim = typing.get_args(dim)[0]  # Extract the literal value
+                return Annotated[list[elem_type], VectorInfo(dim=dim)]
+
+TABLE_TYPES = ('KTable', 'LTable')
+KEY_FIELD_NAME = '_key'
+
+ElementType = type | tuple[type, type]
+
+def _is_struct_type(t) -> bool:
+    return isinstance(t, type) and dataclasses.is_dataclass(t)
 
 @dataclasses.dataclass
 class AnalyzedTypeInfo:
@@ -60,9 +65,12 @@ class AnalyzedTypeInfo:
     Analyzed info of a Python type.
     """
     kind: str
-    vector_info: Vector | None
-    elem_type: type | None
-    dataclass_type: type | None
+    vector_info: VectorInfo | None  # For Vector
+    elem_type: ElementType | None   # For Vector and Table
+
+    key_type: type | None           # For element of KTable
+    dataclass_type: type | None     # For Struct
+
     attrs: dict[str, Any] | None
     nullable: bool = False
 
@@ -70,6 +78,12 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
     """
     Analyze a Python type and return the analyzed info.
     """
+    if isinstance(t, tuple) and len(t) == 2:
+        key_type, value_type = t
+        result = analyze_type_info(value_type)
+        result.key_type = key_type
+        return result
+
     annotations: tuple[Annotation, ...] = ()
     base_type = None
     nullable = False
@@ -98,33 +112,41 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
             if attrs is None:
                 attrs = dict()
             attrs[attr.key] = attr.value
-        elif isinstance(attr, Vector):
+        elif isinstance(attr, VectorInfo):
             vector_info = attr
         elif isinstance(attr, TypeKind):
             kind = attr.kind
 
     dataclass_type = None
     elem_type = None
-    if isinstance(t, type) and dataclasses.is_dataclass(t):
+    key_type = None
+    if _is_struct_type(t):
         if kind is None:
             kind = 'Struct'
         elif kind != 'Struct':
             raise ValueError(f"Unexpected type kind for struct: {kind}")
         dataclass_type = t
     elif base_type is collections.abc.Sequence or base_type is list:
-        if kind is None:
-            kind = 'Vector' if vector_info is not None else 'List'
-        elif not (kind == 'Vector' or kind in COLLECTION_TYPES):
-            raise ValueError(f"Unexpected type kind for list: {kind}")
-
         args = typing.get_args(t)
-        if len(args) != 1:
-            raise ValueError(f"{kind} must have exactly one type argument")
         elem_type = args[0]
+
+        if kind is None:
+            if _is_struct_type(elem_type):
+                kind = 'LTable'
+                if vector_info is not None:
+                    raise ValueError("Vector element must be a simple type, not a struct")
+            else:
+                kind = 'Vector'
+                if vector_info is None:
+                    vector_info = VectorInfo(dim=None)
+        elif not (kind == 'Vector' or kind in TABLE_TYPES):
+            raise ValueError(f"Unexpected type kind for list: {kind}")
+    elif base_type is collections.abc.Mapping or base_type is dict:
+        args = typing.get_args(t)
+        elem_type = (args[0], args[1])
+        kind = 'KTable'
     elif kind is None:
-        if base_type is collections.abc.Sequence or base_type is list:
-            kind = 'Vector' if vector_info is not None else 'List'
-        elif t is bytes:
+        if t is bytes:
             kind = 'Bytes'
         elif t is str:
             kind = 'Str'
@@ -145,20 +167,26 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         else:
             raise ValueError(f"type unsupported yet: {t}")
 
-    return AnalyzedTypeInfo(kind=kind, vector_info=vector_info, elem_type=elem_type,
-                            dataclass_type=dataclass_type, attrs=attrs, nullable=nullable)
+    return AnalyzedTypeInfo(kind=kind, vector_info=vector_info,
+                            elem_type=elem_type, key_type=key_type, dataclass_type=dataclass_type,
+                            attrs=attrs, nullable=nullable)
 
-def _encode_fields_schema(dataclass_type: type) -> list[dict[str, Any]]:
+def _encode_fields_schema(dataclass_type: type, key_type: type | None = None) -> list[dict[str, Any]]:
     result = []
-    for field in dataclasses.fields(dataclass_type):
+    def add_field(name: str, t) -> None:
         try:
-            type_info = encode_enriched_type_info(analyze_type_info(field.type))
+            type_info = encode_enriched_type_info(analyze_type_info(t))
         except ValueError as e:
             e.add_note(f"Failed to encode annotation for field - "
-                       f"{dataclass_type.__name__}.{field.name}: {field.type}")
+                       f"{dataclass_type.__name__}.{name}: {t}")
             raise
-        type_info['name'] = field.name
+        type_info['name'] = name
         result.append(type_info)
+
+    if key_type is not None:
+        add_field(KEY_FIELD_NAME, key_type)
+    for field in dataclasses.fields(dataclass_type):
+        add_field(field.name, field.type)
     return result
 
 def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
@@ -167,7 +195,7 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
     if type_info.kind == 'Struct':
         if type_info.dataclass_type is None:
             raise ValueError("Struct type must have a dataclass type")
-        encoded_type['fields'] = _encode_fields_schema(type_info.dataclass_type)
+        encoded_type['fields'] = _encode_fields_schema(type_info.dataclass_type, type_info.key_type)
         if doc := inspect.getdoc(type_info.dataclass_type):
             encoded_type['description'] = doc
 
@@ -179,7 +207,7 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         encoded_type['element_type'] = _encode_type(analyze_type_info(type_info.elem_type))
         encoded_type['dimension'] = type_info.vector_info.dim
 
-    elif type_info.kind in COLLECTION_TYPES:
+    elif type_info.kind in TABLE_TYPES:
         if type_info.elem_type is None:
             raise ValueError(f"{type_info.kind} type must have an element type")
         row_type_info = analyze_type_info(type_info.elem_type)

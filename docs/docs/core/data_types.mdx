@@ -9,91 +9,113 @@ In CocoIndex, all data processed by the flow have a type determined when the flo
 
 This makes schema of data processed by CocoIndex clear, and easily determine the schema of your index.
 
-## Data Types 
+## Data Types
+
+You don't need to spell out data types in CocoIndex, when you define the flow using existing operations (source, function, etc).
+These operations decide data types of fields produced by them based on the spec and input data types.
+All you need to do is to make sure the data passed to functions and storage targets are accepted by them.
+
+When you define [custom functions](/docs/core/custom_function), you need to specify the data types of arguments and return values.
 
 ### Basic Types
 
 This is the list of all basic types supported by CocoIndex:
 
-| Type | Description |Type in Python | Original Type in Python |
+| Type | Description | Specific Python Type | Native Python Type |
 |------|-------------|---------------|-------------------------|
 | Bytes | | `bytes` | `bytes` |
 | Str | | `str` | `str` |
 | Bool | | `bool` | `bool` |
 | Int64 | | `int` | `int` |
-| Float32 | | `cocoindex.typing.Float32` |`float` | 
-| Float64 | |  `cocoindex.typing.Float64` |`float` |
-| Range | | `cocoindex.typing.Range`  | `tuple[int, int]` |
+| Float32 | | `cocoindex.Float32` |`float` | 
+| Float64 | |  `cocoindex.Float64` |`float` |
+| Range | | `cocoindex.Range`  | `tuple[int, int]` |
 | Uuid | | `uuid.UUId` | `uuid.UUID` |
 | Date | | `datetime.date` | `datetime.date` |
 | Time | | `datetime.time` | `datetime.time` |
-| LocalDatetime | Date and time without timezone | `cocoindex.typing.LocalDateTime` | `datetime.datetime` |
-| OffsetDatetime | Date and time with a timezone offset | `cocoindex.typing.OffsetDateTime` | `datetime.datetime` |
-| Vector[*type*, *N*?] | |`Annotated[list[type], cocoindex.typing.Vector(dim=N)]` | `list[type]` | 
-| Json | | `cocoindex.typing.Json` | Any type convertible to JSON by `json` package | 
+| LocalDatetime | Date and time without timezone | `cocoindex.LocalDateTime` | `datetime.datetime` |
+| OffsetDatetime | Date and time with a timezone offset | `cocoindex.OffsetDateTime` | `datetime.datetime` |
+| Vector[*T*, *Dim*?] | *T* must be basic type. *Dim* is a positive integer and optional. |`cocoindex.Vector[T]` or `cocoindex.Vector[T, Dim]` | `list[T]` | 
+| Json | | `cocoindex.Json` | Any data convertible to JSON by `json` package | 
 
-For some types, CocoIndex Python SDK provides annotated types with finer granularity than Python's original type, e.g.
+Values of all data types can be represented by values in Python's native types (as described under the Native Python Type column).
+However, the underlying execution engine and some storage system (like Postgres) has finer distinctions for some types, specifically:
+
 *   *Float32* and *Float64* for `float`, with different precision.
 *   *LocalDateTime* and *OffsetDateTime* for `datetime.datetime`, with different timezone awareness.
-*   *Vector* has dimension information.
+*   *Vector* has optional dimension information.
+*   *Range* and *Json* provide a clear tag for the type, to clearly distinguish the type in CocoIndex.
 
-When defining [custom functions](/docs/core/custom_function), use the specific types as type annotations for arguments and return values.
-So CocoIndex will have information about the specific type.
+The native Python type is always more permissive and can represent a superset of possible values.
+*   Only when you annotate the return type of a custom function, you should use the specific type,
+    so that CocoIndex will have information about the precise type to be used in the execution engine and storage system.
+*   For all other purposes, e.g. to provide annotation for argument types of a custom function, or used internally in your custom function,
+    you can choose whatever to use.
+    The native Python type is usually simpler.
 
 ### Struct Type
 
-A struct has a bunch of fields, each with a name and a type.
+A Struct has a bunch of fields, each with a name and a type.
 
-In Python, a struct type is represented by a [dataclass](https://docs.python.org/3/library/dataclasses.html),
+In Python, a Struct type is represented by a [dataclass](https://docs.python.org/3/library/dataclasses.html),
 and all fields must be annotated with a specific type. For example:
 
 ```python
 from dataclasses import dataclass
 
 @dataclass
-class Order:
-    order_id: str
-    name: str
-    price: float
+class Person:
+    first_name: str
+    last_name
+    dob: datetime.date
 ```
 
-### Collection Types
+### Table Types
 
-A collection type models a collection of rows, each of which is a struct with specific schema.
+A Table type models a collection of rows, each with multiple columns.
+Each column of a table has a specific type.
 
-We have two specific types of collection:
+We have two specific types of Table types: KTable and LTable.
 
-| Type | Description |Type in Python | Original Type in Python |
-|------|-------------|---------------|-------------------------|
-| Table[*type*] | The first field is the key, and CocoIndex enforces its uniqueness | `cocoindex.typing.Table[type]` | `list[type]` |
-| List[*type*] | No key field; row order is preserved | `cocoindex.typing.List[type]` | `list[type]` |
+#### KTable
 
-For example, we can use `cocoindex.typing.Table[Order]` to represent a table of orders, and the first field `order_id` will be taken as the key field.
+KTable is a Table type whose first column serves as the key.
+The row order of a KTable is not preserved.
+Type of the first column (key column) must be a [key type](#key-types).
 
-## Types to Create Indexes
+In Python, a KTable type is represented by `dict[K, V]`. 
+The `V` should be a dataclass, representing the value fields of each row.
+For example, you can use `dict[str, Person]` to represent a KTable, with 4 columns: key (Str), `first_name` (Str), `last_name` (Str), `dob` (Date).
 
-### Key Types
+Note that if you want to use a struct as the key, you need to annotate the struct with `@dataclass(frozen=True)`, so the values are immutable.
+For example:
 
-Currently, the following types are supported as types for key fields:
+```python
+@dataclass(frozen=True)
+class PersonKey:
+    id_kind: str
+    id: str
+```
 
-- `bytes`
-- `str`
-- `bool`
-- `int64`
-- `range`
-- `uuid`
-- `date`
+Then you can use `dict[PersonKey, Person]` to represent a KTable keyed by `PersonKey`.
+
+
+#### LTable
+
+LTable is a Table type whose row order is preserved. LTable has no key column.
+
+In Python, a LTable type is represented by `list[R]`, where `R` is a dataclass representing a row.
+For example, you can use `list[Person]` to represent a LTable with 3 columns: `first_name` (Str), `last_name` (Str), `dob` (Date).
+
+## Key Types
+
+Currently, the following types are key types
+
+- Bytes
+- Str
+- Bool
+- Int64
+- Range
+- Uuid
+- Date
 - Struct with all fields being key types
-
-### Vector Type
-
-Users can create vector index on fields with `vector` types.
-A vector index also needs to be configured with a similarity metric, and the index is only effective when this metric is used during retrieval.
-
-Following metrics are supported:
-
-| Metric Name | Description | Similarity Order |
-|-------------|-------------|------------------|
-| `CosineSimilarity` | [Cosine similarity](https://en.wikipedia.org/wiki/Cosine_similarity) | Larger is more similar |
-| `L2Distance` | [L2 distance (a.k.a. Euclidean distance)](https://en.wikipedia.org/wiki/Euclidean_distance) | Smaller is more similar |
-| `InnerProduct` | [Inner product](https://en.wikipedia.org/wiki/Inner_product_space) | Larger is more similar |
