@@ -95,16 +95,20 @@ In CocoIndex, you can export data to property graph databases.
 This usually involves more than one collectors, and you export them to different types of graph elements (nodes and relationships).
 In particular,
 
-1.  You can export rows from some collectors to nodes in the graph.
-2.  You can export rows from some other collectors to relationships in the graph.
-3.  Some nodes referenced by relationships exported in 2 may not exist as nodes exported in 1.
-    CocoIndex will automatically create and keep these nodes, as long as they're still referenced by at least one relationship.
-    This guarantees that all relationships exported in 2 are valid.
+1.  You can export rows from some collectors to nodes in the graph. Each row is mapped to a node.
+2.  You can export rows from some other collectors to relationships in the graph. Each row is mapped to a relationship, together with the source and target nodes of the relationship.
+3.  Since relationships exported in 2 may share the same nodes (with nodes exported in 1, and other relationships exported in 2),
+    there will match and deduplicate nodes, using their primary key as each node's identifier.
 
-We provide common types `NodeMapping`, `RelationshipMapping`, and `ReferencedNode`, to configure for each situation.
-They're agnostic to specific graph databases.
+This is what you need to provide to export data to a property graph database:
 
-#### Nodes
+*   Provide `Nodes` to export nodes with each label (part 1).
+*   For labels that will appear as source/target nodes of relationships (part 2) without being exported as nodes (part 1), you need to declare these labels to provide label-level configuration like primary keys.
+*   Provide `Relationships` to export relationships with each type (part 2).
+
+Nodes' matching and deduplicating are taken care of by CocoIndex, without additional configuration.
+
+#### Nodes to Export
 
 Here's how CocoIndex data elements map to nodes in the graph:
 
@@ -114,9 +118,9 @@ Here's how CocoIndex data elements map to nodes in the graph:
 | a collected row   | a node |
 | a field           | a property of node |
 
-Note that the label used in different `NodeMapping`s should be unique.
+Note that the label used in different `Nodes`s should be unique.
 
-`cocoindex.storages.NodeMapping` is to describe mapping to nodes. It has the following fields:
+`cocoindex.storages.Nodes` is to describe mapping to nodes. It has the following fields:
 
 *   `label` (type: `str`): The label of the node.
 
@@ -138,7 +142,7 @@ document_collector.export(
     ...
     cocoindex.storages.Neo4j(
         ...
-        mapping=cocoindex.storages.NodeMapping(label="Document"),
+        mapping=cocoindex.storages.Nodes(label="Document"),
     ),
     primary_key_fields=["filename"],
 )
@@ -167,7 +171,32 @@ graph TD
   classDef node font-size:8pt,text-align:left,stroke-width:2;
 ```
 
-#### Relationships
+#### Nodes to Declare
+
+If a node label needs to appear as source or target of a relationship, but not exported as a node, you need to [declare](../core/flow_def#target-declarations) the label with necessary configuration.
+
+The dataclass to describe the declaration is specific to each target storage (e.g. `cocoindex.storages.Neo4jDeclarations`),
+while they share the following common fields:
+
+*   `nodes_label` (required): The label of the node.
+*   Options for [storage indexes](../core/flow_def#storage-indexes).
+    *   `primary_key_fields` (required)
+    *   `vector_indexes` (optional)
+
+Continuing the same example above.
+Considering we want to extract relationships from `Document` to `Place` later (i.e. a document mentions a place), but the `Place` label isn't exported as a node, we need to declare it:
+
+```python
+flow_builder.declare(
+    cocoindex.storages.Neo4jDeclarations(
+        connection = ...,
+        nodes_label="Place",
+        primary_key_fields=["name"],
+    ),
+)
+```
+
+#### Relationships to Export
 
 Here's how CocoIndex data elements map to relationships in the graph:
 
@@ -177,12 +206,12 @@ Here's how CocoIndex data elements map to relationships in the graph:
 | a collected row   | a relationship |
 | a field           | a property of relationship, or a property of source/target node, based on configuration |
 
-Note that the type used in different `RelationshipMapping`s should be unique.
+Note that the type used in different `Relationships`s should be unique.
 
-`cocoindex.storages.RelationshipMapping` is to describe mapping to relationships. It has the following fields:
+`cocoindex.storages.Relationships` is to describe mapping to relationships. It has the following fields:
 
 *   `rel_type` (type: `str`): The type of the relationship.
-*   `source`/`target` (type: `cocoindex.storages.NodeReferenceMapping`): Specify how to extract source/target node information from the collected row. It has the following fields:
+*   `source`/`target` (type: `cocoindex.storages.NodeFromFields`): Specify how to extract source/target node information from specific fields in the collected row. It has the following fields:
     *   `label` (type: `str`): The label of the node.
     *   `fields` (type: `Sequence[cocoindex.storages.TargetFieldMapping]`): Specify field mappings from the collected rows to node properties, with the following fields:
         *   `source` (type: `str`): The name of the field in the collected row.
@@ -218,13 +247,13 @@ doc_place_collector.export(
     ...
     cocoindex.storages.Neo4j(
         ...
-        mapping=cocoindex.storages.RelationshipMapping(
+        mapping=cocoindex.storages.Relationships(
             rel_type="MENTION",
-            source=cocoindex.storages.NodeReferenceMapping(
+            source=cocoindex.storages.NodeFromFields(
                 label="Document",
                 fields=[cocoindex.storages.TargetFieldMapping(source="doc_filename", target="filename")],
             ),
-            target=cocoindex.storages.NodeReferenceMapping(
+            target=cocoindex.storages.NodeFromFields(
                 label="Place",
                 fields=[
                     cocoindex.storages.TargetFieldMapping(source="place_name", target="name"),
@@ -250,19 +279,26 @@ graph TD
     classDef: nodeRef
   }
 
-  Doc_Chapter2@{
+  Doc_Chapter2_a@{
     shape: rounded
     label: "**[Document]**
             **filename\\*: chapter2.md**"
     classDef: nodeRef
   }
 
-  Place_CrystalPalace@{
+  Doc_Chapter2_b@{
+    shape: rounded
+    label: "**[Document]**
+            **filename\\*: chapter2.md**"
+    classDef: nodeRef
+  }
+
+  Place_CrystalPalace_a@{
     shape: rounded
     label: "**[Place]**
             **name\\*: Crystal Palace**
             embedding: [0.1, 0.5, ...]"
-    classDef: nodeRef
+    classDef: node
   }
 
   Place_MagicForest@{
@@ -270,38 +306,43 @@ graph TD
     label: "**[Place]**
             **name\\*: Magic Forest**
             embedding: [0.4, 0.2, ...]"
-    classDef: nodeRef
+    classDef: node
   }
 
-  Doc_Chapter1:::nodeRef -- **[MENTION]**{location:12} --> Place_CrystalPalace:::nodeRef
-  Doc_Chapter2:::nodeRef -- **[MENTION]**{location:23} --> Place_MagicForest:::nodeRef
-  Doc_Chapter2:::nodeRef -- **[MENTION]**{location:56} --> Place_CrystalPalace:::nodeRef
+  Place_CrystalPalace_b@{
+    shape: rounded
+    label: "**[Place]**
+            **name\\*: Crystal Palace**
+            embedding: [0.1, 0.5, ...]"
+    classDef: node
+  }
+
+
+  Doc_Chapter1:::nodeRef -- **[MENTION]**{location:12} --> Place_CrystalPalace_a:::node
+  Doc_Chapter2_a:::nodeRef -- **[MENTION]**{location:23} --> Place_MagicForest:::node
+  Doc_Chapter2_b:::nodeRef -- **[MENTION]**{location:56} --> Place_CrystalPalace_b:::node
 
   classDef nodeRef font-size:8pt,text-align:left,fill:transparent,stroke-width:1,stroke-dasharray:5 5;
+  classDef node font-size:8pt,text-align:left,stroke-width:2;
 
 ```
 
+#### Nodes Matching and Deduplicating
 
-#### Nodes only referenced by relationships
+The nodes and relationships we got above are discrete elements.
+To fit them into a connected property graph, CocoIndex will match and deduplicate nodes:
 
-If a node appears as source or target of a relationship, but not exported using `NodeMapping`, CocoIndex will automatically create and keep these nodes until they're no longer referenced by any relationships.
+*   Match nodes based on their primary key values. Nodes with the same primary key values are considered as the same node.
+*   For non-primary key fields (a.k.a. value fields), CocoIndex will pick the values from an arbitrary one.
+    If multiple nodes (before deduplication) with the same primary key provide value fields, an arbitrary one will be picked.
 
-:::note Merge of node values
+:::note
 
-If the same node (as identified by primary key values) appears multiple times (e.g. they're referenced by different relationships),
-CocoIndex uses value fields provided by an arbitrary one of them.
 The best practice is to make the value fields consistent across different appearances of the same node, to avoid non-determinism in the exported graph.
 
 :::
 
-If a node's label specified in `NodeReferenceMapping` doesn't exist in any `NodeMapping`, you need to [declare](../core/flow_def#target-declarations) a `ReferencedNode` to configure [storage indexes](../core/flow_def#storage-indexes) for nodes with this label.
-The following options are supported:
-
-*   `primary_key_fields` (required)
-*   `vector_indexes` (optional)
-
-Using the same example above.
-After combining exported nodes and relationships, we get the knowledge graph with all information:
+After matching and deduplication, we get the final graph:
 
 ```mermaid
 graph TD
@@ -326,7 +367,7 @@ graph TD
     label: "**[Place]**
             **name\\*: Crystal Palace**
             embedding: [0.1, 0.5, ...]"
-    classDef: nodeRef
+    classDef: node
   }
 
   Place_MagicForest@{
@@ -334,30 +375,14 @@ graph TD
     label: "**[Place]**
             **name\\*: Magic Forest**
             embedding: [0.4, 0.2, ...]"
-    classDef: nodeRef
+    classDef: node
   }
 
-  Doc_Chapter1:::node -- **[MENTION]**{location:12} --> Place_CrystalPalace:::nodeRef
-  Doc_Chapter2:::node -- **[MENTION]**{location:23} --> Place_MagicForest:::nodeRef
-  Doc_Chapter2:::node -- **[MENTION]**{location:56} --> Place_CrystalPalace:::nodeRef
+  Doc_Chapter1:::node -- **[MENTION]**{location:12} --> Place_CrystalPalace:::node
+  Doc_Chapter2:::node -- **[MENTION]**{location:23} --> Place_MagicForest:::node
+  Doc_Chapter2:::node -- **[MENTION]**{location:56} --> Place_CrystalPalace:::node
 
   classDef node font-size:8pt,text-align:left,stroke-width:2;
-  classDef nodeRef font-size:8pt,text-align:left,fill:transparent,stroke-width:1,stroke-dasharray:5 5;
-
-```
-
-Nodes with `Place` label in the example aren't exported explicitly using `NodeMapping`, so CocoIndex will automatically create them as long as they're still referenced by any relationship.
-You need to declare a `ReferencedNode`:
-
-```python
-flow_builder.declare(
-    cocoindex.storages.Neo4jDeclarations(
-        ...
-        referenced_nodes=[
-            cocoindex.storages.ReferencedNode(label="Place", primary_key_fields=["name"]),
-        ],
-    ),
-)
 ```
 
 ### Neo4j
@@ -388,6 +413,9 @@ The `Neo4j` storage exports each row as a relationship to Neo4j Knowledge Graph.
 Neo4j also provides a declaration spec `Neo4jDeclaration`, to configure indexing options for nodes only referenced by relationships. It has the following fields:
 
 *   `connection` (type: auth reference to `Neo4jConnectionSpec`)
-*   `relationships` (type: `Sequence[ReferencedNode]`)
+*   Fields for [nodes to declare](#nodes-to-declare), including
+    *   `nodes_label` (required)
+    *   `primary_key_fields` (required)
+    *   `vector_indexes` (optional)
 
 You can find an end-to-end example [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph).
