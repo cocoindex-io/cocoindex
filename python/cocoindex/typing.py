@@ -245,3 +245,8 @@ def encode_enriched_type(t) -> dict[str, Any] | None:
         return None
 
     return encode_enriched_type_info(analyze_type_info(t))
+
+def resolve_forward_ref(t):
+    if t is str:
+        return eval(t) # pylint: disable=eval-used
+    return t

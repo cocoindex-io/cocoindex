@@ -1,4 +1,3 @@
-import asyncio
 import click
 import datetime
 from rich.console import Console
