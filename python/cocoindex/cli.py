@@ -1,4 +1,3 @@
-import asyncio
 import click
 import datetime
 from rich.console import Console
@@ -21,7 +20,7 @@ def ls(show_all: bool):
     """
     List all flows.
     """
-    current_flow_names = [fl.name for fl in flow.flows()]
+    current_flow_names = flow.flow_names()
     persisted_flow_names = flow_names_with_setup()
     remaining_persisted_flow_names = set(persisted_flow_names)
 
