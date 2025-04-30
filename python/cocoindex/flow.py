@@ -462,29 +462,27 @@ class Flow:
             output.append(content, style=style)
             output.append(end)
 
-        # Header
-        flow_name = flow_dict.get("name", "Unnamed")
-        add_line(f"Flow: {flow_name}", style="bold cyan")
+        def format_key_value(key, value, indent):
+            if isinstance(value, (dict, list)):
+                add_line(f"- {key}:", indent, style="green")
+                format_data(value, indent + 2)
+            else:
+                add_line(f"- {key}:", indent, style="green", end="")
+                add_line(f" {value}", style="yellow")
 
         def format_data(data, indent=0):
             if isinstance(data, dict):
                 for key, value in data.items():
-                    if isinstance(value, (dict, list)):
-                        add_line(f"- {key}:", indent, style="green")
-                        format_data(value, indent + 2)
-                    else:
-                        add_line(f"- {key}:", indent, style="green", end="")
-                        add_line(f" {value}", style="yellow")
+                    format_key_value(key, value, indent)
             elif isinstance(data, list):
                 for i, item in enumerate(data):
-                    if isinstance(item, (dict, list)):
-                        add_line(f"- [{i}]:", indent, style="green")
-                        format_data(item, indent + 2)
-                    else:
-                        add_line(f"- [{i}]:", indent, style="green", end="")
-                        add_line(f" {item}", style="yellow")
+                    format_key_value(f"[{i}]", item, indent)
             else:
                 add_line(str(data), indent, style="yellow")
+
+        # Header
+        flow_name = flow_dict.get("name", "Unnamed")
+        add_line(f"Flow: {flow_name}", style="bold cyan")
 
         # Section
         for section_title, section_key in [
