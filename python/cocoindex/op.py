@@ -5,10 +5,10 @@ import asyncio
 import dataclasses
 import inspect
 
-from typing import get_type_hints, Protocol, Any, Callable, Awaitable, dataclass_transform
+from typing import Protocol, Any, Callable, Awaitable, dataclass_transform
 from enum import Enum
 
-from .typing import encode_enriched_type
+from .typing import encode_enriched_type, resolve_forward_ref
 from .convert import encode_engine_value, make_engine_value_decoder
 from . import _engine
 
@@ -214,10 +214,11 @@ def executor_class(**args) -> Callable[[type], type]:
         """
         Decorate a class to provide an executor for an op.
         """
-        type_hints = get_type_hints(cls)
+        # Use `__annotations__` instead of `get_type_hints`, to avoid resolving forward references.
+        type_hints = cls.__annotations__
         if 'spec' not in type_hints:
             raise TypeError("Expect a `spec` field with type hint")
-        spec_cls = type_hints['spec']
+        spec_cls = resolve_forward_ref(type_hints['spec'])
         sig = inspect.signature(cls.__call__)
         return _register_op_factory(
             category=spec_cls._op_category,
