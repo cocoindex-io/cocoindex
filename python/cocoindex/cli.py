@@ -4,6 +4,7 @@ import datetime
 from rich.console import Console
 
 from . import flow, lib
+from .flow import flow_names
 from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
 from .runtime import execution_context
 
@@ -21,7 +22,7 @@ def ls(show_all: bool):
     """
     List all flows.
     """
-    current_flow_names = [fl.name for fl in flow.flows()]
+    current_flow_names = flow_names()
     persisted_flow_names = flow_names_with_setup()
     remaining_persisted_flow_names = set(persisted_flow_names)
 
