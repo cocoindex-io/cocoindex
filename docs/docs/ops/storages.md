@@ -87,26 +87,32 @@ You can find an end-to-end example [here](https://github.com/cocoindex-io/cocoin
 
 ## Property Graph Targets
 
-Property graph is a graph data model where both nodes and relationships can have properties.
+Property graph is a widely-adopted model for knowledge graphs, where both nodes and relationships can have properties.
+[Graph database concepts](https://neo4j.com/docs/getting-started/appendix/graphdb-concepts/) has a good introduction to basic concepts of property graphs.
+
+The following concepts will be used in the following sections:
+* [Node](https://neo4j.com/docs/getting-started/appendix/graphdb-concepts/#graphdb-node)
+    * [Node label](https://neo4j.com/docs/getting-started/appendix/graphdb-concepts/#graphdb-labels), which represents a type of nodes.
+* [Relationship](https://neo4j.com/docs/getting-started/appendix/graphdb-concepts/#graphdb-relationship), which describes a connection between two nodes.
+    * [Relationship type](https://neo4j.com/docs/getting-started/appendix/graphdb-concepts/#graphdb-relationship-type)
+* [Properties](https://neo4j.com/docs/getting-started/appendix/graphdb-concepts/#graphdb-properties), which are key-value pairs associated with nodes and relationships.
 
 ### Data Mapping
 
-In CocoIndex, you can export data to property graph databases.
-This usually involves more than one collectors, and you export them to different types of graph elements (nodes and relationships).
-In particular,
+Data from collectors are mapped to graph elements in various types:
 
-1.  You can export rows from some collectors to nodes in the graph. Each row is mapped to a node.
-2.  You can export rows from some other collectors to relationships in the graph. Each row is mapped to a relationship, together with the source and target nodes of the relationship.
-3.  Since relationships exported in 2 may share the same nodes (with nodes exported in 1, and other relationships exported in 2),
-    there will match and deduplicate nodes, using their primary key as each node's identifier.
+1.  Rows from collectors → Nodes in the graph
+2.  Rows from collectors → Relationships in the graph (including source and target nodes of the relationship)
 
-This is what you need to provide to export data to a property graph database:
+This is what you need to provide to define these mappings:
 
-*   Provide `Nodes` to export nodes with each label (part 1).
-*   For labels that will appear as source/target nodes of relationships (part 2) without being exported as nodes (part 1), you need to declare these labels to provide label-level configuration like primary keys.
-*   Provide `Relationships` to export relationships with each type (part 2).
+*   Specify [nodes to export](#nodes-to-export).
+*   [Declare extra node labels](#declare-extra-node-labels), for labels to appear as source/target nodes of relationships but not exported as nodes.
+*   Specify [relationships to export](#relationships-to-export).
 
-Nodes' matching and deduplicating are taken care of by CocoIndex, without additional configuration.
+In addition, the same node may appear multiple times, from exported nodes and various relationships.
+They should appear as the same node in the target graph database.
+CocoIndex automatically [matches and deduplicates nodes](#nodes-matching-and-deduplicating) based on their primary key values.
 
 #### Nodes to Export
 
@@ -171,7 +177,7 @@ graph TD
   classDef node font-size:8pt,text-align:left,stroke-width:2;
 ```
 
-#### Nodes to Declare
+#### Declare Extra Node Labels
 
 If a node label needs to appear as source or target of a relationship, but not exported as a node, you need to [declare](../core/flow_def#target-declarations) the label with necessary configuration.
 
@@ -318,9 +324,9 @@ graph TD
   }
 
 
-  Doc_Chapter1:::nodeRef -- **[MENTION]**{location:12} --> Place_CrystalPalace_a:::node
-  Doc_Chapter2_a:::nodeRef -- **[MENTION]**{location:23} --> Place_MagicForest:::node
-  Doc_Chapter2_b:::nodeRef -- **[MENTION]**{location:56} --> Place_CrystalPalace_b:::node
+  Doc_Chapter1:::nodeRef -- **:MENTION** (location:12) --> Place_CrystalPalace_a:::node
+  Doc_Chapter2_a:::nodeRef -- **:MENTION** (location:23) --> Place_MagicForest:::node
+  Doc_Chapter2_b:::nodeRef -- **:MENTION** (location:56) --> Place_CrystalPalace_b:::node
 
   classDef nodeRef font-size:8pt,text-align:left,fill:transparent,stroke-width:1,stroke-dasharray:5 5;
   classDef node font-size:8pt,text-align:left,stroke-width:2;
@@ -330,7 +336,7 @@ graph TD
 #### Nodes Matching and Deduplicating
 
 The nodes and relationships we got above are discrete elements.
-To fit them into a connected property graph, CocoIndex will match and deduplicate nodes:
+To fit them into a connected property graph, CocoIndex will match and deduplicate nodes automatically:
 
 *   Match nodes based on their primary key values. Nodes with the same primary key values are considered as the same node.
 *   For non-primary key fields (a.k.a. value fields), CocoIndex will pick the values from an arbitrary one.
@@ -378,9 +384,9 @@ graph TD
     classDef: node
   }
 
-  Doc_Chapter1:::node -- **[MENTION]**{location:12} --> Place_CrystalPalace:::node
-  Doc_Chapter2:::node -- **[MENTION]**{location:23} --> Place_MagicForest:::node
-  Doc_Chapter2:::node -- **[MENTION]**{location:56} --> Place_CrystalPalace:::node
+  Doc_Chapter1:::node -- **:MENTION** (location:12) --> Place_CrystalPalace:::node
+  Doc_Chapter2:::node -- **:MENTION** (location:23) --> Place_MagicForest:::node
+  Doc_Chapter2:::node -- **:MENTION** (location:56) --> Place_CrystalPalace:::node
 
   classDef node font-size:8pt,text-align:left,stroke-width:2;
 ```
