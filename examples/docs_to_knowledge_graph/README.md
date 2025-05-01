@@ -58,15 +58,19 @@ MATCH p=()-->() RETURN p
 ```
 
 ## CocoInsight 
-CocoInsight is a tool to help you understand your data pipeline and data index. CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
+It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
-Run CocoInsight to understand your RAG data pipeline:
+```bash
+python3 main.py cocoindex server -c https://cocoindex.io
+```
+
+And then open the url https://cocoindex.io/cocoinsight. 
 
 ```
 python main.py cocoindex server -c https://cocoindex.io
 ```
 
-Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight). It connects to your local CocoIndex server with zero data retention.
+<img width="1430" alt="cocoinsight" src="https://github.com/user-attachments/assets/d5ada581-cceb-42bf-a949-132df674f3dd" />
 
-You can view the pipeline flow and the data preview in the CocoInsight UI:
-![CocoInsight UI](https://cocoindex.io/blogs/assets/images/cocoinsight-edd71690dcc35b6c5cf1cb31b51b6f6f.png)
+
