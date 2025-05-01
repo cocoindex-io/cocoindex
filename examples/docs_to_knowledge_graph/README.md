@@ -1,19 +1,22 @@
-# Build Knowledge Graph from Markdown Documents, with OpenAI, Neo4j and CocoIndex
+# Build Real-Time Knowledge Graph For Documents with LLM and Neo4j
 
-In this example, we
+We will process a list of documents and use LLM to extract relationships between the concepts in each document. 
+We will generate two kinds of relationships:
 
-*   Extract relationships from Markdown documents.
-*   Build a knowledge graph from the relationships.
+1. Relationships between subjects and objects. E.g., "CocoIndex supports Incremental Processing"
+2. Mentions of entities in a document. E.g., "core/basics.mdx" mentions `CocoIndex` and `Incremental Processing`.
 
-Please give [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a star to support us if you like our work. Thank you so much with a warm coconut hug 🥥🤗. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+You can find a step by step blog for this project [here](https://cocoindex.io/blogs/knowledge-graph-for-docs)
+
+Please drop [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a star to support us if you like our work. Thank you so much with a warm coconut hug 🥥🤗. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
 ## Prerequisite
-
-Before running the example, you need to:
-
 *   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
 *   [Install Neo4j](https://cocoindex.io/docs/ops/storages#neo4j) if you don't have one.
-*   Install / configure LLM API. In this example we use OpenAI. You need to [configure OpenAI API key](https://cocoindex.io/docs/ai/llm#openai) before running the example. Alternatively, you can also follow the comments in source code to switch to Ollama, which runs LLM model locally, and get it ready following [this guide](https://cocoindex.io/docs/ai/llm#ollama).
+*   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).
+
+## Documentation
+You can read the official CocoIndex Documentation for Property Graph Targets [here](https://cocoindex.io/docs/ops/storages#property-graph-targets).
 
 ## Run
 
