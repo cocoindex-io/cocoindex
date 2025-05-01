@@ -1,10 +1,7 @@
-use crate::{lib_context::LibContext, service};
+use crate::prelude::*;
 
-use anyhow::Result;
+use crate::{lib_context::LibContext, service};
 use axum::{routing, Router};
-use futures::{future::BoxFuture, FutureExt};
-use serde::Deserialize;
-use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -14,7 +11,8 @@ use tower_http::{
 #[derive(Deserialize, Debug)]
 pub struct ServerSettings {
     pub address: String,
-    pub cors_origin: Option<String>,
+    #[serde(default)]
+    pub cors_origins: Vec<String>,
 }
 
 /// Initialize the server and return a future that will actually handle requests.
@@ -23,9 +21,15 @@ pub async fn init_server(
     settings: ServerSettings,
 ) -> Result<BoxFuture<'static, ()>> {
     let mut cors = CorsLayer::default();
-    if let Some(ui_cors_origin) = &settings.cors_origin {
+    debug!("cors_origins: {:?}", settings.cors_origins);
+    if !settings.cors_origins.is_empty() {
+        let origins: Vec<_> = settings
+            .cors_origins
+            .iter()
+            .map(|origin| origin.parse())
+            .collect::<Result<_, _>>()?;
         cors = cors
-            .allow_origin(AllowOrigin::exact(ui_cors_origin.parse()?))
+            .allow_origin(AllowOrigin::list(origins))
             .allow_methods([
                 axum::http::Method::GET,
                 axum::http::Method::POST,

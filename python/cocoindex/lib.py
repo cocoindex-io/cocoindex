@@ -6,7 +6,7 @@ import sys
 import functools
 import inspect
 
-from typing import Callable, Self
+from typing import Callable, Self, Any
 from dataclasses import dataclass
 
 from . import _engine
@@ -14,13 +14,14 @@ from . import flow, query, cli
 from .convert import dump_engine_object
 
 
-def _load_field(target: dict[str, str], name: str, env_name: str, required: bool = False):
+def _load_field(target: dict[str, Any], name: str, env_name: str, required: bool = False,
+                parse: Callable[[str], Any] | None = None):
     value = os.getenv(env_name)
     if value is None:
         if required:
             raise ValueError(f"{env_name} is not set")
     else:
-        target[name] = value
+        target[name] = value if parse is None else parse(value)
 
 @dataclass
 class DatabaseConnectionSpec:
@@ -56,17 +57,16 @@ class ServerSettings:
     # The address to bind the server to.
     address: str = "127.0.0.1:8080"
 
-    # The origin of the client (e.g. CocoInsight UI) to allow CORS from.
-    cors_origin: str | None = None
+    # The origins of the clients (e.g. CocoInsight UI) to allow CORS from.
+    cors_origins: list[str] | None = None
 
     @classmethod
     def from_env(cls) -> Self:
         """Load settings from environment variables."""
-
-        kwargs: dict[str, str] = dict()
+        kwargs: dict[str, Any] = dict()
         _load_field(kwargs, "address", "COCOINDEX_SERVER_ADDRESS")
-        _load_field(kwargs, "cors_origin", "COCOINDEX_SERVER_CORS_ORIGIN")
-
+        _load_field(kwargs, "cors_origins", "COCOINDEX_SERVER_CORS_ORIGINS",
+                    parse=lambda s: [o for e in s.split(",") if (o := e.strip()) != ""])
         return cls(**kwargs)
 
 

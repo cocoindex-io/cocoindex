@@ -1,5 +1,7 @@
 import click
 import datetime
+import urllib.parse
+
 from rich.console import Console
 
 from . import flow, lib
@@ -151,30 +153,50 @@ def evaluate(flow_name: str | None, output_dir: str | None, cache: bool = True):
 
 _default_server_settings = lib.ServerSettings.from_env()
 
+COCOINDEX_HOST = 'https://cocoindex.io'
+
 @cli.command()
 @click.option(
     "-a", "--address", type=str, default=_default_server_settings.address,
     help="The address to bind the server to, in the format of IP:PORT.")
 @click.option(
-    "-c", "--cors-origin", type=str, default=_default_server_settings.cors_origin,
-    help="The origin of the client (e.g. CocoInsight UI) to allow CORS from. "
-         "e.g. `http://cocoindex.io` if you want to allow CocoInsight to access the server.")
+    "-c", "--cors-origin", type=str,
+    default=_default_server_settings.cors_origins and ','.join(_default_server_settings.cors_origins),
+    help="The origins of the clients (e.g. CocoInsight UI) to allow CORS from. "
+         "Multiple origins can be specified as a comma-separated list. "
+         "e.g. `https://cocoindex.io,http://localhost:3000`")
+@click.option(
+    "-ci", "--cors-cocoindex", is_flag=True, show_default=True, default=False,
+    help=f"Allow {COCOINDEX_HOST} to access the server.")
+@click.option(
+    "-cl", "--cors-local", type=int,
+    help=f"Allow http://localhost:<port> to access the server.")
 @click.option(
     "-L", "--live-update", is_flag=True, show_default=True, default=False,
     help="Continuously watch changes from data sources and apply to the target index.")
 @click.option(
     "-q", "--quiet", is_flag=True, show_default=True, default=False,
     help="Avoid printing anything to the standard output, e.g. statistics.")
-def server(address: str, live_update: bool, quiet: bool, cors_origin: str | None):
+def server(address: str, live_update: bool, quiet: bool, cors_origin: str | None,
+           cors_cocoindex: bool, cors_local: int | None):
     """
     Start a HTTP server providing REST APIs.
 
     It will allow tools like CocoInsight to access the server.
     """
-    lib.start_server(lib.ServerSettings(address=address, cors_origin=cors_origin))
+    cors_origins : set[str] = set()
+    if cors_origin is not None:
+        cors_origins.update(s for o in cors_origin.split(',') if (s:= o.strip()) != '')
+    if cors_cocoindex:
+        cors_origins.add(COCOINDEX_HOST)
+    if cors_local is not None:
+        cors_origins.add(f"http://localhost:{cors_local}")
+    lib.start_server(lib.ServerSettings(address=address, cors_origins=list(cors_origins)))
     if live_update:
         options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
         execution_context.run(flow.update_all_flows(options))
+    if COCOINDEX_HOST in cors_origins:
+        click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
     input("Press Enter to stop...")
 
 
