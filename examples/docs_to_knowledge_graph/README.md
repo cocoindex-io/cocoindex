@@ -1,4 +1,4 @@
-# Build Real-Time Knowledge Graph For Documents with LLM and Neo4j
+# Build Real-Time Knowledge Graph For Documents with LLM
 
 We will process a list of documents and use LLM to extract relationships between the concepts in each document. 
 We will generate two kinds of relationships:
