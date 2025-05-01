@@ -53,13 +53,13 @@ CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute vi
 Run CocoInsight to understand your RAG data pipeline:
 
 ```sh
-python main.py cocoindex server -c https://cocoindex.io
+python main.py cocoindex server -ci
 ```
 
 You can also add a `-L` flag to make the server keep updating the index to reflect source changes at the same time:
 
 ```sh
-python main.py cocoindex server -c https://cocoindex.io -L
+python main.py cocoindex server -ci -L
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).

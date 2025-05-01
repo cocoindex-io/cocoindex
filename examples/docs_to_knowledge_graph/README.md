@@ -66,14 +66,10 @@ I used CocoInsight (Free beta now) to troubleshoot the index generation and unde
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```bash
-python3 main.py cocoindex server -c https://cocoindex.io
+python main.py cocoindex server -ci
 ```
 
 And then open the url https://cocoindex.io/cocoinsight. 
-
-```
-python main.py cocoindex server -c https://cocoindex.io
-```
 
 <img width="1430" alt="cocoinsight" src="https://github.com/user-attachments/assets/d5ada581-cceb-42bf-a949-132df674f3dd" />
 
