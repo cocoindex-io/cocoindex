@@ -1,10 +1,9 @@
 import click
 import datetime
-import urllib.parse
 
 from rich.console import Console
 
-from . import flow, lib
+from . import flow, lib, setting
 from .flow import flow_names
 from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
 from .runtime import execution_context
@@ -60,9 +59,9 @@ def show(flow_name: str | None, color: bool):
     """
     Show the flow spec in a readable format with colored output.
     """
-    flow = _flow_by_name(flow_name)
+    fl = _flow_by_name(flow_name)
     console = Console(no_color=not color)
-    console.print(flow._render_text())
+    console.print(fl._render_text())
 
 @cli.command()
 def setup():
@@ -151,7 +150,7 @@ def evaluate(flow_name: str | None, output_dir: str | None, cache: bool = True):
     options = flow.EvaluateAndDumpOptions(output_dir=output_dir, use_cache=cache)
     fl.evaluate_and_dump(options)
 
-_default_server_settings = lib.ServerSettings.from_env()
+_default_server_settings = setting.ServerSettings.from_env()
 
 COCOINDEX_HOST = 'https://cocoindex.io'
 
@@ -191,7 +190,7 @@ def server(address: str, live_update: bool, quiet: bool, cors_origin: str | None
         cors_origins.add(COCOINDEX_HOST)
     if cors_local is not None:
         cors_origins.add(f"http://localhost:{cors_local}")
-    lib.start_server(lib.ServerSettings(address=address, cors_origins=list(cors_origins)))
+    lib.start_server(setting.ServerSettings(address=address, cors_origins=list(cors_origins)))
     if live_update:
         options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
         execution_context.run(flow.update_all_flows(options))
