@@ -5,11 +5,11 @@ from typing import Sequence
 from . import op
 from . import index
 from .auth_registry import AuthEntryReference
+from .setting import DatabaseConnectionSpec
 
 class Postgres(op.StorageSpec):
     """Storage powered by Postgres and pgvector."""
-
-    database: AuthEntryReference | None = None
+    database: AuthEntryReference[DatabaseConnectionSpec] | None = None
     table_name: str | None = None
 
 @dataclass
@@ -72,15 +72,14 @@ NodeReferenceMapping = NodeFromFields
 
 class Neo4j(op.StorageSpec):
     """Graph storage powered by Neo4j."""
-
-    connection: AuthEntryReference
+    connection: AuthEntryReference[Neo4jConnection]
     mapping: Nodes | Relationships
 
 class Neo4jDeclaration(op.DeclarationSpec):
     """Declarations for Neo4j."""
 
     kind = "Neo4j"
-    connection: AuthEntryReference
+    connection: AuthEntryReference[Neo4jConnection]
     nodes_label: str
     primary_key_fields: Sequence[str]
     vector_indexes: Sequence[index.VectorIndexDef] = ()
