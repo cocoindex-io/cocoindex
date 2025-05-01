@@ -10,7 +10,7 @@ You can find a step by step blog for this project [here](https://cocoindex.io/bl
 
 Please drop [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a star to support us if you like our work. Thank you so much with a warm coconut hug 🥥🤗. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
-![example-explanation](https://github.com/user-attachments/assets/1e78a576-e3e6-4959-9d4f-911848a8efe3|width=300)
+![example-explanation](https://github.com/user-attachments/assets/1e78a576-e3e6-4959-9d4f-911848a8efe3)
 
 ## Prerequisite
 *   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
