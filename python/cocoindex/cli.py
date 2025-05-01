@@ -4,7 +4,6 @@ import datetime
 from rich.console import Console
 
 from . import flow, lib, setting
-from .flow import flow_names
 from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
 from .runtime import execution_context
 
@@ -22,7 +21,7 @@ def ls(show_all: bool):
     """
     List all flows.
     """
-    current_flow_names = flow_names()
+    current_flow_names = flow.flow_names()
     persisted_flow_names = flow_names_with_setup()
     remaining_persisted_flow_names = set(persisted_flow_names)
 
@@ -150,47 +149,54 @@ def evaluate(flow_name: str | None, output_dir: str | None, cache: bool = True):
     options = flow.EvaluateAndDumpOptions(output_dir=output_dir, use_cache=cache)
     fl.evaluate_and_dump(options)
 
-_default_server_settings = setting.ServerSettings.from_env()
-
+# Create ServerSettings lazily upon first call, as environment variables may be loaded from files, etc.
 COCOINDEX_HOST = 'https://cocoindex.io'
 
 @cli.command()
 @click.option(
-    "-a", "--address", type=str, default=_default_server_settings.address,
-    help="The address to bind the server to, in the format of IP:PORT.")
+    "-a", "--address", type=str,
+    help="The address to bind the server to, in the format of IP:PORT. "
+         "If unspecified, the address specified in COCOINDEX_SERVER_ADDRESS will be used.")
 @click.option(
     "-c", "--cors-origin", type=str,
-    default=_default_server_settings.cors_origins and ','.join(_default_server_settings.cors_origins),
     help="The origins of the clients (e.g. CocoInsight UI) to allow CORS from. "
          "Multiple origins can be specified as a comma-separated list. "
-         "e.g. `https://cocoindex.io,http://localhost:3000`")
+         "e.g. `https://cocoindex.io,http://localhost:3000`. "
+         "Origins specified in COCOINDEX_SERVER_CORS_ORIGINS will also be included.")
 @click.option(
     "-ci", "--cors-cocoindex", is_flag=True, show_default=True, default=False,
     help=f"Allow {COCOINDEX_HOST} to access the server.")
 @click.option(
     "-cl", "--cors-local", type=int,
-    help=f"Allow http://localhost:<port> to access the server.")
+    help="Allow http://localhost:<port> to access the server.")
 @click.option(
     "-L", "--live-update", is_flag=True, show_default=True, default=False,
     help="Continuously watch changes from data sources and apply to the target index.")
 @click.option(
     "-q", "--quiet", is_flag=True, show_default=True, default=False,
     help="Avoid printing anything to the standard output, e.g. statistics.")
-def server(address: str, live_update: bool, quiet: bool, cors_origin: str | None,
+def server(address: str | None, live_update: bool, quiet: bool, cors_origin: str | None,
            cors_cocoindex: bool, cors_local: int | None):
     """
     Start a HTTP server providing REST APIs.
 
     It will allow tools like CocoInsight to access the server.
     """
-    cors_origins : set[str] = set()
+    server_settings = setting.ServerSettings.from_env()
+    cors_origins: set[str] = set(server_settings.cors_origins or [])
     if cors_origin is not None:
-        cors_origins.update(s for o in cors_origin.split(',') if (s:= o.strip()) != '')
+        cors_origins.update(setting.ServerSettings.parse_cors_origins(cors_origin))
     if cors_cocoindex:
         cors_origins.add(COCOINDEX_HOST)
     if cors_local is not None:
         cors_origins.add(f"http://localhost:{cors_local}")
-    lib.start_server(setting.ServerSettings(address=address, cors_origins=list(cors_origins)))
+    server_settings.cors_origins = list(cors_origins)
+
+    if address is not None:
+        server_settings.address = address
+
+    lib.start_server(server_settings)
+
     if live_update:
         options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
         execution_context.run(flow.update_all_flows(options))

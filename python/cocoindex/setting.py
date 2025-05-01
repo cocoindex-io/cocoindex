@@ -3,7 +3,7 @@ Data types for settings of the cocoindex library.
 """
 import os
 
-from typing import Callable, Self, Any
+from typing import Callable, Self, Any, overload
 from dataclasses import dataclass
 
 
@@ -58,5 +58,20 @@ class ServerSettings:
         kwargs: dict[str, Any] = dict()
         _load_field(kwargs, "address", "COCOINDEX_SERVER_ADDRESS")
         _load_field(kwargs, "cors_origins", "COCOINDEX_SERVER_CORS_ORIGINS",
-                    parse=lambda s: [o for e in s.split(",") if (o := e.strip()) != ""])
+                    parse=ServerSettings.parse_cors_origins)
         return cls(**kwargs)
+
+    @overload
+    @staticmethod
+    def parse_cors_origins(s: str) -> list[str]: ...
+
+    @overload
+    @staticmethod
+    def parse_cors_origins(s: str | None) -> list[str] | None: ...
+
+    @staticmethod
+    def parse_cors_origins(s):
+        """
+        Parse the CORS origins from a string.
+        """
+        return [o for e in s.split(",") if (o := e.strip()) != ""] if s is not None else None
