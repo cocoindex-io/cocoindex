@@ -100,7 +100,7 @@ impl SourceVersion {
         };
         if should_skip {
             if let Some(update_stats) = update_stats {
-                update_stats.num_skipped.inc(1);
+                update_stats.num_no_change.inc(1);
             }
         }
         should_skip
@@ -491,8 +491,7 @@ pub async fn update_source_row(
         pool,
     )
     .await?;
-    let already_exists = existing_tracking_info.is_some();
-    let memoization_info = match existing_tracking_info {
+    let (memoization_info, existing_version) = match existing_tracking_info {
         Some(info) => {
             let existing_version = SourceVersion::from_stored(
                 info.processed_source_ordinal,
@@ -502,7 +501,10 @@ pub async fn update_source_row(
             if existing_version.should_skip(source_version, Some(update_stats)) {
                 return Ok(SkippedOr::Skipped(existing_version));
             }
-            info.memoization_info.and_then(|info| info.0)
+            (
+                info.memoization_info.and_then(|info| info.0),
+                Some(existing_version),
+            )
         }
         None => Default::default(),
     };
@@ -592,9 +594,15 @@ pub async fn update_source_row(
     )
     .await?;
 
-    if already_exists {
+    if let Some(existing_version) = existing_version {
         if output.is_some() {
-            update_stats.num_repreocesses.inc(1);
+            if source_version.ordinal.is_none()
+                || source_version.ordinal != existing_version.ordinal
+            {
+                update_stats.num_updates.inc(1);
+            } else {
+                update_stats.num_reprocesses.inc(1);
+            }
         } else {
             update_stats.num_deletions.inc(1);
         }
