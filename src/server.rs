@@ -21,7 +21,6 @@ pub async fn init_server(
     settings: ServerSettings,
 ) -> Result<BoxFuture<'static, ()>> {
     let mut cors = CorsLayer::default();
-    debug!("cors_origins: {:?}", settings.cors_origins);
     if !settings.cors_origins.is_empty() {
         let origins: Vec<_> = settings
             .cors_origins
