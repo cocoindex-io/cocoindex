@@ -17,39 +17,34 @@ impl TargetFieldMapping {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct NodeReferenceMapping {
+pub struct NodeFromFieldsSpec {
     pub label: String,
     pub fields: Vec<TargetFieldMapping>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct NodeMapping {
+pub struct NodesSpec {
     pub label: String,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct RelationshipMapping {
+pub struct RelationshipsSpec {
     pub rel_type: String,
-    pub source: NodeReferenceMapping,
-    pub target: NodeReferenceMapping,
+    pub source: NodeFromFieldsSpec,
+    pub target: NodeFromFieldsSpec,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind")]
 pub enum GraphElementMapping {
-    Relationship(RelationshipMapping),
-    Node(NodeMapping),
+    Relationship(RelationshipsSpec),
+    Node(NodesSpec),
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ReferencedNodeSpec {
-    pub label: String,
+pub struct GraphDeclaration {
+    pub nodes_label: String,
 
     #[serde(flatten)]
     pub index_options: spec::IndexOptions,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct GraphDeclarations {
-    pub referenced_nodes: Vec<ReferencedNodeSpec>,
 }

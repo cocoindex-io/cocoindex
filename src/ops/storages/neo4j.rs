@@ -1,8 +1,6 @@
 use crate::prelude::*;
 
-use super::spec::{
-    GraphDeclarations, GraphElementMapping, NodeReferenceMapping, TargetFieldMapping,
-};
+use super::spec::{GraphDeclaration, GraphElementMapping, NodeFromFieldsSpec, TargetFieldMapping};
 use crate::setup::components::{self, State};
 use crate::setup::{ResourceSetupStatusCheck, SetupChangeType};
 use crate::{ops::sdk::*, setup::CombinedState};
@@ -32,7 +30,7 @@ pub struct Spec {
 pub struct Declaration {
     connection: spec::AuthEntryReference<ConnectionSpec>,
     #[serde(flatten)]
-    decl: GraphDeclarations,
+    decl: GraphDeclaration,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -994,7 +992,7 @@ struct DependentNodeLabelAnalyzer<'a> {
 
 impl<'a> DependentNodeLabelAnalyzer<'a> {
     fn new(
-        rel_end_spec: &'a NodeReferenceMapping,
+        rel_end_spec: &'a NodeFromFieldsSpec,
         index_options_map: &'a HashMap<String, IndexOptions>,
     ) -> Result<Self> {
         Ok(Self {
@@ -1104,8 +1102,7 @@ impl StorageFactoryBase for Factory {
             .chain(
                 declarations
                     .iter()
-                    .flat_map(|d| d.decl.referenced_nodes.iter())
-                    .map(|n| (n.label.clone(), n.index_options.clone())),
+                    .map(|n| (n.decl.nodes_label.clone(), n.decl.index_options.clone())),
             )
             .collect::<HashMap<String, IndexOptions>>();
         let mut label_value_field_types =
@@ -1212,37 +1209,41 @@ impl StorageFactoryBase for Factory {
             .collect::<Result<Vec<_>>>()?;
         let decl_output = declarations
             .into_iter()
-            .flat_map(|d| {
+            .map(|d| {
                 let label_value_field_types = &label_value_field_types;
-                d.decl.referenced_nodes.into_iter().map(move |n| {
-                    let setup_key = GraphElement {
-                        connection: d.connection.clone(),
-                        typ: ElementType::Node(n.label.clone()),
-                    };
-                    let primary_key_fields = n
-                        .index_options
-                        .primary_key_fields
-                        .as_ref()
+                let setup_key = GraphElement {
+                    connection: d.connection.clone(),
+                    typ: ElementType::Node(d.decl.nodes_label.clone()),
+                };
+                let primary_key_fields = d
+                    .decl
+                    .index_options
+                    .primary_key_fields
+                    .as_ref()
+                    .ok_or_else(|| {
+                        api_error!(
+                            "No primary key fields specified for node label `{}`",
+                            &d.decl.nodes_label
+                        )
+                    })?
+                    .iter()
+                    .map(|f| f.clone())
+                    .collect();
+                let setup_state = SetupState::new(
+                    &setup_key.typ,
+                    primary_key_fields,
+                    &d.decl.index_options,
+                    label_value_field_types
+                        .get(&d.decl.nodes_label)
                         .ok_or_else(|| {
                             api_error!(
-                                "No primary key fields specified for node label `{}`",
-                                &n.label
+                                "Data for nodes with label `{}` not provided",
+                                d.decl.nodes_label
                             )
-                        })?
-                        .iter()
-                        .map(|f| f.clone())
-                        .collect();
-                    let setup_state = SetupState::new(
-                        &setup_key.typ,
-                        primary_key_fields,
-                        &n.index_options,
-                        label_value_field_types.get(&n.label).ok_or_else(|| {
-                            api_error!("Data for nodes with label `{}` not provided", n.label)
                         })?,
-                        None,
-                    )?;
-                    Ok((setup_key, setup_state))
-                })
+                    None,
+                )?;
+                Ok((setup_key, setup_state))
             })
             .collect::<Result<Vec<_>>>()?;
         Ok((data_coll_output, decl_output))

@@ -215,11 +215,11 @@ fn group_resource_states<'a>(
             entry.existing.current = Some(current.clone());
         }
         if let Some(legacy_state_key) = &state.legacy_state_key {
-            if !entry
+            if entry
                 .existing
                 .legacy_state_key
                 .as_ref()
-                .map_or(false, |v| v == legacy_state_key)
+                .map_or(false, |v| v != legacy_state_key)
             {
                 warn!(
                     "inconsistent legacy key: {:?}, {:?}",

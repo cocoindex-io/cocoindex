@@ -1,0 +1,77 @@
+"""
+Data types for settings of the cocoindex library.
+"""
+import os
+
+from typing import Callable, Self, Any, overload
+from dataclasses import dataclass
+
+
+@dataclass
+class DatabaseConnectionSpec:
+    """
+    Connection spec for relational database.
+    Used by both internal and target storage.
+    """
+    url: str
+    user: str | None = None
+    password: str | None = None
+
+def _load_field(target: dict[str, Any], name: str, env_name: str, required: bool = False,
+                parse: Callable[[str], Any] | None = None):
+    value = os.getenv(env_name)
+    if value is None:
+        if required:
+            raise ValueError(f"{env_name} is not set")
+    else:
+        target[name] = value if parse is None else parse(value)
+
+@dataclass
+class Settings:
+    """Settings for the cocoindex library."""
+    database: DatabaseConnectionSpec
+
+    @classmethod
+    def from_env(cls) -> Self:
+        """Load settings from environment variables."""
+
+        db_kwargs: dict[str, str] = dict()
+        _load_field(db_kwargs, "url", "COCOINDEX_DATABASE_URL", required=True)
+        _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
+        _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
+        database = DatabaseConnectionSpec(**db_kwargs)
+        return cls(database=database)
+
+@dataclass
+class ServerSettings:
+    """Settings for the cocoindex server."""
+
+    # The address to bind the server to.
+    address: str = "127.0.0.1:8080"
+
+    # The origins of the clients (e.g. CocoInsight UI) to allow CORS from.
+    cors_origins: list[str] | None = None
+
+    @classmethod
+    def from_env(cls) -> Self:
+        """Load settings from environment variables."""
+        kwargs: dict[str, Any] = dict()
+        _load_field(kwargs, "address", "COCOINDEX_SERVER_ADDRESS")
+        _load_field(kwargs, "cors_origins", "COCOINDEX_SERVER_CORS_ORIGINS",
+                    parse=ServerSettings.parse_cors_origins)
+        return cls(**kwargs)
+
+    @overload
+    @staticmethod
+    def parse_cors_origins(s: str) -> list[str]: ...
+
+    @overload
+    @staticmethod
+    def parse_cors_origins(s: str | None) -> list[str] | None: ...
+
+    @staticmethod
+    def parse_cors_origins(s):
+        """
+        Parse the CORS origins from a string.
+        """
+        return [o for e in s.split(",") if (o := e.strip()) != ""] if s is not None else None

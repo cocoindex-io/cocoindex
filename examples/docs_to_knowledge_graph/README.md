@@ -1,19 +1,25 @@
-# Build Knowledge Graph from Markdown Documents, with OpenAI, Neo4j and CocoIndex
+# Build Real-Time Knowledge Graph For Documents with LLM
 
-In this example, we
+We will process a list of documents and use LLM to extract relationships between the concepts in each document. 
+We will generate two kinds of relationships:
 
-*   Extract relationships from Markdown documents.
-*   Build a knowledge graph from the relationships.
+1. Relationships between subjects and objects. E.g., "CocoIndex supports Incremental Processing"
+2. Mentions of entities in a document. E.g., "core/basics.mdx" mentions `CocoIndex` and `Incremental Processing`.
 
-Please give [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a star to support us if you like our work. Thank you so much with a warm coconut hug 🥥🤗. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+You can find a step by step blog for this project [here](https://cocoindex.io/blogs/knowledge-graph-for-docs)
+
+Please drop [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a star to support us if you like our work. Thank you so much with a warm coconut hug 🥥🤗. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+
+![example-explanation](https://github.com/user-attachments/assets/07ddbd60-106f-427f-b7cc-16b73b142d27)
+
 
 ## Prerequisite
-
-Before running the example, you need to:
-
 *   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
 *   [Install Neo4j](https://cocoindex.io/docs/ops/storages#neo4j) if you don't have one.
-*   Install / configure LLM API. In this example we use OpenAI. You need to [configure OpenAI API key](https://cocoindex.io/docs/ai/llm#openai) before running the example. Alternatively, you can also follow the comments in source code to switch to Ollama, which runs LLM model locally, and get it ready following [this guide](https://cocoindex.io/docs/ai/llm#ollama).
+*   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).
+
+## Documentation
+You can read the official CocoIndex Documentation for Property Graph Targets [here](https://cocoindex.io/docs/ops/storages#property-graph-targets).
 
 ## Run
 
@@ -51,17 +57,20 @@ You can open it at [http://localhost:7474](http://localhost:7474), and run the f
 ```cypher
 MATCH p=()-->() RETURN p
 ```
+<img width="1366" alt="neo4j-for-coco-docs" src="https://github.com/user-attachments/assets/3c8b6329-6fee-4533-9480-571399b57e57" />
+
+
 
 ## CocoInsight 
-CocoInsight is a tool to help you understand your data pipeline and data index. CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
+It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
-Run CocoInsight to understand your RAG data pipeline:
-
+```bash
+python main.py cocoindex server -ci
 ```
-python main.py cocoindex server -c https://cocoindex.io
-```
 
-Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight). It connects to your local CocoIndex server with zero data retention.
+And then open the url https://cocoindex.io/cocoinsight. 
 
-You can view the pipeline flow and the data preview in the CocoInsight UI:
-![CocoInsight UI](https://cocoindex.io/blogs/assets/images/cocoinsight-edd71690dcc35b6c5cf1cb31b51b6f6f.png)
+<img width="1430" alt="cocoinsight" src="https://github.com/user-attachments/assets/d5ada581-cceb-42bf-a949-132df674f3dd" />
+
+

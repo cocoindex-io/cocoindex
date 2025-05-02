@@ -8,11 +8,14 @@ import asyncio
 import re
 import inspect
 import datetime
+import json
 
 from typing import Any, Callable, Sequence, TypeVar
 from threading import Lock
 from enum import Enum
 from dataclasses import dataclass
+from rich.text import Text
+from rich.console import Console
 
 from . import _engine
 from . import index
@@ -451,8 +454,58 @@ class Flow:
             return engine_flow
         self._lazy_engine_flow = _lazy_engine_flow
 
+    def _format_flow(self, flow_dict: dict) -> Text:
+        output = Text()
+
+        def add_line(content, indent=0, style=None, end="\n"):
+            output.append(" " * indent)
+            output.append(content, style=style)
+            output.append(end)
+
+        def format_key_value(key, value, indent):
+            if isinstance(value, (dict, list)):
+                add_line(f"- {key}:", indent, style="green")
+                format_data(value, indent + 2)
+            else:
+                add_line(f"- {key}:", indent, style="green", end="")
+                add_line(f" {value}", style="yellow")
+
+        def format_data(data, indent=0):
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    format_key_value(key, value, indent)
+            elif isinstance(data, list):
+                for i, item in enumerate(data):
+                    format_key_value(f"[{i}]", item, indent)
+            else:
+                add_line(str(data), indent, style="yellow")
+
+        # Header
+        flow_name = flow_dict.get("name", "Unnamed")
+        add_line(f"Flow: {flow_name}", style="bold cyan")
+
+        # Section
+        for section_title, section_key in [
+            ("Sources:", "import_ops"),
+            ("Processing:", "reactive_ops"),
+            ("Targets:", "export_ops"),
+        ]:
+            add_line("")
+            add_line(section_title, style="bold cyan")
+            format_data(flow_dict.get(section_key, []), indent=0)
+
+        return output
+
+    def _render_text(self) -> Text:
+        flow_spec_str = str(self._lazy_engine_flow())
+        try:
+            flow_dict = json.loads(flow_spec_str)
+            return self._format_flow(flow_dict)
+        except json.JSONDecodeError:
+            return Text(flow_spec_str)
+
     def __str__(self):
-        return str(self._lazy_engine_flow())
+        return str(self._render_text())
 
     def __repr__(self):
         return repr(self._lazy_engine_flow())

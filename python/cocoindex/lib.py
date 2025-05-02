@@ -1,76 +1,23 @@
 """
 Library level functions and states.
 """
-import os
 import sys
 import functools
 import inspect
 
-from typing import Callable, Self
-from dataclasses import dataclass
+from typing import Callable
 
 from . import _engine
-from . import flow, query, cli
+from . import flow, query, cli, setting
 from .convert import dump_engine_object
 
 
-def _load_field(target: dict[str, str], name: str, env_name: str, required: bool = False):
-    value = os.getenv(env_name)
-    if value is None:
-        if required:
-            raise ValueError(f"{env_name} is not set")
-    else:
-        target[name] = value
-
-@dataclass
-class DatabaseConnectionSpec:
-    url: str
-    user: str | None = None
-    password: str | None = None
-
-@dataclass
-class Settings:
-    """Settings for the cocoindex library."""
-    database: DatabaseConnectionSpec
-
-    @classmethod
-    def from_env(cls) -> Self:
-        """Load settings from environment variables."""
-
-        db_kwargs: dict[str, str] = dict()
-        _load_field(db_kwargs, "url", "COCOINDEX_DATABASE_URL", required=True)
-        _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
-        _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
-        database = DatabaseConnectionSpec(**db_kwargs)
-        return cls(database=database)
-
-
-def init(settings: Settings):
+def init(settings: setting.Settings):
     """Initialize the cocoindex library."""
     _engine.init(dump_engine_object(settings))
 
-@dataclass
-class ServerSettings:
-    """Settings for the cocoindex server."""
 
-    # The address to bind the server to.
-    address: str = "127.0.0.1:8080"
-
-    # The origin of the client (e.g. CocoInsight UI) to allow CORS from.
-    cors_origin: str | None = None
-
-    @classmethod
-    def from_env(cls) -> Self:
-        """Load settings from environment variables."""
-
-        kwargs: dict[str, str] = dict()
-        _load_field(kwargs, "address", "COCOINDEX_SERVER_ADDRESS")
-        _load_field(kwargs, "cors_origin", "COCOINDEX_SERVER_CORS_ORIGIN")
-
-        return cls(**kwargs)
-
-
-def start_server(settings: ServerSettings):
+def start_server(settings: setting.ServerSettings):
     """Start the cocoindex server."""
     flow.ensure_all_flows_built()
     query.ensure_all_handlers_built()
@@ -81,7 +28,7 @@ def stop():
     _engine.stop()
 
 def main_fn(
-        settings: Settings | None = None,
+        settings: setting.Settings | None = None,
         cocoindex_cmd: str = 'cocoindex',
         ) -> Callable[[Callable], Callable]:
     """
@@ -92,7 +39,7 @@ def main_fn(
     """
 
     def _pre_init() -> None:
-        effective_settings = settings or Settings.from_env()
+        effective_settings = settings or setting.Settings.from_env()
         init(effective_settings)
 
     def _should_run_cli() -> bool:

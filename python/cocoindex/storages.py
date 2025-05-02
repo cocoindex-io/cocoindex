@@ -5,11 +5,11 @@ from typing import Sequence
 from . import op
 from . import index
 from .auth_registry import AuthEntryReference
+from .setting import DatabaseConnectionSpec
 
 class Postgres(op.StorageSpec):
     """Storage powered by Postgres and pgvector."""
-
-    database: AuthEntryReference | None = None
+    database: AuthEntryReference[DatabaseConnectionSpec] | None = None
     table_name: str | None = None
 
 @dataclass
@@ -37,7 +37,7 @@ class TargetFieldMapping:
     target: str | None = None
 
 @dataclass
-class NodeReferenceMapping:
+class NodeFromFields:
     """Spec for a referenced graph node, usually as part of a relationship."""
     label: str
     fields: list[TargetFieldMapping]
@@ -50,30 +50,36 @@ class ReferencedNode:
     vector_indexes: Sequence[index.VectorIndexDef] = ()
 
 @dataclass
-class NodeMapping:
+class Nodes:
     """Spec to map a row to a graph node."""
     kind = "Node"
 
     label: str
 
 @dataclass
-class RelationshipMapping:
+class Relationships:
     """Spec to map a row to a graph relationship."""
     kind = "Relationship"
 
     rel_type: str
-    source: NodeReferenceMapping
-    target: NodeReferenceMapping
+    source: NodeFromFields
+    target: NodeFromFields
+
+# For backwards compatibility only
+NodeMapping = Nodes
+RelationshipMapping = Relationships
+NodeReferenceMapping = NodeFromFields
 
 class Neo4j(op.StorageSpec):
     """Graph storage powered by Neo4j."""
+    connection: AuthEntryReference[Neo4jConnection]
+    mapping: Nodes | Relationships
 
-    connection: AuthEntryReference
-    mapping: NodeMapping | RelationshipMapping
-
-class Neo4jDeclarations(op.DeclarationSpec):
+class Neo4jDeclaration(op.DeclarationSpec):
     """Declarations for Neo4j."""
 
     kind = "Neo4j"
-    connection: AuthEntryReference
-    referenced_nodes: Sequence[ReferencedNode] = ()
+    connection: AuthEntryReference[Neo4jConnection]
+    nodes_label: str
+    primary_key_fields: Sequence[str]
+    vector_indexes: Sequence[index.VectorIndexDef] = ()

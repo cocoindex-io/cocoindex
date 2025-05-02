@@ -1,9 +1,12 @@
 """All builtin functions."""
-from typing import Annotated, Any
+from typing import Annotated, Any, TYPE_CHECKING
 
-import sentence_transformers
 from .typing import Float32, Vector, TypeAttr
 from . import op, llm
+
+# Libraries that are heavy to import. Lazily import them later.
+if TYPE_CHECKING:
+    import sentence_transformers
 
 class ParseJson(op.FunctionSpec):
     """Parse a text into a JSON object."""
@@ -35,9 +38,10 @@ class SentenceTransformerEmbedExecutor:
     """Executor for SentenceTransformerEmbed."""
 
     spec: SentenceTransformerEmbed
-    _model: sentence_transformers.SentenceTransformer
+    _model: "sentence_transformers.SentenceTransformer"
 
     def analyze(self, text):
+        import sentence_transformers # pylint: disable=import-outside-toplevel
         args = self.spec.args or {}
         self._model = sentence_transformers.SentenceTransformer(self.spec.model, **args)
         dim = self._model.get_sentence_embedding_dimension()
