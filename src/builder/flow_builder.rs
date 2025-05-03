@@ -1,14 +1,10 @@
 use crate::prelude::*;
 
 use pyo3::{exceptions::PyException, prelude::*};
-use std::{
-    collections::{btree_map, hash_map::Entry, HashMap},
-    ops::Deref,
-};
+use std::{collections::btree_map, ops::Deref};
 
 use super::analyzer::{
-    build_flow_instance_context, AnalyzerContext, CollectorBuilder, DataScopeBuilder,
-    ExecutionScope, ValueTypeBuilder,
+    build_flow_instance_context, AnalyzerContext, CollectorBuilder, DataScopeBuilder, OpScope,
 };
 use crate::{
     base::{
@@ -19,43 +15,35 @@ use crate::{
     ops::interface::FlowInstanceContext,
     py::IntoPyResult,
     setup,
-    utils::immutable::RefList,
 };
 use crate::{lib_context::FlowContext, py};
 
-#[derive(Debug)]
-pub struct DataScopeRefInfo {
-    scope_name: String,
-    parent: Option<(DataScopeRef, spec::FieldPath)>,
-    scope_builder: Arc<Mutex<DataScopeBuilder>>,
-    children: Mutex<HashMap<spec::FieldPath, Weak<DataScopeRefInfo>>>,
-}
-
 #[pyclass]
 #[derive(Debug, Clone)]
-pub struct DataScopeRef(Arc<DataScopeRefInfo>);
+pub struct OpScopeRef(Arc<OpScope>);
 
-impl Deref for DataScopeRef {
-    type Target = DataScopeRefInfo;
+impl From<Arc<OpScope>> for OpScopeRef {
+    fn from(scope: Arc<OpScope>) -> Self {
+        Self(scope)
+    }
+}
+
+impl Deref for OpScopeRef {
+    type Target = Arc<OpScope>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl std::fmt::Display for DataScopeRef {
+impl std::fmt::Display for OpScopeRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some((scope, field_path)) = &self.parent {
-            write!(f, "{} [{} AS {}]", scope, field_path, self.scope_name)?;
-        } else {
-            write!(f, "[{}]", self.scope_name)?;
-        }
-        Ok(())
+        write!(f, "{}", self.0)
     }
 }
 
 #[pymethods]
-impl DataScopeRef {
+impl OpScopeRef {
     pub fn __str__(&self) -> String {
         format!("{}", self)
     }
@@ -67,89 +55,10 @@ impl DataScopeRef {
     pub fn add_collector(&mut self, name: String) -> PyResult<DataCollector> {
         let collector = DataCollector {
             name,
-            scope: self.clone(),
+            scope: self.0.clone(),
             collector: Mutex::new(None),
         };
         Ok(collector)
-    }
-}
-
-impl DataScopeRef {
-    fn get_child_scope(&self, field_path: spec::FieldPath) -> Result<Self> {
-        let mut children = self.children.lock().unwrap();
-        let result = match children.entry(field_path) {
-            Entry::Occupied(mut entry) => {
-                let child = entry.get().upgrade();
-                if let Some(child) = child {
-                    DataScopeRef(child)
-                } else {
-                    let new_scope = self.make_child_scope(entry.key())?;
-                    entry.insert(Arc::downgrade(&new_scope.0));
-                    new_scope
-                }
-            }
-            Entry::Vacant(entry) => {
-                let new_scope = self.make_child_scope(entry.key())?;
-                entry.insert(Arc::downgrade(&new_scope.0));
-                new_scope
-            }
-        };
-        Ok(result)
-    }
-
-    fn make_child_scope(&self, field_path: &spec::FieldPath) -> Result<Self> {
-        let mut num_parent_layers = 0;
-        let mut curr_scope = self;
-        while let Some((parent, _)) = &curr_scope.parent {
-            curr_scope = parent;
-            num_parent_layers += 1;
-        }
-
-        let scope_data = &self.scope_builder.lock().unwrap().data;
-        let mut field_typ = &scope_data
-            .find_field(
-                field_path
-                    .first()
-                    .ok_or_else(|| anyhow!("field path is empty"))?,
-            )
-            .ok_or_else(|| anyhow!("field {} not found", field_path.first().unwrap()))?
-            .1
-            .value_type
-            .typ;
-        for field in field_path[1..].iter() {
-            let struct_builder = match field_typ {
-                ValueTypeBuilder::Struct(struct_type) => struct_type,
-                _ => bail!("expect struct type"),
-            };
-            field_typ = &struct_builder
-                .find_field(field)
-                .ok_or_else(|| anyhow!("field {} not found", field))?
-                .1
-                .value_type
-                .typ;
-        }
-        let scope_builder = match field_typ {
-            ValueTypeBuilder::Table(table_type) => table_type.sub_scope.clone(),
-            _ => api_bail!("expect collection type"),
-        };
-
-        let new_scope = DataScopeRef(Arc::new(DataScopeRefInfo {
-            scope_name: format!("_{}_{}", field_path.join("_"), num_parent_layers),
-            parent: Some((self.clone(), field_path.clone())),
-            scope_builder,
-            children: Mutex::new(HashMap::new()),
-        }));
-        Ok(new_scope)
-    }
-
-    fn is_ds_scope_descendant(&self, other: &Self) -> bool {
-        if Arc::ptr_eq(&self.0, &other.0) {
-            return true;
-        }
-        match &self.parent {
-            Some((parent, _)) => parent.is_ds_scope_descendant(other),
-            None => false,
-        }
     }
 }
 
@@ -179,7 +88,7 @@ impl DataType {
 #[pyclass]
 #[derive(Debug, Clone)]
 pub struct DataSlice {
-    scope: DataScopeRef,
+    scope: Arc<OpScope>,
     value: Arc<spec::ValueMapping>,
     data_type: DataType,
 }
@@ -243,14 +152,22 @@ impl DataSlice {
         }))
     }
 
-    pub fn table_row_scope(&self) -> PyResult<DataScopeRef> {
+    pub fn table_row_scope(&self) -> PyResult<OpScopeRef> {
         let field_path = match self.value.as_ref() {
             spec::ValueMapping::Field(v) => &v.field_path,
             _ => return Err(PyException::new_err("expect field path")),
         };
-        self.scope
-            .get_child_scope(field_path.clone())
-            .into_py_result()
+        let num_parent_layers = self.scope.ancestors().count();
+        let scope_name = format!(
+            "{}_{}",
+            field_path.last().map_or("", |s| s.as_str()),
+            num_parent_layers
+        );
+        let (_, sub_op_scope) = self
+            .scope
+            .new_foreach_op_scope(scope_name, field_path)
+            .into_py_result()?;
+        Ok(OpScopeRef(sub_op_scope))
     }
 }
 
@@ -259,10 +176,7 @@ impl DataSlice {
         match self.value.as_ref() {
             spec::ValueMapping::Field(v) => spec::ValueMapping::Field(spec::FieldMapping {
                 field_path: v.field_path.clone(),
-                scope: v
-                    .scope
-                    .clone()
-                    .or_else(|| Some(self.scope.scope_name.clone())),
+                scope: v.scope.clone().or_else(|| Some(self.scope.name.clone())),
             }),
             v => v.clone(),
         }
@@ -283,7 +197,7 @@ impl std::fmt::Display for DataSlice {
 #[pyclass]
 pub struct DataCollector {
     name: String,
-    scope: DataScopeRef,
+    scope: Arc<OpScope>,
     collector: Mutex<Option<CollectorBuilder>>,
 }
 
@@ -319,9 +233,7 @@ pub struct FlowBuilder {
     flow_inst_context: Arc<FlowInstanceContext>,
     existing_flow_ss: Option<setup::FlowSetupState<setup::ExistingMode>>,
 
-    root_data_scope: Arc<Mutex<DataScopeBuilder>>,
-    root_data_scope_ref: DataScopeRef,
-
+    root_op_scope: Arc<OpScope>,
     flow_instance_name: String,
     reactive_ops: Vec<NamedSpec<spec::ReactiveOpSpec>>,
 
@@ -348,20 +260,17 @@ impl FlowBuilder {
             .flows
             .get(name)
             .cloned();
-        let root_data_scope = Arc::new(Mutex::new(DataScopeBuilder::new()));
+        let root_op_scope = OpScope::new(
+            spec::ROOT_SCOPE_NAME.to_string(),
+            None,
+            Arc::new(Mutex::new(DataScopeBuilder::new())),
+        );
         let flow_inst_context = build_flow_instance_context(name, None);
         let result = Self {
             lib_context,
             flow_inst_context,
             existing_flow_ss,
-
-            root_data_scope_ref: DataScopeRef(Arc::new(DataScopeRefInfo {
-                scope_name: spec::ROOT_SCOPE_NAME.to_string(),
-                parent: None,
-                scope_builder: root_data_scope.clone(),
-                children: Mutex::new(HashMap::new()),
-            })),
-            root_data_scope,
+            root_op_scope,
             flow_instance_name: name.to_string(),
 
             reactive_ops: vec![],
@@ -379,8 +288,8 @@ impl FlowBuilder {
         Ok(result)
     }
 
-    pub fn root_scope(&self) -> DataScopeRef {
-        self.root_data_scope_ref.clone()
+    pub fn root_scope(&self) -> OpScopeRef {
+        OpScopeRef(self.root_op_scope.clone())
     }
 
     #[pyo3(signature = (kind, op_spec, target_scope, name, refresh_options=None))]
@@ -388,12 +297,12 @@ impl FlowBuilder {
         &mut self,
         kind: String,
         op_spec: py::Pythonized<serde_json::Map<String, serde_json::Value>>,
-        target_scope: Option<DataScopeRef>,
+        target_scope: Option<OpScopeRef>,
         name: String,
         refresh_options: Option<py::Pythonized<spec::SourceRefreshOptions>>,
     ) -> PyResult<DataSlice> {
         if let Some(target_scope) = target_scope {
-            if !Arc::ptr_eq(&target_scope.0, &self.root_data_scope_ref.0) {
+            if *target_scope != self.root_op_scope {
                 return Err(PyException::new_err(
                     "source can only be added to the root scope",
                 ));
@@ -413,16 +322,12 @@ impl FlowBuilder {
             registry: &crate::ops::executor_factory_registry(),
             flow_ctx: &self.flow_inst_context,
         };
-        let mut root_data_scope = self.root_data_scope.lock().unwrap();
-
         let analyzed = analyzer_ctx
-            .analyze_import_op(&mut root_data_scope, import_op.clone(), None, None)
+            .analyze_import_op(&self.root_op_scope, import_op.clone(), None, None)
             .into_py_result()?;
         std::mem::drop(analyzed);
 
-        let result =
-            Self::last_field_to_data_slice(&root_data_scope, self.root_data_scope_ref.clone())
-                .into_py_result()?;
+        let result = Self::last_field_to_data_slice(&self.root_op_scope).into_py_result()?;
         self.import_ops.push(import_op);
         Ok(result)
     }
@@ -435,7 +340,7 @@ impl FlowBuilder {
         let schema = value_type.into_inner();
         let value = py::value_from_py_object(&schema.typ, &value)?;
         let slice = DataSlice {
-            scope: self.root_data_scope_ref.clone(),
+            scope: self.root_op_scope.clone().into(),
             value: Arc::new(spec::ValueMapping::Constant(spec::ConstantMapping {
                 schema: schema.clone(),
                 value: serde_json::to_value(value).into_py_result()?,
@@ -450,22 +355,21 @@ impl FlowBuilder {
         name: String,
         value_type: py::Pythonized<schema::EnrichedValueType>,
     ) -> PyResult<DataSlice> {
-        let mut root_data_scope = self.root_data_scope.lock().unwrap();
-        root_data_scope
-            .add_field(name.clone(), &value_type)
-            .into_py_result()?;
-        let result =
-            Self::last_field_to_data_slice(&root_data_scope, self.root_data_scope_ref.clone())
+        let value_type = value_type.into_inner();
+        {
+            let mut root_data_scope = self.root_op_scope.data.lock().unwrap();
+            root_data_scope
+                .add_field(name.clone(), &value_type)
                 .into_py_result()?;
-        self.direct_input_fields.push(FieldSchema {
-            name,
-            value_type: value_type.into_inner(),
-        });
+        }
+        let result = Self::last_field_to_data_slice(&self.root_op_scope).into_py_result()?;
+        self.direct_input_fields
+            .push(FieldSchema { name, value_type });
         Ok(result)
     }
 
     pub fn set_direct_output(&mut self, data_slice: DataSlice) -> PyResult<()> {
-        if !Arc::ptr_eq(&data_slice.scope.0, &self.root_data_scope_ref.0) {
+        if data_slice.scope != self.root_op_scope {
             return Err(PyException::new_err(
                 "direct output must be value in the root scope",
             ));
@@ -480,44 +384,46 @@ impl FlowBuilder {
         kind: String,
         op_spec: py::Pythonized<serde_json::Map<String, serde_json::Value>>,
         args: Vec<(DataSlice, Option<String>)>,
-        target_scope: Option<DataScopeRef>,
+        target_scope: Option<OpScopeRef>,
         name: String,
     ) -> PyResult<DataSlice> {
         let spec = spec::OpSpec {
             kind,
             spec: op_spec.into_inner(),
         };
-        let common_scope =
-            Self::minimum_common_scope(args.iter().map(|(ds, _)| &ds.scope), target_scope.as_ref())
-                .into_py_result()?;
-        self.do_in_scope(
-            common_scope,
-            |reactive_ops, scope, parent_scopes, analyzer_ctx| {
-                let reactive_op = spec::NamedSpec {
-                    name,
-                    spec: spec::ReactiveOpSpec::Transform(spec::TransformOpSpec {
-                        inputs: args
-                            .iter()
-                            .map(|(ds, arg_name)| spec::OpArgBinding {
-                                arg_name: spec::OpArgName(arg_name.clone()),
-                                value: ds.extract_value_mapping(),
-                            })
-                            .collect(),
-                        op: spec,
-                    }),
-                };
-
-                let analyzed =
-                    analyzer_ctx.analyze_reactive_op(scope, &reactive_op, parent_scopes)?;
-                std::mem::drop(analyzed);
-
-                reactive_ops.push(reactive_op);
-                let result = Self::last_field_to_data_slice(scope.data, common_scope.clone())
-                    .into_py_result()?;
-                Ok(result)
-            },
+        let op_scope = Self::minimum_common_scope(
+            args.iter().map(|(ds, _)| &ds.scope),
+            target_scope.as_ref().map(|s| &s.0),
         )
-        .into_py_result()
+        .into_py_result()?;
+
+        let reactive_op = spec::NamedSpec {
+            name,
+            spec: spec::ReactiveOpSpec::Transform(spec::TransformOpSpec {
+                inputs: args
+                    .iter()
+                    .map(|(ds, arg_name)| spec::OpArgBinding {
+                        arg_name: spec::OpArgName(arg_name.clone()),
+                        value: ds.extract_value_mapping(),
+                    })
+                    .collect(),
+                op: spec,
+            }),
+        };
+
+        let analyzer_ctx = AnalyzerContext {
+            registry: &crate::ops::executor_factory_registry(),
+            flow_ctx: &self.flow_inst_context,
+        };
+        let analyzed = analyzer_ctx
+            .analyze_reactive_op(op_scope, &reactive_op)
+            .into_py_result()?;
+        std::mem::drop(analyzed);
+
+        self.get_mut_reactive_ops(op_scope).push(reactive_op);
+
+        let result = Self::last_field_to_data_slice(op_scope).into_py_result()?;
+        Ok(result)
     }
 
     #[pyo3(signature = (collector, fields, auto_uuid_field=None))]
@@ -531,36 +437,35 @@ impl FlowBuilder {
             .into_py_result()?;
         let name = format!(".collect.{}", self.next_generated_op_id);
         self.next_generated_op_id += 1;
-        self.do_in_scope(
-            common_scope,
-            |reactive_ops, scope, parent_scopes, analyzer_ctx| {
-                let reactive_op = spec::NamedSpec {
-                    name,
-                    spec: spec::ReactiveOpSpec::Collect(spec::CollectOpSpec {
-                        input: spec::StructMapping {
-                            fields: fields
-                                .iter()
-                                .map(|(name, ds)| NamedSpec {
-                                    name: name.clone(),
-                                    spec: ds.extract_value_mapping(),
-                                })
-                                .collect(),
-                        },
-                        scope_name: collector.scope.scope_name.clone(),
-                        collector_name: collector.name.clone(),
-                        auto_uuid_field: auto_uuid_field.clone(),
-                    }),
-                };
 
-                let analyzed =
-                    analyzer_ctx.analyze_reactive_op(scope, &reactive_op, parent_scopes)?;
-                std::mem::drop(analyzed);
+        let reactive_op = spec::NamedSpec {
+            name,
+            spec: spec::ReactiveOpSpec::Collect(spec::CollectOpSpec {
+                input: spec::StructMapping {
+                    fields: fields
+                        .iter()
+                        .map(|(name, ds)| NamedSpec {
+                            name: name.clone(),
+                            spec: ds.extract_value_mapping(),
+                        })
+                        .collect(),
+                },
+                scope_name: collector.scope.name.clone(),
+                collector_name: collector.name.clone(),
+                auto_uuid_field: auto_uuid_field.clone(),
+            }),
+        };
 
-                reactive_ops.push(reactive_op);
-                Ok(())
-            },
-        )
-        .into_py_result()?;
+        let analyzer_ctx = AnalyzerContext {
+            registry: &crate::ops::executor_factory_registry(),
+            flow_ctx: &self.flow_inst_context,
+        };
+        let analyzed = analyzer_ctx
+            .analyze_reactive_op(common_scope, &reactive_op)
+            .into_py_result()?;
+        std::mem::drop(analyzed);
+
+        self.get_mut_reactive_ops(common_scope).push(reactive_op);
 
         let collector_schema = CollectorSchema::from_fields(
             fields
@@ -599,7 +504,7 @@ impl FlowBuilder {
             spec: op_spec.into_inner(),
         };
 
-        if !Arc::ptr_eq(&input.scope.0, &self.root_data_scope_ref.0) {
+        if input.scope != self.root_op_scope {
             return Err(PyException::new_err(
                 "Export can only work on collectors belonging to the root scope.",
             ));
@@ -621,13 +526,9 @@ impl FlowBuilder {
         Ok(())
     }
 
-    pub fn scope_field(
-        &self,
-        scope: DataScopeRef,
-        field_name: &str,
-    ) -> PyResult<Option<DataSlice>> {
+    pub fn scope_field(&self, scope: OpScopeRef, field_name: &str) -> PyResult<Option<DataSlice>> {
         let field_type = {
-            let scope_builder = scope.scope_builder.lock().unwrap();
+            let scope_builder = scope.0.data.lock().unwrap();
             let (_, field_schema) = scope_builder
                 .data
                 .find_field(field_name)
@@ -636,7 +537,7 @@ impl FlowBuilder {
                 .into_py_result()?
         };
         Ok(Some(DataSlice {
-            scope,
+            scope: scope.0,
             value: Arc::new(spec::ValueMapping::Field(spec::FieldMapping {
                 scope: None,
                 field_path: spec::FieldPath(vec![field_name.to_string()]),
@@ -766,13 +667,11 @@ impl std::fmt::Display for FlowBuilder {
 }
 
 impl FlowBuilder {
-    fn last_field_to_data_slice(
-        data_builder: &DataScopeBuilder,
-        scope: DataScopeRef,
-    ) -> Result<DataSlice> {
-        let last_field = data_builder.last_field().unwrap();
+    fn last_field_to_data_slice(op_scope: &Arc<OpScope>) -> Result<DataSlice> {
+        let data_scope = op_scope.data.lock().unwrap();
+        let last_field = data_scope.last_field().unwrap();
         let result = DataSlice {
-            scope,
+            scope: op_scope.clone(),
             value: Arc::new(spec::ValueMapping::Field(spec::FieldMapping {
                 scope: None,
                 field_path: spec::FieldPath(vec![last_field.name.clone()]),
@@ -783,17 +682,17 @@ impl FlowBuilder {
     }
 
     fn minimum_common_scope<'a>(
-        scopes: impl Iterator<Item = &'a DataScopeRef>,
-        target_scope: Option<&'a DataScopeRef>,
-    ) -> Result<&'a DataScopeRef> {
+        scopes: impl Iterator<Item = &'a Arc<OpScope>>,
+        target_scope: Option<&'a Arc<OpScope>>,
+    ) -> Result<&'a Arc<OpScope>> {
         let mut scope_iter = scopes;
         let mut common_scope = scope_iter
             .next()
             .ok_or_else(|| PyException::new_err("expect at least one input"))?;
         for scope in scope_iter {
-            if scope.is_ds_scope_descendant(common_scope) {
+            if scope.is_op_scope_descendant(common_scope) {
                 common_scope = scope;
-            } else if !common_scope.is_ds_scope_descendant(scope) {
+            } else if !common_scope.is_op_scope_descendant(scope) {
                 api_bail!(
                     "expect all arguments share the common scope, got {} and {} exclusive to each other",
                     common_scope, scope
@@ -801,7 +700,7 @@ impl FlowBuilder {
             }
         }
         if let Some(target_scope) = target_scope {
-            if !target_scope.is_ds_scope_descendant(common_scope) {
+            if !target_scope.is_op_scope_descendant(common_scope) {
                 api_bail!(
                     "the field can only be attached to a scope or sub-scope of the input value. Target scope: {}, input scope: {}",
                     target_scope, common_scope
@@ -812,114 +711,57 @@ impl FlowBuilder {
         Ok(common_scope)
     }
 
-    fn do_in_scope<T>(
-        &mut self,
-        data_slice_scope: &DataScopeRef,
-        f: impl FnOnce(
-            &mut Vec<spec::NamedSpec<spec::ReactiveOpSpec>>,
-            &mut ExecutionScope<'_>,
-            RefList<'_, &'_ ExecutionScope<'_>>,
-            &AnalyzerContext<'_>,
-        ) -> Result<T>,
-    ) -> Result<T> {
-        let mut data_slice_scopes = Vec::new();
-        let mut next_ds_scope = data_slice_scope;
-        while let Some((parent, _)) = &next_ds_scope.parent {
-            data_slice_scopes.push(next_ds_scope);
-            next_ds_scope = parent;
-        }
-
-        Self::do_in_sub_scope(
-            &mut ExecutionScope {
-                name: spec::ROOT_SCOPE_NAME,
-                data: &mut self.root_data_scope.lock().unwrap(),
-            },
-            RefList::Nil,
-            &data_slice_scopes,
+    fn get_mut_reactive_ops<'a>(
+        &'a mut self,
+        op_scope: &OpScope,
+    ) -> &'a mut Vec<spec::NamedSpec<spec::ReactiveOpSpec>> {
+        Self::get_mut_reactive_ops_internal(
+            op_scope,
             &mut self.reactive_ops,
             &mut self.next_generated_op_id,
-            &AnalyzerContext {
-                registry: &crate::ops::executor_factory_registry(),
-                flow_ctx: &self.flow_inst_context,
-            },
-            f,
         )
     }
 
-    fn do_in_sub_scope<T>(
-        scope: &mut ExecutionScope<'_>,
-        parent_scopes: RefList<'_, &'_ ExecutionScope<'_>>,
-        data_slice_scopes: &[&DataScopeRef],
-        reactive_ops: &mut Vec<spec::NamedSpec<spec::ReactiveOpSpec>>,
+    fn get_mut_reactive_ops_internal<'a>(
+        op_scope: &OpScope,
+        root_reactive_ops: &'a mut Vec<spec::NamedSpec<spec::ReactiveOpSpec>>,
         next_generated_op_id: &mut usize,
-        analyzer_ctx: &AnalyzerContext<'_>,
-        f: impl FnOnce(
-            &mut Vec<spec::NamedSpec<spec::ReactiveOpSpec>>,
-            &mut ExecutionScope<'_>,
-            RefList<'_, &'_ ExecutionScope<'_>>,
-            &AnalyzerContext<'_>,
-        ) -> Result<T>,
-    ) -> Result<T> {
-        let curr_ds_scope = if let Some(&ds_scope) = data_slice_scopes.last() {
-            ds_scope
-        } else {
-            return f(reactive_ops, scope, parent_scopes, analyzer_ctx);
-        };
-        let field_path = if let Some((_, field_path)) = &curr_ds_scope.parent {
-            field_path
-        } else {
-            bail!("expect sub scope, got root")
-        };
+    ) -> &'a mut Vec<spec::NamedSpec<spec::ReactiveOpSpec>> {
+        match &op_scope.parent {
+            None => root_reactive_ops,
+            Some((parent_op_scope, field_path)) => {
+                let parent_reactive_ops = Self::get_mut_reactive_ops_internal(
+                    parent_op_scope,
+                    root_reactive_ops,
+                    next_generated_op_id,
+                );
+                // Reuse the last foreach if matched, otherwise create a new one.
+                match parent_reactive_ops.last() {
+                    Some(spec::NamedSpec {
+                        spec: spec::ReactiveOpSpec::ForEach(foreach_spec),
+                        ..
+                    }) if &foreach_spec.field_path == field_path
+                        && foreach_spec.op_scope.name == op_scope.name => {}
 
-        // Reuse the last foreach if matched, otherwise create a new one.
-        let reactive_ops = match reactive_ops.last_mut() {
-            Some(spec::NamedSpec {
-                spec: spec::ReactiveOpSpec::ForEach(foreach_spec),
-                ..
-            }) if &foreach_spec.field_path == field_path
-                && foreach_spec.op_scope.name == curr_ds_scope.scope_name =>
-            {
-                &mut foreach_spec.op_scope.ops
-            }
-            _ => {
-                reactive_ops.push(spec::NamedSpec {
-                    name: format!(".foreach.{}", next_generated_op_id),
-                    spec: spec::ReactiveOpSpec::ForEach(spec::ForEachOpSpec {
-                        field_path: field_path.clone(),
-                        op_scope: spec::ReactiveOpScope {
-                            name: curr_ds_scope.scope_name.clone(),
-                            ops: vec![],
-                        },
-                    }),
-                });
-                *next_generated_op_id += 1;
-                match &mut reactive_ops.last_mut().unwrap().spec {
+                    _ => {
+                        parent_reactive_ops.push(spec::NamedSpec {
+                            name: format!(".foreach.{}", next_generated_op_id),
+                            spec: spec::ReactiveOpSpec::ForEach(spec::ForEachOpSpec {
+                                field_path: field_path.clone(),
+                                op_scope: spec::ReactiveOpScope {
+                                    name: op_scope.name.clone(),
+                                    ops: vec![],
+                                },
+                            }),
+                        });
+                        *next_generated_op_id += 1;
+                    }
+                }
+                match &mut parent_reactive_ops.last_mut().unwrap().spec {
                     spec::ReactiveOpSpec::ForEach(foreach_spec) => &mut foreach_spec.op_scope.ops,
                     _ => unreachable!(),
                 }
             }
-        };
-
-        let (_, field_type) = scope.data.analyze_field_path(field_path)?;
-        let sub_scope = match &field_type.typ {
-            ValueTypeBuilder::Table(table_type) => &table_type.sub_scope,
-            t => api_bail!(
-                "expect table type, got {}",
-                TryInto::<schema::ValueType>::try_into(t)?
-            ),
-        };
-        let mut sub_scope = sub_scope.lock().unwrap();
-        Self::do_in_sub_scope(
-            &mut ExecutionScope {
-                name: curr_ds_scope.scope_name.as_str(),
-                data: &mut sub_scope,
-            },
-            parent_scopes.prepend(scope),
-            &data_slice_scopes[0..data_slice_scopes.len() - 1],
-            reactive_ops,
-            next_generated_op_id,
-            analyzer_ctx,
-            f,
-        )
+        }
     }
 }

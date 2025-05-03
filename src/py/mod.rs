@@ -382,7 +382,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<builder::flow_builder::FlowBuilder>()?;
     m.add_class::<builder::flow_builder::DataCollector>()?;
     m.add_class::<builder::flow_builder::DataSlice>()?;
-    m.add_class::<builder::flow_builder::DataScopeRef>()?;
+    m.add_class::<builder::flow_builder::OpScopeRef>()?;
     m.add_class::<Flow>()?;
     m.add_class::<FlowLiveUpdater>()?;
     m.add_class::<TransientFlow>()?;

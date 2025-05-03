@@ -66,6 +66,7 @@ pub struct AnalyzedFunctionExecInfo {
 
     /// Fingerprinter of the function's behavior.
     pub fingerprinter: Fingerprinter,
+    /// To deserialize cached value.
     pub output_type: schema::ValueType,
 }
 
@@ -124,6 +125,7 @@ pub enum AnalyzedReactiveOp {
 
 pub struct AnalyzedOpScope {
     pub reactive_ops: Vec<AnalyzedReactiveOp>,
+    pub collector_len: usize,
 }
 
 pub struct ExecutionPlan {

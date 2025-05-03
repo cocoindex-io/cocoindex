@@ -1,9 +1,7 @@
-use crate::builder::plan::AnalyzedValueMapping;
+use crate::prelude::*;
 
 use super::spec::*;
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, ops::Deref, sync::Arc};
+use crate::builder::plan::AnalyzedValueMapping;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VectorTypeSchema {
@@ -141,9 +139,6 @@ impl std::fmt::Display for TableKind {
 pub struct TableSchema {
     pub kind: TableKind,
     pub row: StructSchema,
-
-    #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
-    pub collectors: Vec<NamedSpec<Arc<CollectorSchema>>>,
 }
 
 impl TableSchema {
@@ -170,36 +165,19 @@ impl TableSchema {
         Self {
             kind: self.kind,
             row: self.row.without_attrs(),
-            collectors: self
-                .collectors
-                .iter()
-                .map(|c| NamedSpec {
-                    name: c.name.clone(),
-                    spec: Arc::from(c.spec.without_attrs()),
-                })
-                .collect(),
         }
     }
 }
 
 impl std::fmt::Display for TableSchema {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}({}", self.kind, self.row)?;
-        for collector in self.collectors.iter() {
-            write!(f, "; COLLECTOR {} ({})", collector.name, collector.spec)?;
-        }
-        write!(f, ")")?;
-        Ok(())
+        write!(f, "{}({})", self.kind, self.row)
     }
 }
 
 impl TableSchema {
     pub fn new(kind: TableKind, row: StructSchema) -> Self {
-        Self {
-            kind,
-            row,
-            collectors: Default::default(),
-        }
+        Self { kind, row }
     }
 
     pub fn key_field(&self) -> Option<&FieldSchema> {
@@ -409,16 +387,27 @@ impl CollectorSchema {
     }
 }
 
-/// Top-level schema for a flow instance.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataSchema {
-    pub schema: StructSchema,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpScopeSchema {
+    /// Output schema for transform ops.
+    pub op_output_types: HashMap<FieldName, EnrichedValueType>,
 
-    #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
+    /// Child op scope for foreach ops.
+    pub op_scopes: HashMap<String, Arc<OpScopeSchema>>,
+
+    /// Collectors for the current scope.
     pub collectors: Vec<NamedSpec<Arc<CollectorSchema>>>,
 }
 
-impl Deref for DataSchema {
+/// Top-level schema for a flow instance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowSchema {
+    pub schema: StructSchema,
+
+    pub root_op_scope: OpScopeSchema,
+}
+
+impl std::ops::Deref for FlowSchema {
     type Target = StructSchema;
 
     fn deref(&self) -> &Self::Target {

@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::db_tracking::{self, read_source_tracking_info_for_processing, TrackedTargetKey};
 use super::db_tracking_setup;
-use super::evaluator::{evaluate_source_entry, ScopeValueBuilder};
+use super::evaluator::{evaluate_source_entry, EvaluateSourceEntryOutput};
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, StoredMemoizationInfo};
 use super::stats;
 
@@ -131,7 +131,7 @@ struct TrackingInfoForTarget<'a> {
 
 #[derive(Debug)]
 struct PrecommitData<'a> {
-    scope_value: &'a ScopeValueBuilder,
+    evaluate_output: &'a EvaluateSourceEntryOutput,
     memoization_info: &'a StoredMemoizationInfo,
 }
 struct PrecommitMetadata {
@@ -224,14 +224,12 @@ async fn precommit_source_tracking_info(
     let mut new_target_keys_info = db_tracking::TrackedTargetKeyForSource::default();
     if let Some(data) = &data {
         for export_op in export_ops.iter() {
-            let collected_values = data.scope_value.collected_values
-                [export_op.input.collector_idx as usize]
-                .lock()
-                .unwrap();
             let target_info = tracking_info_for_targets
                 .entry(export_op.target_id)
                 .or_default();
             let mut keys_info = Vec::new();
+            let collected_values =
+                &data.evaluate_output.collected_values[export_op.input.collector_idx as usize];
             for value in collected_values.iter() {
                 let primary_key = extract_primary_key(&export_op.primary_key_def, value)?;
                 let primary_key_json = serde_json::to_value(&primary_key)?;
@@ -441,11 +439,11 @@ async fn commit_source_tracking_info(
 pub async fn evaluate_source_entry_with_memory(
     plan: &ExecutionPlan,
     import_op: &AnalyzedImportOp,
-    schema: &schema::DataSchema,
+    schema: &schema::FlowSchema,
     key: &value::KeyValue,
     options: EvaluationMemoryOptions,
     pool: &PgPool,
-) -> Result<Option<ScopeValueBuilder>> {
+) -> Result<Option<EvaluateSourceEntryOutput>> {
     let stored_info = if options.enable_cache || !options.evaluation_only {
         let source_key_json = serde_json::to_value(key)?;
         let existing_tracking_info = read_source_tracking_info_for_processing(
@@ -473,7 +471,7 @@ pub async fn evaluate_source_entry_with_memory(
 pub async fn update_source_row(
     plan: &ExecutionPlan,
     import_op: &AnalyzedImportOp,
-    schema: &schema::DataSchema,
+    schema: &schema::FlowSchema,
     key: &value::KeyValue,
     source_value: Option<FieldValues>,
     source_version: &SourceVersion,
@@ -539,7 +537,7 @@ pub async fn update_source_row(
         source_version,
         plan.logic_fingerprint,
         output.as_ref().map(|scope_value| PrecommitData {
-            scope_value,
+            evaluate_output: scope_value,
             memoization_info: &stored_mem_info,
         }),
         &process_timestamp,
