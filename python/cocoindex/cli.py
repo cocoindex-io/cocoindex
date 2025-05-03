@@ -1,7 +1,9 @@
+import asyncio
 import click
 import datetime
 
 from rich.console import Console
+from rich.table import Table
 
 from . import flow, lib, setting
 from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
@@ -54,26 +56,25 @@ def ls(show_all: bool):
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
 @click.option("--color/--no-color", default=True)
-@click.option(
-    "--schema", is_flag=True, show_default=True, default=False,
-    help="Also show the schema of the flow.")
-def show(flow_name: str | None, color: bool, schema: bool):
+def show(flow_name: str | None, color: bool):
     """
-    Show the flow spec in a readable format with colored output.
-    Optionally display the schema if --schema is provided.
+    Show the flow spec in a readable format with colored output,
+    including the schema.
     """
-    from rich.table import Table
     flow = _flow_by_name(flow_name)
     console = Console(no_color=not color)
     console.print(flow._render_text())
-    if schema:
+
+    async def render_schema_and_print():
         table = Table(title=f"Schema for Flow: {flow.name}", show_header=True, header_style="bold magenta")
         table.add_column("Field", style="cyan")
         table.add_column("Type", style="green")
         table.add_column("Attributes", style="yellow")
-        for field_name, field_type, attr_str in flow._render_schema():
+        for field_name, field_type, attr_str in await flow._render_schema():
             table.add_row(field_name, field_type, attr_str)
         console.print(table)
+
+    asyncio.run(render_schema_and_print())
 
 @cli.command()
 def setup():

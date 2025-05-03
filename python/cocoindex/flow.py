@@ -504,11 +504,11 @@ class Flow:
         except json.JSONDecodeError:
             return Text(flow_spec_str)
     
-    def _render_schema(self) -> list[tuple[str, str, str]]:
+    async def _render_schema(self) -> list[tuple[str, str, str]]:
         """
         Render the schema as a list of (field_name, field_type, attributes) tuples.
         """
-        return _engine.get_flow_schema(self.name)
+        return await _engine.format_flow_schema(self.name)
 
     def __str__(self):
         return str(self._render_text())

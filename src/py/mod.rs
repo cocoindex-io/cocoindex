@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use crate::base::schema::{DataSchema, EnrichedValueType, FieldSchema, ValueType};
+use crate::base::schema::{BasicValueType, FieldSchema, ValueType};
 use crate::base::spec::VectorSimilarityMetric;
 use crate::execution::query;
 use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
@@ -8,8 +8,10 @@ use crate::ops::interface::{QueryResult, QueryResults};
 use crate::ops::py_factory::PyOpArgSchema;
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
 use crate::server::{self, ServerSettings};
+use crate::service::flows::get_flow_schema;
 use crate::settings::Settings;
 use crate::setup;
+use axum::extract::{Path, State};
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::collections::btree_map;
@@ -368,58 +370,73 @@ fn add_auth_entry(key: String, value: Pythonized<serde_json::Value>) -> PyResult
 }
 
 #[pyfunction]
-fn get_flow_schema(_py: Python<'_>, flow_name: String) -> PyResult<Vec<(String, String, String)>> {
-    let lib_context = get_lib_context().map_err(|e| PyException::new_err(e.to_string()))?;
-    let flow_ctx = lib_context
-        .get_flow_context(&flow_name)
-        .map_err(|e| PyException::new_err(e.to_string()))?;
-    let schema = flow_ctx.flow.data_schema.clone();
+fn format_flow_schema<'py>(py: Python<'py>, flow_name: String) -> PyResult<Bound<'py, PyAny>> {
+    future_into_py(py, async move {
+        let lib_context = get_lib_context().into_py_result()?;
+        let schema = get_flow_schema(Path(flow_name), State(lib_context))
+            .await
+            .into_py_result()?;
 
-    let mut result = Vec::new();
-    fn process_fields(
-        fields: &[FieldSchema],
-        prefix: &str,
-        result: &mut Vec<(String, String, String)>,
-    ) {
-        for field in fields {
-            let field_name = format!("{}{}", prefix, field.name);
+        let mut result = Vec::new();
 
-            let mut field_type = format!("{}", field.value_type.typ);
-            if field.value_type.nullable {
-                field_type.push('?');
-            }
+        fn process_fields(
+            fields: &[FieldSchema],
+            prefix: &str,
+            result: &mut Vec<(String, String, String)>,
+        ) {
+            for field in fields {
+                let field_name = format!("{}{}", prefix, field.name);
 
-            let attr_str = if field.value_type.attrs.is_empty() {
-                String::new()
-            } else {
-                field
-                    .value_type
-                    .attrs
-                    .iter()
-                    .map(|(k, v)| {
-                        let v_str = serde_json::to_string(v).unwrap_or_default();
-                        format!("{}: {}", k, v_str.chars().take(50).collect::<String>())
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
+                let mut field_type = match &field.value_type.typ {
+                    ValueType::Basic(basic) => match basic {
+                        BasicValueType::Vector(v) => {
+                            let dim = v.dimension.map_or("*".to_string(), |d| d.to_string());
+                            let elem = match *v.element_type {
+                                BasicValueType::Float32 => "Float32",
+                                BasicValueType::Float64 => "Float64",
+                                _ => "Unknown",
+                            };
+                            format!("Vector[{}, {}]", dim, elem)
+                        }
+                        other => format!("{:?}", other),
+                    },
+                    ValueType::Table(t) => format!("{:?}", t.kind),
+                    ValueType::Struct(_) => "Struct".to_string(),
+                };
 
-            result.push((field_name.clone(), field_type, attr_str));
-
-            match &field.value_type.typ {
-                ValueType::Struct(s) => {
-                    process_fields(&s.fields, &format!("{}.", field_name), result);
+                if field.value_type.nullable {
+                    field_type.push('?');
                 }
-                ValueType::Table(t) => {
-                    process_fields(&t.row.fields, &format!("{}.", field_name), result);
+
+                let attr_str = if field.value_type.attrs.is_empty() {
+                    String::new()
+                } else {
+                    field
+                        .value_type
+                        .attrs
+                        .keys()
+                        .map(|k| k.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+
+                result.push((field_name.clone(), field_type, attr_str));
+
+                match &field.value_type.typ {
+                    ValueType::Struct(s) => {
+                        process_fields(&s.fields, &format!("{}.", field_name), result);
+                    }
+                    ValueType::Table(t) => {
+                        process_fields(&t.row.fields, &format!("{}.", field_name), result);
+                    }
+                    ValueType::Basic(_) => {}
                 }
-                ValueType::Basic(_) => {}
             }
         }
-    }
 
-    process_fields(&schema.schema.fields, "", &mut result);
-    Ok(result)
+        process_fields(&schema.schema.fields, "", &mut result);
+        Ok(result)
+    })
 }
 
 /// A Python module implemented in Rust.
@@ -435,7 +452,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(apply_setup_changes, m)?)?;
     m.add_function(wrap_pyfunction!(flow_names_with_setup, m)?)?;
     m.add_function(wrap_pyfunction!(add_auth_entry, m)?)?;
-    m.add_function(wrap_pyfunction!(get_flow_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(format_flow_schema, m)?)?;
 
     m.add_class::<builder::flow_builder::FlowBuilder>()?;
     m.add_class::<builder::flow_builder::DataCollector>()?;
