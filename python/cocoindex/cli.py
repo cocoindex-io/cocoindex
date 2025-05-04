@@ -65,16 +65,19 @@ def show(flow_name: str | None, color: bool):
     console = Console(no_color=not color)
     console.print(flow._render_text())
 
-    async def render_schema_and_print():
-        table = Table(title=f"Schema for Flow: {flow.name}", show_header=True, header_style="bold magenta")
-        table.add_column("Field", style="cyan")
-        table.add_column("Type", style="green")
-        table.add_column("Attributes", style="yellow")
-        for field_name, field_type, attr_str in await flow._render_schema():
-            table.add_row(field_name, field_type, attr_str)
-        console.print(table)
+    table = Table(
+        title=f"Schema for Flow: {flow.name}",
+        show_header=True,
+        header_style="bold magenta"
+    )
+    table.add_column("Field", style="cyan")
+    table.add_column("Type", style="green")
+    table.add_column("Attributes", style="yellow")
 
-    asyncio.run(render_schema_and_print())
+    for field_name, field_type, attr_str in flow._render_schema():
+        table.add_row(field_name, field_type, attr_str)
+
+    console.print(table)
 
 @cli.command()
 def setup():

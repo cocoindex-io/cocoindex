@@ -8,10 +8,8 @@ use crate::ops::interface::{QueryResult, QueryResults};
 use crate::ops::py_factory::PyOpArgSchema;
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
 use crate::server::{self, ServerSettings};
-use crate::service::flows::get_flow_schema;
 use crate::settings::Settings;
 use crate::setup;
-use axum::extract::{Path, State};
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::collections::btree_map;
@@ -197,6 +195,69 @@ impl Flow {
             Ok(())
         })
     }
+
+    pub fn get_schema(&self) -> Vec<(String, String, String)> {
+        let schema = &self.0.flow.data_schema;
+        let mut result = Vec::new();
+
+        fn process_fields(
+            fields: &[FieldSchema],
+            prefix: &str,
+            result: &mut Vec<(String, String, String)>,
+        ) {
+            for field in fields {
+                let field_name = format!("{}{}", prefix, field.name);
+
+                let mut field_type = match &field.value_type.typ {
+                    ValueType::Basic(basic) => match basic {
+                        BasicValueType::Vector(v) => {
+                            let dim = v.dimension.map_or("*".to_string(), |d| d.to_string());
+                            let elem = match *v.element_type {
+                                BasicValueType::Float32 => "Float32",
+                                BasicValueType::Float64 => "Float64",
+                                _ => "Unknown",
+                            };
+                            format!("Vector[{}, {}]", dim, elem)
+                        }
+                        other => format!("{:?}", other),
+                    },
+                    ValueType::Table(t) => format!("{:?}", t.kind),
+                    ValueType::Struct(_) => "Struct".to_string(),
+                };
+
+                if field.value_type.nullable {
+                    field_type.push('?');
+                }
+
+                let attr_str = if field.value_type.attrs.is_empty() {
+                    String::new()
+                } else {
+                    field
+                        .value_type
+                        .attrs
+                        .keys()
+                        .map(|k| k.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+
+                result.push((field_name.clone(), field_type, attr_str));
+
+                match &field.value_type.typ {
+                    ValueType::Struct(s) => {
+                        process_fields(&s.fields, &format!("{}.", field_name), result);
+                    }
+                    ValueType::Table(t) => {
+                        process_fields(&t.row.fields, &format!("{}.", field_name), result);
+                    }
+                    ValueType::Basic(_) => {}
+                }
+            }
+        }
+
+        process_fields(&schema.schema.fields, "", &mut result);
+        result
+    }
 }
 
 #[pyclass]
@@ -369,76 +430,6 @@ fn add_auth_entry(key: String, value: Pythonized<serde_json::Value>) -> PyResult
     Ok(())
 }
 
-#[pyfunction]
-fn format_flow_schema<'py>(py: Python<'py>, flow_name: String) -> PyResult<Bound<'py, PyAny>> {
-    future_into_py(py, async move {
-        let lib_context = get_lib_context().into_py_result()?;
-        let schema = get_flow_schema(Path(flow_name), State(lib_context))
-            .await
-            .into_py_result()?;
-
-        let mut result = Vec::new();
-
-        fn process_fields(
-            fields: &[FieldSchema],
-            prefix: &str,
-            result: &mut Vec<(String, String, String)>,
-        ) {
-            for field in fields {
-                let field_name = format!("{}{}", prefix, field.name);
-
-                let mut field_type = match &field.value_type.typ {
-                    ValueType::Basic(basic) => match basic {
-                        BasicValueType::Vector(v) => {
-                            let dim = v.dimension.map_or("*".to_string(), |d| d.to_string());
-                            let elem = match *v.element_type {
-                                BasicValueType::Float32 => "Float32",
-                                BasicValueType::Float64 => "Float64",
-                                _ => "Unknown",
-                            };
-                            format!("Vector[{}, {}]", dim, elem)
-                        }
-                        other => format!("{:?}", other),
-                    },
-                    ValueType::Table(t) => format!("{:?}", t.kind),
-                    ValueType::Struct(_) => "Struct".to_string(),
-                };
-
-                if field.value_type.nullable {
-                    field_type.push('?');
-                }
-
-                let attr_str = if field.value_type.attrs.is_empty() {
-                    String::new()
-                } else {
-                    field
-                        .value_type
-                        .attrs
-                        .keys()
-                        .map(|k| k.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
-
-                result.push((field_name.clone(), field_type, attr_str));
-
-                match &field.value_type.typ {
-                    ValueType::Struct(s) => {
-                        process_fields(&s.fields, &format!("{}.", field_name), result);
-                    }
-                    ValueType::Table(t) => {
-                        process_fields(&t.row.fields, &format!("{}.", field_name), result);
-                    }
-                    ValueType::Basic(_) => {}
-                }
-            }
-        }
-
-        process_fields(&schema.schema.fields, "", &mut result);
-        Ok(result)
-    })
-}
-
 /// A Python module implemented in Rust.
 #[pymodule]
 #[pyo3(name = "_engine")]
@@ -452,7 +443,6 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(apply_setup_changes, m)?)?;
     m.add_function(wrap_pyfunction!(flow_names_with_setup, m)?)?;
     m.add_function(wrap_pyfunction!(add_auth_entry, m)?)?;
-    m.add_function(wrap_pyfunction!(format_flow_schema, m)?)?;
 
     m.add_class::<builder::flow_builder::FlowBuilder>()?;
     m.add_class::<builder::flow_builder::DataCollector>()?;
