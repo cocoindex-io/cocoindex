@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use crate::base::schema::{BasicValueType, FieldSchema, ValueType};
+use crate::base::schema::{FieldSchema, ValueType};
 use crate::base::spec::VectorSimilarityMetric;
 use crate::execution::query;
 use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
@@ -209,19 +209,8 @@ impl Flow {
                 let field_name = format!("{}{}", prefix, field.name);
 
                 let mut field_type = match &field.value_type.typ {
-                    ValueType::Basic(basic) => match basic {
-                        BasicValueType::Vector(v) => {
-                            let dim = v.dimension.map_or("*".to_string(), |d| d.to_string());
-                            let elem = match *v.element_type {
-                                BasicValueType::Float32 => "Float32",
-                                BasicValueType::Float64 => "Float64",
-                                _ => "Unknown",
-                            };
-                            format!("Vector[{}, {}]", dim, elem)
-                        }
-                        other => format!("{:?}", other),
-                    },
-                    ValueType::Table(t) => format!("{:?}", t.kind),
+                    ValueType::Basic(basic) => format!("{}", basic),
+                    ValueType::Table(t) => format!("{}", t.kind),
                     ValueType::Struct(_) => "Struct".to_string(),
                 };
 
@@ -248,7 +237,7 @@ impl Flow {
                         process_fields(&s.fields, &format!("{}.", field_name), result);
                     }
                     ValueType::Table(t) => {
-                        process_fields(&t.row.fields, &format!("{}.", field_name), result);
+                        process_fields(&t.row.fields, &format!("{}[].", field_name), result);
                     }
                     ValueType::Basic(_) => {}
                 }
