@@ -58,27 +58,26 @@ pub enum BasicValueType {
 impl std::fmt::Display for BasicValueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BasicValueType::Bytes => write!(f, "bytes"),
-            BasicValueType::Str => write!(f, "str"),
-            BasicValueType::Bool => write!(f, "bool"),
-            BasicValueType::Int64 => write!(f, "int64"),
-            BasicValueType::Float32 => write!(f, "float32"),
-            BasicValueType::Float64 => write!(f, "float64"),
-            BasicValueType::Range => write!(f, "range"),
-            BasicValueType::Uuid => write!(f, "uuid"),
-            BasicValueType::Date => write!(f, "date"),
-            BasicValueType::Time => write!(f, "time"),
-            BasicValueType::LocalDateTime => write!(f, "local_datetime"),
-            BasicValueType::OffsetDateTime => write!(f, "offset_datetime"),
-            BasicValueType::Json => write!(f, "json"),
-            BasicValueType::Vector(s) => write!(
-                f,
-                "vector({}, {})",
-                s.dimension
-                    .map(|d| d.to_string())
-                    .unwrap_or_else(|| "*".to_string()),
-                s.element_type
-            ),
+            BasicValueType::Bytes => write!(f, "Bytes"),
+            BasicValueType::Str => write!(f, "Str"),
+            BasicValueType::Bool => write!(f, "Bool"),
+            BasicValueType::Int64 => write!(f, "Int64"),
+            BasicValueType::Float32 => write!(f, "Float32"),
+            BasicValueType::Float64 => write!(f, "Float64"),
+            BasicValueType::Range => write!(f, "Range"),
+            BasicValueType::Uuid => write!(f, "Uuid"),
+            BasicValueType::Date => write!(f, "Date"),
+            BasicValueType::Time => write!(f, "Time"),
+            BasicValueType::LocalDateTime => write!(f, "LocalDateTime"),
+            BasicValueType::OffsetDateTime => write!(f, "OffsetDateTime"),
+            BasicValueType::Json => write!(f, "Json"),
+            BasicValueType::Vector(s) => {
+                write!(f, "Vector[{}", s.element_type)?;
+                if let Some(dimension) = s.dimension {
+                    write!(f, ", {}", dimension)?;
+                }
+                write!(f, "]")
+            }
         }
     }
 }
