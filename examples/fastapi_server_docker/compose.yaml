@@ -1,0 +1,18 @@
+services:
+  coco_db:
+    image: pgvector/pgvector:pg17
+    restart: always
+    environment:
+      POSTGRES_USER: cocoindex
+      POSTGRES_PASSWORD: cocoindex
+      POSTGRES_DB: cocoindex
+    ports:
+      - "5432:5432"
+
+  coco_api:
+    build:
+      context: .
+    ports:
+      - 8080:8080
+    depends_on:
+      - coco_db
