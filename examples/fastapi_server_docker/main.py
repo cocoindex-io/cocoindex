@@ -4,18 +4,15 @@ import uvicorn
 from fastapi import FastAPI
 from dotenv import load_dotenv
 
-from src.cocoindex_funs import code_embedding_flow
+from src.cocoindex_funs import code_embedding_flow, code_to_embedding
 
 fastapi_app = FastAPI()
-
     
 query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
     name="SemanticsSearch",
     flow=code_embedding_flow,
     target_name="code_embeddings",
-    query_transform_flow=lambda text: text.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2")),
+    query_transform_flow=code_to_embedding,
     default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY
 )
 
