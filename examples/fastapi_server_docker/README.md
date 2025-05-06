@@ -5,6 +5,6 @@ In this example, we provide a simple docker container using docker compose to bu
 Edit the sample code directory to include the code you want to query over in
 ```sample_code/``` 
 
-Edit the new code directory from the file ```src/cocoindex_funs.py``` line 19.
+Edit the configuration code from the file ```src/cocoindex_funs.py``` line 23 to 25.
 
 Finally build the docker container via: ```docker compose up``` while inside the directory of the example.
