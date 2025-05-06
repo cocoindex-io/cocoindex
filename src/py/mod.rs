@@ -2,6 +2,7 @@ use crate::prelude::*;
 
 use crate::base::schema::{FieldSchema, ValueType};
 use crate::base::spec::VectorSimilarityMetric;
+use crate::base::spec::{NamedSpec, ReactiveOpSpec};
 use crate::execution::query;
 use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
 use crate::ops::interface::{QueryResult, QueryResults};
@@ -196,6 +197,58 @@ impl Flow {
         })
     }
 
+    pub fn get_spec(&self) -> Vec<(String, String, u32)> {
+        let spec = &self.0.flow.flow_instance;
+        let mut result = Vec::new();
+
+        // Header
+        result.push(("Header".to_string(), format!("Flow: {}", spec.name), 0));
+
+        // Sources
+        for op in &spec.import_ops {
+            result.push(("Sources".to_string(), op.to_string(), 0));
+        }
+
+        // Processing
+        fn process_reactive_op(
+            op: &NamedSpec<ReactiveOpSpec>,
+            result: &mut Vec<(String, String, u32)>,
+            indent: u32,
+        ) {
+            result.push(("Processing".to_string(), op.to_string(), indent));
+            if let ReactiveOpSpec::ForEach(fe) = &op.spec {
+                result.push((
+                    "Processing".to_string(),
+                    fe.op_scope.to_string(),
+                    indent + 1,
+                ));
+                for nested_op in &fe.op_scope.ops {
+                    process_reactive_op(nested_op, result, indent + 2);
+                }
+            }
+        }
+
+        for op in &spec.reactive_ops {
+            process_reactive_op(op, &mut result, 0);
+        }
+
+        // Targets
+        for op in &spec.export_ops {
+            result.push(("Targets".to_string(), op.to_string(), 0));
+        }
+
+        // Declarations
+        for decl in &spec.declarations {
+            result.push((
+                "Declarations".to_string(),
+                format!("Declaration: {}", decl),
+                0,
+            ));
+        }
+
+        result
+    }
+
     pub fn get_schema(&self) -> Vec<(String, String, String)> {
         let schema = &self.0.flow.data_schema;
         let mut result = Vec::new();
@@ -211,7 +264,7 @@ impl Flow {
                 let mut field_type = match &field.value_type.typ {
                     ValueType::Basic(basic) => format!("{}", basic),
                     ValueType::Table(t) => format!("{}", t.kind),
-                    ValueType::Struct(_) => "Struct".to_string(),
+                    ValueType::Struct(s) => format!("{}", s),
                 };
 
                 if field.value_type.nullable {
