@@ -44,10 +44,10 @@ impl ser::Serializer for YamlSerializer {
     type SerializeSeq = SeqSerializer;
     type SerializeTuple = SeqSerializer;
     type SerializeTupleStruct = SeqSerializer;
-    type SerializeTupleVariant = SeqSerializer;
+    type SerializeTupleVariant = VariantSeqSerializer;
     type SerializeMap = MapSerializer;
     type SerializeStruct = MapSerializer;
-    type SerializeStructVariant = MapSerializer;
+    type SerializeStructVariant = VariantMapSerializer;
 
     fn serialize_bool(self, v: bool) -> Result<Self::Ok, Self::Error> {
         Ok(Yaml::Boolean(v))
@@ -182,10 +182,11 @@ impl ser::Serializer for YamlSerializer {
         self,
         _name: &'static str,
         _variant_index: u32,
-        _variant: &'static str,
+        variant: &'static str,
         len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        Ok(SeqSerializer {
+        Ok(VariantSeqSerializer {
+            variant_name: variant.to_owned(),
             vec: Vec::with_capacity(len),
         })
     }
@@ -209,10 +210,13 @@ impl ser::Serializer for YamlSerializer {
         self,
         _name: &'static str,
         _variant_index: u32,
-        _variant: &'static str,
-        len: usize,
+        variant: &'static str,
+        _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        self.serialize_map(Some(len))
+        Ok(VariantMapSerializer {
+            variant_name: variant.to_owned(),
+            map: yaml_rust2::yaml::Hash::new(),
+        })
     }
 }
 
@@ -345,5 +349,56 @@ impl ser::SerializeStructVariant for MapSerializer {
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
         ser::SerializeMap::end(self)
+    }
+}
+
+pub struct VariantMapSerializer {
+    variant_name: String,
+    map: yaml_rust2::yaml::Hash,
+}
+
+impl ser::SerializeStructVariant for VariantMapSerializer {
+    type Ok = Yaml;
+    type Error = YamlSerializerError;
+
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
+    where
+        T: Serialize + ?Sized,
+    {
+        self.map.insert(
+            Yaml::String(key.to_owned()),
+            value.serialize(YamlSerializer)?,
+        );
+        Ok(())
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        let mut outer_map = yaml_rust2::yaml::Hash::new();
+        outer_map.insert(Yaml::String(self.variant_name), Yaml::Hash(self.map));
+        Ok(Yaml::Hash(outer_map))
+    }
+}
+
+pub struct VariantSeqSerializer {
+    variant_name: String,
+    vec: Vec<Yaml>,
+}
+
+impl ser::SerializeTupleVariant for VariantSeqSerializer {
+    type Ok = Yaml;
+    type Error = YamlSerializerError;
+
+    fn serialize_field<T>(&mut self, value: &T) -> Result<(), Self::Error>
+    where
+        T: Serialize + ?Sized,
+    {
+        self.vec.push(value.serialize(YamlSerializer)?);
+        Ok(())
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        let mut map = yaml_rust2::yaml::Hash::new();
+        map.insert(Yaml::String(self.variant_name), Yaml::Array(self.vec));
+        Ok(Yaml::Hash(map))
     }
 }
