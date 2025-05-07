@@ -7,6 +7,34 @@ from dotenv import load_dotenv
 import cocoindex
 from jinja2 import Template
 
+# Template for rendering product information as markdown to provide information to LLMs
+PRODUCT_TEMPLATE = """
+# {{ title }}
+
+{% if highlights %}
+## Highlights
+{% for highlight in highlights %}
+- {{ highlight }}
+{% endfor %}
+{% endif %}
+
+
+{% if description %}
+## Description
+
+{{ description.header | default('') }}
+
+{{ description.paragraph | default('') }}
+
+{% if description.bullets %}
+{% for bullet in description.bullets %}
+- {{ bullet }}
+{% endfor %}
+{% endif %}
+
+{% endif %}
+    """
+
 @dataclasses.dataclass
 class ProductInfo:
     id: str
@@ -45,39 +73,12 @@ class ProductTaxonomyInfo:
 @cocoindex.op.function(behavior_version=2)
 def extract_product_info(product: cocoindex.typing.Json, filename: str) -> ProductInfo:
     # Print  markdown for LLM to extract the taxonomy and complimentary taxonomy
-    template_str = """
-# {{ title }}
-## Highlights
-
-{% for highlight in highlights %}
-- {{ highlight }}
-{% endfor %}
-
-## Description
-
-{{ description.header | default('') }}
-{{ description.paragraph | default('') }}
-
-{% if description.bullets %}
-{% for bullet in description.bullets %}
-- {{ bullet }}
-{% endfor %}
-{% endif %}
-    """
-    
-    template = Template(template_str)
-    detail = template.render(
-        title=product['title'],
-        highlights=product.get('highlights', []),
-        description=product.get('description', {})
-    )
-
     return ProductInfo(
         id=f"{filename.removesuffix('.json')}",
         url=product["source"],
         title=product["title"],
         price=float(product["price"].lstrip("$").replace(",", "")),
-        detail=detail,
+        detail=Template(PRODUCT_TEMPLATE).render(**product),
     )
 
 
@@ -193,4 +194,3 @@ def _run():
 if __name__ == "__main__":
     load_dotenv(override=True)
     _run()
-
