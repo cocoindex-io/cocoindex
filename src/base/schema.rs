@@ -88,16 +88,13 @@ impl std::fmt::Display for BasicValueType {
             }
             BasicValueType::Union(s) => {
                 write!(f, "Union[")?;
-
                 for (i, element_type) in s.types.iter().enumerate() {
                     if i > 0 {
                         // Add type delimiter
                         write!(f, " | ")?;
                     }
-
                     write!(f, "{}", element_type)?;
                 }
-
                 write!(f, "]")
             }
         }
