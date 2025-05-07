@@ -70,9 +70,11 @@ impl ExportContext {
             points.push(PointStruct::new(point_id, vectors, payload));
         }
 
-        self.client
-            .upsert_points(UpsertPointsBuilder::new(&self.collection_name, points).wait(true))
-            .await?;
+        if !points.is_empty() {
+            self.client
+                .upsert_points(UpsertPointsBuilder::new(&self.collection_name, points).wait(true))
+                .await?;
+        }
 
         let ids = mutation
             .delete_keys
