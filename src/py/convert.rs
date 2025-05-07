@@ -152,6 +152,9 @@ fn basic_value_from_py_object<'py>(
                 .map(|v| basic_value_from_py_object(&elem.element_type, &v))
                 .collect::<PyResult<Vec<_>>>()?,
         )),
+        schema::BasicValueType::Union(s) => {
+            todo!("Extract `typing.Union`");
+        }
     };
     Ok(result)
 }
