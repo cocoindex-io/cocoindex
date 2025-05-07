@@ -197,54 +197,106 @@ impl Flow {
         })
     }
 
-    pub fn get_spec(&self) -> Vec<(String, String, u32)> {
+    #[pyo3(signature = (verbose=false))]
+    pub fn get_spec(&self, verbose: bool) -> Vec<(String, String, u32)> {
         let spec = &self.0.flow.flow_instance;
-        let mut result = Vec::new();
+        let mut result = Vec::with_capacity(
+            1 + spec.import_ops.len()
+                + spec.reactive_ops.len()
+                + spec.export_ops.len()
+                + spec.declarations.len(),
+        );
 
-        // Header
-        result.push(("Header".to_string(), format!("Flow: {}", spec.name), 0));
-
-        // Sources
-        for op in &spec.import_ops {
-            result.push(("Sources".to_string(), op.to_string(), 0));
+        fn extend_with<T, I, F>(
+            out: &mut Vec<(String, String, u32)>,
+            label: &'static str,
+            items: I,
+            f: F,
+        ) where
+            I: IntoIterator<Item = T>,
+            F: Fn(&T) -> String,
+        {
+            out.extend(items.into_iter().map(|item| (label.into(), f(&item), 0)));
         }
 
+        // Header
+        result.push(("Header".into(), format!("Flow: {}", spec.name), 0));
+
+        // Sources
+        extend_with(&mut result, "Sources", spec.import_ops.iter(), |op| {
+            format!(
+                "Import: name={}, {}",
+                op.name,
+                if verbose {
+                    op.spec.format_verbose()
+                } else {
+                    op.spec.format_concise()
+                }
+            )
+        });
+
         // Processing
-        fn process_reactive_op(
+        fn walk(
             op: &NamedSpec<ReactiveOpSpec>,
-            result: &mut Vec<(String, String, u32)>,
             indent: u32,
+            verbose: bool,
+            out: &mut Vec<(String, String, u32)>,
         ) {
-            result.push(("Processing".to_string(), op.to_string(), indent));
+            out.push((
+                "Processing".into(),
+                format!(
+                    "{}: {}",
+                    op.name,
+                    if verbose {
+                        op.spec.format_verbose()
+                    } else {
+                        op.spec.format_concise()
+                    }
+                ),
+                indent,
+            ));
+
             if let ReactiveOpSpec::ForEach(fe) = &op.spec {
-                result.push((
-                    "Processing".to_string(),
-                    fe.op_scope.to_string(),
-                    indent + 1,
-                ));
-                for nested_op in &fe.op_scope.ops {
-                    process_reactive_op(nested_op, result, indent + 2);
+                out.push(("Processing".into(), fe.op_scope.to_string(), indent + 1));
+                for nested in &fe.op_scope.ops {
+                    walk(nested, indent + 2, verbose, out);
                 }
             }
         }
 
         for op in &spec.reactive_ops {
-            process_reactive_op(op, &mut result, 0);
+            walk(op, 0, verbose, &mut result);
         }
 
         // Targets
-        for op in &spec.export_ops {
-            result.push(("Targets".to_string(), op.to_string(), 0));
-        }
+        extend_with(&mut result, "Targets", spec.export_ops.iter(), |op| {
+            format!(
+                "Export: name={}, {}",
+                op.name,
+                if verbose {
+                    op.spec.format_verbose()
+                } else {
+                    op.spec.format_concise()
+                }
+            )
+        });
 
         // Declarations
-        for decl in &spec.declarations {
-            result.push((
-                "Declarations".to_string(),
-                format!("Declaration: {}", decl),
-                0,
-            ));
-        }
+        extend_with(
+            &mut result,
+            "Declarations",
+            spec.declarations.iter(),
+            |decl| {
+                format!(
+                    "Declaration: {}",
+                    if verbose {
+                        decl.format_verbose()
+                    } else {
+                        decl.format_concise()
+                    }
+                )
+            },
+        );
 
         result
     }

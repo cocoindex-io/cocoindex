@@ -1,7 +1,8 @@
 use crate::prelude::*;
 
-use super::schema::{EnrichedValueType, FieldSchema, ValueType};
+use super::schema::{EnrichedValueType, FieldSchema};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fmt;
 use std::ops::Deref;
 
@@ -115,9 +116,8 @@ pub struct ConstantMapping {
 
 impl fmt::Display for ConstantMapping {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let schema = format_value_type(&self.schema);
         let value = serde_json::to_string(&self.value).unwrap_or("#serde_error".to_string());
-        write!(f, "Constant({}: {})", value, schema)
+        write!(f, "{}", value)
     }
 }
 
@@ -137,10 +137,10 @@ impl fmt::Display for StructMapping {
         let fields = self
             .fields
             .iter()
-            .map(|field| format!("{}={}", field.name, field.spec))
+            .map(|field| field.name.clone())
             .collect::<Vec<_>>()
-            .join(", ");
-        write!(f, "[{}]", fields)
+            .join(",");
+        write!(f, "{}", fields)
     }
 }
 
@@ -216,11 +216,41 @@ pub struct OpSpec {
     pub spec: serde_json::Map<String, serde_json::Value>,
 }
 
-impl fmt::Display for OpSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl OpSpec {
+    pub fn format_concise(&self) -> String {
+        let mut parts = vec![];
+        for (key, value) in self.spec.iter() {
+            match value {
+                Value::String(s) => parts.push(format!("{}={}", key, s)),
+                Value::Array(arr) => {
+                    let items = arr
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    if !items.is_empty() {
+                        parts.push(format!("{}={}", key, items));
+                    }
+                }
+                Value::Object(obj) => {
+                    if let Some(model) = obj.get("model").and_then(|v| v.as_str()) {
+                        parts.push(format!("{}={}", key, model));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if parts.is_empty() {
+            self.kind.clone()
+        } else {
+            format!("{}({})", self.kind, parts.join(", "))
+        }
+    }
+
+    pub fn format_verbose(&self) -> String {
         let spec_str = serde_json::to_string_pretty(&self.spec)
             .map(|s| {
-                let lines: Vec<&str> = s.lines().take(50).collect();
+                let lines: Vec<&str> = s.lines().collect();
                 if lines.len() < s.lines().count() {
                     lines
                         .into_iter()
@@ -232,7 +262,13 @@ impl fmt::Display for OpSpec {
                 }
             })
             .unwrap_or("#serde_error".to_string());
-        write!(f, "OpSpec: kind={}, spec={}", self.kind, spec_str)
+        format!("{}({})", self.kind, spec_str)
+    }
+}
+
+impl fmt::Display for OpSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.format_concise())
     }
 }
 
@@ -246,7 +282,7 @@ impl fmt::Display for SourceRefreshOptions {
         let refresh = self
             .refresh_interval
             .map(|d| format!("{:?}", d))
-            .unwrap_or("None".to_string());
+            .unwrap_or("none".to_string());
         write!(f, "{}", refresh)
     }
 }
@@ -259,13 +295,28 @@ pub struct ImportOpSpec {
     pub refresh_options: SourceRefreshOptions,
 }
 
+impl ImportOpSpec {
+    fn format(&self, verbose: bool) -> String {
+        let source = if verbose {
+            self.source.format_verbose()
+        } else {
+            self.source.format_concise()
+        };
+        format!("source={}, refresh={}", source, self.refresh_options)
+    }
+
+    pub fn format_concise(&self) -> String {
+        self.format(false)
+    }
+
+    pub fn format_verbose(&self) -> String {
+        self.format(true)
+    }
+}
+
 impl fmt::Display for ImportOpSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Import: source={}, refresh={}",
-            self.source, self.refresh_options
-        )
+        write!(f, "{}", self.format_concise())
     }
 }
 
@@ -275,15 +326,40 @@ pub struct TransformOpSpec {
     pub op: OpSpec,
 }
 
-impl fmt::Display for TransformOpSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl TransformOpSpec {
+    fn format(&self, verbose: bool) -> String {
         let inputs = self
             .inputs
             .iter()
-            .map(|input| input.to_string())
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
-            .join(", ");
-        write!(f, "Transform: op={}, inputs=[{}]", self.op, inputs)
+            .join(",");
+
+        let op_str = if verbose {
+            self.op.format_verbose()
+        } else {
+            self.op.format_concise()
+        };
+
+        if verbose {
+            format!("op={}, inputs=[{}]", op_str, inputs)
+        } else {
+            format!("op={}, inputs={}", op_str, inputs)
+        }
+    }
+
+    pub fn format_concise(&self) -> String {
+        self.format(false)
+    }
+
+    pub fn format_verbose(&self) -> String {
+        self.format(true)
+    }
+}
+
+impl fmt::Display for TransformOpSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.format_concise())
     }
 }
 
@@ -294,9 +370,15 @@ pub struct ForEachOpSpec {
     pub op_scope: ReactiveOpScope,
 }
 
+impl ForEachOpSpec {
+    pub fn get_label(&self) -> String {
+        format!("Loop over {}", self.field_path)
+    }
+}
+
 impl fmt::Display for ForEachOpSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ForEach: field={}", self.field_path)
+        write!(f, "field={}", self.field_path)
     }
 }
 
@@ -313,13 +395,35 @@ pub struct CollectOpSpec {
     pub auto_uuid_field: Option<FieldName>,
 }
 
+impl CollectOpSpec {
+    fn format(&self, verbose: bool) -> String {
+        let uuid = self.auto_uuid_field.as_deref().unwrap_or("none");
+
+        if verbose {
+            format!(
+                "scope={}, collector={}, input=[{}], uuid={}",
+                self.scope_name, self.collector_name, self.input, uuid
+            )
+        } else {
+            format!(
+                "collector={}, input={}, uuid={}",
+                self.collector_name, self.input, uuid
+            )
+        }
+    }
+
+    pub fn format_concise(&self) -> String {
+        self.format(false)
+    }
+
+    pub fn format_verbose(&self) -> String {
+        self.format(true)
+    }
+}
+
 impl fmt::Display for CollectOpSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Collect: scope={}, collector={}, input={}, uuid_field={:?}",
-            self.scope_name, self.collector_name, self.input, self.auto_uuid_field
-        )
+        write!(f, "{}", self.format_concise())
     }
 }
 
@@ -365,19 +469,15 @@ impl fmt::Display for IndexOptions {
         let primary_keys = self
             .primary_key_fields
             .as_ref()
-            .map(|p| p.join(", "))
+            .map(|p| p.join(","))
             .unwrap_or_default();
         let vector_indexes = self
             .vector_indexes
             .iter()
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
-            .join(", ");
-        write!(
-            f,
-            "IndexOptions: primary_keys=[{}], vector_indexes=[{}]",
-            primary_keys, vector_indexes
-        )
+            .join(",");
+        write!(f, "keys={}, indexes={}", primary_keys, vector_indexes)
     }
 }
 
@@ -389,13 +489,38 @@ pub struct ExportOpSpec {
     pub setup_by_user: bool,
 }
 
+impl ExportOpSpec {
+    fn format(&self, verbose: bool) -> String {
+        let target_str = if verbose {
+            self.target.format_verbose()
+        } else {
+            self.target.format_concise()
+        };
+
+        let base = format!(
+            "collector={}, target={}, {}",
+            self.collector_name, target_str, self.index_options
+        );
+
+        if verbose {
+            format!("{}, setup_by_user={}", base, self.setup_by_user)
+        } else {
+            base
+        }
+    }
+
+    pub fn format_concise(&self) -> String {
+        self.format(false)
+    }
+
+    pub fn format_verbose(&self) -> String {
+        self.format(true)
+    }
+}
+
 impl fmt::Display for ExportOpSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Export: collector={}, target={}, {}, setup_by_user={}",
-            self.collector_name, self.target, self.index_options, self.setup_by_user
-        )
+        write!(f, "{}", self.format_concise())
     }
 }
 
@@ -407,13 +532,27 @@ pub enum ReactiveOpSpec {
     Collect(CollectOpSpec),
 }
 
+impl ReactiveOpSpec {
+    pub fn format_concise(&self) -> String {
+        match self {
+            ReactiveOpSpec::Transform(t) => format!("Transform: {}", t.format_concise()),
+            ReactiveOpSpec::ForEach(fe) => format!("{}", fe.get_label()),
+            ReactiveOpSpec::Collect(c) => c.format_concise(),
+        }
+    }
+
+    pub fn format_verbose(&self) -> String {
+        match self {
+            ReactiveOpSpec::Transform(t) => format!("Transform: {}", t.format_verbose()),
+            ReactiveOpSpec::ForEach(fe) => format!("ForEach: {}", fe),
+            ReactiveOpSpec::Collect(c) => format!("Collect: {}", c.format_verbose()),
+        }
+    }
+}
+
 impl fmt::Display for ReactiveOpSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ReactiveOpSpec::Transform(t) => write!(f, "{}", t),
-            ReactiveOpSpec::ForEach(fe) => write!(f, "{}", fe),
-            ReactiveOpSpec::Collect(c) => write!(f, "{}", c),
-        }
+        write!(f, "{}", self.format_concise())
     }
 }
 
@@ -530,17 +669,4 @@ impl<T> std::hash::Hash for AuthEntryReference<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.key.hash(state);
     }
-}
-
-// Helper function to format EnrichedValueType
-fn format_value_type(value_type: &EnrichedValueType) -> String {
-    let mut typ = match &value_type.typ {
-        ValueType::Basic(basic) => format!("{}", basic),
-        ValueType::Table(t) => format!("{}", t.kind),
-        ValueType::Struct(s) => format!("{}", s),
-    };
-    if value_type.nullable {
-        typ.push('?');
-    }
-    typ
 }
