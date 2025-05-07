@@ -52,29 +52,34 @@ impl std::fmt::Debug for Counter {
 
 #[derive(Debug, Serialize, Default, Clone)]
 pub struct UpdateStats {
-    pub num_skipped: Counter,
+    pub num_no_change: Counter,
     pub num_insertions: Counter,
     pub num_deletions: Counter,
-    pub num_repreocesses: Counter,
+    /// Number of source rows that were updated.
+    pub num_updates: Counter,
+    /// Number of source rows that were reprocessed because of logic change.
+    pub num_reprocesses: Counter,
     pub num_errors: Counter,
 }
 
 impl UpdateStats {
     pub fn delta(&self, base: &Self) -> Self {
         UpdateStats {
-            num_skipped: self.num_skipped.delta(&base.num_skipped),
+            num_no_change: self.num_no_change.delta(&base.num_no_change),
             num_insertions: self.num_insertions.delta(&base.num_insertions),
             num_deletions: self.num_deletions.delta(&base.num_deletions),
-            num_repreocesses: self.num_repreocesses.delta(&base.num_repreocesses),
+            num_updates: self.num_updates.delta(&base.num_updates),
+            num_reprocesses: self.num_reprocesses.delta(&base.num_reprocesses),
             num_errors: self.num_errors.delta(&base.num_errors),
         }
     }
 
     pub fn is_zero(&self) -> bool {
-        self.num_skipped.get() == 0
+        self.num_no_change.get() == 0
             && self.num_insertions.get() == 0
             && self.num_deletions.get() == 0
-            && self.num_repreocesses.get() == 0
+            && self.num_updates.get() == 0
+            && self.num_reprocesses.get() == 0
             && self.num_errors.get() == 0
     }
 }
@@ -87,18 +92,19 @@ impl std::fmt::Display for UpdateStats {
             messages.push(format!("{num_errors} source rows FAILED"));
         }
 
-        let num_skipped = self.num_skipped.get();
+        let num_skipped = self.num_no_change.get();
         if num_skipped > 0 {
-            messages.push(format!("{} source rows SKIPPED", num_skipped));
+            messages.push(format!("{} source rows NO CHANGE", num_skipped));
         }
 
         let num_insertions = self.num_insertions.get();
         let num_deletions = self.num_deletions.get();
-        let num_reprocesses = self.num_repreocesses.get();
-        let num_source_rows = num_insertions + num_deletions + num_reprocesses;
+        let num_updates = self.num_updates.get();
+        let num_reprocesses = self.num_reprocesses.get();
+        let num_source_rows = num_insertions + num_deletions + num_updates + num_reprocesses;
         if num_source_rows > 0 {
             messages.push(format!(
-                "{num_source_rows} source rows processed: {num_insertions} ADDED, {num_deletions} REMOVED, {num_reprocesses} REPROCESSED",
+                "{num_source_rows} source rows processed ({num_insertions} ADDED, {num_deletions} REMOVED, {num_updates} UPDATED, {num_reprocesses} REPROCESSED on flow change)",
             ));
         }
 

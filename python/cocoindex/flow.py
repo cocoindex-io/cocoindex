@@ -503,6 +503,9 @@ class Flow:
             return self._format_flow(flow_dict)
         except json.JSONDecodeError:
             return Text(flow_spec_str)
+    
+    def _render_schema(self) -> list[tuple[str, str, str]]:
+        return self._lazy_engine_flow().get_schema()
 
     def __str__(self):
         return str(self._render_text())

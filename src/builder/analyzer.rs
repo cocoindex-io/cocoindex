@@ -11,7 +11,6 @@ use crate::utils::fingerprint::Fingerprinter;
 use crate::{
     base::{schema::*, spec::*},
     ops::{interface::*, registry::*},
-    utils::immutable::RefList,
 };
 use futures::future::{try_join3, BoxFuture};
 use futures::{future::try_join_all, FutureExt};
@@ -122,13 +121,6 @@ impl TryFrom<&TableSchema> for TableSchemaBuilder {
             kind: schema.kind,
             sub_scope: Arc::new(Mutex::new(DataScopeBuilder {
                 data: (&schema.row).try_into()?,
-                collectors: Mutex::new(
-                    schema
-                        .collectors
-                        .iter()
-                        .map(|c| (c.name.clone(), CollectorBuilder::new(c.spec.clone())))
-                        .collect(),
-                ),
             })),
         })
     }
@@ -140,20 +132,9 @@ impl TryInto<TableSchema> for &TableSchemaBuilder {
     fn try_into(self) -> Result<TableSchema> {
         let sub_scope = self.sub_scope.lock().unwrap();
         let row = (&sub_scope.data).try_into()?;
-        let collectors = sub_scope
-            .collectors
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(name, schema)| NamedSpec {
-                name: name.clone(),
-                spec: schema.schema.clone(),
-            })
-            .collect();
         Ok(TableSchema {
             kind: self.kind,
             row,
-            collectors,
         })
     }
 }
@@ -182,38 +163,9 @@ fn try_make_common_value_type(
                 );
             }
             let row = try_merge_struct_schemas(&table_type1.row, &table_type2.row)?;
-
-            if table_type1.collectors.len() != table_type2.collectors.len() {
-                api_bail!(
-                    "Collection types are not compatible as they have different collectors count: {} vs {}",
-                    table_type1,
-                    table_type2
-                );
-            }
-            let collectors = table_type1
-                .collectors
-                .iter()
-                .zip(table_type2.collectors.iter())
-                .map(|(c1, c2)| -> Result<_> {
-                    if c1.name != c2.name {
-                        api_bail!(
-                            "Collection types are not compatible as they have different collectors names: {} vs {}",
-                            c1.name,
-                            c2.name
-                        );
-                    }
-                    let collector = NamedSpec {
-                        name: c1.name.clone(),
-                        spec: Arc::new(try_merge_collector_schemas(&c1.spec, &c2.spec)?),
-                    };
-                    Ok(collector)
-                })
-                .collect::<Result<_>>()?;
-
             ValueType::Table(TableSchema {
                 kind: table_type1.kind,
                 row,
-                collectors,
             })
         }
         (t1 @ (ValueType::Basic(_) | ValueType::Struct(_) | ValueType::Table(_)), t2) => {
@@ -346,14 +298,12 @@ impl CollectorBuilder {
 #[derive(Debug)]
 pub(super) struct DataScopeBuilder {
     pub data: StructSchemaBuilder,
-    pub collectors: Mutex<IndexMap<FieldName, CollectorBuilder>>,
 }
 
 impl DataScopeBuilder {
     pub fn new() -> Self {
         Self {
             data: Default::default(),
-            collectors: Default::default(),
         }
     }
 
@@ -411,31 +361,28 @@ impl DataScopeBuilder {
             value_type,
         ))
     }
+}
 
-    pub fn consume_collector(
-        &self,
-        collector_name: &FieldName,
-    ) -> Result<(AnalyzedLocalCollectorReference, Arc<CollectorSchema>)> {
-        let mut collectors = self.collectors.lock().unwrap();
-        let (collector_idx, _, collector) = collectors
-            .get_full_mut(collector_name)
-            .ok_or_else(|| api_error!("Collector not found: {}", collector_name))?;
-        Ok((
-            AnalyzedLocalCollectorReference {
-                collector_idx: collector_idx as u32,
-            },
-            collector.use_schema(),
-        ))
-    }
+pub(super) struct AnalyzerContext<'a> {
+    pub registry: &'a ExecutorFactoryRegistry,
+    pub flow_ctx: &'a Arc<FlowInstanceContext>,
+}
 
+#[derive(Debug, Default)]
+pub(super) struct OpScopeStates {
+    pub op_output_types: HashMap<FieldName, EnrichedValueType>,
+    pub collectors: IndexMap<FieldName, CollectorBuilder>,
+    pub sub_scopes: HashMap<String, Arc<OpScopeSchema>>,
+}
+
+impl OpScopeStates {
     pub fn add_collector(
-        &self,
+        &mut self,
         collector_name: FieldName,
         schema: CollectorSchema,
     ) -> Result<AnalyzedLocalCollectorReference> {
-        let mut collectors = self.collectors.lock().unwrap();
-        let existing_len = collectors.len();
-        let idx = match collectors.entry(collector_name) {
+        let existing_len = self.collectors.len();
+        let idx = match self.collectors.entry(collector_name) {
             indexmap::map::Entry::Occupied(mut entry) => {
                 entry.get_mut().merge_schema(&schema)?;
                 entry.index()
@@ -450,53 +397,170 @@ impl DataScopeBuilder {
         })
     }
 
-    pub fn into_data_schema(self) -> Result<DataSchema> {
-        Ok(DataSchema {
-            schema: (&self.data).try_into()?,
+    pub fn consume_collector(
+        &mut self,
+        collector_name: &FieldName,
+    ) -> Result<(AnalyzedLocalCollectorReference, Arc<CollectorSchema>)> {
+        let (collector_idx, _, collector) = self
+            .collectors
+            .get_full_mut(collector_name)
+            .ok_or_else(|| api_error!("Collector not found: {}", collector_name))?;
+        Ok((
+            AnalyzedLocalCollectorReference {
+                collector_idx: collector_idx as u32,
+            },
+            collector.use_schema(),
+        ))
+    }
+
+    fn build_op_scope_schema(&self) -> OpScopeSchema {
+        OpScopeSchema {
+            op_output_types: self
+                .op_output_types
+                .iter()
+                .map(|(name, value_type)| (name.clone(), value_type.without_attrs()))
+                .collect(),
             collectors: self
                 .collectors
-                .into_inner()
-                .unwrap()
-                .into_iter()
+                .iter()
                 .map(|(name, schema)| NamedSpec {
-                    name,
-                    spec: schema.schema,
+                    name: name.clone(),
+                    spec: schema.schema.clone(),
                 })
                 .collect(),
-        })
+            op_scopes: self.sub_scopes.clone(),
+        }
     }
 }
 
-pub(super) struct AnalyzerContext<'a> {
-    pub registry: &'a ExecutorFactoryRegistry,
-    pub flow_ctx: &'a Arc<FlowInstanceContext>,
+#[derive(Debug)]
+pub struct OpScope {
+    pub name: String,
+    pub parent: Option<(Arc<OpScope>, spec::FieldPath)>,
+    pub(super) data: Arc<Mutex<DataScopeBuilder>>,
+    pub(super) states: Mutex<OpScopeStates>,
 }
 
-pub(super) struct ExecutionScope<'a> {
-    pub name: &'a str,
-    pub data: &'a mut DataScopeBuilder,
+struct Iter<'a>(Option<&'a OpScope>);
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = &'a OpScope;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.0 {
+            Some(scope) => {
+                self.0 = scope.parent.as_ref().map(|(parent, _)| parent.as_ref());
+                Some(scope)
+            }
+            None => None,
+        }
+    }
 }
 
-fn find_scope<'a>(
-    scope_name: &ScopeName,
-    scopes: RefList<'a, &'a ExecutionScope<'a>>,
-) -> Result<(u32, &'a ExecutionScope<'a>)> {
-    let (up_level, scope) = scopes
-        .iter()
+impl OpScope {
+    pub(super) fn new(
+        name: String,
+        parent: Option<(Arc<OpScope>, spec::FieldPath)>,
+        data: Arc<Mutex<DataScopeBuilder>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            name,
+            parent,
+            data,
+            states: Mutex::default(),
+        })
+    }
+
+    fn add_op_output(
+        &self,
+        name: FieldName,
+        value_type: EnrichedValueType,
+    ) -> Result<AnalyzedOpOutput> {
+        let op_output = self
+            .data
+            .lock()
+            .unwrap()
+            .add_field(name.clone(), &value_type)?;
+        self.states
+            .lock()
+            .unwrap()
+            .op_output_types
+            .insert(name, value_type);
+        Ok(op_output)
+    }
+
+    pub fn ancestors(&self) -> impl Iterator<Item = &OpScope> {
+        Iter(Some(self))
+    }
+
+    pub fn is_op_scope_descendant(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        match &self.parent {
+            Some((parent, _)) => parent.is_op_scope_descendant(other),
+            None => false,
+        }
+    }
+
+    pub(super) fn new_foreach_op_scope(
+        self: &Arc<Self>,
+        scope_name: String,
+        field_path: &FieldPath,
+    ) -> Result<(AnalyzedLocalFieldReference, Arc<Self>)> {
+        let (local_field_ref, sub_data_scope) = {
+            let data_scope = self.data.lock().unwrap();
+            let (local_field_ref, value_type) = data_scope.analyze_field_path(field_path)?;
+            let sub_data_scope = match &value_type.typ {
+                ValueTypeBuilder::Table(table_type) => table_type.sub_scope.clone(),
+                _ => api_bail!("ForEach only works on collection, field {field_path} is not"),
+            };
+            (local_field_ref, sub_data_scope)
+        };
+        let sub_op_scope = OpScope::new(
+            scope_name,
+            Some((self.clone(), field_path.clone())),
+            sub_data_scope,
+        );
+        Ok((local_field_ref, sub_op_scope))
+    }
+}
+
+impl std::fmt::Display for OpScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some((scope, field_path)) = &self.parent {
+            write!(f, "{} [{} AS {}]", scope, field_path, self.name)?;
+        } else {
+            write!(f, "[{}]", self.name)?;
+        }
+        Ok(())
+    }
+}
+
+impl PartialEq for OpScope {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl Eq for OpScope {}
+
+fn find_scope<'a>(scope_name: &ScopeName, op_scope: &'a OpScope) -> Result<(u32, &'a OpScope)> {
+    let (up_level, scope) = op_scope
+        .ancestors()
         .enumerate()
-        .find(|(_, s)| s.name == scope_name)
+        .find(|(_, s)| &s.name == scope_name)
         .ok_or_else(|| api_error!("Scope not found: {}", scope_name))?;
     Ok((up_level as u32, scope))
 }
 
 fn analyze_struct_mapping(
     mapping: &StructMapping,
-    scopes: RefList<'_, &'_ ExecutionScope<'_>>,
+    op_scope: &OpScope,
 ) -> Result<(AnalyzedStructMapping, Vec<FieldSchema>)> {
     let mut field_mappings = Vec::with_capacity(mapping.fields.len());
     let mut field_schemas = Vec::with_capacity(mapping.fields.len());
     for field in mapping.fields.iter() {
-        let (field_mapping, value_type) = analyze_value_mapping(&field.spec, scopes)?;
+        let (field_mapping, value_type) = analyze_value_mapping(&field.spec, op_scope)?;
         field_mappings.push(field_mapping);
         field_schemas.push(FieldSchema {
             name: field.name.clone(),
@@ -513,7 +577,7 @@ fn analyze_struct_mapping(
 
 fn analyze_value_mapping(
     value_mapping: &ValueMapping,
-    scopes: RefList<'_, &'_ ExecutionScope<'_>>,
+    op_scope: &OpScope,
 ) -> Result<(AnalyzedValueMapping, EnrichedValueType)> {
     let result = match value_mapping {
         ValueMapping::Constant(v) => {
@@ -522,12 +586,12 @@ fn analyze_value_mapping(
         }
 
         ValueMapping::Field(v) => {
-            let (scope_up_level, exec_scope) = match &v.scope {
-                Some(scope) => find_scope(scope, scopes)?,
-                None => (0, *scopes.head().ok_or_else(|| anyhow!("Scope not found"))?),
+            let (scope_up_level, op_scope) = match &v.scope {
+                Some(scope_name) => find_scope(scope_name, op_scope)?,
+                None => (0, op_scope),
             };
-            let (local_field_ref, value_type) =
-                exec_scope.data.analyze_field_path(&v.field_path)?;
+            let data_scope = op_scope.data.lock().unwrap();
+            let (local_field_ref, value_type) = data_scope.analyze_field_path(&v.field_path)?;
             (
                 AnalyzedValueMapping::Field(AnalyzedFieldReference {
                     local: local_field_ref,
@@ -538,7 +602,7 @@ fn analyze_value_mapping(
         }
 
         ValueMapping::Struct(v) => {
-            let (struct_mapping, field_schemas) = analyze_struct_mapping(v, scopes)?;
+            let (struct_mapping, field_schemas) = analyze_struct_mapping(v, op_scope)?;
             (
                 AnalyzedValueMapping::Struct(struct_mapping),
                 EnrichedValueType {
@@ -557,11 +621,11 @@ fn analyze_value_mapping(
 
 fn analyze_input_fields(
     arg_bindings: &[OpArgBinding],
-    scopes: RefList<'_, &'_ ExecutionScope<'_>>,
+    op_scope: &OpScope,
 ) -> Result<Vec<OpArgSchema>> {
     let mut input_field_schemas = Vec::with_capacity(arg_bindings.len());
     for arg_binding in arg_bindings.iter() {
-        let (analyzed_value, value_type) = analyze_value_mapping(&arg_binding.value, scopes)?;
+        let (analyzed_value, value_type) = analyze_value_mapping(&arg_binding.value, op_scope)?;
         input_field_schemas.push(OpArgSchema {
             name: arg_binding.arg_name.clone(),
             value_type,
@@ -575,10 +639,14 @@ fn add_collector(
     scope_name: &ScopeName,
     collector_name: FieldName,
     schema: CollectorSchema,
-    scopes: RefList<'_, &'_ ExecutionScope<'_>>,
+    op_scope: &OpScope,
 ) -> Result<AnalyzedCollectorReference> {
-    let (scope_up_level, scope) = find_scope(scope_name, scopes)?;
-    let local_ref = scope.data.add_collector(collector_name, schema)?;
+    let (scope_up_level, scope) = find_scope(scope_name, op_scope)?;
+    let local_ref = scope
+        .states
+        .lock()
+        .unwrap()
+        .add_collector(collector_name, schema)?;
     Ok(AnalyzedCollectorReference {
         local: local_ref,
         scope_up_level,
@@ -596,7 +664,7 @@ struct ExportDataFieldsInfo {
 impl AnalyzerContext<'_> {
     pub(super) fn analyze_import_op(
         &self,
-        scope: &mut DataScopeBuilder,
+        op_scope: &Arc<OpScope>,
         import_op: NamedSpec<ImportOpSpec>,
         metadata: Option<&mut FlowSetupMetadata>,
         existing_source_states: Option<&Vec<&SourceSetupState>>,
@@ -655,7 +723,13 @@ impl AnalyzerContext<'_> {
         });
 
         let op_name = import_op.name.clone();
-        let output = scope.add_field(import_op.name, &output_type)?;
+        let primary_key_type = output_type
+            .typ
+            .key_type()
+            .ok_or_else(|| api_error!("Source must produce a type with key: {op_name}"))?
+            .typ
+            .clone();
+        let output = op_scope.add_op_output(import_op.name, output_type)?;
         let result_fut = async move {
             trace!("Start building executor for source op `{}`", op_name);
             let executor = executor.await?;
@@ -664,12 +738,7 @@ impl AnalyzerContext<'_> {
                 source_id: source_id.unwrap_or_default(),
                 executor,
                 output,
-                primary_key_type: output_type
-                    .typ
-                    .key_type()
-                    .ok_or_else(|| api_error!("Source must produce a type with key: {op_name}"))?
-                    .typ
-                    .clone(),
+                primary_key_type,
                 name: op_name,
                 refresh_options: import_op.spec.refresh_options,
             })
@@ -679,21 +748,18 @@ impl AnalyzerContext<'_> {
 
     pub(super) fn analyze_reactive_op(
         &self,
-        scope: &mut ExecutionScope<'_>,
+        op_scope: &Arc<OpScope>,
         reactive_op: &NamedSpec<ReactiveOpSpec>,
-        parent_scopes: RefList<'_, &'_ ExecutionScope<'_>>,
     ) -> Result<BoxFuture<'static, Result<AnalyzedReactiveOp>>> {
         let result_fut = match &reactive_op.spec {
             ReactiveOpSpec::Transform(op) => {
                 let input_field_schemas =
-                    analyze_input_fields(&op.inputs, parent_scopes.prepend(scope)).with_context(
-                        || {
-                            format!(
-                                "Failed to analyze inputs for transform op: {}",
-                                reactive_op.name
-                            )
-                        },
-                    )?;
+                    analyze_input_fields(&op.inputs, op_scope).with_context(|| {
+                        format!(
+                            "Failed to analyze inputs for transform op: {}",
+                            reactive_op.name
+                        )
+                    })?;
                 let spec = serde_json::Value::Object(op.op.spec.clone());
 
                 let factory = self.registry.get(&op.op.kind);
@@ -703,43 +769,42 @@ impl AnalyzerContext<'_> {
                             .iter()
                             .map(|field| field.analyzed_value.clone())
                             .collect();
-                        let (output_type, executor) = fn_executor.clone().build(
+                        let (output_enriched_type, executor) = fn_executor.clone().build(
                             spec,
                             input_field_schemas,
                             self.flow_ctx.clone(),
                         )?;
-                        let output = scope
-                            .data
-                            .add_field(reactive_op.name.clone(), &output_type)?;
-                        let reactive_op = reactive_op.clone();
                         let logic_fingerprinter = Fingerprinter::default()
                             .with(&op.op)?
-                            .with(&output_type.without_attrs())?;
+                            .with(&output_enriched_type.without_attrs())?;
+                        let output_type = output_enriched_type.typ.clone();
+                        let output = op_scope
+                            .add_op_output(reactive_op.name.clone(), output_enriched_type)?;
+                        let op_name = reactive_op.name.clone();
                         async move {
-                            trace!("Start building executor for transform op `{}`", reactive_op.name);
+                            trace!("Start building executor for transform op `{op_name}`");
                             let executor = executor.await.with_context(|| {
-                                format!("Failed to build executor for transform op: {}", reactive_op.name)
+                                format!("Failed to build executor for transform op: {op_name}")
                             })?;
                             let enable_cache = executor.enable_cache();
                             let behavior_version = executor.behavior_version();
-                            trace!("Finished building executor for transform op `{}`, enable cache: {enable_cache}, behavior version: {behavior_version:?}", reactive_op.name);
+                            trace!("Finished building executor for transform op `{op_name}`, enable cache: {enable_cache}, behavior version: {behavior_version:?}");
                             let function_exec_info = AnalyzedFunctionExecInfo {
                                 enable_cache,
                                 behavior_version,
                                 fingerprinter: logic_fingerprinter
                                     .with(&behavior_version)?,
-                                output_type: output_type.typ.clone(),
+                                output_type
                             };
                             if function_exec_info.enable_cache
                                 && function_exec_info.behavior_version.is_none()
                             {
                                 api_bail!(
-                                    "When caching is enabled, behavior version must be specified for transform op: {}",
-                                    reactive_op.name
+                                    "When caching is enabled, behavior version must be specified for transform op: {op_name}"
                                 );
                             }
                             Ok(AnalyzedReactiveOp::Transform(AnalyzedTransformOp {
-                                name: reactive_op.name,
+                                name: op_name,
                                 inputs: input_value_mappings,
                                 function_exec_info,
                                 executor,
@@ -756,33 +821,28 @@ impl AnalyzerContext<'_> {
                     }
                 }
             }
-            ReactiveOpSpec::ForEach(op) => {
-                let (local_field_ref, value_type) =
-                    scope.data.analyze_field_path(&op.field_path)?;
-                let sub_scope = match &value_type.typ {
-                    ValueTypeBuilder::Table(table_type) => &table_type.sub_scope,
-                    _ => api_bail!(
-                        "ForEach only works on collection, field {} is not",
-                        op.field_path
-                    ),
-                };
-                let op_scope_fut = {
-                    let mut sub_scope = sub_scope.lock().unwrap();
-                    let mut exec_scope = ExecutionScope {
-                        name: &op.op_scope.name,
-                        data: &mut sub_scope,
-                    };
-                    self.analyze_op_scope(
-                        &mut exec_scope,
-                        &op.op_scope.ops,
-                        parent_scopes.prepend(scope),
-                    )?
+
+            ReactiveOpSpec::ForEach(foreach_op) => {
+                let (local_field_ref, sub_op_scope) = op_scope.new_foreach_op_scope(
+                    foreach_op.op_scope.name.clone(),
+                    &foreach_op.field_path,
+                )?;
+                let analyzed_op_scope_fut = {
+                    let analyzed_op_scope_fut =
+                        self.analyze_op_scope(&sub_op_scope, &foreach_op.op_scope.ops)?;
+                    let sub_op_scope_schema =
+                        sub_op_scope.states.lock().unwrap().build_op_scope_schema();
+                    op_scope.states.lock().unwrap().sub_scopes.insert(
+                        foreach_op.op_scope.name.clone(),
+                        Arc::new(sub_op_scope_schema),
+                    );
+                    analyzed_op_scope_fut
                 };
                 let op_name = reactive_op.name.clone();
                 async move {
                     Ok(AnalyzedReactiveOp::ForEach(AnalyzedForEachOp {
                         local_field_ref,
-                        op_scope: op_scope_fut
+                        op_scope: analyzed_op_scope_fut
                             .await
                             .with_context(|| format!("Analyzing foreach op: {op_name}"))?,
                         name: op_name,
@@ -792,8 +852,7 @@ impl AnalyzerContext<'_> {
             }
 
             ReactiveOpSpec::Collect(op) => {
-                let scopes = parent_scopes.prepend(scope);
-                let (struct_mapping, fields_schema) = analyze_struct_mapping(&op.input, scopes)?;
+                let (struct_mapping, fields_schema) = analyze_struct_mapping(&op.input, op_scope)?;
                 let has_auto_uuid_field = op.auto_uuid_field.is_some();
                 let fingerprinter = Fingerprinter::default().with(&fields_schema)?;
                 let collect_op = AnalyzedReactiveOp::Collect(AnalyzedCollectOp {
@@ -804,7 +863,7 @@ impl AnalyzerContext<'_> {
                         &op.scope_name,
                         op.collector_name.clone(),
                         CollectorSchema::from_fields(fields_schema, op.auto_uuid_field.clone()),
-                        scopes,
+                        op_scope,
                     )?,
                     fingerprinter,
                 });
@@ -902,7 +961,7 @@ impl AnalyzerContext<'_> {
     fn analyze_export_op_group(
         &self,
         target_kind: String,
-        scope: &mut DataScopeBuilder,
+        op_scope: &Arc<OpScope>,
         flow_inst: &FlowInstanceSpec,
         export_op_group: &AnalyzedExportTargetOpGroup,
         declarations: Vec<serde_json::Value>,
@@ -913,8 +972,11 @@ impl AnalyzerContext<'_> {
         let mut data_fields_infos = Vec::<ExportDataFieldsInfo>::new();
         for idx in export_op_group.op_idx.iter() {
             let export_op = &flow_inst.export_ops[*idx];
-            let (local_collector_ref, collector_schema) =
-                scope.consume_collector(&export_op.spec.collector_name)?;
+            let (local_collector_ref, collector_schema) = op_scope
+                .states
+                .lock()
+                .unwrap()
+                .consume_collector(&export_op.spec.collector_name)?;
             let (key_fields_schema, value_fields_schema, data_collection_info) =
                 match &export_op.spec.index_options.primary_key_fields {
                     Some(fields) => {
@@ -1040,17 +1102,18 @@ impl AnalyzerContext<'_> {
 
     fn analyze_op_scope(
         &self,
-        scope: &mut ExecutionScope<'_>,
+        op_scope: &Arc<OpScope>,
         reactive_ops: &[NamedSpec<ReactiveOpSpec>],
-        parent_scopes: RefList<'_, &'_ ExecutionScope<'_>>,
     ) -> Result<impl Future<Output = Result<AnalyzedOpScope>> + Send> {
         let op_futs = reactive_ops
             .iter()
-            .map(|reactive_op| self.analyze_reactive_op(scope, reactive_op, parent_scopes))
+            .map(|reactive_op| self.analyze_reactive_op(op_scope, reactive_op))
             .collect::<Result<Vec<_>>>()?;
+        let collector_len = op_scope.states.lock().unwrap().collectors.len();
         let result_fut = async move {
             Ok(AnalyzedOpScope {
                 reactive_ops: try_join_all(op_futs).await?,
+                collector_len,
             })
         };
         Ok(result_fut)
@@ -1068,18 +1131,25 @@ pub fn build_flow_instance_context(
     })
 }
 
+fn build_flow_schema(root_op_scope: &OpScope) -> Result<FlowSchema> {
+    let schema = (&root_op_scope.data.lock().unwrap().data).try_into()?;
+    let root_op_scope_schema = root_op_scope.states.lock().unwrap().build_op_scope_schema();
+    Ok(FlowSchema {
+        schema,
+        root_op_scope: root_op_scope_schema,
+    })
+}
+
 pub fn analyze_flow(
     flow_inst: &FlowInstanceSpec,
     flow_ctx: &Arc<FlowInstanceContext>,
     existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
     registry: &ExecutorFactoryRegistry,
 ) -> Result<(
-    DataSchema,
+    FlowSchema,
     impl Future<Output = Result<ExecutionPlan>> + Send,
     setup::FlowSetupState<setup::DesiredMode>,
 )> {
-    let mut root_data_scope = DataScopeBuilder::new();
-
     let existing_metadata_versions = || {
         existing_flow_ss
             .iter()
@@ -1138,28 +1208,22 @@ pub fn analyze_flow(
     };
 
     let analyzer_ctx = AnalyzerContext { registry, flow_ctx };
-    let mut root_exec_scope = ExecutionScope {
-        name: ROOT_SCOPE_NAME,
-        data: &mut root_data_scope,
-    };
+    let root_data_scope = Arc::new(Mutex::new(DataScopeBuilder::new()));
+    let root_op_scope = OpScope::new(ROOT_SCOPE_NAME.to_string(), None, root_data_scope);
     let import_ops_futs = flow_inst
         .import_ops
         .iter()
         .map(|import_op| {
             let existing_source_states = source_states_by_name.get(import_op.name.as_str());
             analyzer_ctx.analyze_import_op(
-                root_exec_scope.data,
+                &root_op_scope,
                 import_op.clone(),
                 Some(&mut setup_state.metadata),
                 existing_source_states,
             )
         })
         .collect::<Result<Vec<_>>>()?;
-    let op_scope_fut = analyzer_ctx.analyze_op_scope(
-        &mut root_exec_scope,
-        &flow_inst.reactive_ops,
-        RefList::Nil,
-    )?;
+    let op_scope_fut = analyzer_ctx.analyze_op_scope(&root_op_scope, &flow_inst.reactive_ops)?;
 
     #[derive(Default)]
     struct TargetOpGroup {
@@ -1197,7 +1261,7 @@ pub fn analyze_flow(
         };
         export_ops_futs.extend(analyzer_ctx.analyze_export_op_group(
             target_kind,
-            root_exec_scope.data,
+            &root_op_scope,
             flow_inst,
             &analyzed_target_op_group,
             op_ids.declarations,
@@ -1208,10 +1272,11 @@ pub fn analyze_flow(
     }
 
     let tracking_table_setup = setup_state.tracking_table.clone();
-    let data_schema = root_data_scope.into_data_schema()?;
+
+    let flow_schema = build_flow_schema(&root_op_scope)?;
     let logic_fingerprint = Fingerprinter::default()
         .with(&flow_inst)?
-        .with(&data_schema)?
+        .with(&flow_schema.schema)?
         .into_fingerprint();
     let plan_fut = async move {
         let (import_ops, op_scope, export_ops) = try_join3(
@@ -1231,7 +1296,7 @@ pub fn analyze_flow(
         })
     };
 
-    Ok((data_schema, plan_fut, setup_state))
+    Ok((flow_schema, plan_fut, setup_state))
 }
 
 pub fn analyze_transient_flow<'a>(
@@ -1240,7 +1305,7 @@ pub fn analyze_transient_flow<'a>(
     registry: &'a ExecutorFactoryRegistry,
 ) -> Result<(
     EnrichedValueType,
-    DataSchema,
+    FlowSchema,
     impl Future<Output = Result<TransientExecutionPlan>> + Send + 'a,
 )> {
     let mut root_data_scope = DataScopeBuilder::new();
@@ -1250,19 +1315,15 @@ pub fn analyze_transient_flow<'a>(
         let analyzed_field = root_data_scope.add_field(field.name.clone(), &field.value_type)?;
         input_fields.push(analyzed_field);
     }
-    let mut root_exec_scope = ExecutionScope {
-        name: ROOT_SCOPE_NAME,
-        data: &mut root_data_scope,
-    };
-    let op_scope_fut = analyzer_ctx.analyze_op_scope(
-        &mut root_exec_scope,
-        &flow_inst.reactive_ops,
-        RefList::Nil,
-    )?;
-    let (output_value, output_type) = analyze_value_mapping(
-        &flow_inst.output_value,
-        RefList::Nil.prepend(&root_exec_scope),
-    )?;
+    let root_op_scope = OpScope::new(
+        ROOT_SCOPE_NAME.to_string(),
+        None,
+        Arc::new(Mutex::new(root_data_scope)),
+    );
+    let op_scope_fut = analyzer_ctx.analyze_op_scope(&root_op_scope, &flow_inst.reactive_ops)?;
+    let (output_value, output_type) =
+        analyze_value_mapping(&flow_inst.output_value, &root_op_scope)?;
+    let data_schema = build_flow_schema(&root_op_scope)?;
     let plan_fut = async move {
         let op_scope = op_scope_fut.await?;
         Ok(TransientExecutionPlan {
@@ -1271,5 +1332,5 @@ pub fn analyze_transient_flow<'a>(
             output_value,
         })
     };
-    Ok((output_type, root_data_scope.into_data_schema()?, plan_fut))
+    Ok((output_type, data_schema, plan_fut))
 }

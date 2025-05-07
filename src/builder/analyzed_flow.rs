@@ -9,7 +9,7 @@ use crate::{
 
 pub struct AnalyzedFlow {
     pub flow_instance: spec::FlowInstanceSpec,
-    pub data_schema: schema::DataSchema,
+    pub data_schema: schema::FlowSchema,
     pub desired_state: setup::FlowSetupState<setup::DesiredMode>,
     /// It's None if the flow is not up to date
     pub execution_plan:
@@ -67,7 +67,7 @@ impl AnalyzedFlow {
 
 pub struct AnalyzedTransientFlow {
     pub transient_flow_instance: spec::TransientFlowSpec,
-    pub data_schema: schema::DataSchema,
+    pub data_schema: schema::FlowSchema,
     pub execution_plan: plan::TransientExecutionPlan,
     pub output_type: schema::EnrichedValueType,
 }

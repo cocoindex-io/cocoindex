@@ -21,7 +21,6 @@ pub async fn init_server(
     settings: ServerSettings,
 ) -> Result<BoxFuture<'static, ()>> {
     let mut cors = CorsLayer::default();
-    debug!("cors_origins: {:?}", settings.cors_origins);
     if !settings.cors_origins.is_empty() {
         let origins: Vec<_> = settings
             .cors_origins
@@ -38,44 +37,54 @@ pub async fn init_server(
             .allow_headers([axum::http::header::CONTENT_TYPE]);
     }
     let app = Router::new()
-        .route("/api/flows", routing::get(service::flows::list_flows))
         .route(
-            "/api/flows/:flowInstName",
-            routing::get(service::flows::get_flow_spec),
+            "/cocoindex",
+            routing::get(|| async { "CocoIndex is running!" }),
         )
-        .route(
-            "/api/flows/:flowInstName/schema",
-            routing::get(service::flows::get_flow_schema),
-        )
-        .route(
-            "/api/flows/:flowInstName/keys",
-            routing::get(service::flows::get_keys),
-        )
-        .route(
-            "/api/flows/:flowInstName/data",
-            routing::get(service::flows::evaluate_data),
-        )
-        .route(
-            "/api/flows/:flowInstName/update",
-            routing::post(service::flows::update),
-        )
-        .route(
-            "/api/flows/:flowInstName/search",
-            routing::get(service::search::search),
-        )
-        .layer(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(cors),
-        )
-        .with_state(lib_context.clone());
+        .nest(
+            "/cocoindex/api",
+            Router::new()
+                .route("/flows", routing::get(service::flows::list_flows))
+                .route(
+                    "/flows/:flowInstName",
+                    routing::get(service::flows::get_flow_spec),
+                )
+                .route(
+                    "/flows/:flowInstName/schema",
+                    routing::get(service::flows::get_flow_schema),
+                )
+                .route(
+                    "/flows/:flowInstName/keys",
+                    routing::get(service::flows::get_keys),
+                )
+                .route(
+                    "/flows/:flowInstName/data",
+                    routing::get(service::flows::evaluate_data),
+                )
+                .route(
+                    "/flows/:flowInstName/update",
+                    routing::post(service::flows::update),
+                )
+                .route(
+                    "/flows/:flowInstName/search",
+                    routing::get(service::search::search),
+                )
+                .layer(
+                    ServiceBuilder::new()
+                        .layer(TraceLayer::new_for_http())
+                        .layer(cors),
+                )
+                .with_state(lib_context.clone()),
+        );
 
-    // run our app with hyper, listening globally on port 3000
     let listener = tokio::net::TcpListener::bind(&settings.address)
         .await
-        .unwrap();
+        .context(format!("Failed to bind to address: {}", settings.address))?;
 
-    println!("Server running at http://{}/", settings.address);
+    println!(
+        "Server running at http://{}/cocoindex",
+        listener.local_addr()?
+    );
     let serve_fut = async { axum::serve(listener, app).await.unwrap() };
     Ok(serve_fut.boxed())
 }

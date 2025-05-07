@@ -17,8 +17,6 @@ use super::memoization::{evaluate_with_cell, EvaluationMemory, EvaluationMemoryO
 pub struct ScopeValueBuilder {
     // TODO: Share the same lock for values produced in the same execution scope, for stricter atomicity.
     pub fields: Vec<OnceLock<value::Value<ScopeValueBuilder>>>,
-
-    pub collected_values: Vec<Mutex<Vec<value::FieldValues>>>,
 }
 
 impl From<&ScopeValueBuilder> for value::ScopeValue {
@@ -46,26 +44,17 @@ impl From<ScopeValueBuilder> for value::ScopeValue {
 }
 
 impl ScopeValueBuilder {
-    fn new(num_fields: usize, num_collectors: usize) -> Self {
+    fn new(num_fields: usize) -> Self {
         let mut fields = Vec::with_capacity(num_fields);
         fields.resize_with(num_fields, OnceLock::new);
-
-        let mut collected_values = Vec::with_capacity(num_collectors);
-        collected_values.resize_with(num_collectors, Default::default);
-        Self {
-            fields,
-            collected_values,
-        }
+        Self { fields }
     }
 
-    fn augmented_from(
-        source: &value::ScopeValue,
-        schema: &schema::TableSchema,
-    ) -> Result<Self> {
+    fn augmented_from(source: &value::ScopeValue, schema: &schema::TableSchema) -> Result<Self> {
         let val_index_base = if schema.has_key() { 1 } else { 0 };
         let len = schema.row.fields.len() - val_index_base;
 
-        let mut builder = Self::new(len, schema.collectors.len());
+        let mut builder = Self::new(len);
 
         let value::ScopeValue(source_fields) = source;
         for ((v, t), r) in source_fields
@@ -149,9 +138,27 @@ struct ScopeEntry<'a> {
     key: ScopeKey<'a>,
     value: &'a ScopeValueBuilder,
     schema: &'a schema::StructSchema,
+    collected_values: Vec<Mutex<Vec<value::FieldValues>>>,
 }
 
-impl ScopeEntry<'_> {
+impl<'a> ScopeEntry<'a> {
+    fn new(
+        key: ScopeKey<'a>,
+        value: &'a ScopeValueBuilder,
+        schema: &'a schema::StructSchema,
+        analyzed_op_scope: &AnalyzedOpScope,
+    ) -> Self {
+        let mut collected_values = Vec::with_capacity(analyzed_op_scope.collector_len);
+        collected_values.resize_with(analyzed_op_scope.collector_len, Default::default);
+
+        Self {
+            key,
+            value,
+            schema,
+            collected_values,
+        }
+    }
+
     fn get_local_field_schema<'b>(
         schema: &'b schema::StructSchema,
         indices: &[u32],
@@ -351,11 +358,12 @@ async fn evaluate_op_scope(
                             evaluate_child_op_scope(
                                 &op.op_scope,
                                 scoped_entries,
-                                ScopeEntry {
-                                    key: ScopeKey::None,
-                                    value: item,
-                                    schema: &table_schema.row,
-                                },
+                                ScopeEntry::new(
+                                    ScopeKey::None,
+                                    item,
+                                    &table_schema.row,
+                                    &op.op_scope,
+                                ),
                                 memory,
                             )
                         })
@@ -366,11 +374,12 @@ async fn evaluate_op_scope(
                             evaluate_child_op_scope(
                                 &op.op_scope,
                                 scoped_entries,
-                                ScopeEntry {
-                                    key: ScopeKey::MapKey(k),
-                                    value: v,
-                                    schema: &table_schema.row,
-                                },
+                                ScopeEntry::new(
+                                    ScopeKey::MapKey(k),
+                                    v,
+                                    &table_schema.row,
+                                    &op.op_scope,
+                                ),
                                 memory,
                             )
                         })
@@ -382,11 +391,12 @@ async fn evaluate_op_scope(
                             evaluate_child_op_scope(
                                 &op.op_scope,
                                 scoped_entries,
-                                ScopeEntry {
-                                    key: ScopeKey::ListIndex(i),
-                                    value: item,
-                                    schema: &table_schema.row,
-                                },
+                                ScopeEntry::new(
+                                    ScopeKey::ListIndex(i),
+                                    item,
+                                    &table_schema.row,
+                                    &op.op_scope,
+                                ),
                                 memory,
                             )
                         })
@@ -420,9 +430,9 @@ async fn evaluate_op_scope(
                 };
                 let collector_entry = scoped_entries
                     .headn(op.collector_ref.scope_up_level as usize)
-                    .unwrap();
+                    .ok_or_else(|| anyhow::anyhow!("Collector level out of bound"))?;
                 {
-                    let mut collected_records = collector_entry.value.collected_values
+                    let mut collected_records = collector_entry.collected_values
                         [op.collector_ref.local.collector_idx as usize]
                         .lock()
                         .unwrap();
@@ -436,22 +446,28 @@ async fn evaluate_op_scope(
     Ok(())
 }
 
+#[derive(Debug)]
+pub struct EvaluateSourceEntryOutput {
+    pub data_scope: ScopeValueBuilder,
+    pub collected_values: Vec<Vec<value::FieldValues>>,
+}
+
 pub async fn evaluate_source_entry(
     plan: &ExecutionPlan,
     import_op: &AnalyzedImportOp,
-    schema: &schema::DataSchema,
+    schema: &schema::FlowSchema,
     key: &value::KeyValue,
     source_value: value::FieldValues,
     memory: &EvaluationMemory,
-) -> Result<ScopeValueBuilder> {
+) -> Result<EvaluateSourceEntryOutput> {
     let root_schema = &schema.schema;
-    let root_scope_value =
-        ScopeValueBuilder::new(root_schema.fields.len(), schema.collectors.len());
-    let root_scope_entry = ScopeEntry {
-        key: ScopeKey::None,
-        value: &root_scope_value,
-        schema: root_schema,
-    };
+    let root_scope_value = ScopeValueBuilder::new(root_schema.fields.len());
+    let root_scope_entry = ScopeEntry::new(
+        ScopeKey::None,
+        &root_scope_value,
+        root_schema,
+        &plan.op_scope,
+    );
 
     let table_schema = match &root_schema.fields[import_op.output.field_idx as usize]
         .value_type
@@ -476,7 +492,15 @@ pub async fn evaluate_source_entry(
         memory,
     )
     .await?;
-    Ok(root_scope_value)
+    let collected_values = root_scope_entry
+        .collected_values
+        .into_iter()
+        .map(|v| v.into_inner().unwrap())
+        .collect::<Vec<_>>();
+    Ok(EvaluateSourceEntryOutput {
+        data_scope: root_scope_value,
+        collected_values,
+    })
 }
 
 pub async fn evaluate_transient_flow(
@@ -484,13 +508,13 @@ pub async fn evaluate_transient_flow(
     input_values: &Vec<value::Value>,
 ) -> Result<value::Value> {
     let root_schema = &flow.data_schema.schema;
-    let root_scope_value =
-        ScopeValueBuilder::new(root_schema.fields.len(), flow.data_schema.collectors.len());
-    let root_scope_entry = ScopeEntry {
-        key: ScopeKey::None,
-        value: &root_scope_value,
-        schema: root_schema,
-    };
+    let root_scope_value = ScopeValueBuilder::new(root_schema.fields.len());
+    let root_scope_entry = ScopeEntry::new(
+        ScopeKey::None,
+        &root_scope_value,
+        root_schema,
+        &flow.execution_plan.op_scope,
+    );
 
     if input_values.len() != flow.execution_plan.input_fields.len() {
         bail!(

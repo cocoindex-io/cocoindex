@@ -61,7 +61,7 @@ struct SourceOutputData<'a> {
 
 struct Dumper<'a> {
     plan: &'a ExecutionPlan,
-    schema: &'a schema::DataSchema,
+    schema: &'a schema::FlowSchema,
     pool: &'a PgPool,
     options: EvaluateAndDumpOptions,
 }
@@ -95,11 +95,7 @@ impl<'a> Dumper<'a> {
             return Ok(None);
         };
 
-        *collected_values_buffer = data_builder
-            .collected_values
-            .into_iter()
-            .map(|v| v.into_inner().unwrap())
-            .collect();
+        *collected_values_buffer = data_builder.collected_values;
         let exports = self
             .plan
             .export_ops
@@ -109,7 +105,9 @@ impl<'a> Dumper<'a> {
                 let entry = (
                     export_op.name.as_str(),
                     TargetExportData {
-                        schema: &self.schema.collectors[collector_idx].spec.fields,
+                        schema: &self.schema.root_op_scope.collectors[collector_idx]
+                            .spec
+                            .fields,
                         data: collected_values_buffer[collector_idx]
                             .iter()
                             .map(|v| -> Result<_> {
@@ -225,7 +223,7 @@ impl<'a> Dumper<'a> {
 
 pub async fn evaluate_and_dump(
     plan: &ExecutionPlan,
-    schema: &schema::DataSchema,
+    schema: &schema::FlowSchema,
     options: EvaluateAndDumpOptions,
     pool: &PgPool,
 ) -> Result<()> {

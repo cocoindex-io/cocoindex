@@ -1,5 +1,6 @@
 use crate::prelude::*;
 
+use crate::base::schema::{FieldSchema, ValueType};
 use crate::base::spec::VectorSimilarityMetric;
 use crate::execution::query;
 use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
@@ -13,6 +14,7 @@ use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::collections::btree_map;
 use std::fmt::Write;
+use std::sync::Arc;
 
 mod convert;
 pub use convert::*;
@@ -192,6 +194,58 @@ impl Flow {
                 .into_py_result()?;
             Ok(())
         })
+    }
+
+    pub fn get_schema(&self) -> Vec<(String, String, String)> {
+        let schema = &self.0.flow.data_schema;
+        let mut result = Vec::new();
+
+        fn process_fields(
+            fields: &[FieldSchema],
+            prefix: &str,
+            result: &mut Vec<(String, String, String)>,
+        ) {
+            for field in fields {
+                let field_name = format!("{}{}", prefix, field.name);
+
+                let mut field_type = match &field.value_type.typ {
+                    ValueType::Basic(basic) => format!("{}", basic),
+                    ValueType::Table(t) => format!("{}", t.kind),
+                    ValueType::Struct(_) => "Struct".to_string(),
+                };
+
+                if field.value_type.nullable {
+                    field_type.push('?');
+                }
+
+                let attr_str = if field.value_type.attrs.is_empty() {
+                    String::new()
+                } else {
+                    field
+                        .value_type
+                        .attrs
+                        .keys()
+                        .map(|k| k.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+
+                result.push((field_name.clone(), field_type, attr_str));
+
+                match &field.value_type.typ {
+                    ValueType::Struct(s) => {
+                        process_fields(&s.fields, &format!("{}.", field_name), result);
+                    }
+                    ValueType::Table(t) => {
+                        process_fields(&t.row.fields, &format!("{}[].", field_name), result);
+                    }
+                    ValueType::Basic(_) => {}
+                }
+            }
+        }
+
+        process_fields(&schema.schema.fields, "", &mut result);
+        result
     }
 }
 
@@ -382,7 +436,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<builder::flow_builder::FlowBuilder>()?;
     m.add_class::<builder::flow_builder::DataCollector>()?;
     m.add_class::<builder::flow_builder::DataSlice>()?;
-    m.add_class::<builder::flow_builder::DataScopeRef>()?;
+    m.add_class::<builder::flow_builder::OpScopeRef>()?;
     m.add_class::<Flow>()?;
     m.add_class::<FlowLiveUpdater>()?;
     m.add_class::<TransientFlow>()?;

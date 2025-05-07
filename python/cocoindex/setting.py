@@ -47,7 +47,7 @@ class ServerSettings:
     """Settings for the cocoindex server."""
 
     # The address to bind the server to.
-    address: str = "127.0.0.1:8080"
+    address: str = "127.0.0.1:49344"
 
     # The origins of the clients (e.g. CocoInsight UI) to allow CORS from.
     cors_origins: list[str] | None = None

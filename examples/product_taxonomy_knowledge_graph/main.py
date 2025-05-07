@@ -1,5 +1,5 @@
 """
-This example shows how to extract taxonomy and complementary taxonomy from product data and build a knowledge graph.
+This example shows how to extract relationships from Markdown documents and build a knowledge graph.
 """
 import dataclasses
 import datetime
@@ -38,6 +38,7 @@ PRODUCT_TEMPLATE = """
 @dataclasses.dataclass
 class ProductInfo:
     id: str
+    url: str
     title: str
     price: float
     detail: str
@@ -74,6 +75,7 @@ def extract_product_info(product: cocoindex.typing.Json, filename: str) -> Produ
     # Print  markdown for LLM to extract the taxonomy and complimentary taxonomy
     return ProductInfo(
         id=f"{filename.removesuffix('.json')}",
+        url=product["source"],
         title=product["title"],
         price=float(product["price"].lstrip("$").replace(",", "")),
         detail=Template(PRODUCT_TEMPLATE).render(**product),
@@ -86,7 +88,7 @@ def store_product_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
     Define an example flow that extracts triples from files and build knowledge graph.
     """
     data_scope["products"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="products",
+        cocoindex.sources.LocalFile(path="crawled_products",
                                     included_patterns=["*.json"]),
         refresh_interval=datetime.timedelta(seconds=5))
 
@@ -96,16 +98,14 @@ def store_product_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
 
 
     with data_scope["products"].row() as product:
-        data = (product["content"]
-                .transform(cocoindex.functions.ParseJson(), language="json")
-                .transform(extract_product_info, filename=product["filename"]))
-        product_node.collect(id=data["id"], title=data["title"], price=data["price"])
-
+        data = (product["content"].transform(cocoindex.functions.ParseJson(), language="json")
+                            .transform(extract_product_info, filename=product["filename"]))
         taxonomy = data["detail"].transform(cocoindex.functions.ExtractByLlm(
                     llm_spec=cocoindex.LlmSpec(
                         api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4.1"),
                         output_type=ProductTaxonomyInfo))
         
+        product_node.collect(id=data["id"], url=data["url"], title=data["title"], price=data["price"])
         with taxonomy['taxonomies'].row() as t:
             product_taxonomy.collect(id=cocoindex.GeneratedField.UUID, product_id=data["id"], taxonomy=t["name"])
         with taxonomy['complementary_taxonomies'].row() as t:

@@ -1,0 +1,5 @@
+cocoindex>=0.1.26
+python-dotenv>=1.0.1
+fastapi==0.115.12
+fastapi-cli==0.0.7
+uvicorn==0.34.2

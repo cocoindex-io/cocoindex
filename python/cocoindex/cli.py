@@ -1,7 +1,9 @@
+import asyncio
 import click
 import datetime
 
 from rich.console import Console
+from rich.table import Table
 
 from . import flow, lib, setting
 from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
@@ -56,11 +58,26 @@ def ls(show_all: bool):
 @click.option("--color/--no-color", default=True)
 def show(flow_name: str | None, color: bool):
     """
-    Show the flow spec in a readable format with colored output.
+    Show the flow spec in a readable format with colored output,
+    including the schema.
     """
-    fl = _flow_by_name(flow_name)
+    flow = _flow_by_name(flow_name)
     console = Console(no_color=not color)
-    console.print(fl._render_text())
+    console.print(flow._render_text())
+
+    table = Table(
+        title=f"Schema for Flow: {flow.name}",
+        show_header=True,
+        header_style="bold magenta"
+    )
+    table.add_column("Field", style="cyan")
+    table.add_column("Type", style="green")
+    table.add_column("Attributes", style="yellow")
+
+    for field_name, field_type, attr_str in flow._render_schema():
+        table.add_row(field_name, field_type, attr_str)
+
+    console.print(table)
 
 @cli.command()
 def setup():

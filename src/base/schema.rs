@@ -1,9 +1,7 @@
-use crate::builder::plan::AnalyzedValueMapping;
+use crate::prelude::*;
 
 use super::spec::*;
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, ops::Deref, sync::Arc};
+use crate::builder::plan::AnalyzedValueMapping;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VectorTypeSchema {
@@ -60,27 +58,26 @@ pub enum BasicValueType {
 impl std::fmt::Display for BasicValueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BasicValueType::Bytes => write!(f, "bytes"),
-            BasicValueType::Str => write!(f, "str"),
-            BasicValueType::Bool => write!(f, "bool"),
-            BasicValueType::Int64 => write!(f, "int64"),
-            BasicValueType::Float32 => write!(f, "float32"),
-            BasicValueType::Float64 => write!(f, "float64"),
-            BasicValueType::Range => write!(f, "range"),
-            BasicValueType::Uuid => write!(f, "uuid"),
-            BasicValueType::Date => write!(f, "date"),
-            BasicValueType::Time => write!(f, "time"),
-            BasicValueType::LocalDateTime => write!(f, "local_datetime"),
-            BasicValueType::OffsetDateTime => write!(f, "offset_datetime"),
-            BasicValueType::Json => write!(f, "json"),
-            BasicValueType::Vector(s) => write!(
-                f,
-                "vector({}, {})",
-                s.dimension
-                    .map(|d| d.to_string())
-                    .unwrap_or_else(|| "*".to_string()),
-                s.element_type
-            ),
+            BasicValueType::Bytes => write!(f, "Bytes"),
+            BasicValueType::Str => write!(f, "Str"),
+            BasicValueType::Bool => write!(f, "Bool"),
+            BasicValueType::Int64 => write!(f, "Int64"),
+            BasicValueType::Float32 => write!(f, "Float32"),
+            BasicValueType::Float64 => write!(f, "Float64"),
+            BasicValueType::Range => write!(f, "Range"),
+            BasicValueType::Uuid => write!(f, "Uuid"),
+            BasicValueType::Date => write!(f, "Date"),
+            BasicValueType::Time => write!(f, "Time"),
+            BasicValueType::LocalDateTime => write!(f, "LocalDateTime"),
+            BasicValueType::OffsetDateTime => write!(f, "OffsetDateTime"),
+            BasicValueType::Json => write!(f, "Json"),
+            BasicValueType::Vector(s) => {
+                write!(f, "Vector[{}", s.element_type)?;
+                if let Some(dimension) = s.dimension {
+                    write!(f, ", {}", dimension)?;
+                }
+                write!(f, "]")
+            }
         }
     }
 }
@@ -141,9 +138,6 @@ impl std::fmt::Display for TableKind {
 pub struct TableSchema {
     pub kind: TableKind,
     pub row: StructSchema,
-
-    #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
-    pub collectors: Vec<NamedSpec<Arc<CollectorSchema>>>,
 }
 
 impl TableSchema {
@@ -170,36 +164,19 @@ impl TableSchema {
         Self {
             kind: self.kind,
             row: self.row.without_attrs(),
-            collectors: self
-                .collectors
-                .iter()
-                .map(|c| NamedSpec {
-                    name: c.name.clone(),
-                    spec: Arc::from(c.spec.without_attrs()),
-                })
-                .collect(),
         }
     }
 }
 
 impl std::fmt::Display for TableSchema {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}({}", self.kind, self.row)?;
-        for collector in self.collectors.iter() {
-            write!(f, "; COLLECTOR {} ({})", collector.name, collector.spec)?;
-        }
-        write!(f, ")")?;
-        Ok(())
+        write!(f, "{}({})", self.kind, self.row)
     }
 }
 
 impl TableSchema {
     pub fn new(kind: TableKind, row: StructSchema) -> Self {
-        Self {
-            kind,
-            row,
-            collectors: Default::default(),
-        }
+        Self { kind, row }
     }
 
     pub fn key_field(&self) -> Option<&FieldSchema> {
@@ -409,16 +386,27 @@ impl CollectorSchema {
     }
 }
 
-/// Top-level schema for a flow instance.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataSchema {
-    pub schema: StructSchema,
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpScopeSchema {
+    /// Output schema for transform ops.
+    pub op_output_types: HashMap<FieldName, EnrichedValueType>,
 
-    #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
+    /// Child op scope for foreach ops.
+    pub op_scopes: HashMap<String, Arc<OpScopeSchema>>,
+
+    /// Collectors for the current scope.
     pub collectors: Vec<NamedSpec<Arc<CollectorSchema>>>,
 }
 
-impl Deref for DataSchema {
+/// Top-level schema for a flow instance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowSchema {
+    pub schema: StructSchema,
+
+    pub root_op_scope: OpScopeSchema,
+}
+
+impl std::ops::Deref for FlowSchema {
     type Target = StructSchema;
 
     fn deref(&self) -> &Self::Target {
