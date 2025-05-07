@@ -44,32 +44,24 @@ class ProductTaxonomyInfo:
 
 @cocoindex.op.function(behavior_version=2)
 def extract_product_info(product: cocoindex.typing.Json, filename: str) -> ProductInfo:
+    # Print  markdown for LLM to extract the taxonomy and complimentary taxonomy
     template_str = """
 # {{ title }}
-{% if highlights %}
-
 ## Highlights
 
 {% for highlight in highlights %}
 - {{ highlight }}
 {% endfor %}
-{% endif %}
-{% if description %}
+
 ## Description
 
-{% if description.header %}
-{{ description.header }}
-{% endif %}
-
-{% if description.paragraph %}
-{{ description.paragraph }}
-{% endif %}
+{{ description.header | default('') }}
+{{ description.paragraph | default('') }}
 
 {% if description.bullets %}
 {% for bullet in description.bullets %}
 - {{ bullet }}
 {% endfor %}
-{% endif %}
 {% endif %}
     """
     
