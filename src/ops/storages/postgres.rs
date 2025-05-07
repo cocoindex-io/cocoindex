@@ -249,6 +249,10 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
                             .transpose()?
                     }
                 }
+                BasicValueType::Union(_) => row
+                    .try_get::<Option<serde_json::Value>, _>(field_idx)?
+                    .map(|v| BasicValue::from_json(v, basic_type))
+                    .transpose()?,
             };
             basic_value.map(Value::Basic)
         }
@@ -699,6 +703,7 @@ fn to_column_type_sql(column_type: &ValueType) -> Cow<'static, str> {
                     "jsonb".into()
                 }
             }
+            BasicValueType::Union(_) => "jsonb".into(),
         },
         _ => "jsonb".into(),
     }
