@@ -2,7 +2,7 @@
 
 We will process a list of products and use LLM to extract the taxonomy and complimentary taxonomy for each product.
 
-Please drop [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a star to support us if you like our work. Thank you so much with a warm coconut hug 🥥🤗. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+Please drop [CocoIndex on Github](https://github.com/cocoindex-io/cocoindex) a star to support us and stay tuned for more updates. Thank you so much 🥥🤗. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
 
 ## Prerequisite
@@ -49,9 +49,7 @@ You can open it at [http://localhost:7474](http://localhost:7474), and run the f
 ```cypher
 MATCH p=()-->() RETURN p
 ```
-<img width="1366" alt="neo4j-for-coco-docs" src="https://github.com/user-attachments/assets/3c8b6329-6fee-4533-9480-571399b57e57" />
-
-
+![Neo4j Browser Screenshot](img/neo4j.png)
 
 ## CocoInsight 
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
@@ -63,6 +61,6 @@ python main.py cocoindex server -ci
 
 And then open the url https://cocoindex.io/cocoinsight. 
 
-<img width="1430" alt="cocoinsight" src="https://github.com/user-attachments/assets/d5ada581-cceb-42bf-a949-132df674f3dd" />
+![CocoInsight Screenshot](img/cocoinsight.png)
 
 
