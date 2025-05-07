@@ -15,7 +15,7 @@ from threading import Lock
 from enum import Enum
 from dataclasses import dataclass
 from rich.text import Text
-from rich.console import Console
+from rich.tree import Tree
 
 from . import _engine
 from . import index
@@ -454,61 +454,52 @@ class Flow:
             return engine_flow
         self._lazy_engine_flow = _lazy_engine_flow
 
-    def _format_flow(self, flow_dict: dict) -> Text:
-        output = Text()
+    def _render_spec(self, verbose: bool = False) -> Tree:
+        """
+        Render the flow spec as a styled rich Tree with hierarchical structure.
+        """
+        tree = Tree(f"Flow: {self.name}", style="cyan")
+        current_section = None
+        section_node = None
+        indent_stack = []
 
-        def add_line(content, indent=0, style=None, end="\n"):
-            output.append(" " * indent)
-            output.append(content, style=style)
-            output.append(end)
+        for i, (section, content, indent) in enumerate(self._get_spec(verbose=verbose)):
+            # Skip "Scope" entries (see ReactiveOpScope in spec.rs)
+            if content.startswith("Scope:"):
+                continue
 
-        def format_key_value(key, value, indent):
-            if isinstance(value, (dict, list)):
-                add_line(f"- {key}:", indent, style="green")
-                format_data(value, indent + 2)
+            if section != current_section:
+                current_section = section
+                section_node = tree.add(f"{section}:", style="bold magenta")
+                indent_stack = [(0, section_node)]
+
+            while indent_stack and indent_stack[-1][0] >= indent:
+                indent_stack.pop()
+
+            parent = indent_stack[-1][1] if indent_stack else section_node
+            styled_content = Text(content, style="yellow")
+            is_parent = any(
+                next_indent > indent
+                for _, next_content, next_indent in self._get_spec(verbose=verbose)[i + 1:]
+                if not next_content.startswith("Scope:")
+            )
+
+            if is_parent:
+                node = parent.add(styled_content, style=None)
+                indent_stack.append((indent, node))
             else:
-                add_line(f"- {key}:", indent, style="green", end="")
-                add_line(f" {value}", style="yellow")
+                parent.add(styled_content, style=None)
 
-        def format_data(data, indent=0):
-            if isinstance(data, dict):
-                for key, value in data.items():
-                    format_key_value(key, value, indent)
-            elif isinstance(data, list):
-                for i, item in enumerate(data):
-                    format_key_value(f"[{i}]", item, indent)
-            else:
-                add_line(str(data), indent, style="yellow")
+        return tree
 
-        # Header
-        flow_name = flow_dict.get("name", "Unnamed")
-        add_line(f"Flow: {flow_name}", style="bold cyan")
-
-        # Section
-        for section_title, section_key in [
-            ("Sources:", "import_ops"),
-            ("Processing:", "reactive_ops"),
-            ("Targets:", "export_ops"),
-        ]:
-            add_line("")
-            add_line(section_title, style="bold cyan")
-            format_data(flow_dict.get(section_key, []), indent=0)
-
-        return output
-
-    def _render_text(self) -> Text:
-        flow_spec_str = str(self._lazy_engine_flow())
-        try:
-            flow_dict = json.loads(flow_spec_str)
-            return self._format_flow(flow_dict)
-        except json.JSONDecodeError:
-            return Text(flow_spec_str)
+    def _get_spec(self, verbose: bool = False) -> list[tuple[str, str, int]]:
+        return self._lazy_engine_flow().get_spec(verbose=verbose)
     
-    def _render_schema(self) -> list[tuple[str, str, str]]:
+    def _get_schema(self) -> list[tuple[str, str, str]]:
         return self._lazy_engine_flow().get_schema()
 
     def __str__(self):
-        return str(self._render_text())
+        return str(self._get_spec())
 
     def __repr__(self):
         return repr(self._lazy_engine_flow())

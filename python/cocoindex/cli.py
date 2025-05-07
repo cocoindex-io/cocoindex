@@ -55,16 +55,17 @@ def ls(show_all: bool):
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
-@click.option("--color/--no-color", default=True)
-def show(flow_name: str | None, color: bool):
+@click.option("--color/--no-color", default=True, help="Enable or disable colored output.")
+@click.option("--verbose", is_flag=True, help="Show verbose output with full details.")
+def show(flow_name: str | None, color: bool, verbose: bool):
     """
-    Show the flow spec in a readable format with colored output,
-    including the schema.
+    Show the flow spec and schema in a readable format with colored output.
     """
     flow = _flow_by_name(flow_name)
     console = Console(no_color=not color)
-    console.print(flow._render_text())
+    console.print(flow._render_spec(verbose=verbose))
 
+    console.print()
     table = Table(
         title=f"Schema for Flow: {flow.name}",
         show_header=True,
@@ -74,7 +75,7 @@ def show(flow_name: str | None, color: bool):
     table.add_column("Type", style="green")
     table.add_column("Attributes", style="yellow")
 
-    for field_name, field_type, attr_str in flow._render_schema():
+    for field_name, field_type, attr_str in flow._get_schema():
         table.add_row(field_name, field_type, attr_str)
 
     console.print(table)
