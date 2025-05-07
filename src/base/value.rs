@@ -4,6 +4,7 @@ use anyhow::Result;
 use base64::prelude::*;
 use bytes::Bytes;
 use chrono::Offset;
+use itertools::Itertools;
 use log::warn;
 use serde::{
     de::{SeqAccess, Visitor},
@@ -920,23 +921,17 @@ impl BasicValue {
             }
             (v, BasicValueType::Union(UnionTypeSchema { types })) => {
                 for ty in types {
-                    match ty {
-                        BasicValueType::Bool => {
-                            if let Some(bool_val) = v.as_bool() {
-                                return Ok(BasicValue::Bool(bool_val));
-                            }
-                        }
-                        BasicValueType::Str => {
-                            if let Some(str_val) = v.as_str() {
-                                return Ok(BasicValue::Str(Arc::from(str_val)))
-                            }
-                        }
-                        // TODO
-                        _ => {}
+                    // TODO: Avoid clone
+                    if let Ok(val) = BasicValue::from_json(v.clone(), ty) {
+                        return Ok(val);
                     }
                 }
 
-                Err(anyhow::anyhow!("invalid union value: {}", v))?
+                Err(anyhow::anyhow!(
+                    "invalid union value: {}, expect {}",
+                    v,
+                    types.iter().join(" | "),
+                ))?
             }
             (v, t) => {
                 anyhow::bail!("Value and type not matched.\nTarget type {t:?}\nJSON value: {v}\n")
