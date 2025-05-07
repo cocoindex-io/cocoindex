@@ -9,5 +9,6 @@ from .llm import LlmSpec, LlmApiType
 from .index import VectorSimilarityMetric, VectorIndexDef, IndexOptions
 from .auth_registry import AuthEntryReference, add_auth_entry, ref_auth_entry
 from .lib import *
+from .setting import *
 from ._engine import OpArgSchema
 from .typing import Float32, Float64, LocalDateTime, OffsetDateTime, Range, Vector, Json
