@@ -37,7 +37,7 @@ python main.py cocoindex update
 
 ### Browse the knowledge graph
 
-After the knowledge graph is build, you can explore the knowledge graph you built in Neo4j Browser.
+After the knowledge graph is built, you can explore the knowledge graph you built in Neo4j Browser.
 
 For the dev enviroment, you can connect neo4j browser using credentials:
 - username: `neo4j`
