@@ -6,7 +6,6 @@ use std::sync::Arc;
 use crate::ops::sdk::*;
 use crate::setup;
 use anyhow::{bail, Result};
-use axum_extra::extract;
 use futures::FutureExt;
 use qdrant_client::qdrant::vectors_output::VectorsOptions;
 use qdrant_client::qdrant::{
@@ -266,25 +265,25 @@ fn extract_basic_value(
 
             point.payload
                 .get(field_name)
-                .and_then(|v| v.kind.and_then(|kind| match kind {
-                    qdrant::value::Kind::BoolValue(v) if types.contains(&BasicValueType::Bool) => {
-                        extract_basic_value(point, &BasicValueType::Bool, field_name)
+                .and_then(|v| v.kind.as_ref().and_then(|kind| match kind {
+                    &qdrant::value::Kind::BoolValue(v) if types.contains(&BasicValueType::Bool) => {
+                        Some(BasicValue::Bool(v))
                     }
-                    qdrant::value::Kind::IntegerValue(v) if types.contains(&BasicValueType::Int64) => {
-                        extract_basic_value(point, &BasicValueType::Int64, field_name)
+                    &qdrant::value::Kind::IntegerValue(v) if types.contains(&BasicValueType::Int64) => {
+                        Some(BasicValue::Int64(v))
                     }
-                    qdrant::value::Kind::DoubleValue(v) if types.contains(&BasicValueType::Float64) => {
-                        extract_basic_value(point, &BasicValueType::Float64, field_name)
+                    &qdrant::value::Kind::DoubleValue(v) if types.contains(&BasicValueType::Float64) => {
+                        Some(BasicValue::Float64(v))
                     }
-                    qdrant::value::Kind::DoubleValue(v) if types.contains(&BasicValueType::Float32) => {
-                        extract_basic_value(point, &BasicValueType::Float32, field_name)
+                    &qdrant::value::Kind::DoubleValue(v) if types.contains(&BasicValueType::Float32) => {
+                        Some(BasicValue::Float32(v as f32))
                     }
                     qdrant::value::Kind::StringValue(v) => s.parse_str(&v).ok(),
 
-                    qdrant::value::Kind::StructValue(v) if types.contains(&BasicValueType::Range) => {
+                    qdrant::value::Kind::StructValue(_) if types.contains(&BasicValueType::Range) => {
                         extract_basic_value(point, &BasicValueType::Range, field_name)
                     }
-                    v => {
+                    _ => {
                         let mut matched_value = None;
 
                         // Nested union
@@ -309,9 +308,7 @@ fn extract_basic_value(
                 }))
         }
 
-        _ => {
-            anyhow::bail!("Unsupported value type")
-        }
+        _ => None,
     }
 }
 
