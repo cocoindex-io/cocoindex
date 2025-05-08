@@ -86,7 +86,7 @@ def store_product_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
     Define an example flow that extracts triples from files and build knowledge graph.
     """
     data_scope["products"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="crawled_products",
+        cocoindex.sources.LocalFile(path="products",
                                     included_patterns=["*.json"]),
         refresh_interval=datetime.timedelta(seconds=5))
 
