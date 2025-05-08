@@ -6,6 +6,23 @@ use serde_json::Value;
 use std::fmt;
 use std::ops::Deref;
 
+// Define SpecFormatMode enum for type-safe formatting
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SpecFormatMode {
+    Concise,
+    Verbose,
+}
+
+impl SpecFormatMode {
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "concise" => Ok(SpecFormatMode::Concise),
+            "verbose" => Ok(SpecFormatMode::Verbose),
+            _ => Err(format!("Invalid format mode: {}", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum SpecString {
@@ -264,6 +281,13 @@ impl OpSpec {
             .unwrap_or("#serde_error".to_string());
         format!("{}({})", self.kind, spec_str)
     }
+
+    pub fn format(&self, mode: SpecFormatMode) -> String {
+        match mode {
+            SpecFormatMode::Concise => self.format_concise(),
+            SpecFormatMode::Verbose => self.format_verbose(),
+        }
+    }
 }
 
 impl fmt::Display for OpSpec {
@@ -296,27 +320,18 @@ pub struct ImportOpSpec {
 }
 
 impl ImportOpSpec {
-    fn format(&self, verbose: bool) -> String {
-        let source = if verbose {
-            self.source.format_verbose()
-        } else {
-            self.source.format_concise()
+    pub fn format(&self, mode: SpecFormatMode) -> String {
+        let source = match mode {
+            SpecFormatMode::Concise => self.source.format_concise(),
+            SpecFormatMode::Verbose => self.source.format_verbose(),
         };
         format!("source={}, refresh={}", source, self.refresh_options)
-    }
-
-    pub fn format_concise(&self) -> String {
-        self.format(false)
-    }
-
-    pub fn format_verbose(&self) -> String {
-        self.format(true)
     }
 }
 
 impl fmt::Display for ImportOpSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format_concise())
+        write!(f, "{}", self.format(SpecFormatMode::Concise))
     }
 }
 
@@ -327,39 +342,27 @@ pub struct TransformOpSpec {
 }
 
 impl TransformOpSpec {
-    fn format(&self, verbose: bool) -> String {
+    pub fn format(&self, mode: SpecFormatMode) -> String {
         let inputs = self
             .inputs
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
-
-        let op_str = if verbose {
-            self.op.format_verbose()
-        } else {
-            self.op.format_concise()
+        let op_str = match mode {
+            SpecFormatMode::Concise => self.op.format_concise(),
+            SpecFormatMode::Verbose => self.op.format_verbose(),
         };
-
-        if verbose {
-            format!("op={}, inputs=[{}]", op_str, inputs)
-        } else {
-            format!("op={}, inputs={}", op_str, inputs)
+        match mode {
+            SpecFormatMode::Concise => format!("op={}, inputs={}", op_str, inputs),
+            SpecFormatMode::Verbose => format!("op={}, inputs=[{}]", op_str, inputs),
         }
-    }
-
-    pub fn format_concise(&self) -> String {
-        self.format(false)
-    }
-
-    pub fn format_verbose(&self) -> String {
-        self.format(true)
     }
 }
 
 impl fmt::Display for TransformOpSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format_concise())
+        write!(f, "{}", self.format(SpecFormatMode::Concise))
     }
 }
 
@@ -373,6 +376,13 @@ pub struct ForEachOpSpec {
 impl ForEachOpSpec {
     pub fn get_label(&self) -> String {
         format!("Loop over {}", self.field_path)
+    }
+
+    pub fn format(&self, mode: SpecFormatMode) -> String {
+        match mode {
+            SpecFormatMode::Concise => self.get_label(),
+            SpecFormatMode::Verbose => format!("field={}", self.field_path),
+        }
     }
 }
 
@@ -396,34 +406,28 @@ pub struct CollectOpSpec {
 }
 
 impl CollectOpSpec {
-    fn format(&self, verbose: bool) -> String {
+    pub fn format(&self, mode: SpecFormatMode) -> String {
         let uuid = self.auto_uuid_field.as_deref().unwrap_or("none");
-
-        if verbose {
-            format!(
-                "scope={}, collector={}, input=[{}], uuid={}",
-                self.scope_name, self.collector_name, self.input, uuid
-            )
-        } else {
-            format!(
-                "collector={}, input={}, uuid={}",
-                self.collector_name, self.input, uuid
-            )
+        match mode {
+            SpecFormatMode::Concise => {
+                format!(
+                    "collector={}, input={}, uuid={}",
+                    self.collector_name, self.input, uuid
+                )
+            }
+            SpecFormatMode::Verbose => {
+                format!(
+                    "scope={}, collector={}, input=[{}], uuid={}",
+                    self.scope_name, self.collector_name, self.input, uuid
+                )
+            }
         }
-    }
-
-    pub fn format_concise(&self) -> String {
-        self.format(false)
-    }
-
-    pub fn format_verbose(&self) -> String {
-        self.format(true)
     }
 }
 
 impl fmt::Display for CollectOpSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format_concise())
+        write!(f, "{}", self.format(SpecFormatMode::Concise))
     }
 }
 
@@ -490,37 +494,25 @@ pub struct ExportOpSpec {
 }
 
 impl ExportOpSpec {
-    fn format(&self, verbose: bool) -> String {
-        let target_str = if verbose {
-            self.target.format_verbose()
-        } else {
-            self.target.format_concise()
+    pub fn format(&self, mode: SpecFormatMode) -> String {
+        let target_str = match mode {
+            SpecFormatMode::Concise => self.target.format_concise(),
+            SpecFormatMode::Verbose => self.target.format_verbose(),
         };
-
         let base = format!(
             "collector={}, target={}, {}",
             self.collector_name, target_str, self.index_options
         );
-
-        if verbose {
-            format!("{}, setup_by_user={}", base, self.setup_by_user)
-        } else {
-            base
+        match mode {
+            SpecFormatMode::Concise => base,
+            SpecFormatMode::Verbose => format!("{}, setup_by_user={}", base, self.setup_by_user),
         }
-    }
-
-    pub fn format_concise(&self) -> String {
-        self.format(false)
-    }
-
-    pub fn format_verbose(&self) -> String {
-        self.format(true)
     }
 }
 
 impl fmt::Display for ExportOpSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format_concise())
+        write!(f, "{}", self.format(SpecFormatMode::Concise))
     }
 }
 
@@ -533,26 +525,21 @@ pub enum ReactiveOpSpec {
 }
 
 impl ReactiveOpSpec {
-    pub fn format_concise(&self) -> String {
+    pub fn format(&self, mode: SpecFormatMode) -> String {
         match self {
-            ReactiveOpSpec::Transform(t) => format!("Transform: {}", t.format_concise()),
-            ReactiveOpSpec::ForEach(fe) => format!("{}", fe.get_label()),
-            ReactiveOpSpec::Collect(c) => c.format_concise(),
-        }
-    }
-
-    pub fn format_verbose(&self) -> String {
-        match self {
-            ReactiveOpSpec::Transform(t) => format!("Transform: {}", t.format_verbose()),
-            ReactiveOpSpec::ForEach(fe) => format!("ForEach: {}", fe),
-            ReactiveOpSpec::Collect(c) => format!("Collect: {}", c.format_verbose()),
+            ReactiveOpSpec::Transform(t) => format!("Transform: {}", t.format(mode)),
+            ReactiveOpSpec::ForEach(fe) => match mode {
+                SpecFormatMode::Concise => format!("{}", fe.get_label()),
+                SpecFormatMode::Verbose => format!("ForEach: {}", fe.format(mode)),
+            },
+            ReactiveOpSpec::Collect(c) => format!("Collect: {}", c.format(mode)),
         }
     }
 }
 
 impl fmt::Display for ReactiveOpSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format_concise())
+        write!(f, "{}", self.format(SpecFormatMode::Concise))
     }
 }
 

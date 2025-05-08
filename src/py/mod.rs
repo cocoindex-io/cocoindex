@@ -1,6 +1,7 @@
 use crate::prelude::*;
 
 use crate::base::schema::{FieldSchema, ValueType};
+use crate::base::spec::SpecFormatMode;
 use crate::base::spec::VectorSimilarityMetric;
 use crate::base::spec::{NamedSpec, ReactiveOpSpec};
 use crate::execution::query;
@@ -197,8 +198,10 @@ impl Flow {
         })
     }
 
-    #[pyo3(signature = (verbose=false))]
-    pub fn get_spec(&self, verbose: bool) -> Vec<(String, String, u32)> {
+    #[pyo3(signature = (format_mode="concise"))]
+    pub fn get_spec(&self, format_mode: &str) -> PyResult<Vec<(String, String, u32)>> {
+        let mode = SpecFormatMode::from_str(format_mode)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e))?;
         let spec = &self.0.flow.flow_instance;
         let mut result = Vec::with_capacity(
             1 + spec.import_ops.len()
@@ -224,61 +227,37 @@ impl Flow {
 
         // Sources
         extend_with(&mut result, "Sources", spec.import_ops.iter(), |op| {
-            format!(
-                "Import: name={}, {}",
-                op.name,
-                if verbose {
-                    op.spec.format_verbose()
-                } else {
-                    op.spec.format_concise()
-                }
-            )
+            format!("Import: name={}, {}", op.name, op.spec.format(mode))
         });
 
         // Processing
         fn walk(
             op: &NamedSpec<ReactiveOpSpec>,
             indent: u32,
-            verbose: bool,
+            mode: SpecFormatMode,
             out: &mut Vec<(String, String, u32)>,
         ) {
             out.push((
                 "Processing".into(),
-                format!(
-                    "{}: {}",
-                    op.name,
-                    if verbose {
-                        op.spec.format_verbose()
-                    } else {
-                        op.spec.format_concise()
-                    }
-                ),
+                format!("{}: {}", op.name, op.spec.format(mode)),
                 indent,
             ));
 
             if let ReactiveOpSpec::ForEach(fe) = &op.spec {
                 out.push(("Processing".into(), fe.op_scope.to_string(), indent + 1));
                 for nested in &fe.op_scope.ops {
-                    walk(nested, indent + 2, verbose, out);
+                    walk(nested, indent + 2, mode, out);
                 }
             }
         }
 
         for op in &spec.reactive_ops {
-            walk(op, 0, verbose, &mut result);
+            walk(op, 0, mode, &mut result);
         }
 
         // Targets
         extend_with(&mut result, "Targets", spec.export_ops.iter(), |op| {
-            format!(
-                "Export: name={}, {}",
-                op.name,
-                if verbose {
-                    op.spec.format_verbose()
-                } else {
-                    op.spec.format_concise()
-                }
-            )
+            format!("Export: name={}, {}", op.name, op.spec.format(mode))
         });
 
         // Declarations
@@ -286,19 +265,10 @@ impl Flow {
             &mut result,
             "Declarations",
             spec.declarations.iter(),
-            |decl| {
-                format!(
-                    "Declaration: {}",
-                    if verbose {
-                        decl.format_verbose()
-                    } else {
-                        decl.format_concise()
-                    }
-                )
-            },
+            |decl| format!("Declaration: {}", decl.format(mode)),
         );
 
-        result
+        Ok(result)
     }
 
     pub fn get_schema(&self) -> Vec<(String, String, String)> {
@@ -316,7 +286,7 @@ impl Flow {
                 let mut field_type = match &field.value_type.typ {
                     ValueType::Basic(basic) => format!("{}", basic),
                     ValueType::Table(t) => format!("{}", t.kind),
-                    ValueType::Struct(s) => format!("{}", s),
+                    ValueType::Struct(_) => "Struct".to_string(),
                 };
 
                 if field.value_type.nullable {
