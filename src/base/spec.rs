@@ -2,25 +2,32 @@ use crate::prelude::*;
 
 use super::schema::{EnrichedValueType, FieldSchema};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fmt;
 use std::ops::Deref;
 
-// Define SpecFormatMode enum for type-safe formatting
+/// OutputMode enum for displaying spec info in different granularity
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SpecFormatMode {
+pub enum OutputMode {
     Concise,
     Verbose,
 }
 
-impl SpecFormatMode {
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl OutputMode {
+    pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "concise" => Ok(SpecFormatMode::Concise),
-            "verbose" => Ok(SpecFormatMode::Verbose),
-            _ => Err(format!("Invalid format mode: {}", s)),
+            "concise" => OutputMode::Concise,
+            "verbose" => OutputMode::Verbose,
+            _ => unreachable!(
+                "Invalid format mode: {}. Expected 'concise' or 'verbose'.",
+                s
+            ),
         }
     }
+}
+
+/// Formatting spec per output mode
+pub trait SpecFormatter {
+    fn format(&self, mode: OutputMode) -> String;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,66 +240,28 @@ pub struct OpSpec {
     pub spec: serde_json::Map<String, serde_json::Value>,
 }
 
-impl OpSpec {
-    pub fn format_concise(&self) -> String {
-        let mut parts = vec![];
-        for (key, value) in self.spec.iter() {
-            match value {
-                Value::String(s) => parts.push(format!("{}={}", key, s)),
-                Value::Array(arr) => {
-                    let items = arr
-                        .iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    if !items.is_empty() {
-                        parts.push(format!("{}={}", key, items));
-                    }
-                }
-                Value::Object(obj) => {
-                    if let Some(model) = obj.get("model").and_then(|v| v.as_str()) {
-                        parts.push(format!("{}={}", key, model));
-                    }
-                }
-                _ => {}
+impl SpecFormatter for OpSpec {
+    fn format(&self, mode: OutputMode) -> String {
+        match mode {
+            OutputMode::Concise => self.kind.clone(),
+            OutputMode::Verbose => {
+                let spec_str = serde_json::to_string_pretty(&self.spec)
+                    .map(|s| {
+                        let lines: Vec<&str> = s.lines().collect();
+                        if lines.len() < s.lines().count() {
+                            lines
+                                .into_iter()
+                                .chain(["..."])
+                                .collect::<Vec<_>>()
+                                .join("\n  ")
+                        } else {
+                            lines.join("\n  ")
+                        }
+                    })
+                    .unwrap_or("#serde_error".to_string());
+                format!("{}({})", self.kind, spec_str)
             }
         }
-        if parts.is_empty() {
-            self.kind.clone()
-        } else {
-            format!("{}({})", self.kind, parts.join(", "))
-        }
-    }
-
-    pub fn format_verbose(&self) -> String {
-        let spec_str = serde_json::to_string_pretty(&self.spec)
-            .map(|s| {
-                let lines: Vec<&str> = s.lines().collect();
-                if lines.len() < s.lines().count() {
-                    lines
-                        .into_iter()
-                        .chain(["..."])
-                        .collect::<Vec<_>>()
-                        .join("\n  ")
-                } else {
-                    lines.join("\n  ")
-                }
-            })
-            .unwrap_or("#serde_error".to_string());
-        format!("{}({})", self.kind, spec_str)
-    }
-
-    pub fn format(&self, mode: SpecFormatMode) -> String {
-        match mode {
-            SpecFormatMode::Concise => self.format_concise(),
-            SpecFormatMode::Verbose => self.format_verbose(),
-        }
-    }
-}
-
-impl fmt::Display for OpSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format_concise())
     }
 }
 
@@ -319,53 +288,43 @@ pub struct ImportOpSpec {
     pub refresh_options: SourceRefreshOptions,
 }
 
-impl ImportOpSpec {
-    pub fn format(&self, mode: SpecFormatMode) -> String {
-        let source = match mode {
-            SpecFormatMode::Concise => self.source.format_concise(),
-            SpecFormatMode::Verbose => self.source.format_verbose(),
-        };
+impl SpecFormatter for ImportOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
+        let source = self.source.format(mode);
         format!("source={}, refresh={}", source, self.refresh_options)
     }
 }
 
 impl fmt::Display for ImportOpSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format(SpecFormatMode::Concise))
+        write!(f, "{}", self.format(OutputMode::Concise))
     }
 }
 
+/// Transform data using a given operator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformOpSpec {
     pub inputs: Vec<OpArgBinding>,
     pub op: OpSpec,
 }
 
-impl TransformOpSpec {
-    pub fn format(&self, mode: SpecFormatMode) -> String {
+impl SpecFormatter for TransformOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
         let inputs = self
             .inputs
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let op_str = match mode {
-            SpecFormatMode::Concise => self.op.format_concise(),
-            SpecFormatMode::Verbose => self.op.format_verbose(),
-        };
+        let op_str = self.op.format(mode);
         match mode {
-            SpecFormatMode::Concise => format!("op={}, inputs={}", op_str, inputs),
-            SpecFormatMode::Verbose => format!("op={}, inputs=[{}]", op_str, inputs),
+            OutputMode::Concise => format!("op={}, inputs={}", op_str, inputs),
+            OutputMode::Verbose => format!("op={}, inputs=[{}]", op_str, inputs),
         }
     }
 }
 
-impl fmt::Display for TransformOpSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format(SpecFormatMode::Concise))
-    }
-}
-
+/// Apply reactive operations to each row of the input field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForEachOpSpec {
     /// Mapping that provides a table to apply reactive operations to.
@@ -377,21 +336,18 @@ impl ForEachOpSpec {
     pub fn get_label(&self) -> String {
         format!("Loop over {}", self.field_path)
     }
+}
 
-    pub fn format(&self, mode: SpecFormatMode) -> String {
+impl SpecFormatter for ForEachOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
         match mode {
-            SpecFormatMode::Concise => self.get_label(),
-            SpecFormatMode::Verbose => format!("field={}", self.field_path),
+            OutputMode::Concise => self.get_label(),
+            OutputMode::Verbose => format!("field={}", self.field_path),
         }
     }
 }
 
-impl fmt::Display for ForEachOpSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "field={}", self.field_path)
-    }
-}
-
+/// Emit data to a given collector at the given scope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectOpSpec {
     /// Field values to be collected.
@@ -405,29 +361,23 @@ pub struct CollectOpSpec {
     pub auto_uuid_field: Option<FieldName>,
 }
 
-impl CollectOpSpec {
-    pub fn format(&self, mode: SpecFormatMode) -> String {
+impl SpecFormatter for CollectOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
         let uuid = self.auto_uuid_field.as_deref().unwrap_or("none");
         match mode {
-            SpecFormatMode::Concise => {
+            OutputMode::Concise => {
                 format!(
                     "collector={}, input={}, uuid={}",
                     self.collector_name, self.input, uuid
                 )
             }
-            SpecFormatMode::Verbose => {
+            OutputMode::Verbose => {
                 format!(
                     "scope={}, collector={}, input=[{}], uuid={}",
                     self.scope_name, self.collector_name, self.input, uuid
                 )
             }
         }
-    }
-}
-
-impl fmt::Display for CollectOpSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format(SpecFormatMode::Concise))
     }
 }
 
@@ -485,6 +435,7 @@ impl fmt::Display for IndexOptions {
     }
 }
 
+/// Store data to a given sink.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportOpSpec {
     pub collector_name: FieldName,
@@ -493,29 +444,21 @@ pub struct ExportOpSpec {
     pub setup_by_user: bool,
 }
 
-impl ExportOpSpec {
-    pub fn format(&self, mode: SpecFormatMode) -> String {
-        let target_str = match mode {
-            SpecFormatMode::Concise => self.target.format_concise(),
-            SpecFormatMode::Verbose => self.target.format_verbose(),
-        };
+impl SpecFormatter for ExportOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
+        let target_str = self.target.format(mode);
         let base = format!(
             "collector={}, target={}, {}",
             self.collector_name, target_str, self.index_options
         );
         match mode {
-            SpecFormatMode::Concise => base,
-            SpecFormatMode::Verbose => format!("{}, setup_by_user={}", base, self.setup_by_user),
+            OutputMode::Concise => base,
+            OutputMode::Verbose => format!("{}, setup_by_user={}", base, self.setup_by_user),
         }
     }
 }
 
-impl fmt::Display for ExportOpSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format(SpecFormatMode::Concise))
-    }
-}
-
+/// A reactive operation reacts on given input values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
 pub enum ReactiveOpSpec {
@@ -524,22 +467,16 @@ pub enum ReactiveOpSpec {
     Collect(CollectOpSpec),
 }
 
-impl ReactiveOpSpec {
-    pub fn format(&self, mode: SpecFormatMode) -> String {
+impl SpecFormatter for ReactiveOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
         match self {
             ReactiveOpSpec::Transform(t) => format!("Transform: {}", t.format(mode)),
             ReactiveOpSpec::ForEach(fe) => match mode {
-                SpecFormatMode::Concise => format!("{}", fe.get_label()),
-                SpecFormatMode::Verbose => format!("ForEach: {}", fe.format(mode)),
+                OutputMode::Concise => format!("{}", fe.get_label()),
+                OutputMode::Verbose => format!("ForEach: {}", fe.format(mode)),
             },
             ReactiveOpSpec::Collect(c) => format!("Collect: {}", c.format(mode)),
         }
-    }
-}
-
-impl fmt::Display for ReactiveOpSpec {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.format(SpecFormatMode::Concise))
     }
 }
 
@@ -556,6 +493,7 @@ impl fmt::Display for ReactiveOpScope {
     }
 }
 
+/// A flow defines the rule to sync data from given sources to given sinks with given transformations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowInstanceSpec {
     /// Name of the flow instance.

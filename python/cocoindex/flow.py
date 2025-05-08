@@ -493,7 +493,7 @@ class Flow:
         return tree
 
     def _get_spec(self, verbose: bool = False) -> list[tuple[str, str, int]]:
-        return self._lazy_engine_flow().get_spec(format_mode="verbose" if verbose else "concise")
+        return self._lazy_engine_flow().get_spec(output_mode="verbose" if verbose else "concise")
     
     def _get_schema(self) -> list[tuple[str, str, str]]:
         return self._lazy_engine_flow().get_schema()

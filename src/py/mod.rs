@@ -1,9 +1,9 @@
 use crate::prelude::*;
 
 use crate::base::schema::{FieldSchema, ValueType};
-use crate::base::spec::SpecFormatMode;
 use crate::base::spec::VectorSimilarityMetric;
 use crate::base::spec::{NamedSpec, ReactiveOpSpec};
+use crate::base::spec::{OutputMode, SpecFormatter};
 use crate::execution::query;
 use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
 use crate::ops::interface::{QueryResult, QueryResults};
@@ -198,10 +198,9 @@ impl Flow {
         })
     }
 
-    #[pyo3(signature = (format_mode="concise"))]
-    pub fn get_spec(&self, format_mode: &str) -> PyResult<Vec<(String, String, u32)>> {
-        let mode = SpecFormatMode::from_str(format_mode)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e))?;
+    #[pyo3(signature = (output_mode="concise"))]
+    pub fn get_spec(&self, output_mode: &str) -> PyResult<Vec<(String, String, u32)>> {
+        let mode = OutputMode::from_str(output_mode);
         let spec = &self.0.flow.flow_instance;
         let mut result = Vec::with_capacity(
             1 + spec.import_ops.len()
@@ -234,7 +233,7 @@ impl Flow {
         fn walk(
             op: &NamedSpec<ReactiveOpSpec>,
             indent: u32,
-            mode: SpecFormatMode,
+            mode: OutputMode,
             out: &mut Vec<(String, String, u32)>,
         ) {
             out.push((
