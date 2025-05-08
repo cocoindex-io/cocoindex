@@ -6,11 +6,11 @@ use std::sync::Arc;
 use crate::ops::sdk::*;
 use crate::setup;
 use anyhow::{bail, Result};
+use axum_extra::extract;
 use futures::FutureExt;
 use qdrant_client::qdrant::vectors_output::VectorsOptions;
 use qdrant_client::qdrant::{
-    DeletePointsBuilder, NamedVectors, PointId, PointStruct, PointsIdsList, UpsertPointsBuilder,
-    Value as QdrantValue,
+    self, DeletePointsBuilder, NamedVectors, PointId, PointStruct, PointsIdsList, UpsertPointsBuilder, Value as QdrantValue
 };
 use qdrant_client::qdrant::{Query, QueryPointsBuilder, ScoredPoint};
 use qdrant_client::Qdrant;
@@ -161,109 +161,166 @@ fn convert_to_vector(v: Vec<BasicValue>) -> Vec<f32> {
         .collect()
 }
 
+fn extract_basic_value(
+    point: &ScoredPoint,
+    basic_type: &BasicValueType,
+    field_name: &str,
+) -> Option<BasicValue> {
+    match basic_type {
+        BasicValueType::Str => point.payload.get(field_name).and_then(|v| {
+            v.as_str()
+                .map(|s| BasicValue::Str(Arc::from(s.to_string())))
+        }),
+        BasicValueType::Bool => point
+            .payload
+            .get(field_name)
+            .and_then(|v| v.as_bool().map(BasicValue::Bool)),
+
+        BasicValueType::Int64 => point
+            .payload
+            .get(field_name)
+            .and_then(|v| v.as_integer().map(BasicValue::Int64)),
+
+        BasicValueType::Float32 => point
+            .payload
+            .get(field_name)
+            .and_then(|v| v.as_double().map(|f| BasicValue::Float32(f as f32))),
+
+        BasicValueType::Float64 => point
+            .payload
+            .get(field_name)
+            .and_then(|v| v.as_double().map(BasicValue::Float64)),
+
+        BasicValueType::Json => point
+            .payload
+            .get(field_name)
+            .map(|v| BasicValue::Json(Arc::from(v.clone().into_json()))),
+
+        BasicValueType::Vector(_) => point
+            .vectors
+            .as_ref()
+            .and_then(|v| v.vectors_options.as_ref())
+            .and_then(|vectors_options| match vectors_options {
+                VectorsOptions::Vector(vector) => {
+                    let values = vector
+                        .data
+                        .iter()
+                        .map(|f| BasicValue::Float32(*f))
+                        .collect::<Vec<_>>();
+                    Some(BasicValue::Vector(Arc::from(values)))
+                }
+                VectorsOptions::Vectors(vectors) => {
+                    vectors.vectors.get(field_name).map(|vector| {
+                        let values = vector
+                            .data
+                            .iter()
+                            .map(|f| BasicValue::Float32(*f))
+                            .collect::<Vec<_>>();
+                        BasicValue::Vector(Arc::from(values))
+                    })
+                }
+            }),
+
+        BasicValueType::Uuid => point
+            .payload
+            .get(field_name)
+            .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::Uuid)),
+
+        BasicValueType::Date => point
+            .payload
+            .get(field_name)
+            .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::Date)),
+
+        BasicValueType::Time => point
+            .payload
+            .get(field_name)
+            .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::Time)),
+
+        BasicValueType::LocalDateTime => point
+            .payload
+            .get(field_name)
+            .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::LocalDateTime)),
+
+        BasicValueType::OffsetDateTime => point
+            .payload
+            .get(field_name)
+            .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::OffsetDateTime)),
+
+        BasicValueType::Range => point.payload.get(field_name).and_then(|v| {
+            v.as_struct().and_then(|s| {
+                let start = s.fields.get("start").and_then(|f| f.as_integer());
+                let end = s.fields.get("end").and_then(|f| f.as_integer());
+
+                match (start, end) {
+                    (Some(start), Some(end)) => Some(BasicValue::Range(RangeValue {
+                        start: start as usize,
+                        end: end as usize,
+                    })),
+                    _ => None,
+                }
+            })
+        }),
+
+        BasicValueType::Union(s) => {
+            let types = &s.types;
+
+            point.payload
+                .get(field_name)
+                .and_then(|v| v.kind.and_then(|kind| match kind {
+                    qdrant::value::Kind::BoolValue(v) if types.contains(&BasicValueType::Bool) => {
+                        extract_basic_value(point, &BasicValueType::Bool, field_name)
+                    }
+                    qdrant::value::Kind::IntegerValue(v) if types.contains(&BasicValueType::Int64) => {
+                        extract_basic_value(point, &BasicValueType::Int64, field_name)
+                    }
+                    qdrant::value::Kind::DoubleValue(v) if types.contains(&BasicValueType::Float64) => {
+                        extract_basic_value(point, &BasicValueType::Float64, field_name)
+                    }
+                    qdrant::value::Kind::DoubleValue(v) if types.contains(&BasicValueType::Float32) => {
+                        extract_basic_value(point, &BasicValueType::Float32, field_name)
+                    }
+                    qdrant::value::Kind::StringValue(v) => s.parse_str(&v).ok(),
+
+                    qdrant::value::Kind::StructValue(v) if types.contains(&BasicValueType::Range) => {
+                        extract_basic_value(point, &BasicValueType::Range, field_name)
+                    }
+                    v => {
+                        let mut matched_value = None;
+
+                        // Nested union
+                        match types.iter().find(|typ| matches!(typ, BasicValueType::Union(_))) {
+                            Some(union_type) => {
+                                matched_value = extract_basic_value(point, union_type, field_name);
+                            }
+                            _ => {}
+                        }
+                        // Return if fulfilled
+                        if matched_value.is_some() {
+                            return matched_value;
+                        }
+
+                        // JSON
+                        if types.contains(&BasicValueType::Json) {
+                            matched_value = extract_basic_value(point, &BasicValueType::Json, field_name);
+                        }
+
+                        matched_value
+                    }
+                }))
+        }
+
+        _ => {
+            anyhow::bail!("Unsupported value type")
+        }
+    }
+}
+
 fn into_value(point: &ScoredPoint, schema: &FieldSchema) -> Result<Value> {
     let field_name = &schema.name;
     let typ = schema.value_type.typ.clone();
     let value = match typ {
         ValueType::Basic(basic_type) => {
-            let basic_value = match basic_type {
-                BasicValueType::Str => point.payload.get(field_name).and_then(|v| {
-                    v.as_str()
-                        .map(|s| BasicValue::Str(Arc::from(s.to_string())))
-                }),
-                BasicValueType::Bool => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_bool().map(BasicValue::Bool)),
-
-                BasicValueType::Int64 => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_integer().map(BasicValue::Int64)),
-
-                BasicValueType::Float32 => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_double().map(|f| BasicValue::Float32(f as f32))),
-
-                BasicValueType::Float64 => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_double().map(BasicValue::Float64)),
-
-                BasicValueType::Json => point
-                    .payload
-                    .get(field_name)
-                    .map(|v| BasicValue::Json(Arc::from(v.clone().into_json()))),
-
-                BasicValueType::Vector(_) => point
-                    .vectors
-                    .as_ref()
-                    .and_then(|v| v.vectors_options.as_ref())
-                    .and_then(|vectors_options| match vectors_options {
-                        VectorsOptions::Vector(vector) => {
-                            let values = vector
-                                .data
-                                .iter()
-                                .map(|f| BasicValue::Float32(*f))
-                                .collect::<Vec<_>>();
-                            Some(BasicValue::Vector(Arc::from(values)))
-                        }
-                        VectorsOptions::Vectors(vectors) => {
-                            vectors.vectors.get(field_name).map(|vector| {
-                                let values = vector
-                                    .data
-                                    .iter()
-                                    .map(|f| BasicValue::Float32(*f))
-                                    .collect::<Vec<_>>();
-                                BasicValue::Vector(Arc::from(values))
-                            })
-                        }
-                    }),
-
-                BasicValueType::Uuid => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::Uuid)),
-
-                BasicValueType::Date => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::Date)),
-
-                BasicValueType::Time => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::Time)),
-
-                BasicValueType::LocalDateTime => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::LocalDateTime)),
-
-                BasicValueType::OffsetDateTime => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::OffsetDateTime)),
-
-                BasicValueType::Range => point.payload.get(field_name).and_then(|v| {
-                    v.as_struct().and_then(|s| {
-                        let start = s.fields.get("start").and_then(|f| f.as_integer());
-                        let end = s.fields.get("end").and_then(|f| f.as_integer());
-
-                        match (start, end) {
-                            (Some(start), Some(end)) => Some(BasicValue::Range(RangeValue {
-                                start: start as usize,
-                                end: end as usize,
-                            })),
-                            _ => None,
-                        }
-                    })
-                }),
-                _ => {
-                    anyhow::bail!("Unsupported value type")
-                }
-            };
+            let basic_value = extract_basic_value(point, &basic_type, field_name);
             basic_value.map(Value::Basic)
         }
         _ => point
