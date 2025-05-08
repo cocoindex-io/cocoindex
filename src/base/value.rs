@@ -928,7 +928,7 @@ impl BasicValue {
                 }
 
                 Err(anyhow::anyhow!(
-                    "invalid union value: {}, expect {}",
+                    "invalid union value: {}, expect type {}",
                     v,
                     types.iter().join(" | "),
                 ))?
