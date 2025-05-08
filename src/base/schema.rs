@@ -17,7 +17,14 @@ pub struct UnionTypeSchema {
 
 impl UnionTypeSchema {
     pub fn parse_str(&self, val: &str) -> Result<BasicValue> {
-        todo!("String parsing not implemented")
+        // TODO: Add parsing
+        let types = &self.types;
+
+        if types.contains(&BasicValueType::Str) {
+            return Ok(BasicValue::Str(Arc::from(val)));
+        }
+
+        anyhow::bail!("Cannot parse \"{}\"", val)
     }
 }
 
