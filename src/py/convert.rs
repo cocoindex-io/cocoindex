@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use pyo3::exceptions::PyTypeError;
 use pyo3::types::{PyList, PyTuple};
 use pyo3::IntoPyObjectExt;
 use pyo3::{exceptions::PyException, prelude::*};
@@ -153,7 +154,14 @@ fn basic_value_from_py_object<'py>(
                 .collect::<PyResult<Vec<_>>>()?,
         )),
         schema::BasicValueType::Union(s) => {
-            todo!("Extract `typing.Union`");
+            // TODO: Optimization
+            for sub_type in s.types.iter() {
+                if let Ok(value) = basic_value_from_py_object(sub_type, v) {
+                    return Ok(value);
+                }
+            }
+
+            Err(PyErr::new::<PyTypeError, _>("invalid union"))?
         }
     };
     Ok(result)
