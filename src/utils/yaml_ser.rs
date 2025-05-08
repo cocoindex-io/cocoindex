@@ -370,3 +370,362 @@ impl ser::SerializeTupleVariant for VariantSeqSerializer {
         Ok(Yaml::Hash(map))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::ser::Error as SerdeSerError;
+    use serde::{Serialize, Serializer};
+    use std::collections::BTreeMap;
+    use yaml_rust2::yaml::{Hash, Yaml};
+
+    fn assert_yaml_serialization<T: Serialize>(value: T, expected_yaml: Yaml) {
+        let result = YamlSerializer::serialize(&value);
+        println!(
+            "Serialized value: {:?}, Expected value: {:?}",
+            result, expected_yaml
+        );
+
+        assert!(
+            result.is_ok(),
+            "Serialization failed when it should have succeeded. Error: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            result.unwrap(),
+            expected_yaml,
+            "Serialized YAML did not match expected YAML."
+        );
+    }
+
+    #[test]
+    fn test_serialize_bool() {
+        assert_yaml_serialization(true, Yaml::Boolean(true));
+        assert_yaml_serialization(false, Yaml::Boolean(false));
+    }
+
+    #[test]
+    fn test_serialize_integers() {
+        assert_yaml_serialization(42i8, Yaml::Integer(42));
+        assert_yaml_serialization(-100i16, Yaml::Integer(-100));
+        assert_yaml_serialization(123456i32, Yaml::Integer(123456));
+        assert_yaml_serialization(7890123456789i64, Yaml::Integer(7890123456789));
+        assert_yaml_serialization(255u8, Yaml::Integer(255));
+        assert_yaml_serialization(65535u16, Yaml::Integer(65535));
+        assert_yaml_serialization(4000000000u32, Yaml::Integer(4000000000));
+        // u64 is serialized as Yaml::Real(String) in your implementation
+        assert_yaml_serialization(
+            18446744073709551615u64,
+            Yaml::Real("18446744073709551615".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_serialize_floats() {
+        assert_yaml_serialization(3.14f32, Yaml::Real("3.14".to_string()));
+        assert_yaml_serialization(-0.001f64, Yaml::Real("-0.001".to_string()));
+        assert_yaml_serialization(1.0e10f64, Yaml::Real("10000000000".to_string()));
+    }
+
+    #[test]
+    fn test_serialize_char() {
+        assert_yaml_serialization('X', Yaml::String("X".to_string()));
+        assert_yaml_serialization('✨', Yaml::String("✨".to_string()));
+    }
+
+    #[test]
+    fn test_serialize_str_and_string() {
+        assert_yaml_serialization("hello YAML", Yaml::String("hello YAML".to_string()));
+        assert_yaml_serialization("".to_string(), Yaml::String("".to_string()));
+    }
+
+    #[test]
+    fn test_serialize_raw_bytes() {
+        let bytes_slice: &[u8] = &[0x48, 0x65, 0x6c, 0x6c, 0x6f]; // "Hello"
+        let expected = Yaml::Array(vec![
+            Yaml::Integer(72),
+            Yaml::Integer(101),
+            Yaml::Integer(108),
+            Yaml::Integer(108),
+            Yaml::Integer(111),
+        ]);
+        assert_yaml_serialization(bytes_slice, expected.clone());
+
+        let bytes_vec: Vec<u8> = bytes_slice.to_vec();
+        assert_yaml_serialization(bytes_vec, expected);
+
+        let empty_bytes_slice: &[u8] = &[];
+        assert_yaml_serialization(empty_bytes_slice, Yaml::Array(vec![]));
+    }
+
+    struct MyBytesWrapper<'a>(&'a [u8]);
+
+    impl<'a> Serialize for MyBytesWrapper<'a> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serializer.serialize_bytes(self.0)
+        }
+    }
+
+    #[test]
+    fn test_custom_wrapper_serializes_bytes_as_base64_string() {
+        let data: &[u8] = &[72, 101, 108, 108, 111]; // "Hello"
+        let wrapped_data = MyBytesWrapper(data);
+
+        let base64_encoded = BASE64_STANDARD.encode(data);
+        let expected_yaml = Yaml::String(base64_encoded);
+
+        assert_yaml_serialization(wrapped_data, expected_yaml);
+
+        let empty_data: &[u8] = &[];
+        let wrapped_empty_data = MyBytesWrapper(empty_data);
+        let empty_base64_encoded = BASE64_STANDARD.encode(empty_data);
+        let expected_empty_yaml = Yaml::String(empty_base64_encoded);
+        assert_yaml_serialization(wrapped_empty_data, expected_empty_yaml);
+    }
+
+    #[test]
+    fn test_serialize_option() {
+        let val_none: Option<i32> = None;
+        assert_yaml_serialization(val_none, Yaml::Null);
+
+        let val_some: Option<String> = Some("has value".to_string());
+        assert_yaml_serialization(val_some, Yaml::String("has value".to_string()));
+    }
+
+    #[test]
+    fn test_serialize_unit() {
+        assert_yaml_serialization((), Yaml::Hash(Hash::new()));
+    }
+
+    #[test]
+    fn test_serialize_unit_struct() {
+        #[derive(Serialize)]
+        struct MyUnitStruct;
+
+        assert_yaml_serialization(MyUnitStruct, Yaml::Hash(Hash::new()));
+    }
+
+    #[test]
+    fn test_serialize_newtype_struct() {
+        #[derive(Serialize)]
+        struct MyNewtypeStruct(u64);
+
+        assert_yaml_serialization(MyNewtypeStruct(12345u64), Yaml::Real("12345".to_string()));
+    }
+
+    #[test]
+    fn test_serialize_seq() {
+        let empty_vec: Vec<i32> = vec![];
+        assert_yaml_serialization(empty_vec, Yaml::Array(vec![]));
+
+        let simple_vec = vec![10, 20, 30];
+        assert_yaml_serialization(
+            simple_vec,
+            Yaml::Array(vec![
+                Yaml::Integer(10),
+                Yaml::Integer(20),
+                Yaml::Integer(30),
+            ]),
+        );
+
+        let string_vec = vec!["a".to_string(), "b".to_string()];
+        assert_yaml_serialization(
+            string_vec,
+            Yaml::Array(vec![
+                Yaml::String("a".to_string()),
+                Yaml::String("b".to_string()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn test_serialize_tuple() {
+        let tuple_val = (42i32, "text", false);
+        assert_yaml_serialization(
+            tuple_val,
+            Yaml::Array(vec![
+                Yaml::Integer(42),
+                Yaml::String("text".to_string()),
+                Yaml::Boolean(false),
+            ]),
+        );
+    }
+
+    #[test]
+    fn test_serialize_tuple_struct() {
+        #[derive(Serialize)]
+        struct MyTupleStruct(String, i64);
+
+        assert_yaml_serialization(
+            MyTupleStruct("value".to_string(), -500),
+            Yaml::Array(vec![Yaml::String("value".to_string()), Yaml::Integer(-500)]),
+        );
+    }
+
+    #[test]
+    fn test_serialize_map() {
+        let mut map = BTreeMap::new(); // BTreeMap for ordered keys, matching yaml::Hash
+        map.insert("key1".to_string(), 100);
+        map.insert("key2".to_string(), 200);
+
+        let mut expected_hash = Hash::new();
+        expected_hash.insert(Yaml::String("key1".to_string()), Yaml::Integer(100));
+        expected_hash.insert(Yaml::String("key2".to_string()), Yaml::Integer(200));
+        assert_yaml_serialization(map, Yaml::Hash(expected_hash));
+
+        let empty_map: BTreeMap<String, i32> = BTreeMap::new();
+        assert_yaml_serialization(empty_map, Yaml::Hash(Hash::new()));
+    }
+
+    #[derive(Serialize)]
+    struct SimpleStruct {
+        id: u32,
+        name: String,
+        is_active: bool,
+    }
+
+    #[test]
+    fn test_serialize_struct() {
+        let s = SimpleStruct {
+            id: 101,
+            name: "A Struct".to_string(),
+            is_active: true,
+        };
+        let mut expected_hash = Hash::new();
+        expected_hash.insert(Yaml::String("id".to_string()), Yaml::Integer(101));
+        expected_hash.insert(
+            Yaml::String("name".to_string()),
+            Yaml::String("A Struct".to_string()),
+        );
+        expected_hash.insert(Yaml::String("is_active".to_string()), Yaml::Boolean(true));
+        assert_yaml_serialization(s, Yaml::Hash(expected_hash));
+    }
+
+    #[derive(Serialize)]
+    struct NestedStruct {
+        description: String,
+        data: SimpleStruct,
+        tags: Vec<String>,
+    }
+
+    #[test]
+    fn test_serialize_nested_struct() {
+        let ns = NestedStruct {
+            description: "Contains another struct and a vec".to_string(),
+            data: SimpleStruct {
+                id: 202,
+                name: "Inner".to_string(),
+                is_active: false,
+            },
+            tags: vec!["nested".to_string(), "complex".to_string()],
+        };
+
+        let mut inner_struct_hash = Hash::new();
+        inner_struct_hash.insert(Yaml::String("id".to_string()), Yaml::Integer(202));
+        inner_struct_hash.insert(
+            Yaml::String("name".to_string()),
+            Yaml::String("Inner".to_string()),
+        );
+        inner_struct_hash.insert(Yaml::String("is_active".to_string()), Yaml::Boolean(false));
+
+        let tags_array = Yaml::Array(vec![
+            Yaml::String("nested".to_string()),
+            Yaml::String("complex".to_string()),
+        ]);
+
+        let mut expected_hash = Hash::new();
+        expected_hash.insert(
+            Yaml::String("description".to_string()),
+            Yaml::String("Contains another struct and a vec".to_string()),
+        );
+        expected_hash.insert(
+            Yaml::String("data".to_string()),
+            Yaml::Hash(inner_struct_hash),
+        );
+        expected_hash.insert(Yaml::String("tags".to_string()), tags_array);
+
+        assert_yaml_serialization(ns, Yaml::Hash(expected_hash));
+    }
+
+    #[derive(Serialize)]
+    enum MyEnum {
+        Unit,
+        Newtype(i32),
+        Tuple(String, bool),
+        Struct { field_a: u16, field_b: char },
+    }
+
+    #[test]
+    fn test_serialize_enum_unit_variant() {
+        assert_yaml_serialization(MyEnum::Unit, Yaml::String("Unit".to_string()));
+    }
+
+    #[test]
+    fn test_serialize_enum_newtype_variant() {
+        let mut expected_hash = Hash::new();
+        expected_hash.insert(Yaml::String("Newtype".to_string()), Yaml::Integer(999));
+        assert_yaml_serialization(MyEnum::Newtype(999), Yaml::Hash(expected_hash));
+    }
+
+    #[test]
+    fn test_serialize_enum_tuple_variant() {
+        let mut expected_hash = Hash::new();
+        let inner_array = Yaml::Array(vec![
+            Yaml::String("tuple_data".to_string()),
+            Yaml::Boolean(true),
+        ]);
+        expected_hash.insert(Yaml::String("Tuple".to_string()), inner_array);
+        assert_yaml_serialization(
+            MyEnum::Tuple("tuple_data".to_string(), true),
+            Yaml::Hash(expected_hash),
+        );
+    }
+
+    #[test]
+    fn test_serialize_enum_struct_variant() {
+        let mut inner_struct_hash = Hash::new();
+        inner_struct_hash.insert(Yaml::String("field_a".to_string()), Yaml::Integer(123));
+        inner_struct_hash.insert(
+            Yaml::String("field_b".to_string()),
+            Yaml::String("Z".to_string()),
+        );
+
+        let mut expected_hash = Hash::new();
+        expected_hash.insert(
+            Yaml::String("Struct".to_string()),
+            Yaml::Hash(inner_struct_hash),
+        );
+        assert_yaml_serialization(
+            MyEnum::Struct {
+                field_a: 123,
+                field_b: 'Z',
+            },
+            Yaml::Hash(expected_hash),
+        );
+    }
+
+    #[test]
+    fn test_yaml_serializer_error_display() {
+        let error = YamlSerializerError {
+            msg: "A test error message".to_string(),
+        };
+        assert_eq!(
+            format!("{}", error),
+            "YamlSerializerError: A test error message"
+        );
+    }
+
+    #[test]
+    fn test_yaml_serializer_error_custom() {
+        let error = YamlSerializerError::custom("Custom error detail");
+        assert_eq!(error.msg, "Custom error detail");
+        assert_eq!(
+            format!("{}", error),
+            "YamlSerializerError: Custom error detail"
+        );
+        let _err_trait_obj: Box<dyn std::error::Error> = Box::new(error);
+    }
+}
