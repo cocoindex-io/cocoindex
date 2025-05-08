@@ -273,22 +273,6 @@ impl ser::SerializeTupleStruct for SeqSerializer {
     }
 }
 
-impl ser::SerializeTupleVariant for SeqSerializer {
-    type Ok = Yaml;
-    type Error = YamlSerializerError;
-
-    fn serialize_field<T>(&mut self, value: &T) -> Result<(), Self::Error>
-    where
-        T: Serialize + ?Sized,
-    {
-        ser::SerializeSeq::serialize_element(self, value)
-    }
-
-    fn end(self) -> Result<Self::Ok, Self::Error> {
-        ser::SerializeSeq::end(self)
-    }
-}
-
 pub struct MapSerializer {
     map: yaml_rust2::yaml::Hash,
     next_key: Option<Yaml>,
@@ -321,22 +305,6 @@ impl ser::SerializeMap for MapSerializer {
 }
 
 impl ser::SerializeStruct for MapSerializer {
-    type Ok = Yaml;
-    type Error = YamlSerializerError;
-
-    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
-    where
-        T: Serialize + ?Sized,
-    {
-        ser::SerializeMap::serialize_entry(self, key, value)
-    }
-
-    fn end(self) -> Result<Self::Ok, Self::Error> {
-        ser::SerializeMap::end(self)
-    }
-}
-
-impl ser::SerializeStructVariant for MapSerializer {
     type Ok = Yaml;
     type Error = YamlSerializerError;
 
