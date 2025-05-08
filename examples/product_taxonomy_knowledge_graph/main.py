@@ -11,29 +11,20 @@ from jinja2 import Template
 PRODUCT_TEMPLATE = """
 # {{ title }}
 
-{% if highlights %}
 ## Highlights
 {% for highlight in highlights %}
 - {{ highlight }}
 {% endfor %}
-{% endif %}
 
-
-{% if description %}
 ## Description
-
 {{ description.header | default('') }}
-
 {{ description.paragraph | default('') }}
-
-{% if description.bullets %}
 {% for bullet in description.bullets %}
+
 - {{ bullet }}
 {% endfor %}
-{% endif %}
 
-{% endif %}
-    """
+ """
 
 @dataclasses.dataclass
 class ProductInfo:
