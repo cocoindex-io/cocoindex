@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use super::spec::*;
+use super::{spec::*, value::BasicValue};
 use crate::builder::plan::AnalyzedValueMapping;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -11,7 +11,14 @@ pub struct VectorTypeSchema {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UnionTypeSchema {
+    // TODO: Support struct/table
     pub types: Vec<BasicValueType>,
+}
+
+impl UnionTypeSchema {
+    pub fn parse_str(&self, val: &str) -> Result<BasicValue> {
+        todo!("String parsing not implemented")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -920,8 +920,8 @@ impl BasicValue {
                 BasicValue::Vector(Arc::from(vec))
             }
             (v, BasicValueType::Union(UnionTypeSchema { types })) => {
+                // TODO: Match serde value instead
                 for ty in types {
-                    // TODO: Avoid clone
                     if let Ok(val) = BasicValue::from_json(v.clone(), ty) {
                         return Ok(val);
                     }
