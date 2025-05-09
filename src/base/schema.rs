@@ -11,7 +11,6 @@ pub struct VectorTypeSchema {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UnionTypeSchema {
-    // TODO: Support struct/table
     pub types: BTreeSet<BasicValueType>,
 }
 
