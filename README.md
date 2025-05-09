@@ -17,18 +17,18 @@
 [![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
 </div>
 
-CocoIndex is ultra performant data transformation framework, core engine written in Rust. The problem it tries to solve is to make it easy to prepare fresh data for AI - either creating embedding, building knowledge graph, or performing other data transformations - and take the real-time data pipeline beyond traditional SQL.
+**CocoIndex** is an ultra performant data transformation framework, with its core engine written in Rust. The problem it tries to solve is to make it easy to prepare fresh data for AI - either creating embedding, building knowledge graphs, or performing other data transformations - and take real-time data pipelines beyond traditional SQL.
 
 <p align="center">
     <img src="https://cocoindex.io/images/cocoindex-features.png" alt="CocoIndex Features" width="500">
 </p>
 
-The philosophy is to have the framework handle the source updates, and having developers only focus on defining a series of data transformation, inspired by spreadsheets.
+The philosophy is to have the framework handle the source updates, and having developers only worry about defining a series of data transformation, inspired by spreadsheet.
 
 ## Data Flow programming
 Unlike a workflow orchestration framework where data is usually opaque, in CocoIndex, data and data operations are first class citizens. CocoIndex follows the idea of [Dataflow](https://en.wikipedia.org/wiki/Dataflow_programming) programming model. Each transformation creates a new field solely based on input fields, without hidden states and value mutation. All data before/after each each transformation is observable, with lineage out of the box.
 
-Particularly, users don't define data operations like creation, update, deletion. But rather, they define something like - for a set of source data, this is the transformation or formula. The framework takes care of the data operations like when to create, update, or delete. For example:
+**Particularly**, users don't define data operations like creation, update, or deletion. Rather, they define something like - for a set of source data, this is the transformation or formula. The framework takes care of the data operations such as when to create, update, or delete.
 
 ```python
 # import
