@@ -20,6 +20,7 @@ impl UnionType {
 
                 // Unpack nested union
                 for item in union_type.types.into_iter() {
+                    // Recursively insert underlying types
                     inserted = self.insert(item) || inserted;
                 }
 
