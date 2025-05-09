@@ -161,6 +161,9 @@ class DataSlice:
         """
         Apply a function to the data slice.
         """
+        if not isinstance(fn_spec, op.FunctionSpec):
+            raise ValueError("transform() can only be called on a CocoIndex function")
+
         transform_args: list[tuple[Any, str | None]]
         transform_args = [(self._state.engine_data_slice, None)]
         transform_args += [(self._state.flow_builder_state.get_data_slice(v), None) for v in args]
@@ -280,6 +283,9 @@ class DataCollector:
 
         `vector_index` is for backward compatibility only. Please use `vector_indexes` instead.
         """
+        if not isinstance(target_spec, op.StorageSpec):
+            raise ValueError("export() can only be called on a CocoIndex target storage")
+
         # For backward compatibility only.
         if len(vector_indexes) == 0 and len(vector_index) > 0:
             vector_indexes = [index.VectorIndexDef(field_name=field_name, metric=metric)
@@ -343,8 +349,10 @@ class FlowBuilder:
             refresh_interval: datetime.timedelta | None = None,
         ) -> DataSlice:
         """
-        Add a source to the flow.
+        Import a source to the flow.
         """
+        if not isinstance(spec, op.SourceSpec):
+            raise ValueError("add_source() can only be called on a CocoIndex source")
         return _create_data_slice(
             self._state,
             lambda target_scope, name: self._state.engine_flow_builder.add_source(
