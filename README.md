@@ -17,11 +17,13 @@
 [![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
 </div>
 
-CocoIndex is the world's first open-source engine that supports both custom transformation logic and incremental updates specialized for data indexing.
+CocoIndex is ultra performant data transformation framework, core engine written in Rust. The problem it tries to solve is to make it easy to prepare fresh data for AI - either embedding, knowledge graph, or a series of data transformation - and take the real-time data pipeline beyond traditional SQL.
+
 <p align="center">
     <img src="https://cocoindex.io/images/cocoindex-features.png" alt="CocoIndex Features" width="500">
 </p>
-With CocoIndex, users declare the transformation, CocoIndex creates & maintains an index, and keeps the derived index up to date based on source update, with minimal computation and changes.
+
+The philosophy is to have the framework handle the source updates, and having developers only focus on defining a series of data transformation, inspired by spreadsheet.
 
 
 ## Quick Start:
