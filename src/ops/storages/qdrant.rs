@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::ops::sdk::*;
 use crate::setup;
+use crate::utils::union::parse_str;
 use anyhow::{bail, Result};
 use futures::FutureExt;
 use qdrant_client::qdrant::vectors_output::VectorsOptions;
@@ -260,9 +261,7 @@ fn extract_basic_value(
             })
         }),
 
-        BasicValueType::Union(s) => {
-            let types = &s.types;
-
+        BasicValueType::Union(UnionTypeSchema { types }) => {
             point.payload
                 .get(field_name)
                 .and_then(|v| v.kind.as_ref().and_then(|kind| match kind {
@@ -278,7 +277,7 @@ fn extract_basic_value(
                     &qdrant::value::Kind::DoubleValue(v) if types.contains(&BasicValueType::Float32) => {
                         Some(BasicValue::Float32(v as f32))
                     }
-                    qdrant::value::Kind::StringValue(v) => s.parse_str(&v).ok(),
+                    qdrant::value::Kind::StringValue(v) => parse_str(types.as_slice(), &v).ok(),
 
                     qdrant::value::Kind::StructValue(_) if types.contains(&BasicValueType::Range) => {
                         extract_basic_value(point, &BasicValueType::Range, field_name)
