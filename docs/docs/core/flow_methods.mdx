@@ -70,7 +70,7 @@ This is to achieve best efficiency.
 
 ### One time update
 
-<Tabs>
+<Tabs queryString="code_lang">
 <TabItem value="shell" label="Shell" default>
 
 The `cocoindex update` subcommand creates/updates data in the target storage.
@@ -108,7 +108,7 @@ A data source may enable one or multiple *change capture mechanisms*:
 
 Change capture mechanisms enable CocoIndex to continuously capture changes from the source data and update the target data accordingly, under live update mode.
 
-<Tabs>
+<Tabs queryString="code_lang">
 <TabItem value="shell" label="Shell" default>
 
 To perform live update, run the `cocoindex update` subcommand with `-L` option:
@@ -191,7 +191,7 @@ with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
 
 CocoIndex allows you to run the transformations defined by the flow without updating the target storage.
 
-<Tabs>
+<Tabs queryString="code_lang">
 <TabItem value="shell" label="Shell" default>
 
 The `cocoindex evaluate` subcommand runs the transformation and dumps flow outputs.
