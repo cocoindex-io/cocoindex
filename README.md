@@ -123,7 +123,7 @@ It defines an index flow like this:
 <img width="363" alt="Data Flow" src="https://github.com/user-attachments/assets/2ea7be6d-3d94-42b1-b2bd-22515577e463" />
 
 
-## Examples and demo
+## 🚀 Examples and demo
 
 | Example | Description |
 |---------|-------------|
@@ -135,8 +135,9 @@ It defines an index flow like this:
 | [Docs to Knowledge Graph](examples/docs_to_knowledge_graph) | Extract relationships from Markdown documents and build a knowledge graph |
 | [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |
 | [FastAPI Server with Docker](examples/fastapi_server_docker) | Run the semantic search server in a Dockerized FastAPI setup | 
+| [Product_Taxonomy_Knowledge_Graph](examples/product_taxonomy_knowledge_graph) | Build knowledge graph for product recommendations | 
 
-More coming and stay tuned! If there's any specific examples you would like to see, please let us know in our [Discord community](https://discord.com/invite/zpA9S2DR7s) 🌱.
+More coming and stay tuned 👀!
 
 ## 📖 Documentation
 For detailed documentation, visit [CocoIndex Documentation](https://cocoindex.io/docs), including a [Quickstart guide](https://cocoindex.io/docs/getting_started/quickstart).
@@ -156,6 +157,9 @@ Join our community here:
 - 🐚 [Follow us on LinkedIn](https://www.linkedin.com/company/cocoindex/about/)
 - ▶️ [Subscribe to our YouTube channel](https://www.youtube.com/@cocoindex-io)
 - 📜 [Read our blog posts](https://cocoindex.io/blogs/)
+
+## Support us:
+We are constantly improving, and more features and examples are coming soon. If you love this project, please give us a star ⭐ at GitHub repo [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex) to stay tuned and help us grow. 
 
 ## License
 CocoIndex is Apache 2.0 licensed.
