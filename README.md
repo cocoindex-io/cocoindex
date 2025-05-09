@@ -46,6 +46,12 @@ collector.collect(...)
 collector.export(...)
 ```
 
+## Data Freshness
+As a data framework, CocoIndex takes it to the next level on data freshness. Incremental processing is one of the core values provided by CocoIndex.
+The frameworks takes care of
+- Change data capture
+- Figuring out what exactly needs to be updated, and only updating that without having to recompute everything throughout.
+This makes it fast to reflect any source updates to the target store. If you have concerns with surfacing stale data to AI agents and are spending lots of efforts working on infra piece to optimize the latency, the framework actually handles it for you.
 
 
 ## Quick Start:
