@@ -340,10 +340,10 @@ impl SimpleSemanticsQueryHandler {
 }
 
 #[pyclass]
-pub struct SetupStatusCheck(setup::AllSetupStatusCheck);
+pub struct SetupStatus(setup::AllSetupStatus);
 
 #[pymethods]
-impl SetupStatusCheck {
+impl SetupStatus {
     pub fn __str__(&self) -> String {
         format!("{}", &self.0)
     }
@@ -358,7 +358,7 @@ impl SetupStatusCheck {
 }
 
 #[pyfunction]
-fn sync_setup(py: Python<'_>) -> PyResult<SetupStatusCheck> {
+fn sync_setup(py: Python<'_>) -> PyResult<SetupStatus> {
     let lib_context = get_lib_context().into_py_result()?;
     let flows = lib_context.flows.lock().unwrap();
     let all_setup_states = lib_context.all_setup_states.read().unwrap();
@@ -366,21 +366,21 @@ fn sync_setup(py: Python<'_>) -> PyResult<SetupStatusCheck> {
         get_runtime()
             .block_on(async {
                 let setup_status = setup::sync_setup(&flows, &all_setup_states).await?;
-                anyhow::Ok(SetupStatusCheck(setup_status))
+                anyhow::Ok(SetupStatus(setup_status))
             })
             .into_py_result()
     })
 }
 
 #[pyfunction]
-fn drop_setup(py: Python<'_>, flow_names: Vec<String>) -> PyResult<SetupStatusCheck> {
+fn drop_setup(py: Python<'_>, flow_names: Vec<String>) -> PyResult<SetupStatus> {
     let lib_context = get_lib_context().into_py_result()?;
     let all_setup_states = lib_context.all_setup_states.read().unwrap();
     py.allow_threads(|| {
         get_runtime()
             .block_on(async {
                 let setup_status = setup::drop_setup(flow_names, &all_setup_states).await?;
-                anyhow::Ok(SetupStatusCheck(setup_status))
+                anyhow::Ok(SetupStatus(setup_status))
             })
             .into_py_result()
     })
@@ -395,7 +395,7 @@ fn flow_names_with_setup() -> PyResult<Vec<String>> {
 }
 
 #[pyfunction]
-fn apply_setup_changes(py: Python<'_>, setup_status: &SetupStatusCheck) -> PyResult<()> {
+fn apply_setup_changes(py: Python<'_>, setup_status: &SetupStatus) -> PyResult<()> {
     py.allow_threads(|| {
         get_runtime()
             .block_on(async {
@@ -442,7 +442,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TransientFlow>()?;
     m.add_class::<IndexUpdateInfo>()?;
     m.add_class::<SimpleSemanticsQueryHandler>()?;
-    m.add_class::<SetupStatusCheck>()?;
+    m.add_class::<SetupStatus>()?;
     m.add_class::<PyOpArgSchema>()?;
 
     Ok(())

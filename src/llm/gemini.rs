@@ -1,8 +1,11 @@
-use async_trait::async_trait;
-use crate::llm::{LlmGenerationClient, LlmSpec, LlmGenerateRequest, LlmGenerateResponse, ToJsonSchemaOptions, OutputFormat};
-use anyhow::{Result, bail, Context};
-use serde_json::Value;
 use crate::api_bail;
+use crate::llm::{
+    LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, LlmSpec, OutputFormat,
+    ToJsonSchemaOptions,
+};
+use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
+use serde_json::Value;
 use urlencoding::encode;
 
 pub struct Client {
@@ -76,10 +79,13 @@ impl LlmGenerationClient for Client {
         let api_key = &self.api_key;
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            encode(&self.model), encode(api_key)
+            encode(&self.model),
+            encode(api_key)
         );
 
-        let resp = self.client.post(&url)
+        let resp = self
+            .client
+            .post(&url)
             .json(&payload)
             .send()
             .await

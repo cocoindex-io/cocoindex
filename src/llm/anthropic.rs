@@ -1,8 +1,11 @@
+use crate::llm::{
+    LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, LlmSpec, OutputFormat,
+    ToJsonSchemaOptions,
+};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use crate::llm::{LlmGenerationClient, LlmSpec, LlmGenerateRequest, LlmGenerateResponse, ToJsonSchemaOptions, OutputFormat};
-use anyhow::{Result, bail, Context};
-use serde_json::Value;
 use json5;
+use serde_json::Value;
 
 use crate::api_bail;
 use urlencoding::encode;
@@ -64,7 +67,8 @@ impl LlmGenerationClient for Client {
 
         let encoded_api_key = encode(&self.api_key);
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(url)
             .header("x-api-key", encoded_api_key.as_ref())
             .header("anthropic-version", "2023-06-01")
@@ -81,7 +85,7 @@ impl LlmGenerationClient for Client {
         // println!("Anthropic API full response: {resp_json:?}");
 
         let resp_content = &resp_json["content"];
-        let tool_name = "report_result"; 
+        let tool_name = "report_result";
         let mut extracted_json: Option<Value> = None;
         if let Some(array) = resp_content.as_array() {
             for item in array {
@@ -116,14 +120,16 @@ impl LlmGenerationClient for Client {
                             }
                         }
                     }
-                },
-                _ => return Err(anyhow::anyhow!("No structured tool output or text found in response")),
+                }
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "No structured tool output or text found in response"
+                    ))
+                }
             }
         };
 
-        Ok(LlmGenerateResponse {
-            text,
-        })
+        Ok(LlmGenerateResponse { text })
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {
