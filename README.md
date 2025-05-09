@@ -50,7 +50,7 @@ collector.export(...)
 As a data framework, CocoIndex takes it to the next level on data freshness. Incremental processing is one of the core values provided by CocoIndex.
 
 <p align="center">
-    <img src="https://github.com/user-attachments/assets/4ead7275-8df6-42aa-ba06-81248aa7f8bf" alt="Incremental Processing" width="700">
+    <img src="https://github.com/user-attachments/assets/f4eb29b3-84ee-4fa0-a1e2-80eedeeabde6" alt="Incremental Processing" width="700">
 </p>
 
 The frameworks takes care of
