@@ -11,6 +11,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use super::IntoPyResult;
+use crate::base::schema::BasicValueType;
 use crate::base::{schema, value};
 
 pub struct Pythonized<T>(pub T);
@@ -154,10 +155,15 @@ fn basic_value_from_py_object<'py>(
                 .collect::<PyResult<Vec<_>>>()?,
         )),
         schema::BasicValueType::Union(s) => {
-            // TODO: Optimization
-            for sub_type in s.types().iter() {
-                if let Ok(value) = basic_value_from_py_object(sub_type, v) {
-                    return Ok(value);
+            // Try parsing the value in the reversed order of the enum elements
+            for typ in s.types().iter().rev() {
+                match typ {
+                    BasicValueType::Union(_) => {
+                        // Nested union never happens
+                    }
+                    other => if let Ok(value) = basic_value_from_py_object(other, v) {
+                        return Ok(value);
+                    },
                 }
             }
 
