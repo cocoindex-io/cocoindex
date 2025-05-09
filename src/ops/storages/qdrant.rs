@@ -283,27 +283,26 @@ fn extract_basic_value(
                     qdrant::value::Kind::StructValue(_) if types.contains(&BasicValueType::Range) => {
                         extract_basic_value(point, &BasicValueType::Range, field_name)
                     }
+                    // Other value kinds
                     _ => {
-                        let mut matched_value = None;
-
                         // Nested union
-                        match types.iter().find(|typ| matches!(typ, BasicValueType::Union(_))) {
-                            Some(union_type) => {
-                                matched_value = extract_basic_value(point, union_type, field_name);
-                            }
-                            _ => {}
-                        }
-                        // Return if fulfilled
-                        if matched_value.is_some() {
-                            return matched_value;
+                        match types.iter()
+                            .find(|typ| matches!(typ, BasicValueType::Union(_)))
+                            .and_then(|typ| extract_basic_value(point, typ, field_name))
+                        {
+                            Some(val) => return Some(val),
+                            None => {}
                         }
 
                         // JSON
                         if types.contains(&BasicValueType::Json) {
-                            matched_value = extract_basic_value(point, &BasicValueType::Json, field_name);
+                            match extract_basic_value(point, &BasicValueType::Json, field_name) {
+                                Some(val) => return Some(val),
+                                None => {}
+                            }
                         }
 
-                        matched_value
+                        None
                     }
                 }))
         }
