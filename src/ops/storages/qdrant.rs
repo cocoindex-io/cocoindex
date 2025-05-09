@@ -282,6 +282,7 @@ fn extract_basic_value(
                     qdrant::value::Kind::StructValue(_) if types.contains(&BasicValueType::Range) => {
                         extract_basic_value(point, &BasicValueType::Range, field_name)
                     }
+                    // TODO: Vector
                     // Other value kinds
                     _ => {
                         // Nested union

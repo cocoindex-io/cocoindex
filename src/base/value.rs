@@ -1,5 +1,5 @@
 use super::schema::*;
-use crate::{api_bail, api_error};
+use crate::{api_bail, api_error, utils::union::parse_str};
 use anyhow::Result;
 use base64::prelude::*;
 use bytes::Bytes;
@@ -920,18 +920,56 @@ impl BasicValue {
                 BasicValue::Vector(Arc::from(vec))
             }
             (v, BasicValueType::Union(UnionTypeSchema { types })) => {
-                // TODO: Match serde value instead
-                for ty in types {
-                    if let Ok(val) = BasicValue::from_json(v.clone(), ty) {
-                        return Ok(val);
+                match v {
+                    serde_json::Value::Bool(b) if types.contains(&BasicValueType::Bool) => {
+                        BasicValue::Bool(b)
                     }
-                }
+                    serde_json::Value::Number(n) => {
+                        if types.contains(&BasicValueType::Int64) {
+                            match n.as_i64() {
+                                Some(n) => return Ok(BasicValue::Int64(n)),
+                                None => {}
+                            }
+                        }
 
-                Err(anyhow::anyhow!(
-                    "invalid union value: {}, expect type {}",
-                    v,
-                    types.iter().join(" | "),
-                ))?
+                        if types.contains(&BasicValueType::Float64) {
+                            match n.as_f64() {
+                                Some(n) => return Ok(BasicValue::Float64(n)),
+                                None => {}
+                            }
+                        }
+
+                        if types.contains(&BasicValueType::Float32) {
+                            match n.as_f64().map(|v| v as f32) {
+                                Some(n) => return Ok(BasicValue::Float32(n)),
+                                None => {}
+                            }
+                        }
+
+                        anyhow::bail!("Invalid number value {n}")
+                    }
+                    serde_json::Value::Object(obj) if types.contains(&BasicValueType::Range) => {
+                        let start = obj.get("start").and_then(|val| val.as_u64());
+                        let end = obj.get("end").and_then(|val| val.as_u64());
+
+                        match (start, end) {
+                            (Some(start), Some(end)) => {
+                                BasicValue::Range(RangeValue::new(start as usize, end as usize))
+                            }
+                            _ => anyhow::bail!("Invalid range value")
+                        }
+                    }
+                    serde_json::Value::String(s) => {
+                        match parse_str(types, &s) {
+                            Ok(val) => return Ok(val),
+                            Err(_) => {}
+                        }
+
+                        anyhow::bail!("Invalid string value \"{s}\"")
+                    }
+
+                    _ => anyhow::bail!("Invalid union value {v}, expect type {:?}", types.as_slice()),
+                }
             }
             (v, t) => {
                 anyhow::bail!("Value and type not matched.\nTarget type {t:?}\nJSON value: {v}\n")
