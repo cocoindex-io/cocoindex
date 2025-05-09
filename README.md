@@ -78,9 +78,7 @@ pip install -U cocoindex
 
 ### Define data flow
 
-Follow [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart) to define your first indexing flow.
-
-A common indexing flow looks like:
+Follow [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart) to define your first indexing flow. An example flow looks like:
 
 ```python
 @cocoindex.flow_def(name="TextEmbedding")
