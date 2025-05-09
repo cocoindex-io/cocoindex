@@ -48,6 +48,11 @@ collector.export(...)
 
 ## Data Freshness
 As a data framework, CocoIndex takes it to the next level on data freshness. Incremental processing is one of the core values provided by CocoIndex.
+
+<p align="center">
+    <img src="https://github.com/user-attachments/assets/4ead7275-8df6-42aa-ba06-81248aa7f8bf" alt="Incremental Processing" width="800">
+</p>
+
 The frameworks takes care of
 - Change data capture
 - Figuring out what exactly needs to be updated, and only updating that without having to recompute everything throughout.
@@ -55,7 +60,10 @@ This makes it fast to reflect any source updates to the target store. If you hav
 
 
 ## Quick Start:
-If you're new to CocoIndex 🤗, we recommend checking out the 📖 [Documentation](https://cocoindex.io/docs) and ⚡ [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart). We also have a ▶️ [quick start video tutorial](https://youtu.be/gv5R8nOXsWU?si=9ioeKYkMEnYevTXT) for you to jump start.
+If you're new to CocoIndex, we recommend checking out 
+- 📖 [Documentation](https://cocoindex.io/docs)
+- ⚡  [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart)
+- 🎬 [Quick Start Video Tutorial](https://youtu.be/gv5R8nOXsWU?si=9ioeKYkMEnYevTXT) 
 
 ### Setup 
 1. Install CocoIndex Python library
@@ -64,17 +72,12 @@ If you're new to CocoIndex 🤗, we recommend checking out the 📖 [Documentati
 pip install -U cocoindex
 ```
 
-2. Setup Postgres with pgvector extension; or bring up a Postgres database using docker compose:
+2. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. CocoIndex uses it for incremental processing.
 
-    - Make sure Docker Compose is installed: [docs](https://docs.docker.com/compose/install/)
-    - Start a Postgres SQL database for cocoindex using our docker compose config:
-
-    ```bash
-    docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
-    ```
 
 ### Start your first indexing flow!
 Follow [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart) to define your first indexing flow.
+
 A common indexing flow looks like:
 
 ```python
