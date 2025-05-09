@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use crate::prelude::*;
 
 use super::{spec::*, value::BasicValue};
@@ -12,13 +14,55 @@ pub struct VectorTypeSchema {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UnionTypeSchema {
     // TODO: Support struct/table
+    // TODO: More efficient data structure
     pub types: Vec<BasicValueType>,
 }
 
 impl UnionTypeSchema {
     pub fn parse_str(&self, val: &str) -> Result<BasicValue> {
-        // TODO: Add parsing
         let types = &self.types;
+
+        if types.contains(&BasicValueType::Uuid) {
+            match val.parse().map(BasicValue::Uuid) {
+                Ok(ret) => return Ok(ret),
+                Err(_) => {}
+            }
+        }
+
+        if types.contains(&BasicValueType::OffsetDateTime) {
+            match val.parse().map(BasicValue::OffsetDateTime) {
+                Ok(ret) => return Ok(ret),
+                Err(_) => {}
+            }
+        }
+
+        if types.contains(&BasicValueType::LocalDateTime) {
+            match val.parse().map(BasicValue::LocalDateTime) {
+                Ok(ret) => return Ok(ret),
+                Err(_) => {}
+            }
+        }
+
+        if types.contains(&BasicValueType::Date) {
+            match val.parse().map(BasicValue::Date) {
+                Ok(ret) => return Ok(ret),
+                Err(_) => {}
+            }
+        }
+
+        if types.contains(&BasicValueType::Time) {
+            match val.parse().map(BasicValue::Time) {
+                Ok(ret) => return Ok(ret),
+                Err(_) => {}
+            }
+        }
+
+        if types.contains(&BasicValueType::Json) {
+            match serde_json::Value::from_str(val) {
+                Ok(ret) => return Ok(BasicValue::Json(ret.into())),
+                Err(_) => {}
+            }
+        }
 
         if types.contains(&BasicValueType::Str) {
             return Ok(BasicValue::Str(Arc::from(val)));
