@@ -458,38 +458,19 @@ class Flow:
         """
         Render the flow spec as a styled rich Tree with hierarchical structure.
         """
+        spec = self._get_spec(verbose=verbose)
         tree = Tree(f"Flow: {self.name}", style="cyan")
-        current_section = None
-        section_node = None
-        indent_stack = []
 
-        for i, (section, content, indent) in enumerate(self._get_spec(verbose=verbose)):
-            # Skip "Scope" entries (see ReactiveOpScope in spec.rs)
-            if content.startswith("Scope:"):
-                continue
+        def build_tree(label: str, lines: list):
+            node = Tree(label, style="bold magenta" if lines else "cyan")
+            for line in lines:
+                child_node = node.add(Text(line.content, style="yellow"))
+                child_node.children = build_tree("", line.children).children
+            return node
 
-            if section != current_section:
-                current_section = section
-                section_node = tree.add(f"{section}:", style="bold magenta")
-                indent_stack = [(0, section_node)]
-
-            while indent_stack and indent_stack[-1][0] >= indent:
-                indent_stack.pop()
-
-            parent = indent_stack[-1][1] if indent_stack else section_node
-            styled_content = Text(content, style="yellow")
-            is_parent = any(
-                next_indent > indent
-                for _, next_content, next_indent in self._get_spec(verbose=verbose)[i + 1:]
-                if not next_content.startswith("Scope:")
-            )
-
-            if is_parent:
-                node = parent.add(styled_content, style=None)
-                indent_stack.append((indent, node))
-            else:
-                parent.add(styled_content, style=None)
-
+        for section, lines in spec.sections:
+            section_node = build_tree(f"{section}:", lines)
+            tree.children.append(section_node)
         return tree
 
     def _get_spec(self, verbose: bool = False) -> list[tuple[str, str, int]]:

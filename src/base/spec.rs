@@ -1,33 +1,43 @@
 use crate::prelude::*;
 
 use super::schema::{EnrichedValueType, FieldSchema};
+use pyo3::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::ops::Deref;
 
 /// OutputMode enum for displaying spec info in different granularity
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum OutputMode {
     Concise,
     Verbose,
 }
 
-impl OutputMode {
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "concise" => OutputMode::Concise,
-            "verbose" => OutputMode::Verbose,
-            _ => unreachable!(
-                "Invalid format mode: {}. Expected 'concise' or 'verbose'.",
-                s
-            ),
-        }
-    }
-}
-
 /// Formatting spec per output mode
 pub trait SpecFormatter {
     fn format(&self, mode: OutputMode) -> String;
+}
+
+/// A single line in the rendered spec, with optional scope and children
+#[pyclass(get_all, set_all)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderedSpecLine {
+    /// The formatted content of the line (e.g., "Import: name=documents, source=LocalFile")
+    pub content: String,
+    /// The scope name, if applicable (e.g., "documents_1" for ForEach scopes)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Child lines in the hierarchy
+    pub children: Vec<RenderedSpecLine>,
+}
+
+/// A rendered specification, grouped by sections
+#[pyclass(get_all, set_all)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderedSpec {
+    /// List of (section_name, lines) pairs
+    pub sections: Vec<(String, Vec<RenderedSpecLine>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,7 +200,7 @@ impl ValueMapping {
 }
 
 impl std::fmt::Display for ValueMapping {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ValueMapping::Constant(v) => write!(
                 f,

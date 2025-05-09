@@ -3,7 +3,7 @@ use crate::prelude::*;
 use crate::base::schema::{FieldSchema, ValueType};
 use crate::base::spec::VectorSimilarityMetric;
 use crate::base::spec::{NamedSpec, ReactiveOpSpec};
-use crate::base::spec::{OutputMode, SpecFormatter};
+use crate::base::spec::{OutputMode, RenderedSpec, RenderedSpecLine, SpecFormatter};
 use crate::execution::query;
 use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
 use crate::ops::interface::{QueryResult, QueryResults};
@@ -198,76 +198,94 @@ impl Flow {
         })
     }
 
-    #[pyo3(signature = (output_mode="concise"))]
-    pub fn get_spec(&self, output_mode: &str) -> PyResult<Vec<(String, String, u32)>> {
-        let mode = OutputMode::from_str(output_mode);
+    #[pyo3(signature = (output_mode=None))]
+    pub fn get_spec(&self, output_mode: Option<Pythonized<OutputMode>>) -> PyResult<RenderedSpec> {
+        let mode = output_mode.map_or(OutputMode::Concise, |m| m.into_inner());
         let spec = &self.0.flow.flow_instance;
-        let mut result = Vec::with_capacity(
-            1 + spec.import_ops.len()
-                + spec.reactive_ops.len()
-                + spec.export_ops.len()
-                + spec.declarations.len(),
-        );
+        let mut sections: IndexMap<String, Vec<RenderedSpecLine>> = IndexMap::new();
 
-        fn extend_with<T, I, F>(
-            out: &mut Vec<(String, String, u32)>,
-            label: &'static str,
-            items: I,
-            f: F,
-        ) where
-            I: IntoIterator<Item = T>,
-            F: Fn(&T) -> String,
-        {
-            out.extend(items.into_iter().map(|item| (label.into(), f(&item), 0)));
+        // Initialize sections
+        sections.insert(
+            "Header".to_string(),
+            vec![RenderedSpecLine {
+                content: format!("Flow: {}", spec.name),
+                scope: None,
+                children: vec![],
+            }],
+        );
+        for key in ["Sources", "Processing", "Targets", "Declarations"] {
+            sections.insert(key.to_string(), Vec::new());
         }
 
-        // Header
-        result.push(("Header".into(), format!("Flow: {}", spec.name), 0));
-
         // Sources
-        extend_with(&mut result, "Sources", spec.import_ops.iter(), |op| {
-            format!("Import: name={}, {}", op.name, op.spec.format(mode))
-        });
+        for op in &spec.import_ops {
+            sections
+                .entry("Sources".to_string())
+                .or_default()
+                .push(RenderedSpecLine {
+                    content: format!("Import: name={}, {}", op.name, op.spec.format(mode)),
+                    scope: None,
+                    children: vec![],
+                });
+        }
 
         // Processing
         fn walk(
             op: &NamedSpec<ReactiveOpSpec>,
-            indent: u32,
             mode: OutputMode,
-            out: &mut Vec<(String, String, u32)>,
-        ) {
-            out.push((
-                "Processing".into(),
-                format!("{}: {}", op.name, op.spec.format(mode)),
-                indent,
-            ));
+            scope: Option<String>,
+        ) -> RenderedSpecLine {
+            let content = format!("{}: {}", op.name, op.spec.format(mode));
+            let mut line = RenderedSpecLine {
+                content,
+                scope,
+                children: vec![],
+            };
 
             if let ReactiveOpSpec::ForEach(fe) = &op.spec {
-                out.push(("Processing".into(), fe.op_scope.to_string(), indent + 1));
                 for nested in &fe.op_scope.ops {
-                    walk(nested, indent + 2, mode, out);
+                    line.children
+                        .push(walk(nested, mode, Some(fe.op_scope.name.clone())));
                 }
             }
+
+            line
         }
 
         for op in &spec.reactive_ops {
-            walk(op, 0, mode, &mut result);
+            sections
+                .entry("Processing".to_string())
+                .or_default()
+                .push(walk(op, mode, None));
         }
 
         // Targets
-        extend_with(&mut result, "Targets", spec.export_ops.iter(), |op| {
-            format!("Export: name={}, {}", op.name, op.spec.format(mode))
-        });
+        for op in &spec.export_ops {
+            sections
+                .entry("Targets".to_string())
+                .or_default()
+                .push(RenderedSpecLine {
+                    content: format!("Export: name={}, {}", op.name, op.spec.format(mode)),
+                    scope: None,
+                    children: vec![],
+                });
+        }
 
         // Declarations
-        extend_with(
-            &mut result,
-            "Declarations",
-            spec.declarations.iter(),
-            |decl| format!("Declaration: {}", decl.format(mode)),
-        );
+        for decl in &spec.declarations {
+            sections
+                .entry("Declarations".to_string())
+                .or_default()
+                .push(RenderedSpecLine {
+                    content: format!("Declaration: {}", decl.format(mode)),
+                    scope: None,
+                    children: vec![],
+                });
+        }
 
-        Ok(result)
+        Ok(RenderedSpec {
+            sections: sections.into_iter().collect(),
+        })
     }
 
     pub fn get_schema(&self) -> Vec<(String, String, String)> {
@@ -518,6 +536,8 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SimpleSemanticsQueryHandler>()?;
     m.add_class::<SetupStatusCheck>()?;
     m.add_class::<PyOpArgSchema>()?;
+    m.add_class::<RenderedSpec>()?;
+    m.add_class::<RenderedSpecLine>()?;
 
     Ok(())
 }
