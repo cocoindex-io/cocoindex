@@ -19,6 +19,7 @@ pub struct UnionTypeSchema {
 }
 
 impl UnionTypeSchema {
+    /// Try parsing the str value to each possible type, and return the first successful result
     pub fn parse_str(&self, val: &str) -> Result<BasicValue> {
         let types = &self.types;
 
