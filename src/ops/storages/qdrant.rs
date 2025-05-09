@@ -294,15 +294,6 @@ fn extract_basic_value(
                     }
                     // Other value kinds
                     _ => {
-                        // Nested union
-                        match types.iter()
-                            .find(|typ| matches!(typ, BasicValueType::Union(_)))
-                            .and_then(|typ| extract_basic_value(point, typ, field_name))
-                        {
-                            Some(val) => return Some(val),
-                            None => {}
-                        }
-
                         // Undetected JSON
                         if types.contains(&BasicValueType::Json) {
                             match extract_basic_value(point, &BasicValueType::Json, field_name) {
