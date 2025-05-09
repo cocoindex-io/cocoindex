@@ -25,6 +25,28 @@ CocoIndex is ultra performant data transformation framework, core engine written
 
 The philosophy is to have the framework handle the source updates, and having developers only focus on defining a series of data transformation, inspired by spreadsheet.
 
+## Data Flow programming
+CocoIndex follows [Data flow](https://en.wikipedia.org/wiki/Dataflow_programming) programming model. Compare with traditional orchestration framework, where data is opaque. In CocoIndex data and data operation are first class citizen, and there's no side effects for each data operation. All data are observable in each transformation, with lineage out of the box.
+
+Particularly, user don't define data operations like creation, update, deletion. But rather, they define something like - for a set of source data, this is the transformation or formula. The framework takes care of the data operations like when to create, update, or delete. For example:
+
+```python
+// ingest
+data['content'] = flow_builder.add_source(...) 
+
+// transform
+data['out'] = data['content'] 
+    .transform(...)
+    .transform(...)
+
+// collect data
+collector.collect(...)
+
+// export to db, vector db, graph db ...
+collector.export(...)
+```
+
+
 
 ## Quick Start:
 If you're new to CocoIndex 🤗, we recommend checking out the 📖 [Documentation](https://cocoindex.io/docs) and ⚡ [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart). We also have a ▶️ [quick start video tutorial](https://youtu.be/gv5R8nOXsWU?si=9ioeKYkMEnYevTXT) for you to jump start.
