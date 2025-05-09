@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::ops::sdk::*;
 use crate::setup;
-use crate::utils::union::parse_str;
+use crate::utils::union::ParseStr;
 use anyhow::{bail, Result};
 use futures::FutureExt;
 use qdrant_client::qdrant::vectors_output::VectorsOptions;
@@ -287,7 +287,7 @@ fn extract_basic_value(
                         Some(BasicValue::Float32(v as f32))
                     }
                     // Strings, UUID, DateTime/Date/Time, JSON
-                    qdrant::value::Kind::StringValue(v) => parse_str(types.as_slice(), &v).ok(),
+                    qdrant::value::Kind::StringValue(v) => types.parse_str(&v).ok(),
 
                     qdrant::value::Kind::StructValue(_) if types.contains(&BasicValueType::Range) => {
                         extract_basic_value(point, &BasicValueType::Range, field_name)

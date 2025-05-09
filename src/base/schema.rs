@@ -3,20 +3,19 @@ use crate::prelude::*;
 use super::spec::*;
 use crate::builder::plan::AnalyzedValueMapping;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VectorTypeSchema {
     pub element_type: Box<BasicValueType>,
     pub dimension: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UnionTypeSchema {
     // TODO: Support struct/table
-    // TODO: More efficient data structure
-    pub types: Vec<BasicValueType>,
+    pub types: BTreeSet<BasicValueType>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(tag = "kind")]
 pub enum BasicValueType {
     /// A sequence of bytes in binary.

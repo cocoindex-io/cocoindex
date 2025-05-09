@@ -1,5 +1,5 @@
 use super::schema::*;
-use crate::{api_bail, api_error, utils::union::parse_str};
+use crate::{api_bail, api_error, utils::union::ParseStr};
 use anyhow::Result;
 use base64::prelude::*;
 use bytes::Bytes;
@@ -960,7 +960,7 @@ impl BasicValue {
                         }
                     }
                     serde_json::Value::String(s) => {
-                        match parse_str(types, &s) {
+                        match types.parse_str(&s) {
                             Ok(val) => return Ok(val),
                             Err(_) => {}
                         }
@@ -968,7 +968,7 @@ impl BasicValue {
                         anyhow::bail!("Invalid string value \"{s}\"")
                     }
 
-                    _ => anyhow::bail!("Invalid union value {v}, expect type {:?}", types.as_slice()),
+                    _ => anyhow::bail!("Invalid union value {v}, expect type {}", types.iter().join(" | ")),
                 }
             }
             (v, t) => {
