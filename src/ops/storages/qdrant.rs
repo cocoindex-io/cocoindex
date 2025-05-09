@@ -262,6 +262,15 @@ fn extract_basic_value(
         }),
 
         BasicValueType::Union(UnionTypeSchema { types }) => {
+            // Vectors
+            match types.iter()
+                .find(|typ| matches!(typ, &&BasicValueType::Vector(_)))
+                .and_then(|typ| extract_basic_value(point, typ, field_name))
+            {
+                Some(value) => return Some(value),
+                None => {}
+            }
+
             point.payload
                 .get(field_name)
                 .and_then(|v| v.kind.as_ref().and_then(|kind| match kind {
@@ -277,12 +286,12 @@ fn extract_basic_value(
                     &qdrant::value::Kind::DoubleValue(v) if types.contains(&BasicValueType::Float32) => {
                         Some(BasicValue::Float32(v as f32))
                     }
+                    // Strings, UUID, DateTime/Date/Time, JSON
                     qdrant::value::Kind::StringValue(v) => parse_str(types.as_slice(), &v).ok(),
 
                     qdrant::value::Kind::StructValue(_) if types.contains(&BasicValueType::Range) => {
                         extract_basic_value(point, &BasicValueType::Range, field_name)
                     }
-                    // TODO: Vector
                     // Other value kinds
                     _ => {
                         // Nested union
@@ -294,7 +303,7 @@ fn extract_basic_value(
                             None => {}
                         }
 
-                        // JSON
+                        // Undetected JSON
                         if types.contains(&BasicValueType::Json) {
                             match extract_basic_value(point, &BasicValueType::Json, field_name) {
                                 Some(val) => return Some(val),
