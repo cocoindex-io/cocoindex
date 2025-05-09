@@ -5,7 +5,10 @@ name = "cocoindex"
 version = "999.0.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[profile.release]
+codegen-units = 1
+lto = true
+
 [lib]
 name = "cocoindex_engine"
 crate-type = ["cdylib"]
