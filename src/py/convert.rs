@@ -226,3 +226,89 @@ pub fn value_from_py_object<'py>(
     };
     Ok(result)
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::base::{schema, value};
+    use pyo3::Python;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_roundtrip_basic_values() {
+        Python::with_gil(|py| {
+            // Test Int64
+            let int_value = value::Value::Basic(value::BasicValue::Int64(42));
+            let int_type = schema::ValueType::Basic(schema::BasicValueType::Int64);
+            let py_obj = value_to_py_object(py, &int_value).unwrap();
+            let roundtrip_value = value_from_py_object(&int_type, &py_obj).unwrap();
+            assert_eq!(int_value, roundtrip_value, "Int64 roundtrip failed");
+
+            // Test String
+            let str_value = value::Value::Basic(value::BasicValue::Str(Arc::from("test string")));
+            let str_type = schema::ValueType::Basic(schema::BasicValueType::Str);
+            let py_obj = value_to_py_object(py, &str_value).unwrap();
+            let roundtrip_value = value_from_py_object(&str_type, &py_obj).unwrap();
+            assert_eq!(str_value, roundtrip_value, "String roundtrip failed");
+
+            // Test Bool
+            let bool_value = value::Value::Basic(value::BasicValue::Bool(true));
+            let bool_type = schema::ValueType::Basic(schema::BasicValueType::Bool);
+            let py_obj = value_to_py_object(py, &bool_value).unwrap();
+            let roundtrip_value = value_from_py_object(&bool_type, &py_obj).unwrap();
+            assert_eq!(bool_value, roundtrip_value, "Bool roundtrip failed");
+        });
+    }
+
+    #[test]
+    fn test_roundtrip_struct() {
+        Python::with_gil(|py| {
+            // Create a struct schema with multiple fields
+            let struct_schema = schema::StructSchema {
+                description: Some(Arc::from("Test struct")),
+                fields: Arc::new(vec![
+                    schema::FieldSchema {
+                        name: "id".into(),
+                        value_type: schema::EnrichedValueType {
+                            typ: schema::ValueType::Basic(schema::BasicValueType::Int64),
+                            nullable: false,
+                            attrs: Default::default(),
+                        },
+                    },
+                    schema::FieldSchema {
+                        name: "name".into(),
+                        value_type: schema::EnrichedValueType {
+                            typ: schema::ValueType::Basic(schema::BasicValueType::Str),
+                            nullable: false,
+                            attrs: Default::default(),
+                        },
+                    },
+                    schema::FieldSchema {
+                        name: "active".into(),
+                        value_type: schema::EnrichedValueType {
+                            typ: schema::ValueType::Basic(schema::BasicValueType::Bool),
+                            nullable: false,
+                            attrs: Default::default(),
+                        },
+                    },
+                ]),
+            };
+
+            // Create a struct value matching the schema
+            let struct_value = value::Value::Struct(value::FieldValues {
+                fields: vec![
+                    value::Value::Basic(value::BasicValue::Int64(1)),
+                    value::Value::Basic(value::BasicValue::Str(Arc::from("test"))),
+                    value::Value::Basic(value::BasicValue::Bool(true)),
+                ],
+            });
+
+            // Perform roundtrip conversion
+            let struct_type = schema::ValueType::Struct(struct_schema);
+            let py_obj = value_to_py_object(py, &struct_value).unwrap();
+            let roundtrip_value = value_from_py_object(&struct_type, &py_obj).unwrap();
+            assert_eq!(struct_value, roundtrip_value, "Struct roundtrip failed");
+        });
+    }
+}

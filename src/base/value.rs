@@ -340,7 +340,7 @@ impl KeyValue {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BasicValue {
     Bytes(Bytes),
     Str(Arc<str>),
@@ -511,7 +511,7 @@ impl BasicValue {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum Value<VS = ScopeValue> {
     #[default]
     Null,
@@ -747,7 +747,7 @@ impl<VS> Value<VS> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FieldValues<VS = ScopeValue> {
     pub fields: Vec<Value<VS>>,
 }
@@ -821,7 +821,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ScopeValue(pub FieldValues);
 
 impl Deref for ScopeValue {
