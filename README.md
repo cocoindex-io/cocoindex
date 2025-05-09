@@ -47,7 +47,7 @@ collector.export(...)
 ```
 
 ## Data Freshness
-As a data framework, CocoIndex takes it to the next level on data freshness. Incremental processing is one of the core values provided by CocoIndex.
+As a data framework, CocoIndex takes it to the next level on data freshness. **Incremental processing** is one of the core values provided by CocoIndex.
 
 <p align="center">
     <img src="https://github.com/user-attachments/assets/f4eb29b3-84ee-4fa0-a1e2-80eedeeabde6" alt="Incremental Processing" width="700">
