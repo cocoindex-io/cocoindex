@@ -919,7 +919,9 @@ impl BasicValue {
                     .collect::<Result<Vec<_>>>()?;
                 BasicValue::Vector(Arc::from(vec))
             }
-            (v, BasicValueType::Union(UnionTypeSchema { types })) => {
+            (v, BasicValueType::Union(typ)) => {
+                let types = typ.types();
+
                 match v {
                     serde_json::Value::Bool(b) if types.contains(&BasicValueType::Bool) => {
                         BasicValue::Bool(b)

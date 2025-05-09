@@ -168,7 +168,7 @@ impl JsonSchemaBuilder {
             schema::BasicValueType::Union(s) => {
                 schema.subschemas = Some(Box::new(SubschemaValidation {
                     one_of: Some(
-                        s.types.iter()
+                        s.types().iter()
                             .map(|t| Schema::Object(self.for_basic_value_type(t, field_path)))
                             .collect()
                     ),

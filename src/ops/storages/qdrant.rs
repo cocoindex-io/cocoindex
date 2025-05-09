@@ -261,7 +261,9 @@ fn extract_basic_value(
             })
         }),
 
-        BasicValueType::Union(UnionTypeSchema { types }) => {
+        BasicValueType::Union(typ) => {
+            let types = typ.types();
+
             // Vectors
             match types.iter()
                 .find(|typ| matches!(typ, &&BasicValueType::Vector(_)))

@@ -2,6 +2,63 @@ use std::{str::FromStr, sync::Arc};
 
 use crate::{base::{schema::BasicValueType, value::BasicValue}, prelude::*};
 
+/// Union type helper storing an auto-sorted set of types excluding `Union`
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UnionType {
+    types: BTreeSet<BasicValueType>,
+}
+
+impl UnionType {
+    pub fn types(&self) -> &BTreeSet<BasicValueType> {
+        &self.types
+    }
+
+    pub fn insert(&mut self, value: BasicValueType) -> bool {
+        match value {
+            BasicValueType::Union(union_type) => {
+                let mut inserted = false;
+
+                // Unpack nested union
+                for item in union_type.types.into_iter() {
+                    inserted = self.insert(item) || inserted;
+                }
+
+                inserted
+            }
+
+            other => self.types.insert(other),
+        }
+    }
+
+    pub fn unpack(self) -> Self {
+        self.types.into()
+    }
+}
+
+impl From<Vec<BasicValueType>> for UnionType {
+    fn from(value: Vec<BasicValueType>) -> Self {
+        let mut union = Self::default();
+
+        for typ in value {
+            union.insert(typ);
+        }
+
+        union
+    }
+}
+
+impl From<BTreeSet<BasicValueType>> for UnionType {
+    fn from(value: BTreeSet<BasicValueType>) -> Self {
+        let mut union = Self::default();
+
+        for typ in value {
+            union.insert(typ);
+        }
+
+        union
+    }
+}
+
 pub trait ParseStr {
     type Out;
     type Err;

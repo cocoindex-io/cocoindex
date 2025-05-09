@@ -155,7 +155,7 @@ fn basic_value_from_py_object<'py>(
         )),
         schema::BasicValueType::Union(s) => {
             // TODO: Optimization
-            for sub_type in s.types.iter() {
+            for sub_type in s.types().iter() {
                 if let Ok(value) = basic_value_from_py_object(sub_type, v) {
                     return Ok(value);
                 }
