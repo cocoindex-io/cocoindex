@@ -50,7 +50,7 @@ collector.export(...)
 As a data framework, CocoIndex takes it to the next level on data freshness. Incremental processing is one of the core values provided by CocoIndex.
 
 <p align="center">
-    <img src="https://github.com/user-attachments/assets/4ead7275-8df6-42aa-ba06-81248aa7f8bf" alt="Incremental Processing" width="800">
+    <img src="https://github.com/user-attachments/assets/4ead7275-8df6-42aa-ba06-81248aa7f8bf" alt="Incremental Processing" width="700">
 </p>
 
 The frameworks takes care of
@@ -66,6 +66,7 @@ If you're new to CocoIndex, we recommend checking out
 - 🎬 [Quick Start Video Tutorial](https://youtu.be/gv5R8nOXsWU?si=9ioeKYkMEnYevTXT) 
 
 ### Setup 
+
 1. Install CocoIndex Python library
 
 ```bash
@@ -75,7 +76,8 @@ pip install -U cocoindex
 2. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. CocoIndex uses it for incremental processing.
 
 
-### Start your first indexing flow!
+### Define data flow
+
 Follow [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart) to define your first indexing flow.
 
 A common indexing flow looks like:
@@ -119,10 +121,11 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 ```
 
 It defines an index flow like this:
-![Flow diagram](docs/docs/core/flow_example.svg)
 
-### Play with existing example and demo
-Go to the [examples directory](examples) to try out with any of the examples, following instructions under specific example directory.
+<img width="363" alt="Data Flow" src="https://github.com/user-attachments/assets/2ea7be6d-3d94-42b1-b2bd-22515577e463" />
+
+
+## Examples and demo
 
 | Example | Description |
 |---------|-------------|
