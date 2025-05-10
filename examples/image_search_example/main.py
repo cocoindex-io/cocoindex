@@ -1,5 +1,7 @@
 from dotenv import load_dotenv
 import cocoindex
+import datetime
+import threading
 import os
 import requests
 import base64
@@ -7,6 +9,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from cocoindex.lib import main_fn
+import asyncio
 
 load_dotenv(override=True)
 
@@ -55,7 +58,8 @@ def caption_to_embedding(caption: cocoindex.DataSlice) -> cocoindex.DataSlice:
 @cocoindex.flow_def(name="ImageObjectEmbedding")
 def image_object_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     data_scope["images"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="img", included_patterns=["*.jpg", "*.jpeg", "*.png"], binary=True)
+        cocoindex.sources.LocalFile(path="img", included_patterns=["*.jpg", "*.jpeg", "*.png"], binary=True),
+        refresh_interval=datetime.timedelta(minutes=1)  # Poll for changes every 1 minute
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
@@ -101,6 +105,25 @@ def startup_event():
         query_transform_flow=caption_to_embedding,
         default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
     )
+    # For live updating, pass the flow function directly
+    def run_updater():
+        async def updater_coroutine():
+            print("[LiveUpdater] Coroutine starting...")
+            try:
+                updater = await cocoindex.FlowLiveUpdater.create(image_object_embedding_flow)
+                print("[LiveUpdater] Updater created. Entering context...")
+                async with updater:
+                    print("[LiveUpdater] Running updater.wait()...")
+                    await updater.wait()
+                print("[LiveUpdater] Exited updater context.")
+            except Exception as e:
+                print(f"[LiveUpdater] Exception: {e}")
+        print("[LiveUpdater] Thread starting...")
+        asyncio.run(updater_coroutine())
+        print("[LiveUpdater] Thread finished.")
+    thread = threading.Thread(target=run_updater, daemon=True)
+    thread.start()
+    app.state.live_updater_thread = thread
 
 @app.get("/search")
 def search(q: str = Query(..., description="Search query"), limit: int = Query(5, description="Number of results")):
