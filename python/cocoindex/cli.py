@@ -85,15 +85,15 @@ def setup():
     Check and apply backend setup changes for flows, including the internal and target storage
     (to export).
     """
-    status_check = sync_setup()
-    click.echo(status_check)
-    if status_check.is_up_to_date():
+    setup_status = sync_setup()
+    click.echo(setup_status)
+    if setup_status.is_up_to_date():
         click.echo("No changes need to be pushed.")
         return
     if not click.confirm(
         "Changes need to be pushed. Continue? [yes/N]", default=False, show_default=False):
         return
-    apply_setup_changes(status_check)
+    apply_setup_changes(setup_status)
 
 @cli.command()
 @click.argument("flow_name", type=str, nargs=-1)
@@ -112,15 +112,15 @@ def drop(flow_name: tuple[str, ...], drop_all: bool):
         flow_names = [fl.name for fl in flow.flows()]
     else:
         flow_names = list(flow_name)
-    status_check = drop_setup(flow_names)
-    click.echo(status_check)
-    if status_check.is_up_to_date():
+    setup_status = drop_setup(flow_names)
+    click.echo(setup_status)
+    if setup_status.is_up_to_date():
         click.echo("No flows need to be dropped.")
         return
     if not click.confirm(
         "Changes need to be pushed. Continue? [yes/N]", default=False, show_default=False):
         return
-    apply_setup_changes(status_check)
+    apply_setup_changes(setup_status)
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)

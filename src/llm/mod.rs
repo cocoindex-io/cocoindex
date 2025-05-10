@@ -52,10 +52,10 @@ pub trait LlmGenerationClient: Send + Sync {
     fn json_schema_options(&self) -> ToJsonSchemaOptions;
 }
 
+mod anthropic;
+mod gemini;
 mod ollama;
 mod openai;
-mod gemini;
-mod anthropic;
 
 pub async fn new_llm_generation_client(spec: LlmSpec) -> Result<Box<dyn LlmGenerationClient>> {
     let client = match spec.api_type {

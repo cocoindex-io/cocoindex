@@ -4,7 +4,7 @@ use super::{analyzer, plan};
 use crate::{
     ops::registry::ExecutorFactoryRegistry,
     service::error::{shared_ok, SharedError, SharedResultExt},
-    setup::{self, ObjectSetupStatusCheck},
+    setup::{self, ObjectSetupStatus},
 };
 
 pub struct AnalyzedFlow {
@@ -29,9 +29,9 @@ impl AnalyzedFlow {
             existing_flow_ss,
             registry,
         )?;
-        let setup_status_check =
+        let setup_status =
             setup::check_flow_setup_status(Some(&desired_state), existing_flow_ss).await?;
-        let execution_plan = if setup_status_check.is_up_to_date() {
+        let execution_plan = if setup_status.is_up_to_date() {
             Some(
                 async move {
                     shared_ok(Arc::new(

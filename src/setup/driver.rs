@@ -7,11 +7,11 @@ use std::{
 };
 
 use super::{
-    db_metadata, CombinedState, DesiredMode, ExistingMode, FlowSetupState, FlowSetupStatusCheck,
-    ObjectSetupStatusCheck, ObjectStatus, ResourceIdentifier, ResourceSetupInfo,
-    ResourceSetupStatusCheck, SetupChangeType, StateChange, TargetSetupState,
+    db_metadata, CombinedState, DesiredMode, ExistingMode, FlowSetupState, FlowSetupStatus,
+    ObjectSetupStatus, ObjectStatus, ResourceIdentifier, ResourceSetupInfo,
+    ResourceSetupStatus, SetupChangeType, StateChange, TargetSetupState,
 };
-use super::{AllSetupState, AllSetupStatusCheck};
+use super::{AllSetupState, AllSetupStatus};
 use crate::execution::db_tracking_setup;
 use crate::{
     lib_context::FlowContext,
@@ -243,7 +243,7 @@ fn group_resource_states<'a>(
 pub async fn check_flow_setup_status(
     desired_state: Option<&FlowSetupState<DesiredMode>>,
     existing_state: Option<&FlowSetupState<ExistingMode>>,
-) -> Result<FlowSetupStatusCheck> {
+) -> Result<FlowSetupStatus> {
     let metadata_change = diff_state(
         existing_state.map(|e| &e.metadata),
         desired_state.map(|d| &d.metadata),
@@ -254,7 +254,7 @@ pub async fn check_flow_setup_status(
         .iter()
         .flat_map(|d| d.metadata.sources.values().map(|v| v.source_id))
         .collect::<HashSet<i32>>();
-    let tracking_table_change = db_tracking_setup::TrackingTableSetupStatusCheck::new(
+    let tracking_table_change = db_tracking_setup::TrackingTableSetupStatus::new(
         desired_state.map(|d| &d.tracking_table),
         &existing_state
             .map(|e| Cow::Borrowed(&e.tracking_table))
@@ -318,7 +318,7 @@ pub async fn check_flow_setup_status(
         let never_setup_by_sys = target_state.is_none()
             && existing_without_setup_by_user.current.is_none()
             && existing_without_setup_by_user.staging.is_empty();
-        let status_check = if never_setup_by_sys {
+        let setup_status = if never_setup_by_sys {
             None
         } else {
             Some(
@@ -336,7 +336,7 @@ pub async fn check_flow_setup_status(
             key: resource_id.clone(),
             state,
             description: factory.describe_resource(&resource_id.key)?,
-            status_check,
+            setup_status,
             legacy_key: v
                 .existing
                 .legacy_state_key
@@ -346,7 +346,7 @@ pub async fn check_flow_setup_status(
                 }),
         });
     }
-    Ok(FlowSetupStatusCheck {
+    Ok(FlowSetupStatus {
         status: to_object_status(existing_state, desired_state)?,
         seen_flow_metadata_version: existing_state.and_then(|s| s.seen_flow_metadata_version),
         metadata_change,
@@ -359,61 +359,61 @@ pub async fn check_flow_setup_status(
 pub async fn sync_setup(
     flows: &BTreeMap<String, Arc<FlowContext>>,
     all_setup_state: &AllSetupState<ExistingMode>,
-) -> Result<AllSetupStatusCheck> {
-    let mut flow_status_checks = BTreeMap::new();
+) -> Result<AllSetupStatus> {
+    let mut flow_setup_statuss = BTreeMap::new();
     for (flow_name, flow_context) in flows {
         let existing_state = all_setup_state.flows.get(flow_name);
-        flow_status_checks.insert(
+        flow_setup_statuss.insert(
             flow_name.clone(),
             check_flow_setup_status(Some(&flow_context.flow.desired_state), existing_state).await?,
         );
     }
-    Ok(AllSetupStatusCheck {
+    Ok(AllSetupStatus {
         metadata_table: db_metadata::MetadataTableSetup {
             metadata_table_missing: !all_setup_state.has_metadata_table,
         }
         .into_setup_info(),
-        flows: flow_status_checks,
+        flows: flow_setup_statuss,
     })
 }
 
 pub async fn drop_setup(
     flow_names: impl IntoIterator<Item = String>,
     all_setup_state: &AllSetupState<ExistingMode>,
-) -> Result<AllSetupStatusCheck> {
+) -> Result<AllSetupStatus> {
     if !all_setup_state.has_metadata_table {
         api_bail!("CocoIndex metadata table is missing.");
     }
-    let mut flow_status_checks = BTreeMap::new();
+    let mut flow_setup_statuss = BTreeMap::new();
     for flow_name in flow_names.into_iter() {
         if let Some(existing_state) = all_setup_state.flows.get(&flow_name) {
-            flow_status_checks.insert(
+            flow_setup_statuss.insert(
                 flow_name,
                 check_flow_setup_status(None, Some(existing_state)).await?,
             );
         }
     }
-    Ok(AllSetupStatusCheck {
+    Ok(AllSetupStatus {
         metadata_table: db_metadata::MetadataTableSetup {
             metadata_table_missing: false,
         }
         .into_setup_info(),
-        flows: flow_status_checks,
+        flows: flow_setup_statuss,
     })
 }
 
-async fn maybe_update_resource_setup<K, S, C: ResourceSetupStatusCheck>(
+async fn maybe_update_resource_setup<K, S, C: ResourceSetupStatus>(
     write: &mut impl std::io::Write,
     resource: &ResourceSetupInfo<K, S, C>,
 ) -> Result<()> {
-    if let Some(status_check) = &resource.status_check {
-        if status_check.change_type() != SetupChangeType::NoChange {
+    if let Some(setup_status) = &resource.setup_status {
+        if setup_status.change_type() != SetupChangeType::NoChange {
             writeln!(write, "{}:", resource.description)?;
-            for change in status_check.describe_changes() {
+            for change in setup_status.describe_changes() {
                 writeln!(write, "  - {}", change)?;
             }
             write!(write, "Pushing...")?;
-            status_check.apply_change().await?;
+            setup_status.apply_change().await?;
             writeln!(write, "DONE")?;
         }
     }
@@ -422,12 +422,12 @@ async fn maybe_update_resource_setup<K, S, C: ResourceSetupStatusCheck>(
 
 pub async fn apply_changes(
     write: &mut impl std::io::Write,
-    status_check: &AllSetupStatusCheck,
+    setup_status: &AllSetupStatus,
     pool: &PgPool,
 ) -> Result<()> {
-    maybe_update_resource_setup(write, &status_check.metadata_table).await?;
+    maybe_update_resource_setup(write, &setup_status.metadata_table).await?;
 
-    for (flow_name, flow_status) in &status_check.flows {
+    for (flow_name, flow_status) in &setup_status.flows {
         if flow_status.is_up_to_date() {
             continue;
         }
@@ -453,7 +453,7 @@ pub async fn apply_changes(
         }
         if let Some(tracking_table) = &flow_status.tracking_table {
             if tracking_table
-                .status_check
+                .setup_status
                 .as_ref()
                 .map(|c| c.change_type() != SetupChangeType::NoChange)
                 .unwrap_or_default()

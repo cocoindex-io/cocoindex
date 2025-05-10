@@ -12,44 +12,74 @@
 [![PyPI version](https://img.shields.io/pypi/v/cocoindex?color=5B5BD6)](https://pypi.org/project/cocoindex/)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/cocoindex)](https://pypistats.org/packages/cocoindex)
 
-<!-- [![Python](https://img.shields.io/badge/python-3.11%20to%203.13-5B5BD6?logo=python&logoColor=white)](https://www.python.org/) -->
 [![CI](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml)
 [![release](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml)
 [![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
-<!--[![LinkedIn](https://img.shields.io/badge/LinkedIn-CocoIndex-5B5BD6?logo=linkedin&logoColor=white)](https://www.linkedin.com/company/cocoindex) -->
-<!--[![X (Twitter)](https://img.shields.io/twitter/follow/cocoindex_io)](https://twitter.com/intent/follow?screen_name=cocoindex_io) -->
-
 </div>
 
-CocoIndex is the world's first open-source engine that supports both custom transformation logic and incremental updates specialized for data indexing.
+**CocoIndex** is an ultra performant data transformation framework, with its core engine written in Rust. The problem it tries to solve is to make it easy to prepare fresh data for AI - either creating embedding, building knowledge graphs, or performing other data transformations - and take real-time data pipelines beyond traditional SQL.
+
 <p align="center">
-    <img src="https://cocoindex.io/images/venn.svg" alt="CocoIndex">
+    <img src="https://cocoindex.io/images/cocoindex-features.png" alt="CocoIndex Features" width="500">
 </p>
-With CocoIndex, users declare the transformation, CocoIndex creates & maintains an index, and keeps the derived index up to date based on source update, with minimal computation and changes.
+
+The philosophy is to have the framework handle the source updates, and having developers only worry about defining a series of data transformation, inspired by spreadsheet.
+
+## Dataflow programming
+Unlike a workflow orchestration framework where data is usually opaque, in CocoIndex, data and data operations are first class citizens. CocoIndex follows the idea of [Dataflow](https://en.wikipedia.org/wiki/Dataflow_programming) programming model. Each transformation creates a new field solely based on input fields, without hidden states and value mutation. All data before/after each transformation is observable, with lineage out of the box.
+
+**Particularly**, users don't explicitly mutate data by creating, updating and deleting. Rather, they define something like - for a set of source data, this is the transformation or formula. The framework takes care of the data operations such as when to create, update, or delete.
+
+```python
+# import
+data['content'] = flow_builder.add_source(...) 
+
+# transform
+data['out'] = data['content'] 
+    .transform(...)
+    .transform(...)
+
+# collect data
+collector.collect(...)
+
+# export to db, vector db, graph db ...
+collector.export(...)
+```
+
+## Data Freshness
+As a data framework, CocoIndex takes it to the next level on data freshness. **Incremental processing** is one of the core values provided by CocoIndex.
+
+<p align="center">
+    <img src="https://github.com/user-attachments/assets/f4eb29b3-84ee-4fa0-a1e2-80eedeeabde6" alt="Incremental Processing" width="700">
+</p>
+
+The frameworks takes care of
+- Change data capture.
+- Figure out what exactly needs to be updated, and only updating that without having to recompute everything.
+  
+This makes it fast to reflect any source updates to the target store. If you have concerns with surfacing stale data to AI agents and are spending lots of efforts working on infra piece to optimize the latency, the framework actually handles it for you.
 
 
 ## Quick Start:
-If you're new to CocoIndex 🤗, we recommend checking out the 📖 [Documentation](https://cocoindex.io/docs) and ⚡ [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart). We also have a ▶️ [quick start video tutorial](https://youtu.be/gv5R8nOXsWU?si=9ioeKYkMEnYevTXT) for you to jump start.
+If you're new to CocoIndex, we recommend checking out 
+- 📖 [Documentation](https://cocoindex.io/docs)
+- ⚡  [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart)
+- 🎬 [Quick Start Video Tutorial](https://youtu.be/gv5R8nOXsWU?si=9ioeKYkMEnYevTXT) 
 
 ### Setup 
+
 1. Install CocoIndex Python library
 
 ```bash
 pip install -U cocoindex
 ```
 
-2. Setup Postgres with pgvector extension; or bring up a Postgres database using docker compose:
+2. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. CocoIndex uses it for incremental processing.
 
-    - Make sure Docker Compose is installed: [docs](https://docs.docker.com/compose/install/)
-    - Start a Postgres SQL database for cocoindex using our docker compose config:
 
-    ```bash
-    docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
-    ```
+### Define data flow
 
-### Start your first indexing flow!
-Follow [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart) to define your first indexing flow.
-A common indexing flow looks like:
+Follow [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart) to define your first indexing flow. An example flow looks like:
 
 ```python
 @cocoindex.flow_def(name="TextEmbedding")
@@ -90,10 +120,11 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 ```
 
 It defines an index flow like this:
-![Flow diagram](docs/docs/core/flow_example.svg)
 
-### Play with existing example and demo
-Go to the [examples directory](examples) to try out with any of the examples, following instructions under specific example directory.
+<img width="363" alt="Data Flow" src="https://github.com/user-attachments/assets/2ea7be6d-3d94-42b1-b2bd-22515577e463" />
+
+
+## 🚀 Examples and demo
 
 | Example | Description |
 |---------|-------------|
@@ -105,8 +136,9 @@ Go to the [examples directory](examples) to try out with any of the examples, fo
 | [Docs to Knowledge Graph](examples/docs_to_knowledge_graph) | Extract relationships from Markdown documents and build a knowledge graph |
 | [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |
 | [FastAPI Server with Docker](examples/fastapi_server_docker) | Run the semantic search server in a Dockerized FastAPI setup | 
+| [Product_Taxonomy_Knowledge_Graph](examples/product_taxonomy_knowledge_graph) | Build knowledge graph for product recommendations | 
 
-More coming and stay tuned! If there's any specific examples you would like to see, please let us know in our [Discord community](https://discord.com/invite/zpA9S2DR7s) 🌱.
+More coming and stay tuned 👀!
 
 ## 📖 Documentation
 For detailed documentation, visit [CocoIndex Documentation](https://cocoindex.io/docs), including a [Quickstart guide](https://cocoindex.io/docs/getting_started/quickstart).
@@ -126,6 +158,9 @@ Join our community here:
 - 🐚 [Follow us on LinkedIn](https://www.linkedin.com/company/cocoindex/about/)
 - ▶️ [Subscribe to our YouTube channel](https://www.youtube.com/@cocoindex-io)
 - 📜 [Read our blog posts](https://cocoindex.io/blogs/)
+
+## Support us:
+We are constantly improving, and more features and examples are coming soon. If you love this project, please give us a star ⭐ at GitHub repo [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex) to stay tuned and help us grow. 
 
 ## License
 CocoIndex is Apache 2.0 licensed.

@@ -579,7 +579,7 @@ impl TableSetupAction {
 }
 
 #[derive(Debug)]
-pub struct SetupStatusCheck {
+pub struct SetupStatus {
     db_pool: PgPool,
     table_name: String,
 
@@ -589,7 +589,7 @@ pub struct SetupStatusCheck {
     desired_table_setup: Option<TableSetupAction>,
 }
 
-impl SetupStatusCheck {
+impl SetupStatus {
     fn new(
         db_pool: PgPool,
         table_name: String,
@@ -744,7 +744,7 @@ fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String 
 }
 
 #[async_trait]
-impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
+impl setup::ResourceSetupStatus for SetupStatus {
     fn describe_changes(&self) -> Vec<String> {
         let mut descriptions = vec![];
         if self.drop_existing {
@@ -981,8 +981,8 @@ impl StorageFactoryBase for Factory {
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
         auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<impl setup::ResourceSetupStatusCheck + 'static> {
-        Ok(SetupStatusCheck::new(
+    ) -> Result<impl setup::ResourceSetupStatus + 'static> {
+        Ok(SetupStatus::new(
             get_db_pool(key.database.as_ref(), auth_registry).await?,
             key.table_name,
             desired,

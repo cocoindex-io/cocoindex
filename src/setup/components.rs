@@ -1,4 +1,4 @@
-use super::{CombinedState, ResourceSetupStatusCheck, SetupChangeType, StateChange};
+use super::{CombinedState, ResourceSetupStatus, SetupChangeType, StateChange};
 use crate::prelude::*;
 use std::fmt::Debug;
 
@@ -36,14 +36,14 @@ struct CompositeStateUpsert<S> {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct StatusCheck<D: Operator> {
+pub struct Status<D: Operator> {
     #[derivative(Debug = "ignore")]
     desc: D,
     keys_to_delete: IndexSet<D::Key>,
     states_to_upsert: Vec<CompositeStateUpsert<D::State>>,
 }
 
-impl<D: Operator> StatusCheck<D> {
+impl<D: Operator> Status<D> {
     pub fn create(
         desc: D,
         desired: Option<D::SetupState>,
@@ -109,7 +109,7 @@ impl<D: Operator> StatusCheck<D> {
 }
 
 #[async_trait]
-impl<D: Operator + Send + Sync> ResourceSetupStatusCheck for StatusCheck<D> {
+impl<D: Operator + Send + Sync> ResourceSetupStatus for Status<D> {
     fn describe_changes(&self) -> Vec<String> {
         let mut result = vec![];
 
@@ -164,15 +164,13 @@ impl<D: Operator + Send + Sync> ResourceSetupStatusCheck for StatusCheck<D> {
 }
 
 #[derive(Debug)]
-struct CombinedStatusCheck<A: ResourceSetupStatusCheck, B: ResourceSetupStatusCheck> {
+struct CombinedStatus<A: ResourceSetupStatus, B: ResourceSetupStatus> {
     a: A,
     b: B,
 }
 
 #[async_trait]
-impl<A: ResourceSetupStatusCheck, B: ResourceSetupStatusCheck> ResourceSetupStatusCheck
-    for CombinedStatusCheck<A, B>
-{
+impl<A: ResourceSetupStatus, B: ResourceSetupStatus> ResourceSetupStatus for CombinedStatus<A, B> {
     fn describe_changes(&self) -> Vec<String> {
         let mut result = vec![];
         result.extend(self.a.describe_changes());
@@ -196,9 +194,9 @@ impl<A: ResourceSetupStatusCheck, B: ResourceSetupStatusCheck> ResourceSetupStat
     }
 }
 
-pub fn combine_status_checks<A: ResourceSetupStatusCheck, B: ResourceSetupStatusCheck>(
+pub fn combine_setup_statuss<A: ResourceSetupStatus, B: ResourceSetupStatus>(
     a: A,
     b: B,
-) -> impl ResourceSetupStatusCheck {
-    CombinedStatusCheck { a, b }
+) -> impl ResourceSetupStatus {
+    CombinedStatus { a, b }
 }

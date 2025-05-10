@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use super::spec::{GraphDeclaration, GraphElementMapping, NodeFromFieldsSpec, TargetFieldMapping};
 use crate::setup::components::{self, State};
-use crate::setup::{ResourceSetupStatusCheck, SetupChangeType};
+use crate::setup::{ResourceSetupStatus, SetupChangeType};
 use crate::{ops::sdk::*, setup::CombinedState};
 
 use indoc::formatdoc;
@@ -855,7 +855,7 @@ fn build_composite_field_names(qualifier: &str, field_names: &[String]) -> Strin
 }
 #[derive(Derivative)]
 #[derivative(Debug)]
-struct SetupStatusCheck {
+struct SetupStatus {
     key: GraphElement,
     #[derivative(Debug = "ignore")]
     graph_pool: Arc<GraphPool>,
@@ -864,7 +864,7 @@ struct SetupStatusCheck {
     change_type: SetupChangeType,
 }
 
-impl SetupStatusCheck {
+impl SetupStatus {
     fn new(
         key: GraphElement,
         graph_pool: Arc<GraphPool>,
@@ -908,7 +908,7 @@ impl SetupStatusCheck {
 }
 
 #[async_trait]
-impl ResourceSetupStatusCheck for SetupStatusCheck {
+impl ResourceSetupStatus for SetupStatus {
     fn describe_changes(&self) -> Vec<String> {
         let mut result = vec![];
         if let Some(data_clear) = &self.data_clear {
@@ -1255,16 +1255,16 @@ impl StorageFactoryBase for Factory {
         desired: Option<SetupState>,
         existing: CombinedState<SetupState>,
         auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<impl ResourceSetupStatusCheck + 'static> {
+    ) -> Result<impl ResourceSetupStatus + 'static> {
         let conn_spec = auth_registry.get::<ConnectionSpec>(&key.connection)?;
-        let base = SetupStatusCheck::new(
+        let base = SetupStatus::new(
             key,
             self.graph_pool.clone(),
             conn_spec.clone(),
             desired.as_ref(),
             &existing,
         );
-        let comp = components::StatusCheck::create(
+        let comp = components::Status::create(
             SetupComponentOperator {
                 graph_pool: self.graph_pool.clone(),
                 conn_spec: conn_spec.clone(),
@@ -1272,7 +1272,7 @@ impl StorageFactoryBase for Factory {
             desired,
             existing,
         )?;
-        Ok(components::combine_status_checks(base, comp))
+        Ok(components::combine_setup_statuss(base, comp))
     }
 
     fn check_state_compatibility(
