@@ -204,30 +204,18 @@ impl Flow {
         let spec = &self.0.flow.flow_instance;
         let mut sections: IndexMap<String, Vec<RenderedSpecLine>> = IndexMap::new();
 
-        // Initialize sections
-        sections.insert(
-            "Header".to_string(),
-            vec![RenderedSpecLine {
-                content: format!("Flow: {}", spec.name),
-                scope: None,
-                children: vec![],
-            }],
-        );
-        for key in ["Sources", "Processing", "Targets", "Declarations"] {
-            sections.insert(key.to_string(), Vec::new());
-        }
-
         // Sources
-        for op in &spec.import_ops {
-            sections
-                .entry("Sources".to_string())
-                .or_default()
-                .push(RenderedSpecLine {
+        sections.insert(
+            "Source".to_string(),
+            spec.import_ops
+                .iter()
+                .map(|op| RenderedSpecLine {
                     content: format!("Import: name={}, {}", op.name, op.spec.format(mode)),
                     scope: None,
                     children: vec![],
-                });
-        }
+                })
+                .collect(),
+        );
 
         // Processing
         fn walk(
@@ -236,52 +224,57 @@ impl Flow {
             scope: Option<String>,
         ) -> RenderedSpecLine {
             let content = format!("{}: {}", op.name, op.spec.format(mode));
-            let mut line = RenderedSpecLine {
-                content,
-                scope,
-                children: vec![],
+
+            let children = match &op.spec {
+                ReactiveOpSpec::ForEach(fe) => fe
+                    .op_scope
+                    .ops
+                    .iter()
+                    .map(|nested| walk(nested, mode, Some(fe.op_scope.name.clone())))
+                    .collect(),
+                _ => vec![],
             };
 
-            if let ReactiveOpSpec::ForEach(fe) = &op.spec {
-                for nested in &fe.op_scope.ops {
-                    line.children
-                        .push(walk(nested, mode, Some(fe.op_scope.name.clone())));
-                }
+            RenderedSpecLine {
+                content,
+                scope,
+                children,
             }
-
-            line
         }
 
-        for op in &spec.reactive_ops {
-            sections
-                .entry("Processing".to_string())
-                .or_default()
-                .push(walk(op, mode, None));
-        }
+        sections.insert(
+            "Processing".to_string(),
+            spec.reactive_ops
+                .iter()
+                .map(|op| walk(op, mode, None))
+                .collect(),
+        );
 
         // Targets
-        for op in &spec.export_ops {
-            sections
-                .entry("Targets".to_string())
-                .or_default()
-                .push(RenderedSpecLine {
+        sections.insert(
+            "Targets".to_string(),
+            spec.export_ops
+                .iter()
+                .map(|op| RenderedSpecLine {
                     content: format!("Export: name={}, {}", op.name, op.spec.format(mode)),
                     scope: None,
                     children: vec![],
-                });
-        }
+                })
+                .collect(),
+        );
 
         // Declarations
-        for decl in &spec.declarations {
-            sections
-                .entry("Declarations".to_string())
-                .or_default()
-                .push(RenderedSpecLine {
+        sections.insert(
+            "Declarations".to_string(),
+            spec.declarations
+                .iter()
+                .map(|decl| RenderedSpecLine {
                     content: format!("Declaration: {}", decl.format(mode)),
                     scope: None,
                     children: vec![],
-                });
-        }
+                })
+                .collect(),
+        );
 
         Ok(RenderedSpec {
             sections: sections.into_iter().collect(),
