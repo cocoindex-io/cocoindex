@@ -152,15 +152,12 @@ Welcome with a huge coconut hug 🥥⋆｡˚🤗. We are super excited for commu
 Join our community here:
 
 - 🌟 [Star us on GitHub](https://github.com/cocoindex-io/cocoindex)
-- 💬 [Start a GitHub Discussion](https://github.com/cocoindex-io/cocoindex/discussions)
 - 👋 [Join our Discord community](https://discord.com/invite/zpA9S2DR7s)
-- 𝕏 [Follow us on X](https://x.com/cocoindex_io)
-- 🐚 [Follow us on LinkedIn](https://www.linkedin.com/company/cocoindex/about/)
 - ▶️ [Subscribe to our YouTube channel](https://www.youtube.com/@cocoindex-io)
 - 📜 [Read our blog posts](https://cocoindex.io/blogs/)
 
 ## Support us:
-We are constantly improving, and more features and examples are coming soon. If you love this project, please give us a star ⭐ at GitHub repo [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex) to stay tuned and help us grow. 
+We are constantly improving, and more features and examples are coming soon. If you love this project, please drop us a star ⭐ at GitHub repo [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex) to stay tuned and help us grow. 
 
 ## License
 CocoIndex is Apache 2.0 licensed.
