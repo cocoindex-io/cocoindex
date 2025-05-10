@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use crate::setup::{CombinedState, ResourceSetupInfo, ResourceSetupStatusCheck, SetupChangeType};
+use crate::setup::{CombinedState, ResourceSetupInfo, ResourceSetupStatus, SetupChangeType};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -53,7 +53,7 @@ pub struct TrackingTableSetupState {
 }
 
 #[derive(Debug)]
-pub struct TrackingTableSetupStatusCheck {
+pub struct TrackingTableSetupStatus {
     pub desired_state: Option<TrackingTableSetupState>,
 
     pub legacy_table_names: Vec<String>,
@@ -62,7 +62,7 @@ pub struct TrackingTableSetupStatusCheck {
     pub source_ids_to_delete: Vec<i32>,
 }
 
-impl TrackingTableSetupStatusCheck {
+impl TrackingTableSetupStatus {
     pub fn new(
         desired: Option<&TrackingTableSetupState>,
         existing: &CombinedState<TrackingTableSetupState>,
@@ -91,19 +91,19 @@ impl TrackingTableSetupStatusCheck {
 
     pub fn into_setup_info(
         self,
-    ) -> ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupStatusCheck> {
+    ) -> ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupStatus> {
         ResourceSetupInfo {
             key: (),
             state: self.desired_state.clone(),
             description: "Tracking Table".to_string(),
-            status_check: Some(self),
+            setup_status: Some(self),
             legacy_key: None,
         }
     }
 }
 
 #[async_trait]
-impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
+impl ResourceSetupStatus for TrackingTableSetupStatus {
     fn describe_changes(&self) -> Vec<String> {
         let mut changes: Vec<String> = vec![];
         if self.desired_state.is_some() && !self.legacy_table_names.is_empty() {

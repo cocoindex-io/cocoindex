@@ -310,7 +310,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         desired_state: Option<Self::SetupState>,
         existing_states: setup::CombinedState<Self::SetupState>,
         auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<impl setup::ResourceSetupStatusCheck + 'static>;
+    ) -> Result<impl setup::ResourceSetupStatus + 'static>;
 
     fn check_state_compatibility(
         &self,
@@ -398,13 +398,13 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
         auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<Box<dyn setup::ResourceSetupStatusCheck>> {
+    ) -> Result<Box<dyn setup::ResourceSetupStatus>> {
         let key: T::Key = serde_json::from_value(key.clone())?;
         let desired_state: Option<T::SetupState> = desired_state
             .map(|v| serde_json::from_value(v.clone()))
             .transpose()?;
         let existing_states = from_json_combined_state(existing_states)?;
-        let status_check = StorageFactoryBase::check_setup_status(
+        let setup_status = StorageFactoryBase::check_setup_status(
             self,
             key,
             desired_state,
@@ -412,7 +412,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             auth_registry,
         )
         .await?;
-        Ok(Box::new(status_check))
+        Ok(Box::new(setup_status))
     }
 
     fn describe_resource(&self, key: &serde_json::Value) -> Result<String> {

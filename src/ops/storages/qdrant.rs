@@ -390,7 +390,7 @@ impl StorageFactoryBase for Arc<Factory> {
         _desired: Option<()>,
         _existing: setup::CombinedState<()>,
         _auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<impl setup::ResourceSetupStatusCheck + 'static> {
+    ) -> Result<impl setup::ResourceSetupStatus + 'static> {
         Err(anyhow!("Set `setup_by_user` to `true` to export to Qdrant")) as Result<Infallible, _>
     }
 
