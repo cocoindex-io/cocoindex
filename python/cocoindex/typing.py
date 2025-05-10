@@ -56,8 +56,11 @@ KEY_FIELD_NAME = '_key'
 
 ElementType = type | tuple[type, type]
 
+def is_namedtuple_type(t) -> bool:
+    return isinstance(t, type) and issubclass(t, tuple) and hasattr(t, "_fields")
+
 def _is_struct_type(t) -> bool:
-    return isinstance(t, type) and dataclasses.is_dataclass(t)
+    return isinstance(t, type) and (dataclasses.is_dataclass(t) or is_namedtuple_type(t))
 
 @dataclasses.dataclass
 class AnalyzedTypeInfo:
@@ -70,6 +73,7 @@ class AnalyzedTypeInfo:
 
     key_type: type | None           # For element of KTable
     dataclass_type: type | None     # For Struct
+    namedtuple_type: type | None    # For Struct
 
     attrs: dict[str, Any] | None
     nullable: bool = False
@@ -118,6 +122,7 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
             kind = attr.kind
 
     dataclass_type = None
+    namedtuple_type = None
     elem_type = None
     key_type = None
     if _is_struct_type(t):
@@ -125,7 +130,10 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
             kind = 'Struct'
         elif kind != 'Struct':
             raise ValueError(f"Unexpected type kind for struct: {kind}")
-        dataclass_type = t
+        if dataclasses.is_dataclass(t):
+            dataclass_type = t
+        elif is_namedtuple_type(t):
+            namedtuple_type = t
     elif base_type is collections.abc.Sequence or base_type is list:
         args = typing.get_args(t)
         elem_type = args[0]
@@ -167,36 +175,52 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         else:
             raise ValueError(f"type unsupported yet: {t}")
 
-    return AnalyzedTypeInfo(kind=kind, vector_info=vector_info,
-                            elem_type=elem_type, key_type=key_type, dataclass_type=dataclass_type,
-                            attrs=attrs, nullable=nullable)
+    return AnalyzedTypeInfo(
+        kind=kind,
+        vector_info=vector_info,
+        elem_type=elem_type,
+        key_type=key_type,
+        dataclass_type=dataclass_type,
+        namedtuple_type=namedtuple_type,
+        attrs=attrs,
+        nullable=nullable,
+    )
 
-def _encode_fields_schema(dataclass_type: type, key_type: type | None = None) -> list[dict[str, Any]]:
+def _encode_fields_schema(struct_type: type, key_type: type | None = None) -> list[dict[str, Any]]:
     result = []
     def add_field(name: str, t) -> None:
         try:
             type_info = encode_enriched_type_info(analyze_type_info(t))
         except ValueError as e:
-            e.add_note(f"Failed to encode annotation for field - "
-                       f"{dataclass_type.__name__}.{name}: {t}")
+            e.add_note(
+                f"Failed to encode annotation for field - "
+                f"{struct_type.__name__}.{name}: {t}"
+            )
             raise
         type_info['name'] = name
         result.append(type_info)
 
     if key_type is not None:
         add_field(KEY_FIELD_NAME, key_type)
-    for field in dataclasses.fields(dataclass_type):
-        add_field(field.name, field.type)
+
+    if dataclasses.is_dataclass(struct_type):
+        for field in dataclasses.fields(struct_type):
+            add_field(field.name, field.type)
+    elif is_namedtuple_type(struct_type):
+        for name, field_type in struct_type.__annotations__.items():
+            add_field(name, field_type)
+
     return result
 
 def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
     encoded_type: dict[str, Any] = { 'kind': type_info.kind }
 
     if type_info.kind == 'Struct':
-        if type_info.dataclass_type is None:
-            raise ValueError("Struct type must have a dataclass type")
-        encoded_type['fields'] = _encode_fields_schema(type_info.dataclass_type, type_info.key_type)
-        if doc := inspect.getdoc(type_info.dataclass_type):
+        struct_type = type_info.dataclass_type or type_info.namedtuple_type
+        if struct_type is None:
+            raise ValueError("Struct type must have a dataclass or namedtuple type")
+        encoded_type['fields'] = _encode_fields_schema(struct_type, type_info.key_type)
+        if doc := inspect.getdoc(struct_type):
             encoded_type['description'] = doc
 
     elif type_info.kind == 'Vector':

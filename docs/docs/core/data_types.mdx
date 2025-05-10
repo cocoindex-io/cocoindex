@@ -53,22 +53,40 @@ The native Python type is always more permissive and can represent a superset of
     you can choose whatever to use.
     The native Python type is usually simpler.
 
-### Struct Type
+### Struct Types
 
 A Struct has a bunch of fields, each with a name and a type.
 
-In Python, a Struct type is represented by a [dataclass](https://docs.python.org/3/library/dataclasses.html),
-and all fields must be annotated with a specific type. For example:
+In Python, a Struct type is represented by either a [dataclass](https://docs.python.org/3/library/dataclasses.html)
+or a [NamedTuple](https://docs.python.org/3/library/typing.html#typing.NamedTuple), with all fields annotated with a specific type.
+Both options define a structured type with named fields, but they differ slightly:
+
+- **Dataclass**: A flexible class-based structure, mutable by default, defined using the `@dataclass` decorator.
+- **NamedTuple**: An immutable tuple-based structure, defined using `typing.NamedTuple`.
+
+For example:
 
 ```python
 from dataclasses import dataclass
+from typing import NamedTuple
+import datetime
 
+# Using dataclass
 @dataclass
 class Person:
     first_name: str
-    last_name
+    last_name: str
+    dob: datetime.date
+
+# Using NamedTuple
+class PersonTuple(NamedTuple):
+    first_name: str
+    last_name: str
     dob: datetime.date
 ```
+
+Both `Person` and `PersonTuple` are valid Struct types in CocoIndex, with identical schemas (three fields: `first_name` (Str), `last_name` (Str), `dob` (Date)).
+Choose `dataclass` for mutable objects or when you need additional methods, and `NamedTuple` for immutable, lightweight structures.
 
 ### Table Types
 
@@ -84,10 +102,10 @@ The row order of a KTable is not preserved.
 Type of the first column (key column) must be a [key type](#key-types).
 
 In Python, a KTable type is represented by `dict[K, V]`. 
-The `V` should be a dataclass, representing the value fields of each row.
-For example, you can use `dict[str, Person]` to represent a KTable, with 4 columns: key (Str), `first_name` (Str), `last_name` (Str), `dob` (Date).
+The `V` should be a struct type, either a `dataclass` or `NamedTuple`, representing the value fields of each row.
+For example, you can use `dict[str, Person]` or `dict[str, PersonTuple]` to represent a KTable, with 4 columns: key (Str), `first_name` (Str), `last_name` (Str), `dob` (Date).
 
-Note that if you want to use a struct as the key, you need to annotate the struct with `@dataclass(frozen=True)`, so the values are immutable.
+Note that if you want to use a struct as the key, you need to annotate the struct with `@dataclass(frozen=True)`, For `NamedTuple`, immutability is built-in. so the values are immutable.
 For example:
 
 ```python
@@ -95,9 +113,13 @@ For example:
 class PersonKey:
     id_kind: str
     id: str
+
+class PersonKeyTuple(NamedTuple):
+    id_kind: str
+    id: str
 ```
 
-Then you can use `dict[PersonKey, Person]` to represent a KTable keyed by `PersonKey`.
+Then you can use `dict[PersonKey, Person]` or `dict[PersonKeyTuple, PersonTuple]` to represent a KTable keyed by `PersonKey` or `PersonKeyTuple`.
 
 
 #### LTable
@@ -118,4 +140,4 @@ Currently, the following types are key types
 - Range
 - Uuid
 - Date
-- Struct with all fields being key types
+- Struct with all fields being key types (using `@dataclass(frozen=True)` or `NamedTuple`)
