@@ -1,4 +1,4 @@
-use crate::{lib_context::get_auth_registry, prelude::*};
+use crate::{lib_context::get_auth_registry, ops::interface::ExportTargetFactory, prelude::*};
 
 use sqlx::PgPool;
 use std::{
@@ -8,8 +8,8 @@ use std::{
 
 use super::{
     db_metadata, CombinedState, DesiredMode, ExistingMode, FlowSetupState, FlowSetupStatus,
-    ObjectSetupStatus, ObjectStatus, ResourceIdentifier, ResourceSetupInfo,
-    ResourceSetupStatus, SetupChangeType, StateChange, TargetSetupState,
+    ObjectSetupStatus, ObjectStatus, ResourceIdentifier, ResourceSetupInfo, ResourceSetupStatus,
+    SetupChangeType, StateChange, TargetSetupState,
 };
 use super::{AllSetupState, AllSetupStatus};
 use crate::execution::db_tracking_setup;
@@ -75,6 +75,16 @@ fn from_metadata_record<S: DeserializeOwned + Debug + Clone>(
     })
 }
 
+fn get_export_target_factory(
+    target_type: &str,
+) -> Option<Arc<dyn ExportTargetFactory + Send + Sync>> {
+    let registry = executor_factory_registry();
+    match registry.get(&target_type) {
+        Some(ExecutorFactory::ExportTarget(factory)) => Some(factory.clone()),
+        _ => None,
+    }
+}
+
 pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupState<ExistingMode>> {
     let setup_metadata_records = db_metadata::read_setup_metadata(pool).await?;
 
@@ -116,12 +126,10 @@ pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupState<Exi
                     }
                     MetadataRecordType::Target(target_type) => {
                         let normalized_key = {
-                            let registry = executor_factory_registry();
-                            match registry.get(&target_type) {
-                                Some(ExecutorFactory::ExportTarget(factory)) => {
-                                    factory.normalize_setup_key(&metadata_record.key)?
-                                }
-                                _ => metadata_record.key.clone(),
+                            if let Some(factory) = get_export_target_factory(&target_type) {
+                                factory.normalize_setup_key(&metadata_record.key)?
+                            } else {
+                                metadata_record.key.clone()
                             }
                         };
                         let combined_state = from_metadata_record(
@@ -280,18 +288,13 @@ pub async fn check_flow_setup_status(
         desired_state.iter().flat_map(|d| d.targets.iter()),
         existing_state.iter().flat_map(|e| e.targets.iter()),
     )?;
-    let registry = executor_factory_registry();
     for (resource_id, v) in grouped_target_resources.into_iter() {
-        let factory = match registry.get(&resource_id.target_kind) {
+        let factory = match get_export_target_factory(&resource_id.target_kind) {
             Some(factory) => factory,
             None => {
                 unknown_resources.push(resource_id.clone());
                 continue;
             }
-        };
-        let factory = match factory {
-            ExecutorFactory::ExportTarget(factory) => factory,
-            _ => bail!("Unexpected factory type for {}", resource_id.target_kind),
         };
         let state = v.desired.clone();
         let target_state = v
@@ -402,20 +405,34 @@ pub async fn drop_setup(
     })
 }
 
-async fn maybe_update_resource_setup<K, S, C: ResourceSetupStatus>(
+async fn maybe_update_resource_setup<
+    'a,
+    K: 'a,
+    S: 'a,
+    C: ResourceSetupStatus,
+    ChangeApplierResultFut: Future<Output = Result<()>>,
+>(
+    resource_kind: &str,
     write: &mut impl std::io::Write,
-    resource: &ResourceSetupInfo<K, S, C>,
+    resources: impl Iterator<Item = &'a ResourceSetupInfo<K, S, C>>,
+    apply_change: impl FnOnce(Vec<&'a C>) -> ChangeApplierResultFut,
 ) -> Result<()> {
-    if let Some(setup_status) = &resource.setup_status {
-        if setup_status.change_type() != SetupChangeType::NoChange {
-            writeln!(write, "{}:", resource.description)?;
-            for change in setup_status.describe_changes() {
-                writeln!(write, "  - {}", change)?;
+    let mut changes = Vec::new();
+    for resource in resources {
+        if let Some(setup_status) = &resource.setup_status {
+            if setup_status.change_type() != SetupChangeType::NoChange {
+                changes.push(setup_status);
+                writeln!(write, "{}:", resource.description)?;
+                for change in setup_status.describe_changes() {
+                    writeln!(write, "  - {}", change)?;
+                }
             }
-            write!(write, "Pushing...")?;
-            setup_status.apply_change().await?;
-            writeln!(write, "DONE")?;
         }
+    }
+    if !changes.is_empty() {
+        write!(write, "Pushing change for {resource_kind}...")?;
+        apply_change(changes).await?;
+        writeln!(write, "DONE")?;
     }
     Ok(())
 }
@@ -425,7 +442,13 @@ pub async fn apply_changes(
     setup_status: &AllSetupStatus,
     pool: &PgPool,
 ) -> Result<()> {
-    maybe_update_resource_setup(write, &setup_status.metadata_table).await?;
+    maybe_update_resource_setup(
+        "metadata table",
+        write,
+        std::iter::once(&setup_status.metadata_table),
+        |setup_status| setup_status[0].apply_change(),
+    )
+    .await?;
 
     for (flow_name, flow_status) in &setup_status.flows {
         if flow_status.is_up_to_date() {
@@ -494,10 +517,38 @@ pub async fn apply_changes(
         .await?;
 
         if let Some(tracking_table) = &flow_status.tracking_table {
-            maybe_update_resource_setup(write, tracking_table).await?;
+            maybe_update_resource_setup(
+                "tracking table",
+                write,
+                std::iter::once(tracking_table),
+                |setup_status| setup_status[0].apply_change(),
+            )
+            .await?;
         }
+
+        let mut setup_status_by_target_kind = IndexMap::<&str, Vec<_>>::new();
         for target_resource in &flow_status.target_resources {
-            maybe_update_resource_setup(write, target_resource).await?;
+            setup_status_by_target_kind
+                .entry(target_resource.key.target_kind.as_str())
+                .or_default()
+                .push(target_resource);
+        }
+        for (target_kind, resources) in setup_status_by_target_kind.into_iter() {
+            maybe_update_resource_setup(
+                target_kind,
+                write,
+                resources.into_iter(),
+                |setup_status| async move {
+                    let factory = get_export_target_factory(target_kind).ok_or_else(|| {
+                        anyhow::anyhow!("No factory found for target kind: {}", target_kind)
+                    })?;
+                    factory
+                        .apply_setup_changes(setup_status.into_iter().map(|s| s.as_ref()).collect())
+                        .await?;
+                    Ok(())
+                },
+            )
+            .await?;
         }
 
         let is_deletion = flow_status.status == ObjectStatus::Deleted;

@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 use super::spec::{GraphDeclaration, GraphElementMapping, NodeFromFieldsSpec, TargetFieldMapping};
-use crate::setup::components::{self, State};
+use crate::setup::components::{self, apply_component_changes, State};
 use crate::setup::{ResourceSetupStatus, SetupChangeType};
 use crate::{ops::sdk::*, setup::CombinedState};
 
@@ -688,7 +688,7 @@ impl ComponentKind {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ComponentKey {
+pub struct ComponentKey {
     kind: ComponentKind,
     name: String,
 }
@@ -754,13 +754,13 @@ impl components::State<ComponentKey> for ComponentState {
     }
 }
 
-struct SetupComponentOperator {
+pub struct SetupComponentOperator {
     graph_pool: Arc<GraphPool>,
     conn_spec: ConnectionSpec,
 }
 
 #[async_trait]
-impl components::Operator for SetupComponentOperator {
+impl components::SetupOperator for SetupComponentOperator {
     type Key = ComponentKey;
     type State = ComponentState;
     type SetupState = SetupState;
@@ -855,7 +855,7 @@ fn build_composite_field_names(qualifier: &str, field_names: &[String]) -> Strin
 }
 #[derive(Derivative)]
 #[derivative(Debug)]
-struct SetupStatus {
+pub struct GraphElementDataSetupStatus {
     key: GraphElement,
     #[derivative(Debug = "ignore")]
     graph_pool: Arc<GraphPool>,
@@ -864,7 +864,7 @@ struct SetupStatus {
     change_type: SetupChangeType,
 }
 
-impl SetupStatus {
+impl GraphElementDataSetupStatus {
     fn new(
         key: GraphElement,
         graph_pool: Arc<GraphPool>,
@@ -907,8 +907,7 @@ impl SetupStatus {
     }
 }
 
-#[async_trait]
-impl ResourceSetupStatus for SetupStatus {
+impl ResourceSetupStatus for GraphElementDataSetupStatus {
     fn describe_changes(&self) -> Vec<String> {
         let mut result = vec![];
         if let Some(data_clear) = &self.data_clear {
@@ -934,6 +933,12 @@ impl ResourceSetupStatus for SetupStatus {
         self.change_type
     }
 
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl GraphElementDataSetupStatus {
     async fn apply_change(&self) -> Result<()> {
         let graph = self.graph_pool.get_graph(&self.conn_spec).await?;
         if let Some(data_clear) = &self.data_clear {
@@ -1077,6 +1082,10 @@ impl StorageFactoryBase for Factory {
     type Spec = Spec;
     type DeclarationSpec = Declaration;
     type SetupState = SetupState;
+    type SetupStatus = (
+        GraphElementDataSetupStatus,
+        components::SetupStatus<SetupComponentOperator>,
+    );
     type Key = GraphElement;
     type ExportContext = ExportContext;
 
@@ -1255,16 +1264,16 @@ impl StorageFactoryBase for Factory {
         desired: Option<SetupState>,
         existing: CombinedState<SetupState>,
         auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<impl ResourceSetupStatus + 'static> {
+    ) -> Result<Self::SetupStatus> {
         let conn_spec = auth_registry.get::<ConnectionSpec>(&key.connection)?;
-        let base = SetupStatus::new(
+        let data_status = GraphElementDataSetupStatus::new(
             key,
             self.graph_pool.clone(),
             conn_spec.clone(),
             desired.as_ref(),
             &existing,
         );
-        let comp = components::Status::create(
+        let components = components::SetupStatus::create(
             SetupComponentOperator {
                 graph_pool: self.graph_pool.clone(),
                 conn_spec: conn_spec.clone(),
@@ -1272,7 +1281,7 @@ impl StorageFactoryBase for Factory {
             desired,
             existing,
         )?;
-        Ok(components::combine_setup_statuss(base, comp))
+        Ok((data_status, components))
     }
 
     fn check_state_compatibility(
@@ -1326,6 +1335,17 @@ impl StorageFactoryBase for Factory {
             .await
             .map_err(Into::<anyhow::Error>::into)?
         }
+        Ok(())
+    }
+
+    async fn apply_setup_changes(
+        &self,
+        changes: Vec<&'async_trait Self::SetupStatus>,
+    ) -> Result<()> {
+        for change in changes.iter() {
+            change.0.apply_change().await?;
+        }
+        apply_component_changes(changes.iter().map(|c| &c.1).collect()).await?;
         Ok(())
     }
 }
