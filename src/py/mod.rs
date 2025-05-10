@@ -2,8 +2,7 @@ use crate::prelude::*;
 
 use crate::base::schema::{FieldSchema, ValueType};
 use crate::base::spec::VectorSimilarityMetric;
-use crate::base::spec::{NamedSpec, ReactiveOpSpec};
-use crate::base::spec::{OutputMode, RenderedSpec, RenderedSpecLine, SpecFormatter};
+use crate::base::spec::{NamedSpec, OutputMode, ReactiveOpSpec, SpecFormatter};
 use crate::execution::query;
 use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
 use crate::ops::interface::{QueryResult, QueryResults};
@@ -115,6 +114,24 @@ impl IndexUpdateInfo {
 #[pyclass]
 pub struct Flow(pub Arc<FlowContext>);
 
+/// A single line in the rendered spec, with hierarchical children
+#[pyclass(get_all, set_all)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderedSpecLine {
+    /// The formatted content of the line (e.g., "Import: name=documents, source=LocalFile")
+    pub content: String,
+    /// Child lines in the hierarchy
+    pub children: Vec<RenderedSpecLine>,
+}
+
+/// A rendered specification, grouped by sections
+#[pyclass(get_all, set_all)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderedSpec {
+    /// List of (section_name, lines) pairs
+    pub sections: Vec<(String, Vec<RenderedSpecLine>)>,
+}
+
 #[pyclass]
 pub struct FlowLiveUpdater(pub Arc<tokio::sync::RwLock<execution::FlowLiveUpdater>>);
 
@@ -211,18 +228,13 @@ impl Flow {
                 .iter()
                 .map(|op| RenderedSpecLine {
                     content: format!("Import: name={}, {}", op.name, op.spec.format(mode)),
-                    scope: None,
                     children: vec![],
                 })
                 .collect(),
         );
 
         // Processing
-        fn walk(
-            op: &NamedSpec<ReactiveOpSpec>,
-            mode: OutputMode,
-            scope: Option<String>,
-        ) -> RenderedSpecLine {
+        fn walk(op: &NamedSpec<ReactiveOpSpec>, mode: OutputMode) -> RenderedSpecLine {
             let content = format!("{}: {}", op.name, op.spec.format(mode));
 
             let children = match &op.spec {
@@ -230,24 +242,17 @@ impl Flow {
                     .op_scope
                     .ops
                     .iter()
-                    .map(|nested| walk(nested, mode, Some(fe.op_scope.name.clone())))
+                    .map(|nested| walk(nested, mode))
                     .collect(),
                 _ => vec![],
             };
 
-            RenderedSpecLine {
-                content,
-                scope,
-                children,
-            }
+            RenderedSpecLine { content, children }
         }
 
         sections.insert(
             "Processing".to_string(),
-            spec.reactive_ops
-                .iter()
-                .map(|op| walk(op, mode, None))
-                .collect(),
+            spec.reactive_ops.iter().map(|op| walk(op, mode)).collect(),
         );
 
         // Targets
@@ -257,7 +262,6 @@ impl Flow {
                 .iter()
                 .map(|op| RenderedSpecLine {
                     content: format!("Export: name={}, {}", op.name, op.spec.format(mode)),
-                    scope: None,
                     children: vec![],
                 })
                 .collect(),
@@ -270,7 +274,6 @@ impl Flow {
                 .iter()
                 .map(|decl| RenderedSpecLine {
                     content: format!("Declaration: {}", decl.format(mode)),
-                    scope: None,
                     children: vec![],
                 })
                 .collect(),
