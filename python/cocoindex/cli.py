@@ -137,9 +137,9 @@ def update(flow_name: str | None, live: bool, quiet: bool):
     if flow_name is None:
         return flow.update_all_flows(options)
     else:
-        updater = flow.FlowLiveUpdater(_flow_by_name(flow_name), options)
-        updater.wait()
-        return updater.update_stats()
+        with flow.FlowLiveUpdater(_flow_by_name(flow_name), options) as updater:
+            updater.wait()
+            return updater.update_stats()
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
