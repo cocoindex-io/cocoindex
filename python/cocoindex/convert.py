@@ -57,17 +57,16 @@ def make_engine_value_decoder(
             f"Type mismatch for `{''.join(field_path)}`: "
             f"passed in {src_type_kind}, declared {dst_annotation} ({dst_type_info.kind})")
 
-    if dst_type_info.dataclass_type is not None or dst_type_info.namedtuple_type is not None:
-        struct_type = dst_type_info.dataclass_type or dst_type_info.namedtuple_type
+    if dst_type_info.struct_type is not None:
         return _make_engine_struct_value_decoder(
-            field_path, src_type['fields'], struct_type)
+            field_path, src_type['fields'], dst_type_info.struct_type)
 
     if src_type_kind in TABLE_TYPES:
         field_path.append('[*]')
         elem_type_info = analyze_type_info(dst_type_info.elem_type)
-        if elem_type_info.dataclass_type is None and elem_type_info.namedtuple_type is None:
+        if elem_type_info.struct_type is None:
             raise ValueError(f"Type mismatch for `{''.join(field_path)}`: "
-                            f"declared `{dst_type_info.kind}`, a dataclass or namedtuple type expected")
+                            f"declared `{dst_type_info.kind}`, a dataclass or NamedTuple type expected")
         engine_fields_schema = src_type['row']['fields']
         if elem_type_info.key_type is not None:
             key_field_schema = engine_fields_schema[0]
@@ -76,16 +75,14 @@ def make_engine_value_decoder(
                 field_path, key_field_schema['type'], elem_type_info.key_type)
             field_path.pop()
             value_decoder = _make_engine_struct_value_decoder(
-                field_path, engine_fields_schema[1:], 
-                elem_type_info.dataclass_type or elem_type_info.namedtuple_type)
+                field_path, engine_fields_schema[1:], elem_type_info.struct_type)
             def decode(value):
                 if value is None:
                     return None
                 return {key_decoder(v[0]): value_decoder(v[1:]) for v in value}
         else:
             elem_decoder = _make_engine_struct_value_decoder(
-                field_path, engine_fields_schema, 
-                elem_type_info.dataclass_type or elem_type_info.namedtuple_type)
+                field_path, engine_fields_schema, elem_type_info.struct_type)
             def decode(value):
                 if value is None:
                     return None
@@ -144,12 +141,8 @@ def _make_engine_struct_value_decoder(
         make_closure_for_value(name, param)
         for (name, param) in parameters.items()]
 
-    if is_dataclass:
-        return lambda values: dst_struct_type(
-            *(decoder(values) for decoder in field_value_decoder))
-    else:  # namedtuple
-        return lambda values: dst_struct_type(
-            *(decoder(values) for decoder in field_value_decoder))
+    return lambda values: dst_struct_type(
+        *(decoder(values) for decoder in field_value_decoder))
 
 def dump_engine_object(v: Any) -> Any:
     """Recursively dump an object for engine. Engine side uses `Pythonized` to catch."""
