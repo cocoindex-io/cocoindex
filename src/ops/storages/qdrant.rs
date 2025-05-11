@@ -295,17 +295,7 @@ fn extract_basic_value(
                         extract_basic_value(point, &BasicValueType::Range, field_name)
                     }
                     // Other value kinds
-                    _ => {
-                        // Undetected JSON
-                        if types.contains(&BasicValueType::Json) {
-                            match extract_basic_value(point, &BasicValueType::Json, field_name) {
-                                Some(val) => return Some(val),
-                                None => {}
-                            }
-                        }
-
-                        None
-                    }
+                    _ => None,
                 }))
         }
 
