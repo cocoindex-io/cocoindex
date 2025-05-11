@@ -218,16 +218,17 @@ pub enum SetupChangeType {
     Invalid,
 }
 
-#[async_trait]
-pub trait ResourceSetupStatus: Send + Sync + Debug {
+pub trait ResourceSetupStatus: Send + Sync + Debug + 'static {
     fn describe_changes(&self) -> Vec<String>;
 
     fn change_type(&self) -> SetupChangeType;
 
-    async fn apply_change(&self) -> Result<()>;
+    // Workaround as Rust doesn't support dyn upcasting before 1.86.
+    // (https://github.com/rust-lang/rust/issues/65991)
+    // Can be replaced by a `Any` bound when we require Rust 1.86 or newer.
+    fn as_any(&self) -> &dyn Any;
 }
 
-#[async_trait]
 impl ResourceSetupStatus for Box<dyn ResourceSetupStatus> {
     fn describe_changes(&self) -> Vec<String> {
         self.as_ref().describe_changes()
@@ -237,12 +238,11 @@ impl ResourceSetupStatus for Box<dyn ResourceSetupStatus> {
         self.as_ref().change_type()
     }
 
-    async fn apply_change(&self) -> Result<()> {
-        self.as_ref().apply_change().await
+    fn as_any(&self) -> &dyn Any {
+        self as &dyn Any
     }
 }
 
-#[async_trait]
 impl ResourceSetupStatus for std::convert::Infallible {
     fn describe_changes(&self) -> Vec<String> {
         unreachable!()
@@ -252,8 +252,8 @@ impl ResourceSetupStatus for std::convert::Infallible {
         unreachable!()
     }
 
-    async fn apply_change(&self) -> Result<()> {
-        unreachable!()
+    fn as_any(&self) -> &dyn Any {
+        self as &dyn Any
     }
 }
 

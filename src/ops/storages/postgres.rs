@@ -743,7 +743,6 @@ fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String 
     format!("{} {}", index_name, to_index_spec_sql(index_spec))
 }
 
-#[async_trait]
 impl setup::ResourceSetupStatus for SetupStatus {
     fn describe_changes(&self) -> Vec<String> {
         let mut descriptions = vec![];
@@ -826,6 +825,12 @@ impl setup::ResourceSetupStatus for SetupStatus {
         }
     }
 
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl SetupStatus {
     async fn apply_change(&self) -> Result<()> {
         let table_name = &self.table_name;
         if self.drop_existing {
@@ -912,6 +917,7 @@ impl StorageFactoryBase for Factory {
     type Spec = Spec;
     type DeclarationSpec = ();
     type SetupState = SetupState;
+    type SetupStatus = SetupStatus;
     type Key = TableId;
     type ExportContext = ExportContext;
 
@@ -981,7 +987,7 @@ impl StorageFactoryBase for Factory {
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
         auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<impl setup::ResourceSetupStatus + 'static> {
+    ) -> Result<SetupStatus> {
         Ok(SetupStatus::new(
             get_db_pool(key.database.as_ref(), auth_registry).await?,
             key.table_name,
@@ -1051,6 +1057,16 @@ impl StorageFactoryBase for Factory {
                     .await?;
             }
             txn.commit().await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_setup_changes(
+        &self,
+        setup_status: Vec<&'async_trait Self::SetupStatus>,
+    ) -> Result<()> {
+        for setup_status in setup_status.iter() {
+            setup_status.apply_change().await?;
         }
         Ok(())
     }

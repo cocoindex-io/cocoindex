@@ -214,6 +214,11 @@ pub trait ExportTargetFactory: Send + Sync {
         &self,
         mutations: Vec<ExportTargetMutationWithContext<'async_trait, dyn Any + Send + Sync>>,
     ) -> Result<()>;
+
+    async fn apply_setup_changes(
+        &self,
+        setup_status: Vec<&'async_trait dyn setup::ResourceSetupStatus>,
+    ) -> Result<()>;
 }
 
 #[derive(Clone)]

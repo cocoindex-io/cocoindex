@@ -387,6 +387,7 @@ impl StorageFactoryBase for Arc<Factory> {
     type Spec = Spec;
     type DeclarationSpec = ();
     type SetupState = ();
+    type SetupStatus = Infallible;
     type Key = String;
     type ExportContext = ExportContext;
 
@@ -445,7 +446,7 @@ impl StorageFactoryBase for Arc<Factory> {
         _desired: Option<()>,
         _existing: setup::CombinedState<()>,
         _auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<impl setup::ResourceSetupStatus + 'static> {
+    ) -> Result<Self::SetupStatus> {
         Err(anyhow!("Set `setup_by_user` to `true` to export to Qdrant")) as Result<Infallible, _>
     }
 
@@ -472,5 +473,12 @@ impl StorageFactoryBase for Arc<Factory> {
                 .await?;
         }
         Ok(())
+    }
+
+    async fn apply_setup_changes(
+        &self,
+        _setup_status: Vec<&'async_trait Self::SetupStatus>,
+    ) -> Result<()> {
+        Err(anyhow!("Qdrant does not support setup changes"))
     }
 }

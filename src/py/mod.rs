@@ -2,6 +2,7 @@ use crate::prelude::*;
 
 use crate::base::schema::{FieldSchema, ValueType};
 use crate::base::spec::VectorSimilarityMetric;
+use crate::base::spec::{NamedSpec, OutputMode, ReactiveOpSpec, SpecFormatter};
 use crate::execution::query;
 use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
 use crate::ops::interface::{QueryResult, QueryResults};
@@ -113,6 +114,24 @@ impl IndexUpdateInfo {
 #[pyclass]
 pub struct Flow(pub Arc<FlowContext>);
 
+/// A single line in the rendered spec, with hierarchical children
+#[pyclass(get_all, set_all)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderedSpecLine {
+    /// The formatted content of the line (e.g., "Import: name=documents, source=LocalFile")
+    pub content: String,
+    /// Child lines in the hierarchy
+    pub children: Vec<RenderedSpecLine>,
+}
+
+/// A rendered specification, grouped by sections
+#[pyclass(get_all, set_all)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderedSpec {
+    /// List of (section_name, lines) pairs
+    pub sections: Vec<(String, Vec<RenderedSpecLine>)>,
+}
+
 #[pyclass]
 pub struct FlowLiveUpdater(pub Arc<tokio::sync::RwLock<execution::FlowLiveUpdater>>);
 
@@ -193,6 +212,75 @@ impl Flow {
                 })
                 .into_py_result()?;
             Ok(())
+        })
+    }
+
+    #[pyo3(signature = (output_mode=None))]
+    pub fn get_spec(&self, output_mode: Option<Pythonized<OutputMode>>) -> PyResult<RenderedSpec> {
+        let mode = output_mode.map_or(OutputMode::Concise, |m| m.into_inner());
+        let spec = &self.0.flow.flow_instance;
+        let mut sections: IndexMap<String, Vec<RenderedSpecLine>> = IndexMap::new();
+
+        // Sources
+        sections.insert(
+            "Source".to_string(),
+            spec.import_ops
+                .iter()
+                .map(|op| RenderedSpecLine {
+                    content: format!("Import: name={}, {}", op.name, op.spec.format(mode)),
+                    children: vec![],
+                })
+                .collect(),
+        );
+
+        // Processing
+        fn walk(op: &NamedSpec<ReactiveOpSpec>, mode: OutputMode) -> RenderedSpecLine {
+            let content = format!("{}: {}", op.name, op.spec.format(mode));
+
+            let children = match &op.spec {
+                ReactiveOpSpec::ForEach(fe) => fe
+                    .op_scope
+                    .ops
+                    .iter()
+                    .map(|nested| walk(nested, mode))
+                    .collect(),
+                _ => vec![],
+            };
+
+            RenderedSpecLine { content, children }
+        }
+
+        sections.insert(
+            "Processing".to_string(),
+            spec.reactive_ops.iter().map(|op| walk(op, mode)).collect(),
+        );
+
+        // Targets
+        sections.insert(
+            "Targets".to_string(),
+            spec.export_ops
+                .iter()
+                .map(|op| RenderedSpecLine {
+                    content: format!("Export: name={}, {}", op.name, op.spec.format(mode)),
+                    children: vec![],
+                })
+                .collect(),
+        );
+
+        // Declarations
+        sections.insert(
+            "Declarations".to_string(),
+            spec.declarations
+                .iter()
+                .map(|decl| RenderedSpecLine {
+                    content: format!("Declaration: {}", decl.format(mode)),
+                    children: vec![],
+                })
+                .collect(),
+        );
+
+        Ok(RenderedSpec {
+            sections: sections.into_iter().collect(),
         })
     }
 
@@ -444,6 +532,8 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SimpleSemanticsQueryHandler>()?;
     m.add_class::<SetupStatus>()?;
     m.add_class::<PyOpArgSchema>()?;
+    m.add_class::<RenderedSpec>()?;
+    m.add_class::<RenderedSpecLine>()?;
 
     Ok(())
 }

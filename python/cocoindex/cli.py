@@ -1,4 +1,3 @@
-import asyncio
 import click
 import datetime
 
@@ -7,7 +6,6 @@ from rich.table import Table
 
 from . import flow, lib, setting
 from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
-from .runtime import execution_context
 
 @click.group()
 def cli():
@@ -55,16 +53,17 @@ def ls(show_all: bool):
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
-@click.option("--color/--no-color", default=True)
-def show(flow_name: str | None, color: bool):
+@click.option("--color/--no-color", default=True, help="Enable or disable colored output.")
+@click.option("--verbose", is_flag=True, help="Show verbose output with full details.")
+def show(flow_name: str | None, color: bool, verbose: bool):
     """
-    Show the flow spec in a readable format with colored output,
-    including the schema.
+    Show the flow spec and schema in a readable format with colored output.
     """
     flow = _flow_by_name(flow_name)
     console = Console(no_color=not color)
-    console.print(flow._render_text())
+    console.print(flow._render_spec(verbose=verbose))
 
+    console.print()
     table = Table(
         title=f"Schema for Flow: {flow.name}",
         show_header=True,
@@ -74,7 +73,7 @@ def show(flow_name: str | None, color: bool):
     table.add_column("Type", style="green")
     table.add_column("Attributes", style="yellow")
 
-    for field_name, field_type, attr_str in flow._render_schema():
+    for field_name, field_type, attr_str in flow._get_schema():
         table.add_row(field_name, field_type, attr_str)
 
     console.print(table)
@@ -135,13 +134,12 @@ def update(flow_name: str | None, live: bool, quiet: bool):
     Update the index to reflect the latest data from data sources.
     """
     options = flow.FlowLiveUpdaterOptions(live_mode=live, print_stats=not quiet)
-    async def _update():
-        if flow_name is None:
-            await flow.update_all_flows(options)
-        else:
-            updater = await flow.FlowLiveUpdater.create(_flow_by_name(flow_name), options)
-            await updater.wait()
-    execution_context.run(_update())
+    if flow_name is None:
+        return flow.update_all_flows(options)
+    else:
+        updater = flow.FlowLiveUpdater(_flow_by_name(flow_name), options)
+        updater.wait()
+        return updater.update_stats()
 
 @cli.command()
 @click.argument("flow_name", type=str, required=False)
@@ -216,7 +214,7 @@ def server(address: str | None, live_update: bool, quiet: bool, cors_origin: str
 
     if live_update:
         options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
-        execution_context.run(flow.update_all_flows(options))
+        flow.update_all_flows(options)
     if COCOINDEX_HOST in cors_origins:
         click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
     input("Press Enter to stop...")

@@ -330,7 +330,6 @@ impl MetadataTableSetup {
     }
 }
 
-#[async_trait]
 impl ResourceSetupStatus for MetadataTableSetup {
     fn describe_changes(&self) -> Vec<String> {
         if self.metadata_table_missing {
@@ -350,7 +349,13 @@ impl ResourceSetupStatus for MetadataTableSetup {
         }
     }
 
-    async fn apply_change(&self) -> Result<()> {
+    fn as_any(&self) -> &dyn Any {
+        self as &dyn Any
+    }
+}
+
+impl MetadataTableSetup {
+    pub async fn apply_change(&self) -> Result<()> {
         if !self.metadata_table_missing {
             return Ok(());
         }

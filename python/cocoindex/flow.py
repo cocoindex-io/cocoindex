@@ -8,14 +8,13 @@ import asyncio
 import re
 import inspect
 import datetime
-import json
 
 from typing import Any, Callable, Sequence, TypeVar
 from threading import Lock
 from enum import Enum
 from dataclasses import dataclass
 from rich.text import Text
-from rich.console import Console
+from rich.tree import Tree
 
 from . import _engine
 from . import index
@@ -394,12 +393,13 @@ class FlowLiveUpdater:
                 arg.internal_flow(), dump_engine_object(options or FlowLiveUpdaterOptions())))
 
     @staticmethod
-    async def create(fl: Flow, options: FlowLiveUpdaterOptions | None = None) -> FlowLiveUpdater:
+    async def create_async(fl: Flow, options: FlowLiveUpdaterOptions | None = None) -> FlowLiveUpdater:
         """
         Create a live updater for a flow.
+        Similar to the constructor, but for async usage.
         """
         engine_live_updater = await _engine.FlowLiveUpdater.create(
-            await fl.ainternal_flow(),
+            await fl.internal_flow_async(),
             dump_engine_object(options or FlowLiveUpdaterOptions()))
         return FlowLiveUpdater(engine_live_updater)
 
@@ -408,20 +408,27 @@ class FlowLiveUpdater:
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.abort()
-        execution_context.run(self.wait())
+        self.wait()
 
     async def __aenter__(self) -> FlowLiveUpdater:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
         self.abort()
-        await self.wait()
+        await self.wait_async()
 
-    async def wait(self) -> None:
+    def wait(self) -> None:
         """
         Wait for the live updater to finish.
         """
+        execution_context.run(self.wait_async())
+
+    async def wait_async(self) -> None:
+        """
+        Wait for the live updater to finish. Async version.
+        """
         await self._engine_live_updater.wait()
+
 
     def abort(self) -> None:
         """
@@ -462,61 +469,33 @@ class Flow:
             return engine_flow
         self._lazy_engine_flow = _lazy_engine_flow
 
-    def _format_flow(self, flow_dict: dict) -> Text:
-        output = Text()
+    def _render_spec(self, verbose: bool = False) -> Tree:
+        """
+        Render the flow spec as a styled rich Tree with hierarchical structure.
+        """
+        spec = self._get_spec(verbose=verbose)
+        tree = Tree(f"Flow: {self.name}", style="cyan")
 
-        def add_line(content, indent=0, style=None, end="\n"):
-            output.append(" " * indent)
-            output.append(content, style=style)
-            output.append(end)
+        def build_tree(label: str, lines: list):
+            node = Tree(label, style="bold magenta" if lines else "cyan")
+            for line in lines:
+                child_node = node.add(Text(line.content, style="yellow"))
+                child_node.children = build_tree("", line.children).children
+            return node
 
-        def format_key_value(key, value, indent):
-            if isinstance(value, (dict, list)):
-                add_line(f"- {key}:", indent, style="green")
-                format_data(value, indent + 2)
-            else:
-                add_line(f"- {key}:", indent, style="green", end="")
-                add_line(f" {value}", style="yellow")
+        for section, lines in spec.sections:
+            section_node = build_tree(f"{section}:", lines)
+            tree.children.append(section_node)
+        return tree
 
-        def format_data(data, indent=0):
-            if isinstance(data, dict):
-                for key, value in data.items():
-                    format_key_value(key, value, indent)
-            elif isinstance(data, list):
-                for i, item in enumerate(data):
-                    format_key_value(f"[{i}]", item, indent)
-            else:
-                add_line(str(data), indent, style="yellow")
-
-        # Header
-        flow_name = flow_dict.get("name", "Unnamed")
-        add_line(f"Flow: {flow_name}", style="bold cyan")
-
-        # Section
-        for section_title, section_key in [
-            ("Sources:", "import_ops"),
-            ("Processing:", "reactive_ops"),
-            ("Targets:", "export_ops"),
-        ]:
-            add_line("")
-            add_line(section_title, style="bold cyan")
-            format_data(flow_dict.get(section_key, []), indent=0)
-
-        return output
-
-    def _render_text(self) -> Text:
-        flow_spec_str = str(self._lazy_engine_flow())
-        try:
-            flow_dict = json.loads(flow_spec_str)
-            return self._format_flow(flow_dict)
-        except json.JSONDecodeError:
-            return Text(flow_spec_str)
+    def _get_spec(self, verbose: bool = False) -> list[tuple[str, str, int]]:
+        return self._lazy_engine_flow().get_spec(output_mode="verbose" if verbose else "concise")
     
-    def _render_schema(self) -> list[tuple[str, str, str]]:
+    def _get_schema(self) -> list[tuple[str, str, str]]:
         return self._lazy_engine_flow().get_schema()
 
     def __str__(self):
-        return str(self._render_text())
+        return str(self._get_spec())
 
     def __repr__(self):
         return repr(self._lazy_engine_flow())
@@ -528,13 +507,20 @@ class Flow:
         """
         return self._lazy_engine_flow().name()
 
-    async def update(self) -> _engine.IndexUpdateInfo:
+    def update(self) -> _engine.IndexUpdateInfo:
         """
         Update the index defined by the flow.
-        Once the function returns, the indice is fresh up to the moment when the function is called.
+        Once the function returns, the index is fresh up to the moment when the function is called.
         """
-        updater = await FlowLiveUpdater.create(self, FlowLiveUpdaterOptions(live_mode=False))
-        await updater.wait()
+        return execution_context.run(self.update_async())
+
+    async def update_async(self) -> _engine.IndexUpdateInfo:
+        """
+        Update the index defined by the flow.
+        Once the function returns, the index is fresh up to the moment when the function is called.
+        """
+        updater = await FlowLiveUpdater.create_async(self, FlowLiveUpdaterOptions(live_mode=False))
+        await updater.wait_async()
         return updater.update_stats()
 
     def evaluate_and_dump(self, options: EvaluateAndDumpOptions):
@@ -549,7 +535,7 @@ class Flow:
         """
         return self._lazy_engine_flow()
 
-    async def ainternal_flow(self) -> _engine.Flow:
+    async def internal_flow_async(self) -> _engine.Flow:
         """
         Get the engine flow. The async version.
         """
@@ -615,21 +601,27 @@ def ensure_all_flows_built() -> None:
     for fl in flows():
         fl.internal_flow()
 
-async def aensure_all_flows_built() -> None:
+async def ensure_all_flows_built_async() -> None:
     """
     Ensure all flows are built.
     """
     for fl in flows():
-        await fl.ainternal_flow()
+        await fl.internal_flow_async()
 
-async def update_all_flows(options: FlowLiveUpdaterOptions) -> dict[str, _engine.IndexUpdateInfo]:
+def update_all_flows(options: FlowLiveUpdaterOptions) -> dict[str, _engine.IndexUpdateInfo]:
     """
     Update all flows.
     """
-    await aensure_all_flows_built()
+    return execution_context.run(update_all_flows_async(options))
+
+async def update_all_flows_async(options: FlowLiveUpdaterOptions) -> dict[str, _engine.IndexUpdateInfo]:
+    """
+    Update all flows.
+    """
+    await ensure_all_flows_built_async()
     async def _update_flow(fl: Flow) -> _engine.IndexUpdateInfo:
-        updater = await FlowLiveUpdater.create(fl, options)
-        await updater.wait()
+        updater = await FlowLiveUpdater.create_async(fl, options)
+        await updater.wait_async()
         return updater.update_stats()
     fls = flows()
     all_stats = await asyncio.gather(*(_update_flow(fl) for fl in fls))
