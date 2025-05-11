@@ -112,7 +112,8 @@ impl SourceIndexingContext {
                         },
                     )
                     .await?
-                    .value
+                    .map(|v| v.value)
+                    .flatten()
             };
             let schema = &self.flow.data_schema;
             let result = row_indexer::update_source_row(

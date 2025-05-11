@@ -16,7 +16,7 @@ pub struct FlowInstanceContext {
     pub py_exec_ctx: Option<Arc<crate::py::PythonExecutionContext>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Ordinal(pub i64);
 
 impl From<Ordinal> for i64 {
@@ -72,9 +72,9 @@ pub struct SourceExecutorGetOptions {
     pub include_value: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SourceValue {
-    // None if not exists, or not included in the option.
+    // None if not included in the option.
     pub value: Option<FieldValues>,
     // None if unavailable, or not included in the option.
     pub ordinal: Option<Ordinal>,
@@ -93,7 +93,7 @@ pub trait SourceExecutor: Send + Sync {
         &self,
         key: &KeyValue,
         options: &SourceExecutorGetOptions,
-    ) -> Result<SourceValue>;
+    ) -> Result<Option<SourceValue>>;
 
     async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
         Ok(None)

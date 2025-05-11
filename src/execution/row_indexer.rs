@@ -471,9 +471,10 @@ pub async fn evaluate_source_entry_with_memory(
             },
         )
         .await?
-        .value
     {
-        Some(d) => d,
+        Some(d) => d
+            .value
+            .ok_or_else(|| anyhow::anyhow!("value not returned"))?,
         None => return Ok(None),
     };
     let output = evaluate_source_entry(src_eval_ctx, source_value, &memory).await?;

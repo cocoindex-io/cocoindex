@@ -88,12 +88,9 @@ impl SourceExecutor for Executor {
         &self,
         key: &KeyValue,
         options: &SourceExecutorGetOptions,
-    ) -> Result<SourceValue> {
+    ) -> Result<Option<SourceValue>> {
         if !self.is_file_included(key.str_value()?.as_ref()) {
-            return Ok(SourceValue {
-                value: None,
-                ordinal: None,
-            });
+            return Ok(None);
         }
         let path = self.root_path.join(key.str_value()?.as_ref());
         let ordinal = if options.include_ordinal {
@@ -117,7 +114,7 @@ impl SourceExecutor for Executor {
         } else {
             None
         };
-        Ok(SourceValue { value, ordinal })
+        Ok(Some(SourceValue { value, ordinal }))
     }
 }
 

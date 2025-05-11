@@ -211,3 +211,28 @@ impl ListTrackedSourceKeyMetadataState {
         sqlx::query_as(&self.query_str).bind(source_id).fetch(pool)
     }
 }
+
+#[derive(sqlx::FromRow, Debug)]
+pub struct SourceLastProcessedInfo {
+    pub processed_source_ordinal: Option<i64>,
+    pub process_logic_fingerprint: Option<Vec<u8>>,
+    pub process_time_micros: Option<i64>,
+}
+
+pub async fn read_source_last_processed_info(
+    source_id: i32,
+    source_key_json: &serde_json::Value,
+    db_setup: &TrackingTableSetupState,
+    pool: &PgPool,
+) -> Result<Option<SourceLastProcessedInfo>> {
+    let query_str = format!(
+        "SELECT processed_source_ordinal, process_logic_fingerprint, process_time_micros FROM {} WHERE source_id = $1 AND source_key = $2",
+        db_setup.table_name
+    );
+    let last_processed_info = sqlx::query_as(&query_str)
+        .bind(source_id)
+        .bind(source_key_json)
+        .fetch_optional(pool)
+        .await?;
+    Ok(last_processed_info)
+}

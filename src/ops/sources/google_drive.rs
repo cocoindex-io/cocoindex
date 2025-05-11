@@ -341,7 +341,7 @@ impl SourceExecutor for Executor {
         &self,
         key: &KeyValue,
         options: &SourceExecutorGetOptions,
-    ) -> Result<SourceValue> {
+    ) -> Result<Option<SourceValue>> {
         let file_id = key.str_value()?;
         let fields = format!(
             "id,name,mimeType,trashed{}",
@@ -359,7 +359,7 @@ impl SourceExecutor for Executor {
         let file = match resp {
             Some((_, file)) if file.trashed != Some(true) => file,
             _ => {
-                return Ok(SourceValue::default());
+                return Ok(None);
             }
         };
         let ordinal = if options.include_ordinal {
@@ -415,7 +415,7 @@ impl SourceExecutor for Executor {
             }
             None => None,
         };
-        Ok(SourceValue { value, ordinal })
+        Ok(Some(SourceValue { value, ordinal }))
     }
 
     async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
