@@ -157,14 +157,14 @@ impl<'a, T> SharedResultExtRef<'a, T> for &'a Result<T, SharedError> {
 
 #[macro_export]
 macro_rules! api_bail {
-    ( $fmt:literal $(, $($arg:expr) , *)?) => {
-        return Err($crate::service::error::ApiError::new(&format!($fmt $(, $($arg) , *)?), axum::http::StatusCode::BAD_REQUEST).into())
+    ( $fmt:literal $(, $($arg:tt)*)?) => {
+        return Err($crate::service::error::ApiError::new(&format!($fmt $(, $($arg)*)?), axum::http::StatusCode::BAD_REQUEST).into())
     };
 }
 
 #[macro_export]
 macro_rules! api_error {
-    ( $fmt:literal $(, $($arg:expr) , *)?) => {
-        $crate::service::error::ApiError::new(&format!($fmt $(, $($arg) , *)?), axum::http::StatusCode::BAD_REQUEST)
+    ( $fmt:literal $(, $($arg:tt)*)?) => {
+        $crate::service::error::ApiError::new(&format!($fmt $(, $($arg)*)?), axum::http::StatusCode::BAD_REQUEST)
     };
 }
