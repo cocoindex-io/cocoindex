@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use yaml_rust2::YamlEmitter;
 
+use super::evaluator::SourceRowEvaluationContext;
 use super::memoization::EvaluationMemoryOptions;
 use super::row_indexer;
 use crate::base::{schema, value};
@@ -77,10 +78,12 @@ impl<'a> Dumper<'a> {
         'a: 'b,
     {
         let data_builder = row_indexer::evaluate_source_entry_with_memory(
-            self.plan,
-            import_op,
-            self.schema,
-            key,
+            &SourceRowEvaluationContext {
+                plan: self.plan,
+                import_op,
+                schema: self.schema,
+                key,
+            },
             EvaluationMemoryOptions {
                 enable_cache: self.options.use_cache,
                 evaluation_only: true,

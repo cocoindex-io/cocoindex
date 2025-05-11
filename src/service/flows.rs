@@ -1,11 +1,8 @@
 use crate::prelude::*;
 
+use crate::execution::{evaluator, memoization, row_indexer, stats};
 use crate::lib_context::LibContext;
 use crate::{base::schema::FlowSchema, ops::interface::SourceExecutorListOptions};
-use crate::{
-    execution::memoization,
-    execution::{row_indexer, stats},
-};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -147,10 +144,12 @@ pub async fn evaluate_data(
     let key = value::KeyValue::from_strs(query.key, &key_field.value_type.typ)?;
 
     let evaluate_output = row_indexer::evaluate_source_entry_with_memory(
-        &plan,
-        import_op,
-        schema,
-        &key,
+        &evaluator::SourceRowEvaluationContext {
+            plan: &plan,
+            import_op,
+            schema,
+            key: &key,
+        },
         memoization::EvaluationMemoryOptions {
             enable_cache: true,
             evaluation_only: true,

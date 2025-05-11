@@ -6,11 +6,12 @@ use std::collections::{HashMap, HashSet};
 
 use super::db_tracking::{self, read_source_tracking_info_for_processing, TrackedTargetKey};
 use super::db_tracking_setup;
-use super::evaluator::{evaluate_source_entry, EvaluateSourceEntryOutput};
+use super::evaluator::{
+    evaluate_source_entry, EvaluateSourceEntryOutput, SourceRowEvaluationContext,
+};
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, StoredMemoizationInfo};
 use super::stats;
 
-use crate::base::schema;
 use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
 use crate::ops::interface::{
@@ -439,19 +440,16 @@ async fn commit_source_tracking_info(
 }
 
 pub async fn evaluate_source_entry_with_memory(
-    plan: &ExecutionPlan,
-    import_op: &AnalyzedImportOp,
-    schema: &schema::FlowSchema,
-    key: &value::KeyValue,
+    src_eval_ctx: &SourceRowEvaluationContext<'_>,
     options: EvaluationMemoryOptions,
     pool: &PgPool,
 ) -> Result<Option<EvaluateSourceEntryOutput>> {
     let stored_info = if options.enable_cache || !options.evaluation_only {
-        let source_key_json = serde_json::to_value(key)?;
+        let source_key_json = serde_json::to_value(src_eval_ctx.key)?;
         let existing_tracking_info = read_source_tracking_info_for_processing(
-            import_op.source_id,
+            src_eval_ctx.import_op.source_id,
             &source_key_json,
-            &plan.tracking_table_setup,
+            &src_eval_ctx.plan.tracking_table_setup,
             pool,
         )
         .await?;
@@ -462,10 +460,11 @@ pub async fn evaluate_source_entry_with_memory(
         None
     };
     let memory = EvaluationMemory::new(chrono::Utc::now(), stored_info, options);
-    let source_value = match import_op
+    let source_value = match src_eval_ctx
+        .import_op
         .executor
         .get_value(
-            key,
+            src_eval_ctx.key,
             &SourceExecutorGetOptions {
                 include_value: true,
                 include_ordinal: false,
@@ -477,28 +476,25 @@ pub async fn evaluate_source_entry_with_memory(
         Some(d) => d,
         None => return Ok(None),
     };
-    let output = evaluate_source_entry(plan, import_op, schema, key, source_value, &memory).await?;
+    let output = evaluate_source_entry(src_eval_ctx, source_value, &memory).await?;
     Ok(Some(output))
 }
 
 pub async fn update_source_row(
-    plan: &ExecutionPlan,
-    import_op: &AnalyzedImportOp,
-    schema: &schema::FlowSchema,
-    key: &value::KeyValue,
+    src_eval_ctx: &SourceRowEvaluationContext<'_>,
     source_value: Option<FieldValues>,
     source_version: &SourceVersion,
     pool: &PgPool,
     update_stats: &stats::UpdateStats,
 ) -> Result<SkippedOr<()>> {
-    let source_key_json = serde_json::to_value(key)?;
-    let process_timestamp = chrono::Utc::now();
+    let source_key_json = serde_json::to_value(src_eval_ctx.key)?;
+    let process_time = chrono::Utc::now();
 
     // Phase 1: Evaluate with memoization info.
     let existing_tracking_info = read_source_tracking_info_for_processing(
-        import_op.source_id,
+        src_eval_ctx.import_op.source_id,
         &source_key_json,
-        &plan.tracking_table_setup,
+        &src_eval_ctx.plan.tracking_table_setup,
         pool,
     )
     .await?;
@@ -507,7 +503,7 @@ pub async fn update_source_row(
             let existing_version = SourceVersion::from_stored(
                 info.processed_source_ordinal,
                 &info.process_logic_fingerprint,
-                plan.logic_fingerprint,
+                src_eval_ctx.plan.logic_fingerprint,
             );
             if existing_version.should_skip(source_version, Some(update_stats)) {
                 return Ok(SkippedOr::Skipped(existing_version));
@@ -522,22 +518,15 @@ pub async fn update_source_row(
     let (output, stored_mem_info) = match source_value {
         Some(source_value) => {
             let evaluation_memory = EvaluationMemory::new(
-                process_timestamp,
+                process_time,
                 memoization_info,
                 EvaluationMemoryOptions {
                     enable_cache: true,
                     evaluation_only: false,
                 },
             );
-            let output = evaluate_source_entry(
-                plan,
-                import_op,
-                schema,
-                key,
-                source_value,
-                &evaluation_memory,
-            )
-            .await?;
+            let output =
+                evaluate_source_entry(src_eval_ctx, source_value, &evaluation_memory).await?;
             (Some(output), evaluation_memory.into_stored()?)
         }
         None => Default::default(),
@@ -545,17 +534,17 @@ pub async fn update_source_row(
 
     // Phase 2 (precommit): Update with the memoization info and stage target keys.
     let precommit_output = precommit_source_tracking_info(
-        import_op.source_id,
+        src_eval_ctx.import_op.source_id,
         &source_key_json,
         source_version,
-        plan.logic_fingerprint,
+        src_eval_ctx.plan.logic_fingerprint,
         output.as_ref().map(|scope_value| PrecommitData {
             evaluate_output: scope_value,
             memoization_info: &stored_mem_info,
         }),
-        &process_timestamp,
-        &plan.tracking_table_setup,
-        &plan.export_ops,
+        &process_time,
+        &src_eval_ctx.plan.tracking_table_setup,
+        &src_eval_ctx.plan.export_ops,
         update_stats,
         pool,
     )
@@ -567,40 +556,44 @@ pub async fn update_source_row(
 
     // Phase 3: Apply changes to the target storage, including upserting new target records and removing existing ones.
     let mut target_mutations = precommit_output.target_mutations;
-    let apply_futs = plan.export_op_groups.iter().filter_map(|export_op_group| {
-        let mutations_w_ctx: Vec<_> = export_op_group
-            .op_idx
-            .iter()
-            .filter_map(|export_op_idx| {
-                let export_op = &plan.export_ops[*export_op_idx];
-                target_mutations
-                    .remove(&export_op.target_id)
-                    .filter(|m| !m.is_empty())
-                    .map(|mutation| interface::ExportTargetMutationWithContext {
-                        mutation,
-                        export_context: export_op.export_context.as_ref(),
-                    })
+    let apply_futs = src_eval_ctx
+        .plan
+        .export_op_groups
+        .iter()
+        .filter_map(|export_op_group| {
+            let mutations_w_ctx: Vec<_> = export_op_group
+                .op_idx
+                .iter()
+                .filter_map(|export_op_idx| {
+                    let export_op = &src_eval_ctx.plan.export_ops[*export_op_idx];
+                    target_mutations
+                        .remove(&export_op.target_id)
+                        .filter(|m| !m.is_empty())
+                        .map(|mutation| interface::ExportTargetMutationWithContext {
+                            mutation,
+                            export_context: export_op.export_context.as_ref(),
+                        })
+                })
+                .collect();
+            (!mutations_w_ctx.is_empty()).then(|| {
+                export_op_group
+                    .target_factory
+                    .apply_mutation(mutations_w_ctx)
             })
-            .collect();
-        (!mutations_w_ctx.is_empty()).then(|| {
-            export_op_group
-                .target_factory
-                .apply_mutation(mutations_w_ctx)
-        })
-    });
+        });
 
     // TODO: Handle errors.
     try_join_all(apply_futs).await?;
 
     // Phase 4: Update the tracking record.
     commit_source_tracking_info(
-        import_op.source_id,
+        src_eval_ctx.import_op.source_id,
         &source_key_json,
         source_version,
-        &plan.logic_fingerprint.0,
+        &src_eval_ctx.plan.logic_fingerprint.0,
         precommit_output.metadata,
-        &process_timestamp,
-        &plan.tracking_table_setup,
+        &process_time,
+        &src_eval_ctx.plan.tracking_table_setup,
         pool,
     )
     .await?;
