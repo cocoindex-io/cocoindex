@@ -462,8 +462,8 @@ mod tests {
 
     #[test]
     fn test_union_fmt_nested_auto_unpack() {
-        // Uuid | Date | (Date | OffsetDateTime | Time | Bytes | (Bytes | Uuid | Time) | Str |
-        // Bytes) = Bytes | Str | Uuid | Date | Time | OffsetDateTime
+        // Uuid | Date | (Date | OffsetDateTime | Time | Bytes | (Bytes | Uuid | Time)) | Str |
+        // Bytes = Bytes | Str | Uuid | Date | Time | OffsetDateTime
         let typ = BasicValueType::Union(vec![
             BasicValueType::Uuid,
             BasicValueType::Date,
