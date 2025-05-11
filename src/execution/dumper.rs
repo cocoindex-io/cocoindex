@@ -167,7 +167,7 @@ impl<'a> Dumper<'a> {
     async fn evaluate_and_dump_for_source(&self, import_op: &AnalyzedImportOp) -> Result<()> {
         let mut keys_by_filename_prefix: IndexMap<String, Vec<value::KeyValue>> = IndexMap::new();
 
-        let mut rows_stream = import_op.executor.list(SourceExecutorListOptions {
+        let mut rows_stream = import_op.executor.list(&SourceExecutorListOptions {
             include_ordinal: false,
         });
         while let Some(rows) = rows_stream.next().await {

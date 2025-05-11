@@ -101,7 +101,17 @@ impl SourceIndexingContext {
                 // also happens for update cases and there's no way to keep them always in sync for many sources.
                 //
                 // We only need source version <= actual version for value.
-                import_op.executor.get_value(&key).await?
+                import_op
+                    .executor
+                    .get_value(
+                        &key,
+                        &interface::SourceExecutorGetOptions {
+                            include_value: true,
+                            include_ordinal: false,
+                        },
+                    )
+                    .await?
+                    .value
             };
             let schema = &self.flow.data_schema;
             let result = row_indexer::update_source_row(
@@ -203,7 +213,7 @@ impl SourceIndexingContext {
         let import_op = &plan.import_ops[self.source_idx];
         let mut rows_stream = import_op
             .executor
-            .list(interface::SourceExecutorListOptions {
+            .list(&interface::SourceExecutorListOptions {
                 include_ordinal: true,
             });
         let mut join_set = JoinSet::new();

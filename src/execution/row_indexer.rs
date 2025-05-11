@@ -13,7 +13,9 @@ use super::stats;
 use crate::base::schema;
 use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
-use crate::ops::interface::{ExportTargetMutation, ExportTargetUpsertEntry, Ordinal};
+use crate::ops::interface::{
+    ExportTargetMutation, ExportTargetUpsertEntry, Ordinal, SourceExecutorGetOptions,
+};
 use crate::utils::db::WriteAction;
 use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 
@@ -460,7 +462,18 @@ pub async fn evaluate_source_entry_with_memory(
         None
     };
     let memory = EvaluationMemory::new(chrono::Utc::now(), stored_info, options);
-    let source_value = match import_op.executor.get_value(key).await? {
+    let source_value = match import_op
+        .executor
+        .get_value(
+            key,
+            &SourceExecutorGetOptions {
+                include_value: true,
+                include_ordinal: false,
+            },
+        )
+        .await?
+        .value
+    {
         Some(d) => d,
         None => return Ok(None),
     };

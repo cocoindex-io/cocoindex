@@ -89,7 +89,7 @@ pub async fn get_keys(
             )
         })?;
 
-    let mut rows_stream = import_op.executor.list(SourceExecutorListOptions {
+    let mut rows_stream = import_op.executor.list(&SourceExecutorListOptions {
         include_ordinal: false,
     });
     let mut keys = Vec::new();
