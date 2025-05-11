@@ -8,7 +8,6 @@ import asyncio
 import re
 import inspect
 import datetime
-import json
 
 from typing import Any, Callable, Sequence, TypeVar
 from threading import Lock
@@ -409,7 +408,7 @@ class FlowLiveUpdater:
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.abort()
-        execution_context.run(self.wait_async())
+        self.wait()
 
     async def __aenter__(self) -> FlowLiveUpdater:
         return self
