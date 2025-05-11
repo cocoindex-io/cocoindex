@@ -433,3 +433,56 @@ pub struct OpArgSchema {
     pub value_type: EnrichedValueType,
     pub analyzed_value: AnalyzedValueMapping,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_union_fmt_empty() {
+        let typ = BasicValueType::Union(UnionType::default());
+        let expected = "Union[]";
+
+        assert_eq!(typ.to_string(), expected);
+    }
+
+    #[test]
+    fn test_union_fmt_autosort_basic() {
+        // Uuid | Date | Str | Bytes = Bytes | Str | Uuid | Date
+        let typ = BasicValueType::Union(vec![
+            BasicValueType::Uuid,
+            BasicValueType::Date,
+            BasicValueType::Str,
+            BasicValueType::Bytes,
+        ].into());
+        let expected = "Union[Bytes | Str | Uuid | Date]";
+
+        assert_eq!(typ.to_string(), expected);
+    }
+
+    #[test]
+    fn test_union_fmt_nested_auto_unpack() {
+        // Uuid | Date | (Date | OffsetDateTime | Time | Bytes | (Bytes | Uuid | Time) | Str |
+        // Bytes) = Bytes | Str | Uuid | Date | Time | OffsetDateTime
+        let typ = BasicValueType::Union(vec![
+            BasicValueType::Uuid,
+            BasicValueType::Date,
+            BasicValueType::Union(vec![
+                BasicValueType::Date,
+                BasicValueType::OffsetDateTime,
+                BasicValueType::Time,
+                BasicValueType::Bytes,
+                BasicValueType::Union(vec![
+                    BasicValueType::Bytes,
+                    BasicValueType::Uuid,
+                    BasicValueType::Time,
+                ].into()),
+            ].into()),
+            BasicValueType::Str,
+            BasicValueType::Bytes,
+        ].into());
+        let expected = "Union[Bytes | Str | Uuid | Date | Time | OffsetDateTime]";
+
+        assert_eq!(typ.to_string(), expected);
+    }
+}
