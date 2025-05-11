@@ -96,7 +96,7 @@ impl SourceIndexingContext {
             } else if let Some(value) = value {
                 Some(value)
             } else {
-                // Even if the source version kind is not Deleted, the source value might be gone one polling.
+                // Even if the source version kind is not Deleted, the source value might be gone when polling.
                 // In this case, we still use the current source version even if it's already stale - actually this version skew
                 // also happens for update cases and there's no way to keep them always in sync for many sources.
                 //

@@ -11,7 +11,7 @@ CocoIndex is an ETL framework for building indexes from specified data sources, 
 
 ## Indexing flow
 
-An indexing flow extracts data from speicfied data sources, upon specified transformations, and puts the transformed data into specified storage for later retrieval.
+An indexing flow extracts data from specified data sources, upon specified transformations, and puts the transformed data into specified storage for later retrieval.
 
 An indexing flow has two aspects: data and operations on data.
 
