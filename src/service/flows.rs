@@ -209,17 +209,17 @@ pub async fn update(
     Ok(Json(live_updater.index_update_info()))
 }
 
-pub async fn get_row_index_status(
+pub async fn get_row_indexing_status(
     Path(flow_name): Path<String>,
     Query(query): Query<SourceRowKeyParams>,
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<indexing_status::SourceRowIndexingStatus>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let source_row_key_ctx = SourceRowKeyContextHolder::create(&flow_ctx, query).await?;
-    let index_status = indexing_status::get_source_row_indexing_status(
+    let indexing_status = indexing_status::get_source_row_indexing_status(
         &source_row_key_ctx.as_context(),
         &lib_context.builtin_db_pool,
     )
     .await?;
-    Ok(Json(index_status))
+    Ok(Json(indexing_status))
 }
