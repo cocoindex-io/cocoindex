@@ -394,12 +394,13 @@ class FlowLiveUpdater:
                 arg.internal_flow(), dump_engine_object(options or FlowLiveUpdaterOptions())))
 
     @staticmethod
-    async def create(fl: Flow, options: FlowLiveUpdaterOptions | None = None) -> FlowLiveUpdater:
+    async def create_async(fl: Flow, options: FlowLiveUpdaterOptions | None = None) -> FlowLiveUpdater:
         """
         Create a live updater for a flow.
+        Similar to the constructor, but for async usage.
         """
         engine_live_updater = await _engine.FlowLiveUpdater.create(
-            await fl.ainternal_flow(),
+            await fl.internal_flow_async(),
             dump_engine_object(options or FlowLiveUpdaterOptions()))
         return FlowLiveUpdater(engine_live_updater)
 
@@ -408,20 +409,27 @@ class FlowLiveUpdater:
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.abort()
-        execution_context.run(self.wait())
+        execution_context.run(self.wait_async())
 
     async def __aenter__(self) -> FlowLiveUpdater:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback):
         self.abort()
-        await self.wait()
+        await self.wait_async()
 
-    async def wait(self) -> None:
+    def wait(self) -> None:
         """
         Wait for the live updater to finish.
         """
+        execution_context.run(self.wait_async())
+
+    async def wait_async(self) -> None:
+        """
+        Wait for the live updater to finish. Async version.
+        """
         await self._engine_live_updater.wait()
+
 
     def abort(self) -> None:
         """
@@ -500,13 +508,20 @@ class Flow:
         """
         return self._lazy_engine_flow().name()
 
-    async def update(self) -> _engine.IndexUpdateInfo:
+    def update(self) -> _engine.IndexUpdateInfo:
         """
         Update the index defined by the flow.
-        Once the function returns, the indice is fresh up to the moment when the function is called.
+        Once the function returns, the index is fresh up to the moment when the function is called.
         """
-        updater = await FlowLiveUpdater.create(self, FlowLiveUpdaterOptions(live_mode=False))
-        await updater.wait()
+        return execution_context.run(self.update_async())
+
+    async def update_async(self) -> _engine.IndexUpdateInfo:
+        """
+        Update the index defined by the flow.
+        Once the function returns, the index is fresh up to the moment when the function is called.
+        """
+        updater = await FlowLiveUpdater.create_async(self, FlowLiveUpdaterOptions(live_mode=False))
+        await updater.wait_async()
         return updater.update_stats()
 
     def evaluate_and_dump(self, options: EvaluateAndDumpOptions):
@@ -521,7 +536,7 @@ class Flow:
         """
         return self._lazy_engine_flow()
 
-    async def ainternal_flow(self) -> _engine.Flow:
+    async def internal_flow_async(self) -> _engine.Flow:
         """
         Get the engine flow. The async version.
         """
@@ -587,21 +602,27 @@ def ensure_all_flows_built() -> None:
     for fl in flows():
         fl.internal_flow()
 
-async def aensure_all_flows_built() -> None:
+async def ensure_all_flows_built_async() -> None:
     """
     Ensure all flows are built.
     """
     for fl in flows():
-        await fl.ainternal_flow()
+        await fl.internal_flow_async()
 
-async def update_all_flows(options: FlowLiveUpdaterOptions) -> dict[str, _engine.IndexUpdateInfo]:
+def update_all_flows(options: FlowLiveUpdaterOptions) -> dict[str, _engine.IndexUpdateInfo]:
     """
     Update all flows.
     """
-    await aensure_all_flows_built()
+    return execution_context.run(update_all_flows_async(options))
+
+async def update_all_flows_async(options: FlowLiveUpdaterOptions) -> dict[str, _engine.IndexUpdateInfo]:
+    """
+    Update all flows.
+    """
+    await ensure_all_flows_built_async()
     async def _update_flow(fl: Flow) -> _engine.IndexUpdateInfo:
-        updater = await FlowLiveUpdater.create(fl, options)
-        await updater.wait()
+        updater = await FlowLiveUpdater.create_async(fl, options)
+        await updater.wait_async()
         return updater.update_stats()
     fls = flows()
     all_stats = await asyncio.gather(*(_update_flow(fl) for fl in fls))
