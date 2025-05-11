@@ -447,6 +447,14 @@ mod tests {
     }
 
     #[test]
+    fn test_union_fmt_single() {
+        let typ = BasicValueType::Union(vec![BasicValueType::Uuid].into());
+        let expected = "Union[Uuid]";
+
+        assert_eq!(typ.to_string(), expected);
+    }
+
+    #[test]
     fn test_union_fmt_autosort_basic() {
         // Uuid | Date | Str | Bytes = Bytes | Str | Uuid | Date
         let typ = BasicValueType::Union(vec![
