@@ -105,7 +105,7 @@ In Python, a KTable type is represented by `dict[K, V]`.
 The `V` should be a struct type, either a `dataclass` or `NamedTuple`, representing the value fields of each row.
 For example, you can use `dict[str, Person]` or `dict[str, PersonTuple]` to represent a KTable, with 4 columns: key (Str), `first_name` (Str), `last_name` (Str), `dob` (Date).
 
-Note that if you want to use a struct as the key, you need to annotate the struct with `@dataclass(frozen=True)`, For `NamedTuple`, immutability is built-in. so the values are immutable.
+Note that if you want to use a struct as the key, you need to ensure the struct is immutable. For `dataclass`, annotate it with `@dataclass(frozen=True)`. For `NamedTuple`, immutability is built-in.
 For example:
 
 ```python
