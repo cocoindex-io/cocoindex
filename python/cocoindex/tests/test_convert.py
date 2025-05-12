@@ -146,6 +146,12 @@ def test_make_engine_value_decoder_basic_types():
         # Extra field in engine value for Customer (should ignore)
         (Customer, ["Alice", ["O1", "item1", 10.0, "default_extra"], [["vip"]], "extra"], Customer("Alice", Order("O1", "item1", 10.0, "default_extra"), [Tag("vip")])),
         (CustomerNamedTuple, ["Alice", ["O1", "item1", 10.0, "default_extra"], [["vip"]], "extra"], CustomerNamedTuple("Alice", OrderNamedTuple("O1", "item1", 10.0, "default_extra"), [Tag("vip")])),
+        # Missing optional field with default
+        (Order, ["O123", "mixed nuts", 25.0], Order("O123", "mixed nuts", 25.0, "default_extra")),
+        (OrderNamedTuple, ["O123", "mixed nuts", 25.0], OrderNamedTuple("O123", "mixed nuts", 25.0, "default_extra")),
+        # Partial optional fields
+        (Customer, ["Alice", ["O1", "item1", 10.0]], Customer("Alice", Order("O1", "item1", 10.0, "default_extra"), None)),
+        (CustomerNamedTuple, ["Alice", ["O1", "item1", 10.0]], CustomerNamedTuple("Alice", OrderNamedTuple("O1", "item1", 10.0, "default_extra"), None)),
     ]
 )
 def test_struct_decoder_cases(data_type, engine_val, expected):

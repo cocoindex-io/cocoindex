@@ -110,10 +110,12 @@ def _make_engine_struct_value_decoder(
     if is_dataclass:
         parameters = inspect.signature(dst_struct_type).parameters
     elif is_namedtuple:
+        defaults = getattr(dst_struct_type, '_field_defaults', {})
         parameters = {
             name: inspect.Parameter(
                 name=name,
                 kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=defaults.get(name, inspect.Parameter.empty),
                 annotation=dst_struct_type.__annotations__.get(name, inspect.Parameter.empty)
             )
             for name in dst_struct_type._fields
@@ -128,7 +130,7 @@ def _make_engine_struct_value_decoder(
             field_decoder = make_engine_value_decoder(
                 field_path, src_fields[src_idx]['type'], param.annotation)
             field_path.pop()
-            return lambda values: field_decoder(values[src_idx])
+            return lambda values: field_decoder(values[src_idx]) if len(values) > src_idx else param.default
 
         default_value = param.default
         if default_value is inspect.Parameter.empty:
