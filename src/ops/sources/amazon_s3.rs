@@ -49,17 +49,17 @@ impl SourceExecutor for Executor {
         &'a self,
         _options: &'a SourceExecutorListOptions,
     ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>> {
-        let client = self.client.clone();
-        let bucket = self.bucket_name.clone();
-        let prefix = self.prefix.clone();
-        let included_glob_set = self.included_glob_set.clone();
-        let excluded_glob_set = self.excluded_glob_set.clone();
+        let client = &self.client;
+        let bucket = &self.bucket_name;
+        let prefix = &self.prefix;
+        let included_glob_set = &self.included_glob_set;
+        let excluded_glob_set = &self.excluded_glob_set;
         try_stream! {
             let mut continuation_token = None;
             loop {
                 let mut req = client
                     .list_objects_v2()
-                    .bucket(&bucket);
+                    .bucket(bucket);
                 if let Some(ref p) = prefix {
                     req = req.prefix(p);
                 }
@@ -151,7 +151,7 @@ impl SourceFactoryBase for Factory {
     type Spec = Spec;
 
     fn name(&self) -> &str {
-        "S3"
+        "AmazonS3"
     }
 
     fn get_output_schema(
@@ -189,7 +189,10 @@ impl SourceFactoryBase for Factory {
         _context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SourceExecutor>> {
         let region_provider = RegionProviderChain::default_provider().or_else(Region::new("us-east-1"));
-        let config = aws_config::from_env().region(region_provider).load().await;
+        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(region_provider)
+            .load()
+            .await;
         let client = Client::new(&config);
         Ok(Box::new(Executor {
             client,

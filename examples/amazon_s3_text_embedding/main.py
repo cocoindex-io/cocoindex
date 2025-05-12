@@ -5,16 +5,16 @@ import cocoindex
 import datetime
 import os
 
-@cocoindex.flow_def(name="S3TextEmbedding")
-def s3_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+@cocoindex.flow_def(name="AmazonS3TextEmbedding")
+def amazon_s3_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     """
-    Define an example flow that embeds text from S3 into a vector database.
+    Define an example flow that embeds text from Amazon S3 into a vector database.
     """
-    bucket_name = os.environ["S3_BUCKET_NAME"]
-    prefix = os.environ.get("S3_PREFIX", None)
+    bucket_name = os.environ["AMAZON_S3_BUCKET_NAME"]
+    prefix = os.environ.get("AMAZON_S3_PREFIX", None)
 
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.S3(
+        cocoindex.sources.AmazonS3(
             bucket_name=bucket_name,
             prefix=prefix,
             included_patterns=["*.md", "*.txt", "*.docx"],
@@ -46,7 +46,7 @@ def s3_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: coco
 
 query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
     name="SemanticsSearch",
-    flow=s3_text_embedding_flow,
+    flow=amazon_s3_text_embedding_flow,
     target_name="doc_embeddings",
     query_transform_flow=lambda text: text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
@@ -56,7 +56,7 @@ query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
 @cocoindex.main_fn()
 def _run():
     # Use a `FlowLiveUpdater` to keep the flow data updated.
-    with cocoindex.FlowLiveUpdater(s3_text_embedding_flow):
+    with cocoindex.FlowLiveUpdater(amazon_s3_text_embedding_flow):
         # Run queries in a loop to demonstrate the query capabilities.
         while True:
             try:

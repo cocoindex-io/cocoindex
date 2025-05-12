@@ -30,7 +30,7 @@ class GoogleDrive(op.SourceSpec):
     recent_changes_poll_interval: datetime.timedelta | None = None
 
 
-class S3(op.SourceSpec):
+class AmazonS3(op.SourceSpec):
     """Import data from an Amazon S3 bucket. Supports optional prefix and file filtering by glob patterns."""
 
     _op_category = op.OpCategory.SOURCE

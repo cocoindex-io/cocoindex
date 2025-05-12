@@ -1,6 +1,6 @@
 This example builds an embedding index based on files stored in an Amazon S3 bucket.
 It continuously updates the index as files are added / updated / deleted in the source bucket:
-it keeps the index in sync with the S3 bucket effortlessly.
+it keeps the index in sync with the Amazon S3 bucket effortlessly.
 
 ## Prerequisite
 
@@ -10,7 +10,7 @@ Before running the example, you need to:
 
 2.  Prepare for Amazon S3:
 
-    -   **Create an S3 bucket:**
+    -   **Create an Amazon S3 bucket:**
         - Go to the [AWS S3 Console](https://s3.console.aws.amazon.com/s3/home) and click **Create bucket**. Give it a unique name and choose a region.
         - Or, use the AWS CLI:
           ```sh
@@ -40,16 +40,26 @@ Before running the example, you need to:
           ```
         - If running on AWS EC2 or Lambda, you can use an [IAM role](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles.html) with S3 read permissions.
 
-    -   **(Optional) Specify a prefix** to restrict to a subfolder in the bucket by setting `S3_PREFIX` in your `.env`.
+    -   **(Optional) Specify a prefix** to restrict to a subfolder in the bucket by setting `AMAZON_S3_PREFIX` in your `.env`.
 
     See [AWS S3 documentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html) for more details.
 
-3.  Create a `.env` file with your S3 bucket name and (optionally) prefix.
+3.  Create a `.env` file with your Amazon S3 bucket name and (optionally) prefix.
     Start from copying the `.env.example`, and then edit it to fill in your bucket name and prefix.
 
     ```bash
     cp .env.example .env
     $EDITOR .env
+    ```
+
+    Example `.env` file:
+    ```
+    # Database Configuration
+    DATABASE_URL=postgresql://localhost:5432/cocoindex
+
+    # Amazon S3 Configuration
+    AMAZON_S3_BUCKET_NAME=your-bucket-name
+    AMAZON_S3_PREFIX=optional/prefix/path
     ```
 
 ## Run
@@ -72,7 +82,7 @@ Run:
 uv run main.py
 ```
 
-During running, it will keep observing changes in the S3 bucket and update the index automatically.
+During running, it will keep observing changes in the Amazon S3 bucket and update the index automatically.
 At the same time, it accepts queries from the terminal, and performs search on top of the up-to-date index.
 
 
