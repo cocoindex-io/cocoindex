@@ -62,6 +62,10 @@ pub async fn init_server(
                     routing::get(service::flows::evaluate_data),
                 )
                 .route(
+                    "/flows/:flowInstName/rowStatus",
+                    routing::get(service::flows::get_row_indexing_status),
+                )
+                .route(
                     "/flows/:flowInstName/update",
                     routing::post(service::flows::update),
                 )

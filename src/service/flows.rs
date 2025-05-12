@@ -1,11 +1,8 @@
 use crate::prelude::*;
 
+use crate::execution::{evaluator, indexing_status, memoization, row_indexer, stats};
 use crate::lib_context::LibContext;
 use crate::{base::schema::FlowSchema, ops::interface::SourceExecutorListOptions};
-use crate::{
-    execution::memoization,
-    execution::{row_indexer, stats},
-};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -89,7 +86,7 @@ pub async fn get_keys(
             )
         })?;
 
-    let mut rows_stream = import_op.executor.list(SourceExecutorListOptions {
+    let mut rows_stream = import_op.executor.list(&SourceExecutorListOptions {
         include_ordinal: false,
     });
     let mut keys = Vec::new();
@@ -103,7 +100,7 @@ pub async fn get_keys(
 }
 
 #[derive(Deserialize)]
-pub struct EvaluateDataParams {
+pub struct SourceRowKeyParams {
     field: String,
     key: Vec<String>,
 }
@@ -114,43 +111,66 @@ pub struct EvaluateDataResponse {
     data: value::ScopeValue,
 }
 
+struct SourceRowKeyContextHolder<'a> {
+    plan: Arc<plan::ExecutionPlan>,
+    import_op_idx: usize,
+    schema: &'a FlowSchema,
+    key: value::KeyValue,
+}
+
+impl<'a> SourceRowKeyContextHolder<'a> {
+    async fn create(flow_ctx: &'a FlowContext, source_row_key: SourceRowKeyParams) -> Result<Self> {
+        let schema = &flow_ctx.flow.data_schema;
+        let import_op_idx = flow_ctx
+            .flow
+            .flow_instance
+            .import_ops
+            .iter()
+            .position(|op| op.name == source_row_key.field)
+            .ok_or_else(|| {
+                ApiError::new(
+                    &format!("source field not found: {}", source_row_key.field),
+                    StatusCode::BAD_REQUEST,
+                )
+            })?;
+        let plan = flow_ctx.flow.get_execution_plan().await?;
+        let import_op = &plan.import_ops[import_op_idx];
+        let field_schema = &schema.fields[import_op.output.field_idx as usize];
+        let table_schema = match &field_schema.value_type.typ {
+            schema::ValueType::Table(table) => table,
+            _ => api_bail!("field is not a table: {}", source_row_key.field),
+        };
+        let key_field = table_schema
+            .key_field()
+            .ok_or_else(|| api_error!("field {} does not have a key", source_row_key.field))?;
+        let key = value::KeyValue::from_strs(source_row_key.key, &key_field.value_type.typ)?;
+        Ok(Self {
+            plan,
+            import_op_idx,
+            schema,
+            key,
+        })
+    }
+
+    fn as_context<'b>(&'b self) -> evaluator::SourceRowEvaluationContext<'b> {
+        evaluator::SourceRowEvaluationContext {
+            plan: &self.plan,
+            import_op: &self.plan.import_ops[self.import_op_idx],
+            schema: self.schema,
+            key: &self.key,
+        }
+    }
+}
+
 pub async fn evaluate_data(
     Path(flow_name): Path<String>,
-    Query(query): Query<EvaluateDataParams>,
+    Query(query): Query<SourceRowKeyParams>,
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<EvaluateDataResponse>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
-    let schema = &flow_ctx.flow.data_schema;
-
-    let import_op_idx = flow_ctx
-        .flow
-        .flow_instance
-        .import_ops
-        .iter()
-        .position(|op| op.name == query.field)
-        .ok_or_else(|| {
-            ApiError::new(
-                &format!("source field not found: {}", query.field),
-                StatusCode::BAD_REQUEST,
-            )
-        })?;
-    let plan = flow_ctx.flow.get_execution_plan().await?;
-    let import_op = &plan.import_ops[import_op_idx];
-    let field_schema = &schema.fields[import_op.output.field_idx as usize];
-    let table_schema = match &field_schema.value_type.typ {
-        schema::ValueType::Table(table) => table,
-        _ => api_bail!("field is not a table: {}", query.field),
-    };
-    let key_field = table_schema
-        .key_field()
-        .ok_or_else(|| api_error!("field {} does not have a key", query.field))?;
-    let key = value::KeyValue::from_strs(query.key, &key_field.value_type.typ)?;
-
+    let source_row_key_ctx = SourceRowKeyContextHolder::create(&flow_ctx, query).await?;
     let evaluate_output = row_indexer::evaluate_source_entry_with_memory(
-        &plan,
-        import_op,
-        schema,
-        &key,
+        &source_row_key_ctx.as_context(),
         memoization::EvaluationMemoryOptions {
             enable_cache: true,
             evaluation_only: true,
@@ -158,10 +178,15 @@ pub async fn evaluate_data(
         &lib_context.builtin_db_pool,
     )
     .await?
-    .ok_or_else(|| api_error!("value not found for source at the specified key: {key:?}"))?;
+    .ok_or_else(|| {
+        api_error!(
+            "value not found for source at the specified key: {key:?}",
+            key = source_row_key_ctx.key
+        )
+    })?;
 
     Ok(Json(EvaluateDataResponse {
-        schema: schema.clone(),
+        schema: flow_ctx.flow.data_schema.clone(),
         data: evaluate_output.data_scope.into(),
     }))
 }
@@ -182,4 +207,19 @@ pub async fn update(
     .await?;
     live_updater.wait().await?;
     Ok(Json(live_updater.index_update_info()))
+}
+
+pub async fn get_row_indexing_status(
+    Path(flow_name): Path<String>,
+    Query(query): Query<SourceRowKeyParams>,
+    State(lib_context): State<Arc<LibContext>>,
+) -> Result<Json<indexing_status::SourceRowIndexingStatus>, ApiError> {
+    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
+    let source_row_key_ctx = SourceRowKeyContextHolder::create(&flow_ctx, query).await?;
+    let indexing_status = indexing_status::get_source_row_indexing_status(
+        &source_row_key_ctx.as_context(),
+        &lib_context.builtin_db_pool,
+    )
+    .await?;
+    Ok(Json(indexing_status))
 }

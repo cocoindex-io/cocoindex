@@ -16,7 +16,7 @@ pub struct FlowInstanceContext {
     pub py_exec_ctx: Option<Arc<crate::py::PythonExecutionContext>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Ordinal(pub i64);
 
 impl From<Ordinal> for i64 {
@@ -66,16 +66,34 @@ pub struct SourceExecutorListOptions {
     pub include_ordinal: bool,
 }
 
+#[derive(Debug, Default)]
+pub struct SourceExecutorGetOptions {
+    pub include_ordinal: bool,
+    pub include_value: bool,
+}
+
+#[derive(Debug)]
+pub struct SourceValue {
+    // None if not included in the option.
+    pub value: Option<FieldValues>,
+    // None if unavailable, or not included in the option.
+    pub ordinal: Option<Ordinal>,
+}
+
 #[async_trait]
 pub trait SourceExecutor: Send + Sync {
     /// Get the list of keys for the source.
-    fn list(
-        &self,
-        options: SourceExecutorListOptions,
-    ) -> BoxStream<'_, Result<Vec<SourceRowMetadata>>>;
+    fn list<'a>(
+        &'a self,
+        options: &'a SourceExecutorListOptions,
+    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>>;
 
     // Get the value for the given key.
-    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>>;
+    async fn get_value(
+        &self,
+        key: &KeyValue,
+        options: &SourceExecutorGetOptions,
+    ) -> Result<Option<SourceValue>>;
 
     async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
         Ok(None)

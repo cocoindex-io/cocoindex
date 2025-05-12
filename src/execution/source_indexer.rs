@@ -6,6 +6,7 @@ use tokio::{sync::Semaphore, task::JoinSet};
 
 use super::{
     db_tracking,
+    evaluator::SourceRowEvaluationContext,
     row_indexer::{self, SkippedOr, SourceVersion, SourceVersionKind},
     stats,
 };
@@ -96,19 +97,32 @@ impl SourceIndexingContext {
             } else if let Some(value) = value {
                 Some(value)
             } else {
-                // Even if the source version kind is not Deleted, the source value might be gone one polling.
+                // Even if the source version kind is not Deleted, the source value might be gone when polling.
                 // In this case, we still use the current source version even if it's already stale - actually this version skew
                 // also happens for update cases and there's no way to keep them always in sync for many sources.
                 //
                 // We only need source version <= actual version for value.
-                import_op.executor.get_value(&key).await?
+                import_op
+                    .executor
+                    .get_value(
+                        &key,
+                        &interface::SourceExecutorGetOptions {
+                            include_value: true,
+                            include_ordinal: false,
+                        },
+                    )
+                    .await?
+                    .map(|v| v.value)
+                    .flatten()
             };
             let schema = &self.flow.data_schema;
             let result = row_indexer::update_source_row(
-                &plan,
-                import_op,
-                schema,
-                &key,
+                &SourceRowEvaluationContext {
+                    plan: &plan,
+                    import_op,
+                    schema,
+                    key: &key,
+                },
                 source_value,
                 &source_version,
                 &pool,
@@ -203,7 +217,7 @@ impl SourceIndexingContext {
         let import_op = &plan.import_ops[self.source_idx];
         let mut rows_stream = import_op
             .executor
-            .list(interface::SourceExecutorListOptions {
+            .list(&interface::SourceExecutorListOptions {
                 include_ordinal: true,
             });
         let mut join_set = JoinSet::new();

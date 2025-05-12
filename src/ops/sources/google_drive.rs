@@ -292,21 +292,25 @@ impl<T> ResultExt<T> for google_drive3::Result<T> {
     }
 }
 
+fn optional_modified_time(include_ordinal: bool) -> &'static str {
+    if include_ordinal {
+        ",modifiedTime"
+    } else {
+        ""
+    }
+}
+
 #[async_trait]
 impl SourceExecutor for Executor {
-    fn list(
-        &self,
-        options: SourceExecutorListOptions,
-    ) -> BoxStream<'_, Result<Vec<SourceRowMetadata>>> {
+    fn list<'a>(
+        &'a self,
+        options: &'a SourceExecutorListOptions,
+    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>> {
         let mut seen_ids = HashSet::new();
         let mut folder_ids = self.root_folder_ids.clone();
         let fields = format!(
             "files(id,name,mimeType,trashed{})",
-            if options.include_ordinal {
-                ",modifiedTime"
-            } else {
-                ""
-            }
+            optional_modified_time(options.include_ordinal)
         );
         let mut new_folder_ids = Vec::new();
         try_stream! {
@@ -333,20 +337,35 @@ impl SourceExecutor for Executor {
         .boxed()
     }
 
-    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
+    async fn get_value(
+        &self,
+        key: &KeyValue,
+        options: &SourceExecutorGetOptions,
+    ) -> Result<Option<SourceValue>> {
         let file_id = key.str_value()?;
+        let fields = format!(
+            "id,name,mimeType,trashed{}",
+            optional_modified_time(options.include_ordinal)
+        );
         let resp = self
             .drive_hub
             .files()
             .get(file_id)
             .add_scope(Scope::Readonly)
-            .param("fields", "id,name,mimeType,trashed")
+            .param("fields", &fields)
             .doit()
             .await
             .or_not_found()?;
         let file = match resp {
             Some((_, file)) if file.trashed != Some(true) => file,
-            _ => return Ok(None),
+            _ => {
+                return Ok(None);
+            }
+        };
+        let ordinal = if options.include_ordinal {
+            file.modified_time.map(|t| t.try_into()).transpose()?
+        } else {
+            None
         };
         let type_n_body = if let Some(export_mime_type) = file
             .mime_type
@@ -396,7 +415,7 @@ impl SourceExecutor for Executor {
             }
             None => None,
         };
-        Ok(value)
+        Ok(Some(SourceValue { value, ordinal }))
     }
 
     async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
