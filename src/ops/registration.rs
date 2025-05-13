@@ -8,6 +8,7 @@ use std::sync::{Arc, LazyLock, RwLock, RwLockReadGuard};
 fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
     sources::local_file::Factory.register(registry)?;
     sources::google_drive::Factory.register(registry)?;
+    sources::amazon_s3::Factory.register(registry)?;
 
     functions::parse_json::Factory.register(registry)?;
     functions::split_recursively::Factory.register(registry)?;

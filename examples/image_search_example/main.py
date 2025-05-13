@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 import cocoindex
+import datetime
 import os
 import requests
 import base64
@@ -14,7 +15,7 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma3"
 
 # 1. Extract caption from image using Ollama vision model
-@cocoindex.op.function()
+@cocoindex.op.function(cache=True, behavior_version=1)
 def get_image_caption(img_bytes: bytes) -> str:
     """
     Use Ollama's gemma3 model to extract a detailed caption from an image.
@@ -55,7 +56,8 @@ def caption_to_embedding(caption: cocoindex.DataSlice) -> cocoindex.DataSlice:
 @cocoindex.flow_def(name="ImageObjectEmbedding")
 def image_object_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     data_scope["images"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="img", included_patterns=["*.jpg", "*.jpeg", "*.png"], binary=True)
+        cocoindex.sources.LocalFile(path="img", included_patterns=["*.jpg", "*.jpeg", "*.png"], binary=True),
+        refresh_interval=datetime.timedelta(minutes=1)  # Poll for changes every 1 minute
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
@@ -101,6 +103,8 @@ def startup_event():
         query_transform_flow=caption_to_embedding,
         default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
     )
+    app.state.live_updater = cocoindex.FlowLiveUpdater(image_object_embedding_flow)
+    app.state.live_updater.start()
 
 @app.get("/search")
 def search(q: str = Query(..., description="Search query"), limit: int = Query(5, description="Number of results")):

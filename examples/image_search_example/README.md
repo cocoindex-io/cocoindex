@@ -5,6 +5,7 @@
 - QDrant for Vector Storage
 - Ollama Gemma3 (Image to Text)
 - CLIP ViT-L/14 - Embeddings Model
+- Live Update
 
 ## Make sure Postgres and Qdrant are running
 ```
@@ -42,12 +43,12 @@ pip install -r requirements.txt
 ```
 
 ### Place your images in the `img` directory.
+- No need to update manually. CocoIndex will automatically update the index as new images are added to the directory.
 
 
 ## Run Backend
 ```
 python main.py cocoindex setup
-python main.py cocoindex update
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -59,3 +60,4 @@ npm run dev
 ```
 
 Go to `http://localhost:5174` to search.
+
