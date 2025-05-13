@@ -12,13 +12,15 @@ def amazon_s3_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scop
     """
     bucket_name = os.environ["AMAZON_S3_BUCKET_NAME"]
     prefix = os.environ.get("AMAZON_S3_PREFIX", None)
+    sqs_queue_url = os.environ.get("AMAZON_S3_SQS_QUEUE_URL", None)
 
     data_scope["documents"] = flow_builder.add_source(
         cocoindex.sources.AmazonS3(
             bucket_name=bucket_name,
             prefix=prefix,
             included_patterns=["*.md", "*.txt", "*.docx"],
-            binary=False),
+            binary=False,
+            sqs_queue_url=sqs_queue_url),
         refresh_interval=datetime.timedelta(minutes=1))
 
     doc_embeddings = data_scope.add_collector()
