@@ -1,11 +1,11 @@
-use aws_config::meta::region::RegionProviderChain;
-use aws_sdk_s3::Client;
-use aws_config::Region;
+use crate::fields_value;
 use async_stream::try_stream;
+use aws_config::meta::region::RegionProviderChain;
+use aws_config::Region;
+use aws_sdk_s3::Client;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use log::warn;
 use std::sync::Arc;
-use crate::fields_value;
 
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
@@ -41,6 +41,10 @@ impl Executor {
             .is_none_or(|glob_set| glob_set.is_match(key))
             && !self.is_excluded(key)
     }
+}
+
+fn datetime_to_ordinal(dt: &aws_sdk_s3::primitives::DateTime) -> Ordinal {
+    Ordinal((dt.as_nanos() / 1000) as i64)
 }
 
 #[async_trait]
@@ -84,7 +88,7 @@ impl SourceExecutor for Executor {
                             if include && !exclude {
                                 batch.push(SourceRowMetadata {
                                     key: KeyValue::Str(key.to_string().into()),
-                                    ordinal: obj.last_modified().map(|dt| Ordinal(dt.secs() as i64)),
+                                    ordinal: obj.last_modified().map(datetime_to_ordinal),
                                 });
                             }
                         }
@@ -111,7 +115,8 @@ impl SourceExecutor for Executor {
         if !self.is_file_included(key_str) {
             return Ok(None);
         }
-        let resp = self.client
+        let resp = self
+            .client
             .get_object()
             .bucket(&self.bucket_name)
             .key(key_str.as_ref())
@@ -124,8 +129,13 @@ impl SourceExecutor for Executor {
                 return Ok(None);
             }
         };
-        let bytes = obj.body.collect().await?.into_bytes();
+        let ordinal = if options.include_ordinal {
+            obj.last_modified().map(datetime_to_ordinal)
+        } else {
+            None
+        };
         let value = if options.include_value {
+            let bytes = obj.body.collect().await?.into_bytes();
             Some(if self.binary {
                 fields_value!(bytes.to_vec())
             } else {
@@ -140,7 +150,7 @@ impl SourceExecutor for Executor {
         } else {
             None
         };
-        Ok(Some(SourceValue { value, ordinal: None }))
+        Ok(Some(SourceValue { value, ordinal }))
     }
 }
 
@@ -188,7 +198,8 @@ impl SourceFactoryBase for Factory {
         spec: Spec,
         _context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SourceExecutor>> {
-        let region_provider = RegionProviderChain::default_provider().or_else(Region::new("us-east-1"));
+        let region_provider =
+            RegionProviderChain::default_provider().or_else(Region::new("us-east-1"));
         let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(region_provider)
             .load()
@@ -211,4 +222,4 @@ fn build_glob_set(patterns: Vec<String>) -> Result<GlobSet> {
         builder.add(Glob::new(pattern.as_str())?);
     }
     Ok(builder.build()?)
-} 
+}
