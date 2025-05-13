@@ -178,7 +178,7 @@ impl SourceExecutor for Executor {
 
 #[derive(Debug, Deserialize)]
 pub struct S3EventNotification {
-    #[serde(rename = "Records")]
+    #[serde(default, rename = "Records")]
     pub records: Vec<S3EventRecord>,
 }
 
@@ -186,8 +186,7 @@ pub struct S3EventNotification {
 pub struct S3EventRecord {
     #[serde(rename = "eventName")]
     pub event_name: String,
-    // pub eventTime: String,
-    pub s3: S3Entity,
+    pub s3: Option<S3Entity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,13 +224,18 @@ impl Executor {
         for message in messages.into_iter().filter_map(|m| m.body) {
             let notification: S3EventNotification = serde_json::from_str(&message)?;
             for record in notification.records {
-                if record.s3.bucket.name != self.bucket_name {
+                let s3 = if let Some(s3) = record.s3 {
+                    s3
+                } else {
+                    continue;
+                };
+                if s3.bucket.name != self.bucket_name {
                     continue;
                 }
                 if !self
                     .prefix
                     .as_ref()
-                    .map_or(true, |prefix| record.s3.object.key.starts_with(prefix))
+                    .map_or(true, |prefix| s3.object.key.starts_with(prefix))
                 {
                     continue;
                 }
@@ -239,7 +243,7 @@ impl Executor {
                     || record.event_name.starts_with("ObjectDeleted:")
                 {
                     changes.push(SourceChange {
-                        key: KeyValue::Str(record.s3.object.key.into()),
+                        key: KeyValue::Str(s3.object.key.into()),
                         data: None,
                     });
                 }
