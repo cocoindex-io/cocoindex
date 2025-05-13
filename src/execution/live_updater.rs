@@ -93,9 +93,12 @@ async fn update_source(
                 async move {
                     let mut change_stream = change_stream;
                     while let Some(change) = change_stream.next().await {
-                        source_context
-                            .process_change(change, &pool, &source_update_stats)
-                            .map(tokio::spawn);
+                        tokio::spawn(source_context.clone().process_source_key(
+                            change.key,
+                            change.data,
+                            source_update_stats.clone(),
+                            pool.clone(),
+                        ));
                     }
                     Ok(())
                 }

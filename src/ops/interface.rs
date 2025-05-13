@@ -16,10 +16,20 @@ pub struct FlowInstanceContext {
     pub py_exec_ctx: Option<Arc<crate::py::PythonExecutionContext>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub struct Ordinal(pub i64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+pub struct Ordinal(pub Option<i64>);
 
-impl From<Ordinal> for i64 {
+impl Ordinal {
+    pub fn unavailable() -> Self {
+        Self(None)
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
+impl From<Ordinal> for Option<i64> {
     fn from(val: Ordinal) -> Self {
         val.0
     }
@@ -30,7 +40,7 @@ impl TryFrom<SystemTime> for Ordinal {
 
     fn try_from(time: SystemTime) -> Result<Self, Self::Error> {
         let duration = time.duration_since(std::time::UNIX_EPOCH)?;
-        Ok(duration.as_micros().try_into().map(Ordinal)?)
+        Ok(Ordinal(Some(duration.as_micros().try_into()?)))
     }
 }
 
@@ -38,27 +48,51 @@ impl<TZ: TimeZone> TryFrom<chrono::DateTime<TZ>> for Ordinal {
     type Error = anyhow::Error;
 
     fn try_from(time: chrono::DateTime<TZ>) -> Result<Self, Self::Error> {
-        Ok(Ordinal(time.timestamp_micros()))
+        Ok(Ordinal(Some(time.timestamp_micros())))
     }
 }
 
-pub struct SourceRowMetadata {
+pub struct PartialSourceRowMetadata {
     pub key: KeyValue,
-    /// None means the ordinal is unavailable.
     pub ordinal: Option<Ordinal>,
 }
 
-pub enum SourceValueChange {
-    /// None means value unavailable in this change - needs a separate poll by get_value() API.
-    Upsert(Option<FieldValues>),
-    Delete,
+#[derive(Debug)]
+pub enum SourceValue {
+    Existence(FieldValues),
+    NonExistence,
+}
+
+impl SourceValue {
+    pub fn is_existent(&self) -> bool {
+        matches!(self, Self::Existence(_))
+    }
+
+    pub fn as_optional(&self) -> Option<&FieldValues> {
+        match self {
+            Self::Existence(value) => Some(value),
+            Self::NonExistence => None,
+        }
+    }
+
+    pub fn into_optional(self) -> Option<FieldValues> {
+        match self {
+            Self::Existence(value) => Some(value),
+            Self::NonExistence => None,
+        }
+    }
+}
+
+pub struct SourceData {
+    pub value: SourceValue,
+    pub ordinal: Ordinal,
 }
 
 pub struct SourceChange {
-    /// Last update/deletion ordinal. None means unavailable.
-    pub ordinal: Option<Ordinal>,
     pub key: KeyValue,
-    pub value: SourceValueChange,
+
+    /// If None, the engine will poll to get the latest existence state and value.
+    pub data: Option<SourceData>,
 }
 
 #[derive(Debug, Default)]
@@ -73,27 +107,39 @@ pub struct SourceExecutorGetOptions {
 }
 
 #[derive(Debug)]
-pub struct SourceValue {
-    // None if not included in the option.
-    pub value: Option<FieldValues>,
-    // None if unavailable, or not included in the option.
+pub struct PartialSourceRowData {
+    pub value: Option<SourceValue>,
     pub ordinal: Option<Ordinal>,
 }
 
+impl TryFrom<PartialSourceRowData> for SourceData {
+    type Error = anyhow::Error;
+
+    fn try_from(data: PartialSourceRowData) -> Result<Self, Self::Error> {
+        Ok(Self {
+            value: data
+                .value
+                .ok_or_else(|| anyhow::anyhow!("value is missing"))?,
+            ordinal: data
+                .ordinal
+                .ok_or_else(|| anyhow::anyhow!("ordinal is missing"))?,
+        })
+    }
+}
 #[async_trait]
 pub trait SourceExecutor: Send + Sync {
     /// Get the list of keys for the source.
     fn list<'a>(
         &'a self,
         options: &'a SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>>;
+    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>>;
 
     // Get the value for the given key.
     async fn get_value(
         &self,
         key: &KeyValue,
         options: &SourceExecutorGetOptions,
-    ) -> Result<Option<SourceValue>>;
+    ) -> Result<PartialSourceRowData>;
 
     async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
         Ok(None)

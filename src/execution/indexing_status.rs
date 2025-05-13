@@ -6,14 +6,14 @@ use futures::try_join;
 
 #[derive(Debug, Serialize)]
 pub struct SourceRowLastProcessedInfo {
-    pub source_ordinal: Option<interface::Ordinal>,
+    pub source_ordinal: interface::Ordinal,
     pub processing_time: Option<chrono::DateTime<chrono::Utc>>,
     pub is_logic_current: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SourceRowInfo {
-    pub ordinal: Option<interface::Ordinal>,
+    pub ordinal: interface::Ordinal,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,7 +43,7 @@ pub async fn get_source_row_indexing_status(
     let (last_processed, current) = try_join!(last_processed_fut, current_fut)?;
 
     let last_processed = last_processed.map(|l| SourceRowLastProcessedInfo {
-        source_ordinal: l.processed_source_ordinal.map(interface::Ordinal),
+        source_ordinal: interface::Ordinal(l.processed_source_ordinal),
         processing_time: l
             .process_time_micros
             .map(chrono::DateTime::<chrono::Utc>::from_timestamp_micros)
@@ -51,9 +51,13 @@ pub async fn get_source_row_indexing_status(
         is_logic_current: Some(src_eval_ctx.plan.logic_fingerprint.0.as_slice())
             == l.process_logic_fingerprint.as_ref().map(|b| b.as_slice()),
     });
-    let current = current.map(|c| SourceRowInfo { ordinal: c.ordinal });
+    let current = SourceRowInfo {
+        ordinal: current
+            .ordinal
+            .ok_or(anyhow::anyhow!("Ordinal is unavailable for the source"))?,
+    };
     Ok(SourceRowIndexingStatus {
         last_processed,
-        current,
+        current: Some(current),
     })
 }
