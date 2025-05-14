@@ -231,13 +231,12 @@ pub fn value_from_py_object<'py>(
     Ok(result)
 }
 
-// `value_from_py_object` and `value_to_py_object` are functions internal to this module. `Pythonized` is the API exposed by the module. Ideally we want to test on the behavior of the public API.
 #[cfg(test)]
 mod tests {
-    use super::*; // To bring Pythonized into scope
+    use super::*;
     use crate::base::schema;
     use crate::base::value;
-    use crate::base::value::ScopeValue; // Changed import from GeneralValueSpec
+    use crate::base::value::ScopeValue;
     use pyo3::Python;
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -251,9 +250,6 @@ mod tests {
             });
 
             println!("Python object: {:?}", py_object);
-            // Convert Python object back to Rust value
-            // let roundtripped_value = Pythonized::<value::Value>::extract_bound(&py_object)
-            //     .unwrap_or_else(|e| panic!("Failed to convert Python object back to Rust value: {:?}", e));
             let roundtripped_value =
                 value_from_py_object(value_type, &py_object).unwrap_or_else(|e| {
                     panic!(
