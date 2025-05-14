@@ -212,11 +212,12 @@ def server(address: str | None, live_update: bool, quiet: bool, cors_origin: str
 
     lib.start_server(server_settings)
 
+    if COCOINDEX_HOST in cors_origins:
+        click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
+
     if live_update:
         options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
         flow.update_all_flows(options)
-    if COCOINDEX_HOST in cors_origins:
-        click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
     input("Press Enter to stop...")
 
 
