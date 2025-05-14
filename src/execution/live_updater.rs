@@ -125,7 +125,7 @@ async fn update_source(
             futs.push(
                 async move {
                     let mut change_stream = change_stream;
-                    let retry_options = retriable::RetryOptions {
+                    let retry_options = retryable::RetryOptions {
                         max_retries: None,
                         initial_backoff: std::time::Duration::from_secs(5),
                         max_backoff: std::time::Duration::from_secs(60),
@@ -134,14 +134,14 @@ async fn update_source(
                         // Workaround as AsyncFnMut isn't mature yet.
                         // Should be changed to use AsyncFnMut once it is.
                         let change_stream = tokio::sync::Mutex::new(&mut change_stream);
-                        let change_msg = retriable::run(
+                        let change_msg = retryable::run(
                             || async {
                                 let mut change_stream = change_stream.lock().await;
                                 change_stream
                                     .next()
                                     .await
                                     .transpose()
-                                    .map_err(retriable::Error::always_retryable)
+                                    .map_err(retryable::Error::always_retryable)
                             },
                             &retry_options,
                         )

@@ -103,7 +103,7 @@ impl GraphElement {
     }
 }
 
-impl retriable::IsRetryable for neo4rs::Error {
+impl retryable::IsRetryable for neo4rs::Error {
     fn is_retryable(&self) -> bool {
         match self {
             neo4rs::Error::ConnectionError => true,
@@ -1289,11 +1289,11 @@ impl StorageFactoryBase for Factory {
                 .or_insert_with(Vec::new)
                 .push(mut_with_ctx);
         }
-        let retry_options = retriable::RetryOptions::default();
+        let retry_options = retryable::RetryOptions::default();
         for muts in muts_by_graph.values_mut() {
             muts.sort_by_key(|m| m.export_context.create_order);
             let graph = &muts[0].export_context.graph;
-            retriable::run(
+            retryable::run(
                 async || {
                     let mut queries = vec![];
                     for mut_with_ctx in muts.iter() {
@@ -1311,7 +1311,7 @@ impl StorageFactoryBase for Factory {
                     let mut txn = graph.start_txn().await?;
                     txn.run_queries(queries).await?;
                     txn.commit().await?;
-                    retriable::Ok(())
+                    retryable::Ok(())
                 },
                 &retry_options,
             )
