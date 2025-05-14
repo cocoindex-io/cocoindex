@@ -71,7 +71,7 @@ impl<'de> Deserialize<'de> for RangeValue {
 }
 
 /// Value of key.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
 pub enum KeyValue {
     Bytes(Bytes),
     Str(Arc<str>),
@@ -340,7 +340,7 @@ impl KeyValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub enum BasicValue {
     Bytes(Bytes),
     Str(Arc<str>),
@@ -511,7 +511,7 @@ impl BasicValue {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub enum Value<VS = ScopeValue> {
     #[default]
     Null,
@@ -747,7 +747,7 @@ impl<VS> Value<VS> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct FieldValues<VS = ScopeValue> {
     pub fields: Vec<Value<VS>>,
 }
@@ -821,7 +821,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScopeValue(pub FieldValues);
 
 impl Deref for ScopeValue {
