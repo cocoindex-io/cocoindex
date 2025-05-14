@@ -3,7 +3,6 @@ use async_stream::try_stream;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use log::warn;
 use std::sync::Arc;
 
 use crate::base::field_attrs;
@@ -23,6 +22,20 @@ struct SqsContext {
     client: aws_sdk_sqs::Client,
     queue_url: String,
 }
+
+impl SqsContext {
+    async fn delete_message(&self, receipt_handle: String) -> Result<()> {
+        error!("Deleting message: {}", receipt_handle);
+        self.client
+            .delete_message()
+            .queue_url(&self.queue_url)
+            .receipt_handle(receipt_handle)
+            .send()
+            .await?;
+        Ok(())
+    }
+}
+
 struct Executor {
     client: Client,
     bucket_name: String,
@@ -152,7 +165,9 @@ impl SourceExecutor for Executor {
         Ok(PartialSourceRowData { value, ordinal })
     }
 
-    async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
+    async fn change_stream(
+        &self,
+    ) -> Result<Option<BoxStream<'async_trait, Result<SourceChangeMessage>>>> {
         let sqs_context = if let Some(sqs_context) = &self.sqs_context {
             sqs_context
         } else {
@@ -160,16 +175,16 @@ impl SourceExecutor for Executor {
         };
         let stream = stream! {
             loop {
-                let changes = match self.poll_sqs(&sqs_context).await {
-                    Ok(changes) => changes,
+                 match self.poll_sqs(&sqs_context).await {
+                    Ok(messages) => {
+                        for message in messages {
+                            yield Ok(message);
+                        }
+                    }
                     Err(e) => {
-                        warn!("Failed to poll SQS: {}", e);
-                        continue;
+                        yield Err(e);
                     }
                 };
-                for change in changes {
-                    yield change;
-                }
             }
         };
         Ok(Some(stream.boxed()))
@@ -206,7 +221,7 @@ pub struct S3Object {
 }
 
 impl Executor {
-    async fn poll_sqs(&self, sqs_context: &Arc<SqsContext>) -> Result<Vec<SourceChange>> {
+    async fn poll_sqs(&self, sqs_context: &Arc<SqsContext>) -> Result<Vec<SourceChangeMessage>> {
         let resp = sqs_context
             .client
             .receive_message()
@@ -220,36 +235,53 @@ impl Executor {
         } else {
             return Ok(Vec::new());
         };
-        let mut changes = vec![];
-        for message in messages.into_iter().filter_map(|m| m.body) {
-            let notification: S3EventNotification = serde_json::from_str(&message)?;
-            for record in notification.records {
-                let s3 = if let Some(s3) = record.s3 {
-                    s3
-                } else {
-                    continue;
-                };
-                if s3.bucket.name != self.bucket_name {
-                    continue;
+        let mut change_messages = vec![];
+        for message in messages.into_iter() {
+            if let Some(body) = message.body {
+                let notification: S3EventNotification = serde_json::from_str(&body)?;
+                let mut changes = vec![];
+                for record in notification.records {
+                    let s3 = if let Some(s3) = record.s3 {
+                        s3
+                    } else {
+                        continue;
+                    };
+                    if s3.bucket.name != self.bucket_name {
+                        continue;
+                    }
+                    if !self
+                        .prefix
+                        .as_ref()
+                        .map_or(true, |prefix| s3.object.key.starts_with(prefix))
+                    {
+                        continue;
+                    }
+                    if record.event_name.starts_with("ObjectCreated:")
+                        || record.event_name.starts_with("ObjectDeleted:")
+                    {
+                        changes.push(SourceChange {
+                            key: KeyValue::Str(s3.object.key.into()),
+                            data: None,
+                        });
+                    }
                 }
-                if !self
-                    .prefix
-                    .as_ref()
-                    .map_or(true, |prefix| s3.object.key.starts_with(prefix))
-                {
-                    continue;
-                }
-                if record.event_name.starts_with("ObjectCreated:")
-                    || record.event_name.starts_with("ObjectDeleted:")
-                {
-                    changes.push(SourceChange {
-                        key: KeyValue::Str(s3.object.key.into()),
-                        data: None,
-                    });
+                if let Some(receipt_handle) = message.receipt_handle {
+                    if !changes.is_empty() {
+                        let sqs_context = sqs_context.clone();
+                        change_messages.push(SourceChangeMessage {
+                            changes,
+                            ack_fn: Some(Box::new(move || {
+                                async move { sqs_context.delete_message(receipt_handle).await }
+                                    .boxed()
+                            })),
+                        });
+                    } else {
+                        sqs_context.delete_message(receipt_handle).await?;
+                    }
                 }
             }
         }
-        Ok(changes)
+        Ok(change_messages)
     }
 }
 

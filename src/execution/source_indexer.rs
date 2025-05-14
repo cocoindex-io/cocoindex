@@ -1,5 +1,6 @@
 use crate::prelude::*;
 
+use futures::future::Ready;
 use sqlx::PgPool;
 use std::collections::{hash_map, HashMap};
 use tokio::{sync::Semaphore, task::JoinSet};
@@ -35,6 +36,8 @@ pub struct SourceIndexingContext {
     source_idx: usize,
     state: Mutex<SourceIndexingState>,
 }
+
+pub const NO_ACK: Option<fn() -> Ready<Result<()>>> = None;
 
 impl SourceIndexingContext {
     pub async fn load(
@@ -79,11 +82,15 @@ impl SourceIndexingContext {
         })
     }
 
-    pub async fn process_source_key(
+    pub async fn process_source_key<
+        AckFut: Future<Output = Result<()>> + Send + 'static,
+        AckFn: FnOnce() -> AckFut,
+    >(
         self: Arc<Self>,
         key: value::KeyValue,
         source_data: Option<interface::SourceData>,
         update_stats: Arc<stats::UpdateStats>,
+        ack_fn: Option<AckFn>,
         pool: PgPool,
     ) {
         let process = async {
@@ -173,11 +180,20 @@ impl SourceIndexingContext {
                 }
             }
             drop(permit);
+            if let Some(ack_fn) = ack_fn {
+                ack_fn().await?;
+            }
             anyhow::Ok(())
         };
         if let Err(e) = process.await {
             update_stats.num_errors.inc(1);
-            error!("{:?}", e.context("Error in processing a source row"));
+            error!(
+                "{:?}",
+                e.context(format!(
+                    "Error in processing row from source `{source}` with key: {key}",
+                    source = self.flow.flow_instance.import_ops[self.source_idx].name
+                ))
+            );
         }
     }
 
@@ -203,7 +219,7 @@ impl SourceIndexingContext {
         }
         Some(
             self.clone()
-                .process_source_key(key, None, update_stats.clone(), pool.clone()),
+                .process_source_key(key, None, update_stats.clone(), NO_ACK, pool.clone()),
         )
     }
 
@@ -269,6 +285,7 @@ impl SourceIndexingContext {
                 key,
                 source_data,
                 update_stats.clone(),
+                NO_ACK,
                 pool.clone(),
             ));
         }

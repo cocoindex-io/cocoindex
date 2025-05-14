@@ -190,7 +190,7 @@ impl Executor {
     async fn get_recent_updates(
         &self,
         cutoff_time: &mut DateTime<Utc>,
-    ) -> Result<Vec<SourceChange>> {
+    ) -> Result<SourceChangeMessage> {
         let mut page_size: i32 = 10;
         let mut next_page_token: Option<String> = None;
         let mut changes = Vec::new();
@@ -234,7 +234,10 @@ impl Executor {
             page_size = 100;
         }
         *cutoff_time = Self::make_cutoff_time(most_recent_modified_time, start_time);
-        Ok(changes)
+        Ok(SourceChangeMessage {
+            changes,
+            ack_fn: None,
+        })
     }
 
     async fn is_file_covered(&self, file_id: &str) -> Result<bool> {
@@ -416,7 +419,9 @@ impl SourceExecutor for Executor {
         Ok(PartialSourceRowData { value, ordinal })
     }
 
-    async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
+    async fn change_stream(
+        &self,
+    ) -> Result<Option<BoxStream<'async_trait, Result<SourceChangeMessage>>>> {
         let poll_interval = if let Some(poll_interval) = self.recent_updates_poll_interval {
             poll_interval
         } else {
@@ -428,17 +433,7 @@ impl SourceExecutor for Executor {
         let stream = stream! {
             loop {
                 interval.tick().await;
-                let changes = self.get_recent_updates(&mut cutoff_time).await;
-                match changes {
-                    Ok(changes) => {
-                        for change in changes {
-                            yield change;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error getting recent updates: {e}");
-                    }
-                }
+                yield self.get_recent_updates(&mut cutoff_time).await;
             }
         };
         Ok(Some(stream.boxed()))

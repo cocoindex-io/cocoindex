@@ -1289,11 +1289,12 @@ impl StorageFactoryBase for Factory {
                 .or_insert_with(Vec::new)
                 .push(mut_with_ctx);
         }
+        let retry_options = retriable::RetryOptions::default();
         for muts in muts_by_graph.values_mut() {
             muts.sort_by_key(|m| m.export_context.create_order);
             let graph = &muts[0].export_context.graph;
             retriable::run(
-                || async {
+                async || {
                     let mut queries = vec![];
                     for mut_with_ctx in muts.iter() {
                         let export_ctx = &mut_with_ctx.export_context;
@@ -1312,7 +1313,7 @@ impl StorageFactoryBase for Factory {
                     txn.commit().await?;
                     retriable::Ok(())
                 },
-                retriable::RunOptions::default(),
+                &retry_options,
             )
             .await
             .map_err(Into::<anyhow::Error>::into)?

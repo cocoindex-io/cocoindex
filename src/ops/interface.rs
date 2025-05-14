@@ -95,6 +95,11 @@ pub struct SourceChange {
     pub data: Option<SourceData>,
 }
 
+pub struct SourceChangeMessage {
+    pub changes: Vec<SourceChange>,
+    pub ack_fn: Option<Box<dyn FnOnce() -> BoxFuture<'static, Result<()>> + Send + Sync>>,
+}
+
 #[derive(Debug, Default)]
 pub struct SourceExecutorListOptions {
     pub include_ordinal: bool,
@@ -141,7 +146,9 @@ pub trait SourceExecutor: Send + Sync {
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData>;
 
-    async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
+    async fn change_stream(
+        &self,
+    ) -> Result<Option<BoxStream<'async_trait, Result<SourceChangeMessage>>>> {
         Ok(None)
     }
 }
