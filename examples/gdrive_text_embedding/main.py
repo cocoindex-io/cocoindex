@@ -1,6 +1,5 @@
 from dotenv import load_dotenv
 
-import asyncio
 import cocoindex
 import datetime
 import os
