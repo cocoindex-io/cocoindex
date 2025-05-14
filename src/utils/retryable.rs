@@ -28,6 +28,15 @@ impl IsRetryable for Error {
     }
 }
 
+impl Error {
+    pub fn always_retryable(error: anyhow::Error) -> Self {
+        Self {
+            error,
+            is_retryable: true,
+        }
+    }
+}
+
 impl From<anyhow::Error> for Error {
     fn from(error: anyhow::Error) -> Self {
         Self {
@@ -59,16 +68,16 @@ pub fn Ok<T>(value: T) -> Result<T> {
     Result::Ok(value)
 }
 
-pub struct RunOptions {
-    pub max_retries: usize,
+pub struct RetryOptions {
+    pub max_retries: Option<usize>,
     pub initial_backoff: Duration,
     pub max_backoff: Duration,
 }
 
-impl Default for RunOptions {
+impl Default for RetryOptions {
     fn default() -> Self {
         Self {
-            max_retries: 5,
+            max_retries: Some(5),
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(10),
         }
@@ -82,7 +91,7 @@ pub async fn run<
     F: Fn() -> Fut,
 >(
     f: F,
-    options: RunOptions,
+    options: &RetryOptions,
 ) -> Result<Ok, Err> {
     let mut retries = 0;
     let mut backoff = options.initial_backoff;
@@ -91,7 +100,11 @@ pub async fn run<
         match f().await {
             Result::Ok(result) => return Result::Ok(result),
             Result::Err(err) => {
-                if !err.is_retryable() || retries >= options.max_retries {
+                if !err.is_retryable()
+                    || options
+                        .max_retries
+                        .map_or(false, |max_retries| retries >= max_retries)
+                {
                     return Result::Err(err);
                 }
                 retries += 1;

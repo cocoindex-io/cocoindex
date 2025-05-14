@@ -40,3 +40,4 @@ class AmazonS3(op.SourceSpec):
     binary: bool = False
     included_patterns: list[str] | None = None
     excluded_patterns: list[str] | None = None
+    sqs_queue_url: str | None = None
