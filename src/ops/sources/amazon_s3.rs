@@ -256,7 +256,7 @@ impl Executor {
                         continue;
                     }
                     if record.event_name.starts_with("ObjectCreated:")
-                        || record.event_name.starts_with("ObjectDeleted:")
+                        || record.event_name.starts_with("ObjectRemoved:")
                     {
                         changes.push(SourceChange {
                             key: KeyValue::Str(s3.object.key.into()),
