@@ -1,17 +1,17 @@
 use std::sync::{Mutex, OnceLock};
 use std::{borrow::Cow, collections::BTreeMap};
 
-use anyhow::{bail, Context, Ok, Result};
+use anyhow::{Context, Ok, Result, bail};
 use futures::future::try_join_all;
 
-use crate::builder::{plan::*, AnalyzedTransientFlow};
+use crate::builder::{AnalyzedTransientFlow, plan::*};
 use crate::py::IntoPyResult;
 use crate::{
     base::{schema, value},
     utils::immutable::RefList,
 };
 
-use super::memoization::{evaluate_with_cell, EvaluationMemory, EvaluationMemoryOptions};
+use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, evaluate_with_cell};
 
 #[derive(Debug)]
 pub struct ScopeValueBuilder {
@@ -183,7 +183,7 @@ impl<'a> ScopeEntry<'a> {
     ) -> &'b value::KeyValue {
         if indices.is_empty() {
             key_val
-        } else if let value::KeyValue::Struct(ref fields) = key_val {
+        } else if let value::KeyValue::Struct(fields) = key_val {
             Self::get_local_key_field(&fields[indices[0] as usize], &indices[1..])
         } else {
             panic!("Only struct can be accessed by sub field");
@@ -196,7 +196,7 @@ impl<'a> ScopeEntry<'a> {
     ) -> &'b value::Value<ScopeValueBuilder> {
         if indices.is_empty() {
             val
-        } else if let value::Value::Struct(ref fields) = val {
+        } else if let value::Value::Struct(fields) = val {
             Self::get_local_field(&fields.fields[indices[0] as usize], &indices[1..])
         } else {
             panic!("Only struct can be accessed by sub field");

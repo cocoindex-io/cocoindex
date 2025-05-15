@@ -3,7 +3,7 @@ use crate::{ops::interface::FlowInstanceContext, prelude::*};
 use super::{analyzer, plan};
 use crate::{
     ops::registry::ExecutorFactoryRegistry,
-    service::error::{shared_ok, SharedError, SharedResultExt},
+    service::error::{SharedError, SharedResultExt, shared_ok},
     setup::{self, ObjectSetupStatus},
 };
 

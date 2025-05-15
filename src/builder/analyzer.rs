@@ -12,8 +12,8 @@ use crate::{
     base::{schema::*, spec::*},
     ops::{interface::*, registry::*},
 };
-use futures::future::{try_join3, BoxFuture};
-use futures::{future::try_join_all, FutureExt};
+use futures::future::{BoxFuture, try_join3};
+use futures::{FutureExt, future::try_join_all};
 
 #[derive(Debug)]
 pub(super) enum ValueTypeBuilder {
@@ -668,7 +668,7 @@ impl AnalyzerContext<'_> {
         import_op: NamedSpec<ImportOpSpec>,
         metadata: Option<&mut FlowSetupMetadata>,
         existing_source_states: Option<&Vec<&SourceSetupState>>,
-    ) -> Result<impl Future<Output = Result<AnalyzedImportOp>> + Send> {
+    ) -> Result<impl Future<Output = Result<AnalyzedImportOp>> + Send + use<>> {
         let factory = self.registry.get(&import_op.spec.source.kind);
         let source_factory = match factory {
             Some(ExecutorFactory::Source(source_executor)) => source_executor.clone(),
@@ -676,7 +676,7 @@ impl AnalyzerContext<'_> {
                 return Err(anyhow::anyhow!(
                     "Source executor not found for kind: {}",
                     import_op.spec.source.kind
-                ))
+                ));
             }
         };
         let (output_type, executor) = source_factory.build(
@@ -817,7 +817,7 @@ impl AnalyzerContext<'_> {
                         return Err(anyhow::anyhow!(
                             "Transform op kind not found: {}",
                             op.op.kind
-                        ))
+                        ));
                     }
                 }
             }
@@ -967,7 +967,7 @@ impl AnalyzerContext<'_> {
         declarations: Vec<serde_json::Value>,
         flow_setup_state: &mut FlowSetupState<DesiredMode>,
         existing_target_states: &HashMap<&ResourceIdentifier, Vec<&TargetSetupState>>,
-    ) -> Result<Vec<impl Future<Output = Result<AnalyzedExportOp>> + Send>> {
+    ) -> Result<Vec<impl Future<Output = Result<AnalyzedExportOp>> + Send + use<>>> {
         let mut collection_specs = Vec::<interface::ExportDataCollectionSpec>::new();
         let mut data_fields_infos = Vec::<ExportDataFieldsInfo>::new();
         for idx in export_op_group.op_idx.iter() {
@@ -1104,7 +1104,7 @@ impl AnalyzerContext<'_> {
         &self,
         op_scope: &Arc<OpScope>,
         reactive_ops: &[NamedSpec<ReactiveOpSpec>],
-    ) -> Result<impl Future<Output = Result<AnalyzedOpScope>> + Send> {
+    ) -> Result<impl Future<Output = Result<AnalyzedOpScope>> + Send + use<>> {
         let op_futs = reactive_ops
             .iter()
             .map(|reactive_op| self.analyze_reactive_op(op_scope, reactive_op))
@@ -1147,7 +1147,7 @@ pub fn analyze_flow(
     registry: &ExecutorFactoryRegistry,
 ) -> Result<(
     FlowSchema,
-    impl Future<Output = Result<ExecutionPlan>> + Send,
+    impl Future<Output = Result<ExecutionPlan>> + Send + use<>,
     setup::FlowSetupState<setup::DesiredMode>,
 )> {
     let existing_metadata_versions = || {

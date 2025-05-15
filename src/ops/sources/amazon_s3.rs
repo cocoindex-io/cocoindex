@@ -25,7 +25,6 @@ struct SqsContext {
 
 impl SqsContext {
     async fn delete_message(&self, receipt_handle: String) -> Result<()> {
-        error!("Deleting message: {}", receipt_handle);
         self.client
             .delete_message()
             .queue_url(&self.queue_url)
