@@ -69,7 +69,7 @@ class AnalyzedTypeInfo:
     """
     kind: str
     vector_info: VectorInfo | None  # For Vector
-    elem_type: ElementType | None   # For Vector and Table
+    elem_type: ElementType | None   # For Vector, Table, and Union
 
     key_type: type | None           # For element of KTable
     struct_type: type | None        # For Struct, a dataclass or namedtuple
@@ -95,15 +95,6 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         if base_type is Annotated:
             annotations = t.__metadata__
             t = t.__origin__
-        elif base_type is types.UnionType:
-            possible_types = typing.get_args(t)
-            non_none_types = [arg for arg in possible_types if arg not in (None, types.NoneType)]
-            if len(non_none_types) != 1:
-                raise ValueError(
-                    f"Expect exactly one non-None choice for Union type, but got {len(non_none_types)}: {t}")
-            t = non_none_types[0]
-            if len(possible_types) > 1:
-                nullable = True
         else:
             break
 
@@ -149,6 +140,13 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         args = typing.get_args(t)
         elem_type = (args[0], args[1])
         kind = 'KTable'
+    elif base_type is types.UnionType:
+        possible_types = typing.get_args(t)
+        non_none_types = [arg for arg in possible_types if arg not in (None, types.NoneType)]
+
+        kind = 'Union'
+        elem_type = typing.Union[*non_none_types]
+        nullable = len(non_none_types) < len(possible_types)
     elif kind is None:
         if t is bytes:
             kind = 'Bytes'
