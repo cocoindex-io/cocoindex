@@ -16,7 +16,7 @@ def cli():
 @cli.command()
 @click.option(
     "-a", "--all", "show_all", is_flag=True, show_default=True, default=False,
-    help="Also show all flows with persisted setup, even if not defined in the current process.")
+    help="Also show all flows with persisted setup under the current app namespace, even if not defined in the current process.")
 def ls(show_all: bool):
     """
     List all flows.
