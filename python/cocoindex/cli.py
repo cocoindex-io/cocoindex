@@ -4,6 +4,7 @@ import sys
 import importlib.util
 import os
 import atexit
+import types
 
 from rich.console import Console
 from rich.table import Table
@@ -26,25 +27,24 @@ def _parse_app_flow_specifier(specifier: str) -> tuple[str, str | None]:
             param_hint="APP_SPECIFIER"
         )
 
-    if len(parts) > 1:
-        flow_ref_part = parts[1]
-
-        if not flow_ref_part:
-            # Handles "app_ref:" (empty string after colon)
-            return app_ref, None
-
-        if not flow_ref_part.isidentifier():
-            raise click.BadParameter(
-                f"Invalid format for flow name part ('{flow_ref_part}') in specifier '{specifier}'. "
-                "If a colon separates the application from the flow name, the flow name should typically be "
-                "a valid identifier (e.g., alphanumeric with underscores, not starting with a number).",
-                param_hint="APP_SPECIFIER"
-            )
-        return app_ref, flow_ref_part
-    else:
+    if len(parts) == 1:
         return app_ref, None
 
-def _load_user_app(app_target: str):
+    flow_ref_part = parts[1]
+
+    if not flow_ref_part: # Handles empty string after colon
+        return app_ref, None
+
+    if not flow_ref_part.isidentifier():
+        raise click.BadParameter(
+            f"Invalid format for flow name part ('{flow_ref_part}') in specifier '{specifier}'. "
+            "If a colon separates the application from the flow name, the flow name should typically be "
+            "a valid identifier (e.g., alphanumeric with underscores, not starting with a number).",
+            param_hint="APP_SPECIFIER"
+        )
+    return app_ref, flow_ref_part
+
+def _load_user_app(app_target: str) -> types.ModuleType:
     """
     Loads the user's application, which can be a file path or an installed module name.
     Exits on failure.
@@ -54,10 +54,9 @@ def _load_user_app(app_target: str):
 
     looks_like_path = os.sep in app_target or app_target.lower().endswith(".py")
 
-    if looks_like_path or os.path.isfile(app_target):
+    if looks_like_path:
         if not os.path.isfile(app_target):
-            if looks_like_path and not os.path.exists(app_target):
-                raise click.ClickException(f"Application file path not found: {app_target}")
+            raise click.ClickException(f"Application file path not found: {app_target}")
         app_path = os.path.abspath(app_target)
         app_dir = os.path.dirname(app_path)
         module_name = os.path.splitext(os.path.basename(app_path))[0]
@@ -105,64 +104,45 @@ def ls(app_target: str | None):
     """
     List all flows.
 
-    If APP_TARGET (path/to/app.py or module) is provided, lists flows
-    defined in the app and their backend setup status, also showing any
-    other flows with persisted setup not defined in the app.
+    If APP_TARGET (path/to/app.py or a module) is provided, lists flows
+    defined in the app and their backend setup status.
 
     If APP_TARGET is omitted, lists all flows that have a persisted
     setup in the backend.
     """
-    current_flow_names = set()
-    app_ref = None
-
     if app_target:
-        app_ref, _ = _parse_app_flow_specifier(app_target) # Ignore flow name for ls
+        app_ref, _ = _parse_app_flow_specifier(app_target)
         _load_user_app(app_ref)
-        if current_flow_names := set(flow.flow_names()):
-            click.echo(f"Displaying flows relative to application: '{app_ref}'", err=True)
-        else:
-            click.echo(f"No flows are defined in '{app_ref}'. Here are all the flows in the backend:", err=True)
-    else:
-        click.echo("Displaying all flows with persisted setup in the backend:", err=True)
 
-    persisted_flow_names = set(flow_names_with_setup())
-    all_known_names = sorted(list(current_flow_names | persisted_flow_names))
+        current_flow_names = set(flow.flow_names())
+        persisted_flow_names = set(flow_names_with_setup())
 
-    if not all_known_names:
-        click.echo("No persisted flow setups found in the backend.")
-        return
+        if not current_flow_names:
+            click.echo(f"No flows are defined in '{app_ref}'.")
+            return
 
-    has_missing_setup = False
-    has_extra_setup = False
-
-    for name in all_known_names:
-        is_in_current_app = name in current_flow_names
-        is_persisted = name in persisted_flow_names
-        suffix = ''
-
-        if is_in_current_app:
-            if is_persisted:
-                suffix = ''  # Defined in app and setup exists
+        has_missing = False
+        for name in sorted(current_flow_names):
+            if name in persisted_flow_names:
+                click.echo(name)
             else:
-                suffix = ' [+]'  # Defined in app, setup missing
-                has_missing_setup = True
-        elif is_persisted:
-            suffix = ' [?]'  # Setup exists in backend, not defined in loaded app
-            has_extra_setup = True
-        else:
-            # Ideally not gonna happen
-            continue
-        click.echo(f'{name}{suffix}')
+                click.echo(f"{name} [+]")
+                has_missing = True
 
-    if has_missing_setup or has_extra_setup:
-        click.echo('')
-        click.echo('Notes:')
-        if has_missing_setup:
-            app_context_message = f" (in '{app_ref}')" if app_ref else ""
-            click.echo(f'  [+]: Flows defined in the application{app_context_message}, but backend setup is missing.')
-        if has_extra_setup:
-            app_context_message = f" (not defined in'{app_ref}')" if app_ref else ""
-            click.echo(f'  [?]: Flows with persisted setup in the backend{app_context_message}.')
+        if has_missing:
+            click.echo('')
+            click.echo('Notes:')
+            click.echo('  [+]: Flows present in the current process, but missing setup.')
+
+    else:
+        persisted_flow_names = sorted(flow_names_with_setup())
+
+        if not persisted_flow_names:
+            click.echo("No persisted flow setups found in the backend.")
+            return
+
+        for name in persisted_flow_names:
+            click.echo(name)
 
 @cli.command()
 @click.argument("app_flow_specifier", type=str)
