@@ -144,9 +144,18 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         possible_types = typing.get_args(t)
         non_none_types = [arg for arg in possible_types if arg not in (None, types.NoneType)]
 
+        if len(non_none_types) == 0:
+            return analyze_type_info(None)
+
+        nullable = len(non_none_types) < len(possible_types)
+
+        if len(non_none_types) == 1:
+            result = analyze_type_info(non_none_types[0])
+            result.nullable = nullable
+            return result
+
         kind = 'Union'
         elem_type = typing.Union[*non_none_types]
-        nullable = len(non_none_types) < len(possible_types)
     elif kind is None:
         if t is bytes:
             kind = 'Bytes'
