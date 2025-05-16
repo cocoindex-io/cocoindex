@@ -65,7 +65,7 @@ def show(flow_name: str | None, color: bool, verbose: bool):
 
     console.print()
     table = Table(
-        title=f"Schema for Flow: {flow.name}",
+        title=f"Schema for Flow: {flow.full_name}",
         show_header=True,
         header_style="bold magenta"
     )
@@ -108,7 +108,7 @@ def drop(flow_name: tuple[str, ...], drop_all: bool):
     if drop_all:
         flow_names = flow_names_with_setup()
     elif len(flow_name) == 0:
-        flow_names = [fl.name for fl in flow.flows()]
+        flow_names = flow.flow_names()
     else:
         flow_names = list(flow_name)
     setup_status = drop_setup(flow_names)
@@ -160,7 +160,7 @@ def evaluate(flow_name: str | None, output_dir: str | None, cache: bool = True):
     """
     fl = _flow_by_name(flow_name)
     if output_dir is None:
-        output_dir = f"eval_{fl.name}_{datetime.datetime.now().strftime('%y%m%d_%H%M%S')}"
+        output_dir = f"eval_{setting.get_app_namespace(trailing_delimiter='_')}{flow_name}_{datetime.datetime.now().strftime('%y%m%d_%H%M%S')}"
     options = flow.EvaluateAndDumpOptions(output_dir=output_dir, use_cache=cache)
     fl.evaluate_and_dump(options)
 

@@ -19,6 +19,7 @@ from rich.tree import Tree
 from . import _engine
 from . import index
 from . import op
+from . import setting
 from .convert import dump_engine_object
 from .typing import encode_enriched_type
 from .runtime import execution_context
@@ -310,7 +311,7 @@ class _FlowBuilderState:
 
     def __init__(self, /, name: str | None = None):
         flow_name = _flow_name_builder.build_name(name, prefix="_flow_")
-        self.engine_flow_builder = _engine.FlowBuilder(flow_name)
+        self.engine_flow_builder = _engine.FlowBuilder(get_full_flow_name(flow_name))
         self.field_name_builder = _NameBuilder()
 
     def get_data_slice(self, v: Any) -> _engine.DataSlice:
@@ -481,7 +482,7 @@ class Flow:
         Render the flow spec as a styled rich Tree with hierarchical structure.
         """
         spec = self._get_spec(verbose=verbose)
-        tree = Tree(f"Flow: {self.name}", style="cyan")
+        tree = Tree(f"Flow: {self.full_name}", style="cyan")
 
         def build_tree(label: str, lines: list):
             node = Tree(label, style="bold magenta" if lines else "cyan")
@@ -508,9 +509,9 @@ class Flow:
         return repr(self._lazy_engine_flow())
 
     @property
-    def name(self) -> str:
+    def full_name(self) -> str:
         """
-        Get the name of the flow.
+        Get the full name of the flow.
         """
         return self._lazy_engine_flow().name()
 
@@ -566,8 +567,16 @@ def _create_lazy_flow(name: str | None, fl_def: Callable[[FlowBuilder, DataScope
 _flows_lock = Lock()
 _flows: dict[str, Flow] = {}
 
+def get_full_flow_name(name: str) -> str:
+    """
+    Get the full name of a flow.
+    """
+    return f"{setting.get_app_namespace(trailing_delimiter='.')}{name}"
+
 def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
     """Add a flow definition to the cocoindex library."""
+    if not all(c.isalnum() or c == '_' for c in name):
+        raise ValueError(f"Flow name '{name}' contains invalid characters. Only alphanumeric characters and underscores are allowed.")
     with _flows_lock:
         if name in _flows:
             raise KeyError(f"Flow with name {name} already exists")
@@ -587,12 +596,12 @@ def flow_names() -> list[str]:
     with _flows_lock:
         return list(_flows.keys())
 
-def flows() -> list[Flow]:
+def flows() -> dict[str, Flow]:
     """
     Get all flows.
     """
     with _flows_lock:
-        return list(_flows.values())
+        return dict(_flows)
 
 def flow_by_name(name: str) -> Flow:
     """
@@ -605,14 +614,13 @@ def ensure_all_flows_built() -> None:
     """
     Ensure all flows are built.
     """
-    for fl in flows():
-        fl.internal_flow()
+    execution_context.run(ensure_all_flows_built_async())
 
 async def ensure_all_flows_built_async() -> None:
     """
     Ensure all flows are built.
     """
-    for fl in flows():
+    for fl in flows().values():
         await fl.internal_flow_async()
 
 def update_all_flows(options: FlowLiveUpdaterOptions) -> dict[str, _engine.IndexUpdateInfo]:
@@ -626,13 +634,13 @@ async def update_all_flows_async(options: FlowLiveUpdaterOptions) -> dict[str, _
     Update all flows.
     """
     await ensure_all_flows_built_async()
-    async def _update_flow(fl: Flow) -> _engine.IndexUpdateInfo:
+    async def _update_flow(name: str, fl: Flow) -> tuple[str, _engine.IndexUpdateInfo]:
         async with FlowLiveUpdater(fl, options) as updater:
             await updater.wait_async()
-            return updater.update_stats()
+            return (name, updater.update_stats())
     fls = flows()
-    all_stats = await asyncio.gather(*(_update_flow(fl) for fl in fls))
-    return {fl.name: stats for fl, stats in zip(fls, all_stats)}
+    all_stats = await asyncio.gather(*(_update_flow(name, fl) for (name, fl) in fls.items()))
+    return dict(all_stats)
 
 _transient_flow_name_builder = _NameBuilder()
 class TransientFlow:
