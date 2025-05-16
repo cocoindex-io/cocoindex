@@ -29,6 +29,7 @@ Range = Annotated[tuple[int, int], TypeKind('Range')]
 Json = Annotated[Any, TypeKind('Json')]
 LocalDateTime = Annotated[datetime.datetime, TypeKind('LocalDateTime')]
 OffsetDateTime = Annotated[datetime.datetime, TypeKind('OffsetDateTime')]
+TimeDelta = Annotated[datetime.timedelta, TypeKind('TimeDelta')]
 
 if TYPE_CHECKING:
     T_co = TypeVar('T_co', covariant=True)
@@ -168,6 +169,8 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
             kind = 'Time'
         elif t is datetime.datetime:
             kind = 'OffsetDateTime'
+        elif t is datetime.timedelta:
+            kind = 'TimeDelta'
         else:
             raise ValueError(f"type unsupported yet: {t}")
 

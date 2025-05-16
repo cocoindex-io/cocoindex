@@ -3,17 +3,18 @@ use std::convert::Infallible;
 use std::fmt::Display;
 use std::sync::Arc;
 
+use crate::base::duration::parse_duration;
 use crate::ops::sdk::*;
 use crate::setup;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use futures::FutureExt;
+use qdrant_client::Qdrant;
 use qdrant_client::qdrant::vectors_output::VectorsOptions;
 use qdrant_client::qdrant::{
     DeletePointsBuilder, NamedVectors, PointId, PointStruct, PointsIdsList, UpsertPointsBuilder,
     Value as QdrantValue,
 };
 use qdrant_client::qdrant::{Query, QueryPointsBuilder, ScoredPoint};
-use qdrant_client::Qdrant;
 use serde_json::json;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -131,6 +132,7 @@ fn values_to_payload(
                     BasicValue::LocalDateTime(v) => v.to_string().into(),
                     BasicValue::Time(v) => v.to_string().into(),
                     BasicValue::OffsetDateTime(v) => v.to_string().into(),
+                    BasicValue::TimeDelta(v) => v.to_string().into(),
                     BasicValue::Json(v) => (**v).clone(),
                     BasicValue::Vector(v) => {
                         let vector = convert_to_vector(v.to_vec());
@@ -190,6 +192,11 @@ fn into_value(point: &ScoredPoint, schema: &FieldSchema) -> Result<Value> {
                     .payload
                     .get(field_name)
                     .and_then(|v| v.as_double().map(BasicValue::Float64)),
+
+                BasicValueType::TimeDelta => point.payload.get(field_name).and_then(|v| {
+                    v.as_str()
+                        .and_then(|s| parse_duration(s).ok().map(BasicValue::TimeDelta))
+                }),
 
                 BasicValueType::Json => point
                     .payload
