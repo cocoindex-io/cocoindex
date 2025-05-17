@@ -9,6 +9,7 @@ from .llm import LlmSpec, LlmApiType
 from .index import VectorSimilarityMetric, VectorIndexDef, IndexOptions
 from .auth_registry import AuthEntryReference, add_auth_entry, ref_auth_entry
 from .lib import *
-from .setting import *
+from .setting import DatabaseConnectionSpec, Settings, ServerSettings
+from .setting import get_app_namespace
 from ._engine import OpArgSchema
 from .typing import Float32, Float64, LocalDateTime, OffsetDateTime, Range, Vector, Json
