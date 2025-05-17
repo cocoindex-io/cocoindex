@@ -91,6 +91,7 @@ if __name__ == "__main__":
 The `app_namespace` field helps organize flows across different environments (e.g., dev, staging, production), team members, etc. When set, it prefixes flow names with the namespace.
 
 For example, if the namespace is `Staging`, for a flow with name specified as `Flow1` in code, the full name of the flow will be `Staging.Flow1`.
+You can also get the current app namespace by calling `cocoindex.get_app_namespace()` (see [Getting App Namespace](flow_def#getting-app-namespace) for more details).
 
 If not set, all flows are in a default unnamed namespace.
 
