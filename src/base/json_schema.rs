@@ -150,6 +150,17 @@ impl JsonSchemaBuilder {
                     field_path,
                 );
             }
+            &schema::BasicValueType::TimeDelta => {
+                schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
+                if self.options.supports_format {
+                    schema.format = Some("duration".to_string());
+                }
+                self.set_description(
+                    &mut schema,
+                    "A duration, e.g. 'PT1H2M3S' (ISO 8601) or '1 day 2 hours 3 seconds'",
+                    field_path,
+                );
+            }
             schema::BasicValueType::Json => {
                 // Can be any value. No type constraint.
             }
