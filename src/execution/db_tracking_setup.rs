@@ -5,11 +5,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 pub fn default_tracking_table_name(flow_name: &str) -> String {
-    let sanitized_name = flow_name
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect::<String>();
-    format!("{}__cocoindex_tracking", sanitized_name)
+    format!(
+        "{}__cocoindex_tracking",
+        utils::db::sanitize_identifier(flow_name)
+    )
 }
 
 pub const CURRENT_TRACKING_TABLE_VERSION: i32 = 1;

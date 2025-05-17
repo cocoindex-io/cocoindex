@@ -41,7 +41,7 @@ You may also provide a `cocoindex_cmd` argument to the `main_fn` decorator to ch
 
 ### Explicitly CLI Invoke
 
-An alterntive way is to use `cocoindex.cli.cli` (with type [`click.Group`](https://click.palletsprojects.com/en/stable/api/#click.Group)).
+An alternative way is to use `cocoindex.cli.cli` (with type [`click.Group`](https://click.palletsprojects.com/en/stable/api/#click.Group)).
 For example, you may invoke the CLI explicitly with additional arguments:
 
 <Tabs>
@@ -60,7 +60,7 @@ The following subcommands are available:
 
 | Subcommand | Description |
 | ---------- | ----------- |
-| `ls` | List all flows. |
+| `ls` | List all flows present in the current process. Or list all persisted flows under the current app namespace if `--all` is specified. |
 | `show` | Show the spec for a specific flow. |
 | `setup` | Check and apply backend setup changes for flows, including the internal and target storage (to export). |
 | `drop` | Drop the backend setup for specified flows. |

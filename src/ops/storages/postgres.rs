@@ -11,8 +11,8 @@ use futures::FutureExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
 use serde::Serialize;
-use sqlx::postgres::types::PgRange;
 use sqlx::postgres::PgRow;
+use sqlx::postgres::types::PgRange;
 use sqlx::{PgPool, Row};
 use std::ops::Bound;
 use uuid::Uuid;
@@ -939,10 +939,12 @@ impl StorageFactoryBase for Factory {
             .map(|d| {
                 let table_id = TableId {
                     database: d.spec.database.clone(),
-                    table_name: d
-                        .spec
-                        .table_name
-                        .unwrap_or_else(|| format!("{}__{}", context.flow_instance_name, d.name)),
+                    table_name: d.spec.table_name.unwrap_or_else(|| {
+                        utils::db::sanitize_identifier(&format!(
+                            "{}__{}",
+                            context.flow_instance_name, d.name
+                        ))
+                    }),
                 };
                 let setup_state = SetupState::new(
                     &table_id,
