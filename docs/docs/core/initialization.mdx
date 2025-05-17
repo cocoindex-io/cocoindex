@@ -88,9 +88,9 @@ if __name__ == "__main__":
 
 ### App Namespace
 
-The `app_namespace` field helps organize flows across different environments (e.g., testing, production) or teams. When set, it prefixes flow names with the namespace.
+The `app_namespace` field helps organize flows across different environments (e.g., dev, staging, production), team members, etc. When set, it prefixes flow names with the namespace.
 
-For example, if the namespace is "Staging", for a flow with name specified as `Flow1` in code, the full name of the flow will be `Staging.Flow1`.
+For example, if the namespace is `Staging`, for a flow with name specified as `Flow1` in code, the full name of the flow will be `Staging.Flow1`.
 
 If not set, all flows are in a default unnamed namespace.
 

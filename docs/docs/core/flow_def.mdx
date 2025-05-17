@@ -311,6 +311,38 @@ Following metrics are supported:
 
 ## Miscellaneous
 
+### App Namespace
+
+You can use the [`app_namespace` setting](initialization#app-namespace) or `COCOINDEX_APP_NAMESPACE` environment variable to specify the app namespace,
+to organize flows across different environments (e.g., dev, staging, production), team members, etc.
+
+In the code, You can call `flow.get_app_namespace()` to get the app namespace, and use it to name certain backends. It takes the following arguments:
+
+*   `trailing_delimiter` (optional): a string to append to the app namespace when it's not empty.
+
+e.g. when the current app namespace is `Staging`, `flow.get_app_namespace(trailing_delimiter='.')` will return `Staging.`.
+
+For example,
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+doc_embeddings.export(
+    "doc_embeddings",
+    cocoindex.storages.Qdrant(
+        collection_name=cocoindex.get_app_namespace(trailing_delimiter='__') + "doc_embeddings",
+        ...
+    ),
+    ...
+)
+```
+
+</TabItem>
+</Tabs>
+
+It will use `Staging__doc_embeddings` as the collection name if the current app namespace is `Staging`, and use `doc_embeddings` if the app namespace is empty.
+
 ### Target Declarations
 
 Most time a target storage is created by calling `export()` method on a collector, and this `export()` call comes with configurations needed for the target storage, e.g. options for storage indexes.
