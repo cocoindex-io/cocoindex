@@ -49,7 +49,7 @@ def _load_field(target: dict[str, Any], name: str, env_name: str, required: bool
 class Settings:
     """Settings for the cocoindex library."""
     database: DatabaseConnectionSpec
-    app_namespace: str
+    app_namespace: str = ""
 
     @classmethod
     def from_env(cls) -> Self:

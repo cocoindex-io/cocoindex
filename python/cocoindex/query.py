@@ -50,7 +50,7 @@ class SimpleSemanticsQueryHandler:
                     if engine_handler is None:
                         engine_handler = _engine.SimpleSemanticsQueryHandler(
                             flow.internal_flow(), target_name,
-                            fl.TransientFlow(query_transform_flow, [str]).internal_flow(),
+                            fl.TransformFlow(query_transform_flow, [str]).internal_flow(),
                             default_similarity_metric.value)
                         engine_handler.register_query_handler(name)
             return engine_handler

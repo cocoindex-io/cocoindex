@@ -1,3 +1,4 @@
+use crate::execution::evaluator::evaluate_transient_flow;
 use crate::prelude::*;
 
 use crate::base::schema::{FieldSchema, ValueType};
@@ -11,6 +12,7 @@ use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, regi
 use crate::server::{self, ServerSettings};
 use crate::settings::Settings;
 use crate::setup;
+use pyo3::IntoPyObjectExt;
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::collections::btree_map;
@@ -348,6 +350,27 @@ impl TransientFlow {
 
     pub fn __repr__(&self) -> String {
         self.__str__()
+    }
+
+    pub fn evaluate_async<'py>(
+        &self,
+        py: Python<'py>,
+        args: Vec<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let flow = self.0.clone();
+        let input_values: Vec<value::Value> = std::iter::zip(
+            self.0.transient_flow_instance.input_fields.iter(),
+            args.into_iter(),
+        )
+        .map(|(input_schema, arg)| value_from_py_object(&input_schema.value_type.typ, &arg))
+        .collect::<PyResult<_>>()?;
+
+        future_into_py(py, async move {
+            let result = evaluate_transient_flow(&flow, &input_values)
+                .await
+                .into_py_result()?;
+            Python::with_gil(|py| value_to_py_object(py, &result)?.into_py_any(py))
+        })
     }
 }
 
