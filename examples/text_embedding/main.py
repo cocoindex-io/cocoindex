@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 
 import cocoindex
 
+@cocoindex.transform_flow()
 def text_to_embedding(text: cocoindex.DataSlice) -> cocoindex.DataSlice:
     """
     Embed the text using a SentenceTransformer model.
