@@ -146,8 +146,9 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 
 :::info
 
-In live update mode, for each refresh, CocoIndex will traverse the data source to figure out the changes,
+In live update mode, for each refresh, CocoIndex will list rows in the data source to figure out the changes based on metadata such as last modified time,
 and only perform transformations on changed source keys.
+If nothing changed during the last refresh cycle, only list operations will be performed, which is usually cheap for most data sources.
 
 :::
 
