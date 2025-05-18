@@ -9,7 +9,7 @@ description = "With CocoIndex, users declare the transformation, CocoIndex creat
 authors = [{ name = "CocoIndex", email = "cocoindex.io@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["sentence-transformers>=3.3.1", "click>=8.1.8", "rich>=14.0.0"]
+dependencies = ["sentence-transformers>=3.3.1", "click>=8.1.8", "rich>=14.0.0", "python-dotenv>=1.1.0"]
 license = "Apache-2.0"
 urls = { Homepage = "https://cocoindex.io/" }
 

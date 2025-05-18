@@ -6,6 +6,7 @@ import os
 import atexit
 import types
 
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
@@ -107,10 +108,25 @@ def _load_user_app(app_target: str) -> types.ModuleType:
 
 @click.group()
 @click.version_option(package_name="cocoindex", message="%(prog)s version %(version)s")
-def cli():
+@click.option(
+    "--env-file",
+    type=click.Path(exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True),
+    help="Path to a .env file to load environment variables from. "
+         "If not provided, attempts to load '.env' from the current directory.",
+    default=None,
+    show_default=False
+)
+def cli(env_file: str | None):
     """
     CLI for Cocoindex.
     """
+    loaded_env_path = None
+    dotenv_path = env_file or os.path.join(os.getcwd(), ".env")
+
+    if load_dotenv(dotenv_path=dotenv_path, override=True):
+        loaded_env_path = os.path.abspath(dotenv_path)
+        click.echo(f"Loaded environment variables from: {loaded_env_path}", err=True)
+
     try:
         settings = setting.Settings.from_env()
         lib.init(settings)
