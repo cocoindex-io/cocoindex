@@ -8,8 +8,9 @@ import asyncio
 import re
 import inspect
 import datetime
+import functools
 
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Callable, Sequence, TypeVar, Generic, get_args, get_origin, Type, NamedTuple
 from threading import Lock
 from enum import Enum
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from . import _engine
 from . import index
 from . import op
 from . import setting
-from .convert import dump_engine_object
+from .convert import dump_engine_object, encode_engine_value, make_engine_value_decoder
 from .typing import encode_enriched_type
 from .runtime import execution_context
 
@@ -123,7 +124,7 @@ class _DataSliceState:
         # TODO: We'll support this by an identity transformer or "aliasing" in the future.
         raise ValueError("DataSlice is already attached to a field")
 
-class DataSlice:
+class DataSlice(Generic[T]):
     """A data slice represents a slice of data in a flow. It's readonly."""
 
     _state: _DataSliceState
@@ -183,11 +184,11 @@ class DataSlice:
                         name, prefix=_to_snake_case(_spec_kind(fn_spec))+'_'),
                 ))
 
-    def call(self, func: Callable[[DataSlice], T]) -> T:
+    def call(self, func: Callable[[DataSlice], T], *args, **kwargs) -> T:
         """
         Call a function with the data slice.
         """
-        return func(self)
+        return func(self, *args, **kwargs)
 
 def _data_slice_state(data_slice: DataSlice) -> _DataSliceState:
     return data_slice._state  # pylint: disable=protected-access
@@ -642,27 +643,67 @@ async def update_all_flows_async(options: FlowLiveUpdaterOptions) -> dict[str, _
     all_stats = await asyncio.gather(*(_update_flow(name, fl) for (name, fl) in fls.items()))
     return dict(all_stats)
 
-_transient_flow_name_builder = _NameBuilder()
-class TransientFlow:
+def _get_data_slice_annotation_type(data_slice_type: Type[DataSlice[T]]) -> Type[T] | None:
+    type_args = get_args(data_slice_type)
+    if data_slice_type is DataSlice:
+        return None
+    if get_origin(data_slice_type) != DataSlice or len(type_args) != 1:
+        raise ValueError(f"Expect a DataSlice[T] type, but got {data_slice_type}")
+    return type_args[0]
+
+_transform_flow_name_builder = _NameBuilder()
+
+class TransformFlowInfo(NamedTuple):
+    engine_flow: _engine.TransientFlow
+    result_decoder: Callable[[Any], T]
+
+class TransformFlow(Generic[T]):
     """
     A transient transformation flow that transforms in-memory data.
     """
-    _engine_flow: _engine.TransientFlow
+    _flow_fn: Callable[..., DataSlice[T]]
+    _flow_name: str
+    _flow_arg_types: list[Any]
+    _param_names: list[str]
+
+    _lazy_lock: asyncio.Lock
+    _lazy_flow_info: TransformFlowInfo | None = None
 
     def __init__(
-            self, flow_fn: Callable[..., DataSlice],
+            self, flow_fn: Callable[..., DataSlice[T]],
             flow_arg_types: Sequence[Any], /, name: str | None = None):
+        self._flow_fn = flow_fn
+        self._flow_name = _transform_flow_name_builder.build_name(name, prefix="_transform_flow_")
+        self._flow_arg_types = list(flow_arg_types)
+        self._lazy_lock = asyncio.Lock()
 
-        flow_builder_state = _FlowBuilderState(
-            name=_transient_flow_name_builder.build_name(name, prefix="_transient_flow_"))
-        sig = inspect.signature(flow_fn)
-        if len(sig.parameters) != len(flow_arg_types):
+    def __call__(self, *args, **kwargs) -> DataSlice[T]:
+        return self._flow_fn(*args, **kwargs)
+
+    @property
+    def _flow_info(self) -> TransformFlowInfo:
+        if self._lazy_flow_info is not None:
+            return self._lazy_flow_info
+        return execution_context.run(self._flow_info_async())
+
+    async def _flow_info_async(self) -> TransformFlowInfo:
+        if self._lazy_flow_info is not None:
+            return self._lazy_flow_info
+        async with self._lazy_lock:
+            if self._lazy_flow_info is None:
+                self._lazy_flow_info = await self._build_flow_info_async()
+            return self._lazy_flow_info
+
+    async def _build_flow_info_async(self) -> TransformFlowInfo:
+        flow_builder_state = _FlowBuilderState(name=self._flow_name)
+        sig = inspect.signature(self._flow_fn)
+        if len(sig.parameters) != len(self._flow_arg_types):
             raise ValueError(
                 f"Number of parameters in the flow function ({len(sig.parameters)}) "
-                "does not match the number of argument types ({len(flow_arg_types)})")
+                f"does not match the number of argument types ({len(self._flow_arg_types)})")
 
         kwargs: dict[str, DataSlice] = {}
-        for (param_name, param), param_type in zip(sig.parameters.items(), flow_arg_types):
+        for (param_name, param), param_type in zip(sig.parameters.items(), self._flow_arg_types):
             if param.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
                                   inspect.Parameter.KEYWORD_ONLY):
                 raise ValueError(f"Parameter {param_name} is not a parameter can be passed by name")
@@ -670,20 +711,68 @@ class TransientFlow:
                 param_name, encode_enriched_type(param_type))
             kwargs[param_name] = DataSlice(_DataSliceState(flow_builder_state, engine_ds))
 
-        output = flow_fn(**kwargs)
+        output = self._flow_fn(**kwargs)
         flow_builder_state.engine_flow_builder.set_direct_output(
             _data_slice_state(output).engine_data_slice)
-        self._engine_flow = flow_builder_state.engine_flow_builder.build_transient_flow(
-            execution_context.event_loop)
+        engine_flow = await flow_builder_state.engine_flow_builder.build_transient_flow_async(execution_context.event_loop)
+        self._param_names = list(sig.parameters.keys())
+
+        engine_return_type = _data_slice_state(output).engine_data_slice.data_type().schema()
+        python_return_type = _get_data_slice_annotation_type(sig.return_annotation)
+        result_decoder = make_engine_value_decoder([], engine_return_type['type'], python_return_type)
+
+        return TransformFlowInfo(engine_flow, result_decoder)
 
     def __str__(self):
-        return str(self._engine_flow)
+        return str(self._flow_info.engine_flow)
 
     def __repr__(self):
-        return repr(self._engine_flow)
+        return repr(self._flow_info.engine_flow)
 
     def internal_flow(self) -> _engine.TransientFlow:
         """
         Get the internal flow.
         """
-        return self._engine_flow
+        return self._flow_info.engine_flow
+
+    def eval(self, *args, **kwargs) -> T:
+        """
+        Evaluate the transform flow.
+        """
+        return execution_context.run(self.eval_async(*args, **kwargs))
+
+    async def eval_async(self, *args, **kwargs) -> T:
+        """
+        Evaluate the transform flow.
+        """
+        flow_info = await self._flow_info_async()
+        params = []
+        for i, arg in enumerate(self._param_names):
+            if i < len(args):
+                params.append(encode_engine_value(args[i]))
+            elif arg in kwargs:
+                params.append(encode_engine_value(kwargs[arg]))
+            else:
+                raise ValueError(f"Parameter {arg} is not provided")
+        engine_result = await flow_info.engine_flow.evaluate_async(params)
+        return flow_info.result_decoder(engine_result)
+
+
+def transform_flow() -> Callable[[Callable[..., DataSlice[T]]], TransformFlow[T]]:
+    """
+    A decorator to wrap the transform function.
+    """
+    def _transform_flow_wrapper(fn: Callable[..., DataSlice[T]]):
+        sig = inspect.signature(fn)
+        arg_types = []
+        for (param_name, param) in sig.parameters.items():
+            if param.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                  inspect.Parameter.KEYWORD_ONLY):
+                raise ValueError(f"Parameter {param_name} is not a parameter can be passed by name")
+            arg_types.append(_get_data_slice_annotation_type(param.annotation))
+
+        _transform_flow = TransformFlow(fn, arg_types)
+        functools.update_wrapper(_transform_flow, fn)
+        return _transform_flow
+
+    return _transform_flow_wrapper

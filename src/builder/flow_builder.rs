@@ -1,10 +1,11 @@
-use crate::prelude::*;
+use crate::{prelude::*, py::Pythonized};
 
 use pyo3::{exceptions::PyException, prelude::*};
+use pyo3_async_runtimes::tokio::future_into_py;
 use std::{collections::btree_map, ops::Deref};
 
 use super::analyzer::{
-    build_flow_instance_context, AnalyzerContext, CollectorBuilder, DataScopeBuilder, OpScope,
+    AnalyzerContext, CollectorBuilder, DataScopeBuilder, OpScope, build_flow_instance_context,
 };
 use crate::{
     base::{
@@ -83,6 +84,10 @@ impl DataType {
     pub fn __repr__(&self) -> String {
         self.__str__()
     }
+
+    pub fn schema(&self) -> Pythonized<schema::EnrichedValueType> {
+        Pythonized(self.schema.clone())
+    }
 }
 
 #[pyclass]
@@ -142,7 +147,7 @@ impl DataSlice {
             spec::ValueMapping::Constant { .. } => {
                 return Err(PyException::new_err(
                     "field access not supported for literal",
-                ))
+                ));
             }
         };
         Ok(Some(DataSlice {
@@ -585,11 +590,11 @@ impl FlowBuilder {
         Ok(py::Flow(flow_ctx))
     }
 
-    pub fn build_transient_flow(
+    pub fn build_transient_flow_async<'py>(
         &self,
-        py: Python<'_>,
+        py: Python<'py>,
         py_event_loop: Py<PyAny>,
-    ) -> PyResult<py::TransientFlow> {
+    ) -> PyResult<Bound<'py, PyAny>> {
         if self.direct_input_fields.is_empty() {
             return Err(PyException::new_err("expect at least one direct input"));
         }
@@ -605,16 +610,14 @@ impl FlowBuilder {
             output_value: direct_output_value.clone(),
         };
         let py_ctx = crate::py::PythonExecutionContext::new(py, py_event_loop);
-        let analyzed_flow = py
-            .allow_threads(|| {
-                get_runtime().block_on(super::AnalyzedTransientFlow::from_transient_flow(
-                    spec,
-                    &crate::ops::executor_factory_registry(),
-                    Some(py_ctx),
-                ))
-            })
-            .into_py_result()?;
-        Ok(py::TransientFlow(Arc::new(analyzed_flow)))
+
+        future_into_py(py, async move {
+            let analyzed_flow =
+                super::AnalyzedTransientFlow::from_transient_flow(spec, Some(py_ctx))
+                    .await
+                    .into_py_result()?;
+            Ok(py::TransientFlow(Arc::new(analyzed_flow)))
+        })
     }
 
     pub fn __str__(&self) -> String {
@@ -695,7 +698,8 @@ impl FlowBuilder {
             } else if !common_scope.is_op_scope_descendant(scope) {
                 api_bail!(
                     "expect all arguments share the common scope, got {} and {} exclusive to each other",
-                    common_scope, scope
+                    common_scope,
+                    scope
                 );
             }
         }
@@ -703,7 +707,8 @@ impl FlowBuilder {
             if !target_scope.is_op_scope_descendant(common_scope) {
                 api_bail!(
                     "the field can only be attached to a scope or sub-scope of the input value. Target scope: {}, input scope: {}",
-                    target_scope, common_scope
+                    target_scope,
+                    common_scope
                 );
             }
             common_scope = target_scope;

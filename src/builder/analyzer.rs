@@ -1302,14 +1302,17 @@ pub fn analyze_flow(
 pub fn analyze_transient_flow<'a>(
     flow_inst: &TransientFlowSpec,
     flow_ctx: &'_ Arc<FlowInstanceContext>,
-    registry: &'a ExecutorFactoryRegistry,
 ) -> Result<(
     EnrichedValueType,
     FlowSchema,
     impl Future<Output = Result<TransientExecutionPlan>> + Send + 'a,
 )> {
     let mut root_data_scope = DataScopeBuilder::new();
-    let analyzer_ctx = AnalyzerContext { registry, flow_ctx };
+    let registry = crate::ops::executor_factory_registry();
+    let analyzer_ctx = AnalyzerContext {
+        registry: &registry,
+        flow_ctx,
+    };
     let mut input_fields = vec![];
     for field in flow_inst.input_fields.iter() {
         let analyzed_field = root_data_scope.add_field(field.name.clone(), &field.value_type)?;

@@ -44,7 +44,7 @@ def make_engine_value_decoder(
 
     src_type_kind = src_type['kind']
 
-    if dst_annotation is inspect.Parameter.empty:
+    if dst_annotation is None or dst_annotation is inspect.Parameter.empty or dst_annotation is Any:
         if src_type_kind == 'Struct' or src_type_kind in TABLE_TYPES:
             raise ValueError(f"Missing type annotation for `{''.join(field_path)}`."
                              f"It's required for {src_type_kind} type.")
