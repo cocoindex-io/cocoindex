@@ -1,6 +1,8 @@
 # Build Real-Time Recommendation Engine with LLM and Knowledge Graph
 
-We will process a list of products and use LLM to extract the taxonomy and complimentary taxonomy for each product and find connections between products.
+We will build a real-time product recommendation engine with LLM and knowledge graph. In particular, we will use LLM to understand the category (taxonomy) of a product. In addition, we will use LLM to enumerate the complementary products - users are likely to buy together with the current product (pencil and notebook). 
+
+We will use Knowledge Graph to explore the relationships between products that can be further used for product recommendations or labeling.
 
 Please drop [CocoIndex on Github](https://github.com/cocoindex-io/cocoindex) a star to support us and stay tuned for more updates. Thank you so much 🥥🤗. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
