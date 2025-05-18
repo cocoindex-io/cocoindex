@@ -2,13 +2,23 @@ use std::{str::FromStr, sync::Arc};
 
 use crate::{base::{schema::BasicValueType, value::BasicValue}, prelude::*};
 
+#[derive(Debug, Clone)]
+pub enum UnionParseResult {
+    Union(UnionType),
+    Single(BasicValueType),
+}
+
 /// Union type helper storing an auto-sorted set of types excluding `Union`
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct UnionType {
     types: BTreeSet<BasicValueType>,
 }
 
 impl UnionType {
+    fn new() -> Self {
+        Self { types: BTreeSet::new() }
+    }
+
     pub fn types(&self) -> &BTreeSet<BasicValueType> {
         &self.types
     }
@@ -31,32 +41,56 @@ impl UnionType {
         }
     }
 
-    pub fn unpack(self) -> Self {
-        self.types.into()
+    fn resolve(self) -> Result<UnionParseResult> {
+        if self.types().is_empty() {
+            anyhow::bail!("The union is empty");
+        }
+
+        if self.types().len() == 1 {
+            let mut type_tree: BTreeSet<BasicValueType> = self.into();
+            return Ok(UnionParseResult::Single(type_tree.pop_first().unwrap()));
+        }
+
+        Ok(UnionParseResult::Union(self))
     }
-}
 
-impl From<Vec<BasicValueType>> for UnionType {
-    fn from(value: Vec<BasicValueType>) -> Self {
-        let mut union = Self::default();
+    /// Move an iterable and parse it into a union type.
+    /// If there is only one single unique type, it returns a single `BasicValueType`.
+    pub fn parse_from<T>(
+        input: impl IntoIterator<Item = BasicValueType, IntoIter = T>,
+    ) -> Result<UnionParseResult>
+    where
+        T: Iterator<Item = BasicValueType>,
+    {
+        let mut union = Self::new();
 
-        for typ in value {
+        for typ in input {
             union.insert(typ);
         }
 
-        union
+        union.resolve()
+    }
+
+    /// Assume the input already contains multiple unique types, panic otherwise.
+    ///
+    /// This method is meant for streamlining the code for test cases.
+    /// Use `parse_from()` instead unless you know the input.
+    pub fn coerce_from<T>(
+        input: impl IntoIterator<Item = BasicValueType, IntoIter = T>,
+    ) -> Self
+    where
+        T: Iterator<Item = BasicValueType>,
+    {
+        match Self::parse_from(input) {
+            Ok(UnionParseResult::Union(union)) => union,
+            _ => panic!("Do not use `coerce_from()` for basic type lists that can possibly be one type."),
+        }
     }
 }
 
-impl From<BTreeSet<BasicValueType>> for UnionType {
-    fn from(value: BTreeSet<BasicValueType>) -> Self {
-        let mut union = Self::default();
-
-        for typ in value {
-            union.insert(typ);
-        }
-
-        union
+impl Into<BTreeSet<BasicValueType>> for UnionType {
+    fn into(self) -> BTreeSet<BasicValueType> {
+        self.types
     }
 }
 

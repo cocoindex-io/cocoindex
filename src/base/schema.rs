@@ -437,58 +437,57 @@ pub struct OpArgSchema {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use utils::union::UnionParseResult;
 
     #[test]
     fn test_union_fmt_empty() {
-        let typ = BasicValueType::Union(UnionType::default());
-        let expected = "Union[]";
-
-        assert_eq!(typ.to_string(), expected);
+        let result = UnionType::parse_from(Vec::new());
+        assert!(matches!(result, Err(_)));
     }
 
     #[test]
     fn test_union_fmt_single() {
-        let typ = BasicValueType::Union(vec![BasicValueType::Uuid].into());
-        let expected = "Union[Uuid]";
-
-        assert_eq!(typ.to_string(), expected);
+        let result = UnionType::parse_from(vec![BasicValueType::Uuid]).unwrap();
+        assert!(matches!(result, UnionParseResult::Single(BasicValueType::Uuid)));
     }
 
     #[test]
-    fn test_union_fmt_autosort_basic() {
-        // Uuid | Date | Str | Bytes = Bytes | Str | Uuid | Date
-        let typ = BasicValueType::Union(vec![
+    fn test_union_fmt_flat() {
+        let union = UnionType::coerce_from(vec![
             BasicValueType::Uuid,
             BasicValueType::Date,
             BasicValueType::Str,
             BasicValueType::Bytes,
-        ].into());
+        ]);
+
+        // Uuid | Date | Str | Bytes = Bytes | Str | Uuid | Date
+        let typ = BasicValueType::Union(union);
         let expected = "Union[Bytes | Str | Uuid | Date]";
 
         assert_eq!(typ.to_string(), expected);
     }
 
     #[test]
-    fn test_union_fmt_nested_auto_unpack() {
+    fn test_union_fmt_nested() {
         // Uuid | Date | (Date | OffsetDateTime | Time | Bytes | (Bytes | Uuid | Time)) | Str |
         // Bytes = Bytes | Str | Uuid | Date | Time | OffsetDateTime
-        let typ = BasicValueType::Union(vec![
+        let typ = BasicValueType::Union(UnionType::coerce_from(vec![
             BasicValueType::Uuid,
             BasicValueType::Date,
-            BasicValueType::Union(vec![
+            BasicValueType::Union(UnionType::coerce_from(vec![
                 BasicValueType::Date,
                 BasicValueType::OffsetDateTime,
                 BasicValueType::Time,
                 BasicValueType::Bytes,
-                BasicValueType::Union(vec![
+                BasicValueType::Union(UnionType::coerce_from(vec![
                     BasicValueType::Bytes,
                     BasicValueType::Uuid,
                     BasicValueType::Time,
-                ].into()),
-            ].into()),
+                ])),
+            ])),
             BasicValueType::Str,
             BasicValueType::Bytes,
-        ].into());
+        ]));
         let expected = "Union[Bytes | Str | Uuid | Date | Time | OffsetDateTime]";
 
         assert_eq!(typ.to_string(), expected);
