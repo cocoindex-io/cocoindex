@@ -90,6 +90,9 @@ def make_engine_value_decoder(
         field_path.pop()
         return decode
 
+    if src_type_kind == 'Union':
+        return lambda value: value.elem_type | None if value.nullable else value.elem_type
+
     if src_type_kind == 'Uuid':
         return lambda value: uuid.UUID(bytes=value)
 
