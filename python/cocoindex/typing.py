@@ -235,7 +235,7 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
     elif type_info.kind == 'Union':
         if type_info.elem_type is not types.UnionType:
             raise ValueError("Union type must have a union-typed element type")
-        encoded_type['element_type'] = [
+        encoded_type['types'] = [
             _encode_type(analyze_type_info(typ)) for typ in typing.get_args(type_info.elem_type)
         ]
 
