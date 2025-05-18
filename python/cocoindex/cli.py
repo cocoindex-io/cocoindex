@@ -44,6 +44,26 @@ def _parse_app_flow_specifier(specifier: str) -> tuple[str, str | None]:
         )
     return app_ref, flow_ref_part
 
+def _get_app_ref_from_specifier(
+    specifier: str,
+) -> str:
+    """
+    Parses the APP_TARGET to get the application reference (path or module).
+    Issues a warning if a flow name component is also provided in it.
+    """
+    app_ref, flow_ref = _parse_app_flow_specifier(specifier)
+
+    if flow_ref is not None:
+        click.echo(
+            click.style(
+                f"Ignoring flow name '{flow_ref}' in '{specifier}': "
+                f"this command operates on the entire app/module '{app_ref}'.",
+                fg='yellow'
+            ),
+            err=True
+        )
+    return app_ref
+
 def _load_user_app(app_target: str) -> types.ModuleType:
     """
     Loads the user's application, which can be a file path or an installed module name.
@@ -111,7 +131,7 @@ def ls(app_target: str | None):
     setup in the backend.
     """
     if app_target:
-        app_ref, _ = _parse_app_flow_specifier(app_target)
+        app_ref = _get_app_ref_from_specifier(app_target)
         _load_user_app(app_ref)
 
         current_flow_names = set(flow.flow_names())
@@ -189,7 +209,7 @@ def setup(app_target: str):
 
     APP_TARGET: path/to/app.py or installed_module.
     """
-    app_ref, _ = _parse_app_flow_specifier(app_target) # Ignore flow name for setup
+    app_ref = _get_app_ref_from_specifier(app_target)
     _load_user_app(app_ref)
 
     setup_status = sync_setup()
@@ -227,7 +247,7 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], drop_all: bool):
             click.echo("Warning: When --all is used, APP_TARGET and any individual flow names are ignored.", err=True)
         flow_names = flow_names_with_setup()
     elif app_target:
-        app_ref, _ = _parse_app_flow_specifier(app_target) # Ignore any :FlowName part
+        app_ref = _get_app_ref_from_specifier(app_target)
         _load_user_app(app_ref)
         if flow_name:
             flow_names = list(flow_name)
@@ -352,7 +372,7 @@ def server(app_target: str, address: str | None, live_update: bool, quiet: bool,
 
     APP_TARGET: path/to/app.py or installed_module.
     """
-    app_ref, _ = _parse_app_flow_specifier(app_target) # Ignore flow name for server
+    app_ref = _get_app_ref_from_specifier(app_target)
     _load_user_app(app_ref)
 
     server_settings = setting.ServerSettings.from_env()
