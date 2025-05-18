@@ -35,7 +35,7 @@ This is the list of all basic types supported by CocoIndex:
 | Time | | `datetime.time` | `datetime.time` |
 | LocalDatetime | Date and time without timezone | `cocoindex.LocalDateTime` | `datetime.datetime` |
 | OffsetDatetime | Date and time with a timezone offset | `cocoindex.OffsetDateTime` | `datetime.datetime` |
-| TimeDelta | A duration of time | `cocoindex.typing.TimeDelta` | `datetime.timedelta` |
+| TimeDelta | A duration of time | `datetime.TimeDelta` | `datetime.timedelta` |
 | Vector[*T*, *Dim*?] | *T* must be basic type. *Dim* is a positive integer and optional. |`cocoindex.Vector[T]` or `cocoindex.Vector[T, Dim]` | `list[T]` | 
 | Json | | `cocoindex.Json` | Any data convertible to JSON by `json` package | 
 
