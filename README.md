@@ -137,7 +137,7 @@ It defines an index flow like this:
 | [Docs to Knowledge Graph](examples/docs_to_knowledge_graph) | Extract relationships from Markdown documents and build a knowledge graph |
 | [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |
 | [FastAPI Server with Docker](examples/fastapi_server_docker) | Run the semantic search server in a Dockerized FastAPI setup | 
-| [Product_Taxonomy_Knowledge_Graph](examples/product_taxonomy_knowledge_graph) | Build knowledge graph for product recommendations | 
+| [Recommendation Engine with Knowledge Graph](examples/product_taxonomy_knowledge_graph) | Build real-time product recommendations with LLM and knowledge graph | 
 | [Image Search with Vision API](examples/image_search_example) | Generates detailed captions for images using a vision model, embeds them, enables live-updating semantic search via FastAPI and served on a React frontend|
 
 More coming and stay tuned 👀!
