@@ -68,11 +68,12 @@ class AnalyzedTypeInfo:
     Analyzed info of a Python type.
     """
     kind: str
-    vector_info: VectorInfo | None  # For Vector
-    elem_type: ElementType | None   # For Vector, Table, and Union
+    vector_info: VectorInfo | None          # For Vector
+    elem_type: ElementType | None           # For Vector, and Table
+    union_variant_types: list[type] | None  # For Union
 
-    key_type: type | None           # For element of KTable
-    struct_type: type | None        # For Struct, a dataclass or namedtuple
+    key_type: type | None                   # For element of KTable
+    struct_type: type | None                # For Struct, a dataclass or namedtuple
 
     attrs: dict[str, Any] | None
     nullable: bool = False
@@ -113,6 +114,7 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
 
     struct_type = None
     elem_type = None
+    union_variant_types = None
     key_type = None
     if _is_struct_type(t):
         struct_type = t
@@ -155,7 +157,7 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
             return result
 
         kind = 'Union'
-        elem_type = typing.Union[*non_none_types]
+        union_variant_types = non_none_types
     elif kind is None:
         if t is bytes:
             kind = 'Bytes'
@@ -182,6 +184,7 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         kind=kind,
         vector_info=vector_info,
         elem_type=elem_type,
+        union_variant_types=union_variant_types,
         key_type=key_type,
         struct_type=struct_type,
         attrs=attrs,
@@ -236,7 +239,7 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         if type_info.elem_type is not types.UnionType:
             raise ValueError("Union type must have a union-typed element type")
         encoded_type['types'] = [
-            _encode_type(analyze_type_info(typ)) for typ in typing.get_args(type_info.elem_type)
+            _encode_type(analyze_type_info(typ)) for typ in type_info.union_variant_types
         ]
 
     elif type_info.kind in TABLE_TYPES:
