@@ -121,46 +121,14 @@ Notes:
 
 6. In CocoIndex, a *collector* collects multiple entries of data together. In this example, the `doc_embeddings` collector collects data from all `chunk`s across all `doc`s, and using the collected data to build a vector index `"doc_embeddings"`, using `Postgres`.
 
-### Step 2.2: Define the query handler
+### Step 2.2: Define the main function
 
-Starting from the query handler:
-
-```python title="quickstart.py"
-query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
-    name="SemanticsSearch",
-    flow=text_embedding_flow,
-    target_name="doc_embeddings",
-    query_transform_flow=lambda text: text.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2")),
-    default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)
-```
-
-This handler queries the vector index `"doc_embeddings"`, and uses the same embedding model `"sentence-transformers/all-MiniLM-L6-v2"` to transform query text into vectors for similarity matching.
-
-
-### Step 2.3: Define the main function
-
-The main function is used to interact with users and run queries using the query handler above.
+We can provide an empty main function for now, with a `@cocoindex.main_fn()` decorator:
 
 ```python title="quickstart.py"
 @cocoindex.main_fn()
 def _main():
-    # Run queries to demonstrate the query capabilities.
-    while True:
-        try:
-            query = input("Enter search query (or Enter to quit): ")
-            if query == '':
-                break
-            results, _ = query_handler.search(query, 10)
-            print("\nSearch results:")
-            for result in results:
-                print(f"[{result.score:.3f}] {result.data['filename']}")
-                print(f"    {result.data['text']}")
-                print("---")
-            print()
-        except KeyboardInterrupt:
-            break
+    pass
 
 if __name__ == "__main__":
     _main()
@@ -170,7 +138,6 @@ The `@cocoindex.main_fn` declares a function as the main function for an indexin
 
 *   Initialize the CocoIndex librart states. Settings (e.g. database URL) are loaded from environment variables by default.
 *   When the CLI is invoked with `cocoindex` subcommand, `cocoindex CLI` takes over the control, which provides convenient ways to manage the index. See the next step for more details.
-
 
 ## Step 3: Run the indexing pipeline and queries
 
@@ -206,9 +173,129 @@ It will run for a few seconds and output the following statistics:
 documents: 3 added, 0 removed, 0 updated
 ```
 
-### Step 3.3: Run queries against the index
+## Step 4 (optional): Run queries against the index
 
-Now we have the index built. We can run the same Python file without additional arguments, which will run the main function defined in Step 2.3:
+CocoIndex excels at transforming your data and storing it (a.k.a. indexing). 
+The goal of transforming your data is usually to query against it.
+Once you already have your index built, you can directly access the transformed data in the target database.
+CocoIndex also provides utilities for you to do this more seamlessly.
+
+In this example, we'll use the [`psycopg` library](https://www.psycopg.org/) to connect to the database and run queries.
+Please make sure it's installed:
+
+```bash
+pip install psycopg[binary,pool]
+```
+
+### Step 4.1: Extract common transformations
+
+Between your indexing flow and the query logic, one piece of transformation is shared: compute the embedding of a text.
+i.e. they should use exactly the same embedding model and parameters.
+
+Let's extract that into a function:
+
+```python title="quickstart.py"
+@cocoindex.transform_flow()
+def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
+    return text.transform(
+        cocoindex.functions.SentenceTransformerEmbed(
+            model="sentence-transformers/all-MiniLM-L6-v2"))
+```
+
+`cocoindex.DataSlice[str]` represents certain data in the flow (e.g. a field in a data scope), with type `str` at runtime.
+Similar to the `text_embedding_flow()` above, the `text_to_embedding()` is also to constructing the flow instead of directly doing computation,
+so the type it takes is `cocoindex.DataSlice[str]` instead of `str`.
+See [Data Slice](../core/flow_def#data-slice) for more details.
+
+
+Then the corresponding code in the indexing flow can be simplified by calling this function:
+
+```python title="quickstart.py"
+...
+# Transform data of each chunk
+with doc["chunks"].row() as chunk:
+    # Embed the chunk, put into `embedding` field
+    chunk["embedding"] = text_to_embedding(chunk["text"])
+
+    # Collect the chunk into the collector.
+    doc_embeddings.collect(filename=doc["filename"], location=chunk["location"],
+                            text=chunk["text"], embedding=chunk["embedding"])
+...
+```
+
+The function decorator `@cocoindex.transform_flow()` is used to declare a function as a CocoIndex transform flow,
+i.e., a sub flow only performing transformations, without importing data from sources or exporting data to targets.
+The decorator is needed for evaluating the flow with specific input data in Step 4.2 below.
+
+### Step 4.2: Provide the query logic
+
+Now we can create a function to query the index upon a given input query:
+
+```python title="quickstart.py"
+from psycopg_pool import ConnectionPool
+
+def search(pool: ConnectionPool, query: str, top_k: int = 5):
+    # Get the table name, for the export target in the text_embedding_flow above.
+    table_name = cocoindex.utils.get_target_storage_default_name(text_embedding_flow, "doc_embeddings")
+    # Evaluate the transform flow defined above with the input query, to get the embedding.
+    query_vector = text_to_embedding.eval(query)
+    # Run the query and get the results.
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT filename, text, embedding <=> %s::vector AS distance
+                FROM {table_name} ORDER BY distance LIMIT %s
+            """, (query_vector, top_k))
+            return [
+                {"filename": row[0], "text": row[1], "score": 1.0 - row[2]}
+                for row in cur.fetchall()
+            ]
+```
+
+In the function above, most parts are standard query logic - you can use any libraries you like.
+There're two CocoIndex-specific logic:
+
+1.  Get the table name from the export target in the `text_embedding_flow` above.
+    Since the table name for the `Postgres` target is not explicitly specified in the `export()` call,
+    CocoIndex uses a default name.
+    `cocoindex.utils.get_target_storage_default_name()` is a utility function to get the default table name for this case.
+
+2.  Evaluate the transform flow defined above with the input query, to get the embedding.
+    It's done by the `eval()` method of the transform flow `text_to_embedding`.
+    The return type of this method is `list[float]` as declared in the `text_to_embedding()` function (`cocoindex.DataSlice[list[float]]`).
+
+### Step 4.3: Update the main function
+
+Now we can update the main function to use the query function we just defined:
+
+```python title="quickstart.py"
+@cocoindex.main_fn()
+def _run():
+    # Initialize the database connection pool.
+    pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
+    # Run queries in a loop to demonstrate the query capabilities.
+    while True:
+        try:
+            query = input("Enter search query (or Enter to quit): ")
+            if query == '':
+                break
+            # Run the query function with the database connection pool and the query.
+            results = search(pool, query)
+            print("\nSearch results:")
+            for result in results:
+                print(f"[{result['score']:.3f}] {result['filename']}")
+                print(f"    {result['text']}")
+                print("---")
+            print()
+        except KeyboardInterrupt:
+            break
+```
+
+It interacts with users and search the database by calling the `search()` method created in Step 4.2.
+
+### Step 4.4: Run queries against the index
+
+Now we can run the same Python file, which will run the new main function:
 
 ```bash
 python quickstart.py
