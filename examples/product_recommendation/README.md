@@ -2,7 +2,7 @@
 
 We will build a real-time product recommendation engine with LLM and graph database. In particular, we will use LLM to understand the category (taxonomy) of a product. In addition, we will use LLM to enumerate the complementary products - users are likely to buy together with the current product (pencil and notebook). 
 
-We will use Knowledge Graph to explore the relationships between products that can be further used for product recommendations or labeling.
+We will use Graph to explore the relationships between products that can be further used for product recommendations or labeling.
 
 Please drop [CocoIndex on Github](https://github.com/cocoindex-io/cocoindex) a star to support us and stay tuned for more updates. Thank you so much 🥥🤗. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
