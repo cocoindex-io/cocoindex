@@ -1,8 +1,11 @@
+import os
 from dotenv import load_dotenv
+from psycopg_pool import ConnectionPool
 
 import cocoindex
 
-def text_to_embedding(text: cocoindex.DataSlice) -> cocoindex.DataSlice:
+@cocoindex.transform_flow()
+def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
     """
     Embed the text using a SentenceTransformer model.
     This is a shared logic between indexing and querying, so extract it as a function.
@@ -17,7 +20,7 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
     Define an example flow that embeds text into a vector database.
     """
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="markdown_files"))
+        cocoindex.sources.LocalFile(path="markdown_files", included_patterns=["*.md"]))
 
     doc_embeddings = data_scope.add_collector()
 
@@ -40,26 +43,45 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
                 field_name="embedding",
                 metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 
-query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
+# Keep for now to allow CocoInsight to query.
+# Will be removed later after we expose `search()` below as a query function (https://github.com/cocoindex-io/cocoindex/issues/502).
+cocoindex.query.SimpleSemanticsQueryHandler(
     name="SemanticsSearch",
     flow=text_embedding_flow,
     target_name="doc_embeddings",
     query_transform_flow=text_to_embedding,
     default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)
 
+def search(pool: ConnectionPool, query: str, top_k: int = 5):
+    table_name = cocoindex.utils.get_target_storage_default_name(text_embedding_flow, "doc_embeddings")
+    query_vector = text_to_embedding.eval(query)
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT filename, location, text, embedding <=> %s::vector AS distance
+                FROM {table_name}
+                ORDER BY distance
+                LIMIT %s
+            """, (query_vector, top_k))
+            return [
+                {"filename": row[0], "location": row[1], "text": row[2], "score": 1.0 - row[3]}
+                for row in cur.fetchall()
+            ]
+
 @cocoindex.main_fn()
 def _run():
+    pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         try:
             query = input("Enter search query (or Enter to quit): ")
             if query == '':
                 break
-            results, _ = query_handler.search(query, 10)
+            results = search(pool, query)
             print("\nSearch results:")
             for result in results:
-                print(f"[{result.score:.3f}] {result.data['filename']}")
-                print(f"    {result.data['text']}")
+                print(f"[{result['score']:.3f}] {result['filename']} location:{result['location']}")
+                print(f"    {result['text']}")
                 print("---")
             print()
         except KeyboardInterrupt:

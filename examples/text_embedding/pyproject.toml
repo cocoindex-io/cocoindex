@@ -3,4 +3,11 @@ name = "text-embedding"
 version = "0.1.0"
 description = "Simple example for cocoindex: build embedding index based on local text files."
 requires-python = ">=3.10"
-dependencies = ["cocoindex>=0.1.35", "python-dotenv>=1.0.1"]
+dependencies = [
+    "cocoindex>=0.1.39",
+    "python-dotenv>=1.0.1",
+    "psycopg[binary,pool]",
+]
+
+[tool.setuptools]
+packages = []
