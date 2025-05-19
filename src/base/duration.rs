@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use chrono::Duration;
 
 /// Parses a string of number-unit pairs into a vector of (number, unit),
@@ -30,7 +30,7 @@ fn parse_components(
                 result.push((num, unit));
                 iter.next();
             } else {
-                return Err(anyhow!("Invalid unit '{}' in: {}", unit, original_input));
+                bail!("Invalid unit '{}' in: {}", unit, original_input);
             }
         } else {
             return Err(anyhow!(
@@ -41,22 +41,6 @@ fn parse_components(
         }
     }
     Ok(result)
-}
-
-/// Checks if the sequence of units follows the specified order.
-fn check_order(units: &[char], order: &[char], input: &str) -> Result<()> {
-    let mut last_pos = -1;
-    for &unit in units {
-        if let Some(pos) = order.iter().position(|&u| u == unit) {
-            if pos as i32 <= last_pos {
-                return Err(anyhow!("Units out of order in: {}", input));
-            }
-            last_pos = pos as i32;
-        } else {
-            return Err(anyhow!("Invalid unit '{}' in: {}", unit, input));
-        }
-    }
-    Ok(())
 }
 
 /// Parses an ISO 8601 duration string into a `chrono::Duration`.
@@ -97,38 +81,6 @@ fn parse_iso8601_duration(s: &str, original_input: &str) -> Result<Duration> {
     } else {
         vec![]
     };
-
-    // Duplicate units not allowed in date part
-    let mut seen_date_units = std::collections::HashSet::new();
-    for &(_, unit) in &date_components {
-        if !seen_date_units.insert(unit) {
-            return Err(anyhow!(
-                "Duplicate '{}' in date part: {}",
-                unit,
-                original_input
-            ));
-        }
-    }
-
-    // Duplicate units not allowed in time part
-    let mut seen_time_units = std::collections::HashSet::new();
-    for &(_, unit) in &time_components {
-        if !seen_time_units.insert(unit) {
-            return Err(anyhow!(
-                "Duplicate '{}' in time part: {}",
-                unit,
-                original_input
-            ));
-        }
-    }
-
-    // Check date units are in order
-    let date_units: Vec<char> = date_components.iter().map(|&(_, u)| u).collect();
-    check_order(&date_units, &['Y', 'M', 'W', 'D'], original_input)?;
-
-    // Check time units are in order
-    let time_units: Vec<char> = time_components.iter().map(|&(_, u)| u).collect();
-    check_order(&time_units, &['H', 'M', 'S'], original_input)?;
 
     if date_components.is_empty() && time_components.is_empty() {
         return Err(anyhow!("No components in duration: {}", original_input));
@@ -175,42 +127,26 @@ fn parse_human_readable_duration(s: &str, original_input: &str) -> Result<Durati
         ));
     }
 
-    let components: Vec<(i64, &str)> = parts
+    let durations: Result<Vec<Duration>> = parts
         .chunks(2)
         .map(|chunk| {
-            let num_str = chunk[0];
-            let num = num_str
+            let num: i64 = chunk[0]
                 .parse()
-                .map_err(|_| anyhow!("Invalid number '{}' in: {}", num_str, original_input))?;
-            Ok((num, chunk[1]))
-        })
-        .collect::<Result<Vec<_>>>()?;
+                .map_err(|_| anyhow!("Invalid number '{}' in: {}", chunk[0], original_input))?;
 
-    let units: Vec<&str> = components.iter().map(|&(_, u)| u).collect();
-    check_order(
-        &units
-            .iter()
-            .map(|u| u.to_lowercase().chars().next().unwrap())
-            .collect::<Vec<_>>(),
-        &['d', 'h', 'm', 's', 'i', 'c'], // Abbreviation of day, hour, minute, second, millisecond, microsecond
-        original_input,
-    )?;
-
-    let total = components
-        .iter()
-        .fold(Duration::zero(), |acc, &(num, unit)| {
-            match unit.to_lowercase().as_str() {
-                "day" | "days" => acc + Duration::days(num),
-                "hour" | "hours" => acc + Duration::hours(num),
-                "minute" | "minutes" => acc + Duration::minutes(num),
-                "second" | "seconds" => acc + Duration::seconds(num),
-                "millisecond" | "milliseconds" => acc + Duration::milliseconds(num),
-                "microsecond" | "microseconds" => acc + Duration::microseconds(num),
-                _ => unreachable!("Invalid unit should be caught by prior validation"),
+            match chunk[1].to_lowercase().as_str() {
+                "day" | "days" => Ok(Duration::days(num)),
+                "hour" | "hours" => Ok(Duration::hours(num)),
+                "minute" | "minutes" => Ok(Duration::minutes(num)),
+                "second" | "seconds" => Ok(Duration::seconds(num)),
+                "millisecond" | "milliseconds" => Ok(Duration::milliseconds(num)),
+                "microsecond" | "microseconds" => Ok(Duration::microseconds(num)),
+                _ => bail!("Invalid unit '{}' in: {}", chunk[1], original_input),
             }
-        });
+        })
+        .collect();
 
-    Ok(total)
+    durations.map(|durs| durs.into_iter().sum())
 }
 
 /// Parses a duration string into a `chrono::Duration`, trying ISO 8601 first, then human-readable format.
@@ -230,13 +166,10 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
     }
 
     if is_likely_iso8601(s) {
-        // Try ISO 8601 format without fallbacks
-        return parse_iso8601_duration(s, original_input);
+        parse_iso8601_duration(s, original_input)
+    } else {
+        parse_human_readable_duration(s, original_input)
     }
-
-    // Allow maybe ISO-ish formats, so still try iso8601 first
-    parse_iso8601_duration(s, original_input)
-        .or_else(|_| parse_human_readable_duration(s, original_input))
 }
 
 #[cfg(test)]
@@ -386,39 +319,6 @@ mod tests {
     }
 
     #[test]
-    fn test_iso_out_of_order_unit() {
-        check_err_contains(
-            parse_duration("P1H2D"),
-            "Invalid unit 'H' in: P1H2D", // Why not units out of order
-            "\"P1H2D\"",
-        );
-        check_err_contains(
-            parse_duration("PT2S1H"),
-            "Units out of order in: PT2S1H",
-            "\"PT2S1H\"",
-        );
-        check_err_contains(
-            parse_duration("P1W1Y"),
-            "Units out of order in: P1W1Y",
-            "\"P1W1Y\"",
-        );
-    }
-
-    #[test]
-    fn test_iso_duplicated_unit() {
-        check_err_contains(
-            parse_duration("P1D1D"),
-            "Duplicate 'D' in date part: P1D1D",
-            "\"P1D1D\"",
-        );
-        check_err_contains(
-            parse_duration("PT1H1H"),
-            "Duplicate 'H' in time part: PT1H1H",
-            "\"PT1H1H\"",
-        );
-    }
-
-    #[test]
     fn test_iso_negative_number_after_p() {
         check_err_contains(
             parse_duration("P-1D"),
@@ -473,6 +373,33 @@ mod tests {
             parse_duration("P1DT2H3M4S"),
             Duration::days(1) + Duration::hours(2) + Duration::minutes(3) + Duration::seconds(4),
             "\"P1DT2H3M4S\"",
+        );
+    }
+
+    #[test]
+    fn test_iso_duplicated_unit() {
+        check_ok(parse_duration("P1D1D"), Duration::days(2), "\"P1D1D\"");
+        check_ok(parse_duration("PT1H1H"), Duration::hours(2), "\"PT1H1H\"");
+    }
+
+    #[test]
+    fn test_iso_out_of_order_unit() {
+        check_ok(
+            parse_duration("P1W1Y"),
+            Duration::days(365 + 7),
+            "\"P1W1Y\"",
+        );
+        check_ok(
+            parse_duration("PT2S1H"),
+            Duration::hours(1) + Duration::seconds(2),
+            "\"PT2S1H\"",
+        );
+        check_ok(parse_duration("P3M"), Duration::days(90), "\"PT2S1H\"");
+        check_ok(parse_duration("PT3M"), Duration::minutes(3), "\"PT2S1H\"");
+        check_err_contains(
+            parse_duration("P1H2D"),
+            "Invalid unit 'H' in: P1H2D", // Time part without 'T' is invalid
+            "\"P1H2D\"",
         );
     }
 
@@ -543,15 +470,6 @@ mod tests {
     }
 
     #[test]
-    fn test_human_out_of_order() {
-        check_err_contains(
-            parse_duration("1 second 2 hours"),
-            "Units out of order in: 1 second 2 hours",
-            "\"1 second 2 hours\"",
-        );
-    }
-
-    #[test]
     fn test_human_float_number_fail() {
         check_err_contains(
             parse_duration("1.5 hours"),
@@ -573,7 +491,7 @@ mod tests {
     fn test_human_unknown_unit() {
         check_err_contains(
             parse_duration("1 year"),
-            "Invalid unit 'y' in: 1 year",
+            "Invalid unit 'year' in: 1 year",
             "\"1 year\"",
         );
     }
@@ -679,6 +597,20 @@ mod tests {
             expected,
             "\"1 day 2 hours 3 minutes 4 seconds\"",
         );
+    }
+
+    #[test]
+    fn test_human_out_of_order() {
+        check_ok(
+            parse_duration("1 second 2 hours"),
+            Duration::hours(2) + Duration::seconds(1),
+            "\"1 second 2 hours\"",
+        );
+        check_ok(
+            parse_duration("7 minutes 6 hours 5 days"),
+            Duration::days(5) + Duration::hours(6) + Duration::minutes(7),
+            "\"7 minutes 6 hours 5 days\"",
+        )
     }
 
     #[test]

@@ -29,7 +29,6 @@ Range = Annotated[tuple[int, int], TypeKind('Range')]
 Json = Annotated[Any, TypeKind('Json')]
 LocalDateTime = Annotated[datetime.datetime, TypeKind('LocalDateTime')]
 OffsetDateTime = Annotated[datetime.datetime, TypeKind('OffsetDateTime')]
-TimeDelta = Annotated[datetime.timedelta, TypeKind('TimeDelta')]
 
 if TYPE_CHECKING:
     T_co = TypeVar('T_co', covariant=True)
