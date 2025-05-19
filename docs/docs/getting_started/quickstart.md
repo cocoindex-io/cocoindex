@@ -54,11 +54,7 @@ Create a new file `quickstart.py` and import the `cocoindex` library:
 import cocoindex
 ```
 
-Then we'll put the following pieces into the file:
-
-*   Define an indexing flow, which specifies a data flow to transform data from specified data source into a vector index.
-*   Define a query handler, which can be used to query the vector index.
-*   A main function, to interact with users and run queries using the query handler above.
+Then we'll create the indexing flow.
 
 ### Step 2.1: Define the indexing flow
 
@@ -309,5 +305,5 @@ Next, you may want to:
 
 *   Learn about [CocoIndex Basics](../core/basics.md).
 *   Learn about other examples in the [examples](https://github.com/cocoindex-io/cocoindex/tree/main/examples) directory.
-    *    The `text_embedding` example is this quickstart with some polishing (loading environment variables from `.env` file, extract pieces shared by the indexing flow and query handler into a function).
+    *    The `text_embedding` example is this quickstart.
     *    Pick other examples to learn upon your interest.
