@@ -102,12 +102,3 @@ CocoIndex uses internal storage for this purpose.
 
 Currently, CocoIndex uses Postgres database as the internal storage.
 See [Initialization](initialization) for configuring its location, and `cocoindex setup` CLI command (see [CocoIndex CLI](cli)) creates tables for the internal storage.
-
-## Retrieval
-
-There are two ways to retrieve data from target storage built by an indexing flow:
-
-*   Query the underlying target storage directly for maximum flexibility.
-*   Use CocoIndex *query handlers* for a more convenient experience with built-in tooling support (e.g. CocoInsight) to understand query performance against the target data.
-
-Query handlers are tied to specific indexing flows. They accept query inputs, transform them by defined operations, and retrieve matching data from the target storage that was created by the flow.
