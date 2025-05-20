@@ -1,14 +1,28 @@
-## Description
 # Build text embedding and semantic search 🔍 with Qdrant
 
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
-In this example, we will build index flow from text embedding from local markdown files, and query the index.
-We will use **Qdrant** as the vector database.
+CocoIndex supports Qdrant natively - [documentation](https://cocoindex.io/docs/ops/storages#qdrant). In this example, we will build index flow from text embedding from local markdown files, and query the index. We will use **Qdrant** as the vector database.
+
+We appreicate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
+
+<img width="1227" alt="coco feat qdrant" src="https://github.com/user-attachments/assets/a7b69fc1-d975-4a73-8677-d1315b0f06e7" />
+
+## Steps:
+### Indexing Flow:
+<img width="480" alt="Screenshot 2025-05-19 at 7 19 50 PM" src="https://github.com/user-attachments/assets/44d47b5e-b49b-4f05-9a00-dcb8027602a1" />
+
+1. We will ingest from a list of local files.
+2. For each file, perform chunking (Recursive Split) and then embeddings. 
+3. We will save the embeddings and the metadata in Postgres with PGVector.
+   
+### Query:
+We will be use Qdrant client to query the index, reusing the embedding operation in the indexing flow.
+
 
 ## Pre-requisites
 
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. Even the target store is Qdrant, CocoIndex uses Postgress to track the data lineage for incremental processing.
 
 - Run Qdrant.
 
