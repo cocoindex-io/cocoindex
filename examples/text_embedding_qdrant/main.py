@@ -92,6 +92,6 @@ def _main():
 
 
 if __name__ == "__main__":
-    load_dotenv(override=True)
+    load_dotenv()
     cocoindex.init()
     _main()

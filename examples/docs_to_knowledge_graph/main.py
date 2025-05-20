@@ -146,9 +146,3 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
         ),
         primary_key_fields=["id"],
     )
-
-def _run():
-    pass
-
-if __name__ == "__main__":
-    _run()

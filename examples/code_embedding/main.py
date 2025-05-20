@@ -8,7 +8,8 @@ def extract_extension(filename: str) -> str:
     """Extract the extension of a filename."""
     return os.path.splitext(filename)[1]
 
-def code_to_embedding(text: cocoindex.DataSlice) -> cocoindex.DataSlice:
+@cocoindex.transform_flow()
+def code_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
     """
     Embed the text using a SentenceTransformer model.
     """
@@ -65,23 +66,26 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
             ]
 
 def _main():
+    # Initialize the database connection pool.
+    pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         try:
             query = input("Enter search query (or Enter to quit): ")
             if query == '':
                 break
-            results, _ = query_handler.search(query, 10)
+            # Run the query function with the database connection pool and the query.
+            results = search(pool, query)
             print("\nSearch results:")
             for result in results:
-                print(f"[{result.score:.3f}] {result.data['filename']}")
-                print(f"    {result.data['code']}")
+                print(f"[{result['score']:.3f}] {result['filename']}")
+                print(f"    {result['code']}")
                 print("---")
             print()
         except KeyboardInterrupt:
             break
 
 if __name__ == "__main__":
-    load_dotenv(override=True)
+    load_dotenv()
     cocoindex.init()
     _main()

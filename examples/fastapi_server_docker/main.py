@@ -2,6 +2,7 @@ import cocoindex
 import uvicorn
 
 from fastapi import FastAPI
+from dotenv import load_dotenv
 
 from src.cocoindex_funs import code_embedding_flow, code_to_embedding
 
@@ -20,8 +21,7 @@ def query_endpoint(string: str):
     results, _ = query_handler.search(string, 10)
     return results
 
-def _run():
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=8080)
-    
 if __name__ == "__main__":
-    _run()
+    load_dotenv()
+    cocoindex.init()
+    uvicorn.run(fastapi_app, host="0.0.0.0", port=8080)

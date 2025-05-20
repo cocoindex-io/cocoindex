@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 import cocoindex
 import os
@@ -59,7 +60,7 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
                 for row in cur.fetchall()
             ]
 
-def _run():
+def _main():
     # Initialize the database connection pool.
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
@@ -80,4 +81,6 @@ def _run():
             break
 
 if __name__ == "__main__":
-    _run()
+    load_dotenv()
+    cocoindex.init()
+    _main()

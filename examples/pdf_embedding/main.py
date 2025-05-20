@@ -1,5 +1,6 @@
 import tempfile
 
+from dotenv import load_dotenv
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
@@ -74,7 +75,7 @@ query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
     query_transform_flow=text_to_embedding,
     default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)
 
-def _run():
+def _main():
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         try:
@@ -92,4 +93,6 @@ def _run():
             break
 
 if __name__ == "__main__":
-    _run()
+    load_dotenv()
+    cocoindex.init()
+    _main()
