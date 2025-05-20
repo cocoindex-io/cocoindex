@@ -489,7 +489,7 @@ class Flow:
         tree = Tree(f"Flow: {self.full_name}", style="cyan")
 
         def build_tree(label: str, lines: list):
-            node = Tree(label, style="bold magenta" if lines else "cyan")
+            node = Tree(label=label if lines else label + " None", style="cyan")
             for line in lines:
                 child_node = node.add(Text(line.content, style="yellow"))
                 child_node.children = build_tree("", line.children).children
