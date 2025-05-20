@@ -10,6 +10,7 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 ### Indexing Flow
 
 <img width="662" alt="PDF indexing flow" src="https://github.com/user-attachments/assets/5e132dd9-7120-4b28-bc57-88d6b5583ef4" />
+
 1. We will ingest a list of PDF files
 2. For each file
    - convert it to markdown
