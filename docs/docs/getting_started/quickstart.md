@@ -268,7 +268,7 @@ It interacts with users and search the database by calling the `search()` method
 
 ### Step 4.4: Run queries against the index
 
-Now we can run the same Python file, which will run the new main function:
+Now we can run the same Python file, which will run the new added main logic:
 
 ```bash
 python quickstart.py
