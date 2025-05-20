@@ -15,42 +15,42 @@ We'll talk about the code skeleton to initialize the library in your code, and t
 
 There're two options to initialize in your code:
 
-*   Use packaged main function. It's easier to start with.
+*   Use Cocoindex CLI. It's easier to start with.
 *   Explicit initialization. It's more flexible.
 
-### Packaged Main
+### CLI-Based Initialization
 
-The easiest way is to use a packaged main function:
+When you use the `cocoindex` command-line tool, the library is automatically initialized for you:
 
-<Tabs>
-<TabItem value="python" label="Python" default>
+1. **Environment File Loading**:
+    *   By default, the `cocoindex` CLI searches upward from the current directory for a `.env` file.
+    *   You can use `--env-file <path>` to specify one explicitly:
 
-The `@cocoindex.main_fn` decorator wraps your main function for CocoIndex:
+        ```sh
+        cocoindex --env-file path/to/custom.env <COMMAND> ...
+        ```
 
-```python
-import cocoindex
+    *   If no file is found, only existing system environment variables are used.
+    *   Loaded variables do **not** override existing system ones.
 
-@cocoindex.main_fn()
-def main():
-  ...
+2. **Automatic Library Initialization**:
+    *   The CLI automatically prepares everything using environment variables — no manual setup required.
+    *   Your script (e.g. `main.py`) is just used to discover defined flows.
 
-if __name__ == "__main__":
-  main()
-```
+    See [Environment Variables](#environment-variables) for supported variables.
 
-</TabItem>
-</Tabs>
+    The primary way to interact with CocoIndex in this setup is via CLI commands that operate on your script:
+    You interact with CocoIndex via CLI commands that operate on your script:
 
-This takes care of the following effects:
+    ```sh
+    # Example: List flows defined in my_app.py
+    cocoindex ls my_app.py
 
-1.  Initialize the library with settings loaded from environment variables, if not explicitly provided.
-2.  If the program is executed with the `cocoindex` command, CocoIndex CLI will take over the control.
-    It provides a bunch of commands for easily managing and inspecting indexes.
+    # Example: Update a specific flow in my_app.py
+    cocoindex update my_app.py:MyFlowName
+    ```
+
     See [CocoIndex CLI](/docs/core/cli) for more details.
-3.  Otherwise, it will run the main function.
-
-See [Environment Variables](#environment-variables) for supported environment variables.
-
 
 ### Explicit Initialization
 
@@ -123,7 +123,11 @@ If you use the Postgres database hosted by [Supabase](https://supabase.com/), pl
 
 ## Environment Variables
 
-When you use the packaged main function, settings will be loaded from environment variables.
+When using the CLI, settings are primarily loaded from environment variables. The CLI will:
+
+*   Use the `--env-file` option if provided.
+*   Otherwise, try to locate a `.env` file by searching upward from the current directory.
+
 Each setting field has a corresponding environment variable:
 
 | environment variable | corresponding field in `Settings` | required? |

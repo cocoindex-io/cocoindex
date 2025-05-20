@@ -30,17 +30,7 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 ```
 
 It creates a `demo_flow` object in `cocoindex.Flow` type.
-To enable CLI, you also need to make sure you have a main function decorated with `@cocoindex.main_fn()`:
 
-
-```python title="main.py"
-@cocoindex.main_fn()
-def main():
-    ...
-
-if __name__ == "__main__":
-    main()
-```
 </TabItem>
 </Tabs>
 
@@ -78,7 +68,7 @@ The `cocoindex update` subcommand creates/updates data in the target storage.
 Once it's done, the target data is fresh up to the moment when the function is called.
 
 ```sh
-python main.py cocoindex update
+cocoindex update main.py
 ```
 
 #### Library API
@@ -115,7 +105,7 @@ Change capture mechanisms enable CocoIndex to continuously capture changes from 
 To perform live update, run the `cocoindex update` subcommand with `-L` option:
 
 ```sh
-python main.py cocoindex update -L
+cocoindex update main.py -L
 ```
 
 If there's at least one data source with change capture mechanism enabled, it will keep running until the aborted (e.g. by `Ctrl-C`).
@@ -232,7 +222,7 @@ It takes the following options:
 Example:
 
 ```sh
-python main.py cocoindex evaluate --output-dir ./eval_output
+cocoindex evaluate main.py --output-dir ./eval_output
 ```
 
 ### Library API
