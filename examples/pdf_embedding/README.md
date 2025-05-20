@@ -1,4 +1,5 @@
-Simple example for cocoindex: build embedding index based on local files.
+# Build embedding index from PDF files and query with natural language
+[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
 ## Prerequisite
 [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
