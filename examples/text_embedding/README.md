@@ -17,7 +17,7 @@ We appreicate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 3. We will save the embeddings and the metadata in Postgres with PGVector.
    
 ### Query:
-1. We will match against user-provided text by a SQL query, reusing the embedding operation in the indexing flow.
+We will match against user-provided text by a SQL query, reusing the embedding operation in the indexing flow.
 
 
 ## Prerequisite
