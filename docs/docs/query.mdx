@@ -31,7 +31,7 @@ In this case, you can:
 
 3.  At query time, you usually want to directly run the function with specific input data, instead of letting it called as part of a long-lived indexing flow.
     To do this, declare the function as a *transform flow*, by decorating it with `@cocoindex.transform_flow()`.
-    This will add `eval()` / `eval_async()` methods to the function, so that you can directly call with specific input data.
+    This will add `eval()` and `eval_async()` methods to the function, so that you can directly call with specific input data.
 
 
 <Tabs>
