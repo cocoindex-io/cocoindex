@@ -21,8 +21,8 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
   <img width="434" alt="Screenshot 2025-05-19 at 10 14 36 PM" src="https://github.com/user-attachments/assets/3a506034-698f-480a-b653-22184dae4e14" />
 </p>
 
-1. We will ingest CocoIndex codebase
-2. For each file, perform chunking (Tree-sitter) and then embeddings. 
+1. We will ingest CocoIndex codebase.
+2. For each file, perform chunking (Tree-sitter) and then embedding. 
 3. We will save the embeddings and the metadata in Postgres with PGVector.
    
 ### Query:
