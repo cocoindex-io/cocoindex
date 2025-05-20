@@ -1,4 +1,3 @@
-from dotenv import load_dotenv
 import cocoindex
 import datetime
 import os
@@ -7,9 +6,6 @@ import base64
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from cocoindex.lib import main_fn
-
-load_dotenv(override=True)
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma3"
@@ -120,8 +116,6 @@ def search(q: str = Query(..., description="Search query"), limit: int = Query(5
         })
     return {"results": out}
 
-# --- CLI entrypoint ---
-@main_fn()
 def _run():
     pass
     
