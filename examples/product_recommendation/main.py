@@ -61,7 +61,7 @@ class ProductTaxonomyInfo:
     complementary_taxonomies: list[ProductTaxonomy]
 
 @cocoindex.op.function(behavior_version=2)
-def extract_product_info(product: cocoindex.typing.Json, filename: str) -> ProductInfo:
+def extract_product_info(product: cocoindex.Json, filename: str) -> ProductInfo:
     # Print  markdown for LLM to extract the taxonomy and complimentary taxonomy
     return ProductInfo(
         id=f"{filename.removesuffix('.json')}",
