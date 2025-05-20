@@ -1,7 +1,7 @@
 # Build real-time index for codebase 
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
-CocoIndex provides built-in support for code base chunking, with native Tree-sitter support. In this example, we will build real-time index for codebase using CocoIndex. 
+CocoIndex provides built-in support for code base chunking, using Tree-sitter to keep syntax boundary. In this example, we will build real-time index for codebase using CocoIndex. 
 
 We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
