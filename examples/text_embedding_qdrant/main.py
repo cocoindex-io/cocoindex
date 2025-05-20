@@ -5,7 +5,7 @@ from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 import cocoindex
 
 # Define Qdrant connection constants
-QDRANT_URL = "http://localhost:6333"
+QDRANT_URL = "http://localhost:6334"
 QDRANT_COLLECTION = "cocoindex"
 
 
