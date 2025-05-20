@@ -31,6 +31,39 @@ struct StatsReportState {
 const MIN_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+struct SharedAckFn {
+    count: usize,
+    ack_fn: Option<Box<dyn FnOnce() -> BoxFuture<'static, Result<()>> + Send + Sync>>,
+}
+
+impl SharedAckFn {
+    fn new(
+        count: usize,
+        ack_fn: Box<dyn FnOnce() -> BoxFuture<'static, Result<()>> + Send + Sync>,
+    ) -> Self {
+        Self {
+            count,
+            ack_fn: Some(ack_fn),
+        }
+    }
+
+    async fn ack(v: &Mutex<Self>) -> Result<()> {
+        let ack_fn = {
+            let mut v = v.lock().unwrap();
+            v.count -= 1;
+            if v.count > 0 {
+                None
+            } else {
+                v.ack_fn.take()
+            }
+        };
+        if let Some(ack_fn) = ack_fn {
+            ack_fn().await?;
+        }
+        Ok(())
+    }
+}
+
 async fn update_source(
     flow_ctx: Arc<FlowContext>,
     plan: Arc<plan::ExecutionPlan>,
@@ -92,10 +125,50 @@ async fn update_source(
             futs.push(
                 async move {
                     let mut change_stream = change_stream;
-                    while let Some(change) = change_stream.next().await {
-                        source_context
-                            .process_change(change, &pool, &source_update_stats)
-                            .map(tokio::spawn);
+                    let retry_options = retryable::RetryOptions {
+                        max_retries: None,
+                        initial_backoff: std::time::Duration::from_secs(5),
+                        max_backoff: std::time::Duration::from_secs(60),
+                    };
+                    loop {
+                        // Workaround as AsyncFnMut isn't mature yet.
+                        // Should be changed to use AsyncFnMut once it is.
+                        let change_stream = tokio::sync::Mutex::new(&mut change_stream);
+                        let change_msg = retryable::run(
+                            || async {
+                                let mut change_stream = change_stream.lock().await;
+                                change_stream
+                                    .next()
+                                    .await
+                                    .transpose()
+                                    .map_err(retryable::Error::always_retryable)
+                            },
+                            &retry_options,
+                        )
+                        .await?;
+                        let change_msg = if let Some(change_msg) = change_msg {
+                            change_msg
+                        } else {
+                            break;
+                        };
+                        let ack_fn = change_msg.ack_fn.map(|ack_fn| {
+                            Arc::new(Mutex::new(SharedAckFn::new(
+                                change_msg.changes.iter().len(),
+                                ack_fn,
+                            )))
+                        });
+                        for change in change_msg.changes {
+                            let ack_fn = ack_fn.clone();
+                            tokio::spawn(source_context.clone().process_source_key(
+                                change.key,
+                                change.data,
+                                source_update_stats.clone(),
+                                ack_fn.map(|ack_fn| {
+                                    move || async move { SharedAckFn::ack(&ack_fn).await }
+                                }),
+                                pool.clone(),
+                            ));
+                        }
                     }
                     Ok(())
                 }

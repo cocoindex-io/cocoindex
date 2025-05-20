@@ -3,7 +3,7 @@ name = "cocoindex"
 # Version used for local development is always higher than others to take precedence.
 # Will be overridden for specific release versions.
 version = "999.0.0"
-edition = "2021"
+edition = "2024"
 
 [profile.release]
 codegen-units = 1

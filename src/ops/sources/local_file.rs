@@ -43,7 +43,7 @@ impl SourceExecutor for Executor {
     fn list<'a>(
         &'a self,
         options: &'a SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>> {
+    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>> {
         let root_component_size = self.root_path.components().count();
         let mut dirs = Vec::new();
         dirs.push(Cow::Borrowed(&self.root_path));
@@ -69,7 +69,7 @@ impl SourceExecutor for Executor {
                             None
                         };
                         if let Some(relative_path) = relative_path.to_str() {
-                            yield vec![SourceRowMetadata {
+                            yield vec![PartialSourceRowMetadata {
                                 key: KeyValue::Str(relative_path.into()),
                                 ordinal,
                             }];
@@ -88,9 +88,12 @@ impl SourceExecutor for Executor {
         &self,
         key: &KeyValue,
         options: &SourceExecutorGetOptions,
-    ) -> Result<Option<SourceValue>> {
+    ) -> Result<PartialSourceRowData> {
         if !self.is_file_included(key.str_value()?.as_ref()) {
-            return Ok(None);
+            return Ok(PartialSourceRowData {
+                value: Some(SourceValue::NonExistence),
+                ordinal: Some(Ordinal::unavailable()),
+            });
         }
         let path = self.root_path.join(key.str_value()?.as_ref());
         let ordinal = if options.include_ordinal {
@@ -106,15 +109,17 @@ impl SourceExecutor for Executor {
                     } else {
                         fields_value!(String::from_utf8_lossy(&content).to_string())
                     };
-                    Some(content)
+                    Some(SourceValue::Existence(content))
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Some(SourceValue::NonExistence)
+                }
                 Err(e) => Err(e)?,
             }
         } else {
             None
         };
-        Ok(Some(SourceValue { value, ordinal }))
+        Ok(PartialSourceRowData { value, ordinal })
     }
 }
 

@@ -1,8 +1,6 @@
 from dotenv import load_dotenv
 
-import asyncio
 import cocoindex
-import datetime
 import os
 
 @cocoindex.flow_def(name="AmazonS3TextEmbedding")
@@ -20,8 +18,7 @@ def amazon_s3_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scop
             prefix=prefix,
             included_patterns=["*.md", "*.txt", "*.docx"],
             binary=False,
-            sqs_queue_url=sqs_queue_url),
-        refresh_interval=datetime.timedelta(minutes=1))
+            sqs_queue_url=sqs_queue_url))
 
     doc_embeddings = data_scope.add_collector()
 

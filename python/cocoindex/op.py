@@ -100,8 +100,8 @@ def _register_op_factory(
             return op_args.behavior_version
 
     class _WrappedClass(executor_cls, _Fallback):
-        _args_converters: list[Callable[[Any], Any]]
-        _kwargs_converters: dict[str, Callable[[str, Any], Any]]
+        _args_decoders: list[Callable[[Any], Any]]
+        _kwargs_decoders: dict[str, Callable[[str, Any], Any]]
         _acall: Callable
 
         def __init__(self, spec):
@@ -109,17 +109,17 @@ def _register_op_factory(
             self.spec = spec
             self._acall = _to_async_call(super().__call__)
 
-        def analyze(self, *args, **kwargs):
+        def analyze(self, *args: _engine.OpArgSchema, **kwargs: _engine.OpArgSchema):
             """
             Analyze the spec and arguments. In this phase, argument types should be validated.
             It should return the expected result type for the current op.
             """
-            self._args_converters = []
-            self._kwargs_converters = {}
+            self._args_decoders = []
+            self._kwargs_decoders = {}
 
             # Match arguments with parameters.
             next_param_idx = 0
-            for arg in  args:
+            for arg in args:
                 if next_param_idx >= len(expected_args):
                     raise ValueError(
                         f"Too many arguments passed in: {len(args)} > {len(expected_args)}")
@@ -128,7 +128,7 @@ def _register_op_factory(
                     inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.VAR_KEYWORD):
                     raise ValueError(
                         f"Too many positional arguments passed in: {len(args)} > {next_param_idx}")
-                self._args_converters.append(
+                self._args_decoders.append(
                     make_engine_value_decoder(
                         [arg_name], arg.value_type['type'], arg_param.annotation))
                 if arg_param.kind != inspect.Parameter.VAR_POSITIONAL:
@@ -146,7 +146,7 @@ def _register_op_factory(
                 if expected_arg is None:
                     raise ValueError(f"Unexpected keyword argument passed in: {kwarg_name}")
                 arg_param = expected_arg[1]
-                self._kwargs_converters[kwarg_name] = make_engine_value_decoder(
+                self._kwargs_decoders[kwarg_name] = make_engine_value_decoder(
                     [kwarg_name], kwarg.value_type['type'], arg_param.annotation)
 
             missing_args = [name for (name, arg) in expected_kwargs
@@ -174,8 +174,8 @@ def _register_op_factory(
                 await _to_async_call(setup_method)()
 
         async def __call__(self, *args, **kwargs):
-            converted_args = (converter(arg) for converter, arg in zip(self._args_converters, args))
-            converted_kwargs = {arg_name: self._kwargs_converters[arg_name](arg)
+            decoded_args = (decoder(arg) for decoder, arg in zip(self._args_decoders, args))
+            decoded_kwargs = {arg_name: self._kwargs_decoders[arg_name](arg)
                                 for arg_name, arg in kwargs.items()}
 
             if op_args.gpu:
@@ -185,9 +185,9 @@ def _register_op_factory(
                 # For now, we use a lock to ensure only one task is executed at a time.
                 # TODO: Implement multi-processing dispatching.
                 async with _gpu_dispatch_lock:
-                    output = await self._acall(*converted_args, **converted_kwargs)
+                    output = await self._acall(*decoded_args, **decoded_kwargs)
             else:
-                output = await self._acall(*converted_args, **converted_kwargs)
+                output = await self._acall(*decoded_args, **decoded_kwargs)
             return encode_engine_value(output)
 
     _WrappedClass.__name__ = executor_cls.__name__

@@ -126,7 +126,7 @@ impl Executor {
         file: File,
         new_folder_ids: &mut Vec<Arc<str>>,
         seen_ids: &mut HashSet<Arc<str>>,
-    ) -> Result<Option<SourceRowMetadata>> {
+    ) -> Result<Option<PartialSourceRowMetadata>> {
         if file.trashed == Some(true) {
             return Ok(None);
         }
@@ -144,7 +144,7 @@ impl Executor {
             new_folder_ids.push(id);
             None
         } else if is_supported_file_type(&mime_type) {
-            Some(SourceRowMetadata {
+            Some(PartialSourceRowMetadata {
                 key: KeyValue::Str(id),
                 ordinal: file.modified_time.map(|t| t.try_into()).transpose()?,
             })
@@ -190,7 +190,7 @@ impl Executor {
     async fn get_recent_updates(
         &self,
         cutoff_time: &mut DateTime<Utc>,
-    ) -> Result<Vec<SourceChange>> {
+    ) -> Result<SourceChangeMessage> {
         let mut page_size: i32 = 10;
         let mut next_page_token: Option<String> = None;
         let mut changes = Vec::new();
@@ -220,13 +220,8 @@ impl Executor {
                 let file_id = file.id.ok_or_else(|| anyhow!("File has no id"))?;
                 if self.is_file_covered(&file_id).await? {
                     changes.push(SourceChange {
-                        ordinal: Some(modified_time.try_into()?),
                         key: KeyValue::Str(Arc::from(file_id)),
-                        value: if file.trashed == Some(true) {
-                            SourceValueChange::Delete
-                        } else {
-                            SourceValueChange::Upsert(None)
-                        },
+                        data: None,
                     });
                 }
             }
@@ -239,7 +234,10 @@ impl Executor {
             page_size = 100;
         }
         *cutoff_time = Self::make_cutoff_time(most_recent_modified_time, start_time);
-        Ok(changes)
+        Ok(SourceChangeMessage {
+            changes,
+            ack_fn: None,
+        })
     }
 
     async fn is_file_covered(&self, file_id: &str) -> Result<bool> {
@@ -305,7 +303,7 @@ impl SourceExecutor for Executor {
     fn list<'a>(
         &'a self,
         options: &'a SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>> {
+    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>> {
         let mut seen_ids = HashSet::new();
         let mut folder_ids = self.root_folder_ids.clone();
         let fields = format!(
@@ -341,7 +339,7 @@ impl SourceExecutor for Executor {
         &self,
         key: &KeyValue,
         options: &SourceExecutorGetOptions,
-    ) -> Result<Option<SourceValue>> {
+    ) -> Result<PartialSourceRowData> {
         let file_id = key.str_value()?;
         let fields = format!(
             "id,name,mimeType,trashed{}",
@@ -359,7 +357,10 @@ impl SourceExecutor for Executor {
         let file = match resp {
             Some((_, file)) if file.trashed != Some(true) => file,
             _ => {
-                return Ok(None);
+                return Ok(PartialSourceRowData {
+                    value: Some(SourceValue::NonExistence),
+                    ordinal: Some(Ordinal::unavailable()),
+                });
             }
         };
         let ordinal = if options.include_ordinal {
@@ -411,14 +412,16 @@ impl SourceExecutor for Executor {
                             .into()
                     },
                 ];
-                Some(FieldValues { fields })
+                Some(SourceValue::Existence(FieldValues { fields }))
             }
             None => None,
         };
-        Ok(Some(SourceValue { value, ordinal }))
+        Ok(PartialSourceRowData { value, ordinal })
     }
 
-    async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
+    async fn change_stream(
+        &self,
+    ) -> Result<Option<BoxStream<'async_trait, Result<SourceChangeMessage>>>> {
         let poll_interval = if let Some(poll_interval) = self.recent_updates_poll_interval {
             poll_interval
         } else {
@@ -430,17 +433,7 @@ impl SourceExecutor for Executor {
         let stream = stream! {
             loop {
                 interval.tick().await;
-                let changes = self.get_recent_updates(&mut cutoff_time).await;
-                match changes {
-                    Ok(changes) => {
-                        for change in changes {
-                            yield change;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error getting recent updates: {e}");
-                    }
-                }
+                yield self.get_recent_updates(&mut cutoff_time).await;
             }
         };
         Ok(Some(stream.boxed()))

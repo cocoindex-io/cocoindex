@@ -11,6 +11,7 @@ from .convert import dump_engine_object
 def init(settings: setting.Settings):
     """Initialize the cocoindex library."""
     _engine.init(dump_engine_object(settings))
+    setting.set_app_namespace(settings.app_namespace)
 
 
 def start_server(settings: setting.ServerSettings):

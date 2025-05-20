@@ -3,7 +3,6 @@ use async_stream::try_stream;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use log::warn;
 use std::sync::Arc;
 
 use crate::base::field_attrs;
@@ -23,6 +22,19 @@ struct SqsContext {
     client: aws_sdk_sqs::Client,
     queue_url: String,
 }
+
+impl SqsContext {
+    async fn delete_message(&self, receipt_handle: String) -> Result<()> {
+        self.client
+            .delete_message()
+            .queue_url(&self.queue_url)
+            .receipt_handle(receipt_handle)
+            .send()
+            .await?;
+        Ok(())
+    }
+}
+
 struct Executor {
     client: Client,
     bucket_name: String,
@@ -49,7 +61,7 @@ impl Executor {
 }
 
 fn datetime_to_ordinal(dt: &aws_sdk_s3::primitives::DateTime) -> Ordinal {
-    Ordinal((dt.as_nanos() / 1000) as i64)
+    Ordinal(Some((dt.as_nanos() / 1000) as i64))
 }
 
 #[async_trait]
@@ -57,7 +69,7 @@ impl SourceExecutor for Executor {
     fn list<'a>(
         &'a self,
         _options: &'a SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<SourceRowMetadata>>> {
+    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>> {
         try_stream! {
             let mut continuation_token = None;
             loop {
@@ -86,7 +98,7 @@ impl SourceExecutor for Executor {
                                 .map(|gs| gs.is_match(key))
                                 .unwrap_or(false);
                             if include && !exclude {
-                                batch.push(SourceRowMetadata {
+                                batch.push(PartialSourceRowMetadata {
                                     key: KeyValue::Str(key.to_string().into()),
                                     ordinal: obj.last_modified().map(datetime_to_ordinal),
                                 });
@@ -110,10 +122,13 @@ impl SourceExecutor for Executor {
         &self,
         key: &KeyValue,
         options: &SourceExecutorGetOptions,
-    ) -> Result<Option<SourceValue>> {
+    ) -> Result<PartialSourceRowData> {
         let key_str = key.str_value()?;
         if !self.is_file_included(key_str) {
-            return Ok(None);
+            return Ok(PartialSourceRowData {
+                value: Some(SourceValue::NonExistence),
+                ordinal: Some(Ordinal::unavailable()),
+            });
         }
         let resp = self
             .client
@@ -123,11 +138,13 @@ impl SourceExecutor for Executor {
             .send()
             .await;
         let obj = match resp {
-            Ok(o) => o,
-            Err(e) => {
-                warn!("Failed to fetch S3 object {}: {}", key_str, e);
-                return Ok(None);
+            Err(e) if e.as_service_error().map_or(false, |e| e.is_no_such_key()) => {
+                return Ok(PartialSourceRowData {
+                    value: Some(SourceValue::NonExistence),
+                    ordinal: Some(Ordinal::unavailable()),
+                });
             }
+            r => r?,
         };
         let ordinal = if options.include_ordinal {
             obj.last_modified().map(datetime_to_ordinal)
@@ -136,24 +153,20 @@ impl SourceExecutor for Executor {
         };
         let value = if options.include_value {
             let bytes = obj.body.collect().await?.into_bytes();
-            Some(if self.binary {
+            Some(SourceValue::Existence(if self.binary {
                 fields_value!(bytes.to_vec())
             } else {
-                match String::from_utf8(bytes.to_vec()) {
-                    Ok(s) => fields_value!(s),
-                    Err(e) => {
-                        warn!("Failed to decode S3 object {} as UTF-8: {}", key_str, e);
-                        return Ok(None);
-                    }
-                }
-            })
+                fields_value!(String::from_utf8_lossy(&bytes).to_string())
+            }))
         } else {
             None
         };
-        Ok(Some(SourceValue { value, ordinal }))
+        Ok(PartialSourceRowData { value, ordinal })
     }
 
-    async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
+    async fn change_stream(
+        &self,
+    ) -> Result<Option<BoxStream<'async_trait, Result<SourceChangeMessage>>>> {
         let sqs_context = if let Some(sqs_context) = &self.sqs_context {
             sqs_context
         } else {
@@ -161,16 +174,16 @@ impl SourceExecutor for Executor {
         };
         let stream = stream! {
             loop {
-                let changes = match self.poll_sqs(&sqs_context).await {
-                    Ok(changes) => changes,
+                 match self.poll_sqs(&sqs_context).await {
+                    Ok(messages) => {
+                        for message in messages {
+                            yield Ok(message);
+                        }
+                    }
                     Err(e) => {
-                        warn!("Failed to poll SQS: {}", e);
-                        continue;
+                        yield Err(e);
                     }
                 };
-                for change in changes {
-                    yield change;
-                }
             }
         };
         Ok(Some(stream.boxed()))
@@ -179,7 +192,7 @@ impl SourceExecutor for Executor {
 
 #[derive(Debug, Deserialize)]
 pub struct S3EventNotification {
-    #[serde(rename = "Records")]
+    #[serde(default, rename = "Records")]
     pub records: Vec<S3EventRecord>,
 }
 
@@ -187,8 +200,7 @@ pub struct S3EventNotification {
 pub struct S3EventRecord {
     #[serde(rename = "eventName")]
     pub event_name: String,
-    // pub eventTime: String,
-    pub s3: S3Entity,
+    pub s3: Option<S3Entity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,7 +220,7 @@ pub struct S3Object {
 }
 
 impl Executor {
-    async fn poll_sqs(&self, sqs_context: &Arc<SqsContext>) -> Result<Vec<SourceChange>> {
+    async fn poll_sqs(&self, sqs_context: &Arc<SqsContext>) -> Result<Vec<SourceChangeMessage>> {
         let resp = sqs_context
             .client
             .receive_message()
@@ -222,36 +234,53 @@ impl Executor {
         } else {
             return Ok(Vec::new());
         };
-        let mut changes = vec![];
-        for message in messages.into_iter().filter_map(|m| m.body) {
-            let notification: S3EventNotification = serde_json::from_str(&message)?;
-            for record in notification.records {
-                if record.s3.bucket.name != self.bucket_name {
-                    continue;
+        let mut change_messages = vec![];
+        for message in messages.into_iter() {
+            if let Some(body) = message.body {
+                let notification: S3EventNotification = serde_json::from_str(&body)?;
+                let mut changes = vec![];
+                for record in notification.records {
+                    let s3 = if let Some(s3) = record.s3 {
+                        s3
+                    } else {
+                        continue;
+                    };
+                    if s3.bucket.name != self.bucket_name {
+                        continue;
+                    }
+                    if !self
+                        .prefix
+                        .as_ref()
+                        .map_or(true, |prefix| s3.object.key.starts_with(prefix))
+                    {
+                        continue;
+                    }
+                    if record.event_name.starts_with("ObjectCreated:")
+                        || record.event_name.starts_with("ObjectRemoved:")
+                    {
+                        changes.push(SourceChange {
+                            key: KeyValue::Str(s3.object.key.into()),
+                            data: None,
+                        });
+                    }
                 }
-                if !self
-                    .prefix
-                    .as_ref()
-                    .map_or(true, |prefix| record.s3.object.key.starts_with(prefix))
-                {
-                    continue;
-                }
-                if record.event_name.starts_with("ObjectCreated:") {
-                    changes.push(SourceChange {
-                        key: KeyValue::Str(record.s3.object.key.into()),
-                        ordinal: None,
-                        value: SourceValueChange::Upsert(None),
-                    });
-                } else if record.event_name.starts_with("ObjectDeleted:") {
-                    changes.push(SourceChange {
-                        key: KeyValue::Str(record.s3.object.key.into()),
-                        ordinal: None,
-                        value: SourceValueChange::Delete,
-                    });
+                if let Some(receipt_handle) = message.receipt_handle {
+                    if !changes.is_empty() {
+                        let sqs_context = sqs_context.clone();
+                        change_messages.push(SourceChangeMessage {
+                            changes,
+                            ack_fn: Some(Box::new(move || {
+                                async move { sqs_context.delete_message(receipt_handle).await }
+                                    .boxed()
+                            })),
+                        });
+                    } else {
+                        sqs_context.delete_message(receipt_handle).await?;
+                    }
                 }
             }
         }
-        Ok(changes)
+        Ok(change_messages)
     }
 }
 

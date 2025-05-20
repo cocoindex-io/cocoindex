@@ -45,6 +45,11 @@ const sidebars: SidebarsConfig = {
       ],
     },
     {
+      type: 'doc',
+      id: 'query',
+      label: 'Query Support',
+    },
+    {
       type: 'category',
       label: 'About',
       collapsed: false,

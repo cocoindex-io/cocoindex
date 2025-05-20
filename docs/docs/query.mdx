@@ -1,0 +1,102 @@
+---
+title: Query Support
+description: CocoIndex supports vector search and text search.
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# CocoIndex Query Support
+
+The main functionality of CocoIndex is indexing.
+The goal of indexing is to enable efficient querying against your data.
+You can use any libraries or frameworks of your choice to perform queries.
+At the same time, CocoIndex provides seamless integration between indexing and querying workflows.
+For example, you can share transformations between indexing and querying, and easily retrieve table names when using CocoIndex's default naming conventions.
+
+## Transform Flow
+
+Sometimes a part of the transformation logic needs to be shared between indexing and querying,
+e.g. when we build a vector index and query against it, the embedding computation needs to be consistent between indexing and querying.
+
+In this case, you can:
+
+1.  Extract a sub-flow with the shared transformation logic into a standalone function.
+    *   It takes one or more data slices as input.
+    *   It returns one data slice as output.
+    *   You need to annotate data types for both inputs and outputs as type parameter for `cocoindex.DataSlice[T]`. See [data types](./core/data_types.mdx) for more details about supported data types.
+
+2.  When you're defining your indexing flow, you can directly call the function.
+    The body will be executed, so that the transformation logic will be added as part of the indexing flow.
+
+3.  At query time, you usually want to directly run the function with specific input data, instead of letting it called as part of a long-lived indexing flow.
+    To do this, declare the function as a *transform flow*, by decorating it with `@cocoindex.transform_flow()`.
+    This will add `eval()` and `eval_async()` methods to the function, so that you can directly call with specific input data.
+
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+The [quickstart](getting_started/quickstart#step-41-extract-common-transformations) shows an example:
+
+```python
+@cocoindex.transform_flow()
+def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
+    return text.transform(
+        cocoindex.functions.SentenceTransformerEmbed(
+            model="sentence-transformers/all-MiniLM-L6-v2"))
+```
+
+When you're defining your indexing flow, you can directly call the function:
+
+```python
+with doc["chunks"].row() as chunk:
+    chunk["embedding"] = text_to_embedding(chunk["text"])
+```
+
+or, using the `call()` method of the transform flow on the first argument, to make operations chainable:
+
+```python
+with doc["chunks"].row() as chunk:
+    chunk["embedding"] = chunk["text"].call(text_to_embedding)
+```
+
+Any time, you can call the `eval()` method with specific string, which will return a `list[float]`:
+
+```python
+print(text_to_embedding.eval("Hello, world!"))
+```
+
+If you're in an async context, please call the `eval_async()` method instead:
+
+```python
+print(await text_to_embedding.eval_async("Hello, world!"))
+```
+
+</TabItem>
+</Tabs>
+
+## Get Target Native Names
+
+In your indexing flow, when you export data to a target, you can specify the target name (e.g. a database table name, a collection name, the node label in property graph databases, etc.) explicitly,
+or for some backends you can also omit it and let CocoIndex generate a default name for you.
+For the latter case, CocoIndex provides a utility function `cocoindex.utils.get_target_storage_default_name()` to get the default name.
+It takes the following arguments:
+
+*   `flow` (type: `cocoindex.Flow`): The flow to get the default name for.
+*   `target_name` (type: `str`): The export target name, appeared in the `export()` call.
+
+For example:
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+```python
+table_name = cocoindex.utils.get_target_storage_default_name(text_embedding_flow, "doc_embeddings")
+query = f"SELECT filename, text FROM {table_name} ORDER BY embedding <=> %s::vector DESC LIMIT 5"
+...
+```
+
+</TabItem>
+</Tabs>
+

@@ -123,7 +123,7 @@ def cli(env_file: str | None):
     loaded_env_path = None
     dotenv_path = env_file or os.path.join(os.getcwd(), ".env")
 
-    if load_dotenv(dotenv_path=dotenv_path, override=True):
+    if load_dotenv(dotenv_path=dotenv_path):
         loaded_env_path = os.path.abspath(dotenv_path)
         click.echo(f"Loaded environment variables from: {loaded_env_path}", err=True)
 
@@ -189,10 +189,12 @@ def show(app_flow_specifier: str, color: bool, verbose: bool):
     Show the flow spec and schema.
 
     APP_FLOW_SPECIFIER: Specifies the application and optionally the target flow.
-    Can be one of the following formats:\n
-      - path/to/your_app.py\n
-      - an_installed.module_name\n
-      - path/to/your_app.py:SpecificFlowName\n
+    Can be one of the following formats:
+
+    \b
+      - path/to/your_app.py
+      - an_installed.module_name
+      - path/to/your_app.py:SpecificFlowName
       - an_installed.module_name:SpecificFlowName
 
     :SpecificFlowName can be omitted only if the application defines a single flow.
@@ -351,7 +353,7 @@ def evaluate(app_flow_specifier: str, output_dir: str | None, cache: bool = True
 
     fl = _flow_by_name(flow_ref)
     if output_dir is None:
-        output_dir = f"eval_{fl.name}_{datetime.datetime.now().strftime('%y%m%d_%H%M%S')}"
+        output_dir = f"eval_{setting.get_app_namespace(trailing_delimiter='_')}{flow_name}_{datetime.datetime.now().strftime('%y%m%d_%H%M%S')}"
     options = flow.EvaluateAndDumpOptions(output_dir=output_dir, use_cache=cache)
     fl.evaluate_and_dump(options)
 
@@ -406,11 +408,12 @@ def server(app_target: str, address: str | None, live_update: bool, quiet: bool,
 
     lib.start_server(server_settings)
 
+    if COCOINDEX_HOST in cors_origins:
+        click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
+
     if live_update:
         options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
         flow.update_all_flows(options)
-    if COCOINDEX_HOST in cors_origins:
-        click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
     input("Press Enter to stop...")
 
 

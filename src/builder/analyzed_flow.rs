@@ -3,7 +3,7 @@ use crate::{ops::interface::FlowInstanceContext, prelude::*};
 use super::{analyzer, plan};
 use crate::{
     ops::registry::ExecutorFactoryRegistry,
-    service::error::{shared_ok, SharedError, SharedResultExt},
+    service::error::{SharedError, SharedResultExt, shared_ok},
     setup::{self, ObjectSetupStatus},
 };
 
@@ -75,12 +75,11 @@ pub struct AnalyzedTransientFlow {
 impl AnalyzedTransientFlow {
     pub async fn from_transient_flow(
         transient_flow: spec::TransientFlowSpec,
-        registry: &ExecutorFactoryRegistry,
         py_exec_ctx: Option<crate::py::PythonExecutionContext>,
     ) -> Result<Self> {
         let ctx = analyzer::build_flow_instance_context(&transient_flow.name, py_exec_ctx);
         let (output_type, data_schema, execution_plan_fut) =
-            analyzer::analyze_transient_flow(&transient_flow, &ctx, registry)?;
+            analyzer::analyze_transient_flow(&transient_flow, &ctx)?;
         Ok(Self {
             transient_flow_instance: transient_flow,
             data_schema,

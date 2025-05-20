@@ -6,6 +6,25 @@ import os
 from typing import Callable, Self, Any, overload
 from dataclasses import dataclass
 
+_app_namespace: str = ''
+
+def get_app_namespace(*, trailing_delimiter: str | None = None) -> str:
+    """Get the application namespace. Append the `trailing_delimiter` if not empty."""
+    if _app_namespace == '' or trailing_delimiter is None:
+        return _app_namespace
+    return f'{_app_namespace}{trailing_delimiter}'
+
+def split_app_namespace(full_name: str, delimiter: str) -> tuple[str, str]:
+    """Split the full name into the application namespace and the rest."""
+    parts = full_name.split(delimiter, 1)
+    if len(parts) == 1:
+        return '', parts[0]
+    return (parts[0], parts[1])
+
+def set_app_namespace(app_namespace: str):
+    """Set the application namespace."""
+    global _app_namespace  # pylint: disable=global-statement
+    _app_namespace = app_namespace
 
 @dataclass
 class DatabaseConnectionSpec:
@@ -30,6 +49,7 @@ def _load_field(target: dict[str, Any], name: str, env_name: str, required: bool
 class Settings:
     """Settings for the cocoindex library."""
     database: DatabaseConnectionSpec
+    app_namespace: str = ""
 
     @classmethod
     def from_env(cls) -> Self:
@@ -40,7 +60,10 @@ class Settings:
         _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
         _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
         database = DatabaseConnectionSpec(**db_kwargs)
-        return cls(database=database)
+
+        app_namespace = os.getenv("COCOINDEX_APP_NAMESPACE", '')
+
+        return cls(database=database, app_namespace=app_namespace)
 
 @dataclass
 class ServerSettings:

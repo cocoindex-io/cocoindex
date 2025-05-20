@@ -1,8 +1,10 @@
 from dotenv import load_dotenv
-
+from psycopg_pool import ConnectionPool
 import cocoindex
+import os
 
-def text_to_embedding(text: cocoindex.DataSlice) -> cocoindex.DataSlice:
+@cocoindex.transform_flow()
+def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
     """
     Embed the text using a SentenceTransformer model.
     This is a shared logic between indexing and querying, so extract it as a function.
@@ -40,26 +42,40 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
                 field_name="embedding",
                 metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 
-query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
-    name="SemanticsSearch",
-    flow=text_embedding_flow,
-    target_name="doc_embeddings",
-    query_transform_flow=text_to_embedding,
-    default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)
+
+def search(pool: ConnectionPool, query: str, top_k: int = 5):
+    # Get the table name, for the export target in the text_embedding_flow above.
+    table_name = cocoindex.utils.get_target_storage_default_name(text_embedding_flow, "doc_embeddings")
+    # Evaluate the transform flow defined above with the input query, to get the embedding.
+    query_vector = text_to_embedding.eval(query)
+    # Run the query and get the results.
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT filename, text, embedding <=> %s::vector AS distance
+                FROM {table_name} ORDER BY distance LIMIT %s
+            """, (query_vector, top_k))
+            return [
+                {"filename": row[0], "text": row[1], "score": 1.0 - row[2]}
+                for row in cur.fetchall()
+            ]
 
 @cocoindex.main_fn()
 def _run():
+    # Initialize the database connection pool.
+    pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         try:
             query = input("Enter search query (or Enter to quit): ")
             if query == '':
                 break
-            results, _ = query_handler.search(query, 10)
+            # Run the query function with the database connection pool and the query.
+            results = search(pool, query)
             print("\nSearch results:")
             for result in results:
-                print(f"[{result.score:.3f}] {result.data['filename']}")
-                print(f"    {result.data['text']}")
+                print(f"[{result['score']:.3f}] {result['filename']}")
+                print(f"    {result['text']}")
                 print("---")
             print()
         except KeyboardInterrupt:

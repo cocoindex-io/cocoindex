@@ -1,3 +1,0 @@
-cocoindex
-python-dotenv
-boto3 

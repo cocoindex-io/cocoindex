@@ -1,7 +1,6 @@
 ---
 title: Flow Definition
 description: Define a CocoIndex flow, by specifying source, transformations and storages, and connect input/output data of them.
-toc_max_heading_level: 4
 ---
 
 import Tabs from '@theme/Tabs';
@@ -146,8 +145,9 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 
 :::info
 
-In live update mode, for each refresh, CocoIndex will traverse the data source to figure out the changes,
+In live update mode, for each refresh, CocoIndex will list rows in the data source to figure out the changes based on metadata such as last modified time,
 and only perform transformations on changed source keys.
+If nothing changed during the last refresh cycle, only list operations will be performed, which is usually cheap for most data sources.
 
 :::
 
@@ -310,6 +310,38 @@ Following metrics are supported:
 | InnerProduct | [Inner product](https://en.wikipedia.org/wiki/Inner_product_space) | Larger is more similar |
 
 ## Miscellaneous
+
+### Getting App Namespace
+
+You can use the [`app_namespace` setting](initialization#app-namespace) or `COCOINDEX_APP_NAMESPACE` environment variable to specify the app namespace,
+to organize flows across different environments (e.g., dev, staging, production), team members, etc.
+
+In the code, You can call `flow.get_app_namespace()` to get the app namespace, and use it to name certain backends. It takes the following arguments:
+
+*   `trailing_delimiter` (optional): a string to append to the app namespace when it's not empty.
+
+e.g. when the current app namespace is `Staging`, `flow.get_app_namespace(trailing_delimiter='.')` will return `Staging.`.
+
+For example,
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+doc_embeddings.export(
+    "doc_embeddings",
+    cocoindex.storages.Qdrant(
+        collection_name=cocoindex.get_app_namespace(trailing_delimiter='__') + "doc_embeddings",
+        ...
+    ),
+    ...
+)
+```
+
+</TabItem>
+</Tabs>
+
+It will use `Staging__doc_embeddings` as the collection name if the current app namespace is `Staging`, and use `doc_embeddings` if the app namespace is empty.
 
 ### Target Declarations
 
