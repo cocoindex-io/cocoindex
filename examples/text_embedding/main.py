@@ -1,7 +1,6 @@
 import os
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
-
 import cocoindex
 
 @cocoindex.transform_flow()
@@ -43,15 +42,6 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
                 field_name="embedding",
                 metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 
-# Keep for now to allow CocoInsight to query.
-# Will be removed later after we expose `search()` below as a query function (https://github.com/cocoindex-io/cocoindex/issues/502).
-cocoindex.query.SimpleSemanticsQueryHandler(
-    name="SemanticsSearch",
-    flow=text_embedding_flow,
-    target_name="doc_embeddings",
-    query_transform_flow=text_to_embedding,
-    default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)
-
 def search(pool: ConnectionPool, query: str, top_k: int = 5):
     table_name = cocoindex.utils.get_target_storage_default_name(text_embedding_flow, "doc_embeddings")
     query_vector = text_to_embedding.eval(query)
@@ -70,6 +60,7 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
 
 @cocoindex.main_fn()
 def _run():
+    # Initialize the database connection pool.
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
@@ -77,10 +68,11 @@ def _run():
             query = input("Enter search query (or Enter to quit): ")
             if query == '':
                 break
+            # Run the query function with the database connection pool and the query.
             results = search(pool, query)
             print("\nSearch results:")
             for result in results:
-                print(f"[{result['score']:.3f}] {result['filename']} location:{result['location']}")
+                print(f"[{result['score']:.3f}] {result['filename']}")
                 print(f"    {result['text']}")
                 print("---")
             print()
