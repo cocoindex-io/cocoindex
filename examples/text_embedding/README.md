@@ -6,18 +6,18 @@ In this example, we will build index flow from text embedding from local markdow
 
 We appreicate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
+## Steps:
+🌱 A detailed step by step tutorial can be found here: [Get Started Documentation](https://cocoindex.io/docs/getting_started/quickstart)
+
+### Indexing Flow:
 <img width="461" alt="Screenshot 2025-05-19 at 5 48 28 PM" src="https://github.com/user-attachments/assets/b6825302-a0c7-4b86-9a2d-52da8286b4bd" />
 
-Steps:
-- Indexing Flow:
-    1. We will ingest from a list of local files.
-    2. For each file, perform chunking (Recursive Split) and then embeddings. 
-    3. We will save the embeddings and the metadata in Postgres with PGVector.
-
-- Query:
+1. We will ingest from a list of local files.
+2. For each file, perform chunking (Recursive Split) and then embeddings. 
+3. We will save the embeddings and the metadata in Postgres with PGVector.
+   
+### Query:
 We will match against user-provided text by a SQL query, reusing the embedding operation in the indexing flow.
-
-🌱 A detailed step by step tutorial can be found here: [Get Started Documentation](https://cocoindex.io/docs/getting_started/quickstart)
 
 
 ## Prerequisite
