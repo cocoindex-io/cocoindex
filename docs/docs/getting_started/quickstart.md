@@ -244,6 +244,9 @@ Now we can add the main logic to the program. It uses the query function we just
 
 ```python title="quickstart.py"
 if __name__ == "__main__":
+    # Initialize CocoIndex library states
+    cocoindex.init()
+
     # Initialize the database connection pool.
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
