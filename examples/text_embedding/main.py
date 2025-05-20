@@ -1,7 +1,7 @@
-import os
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 import cocoindex
+import os
 
 @cocoindex.transform_flow()
 def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
@@ -19,7 +19,7 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
     Define an example flow that embeds text into a vector database.
     """
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="markdown_files", included_patterns=["*.md"]))
+        cocoindex.sources.LocalFile(path="markdown_files"))
 
     doc_embeddings = data_scope.add_collector()
 
@@ -42,19 +42,21 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
                 field_name="embedding",
                 metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 
+
 def search(pool: ConnectionPool, query: str, top_k: int = 5):
+    # Get the table name, for the export target in the text_embedding_flow above.
     table_name = cocoindex.utils.get_target_storage_default_name(text_embedding_flow, "doc_embeddings")
+    # Evaluate the transform flow defined above with the input query, to get the embedding.
     query_vector = text_to_embedding.eval(query)
+    # Run the query and get the results.
     with pool.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(f"""
-                SELECT filename, location, text, embedding <=> %s::vector AS distance
-                FROM {table_name}
-                ORDER BY distance
-                LIMIT %s
+                SELECT filename, text, embedding <=> %s::vector AS distance
+                FROM {table_name} ORDER BY distance LIMIT %s
             """, (query_vector, top_k))
             return [
-                {"filename": row[0], "location": row[1], "text": row[2], "score": 1.0 - row[3]}
+                {"filename": row[0], "text": row[1], "score": 1.0 - row[2]}
                 for row in cur.fetchall()
             ]
 
