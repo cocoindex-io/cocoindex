@@ -51,8 +51,7 @@ query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
             model="sentence-transformers/all-MiniLM-L6-v2")),
     default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)
 
-@cocoindex.main_fn()
-def _run():
+def _main():
     # Use a `FlowLiveUpdater` to keep the flow data updated.
     with cocoindex.FlowLiveUpdater(gdrive_text_embedding_flow):
         # Run queries in a loop to demonstrate the query capabilities.
@@ -72,5 +71,6 @@ def _run():
                 break
 
 if __name__ == "__main__":
-    load_dotenv(override=True)
-    _run()
+    load_dotenv()
+    cocoindex.init()
+    _main()

@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
-
 import cocoindex
 
 # Define Qdrant connection constants
@@ -61,9 +60,7 @@ def text_embedding_flow(
         setup_by_user=True,
     )
 
-
-@cocoindex.main_fn()
-def _run():
+def _main():
     # Initialize Qdrant client
     client = QdrantClient(url=QDRANT_GRPC_URL, prefer_grpc=True)
     
@@ -95,5 +92,6 @@ def _run():
 
 
 if __name__ == "__main__":
-    load_dotenv(override=True)
-    _run()
+    load_dotenv()
+    cocoindex.init()
+    _main()

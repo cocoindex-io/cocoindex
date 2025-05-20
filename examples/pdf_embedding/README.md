@@ -27,35 +27,35 @@ We will match against user-provided text by a SQL query, and reuse the embedding
 
 ## Run
 
-- Install dependencies:
-  
-  ```bash
-  pip install -e .
-  ```
+Install dependencies:
 
-- Setup:
+```bash
+pip install -e .
+```
 
-  ```bash
-  python main.py cocoindex setup
-  ```
+Setup:
 
-- Update index:
+```bash
+cocoindex setup main.py
+```
 
-  ```bash
-  python main.py cocoindex update
-  ```
+Update index:
 
-- Run:
+```bash
+cocoindex update main.py
+```
 
-  ```bash
-  python main.py
-  ```
+Run:
+
+```bash
+python main.py
+```
 
 ## CocoInsight 
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```
-python main.py cocoindex server -ci
+cocoindex server -ci main.py
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).

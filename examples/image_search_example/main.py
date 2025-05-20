@@ -7,9 +7,6 @@ import base64
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from cocoindex.lib import main_fn
-
-load_dotenv(override=True)
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma3"
@@ -94,8 +91,8 @@ app.mount("/img", StaticFiles(directory="img"), name="img")
 # --- CocoIndex initialization on startup ---
 @app.on_event("startup")
 def startup_event():
-    settings = cocoindex.Settings.from_env()
-    cocoindex.init(settings)
+    load_dotenv()
+    cocoindex.init()
     app.state.query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
         name="ImageObjectSearch",
         flow=image_object_embedding_flow,
@@ -119,11 +116,3 @@ def search(q: str = Query(..., description="Search query"), limit: int = Query(5
             "score": result.score
         })
     return {"results": out}
-
-# --- CLI entrypoint ---
-@main_fn()
-def _run():
-    pass
-    
-if __name__ == "__main__":
-    _run()

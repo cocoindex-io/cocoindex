@@ -1,7 +1,6 @@
 import tempfile
 import dataclasses
 
-from dotenv import load_dotenv
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
@@ -116,11 +115,3 @@ def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: coco
         cocoindex.storages.Postgres(table_name="modules_info"),
         primary_key_fields=["filename"],
     )
-
-@cocoindex.main_fn()
-def _run():
-    pass
-
-if __name__ == "__main__":
-    load_dotenv(override=True)
-    _run()

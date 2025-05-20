@@ -106,10 +106,7 @@ Search results:
 """)
 
 
-@cocoindex.main_fn()
-def _run():
-    # Initialize the database connection pool.
-    pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
+def _main():
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         try:
@@ -124,5 +121,6 @@ def _run():
 
 
 if __name__ == "__main__":
-    load_dotenv(override=True)
-    _run()
+    load_dotenv()
+    cocoindex.init()
+    _main()

@@ -48,7 +48,6 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
                 metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 
 
-
 def search(pool: ConnectionPool, query: str, top_k: int = 5):
     # Get the table name, for the export target in the code_embedding_flow above.
     table_name = cocoindex.utils.get_target_storage_default_name(code_embedding_flow, "code_embeddings")
@@ -66,8 +65,7 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
                 for row in cur.fetchall()
             ]
 
-@cocoindex.main_fn()
-def _run():
+def _main():
     # Initialize the database connection pool.
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
@@ -88,5 +86,6 @@ def _run():
             break
 
 if __name__ == "__main__":
-    load_dotenv(override=True)
-    _run()
+    load_dotenv()
+    cocoindex.init()
+    _main()
