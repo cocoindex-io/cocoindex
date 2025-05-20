@@ -115,9 +115,3 @@ def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: coco
         cocoindex.storages.Postgres(table_name="modules_info"),
         primary_key_fields=["filename"],
     )
-
-def _run():
-    pass
-
-if __name__ == "__main__":
-    _run()

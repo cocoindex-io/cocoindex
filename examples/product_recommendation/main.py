@@ -174,9 +174,3 @@ def store_product_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
         ),
         primary_key_fields=["id"],
     )
-
-def _run():
-    pass
-
-if __name__ == "__main__":
-    _run()
