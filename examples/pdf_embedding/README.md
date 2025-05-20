@@ -14,13 +14,13 @@ pip install -e .
 Setup:
 
 ```bash
-cocoindex main.py setup
+cocoindex setup main.py
 ```
 
 Update index:
 
 ```bash
-cocoindex main.py update
+cocoindex update main.py
 ```
 
 Run:
@@ -35,7 +35,7 @@ CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute vi
 Run CocoInsight to understand your RAG data pipeline:
 
 ```
-cocoindex main.py server -ci
+cocoindex server -ci main.py
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).

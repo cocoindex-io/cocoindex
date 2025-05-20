@@ -59,13 +59,13 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
 - Setup:
 
    ```bash
-   cocoindex main.py setup
+   cocoindex setup main.py
    ```
 
 - Update index:
 
    ```bash
-   cocoindex main.py update
+   cocoindex update main.py
    ```
 
 - Run:
@@ -79,7 +79,7 @@ I used CocoInsight (Free beta now) to troubleshoot the index generation and unde
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```bash
-cocoindex main.py server -ci
+cocoindex server -ci main.py
 ```
 
 Open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
