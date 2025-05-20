@@ -62,7 +62,7 @@ def pdf_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
             language="markdown", chunk_size=2000, chunk_overlap=500)
 
         with doc["chunks"].row() as chunk:
-            chunk["embedding"] = chunk["text"].call(text_to_embedding)
+            chunk["embedding"] = text_to_embedding(chunk["text"])
             pdf_embeddings.collect(id=cocoindex.GeneratedField.UUID,
                                    filename=doc["filename"], location=chunk["location"],
                                    text=chunk["text"], embedding=chunk["embedding"])
@@ -107,6 +107,8 @@ Search results:
 
 
 def _main():
+    # Initialize the database connection pool.
+    pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         try:
