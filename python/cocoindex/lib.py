@@ -12,8 +12,13 @@ from . import flow, query, cli, setting
 from .convert import dump_engine_object
 
 
-def init(settings: setting.Settings):
-    """Initialize the cocoindex library."""
+def init(settings: setting.Settings | None):
+    """
+    Initialize the cocoindex library.
+
+    If the settings are not provided, they are loaded from the environment variables.
+    """
+    settings = settings or setting.Settings.from_env()
     _engine.init(dump_engine_object(settings))
     setting.set_app_namespace(settings.app_namespace)
 

@@ -1,19 +1,25 @@
+from dotenv import load_dotenv
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 import cocoindex
 
+# Define Qdrant connection constants
+QDRANT_GRPC_URL = "http://localhost:6334"
+QDRANT_COLLECTION = "cocoindex"
 
-def text_to_embedding(text: cocoindex.DataSlice) -> cocoindex.DataSlice:
+
+@cocoindex.transform_flow()
+def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
     """
     Embed the text using a SentenceTransformer model.
     This is a shared logic between indexing and querying, so extract it as a function.
     """
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"
-        )
-    )
+            model="sentence-transformers/all-MiniLM-L6-v2"))
 
 
-@cocoindex.flow_def(name="TextEmbedding")
+@cocoindex.flow_def(name="TextEmbeddingWithQdrant")
 def text_embedding_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ):
@@ -48,34 +54,37 @@ def text_embedding_flow(
     doc_embeddings.export(
         "doc_embeddings",
         cocoindex.storages.Qdrant(
-            collection_name="cocoindex", grpc_url="http://localhost:6334/"
+            collection_name=QDRANT_COLLECTION, grpc_url=QDRANT_GRPC_URL
         ),
         primary_key_fields=["id"],
         setup_by_user=True,
     )
 
-
-query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
-    name="SemanticsSearch",
-    flow=text_embedding_flow,
-    target_name="doc_embeddings",
-    query_transform_flow=text_to_embedding,
-    default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-)
-
-
-def _run():
+def _main():
+    # Initialize Qdrant client
+    client = QdrantClient(url=QDRANT_GRPC_URL, prefer_grpc=True)
+    
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         try:
             query = input("Enter search query (or Enter to quit): ")
             if query == "":
                 break
-            results, _ = query_handler.search(query, 10, "text_embedding")
+            
+            # Get the embedding for the query
+            query_embedding = text_to_embedding.eval(query)
+            
+            search_results = client.search(
+                collection_name=QDRANT_COLLECTION,
+                query_vector=("text_embedding", query_embedding),
+                limit=10
+            )
             print("\nSearch results:")
-            for result in results:
-                print(f"[{result.score:.3f}] {result.data['filename']}")
-                print(f"    {result.data['text']}")
+            for result in search_results:
+                score = result.score
+                payload = result.payload
+                print(f"[{score:.3f}] {payload['filename']}")
+                print(f"    {payload['text']}")
                 print("---")
             print()
         except KeyboardInterrupt:
@@ -83,4 +92,6 @@ def _run():
 
 
 if __name__ == "__main__":
-    _run()
+    load_dotenv(override=True)
+    cocoindex.init()
+    _main()

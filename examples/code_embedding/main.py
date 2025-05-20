@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+from psycopg_pool import ConnectionPool
 import cocoindex
 import os
 
@@ -45,14 +47,24 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
                 metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 
 
-query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
-    name="SemanticsSearch",
-    flow=code_embedding_flow,
-    target_name="code_embeddings",
-    query_transform_flow=code_to_embedding,
-    default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)
+def search(pool: ConnectionPool, query: str, top_k: int = 5):
+    # Get the table name, for the export target in the code_embedding_flow above.
+    table_name = cocoindex.utils.get_target_storage_default_name(code_embedding_flow, "code_embeddings")
+    # Evaluate the transform flow defined above with the input query, to get the embedding.
+    query_vector = code_to_embedding.eval(query)
+    # Run the query and get the results.
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT filename, code, embedding <=> %s::vector AS distance
+                FROM {table_name} ORDER BY distance LIMIT %s
+            """, (query_vector, top_k))
+            return [
+                {"filename": row[0], "code": row[1], "score": 1.0 - row[2]}
+                for row in cur.fetchall()
+            ]
 
-def _run():
+def _main():
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         try:
@@ -70,4 +82,6 @@ def _run():
             break
 
 if __name__ == "__main__":
-    _run()
+    load_dotenv(override=True)
+    cocoindex.init()
+    _main()
