@@ -4,7 +4,7 @@
 
 In this example, we will build index flow from text embedding from local markdown files, and query the index.
 
-We appreicate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
+We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
 ## Steps:
 🌱 A detailed step by step tutorial can be found here: [Get Started Documentation](https://cocoindex.io/docs/getting_started/quickstart)
