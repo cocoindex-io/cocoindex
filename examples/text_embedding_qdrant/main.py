@@ -4,6 +4,10 @@ from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
 import cocoindex
 
+# Define Qdrant connection constants
+QDRANT_URL = "http://localhost:6333"
+QDRANT_COLLECTION = "cocoindex"
+
 
 @cocoindex.transform_flow()
 def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
@@ -51,7 +55,7 @@ def text_embedding_flow(
     doc_embeddings.export(
         "doc_embeddings",
         cocoindex.storages.Qdrant(
-            collection_name="cocoindex", grpc_url="http://localhost:6334/"
+            collection_name=QDRANT_COLLECTION, grpc_url=QDRANT_URL
         ),
         primary_key_fields=["id"],
         setup_by_user=True,
@@ -61,7 +65,7 @@ def text_embedding_flow(
 @cocoindex.main_fn()
 def _run():
     # Initialize Qdrant client
-    client = QdrantClient(host="localhost", port=6333)
+    client = QdrantClient(url=QDRANT_URL)
     
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
@@ -75,7 +79,7 @@ def _run():
             
             # Search in Qdrant
             search_results = client.search(
-                collection_name="cocoindex",
+                collection_name=QDRANT_COLLECTION,
                 query_vector=("text_embedding", query_embedding),
                 limit=10
             )
