@@ -9,6 +9,16 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 ## Steps
 ### Indexing Flow
 
+<img width="662" alt="PDF indexing flow" src="https://github.com/user-attachments/assets/5e132dd9-7120-4b28-bc57-88d6b5583ef4" />
+1. We will ingest a list of PDF files
+2. For each file
+   - convert it to markdown
+   - perform chunking (recursively split) and then embed each chunk.
+3. We will save the embeddings and the metadata in Postgres with PGVector.
+
+### Query
+We will match against user-provided text by a SQL query, and reuse the embedding operation in the indexing flow.
+
 
 
 ## Prerequisite
@@ -16,34 +26,32 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 ## Run
 
-Install dependencies:
+- Install dependencies:
+  
+  ```bash
+  pip install -e .
+  ```
 
-```bash
-pip install -e .
-```
+- Setup:
 
-Setup:
+  ```bash
+  python main.py cocoindex setup
+  ```
 
-```bash
-python main.py cocoindex setup
-```
+- Update index:
 
-Update index:
+  ```bash
+  python main.py cocoindex update
+  ```
 
-```bash
-python main.py cocoindex update
-```
+- Run:
 
-Run:
-
-```bash
-python main.py
-```
+  ```bash
+  python main.py
+  ```
 
 ## CocoInsight 
-CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
-
-Run CocoInsight to understand your RAG data pipeline:
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```
 python main.py cocoindex server -ci
