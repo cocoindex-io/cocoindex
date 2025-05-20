@@ -132,7 +132,7 @@ if __name__ == "__main__":
 
 The `@cocoindex.main_fn` declares a function as the main function for an indexing application. This achieves the following effects:
 
-*   Initialize the CocoIndex librart states. Settings (e.g. database URL) are loaded from environment variables by default.
+*   Initialize the CocoIndex library states. Settings (e.g. database URL) are loaded from environment variables by default.
 *   When the CLI is invoked with `cocoindex` subcommand, `cocoindex CLI` takes over the control, which provides convenient ways to manage the index. See the next step for more details.
 
 ## Step 3: Run the indexing pipeline and queries
