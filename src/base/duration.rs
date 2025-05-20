@@ -20,7 +20,7 @@ fn parse_components(
             }
         }
         if num_str.is_empty() {
-            return Err(anyhow!("Expected number in: {}", original_input));
+            bail!("Expected number in: {}", original_input);
         }
         let num = num_str
             .parse()
@@ -33,11 +33,11 @@ fn parse_components(
                 bail!("Invalid unit '{}' in: {}", unit, original_input);
             }
         } else {
-            return Err(anyhow!(
+            bail!(
                 "Missing unit after number '{}' in: {}",
                 num_str,
                 original_input
-            ));
+            );
         }
     }
     Ok(result)
@@ -52,10 +52,7 @@ fn parse_iso8601_duration(s: &str, original_input: &str) -> Result<Duration> {
     };
 
     if !s_after_sign.starts_with('P') {
-        return Err(anyhow!(
-            "Duration must start with 'P' in: {}",
-            original_input
-        ));
+        bail!("Duration must start with 'P' in: {}", original_input);
     }
     let s_after_p = &s_after_sign[1..];
 
@@ -72,10 +69,10 @@ fn parse_iso8601_duration(s: &str, original_input: &str) -> Result<Duration> {
     let time_components = if let Some(time_str) = time_part {
         let comps = parse_components(time_str, &['H', 'M', 'S'], original_input)?;
         if comps.is_empty() {
-            return Err(anyhow!(
+            bail!(
                 "Time part present but no time components in: {}",
                 original_input
-            ));
+            );
         }
         comps
     } else {
@@ -83,7 +80,7 @@ fn parse_iso8601_duration(s: &str, original_input: &str) -> Result<Duration> {
     };
 
     if date_components.is_empty() && time_components.is_empty() {
-        return Err(anyhow!("No components in duration: {}", original_input));
+        bail!("No components in duration: {}", original_input);
     }
 
     // Accumulate date duration
@@ -121,10 +118,10 @@ fn parse_iso8601_duration(s: &str, original_input: &str) -> Result<Duration> {
 fn parse_human_readable_duration(s: &str, original_input: &str) -> Result<Duration> {
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.is_empty() || parts.len() % 2 != 0 {
-        return Err(anyhow!(
+        bail!(
             "Invalid human-readable duration format in: {}",
             original_input
-        ));
+        );
     }
 
     let durations: Result<Vec<Duration>> = parts
@@ -154,18 +151,16 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
     let original_input = s;
     let s = s.trim();
     if s.is_empty() {
-        return Err(anyhow!("Empty duration string"));
+        bail!("Empty duration string");
     }
 
-    fn is_likely_iso8601(s: &str) -> bool {
-        match s.as_bytes() {
-            [c, ..] if c.eq_ignore_ascii_case(&b'P') => true,
-            [b'-', c, ..] if c.eq_ignore_ascii_case(&b'P') => true,
-            _ => false,
-        }
-    }
+    let is_likely_iso8601 = match s.as_bytes() {
+        [c, ..] if c.eq_ignore_ascii_case(&b'P') => true,
+        [b'-', c, ..] if c.eq_ignore_ascii_case(&b'P') => true,
+        _ => false,
+    };
 
-    if is_likely_iso8601(s) {
+    if is_likely_iso8601 {
         parse_iso8601_duration(s, original_input)
     } else {
         parse_human_readable_duration(s, original_input)

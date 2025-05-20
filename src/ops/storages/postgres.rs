@@ -220,9 +220,6 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
                 BasicValueType::OffsetDateTime => row
                     .try_get::<Option<chrono::DateTime<chrono::FixedOffset>>, _>(field_idx)?
                     .map(BasicValue::OffsetDateTime),
-                // BasicValueType::TimeDelta => row
-                //     .try_get::<Option<chrono::Duration>, _>(field_idx)?
-                //     .map(BasicValue::TimeDelta),
                 BasicValueType::TimeDelta => row
                     .try_get::<Option<sqlx::postgres::types::PgInterval>, _>(field_idx)?
                     .map(|pg_interval| {
