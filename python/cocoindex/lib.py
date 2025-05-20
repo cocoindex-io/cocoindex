@@ -12,7 +12,7 @@ from . import flow, query, cli, setting
 from .convert import dump_engine_object
 
 
-def init(settings: setting.Settings | None):
+def init(settings: setting.Settings | None = None):
     """
     Initialize the cocoindex library.
 
