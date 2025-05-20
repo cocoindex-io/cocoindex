@@ -12,7 +12,7 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 ## Tutorials
 - Step by step tutorial - Checkout the [blog](https://cocoindex.io/blogs/index-code-base-for-rag).
-- Video Tutorial - [Youtube](https://youtu.be/G3WstvhHO24?si=Bnxu67Ax5Lv8b-J2)
+- Video tutorial - [Youtube](https://youtu.be/G3WstvhHO24?si=Bnxu67Ax5Lv8b-J2)
 
 ## Steps
 
