@@ -21,6 +21,19 @@ Checkout the list of supported languages [here](https://cocoindex.io/docs/ops/fu
     </a>
   </div>
 
+## Steps
+
+### Indexing Flow
+<img width="434" alt="Screenshot 2025-05-19 at 10 14 36 PM" src="https://github.com/user-attachments/assets/3a506034-698f-480a-b653-22184dae4e14" />
+
+
+1. We will ingest CocoIndex codebase
+2. For each file, perform chunking (Tree-sitter) and then embeddings. 
+3. We will save the embeddings and the metadata in Postgres with PGVector.
+   
+### Query:
+We will match against user-provided text by a SQL query, reusing the embedding operation in the indexing flow.
+
 
 ## Prerequisite
 [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
