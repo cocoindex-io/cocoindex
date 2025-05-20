@@ -13,16 +13,13 @@ Checkout the list of supported languages [here](https://cocoindex.io/docs/ops/fu
 
 
 ## Tutorials
-### Step by step tutorial 
-Checkout the blog [here](https://cocoindex.io/blogs/index-code-base-for-rag).
-
-### Video Tutorial
-<div align="center">
-  <a href="https://youtu.be/G3WstvhHO24?si=Bnxu67Ax5Lv8b-J2">
-    <img src="https://img.youtube.com/vi/G3WstvhHO24/0.jpg" alt="Code Embedding with CocoIndex Tutorial" width="600">
-  </a>
-  <p>Click the image above to watch the video tutorial on YouTube</p>
-</div>
+- Step by step tutorial - Checkout the [blog](https://cocoindex.io/blogs/index-code-base-for-rag).
+- Video Tutorial
+  <div>
+    <a href="https://youtu.be/G3WstvhHO24?si=Bnxu67Ax5Lv8b-J2">
+      <img src="https://github.com/user-attachments/assets/072a9e92-d757-427a-8785-47f0232932b1" alt="Code Embedding with CocoIndex Tutorial" width="480">
+    </a>
+  </div>
 
 
 ## Prerequisite
@@ -30,33 +27,32 @@ Checkout the blog [here](https://cocoindex.io/blogs/index-code-base-for-rag).
 
 ## Run
 
-Install dependencies:
-```bash
-pip install -e .
-```
+- Install dependencies:
+  ```bash
+  pip install -e .
+  ```
 
-Setup:
+- Setup:
 
-```bash
-python main.py cocoindex setup
-```
+  ```bash
+  python main.py cocoindex setup
+  ```
 
-Update index:
+- Update index:
+  
+  ```bash
+  python main.py cocoindex update
+  ```
 
-```bash
-python main.py cocoindex update
-```
+- Run:
 
-Run:
-
-```bash
-python main.py
-```
+  ```bash
+  python main.py
+  ```
 
 ## CocoInsight
-CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
-
-Run CocoInsight to understand your RAG data pipeline:
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
+It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```
 python main.py cocoindex server -ci
