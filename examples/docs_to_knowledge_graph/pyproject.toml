@@ -3,7 +3,7 @@ name = "manuals-to-kg"
 version = "0.1.0"
 description = "Simple example for cocoindex: extract triples from files and build knowledge graph."
 requires-python = ">=3.10"
-dependencies = ["cocoindex>=0.1.39", "python-dotenv>=1.0.1"]
+dependencies = ["cocoindex>=0.1.42", "python-dotenv>=1.0.1"]
 
 [tool.setuptools]
 packages = []
