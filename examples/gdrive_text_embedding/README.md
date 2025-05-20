@@ -1,6 +1,21 @@
-This example builds embedding index based on Google Drive files.
-It continuously updates the index as files are added / updated / deleted in the source folders:
-it keeps the index in sync with the source folders effortlessly.
+# Build Google Drive text embedding and semantic search 🔍
+[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+
+In this example, we will build an embedding index based on Google Drive files and perform semantic search.
+
+It continuously updates the index as files are added / updated / deleted in the source folders. It keeps the index in sync with the source folders in real-time.
+
+We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
+
+## Steps
+
+### Indexing Flow
+1. We will ingest files from Google Drive folders.
+2. For each file, perform chunking (recursively split) and then embedding.
+3. We will save the embeddings and the metadata in Postgres with PGVector.
+   
+### Query
+We will match against user-provided text by a SQL query, and reuse the embedding operation in the indexing flow.
 
 ## Prerequisite
 
@@ -25,32 +40,31 @@ Before running the example, you need to:
 
 ## Run
 
-Install dependencies:
+- Install dependencies:
 
-```sh
-pip install -e .
-```
+    ```sh
+    pip install -e .
+    ```
 
-Setup:
+- Setup:
 
-```sh
-cocoindex setup main.py
-```
+    ```sh
+    cocoindex setup main.py
+    ```
 
-Run:
-
-```sh
-python main.py
-```
+- Run:
+        
+    ```sh
+    python main.py
+    ```
 
 During running, it will keep observing changes in the source folders and update the index automatically.
 At the same time, it accepts queries from the terminal, and performs search on top of the up-to-date index.
 
 
 ## CocoInsight 
-CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
-
-Run CocoInsight to understand your RAG data pipeline:
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
+It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```sh
 cocoindex server -ci main.py
