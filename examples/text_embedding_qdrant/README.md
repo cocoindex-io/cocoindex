@@ -1,6 +1,10 @@
 ## Description
+# Build text embedding and semantic search 🔍 with Qdrant
 
-Example to build a vector index in Qdrant based on local files.
+[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+
+In this example, we will build index flow from text embedding from local markdown files, and query the index.
+We will use **Qdrant** as the vector database.
 
 ## Pre-requisites
 
@@ -57,13 +61,13 @@ python main.py
 ```
 
 ## CocoInsight
-
-CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
-
-Run CocoInsight to understand your RAG data pipeline:
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
+It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```bash
 python main.py cocoindex server -ci
 ```
 
-Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
+Open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
+
+

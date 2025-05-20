@@ -1,21 +1,22 @@
 from dotenv import load_dotenv
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
 import cocoindex
 
 
-def text_to_embedding(text: cocoindex.DataSlice) -> cocoindex.DataSlice:
+@cocoindex.transform_flow()
+def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
     """
     Embed the text using a SentenceTransformer model.
     This is a shared logic between indexing and querying, so extract it as a function.
     """
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"
-        )
-    )
+            model="sentence-transformers/all-MiniLM-L6-v2"))
 
 
-@cocoindex.flow_def(name="TextEmbedding")
+@cocoindex.flow_def(name="TextEmbeddingWithQdrant")
 def text_embedding_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ):
@@ -57,28 +58,34 @@ def text_embedding_flow(
     )
 
 
-query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
-    name="SemanticsSearch",
-    flow=text_embedding_flow,
-    target_name="doc_embeddings",
-    query_transform_flow=text_to_embedding,
-    default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-)
-
-
 @cocoindex.main_fn()
 def _run():
+    # Initialize Qdrant client
+    client = QdrantClient(host="localhost", port=6333)
+    
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         try:
             query = input("Enter search query (or Enter to quit): ")
             if query == "":
                 break
-            results, _ = query_handler.search(query, 10, "text_embedding")
+            
+            # Get the embedding for the query
+            query_embedding = text_to_embedding.eval(query)
+            
+            # Search in Qdrant
+            search_results = client.search(
+                collection_name="cocoindex",
+                query_vector=("text_embedding", query_embedding),
+                limit=10
+            )
+            
             print("\nSearch results:")
-            for result in results:
-                print(f"[{result.score:.3f}] {result.data['filename']}")
-                print(f"    {result.data['text']}")
+            for result in search_results:
+                score = result.score
+                payload = result.payload
+                print(f"[{score:.3f}] {payload['filename']}")
+                print(f"    {payload['text']}")
                 print("---")
             print()
         except KeyboardInterrupt:
