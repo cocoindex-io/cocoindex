@@ -6,7 +6,7 @@ CocoIndex supports Qdrant natively - [documentation](https://cocoindex.io/docs/o
 
 We appreicate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
-<img width="1227" alt="coco feat qdrant" src="https://github.com/user-attachments/assets/a7b69fc1-d975-4a73-8677-d1315b0f06e7" />
+<img width="860" alt="Screenshot 2025-05-19 at 7 24 13 PM" src="https://github.com/user-attachments/assets/a9deecfa-dd94-4b97-a1b1-90488d8178df" />
 
 ## Steps:
 ### Indexing Flow:
@@ -26,53 +26,53 @@ We will be use Qdrant client to query the index, reusing the embedding operation
 
 - Run Qdrant.
 
-```bash
-docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
-```
+   ```bash
+   docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
+   ```
 
 - [Create a collection](https://qdrant.tech/documentation/concepts/vectors/#named-vectors) to export the embeddings to.
 
-```bash
-curl  -X PUT \
-  'http://localhost:6333/collections/cocoindex' \
-  --header 'Content-Type: application/json' \
-  --data-raw '{
-  "vectors": {
-    "text_embedding": {
-      "size": 384,
-      "distance": "Cosine"
-    }
-  }
-}'
-```
+   ```bash
+   curl  -X PUT \
+     'http://localhost:6333/collections/cocoindex' \
+     --header 'Content-Type: application/json' \
+     --data-raw '{
+     "vectors": {
+       "text_embedding": {
+         "size": 384,
+         "distance": "Cosine"
+       }
+     }
+   }'
+   ```
 
-You can view the collections and data with the Qdrant dashboard at <http://localhost:6333/dashboard>.
+   You can view the collections and data with the Qdrant dashboard at <http://localhost:6333/dashboard>.
 
 ## Run
 
-Install dependencies:
+- Install dependencies:
 
-```bash
-pip install -e .
-```
+   ```bash
+   pip install -e .
+   ```
 
-Setup:
+- Setup:
 
-```bash
-python main.py cocoindex setup
-```
+   ```bash
+   python main.py cocoindex setup
+   ```
 
-Update index:
+- Update index:
 
-```bash
-python main.py cocoindex update
-```
+   ```bash
+   python main.py cocoindex update
+   ```
 
-Run:
+- Run:
 
-```bash
-python main.py
-```
+   ```bash
+   python main.py
+   ```
 
 ## CocoInsight
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
