@@ -1,5 +1,3 @@
-from dotenv import load_dotenv
-
 import cocoindex
 
 
@@ -66,7 +64,6 @@ query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
 )
 
 
-@cocoindex.main_fn()
 def _run():
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
@@ -86,5 +83,4 @@ def _run():
 
 
 if __name__ == "__main__":
-    load_dotenv(override=True)
     _run()

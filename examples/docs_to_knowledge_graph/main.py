@@ -2,7 +2,6 @@
 This example shows how to extract relationships from documents and build a knowledge graph.
 """
 import dataclasses
-from dotenv import load_dotenv
 import cocoindex
 
 @dataclasses.dataclass
@@ -148,10 +147,8 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
         primary_key_fields=["id"],
     )
 
-@cocoindex.main_fn()
 def _run():
     pass
 
 if __name__ == "__main__":
-    load_dotenv(override=True)
     _run()
