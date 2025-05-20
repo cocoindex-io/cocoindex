@@ -42,7 +42,6 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
                 field_name="embedding",
                 metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 
-
 def search(pool: ConnectionPool, query: str, top_k: int = 5):
     # Get the table name, for the export target in the text_embedding_flow above.
     table_name = cocoindex.utils.get_target_storage_default_name(text_embedding_flow, "doc_embeddings")

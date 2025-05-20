@@ -1,4 +1,7 @@
-# Build text embedding and semantic search 🔍
+Build text embedding and semantic search based on local files.
+
+In this example, we will build a text embedding index and a semantic search flow based on local markdown files.
+
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/cocoindex-io/cocoindex/blob/main/examples/text_embedding/Text_Embedding.ipynb)
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
