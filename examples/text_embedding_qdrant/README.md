@@ -4,7 +4,7 @@
 
 CocoIndex supports Qdrant natively - [documentation](https://cocoindex.io/docs/ops/storages#qdrant). In this example, we will build index flow from text embedding from local markdown files, and query the index. We will use **Qdrant** as the vector database.
 
-We appreicate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
+We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
 <img width="860" alt="Screenshot 2025-05-19 at 7 24 13 PM" src="https://github.com/user-attachments/assets/a9deecfa-dd94-4b97-a1b1-90488d8178df" />
 
