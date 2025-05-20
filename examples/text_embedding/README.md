@@ -1,8 +1,15 @@
-Build text embedding and semantic search based on local files.
+# Build text embedding and semantic search 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/cocoindex-io/cocoindex/blob/main/examples/text_embedding/Text_Embedding.ipynb)
+
 
 In this example, we will build a text embedding index and a semantic search flow based on local markdown files.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/cocoindex-io/cocoindex/blob/main/examples/text_embedding/Text_Embedding.ipynb)
+
+<img width="461" alt="Screenshot 2025-05-19 at 5 48 28 PM" src="https://github.com/user-attachments/assets/b6825302-a0c7-4b86-9a2d-52da8286b4bd" />
+
+We will ingest from a list of local files. For each file, perform chunking (Recursive Split) and then embeddings. 
+We will save the embeddings and the metadata in Postgres with PGVector.
+And then add a simpler query handler for semantic search.
 
 ## Prerequisite
 
