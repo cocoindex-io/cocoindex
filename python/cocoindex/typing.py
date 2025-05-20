@@ -168,6 +168,8 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
             kind = 'Time'
         elif t is datetime.datetime:
             kind = 'OffsetDateTime'
+        elif t is datetime.timedelta:
+            kind = 'TimeDelta'
         else:
             raise ValueError(f"type unsupported yet: {t}")
 

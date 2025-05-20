@@ -1,4 +1,5 @@
 use super::schema::*;
+use crate::base::duration::parse_duration;
 use crate::{api_bail, api_error};
 use anyhow::Result;
 use base64::prelude::*;
@@ -6,9 +7,9 @@ use bytes::Bytes;
 use chrono::Offset;
 use log::warn;
 use serde::{
+    Deserialize, Serialize,
     de::{SeqAccess, Visitor},
     ser::{SerializeMap, SerializeSeq, SerializeTuple},
-    Deserialize, Serialize,
 };
 use std::{collections::BTreeMap, ops::Deref, sync::Arc};
 
@@ -354,6 +355,7 @@ pub enum BasicValue {
     Time(chrono::NaiveTime),
     LocalDateTime(chrono::NaiveDateTime),
     OffsetDateTime(chrono::DateTime<chrono::FixedOffset>),
+    TimeDelta(chrono::Duration),
     Json(Arc<serde_json::Value>),
     Vector(Arc<[BasicValue]>),
 }
@@ -436,6 +438,12 @@ impl From<chrono::DateTime<chrono::FixedOffset>> for BasicValue {
     }
 }
 
+impl From<chrono::Duration> for BasicValue {
+    fn from(value: chrono::Duration) -> Self {
+        BasicValue::TimeDelta(value)
+    }
+}
+
 impl From<serde_json::Value> for BasicValue {
     fn from(value: serde_json::Value) -> Self {
         BasicValue::Json(Arc::from(value))
@@ -465,6 +473,7 @@ impl BasicValue {
             | BasicValue::Time(_)
             | BasicValue::LocalDateTime(_)
             | BasicValue::OffsetDateTime(_)
+            | BasicValue::TimeDelta(_)
             | BasicValue::Json(_)
             | BasicValue::Vector(_) => api_bail!("invalid key value type"),
         };
@@ -485,6 +494,7 @@ impl BasicValue {
             | BasicValue::Time(_)
             | BasicValue::LocalDateTime(_)
             | BasicValue::OffsetDateTime(_)
+            | BasicValue::TimeDelta(_)
             | BasicValue::Json(_)
             | BasicValue::Vector(_) => api_bail!("invalid key value type"),
         };
@@ -505,6 +515,7 @@ impl BasicValue {
             BasicValue::Time(_) => "time",
             BasicValue::LocalDateTime(_) => "local_datetime",
             BasicValue::OffsetDateTime(_) => "offset_datetime",
+            BasicValue::TimeDelta(_) => "timedelta",
             BasicValue::Json(_) => "json",
             BasicValue::Vector(_) => "vector",
         }
@@ -855,6 +866,7 @@ impl serde::Serialize for BasicValue {
             BasicValue::OffsetDateTime(v) => {
                 serializer.serialize_str(&v.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
             }
+            BasicValue::TimeDelta(v) => serializer.serialize_str(&v.to_string()),
             BasicValue::Json(v) => v.serialize(serializer),
             BasicValue::Vector(v) => v.serialize(serializer),
         }
@@ -906,6 +918,9 @@ impl BasicValue {
                         }
                     }
                 }
+            }
+            (serde_json::Value::String(v), BasicValueType::TimeDelta) => {
+                BasicValue::TimeDelta(parse_duration(&v)?)
             }
             (v, BasicValueType::Json) => BasicValue::Json(Arc::from(v)),
             (
