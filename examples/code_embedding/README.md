@@ -5,27 +5,21 @@ CocoIndex provides built-in support for code base chunking, with native Tree-sit
 
 We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
-![Build embedding index for codebase](https://cocoindex.io/blogs/assets/images/cover-9bf0a7cff69b66a40918ab2fc1cea0c7.png)
+![Build embedding index for codebase](https://github.com/user-attachments/assets/6dc5ce89-c949-41d4-852f-ad95af163dbd)
 
-[Tree-sitter](https://en.wikipedia.org/wiki/Tree-sitter_%28parser_generator%29) is a parser generator tool and an incremental parsing library, it is available in Rust 🦀 - [GitHub](https://github.com/tree-sitter/tree-sitter). CocoIndex has built-in Rust integration with Tree-sitter to efficiently parse code and extract syntax trees for various programming languages.
-
-Checkout the list of supported languages [here](https://cocoindex.io/docs/ops/functions#splitrecursively) - in the `language` section.
+[Tree-sitter](https://en.wikipedia.org/wiki/Tree-sitter_%28parser_generator%29) is a parser generator tool and an incremental parsing library, it is available in Rust 🦀 - [GitHub](https://github.com/tree-sitter/tree-sitter). CocoIndex has built-in Rust integration with Tree-sitter to efficiently parse code and extract syntax trees for various programming languages. Checkout the list of supported languages [here](https://cocoindex.io/docs/ops/functions#splitrecursively) - in the `language` section.
 
 
 ## Tutorials
 - Step by step tutorial - Checkout the [blog](https://cocoindex.io/blogs/index-code-base-for-rag).
-- Video Tutorial
-  <div>
-    <a href="https://youtu.be/G3WstvhHO24?si=Bnxu67Ax5Lv8b-J2">
-      <img src="https://github.com/user-attachments/assets/072a9e92-d757-427a-8785-47f0232932b1" alt="Code Embedding with CocoIndex Tutorial" width="480">
-    </a>
-  </div>
+- Video Tutorial - [Youtube](https://youtu.be/G3WstvhHO24?si=Bnxu67Ax5Lv8b-J2)
 
 ## Steps
 
 ### Indexing Flow
-<img width="434" alt="Screenshot 2025-05-19 at 10 14 36 PM" src="https://github.com/user-attachments/assets/3a506034-698f-480a-b653-22184dae4e14" />
-
+<p align='center'>
+  <img width="434" alt="Screenshot 2025-05-19 at 10 14 36 PM" src="https://github.com/user-attachments/assets/3a506034-698f-480a-b653-22184dae4e14" />
+</p>
 
 1. We will ingest CocoIndex codebase
 2. For each file, perform chunking (Tree-sitter) and then embeddings. 
