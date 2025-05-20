@@ -2,7 +2,7 @@
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
 
-In this example, we will build index flow from text embedding from local PDF files, and query the index.
+In this example, we will build index flow for text embedding from local PDF files, and query the index.
 
 We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
@@ -11,9 +11,9 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 <img width="662" alt="PDF indexing flow" src="https://github.com/user-attachments/assets/5e132dd9-7120-4b28-bc57-88d6b5583ef4" />
 
-1. We will ingest a list of PDF files
-2. For each file
-   - convert it to markdown
+1. We will ingest a list of PDF files.
+2. For each file:
+   - convert it to markdown, and then
    - perform chunking (recursively split) and then embed each chunk.
 3. We will save the embeddings and the metadata in Postgres with PGVector.
 
