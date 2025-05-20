@@ -57,13 +57,6 @@ def text_embedding_flow(
     )
 
 
-query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
-    name="SemanticsSearch",
-    flow=text_embedding_flow,
-    target_name="doc_embeddings",
-    query_transform_flow=text_to_embedding,
-    default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-)
 
 
 @cocoindex.main_fn()
