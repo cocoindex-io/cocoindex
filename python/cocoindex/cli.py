@@ -6,7 +6,7 @@ import os
 import atexit
 import types
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 from rich.console import Console
 from rich.table import Table
 
@@ -120,8 +120,7 @@ def cli(env_file: str | None):
     """
     CLI for Cocoindex.
     """
-    loaded_env_path = None
-    dotenv_path = env_file or os.path.join(os.getcwd(), ".env")
+    dotenv_path = env_file or find_dotenv(usecwd=True)
 
     if load_dotenv(dotenv_path=dotenv_path):
         loaded_env_path = os.path.abspath(dotenv_path)
