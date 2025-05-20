@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 use super::spec::{GraphDeclaration, GraphElementMapping, NodeFromFieldsSpec, TargetFieldMapping};
-use crate::setup::components::{self, apply_component_changes, State};
+use crate::setup::components::{self, State, apply_component_changes};
 use crate::setup::{ResourceSetupStatus, SetupChangeType};
 use crate::{ops::sdk::*, setup::CombinedState};
 
@@ -266,6 +266,14 @@ fn basic_value_to_bolt(value: &BasicValue, schema: &BasicValueType) -> Result<Bo
             BoltType::LocalDateTime(neo4rs::BoltLocalDateTime::from(*v))
         }
         BasicValue::OffsetDateTime(v) => BoltType::DateTime(neo4rs::BoltDateTime::from(*v)),
+        BasicValue::TimeDelta(v) => BoltType::Duration(neo4rs::BoltDuration::new(
+            neo4rs::BoltInteger { value: 0 },
+            neo4rs::BoltInteger { value: 0 },
+            neo4rs::BoltInteger {
+                value: v.num_seconds(),
+            },
+            v.subsec_nanos().into(),
+        )),
         BasicValue::Vector(v) => match schema {
             BasicValueType::Vector(t) => BoltType::List(neo4rs::BoltList {
                 value: v
@@ -772,7 +780,9 @@ impl components::SetupOperator for SetupComponentOperator {
                 metric,
                 vector_size,
             } => {
-                format!("{key_desc} ON {label} (field_name: {field_name}, vector_size: {vector_size}, metric: {metric})",)
+                format!(
+                    "{key_desc} ON {label} (field_name: {field_name}, vector_size: {vector_size}, metric: {metric})",
+                )
             }
         }
     }
@@ -794,8 +804,8 @@ impl components::SetupOperator for SetupComponentOperator {
                 };
                 format!(
                     "CREATE CONSTRAINT {name} IF NOT EXISTS FOR {matcher} REQUIRE {field_names} IS {key_type} KEY",
-                    name=key.name,
-                    field_names=build_composite_field_names(qualifier, &field_names),
+                    name = key.name,
+                    field_names = build_composite_field_names(qualifier, &field_names),
                 )
             }
             IndexDef::VectorIndex {
