@@ -7,12 +7,12 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 ![Build embedding index for codebase](https://github.com/user-attachments/assets/6dc5ce89-c949-41d4-852f-ad95af163dbd)
 
-[Tree-sitter](https://en.wikipedia.org/wiki/Tree-sitter_%28parser_generator%29) is a parser generator tool and an incremental parsing library, it is available in Rust 🦀 - [GitHub](https://github.com/tree-sitter/tree-sitter). CocoIndex has built-in Rust integration with Tree-sitter to efficiently parse code and extract syntax trees for various programming languages. Checkout the list of supported languages [here](https://cocoindex.io/docs/ops/functions#splitrecursively) - in the `language` section.
+[Tree-sitter](https://en.wikipedia.org/wiki/Tree-sitter_%28parser_generator%29) is a parser generator tool and an incremental parsing library. It is available in Rust 🦀 - [GitHub](https://github.com/tree-sitter/tree-sitter). CocoIndex has built-in Rust integration with Tree-sitter to efficiently parse code and extract syntax trees for various programming languages. Check out the list of supported languages [here](https://cocoindex.io/docs/ops/functions#splitrecursively) - in the `language` section.
 
 
 ## Tutorials
-- Step by step tutorial - Checkout the [blog](https://cocoindex.io/blogs/index-code-base-for-rag).
-- Video tutorial - [Youtube](https://youtu.be/G3WstvhHO24?si=Bnxu67Ax5Lv8b-J2)
+- Step by step tutorial - Check out the [blog](https://cocoindex.io/blogs/index-code-base-for-rag).
+- Video tutorial - [Youtube](https://youtu.be/G3WstvhHO24?si=Bnxu67Ax5Lv8b-J2).
 
 ## Steps
 
@@ -59,7 +59,7 @@ We will match against user-provided text by a SQL query, reusing the embedding o
 
 ## CocoInsight
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
-It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
+It just connects to your local CocoIndex server, with Zero pipeline data retention. Run the following command to start CocoInsight:
 
 ```
 python main.py cocoindex server -ci
