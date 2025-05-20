@@ -10,11 +10,11 @@ import TabItem from '@theme/TabItem';
 
 CocoIndex CLI is a standalone tool for easily managing and inspecting your flows and indexes.
 
-## Invoking the CLI
+## Invoke the CLI
 
 Once CocoIndex is installed, you can invoke the CLI directly using the `cocoindex` command. Most commands require an `APP_TARGET` argument, which tells the CLI where your flow definitions are located.
 
-**APP_TARGET Format:**
+### APP_TARGET Format
 
 The `APP_TARGET` can be:
 1.  A **path to a Python file** defining your flows (e.g., `main.py`, `path/to/my_flows.py`).
@@ -23,14 +23,34 @@ The `APP_TARGET` can be:
     * `path/to/my_flows.py:MyFlow`
     * `my_package.flows:MyFlow`
 
-**Global Options:**
+### Environment Variables
+
+Environment variables are needed as CocoIndex library settings, as described in [CocoIndex Settings](settings#list-of-environment-variables).
+
+You can set environment variables in an environment file.
+
+*   By default, the `cocoindex` CLI searches upward from the current directory for a `.env` file.
+*   You can use `--env-file <path>` to specify one explicitly:
+
+    ```sh
+    cocoindex --env-file path/to/custom.env <COMMAND> ...
+    ```
+
+Loaded variables do *NOT* override existing system ones.
+If no file is found, only existing system environment variables are used.
+
+### Global Options
+
+CocoIndex CLI supports the following global options:
 
 * `--env-file <path>`: Load environment variables from a specified `.env` file. If not provided, `.env` in the current directory is loaded if it exists.
 * `--version`: Show the CocoIndex version and exit.
 * `--help`: Show the main help message and exit.
 
 :::caution Deprecated Usage
+
 The old method of invoking the CLI using `python main.py cocoindex ...` via the `@cocoindex.main_fn()` decorator is now deprecated. Please remove `@cocoindex.main_fn()` from your scripts and use the standalone cocoindex command as described.
+
 :::
 
 ## Subcommands

@@ -37,7 +37,7 @@ It should be a unique table, meaning that no other export target should export t
 The spec takes the following fields:
 
 *   `database` (type: [auth reference](../core/flow_def#auth-registry) to `DatabaseConnectionSpec`, optional): The connection to the Postgres database.
-    See [DatabaseConnectionSpec](../core/initialization#databaseconnectionspec) for its specific fields.
+    See [DatabaseConnectionSpec](../core/settings#databaseconnectionspec) for its specific fields.
     If not provided, will use the same database as the [internal storage](/docs/core/basics#internal-storage).
 
 *   `table_name` (type: `str`, optional): The name of the table to store to. If unspecified, will use the table name `[${AppNamespace}__]${FlowName}__${TargetName}`, e.g. `DemoFlow__doc_embeddings` or `Staging__DemoFlow__doc_embeddings`.
@@ -419,7 +419,7 @@ The `Neo4j` storage exports each row as a relationship to Neo4j Knowledge Graph.
 Neo4j also provides a declaration spec `Neo4jDeclaration`, to configure indexing options for nodes only referenced by relationships. It has the following fields:
 
 *   `connection` (type: auth reference to `Neo4jConnectionSpec`)
-*   Fields for [nodes to declare](#nodes-to-declare), including
+*   Fields for [nodes to declare](#declare-extra-node-labels), including
     *   `nodes_label` (required)
     *   `primary_key_fields` (required)
     *   `vector_indexes` (optional)
