@@ -5,7 +5,7 @@ import datetime
 import types
 import inspect
 import uuid
-from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING, overload, Sequence, Protocol, Generic, Literal
+from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING, overload, Sequence, Generic, Literal, Protocol
 
 class VectorInfo(NamedTuple):
     dim: int | None
@@ -34,8 +34,11 @@ if TYPE_CHECKING:
     T_co = TypeVar('T_co', covariant=True)
     Dim_co = TypeVar('Dim_co', bound=int, covariant=True)
 
-    class Vector(Sequence[T_co], Generic[T_co, Dim_co], Protocol):
+    class Vector(Protocol, Generic[T_co, Dim_co]):
         """Vector[T, Dim] is a special typing alias for a list[T] with optional dimension info"""
+        def __getitem__(self, index: int) -> T_co: ...
+        def __len__(self) -> int: ...
+
 else:
     class Vector:  # type: ignore[unreachable]
         """ A special typing alias for a list[T] with optional dimension info """

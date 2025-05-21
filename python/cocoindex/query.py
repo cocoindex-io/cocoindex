@@ -4,7 +4,7 @@ from threading import Lock
 
 from . import flow as fl
 from . import index
-from . import _engine
+from . import _engine  # type: ignore
 
 _handlers_lock = Lock()
 _handlers: dict[str, _engine.SimpleSemanticsQueryHandler] = {}

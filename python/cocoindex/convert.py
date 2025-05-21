@@ -7,7 +7,7 @@ import inspect
 import uuid
 
 from enum import Enum
-from typing import Any, Callable, get_origin
+from typing import Any, Callable, get_origin, Mapping
 from .typing import analyze_type_info, encode_enriched_type, is_namedtuple_type, TABLE_TYPES, KEY_FIELD_NAME
 
 
@@ -104,13 +104,12 @@ def _make_engine_struct_value_decoder(
 
     src_name_to_idx = {f['name']: i for i, f in enumerate(src_fields)}
     
-    is_dataclass = dataclasses.is_dataclass(dst_struct_type)
-    is_namedtuple = is_namedtuple_type(dst_struct_type)
-    
-    if is_dataclass:
+    parameters: Mapping[str, inspect.Parameter]
+    if dataclasses.is_dataclass(dst_struct_type):
         parameters = inspect.signature(dst_struct_type).parameters
-    elif is_namedtuple:
+    elif is_namedtuple_type(dst_struct_type):
         defaults = getattr(dst_struct_type, '_field_defaults', {})
+        fields = getattr(dst_struct_type, '_fields', ())
         parameters = {
             name: inspect.Parameter(
                 name=name,
@@ -118,7 +117,7 @@ def _make_engine_struct_value_decoder(
                 default=defaults.get(name, inspect.Parameter.empty),
                 annotation=dst_struct_type.__annotations__.get(name, inspect.Parameter.empty)
             )
-            for name in dst_struct_type._fields
+            for name in fields
         }
     else:
         raise ValueError(f"Unsupported struct type: {dst_struct_type}")
