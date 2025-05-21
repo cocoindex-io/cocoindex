@@ -9,16 +9,15 @@
 
 ## Make sure Postgres and Qdrant are running
 ```
-docker run -d --name qdrant -p 6334:6334 qdrant/qdrant:latest
+docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
 export COCOINDEX_DATABASE_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
 ```
 
 ## Create Qdrant Collection
 ```
-curl -X PUT
-  'http://localhost:6333/collections/image_search' \
-  --header 'Content-Type: application/json' \
-  --data-raw '{
+curl -X PUT 'http://localhost:6333/collections/image_search' \
+  -H 'Content-Type: application/json' \
+  -d '{
     "vectors": {
       "embedding": {
         "size": 768,
