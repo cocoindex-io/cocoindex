@@ -7,9 +7,11 @@ import base64
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from qdrant_client import QdrantClient
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma3"
+QDRANT_GRPC_URL = os.getenv("QDRANT_GRPC_URL", "http://localhost:6334/")
 
 # 1. Extract caption from image using Ollama vision model
 @cocoindex.op.function(cache=True, behavior_version=1)
@@ -42,7 +44,12 @@ def get_image_caption(img_bytes: bytes) -> str:
 
 
 # 2. Embed the caption string
-def caption_to_embedding(caption: cocoindex.DataSlice) -> cocoindex.DataSlice:
+@cocoindex.transform_flow()
+def caption_to_embedding(caption: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
+    """
+    Embed the caption using a CLIP model.
+    This is shared logic between indexing and querying.
+    """
     return caption.transform(
         cocoindex.functions.SentenceTransformerEmbed(
             model="clip-ViT-L-14",
@@ -70,7 +77,7 @@ def image_object_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope:
         "img_embeddings",
         cocoindex.storages.Qdrant(
             collection_name="image_search",
-            grpc_url=os.getenv("QDRANT_GRPC_URL", "http://localhost:6334/"),
+            grpc_url=QDRANT_GRPC_URL,
         ),
         primary_key_fields=["id"],
         setup_by_user=True,
@@ -93,26 +100,31 @@ app.mount("/img", StaticFiles(directory="img"), name="img")
 def startup_event():
     load_dotenv()
     cocoindex.init()
-    app.state.query_handler = cocoindex.query.SimpleSemanticsQueryHandler(
-        name="ImageObjectSearch",
-        flow=image_object_embedding_flow,
-        target_name="img_embeddings",
-        query_transform_flow=caption_to_embedding,
-        default_similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+    # Initialize Qdrant client
+    app.state.qdrant_client = QdrantClient(
+        url=QDRANT_GRPC_URL,
+        prefer_grpc=True
     )
     app.state.live_updater = cocoindex.FlowLiveUpdater(image_object_embedding_flow)
     app.state.live_updater.start()
 
 @app.get("/search")
 def search(q: str = Query(..., description="Search query"), limit: int = Query(5, description="Number of results")):
-    query_handler = app.state.query_handler
-    results, _ = query_handler.search(q, limit, "embedding")
+    # Get the embedding for the query
+    query_embedding = caption_to_embedding.eval(q)
+    
+    # Search in Qdrant
+    search_results = app.state.qdrant_client.search(
+        collection_name="image_search",
+        query_vector=("embedding", query_embedding),
+        limit=limit
+    )
+    
+    # Format results
     out = []
-    for result in results:
-        row = dict(result.data)
-        # Only include filename and score
+    for result in search_results:
         out.append({
-            "filename": row["filename"],
+            "filename": result.payload["filename"],
             "score": result.score
         })
     return {"results": out}
