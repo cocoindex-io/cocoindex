@@ -1,62 +1,57 @@
 from dotenv import load_dotenv
+
 import cocoindex
 import datetime
+import functools
+import io
 import os
-import requests
-import base64
+import torch
+
+from typing import Literal
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from qdrant_client import QdrantClient
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "gemma3"
+from PIL import Image
+from transformers import CLIPModel, CLIPProcessor
+
+
 QDRANT_GRPC_URL = os.getenv("QDRANT_GRPC_URL", "http://localhost:6334/")
+CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
 
-# 1. Extract caption from image using Ollama vision model
-@cocoindex.op.function(cache=True, behavior_version=1)
-def get_image_caption(img_bytes: bytes) -> str:
-    """
-    Use Ollama's gemma3 model to extract a detailed caption from an image.
-    Returns a full-sentence natural language description of the image.
-    """
-    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-    prompt = (
-        "Describe this image in one detailed, natural language sentence. "
-        "Always explicitly name every visible animal species, object, and the main scene. "
-        "Be specific about the type, color, and any distinguishing features. "
-        "Avoid generic words like 'animal' or 'creature'—always use the most precise name (e.g., 'elephant', 'cat', 'lion', 'zebra'). "
-        "If an animal is present, mention its species and what it is doing. "
-        "For example: 'A large grey elephant standing in a grassy savanna, with trees in the background.'"
-    )
-    payload = {
-        "model": OLLAMA_MODEL,
-        "prompt": prompt,
-        "images": [img_b64],
-        "stream": False,
-    }
-    resp = requests.post(OLLAMA_URL, json=payload)
-    resp.raise_for_status()
-    result = resp.json()
-    text = result.get("response", "")
-    text = text.strip().replace("\n", "").rstrip(".")
-    return text
+@functools.cache
+def get_clip_model() -> tuple[CLIPModel, CLIPProcessor]:
+    model = CLIPModel.from_pretrained(CLIP_MODEL_NAME)
+    processor = CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
+    return model, processor
 
 
-# 2. Embed the caption string
-@cocoindex.transform_flow()
-def caption_to_embedding(caption: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
+def embed_query(text: str) -> list[float]:
     """
-    Embed the caption using a CLIP model.
-    This is shared logic between indexing and querying.
+    Embed the caption using CLIP model.
     """
-    return caption.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="clip-ViT-L-14",
-        )
-    )
+    model, processor = get_clip_model()
+    inputs = processor(text=[text], return_tensors="pt", padding=True)
+    with torch.no_grad():
+        features = model.get_text_features(**inputs)
+    return features[0].tolist()
 
-# 3. CocoIndex flow: Ingest images, extract captions, embed, export to Qdrant
+
+@cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
+def embed_image(img_bytes: bytes) -> cocoindex.Vector[cocoindex.Float32, Literal[384]]:
+    """
+    Convert image to embedding using CLIP model.
+    """
+    model, processor = get_clip_model()
+    image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    inputs = processor(images=image, return_tensors="pt")
+    with torch.no_grad():
+        features = model.get_image_features(**inputs)
+    return features[0].tolist()
+    
+
+# CocoIndex flow: Ingest images, extract captions, embed, export to Qdrant
 @cocoindex.flow_def(name="ImageObjectEmbedding")
 def image_object_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     data_scope["images"] = flow_builder.add_source(
@@ -65,12 +60,10 @@ def image_object_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope:
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
-        img["caption"] = img["content"].transform(get_image_caption)
-        img["embedding"] = caption_to_embedding(img["caption"])
+        img["embedding"] = img["content"].transform(embed_image)
         img_embeddings.collect(
             id=cocoindex.GeneratedField.UUID,
             filename=img["filename"],
-            caption=img["caption"],
             embedding=img["embedding"],
         )
     img_embeddings.export(
@@ -111,7 +104,7 @@ def startup_event():
 @app.get("/search")
 def search(q: str = Query(..., description="Search query"), limit: int = Query(5, description="Number of results")):
     # Get the embedding for the query
-    query_embedding = caption_to_embedding.eval(q)
+    query_embedding = embed_query(q)
     
     # Search in Qdrant
     search_results = app.state.qdrant_client.search(
