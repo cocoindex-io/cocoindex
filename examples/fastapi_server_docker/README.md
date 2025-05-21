@@ -3,6 +3,9 @@
 In this example, we will build index for text embedding from local markdown files, and provide a simple query endpoint via fastapi.
 We provide a simple docker container using docker compose to build pgvector17 along with a simple python fastapi script
 
+We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
+
+
 ## Run locally without docker
 - Install dependencies:
 
