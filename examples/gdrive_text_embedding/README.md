@@ -80,4 +80,4 @@ cocoindex server -ci -L main.py
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
 
-<img width="1316" alt="Screenshot 2025-05-20 at 5 06 31 PM" src="https://github.com/user-attachments/assets/0ed848db-3cc3-43d3-8cb8-35069f503288" />
+<img width="1316" alt="Use CocoInsight to understand the data of the pipeline" src="https://github.com/user-attachments/assets/0ed848db-3cc3-43d3-8cb8-35069f503288" />
