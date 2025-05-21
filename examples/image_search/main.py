@@ -18,29 +18,28 @@ from transformers import CLIPModel, CLIPProcessor
 
 
 QDRANT_GRPC_URL = os.getenv("QDRANT_GRPC_URL", "http://localhost:6334/")
+CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
 
 @functools.cache
 def get_clip_model() -> tuple[CLIPModel, CLIPProcessor]:
-    model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
-    processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+    model = CLIPModel.from_pretrained(CLIP_MODEL_NAME)
+    processor = CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
     return model, processor
 
 
-# Convert text to embedding using CLIP model.
-def query_to_embedding(text: str) -> list[float]:
+def embed_query(text: str) -> list[float]:
     """
     Embed the caption using CLIP model.
     """
     model, processor = get_clip_model()
-    inputs = processor(text=[text], images=None, return_tensors="pt", padding=True)
+    inputs = processor(text=[text], return_tensors="pt", padding=True)
     with torch.no_grad():
         features = model.get_text_features(**inputs)
     return features[0].tolist()
 
 
-# Convert image bytes to embedding using CLIP model.
 @cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
-def image_to_embedding(img_bytes: bytes) -> cocoindex.Vector[cocoindex.Float32, Literal[384]]:
+def embed_image(img_bytes: bytes) -> cocoindex.Vector[cocoindex.Float32, Literal[384]]:
     """
     Convert image to embedding using CLIP model.
     """
@@ -61,7 +60,7 @@ def image_object_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope:
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
-        img["embedding"] = img["content"].transform(image_to_embedding)
+        img["embedding"] = img["content"].transform(embed_image)
         img_embeddings.collect(
             id=cocoindex.GeneratedField.UUID,
             filename=img["filename"],
@@ -105,7 +104,7 @@ def startup_event():
 @app.get("/search")
 def search(q: str = Query(..., description="Search query"), limit: int = Query(5, description="Number of results")):
     # Get the embedding for the query
-    query_embedding = query_to_embedding(q)
+    query_embedding = embed_query(q)
     
     # Search in Qdrant
     search_results = app.state.qdrant_client.search(
