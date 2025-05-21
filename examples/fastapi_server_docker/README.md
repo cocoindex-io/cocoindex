@@ -7,7 +7,9 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 
 ## Run locally without docker
-In the .env file, use local postgres url
+
+In the `.env` file, use local Postgres URL
+
 ```
 # For local testing
 COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
@@ -35,6 +37,7 @@ COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
 
     ```bash
     uvicorn main:fastapi_app --reload --host 0.0.0.0 --port 8000
+    ```
  
  ## Query the endpoint
 
@@ -45,7 +48,8 @@ COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
 
 ## Run Docker
 
-In the .env file, use docker postgres url
+In the `.env` file, use Docker Postgres URL
+
 ```
 COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@coco_db:5436/cocoindex
 ```
