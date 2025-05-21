@@ -251,9 +251,10 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], drop_all: bool):
     """
     Drop the backend setup for flows.
 
-    Modes of operation:\n
-    1. Drop ALL persisted setups: `cocoindex drop --all`\n
-    2. Drop all flows defined in an app: `cocoindex drop <APP_TARGET>`\n
+    \b
+    Modes of operation:
+    1. Drop ALL persisted setups: `cocoindex drop --all`
+    2. Drop all flows defined in an app: `cocoindex drop <APP_TARGET>`
     3. Drop specific named flows: `cocoindex drop <APP_TARGET> [FLOW_NAME...]`
     """
     app_ref = None
@@ -270,7 +271,7 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], drop_all: bool):
             flow_names = list(flow_name)
             click.echo(f"Preparing to drop specified flows: {', '.join(flow_names)} (in '{app_ref}').", err=True)
         else:
-            flow_names = [fl.name for fl in flow.flows()]
+            flow_names = flow.flow_names()
             if not flow_names:
                 click.echo(f"No flows found defined in '{app_ref}' to drop.")
                 return
@@ -338,11 +339,12 @@ def evaluate(app_flow_specifier: str, output_dir: str | None, cache: bool = True
     Instead of updating the index, it dumps what should be indexed to files.
     Mainly used for evaluation purpose.
 
+    \b
     APP_FLOW_SPECIFIER: Specifies the application and optionally the target flow.
-    Can be one of the following formats:\n
-      - path/to/your_app.py\n
-      - an_installed.module_name\n
-      - path/to/your_app.py:SpecificFlowName\n
+    Can be one of the following formats:
+      - path/to/your_app.py
+      - an_installed.module_name
+      - path/to/your_app.py:SpecificFlowName
       - an_installed.module_name:SpecificFlowName
 
     :SpecificFlowName can be omitted only if the application defines a single flow.
