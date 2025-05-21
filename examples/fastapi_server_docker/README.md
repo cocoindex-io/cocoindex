@@ -52,5 +52,10 @@ COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@coco_db:5436/cocoindex
 
 Build the docker container via: 
 ```bash
-docker compose up
+docker compose up --build
+```
+
+Test the endpoint:
+```bash
+curl "http://0.0.0.0:8080/search?q=model&limit=3"
 ```
