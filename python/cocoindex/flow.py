@@ -538,8 +538,8 @@ class Flow:
         Update the index defined by the flow.
         Once the function returns, the index is fresh up to the moment when the function is called.
         """
-        updater = await FlowLiveUpdater.create_async(self, FlowLiveUpdaterOptions(live_mode=False))
-        await updater.wait_async()
+        async with FlowLiveUpdater(self, FlowLiveUpdaterOptions(live_mode=False)) as updater:
+            await updater.wait_async()
         return updater.update_stats()
 
     def evaluate_and_dump(self, options: EvaluateAndDumpOptions):
