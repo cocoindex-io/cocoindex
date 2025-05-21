@@ -6,8 +6,10 @@ services:
       POSTGRES_USER: cocoindex
       POSTGRES_PASSWORD: cocoindex
       POSTGRES_DB: cocoindex
+      POSTGRES_PORT: 5436
     ports:
-      - "5432:5432"
+      - "5436:5436"
+    command: postgres -p 5436
 
   coco_api:
     build:

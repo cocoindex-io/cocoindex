@@ -7,6 +7,12 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 
 ## Run locally without docker
+In the .env file, use local postgres url
+```
+# For local testing
+COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
+```
+
 - Install dependencies:
 
     ```bash
@@ -38,5 +44,13 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 
 ## Run Docker
+
+In the .env file, use docker postgres url
+```
+COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@coco_db:5436/cocoindex
+```
+
 Build the docker container via: 
-```docker compose up```
+```bash
+docker compose up
+```
