@@ -38,17 +38,23 @@ ollama serve
 
 
 ## Run Backend
-```
-cocoindex setup main.py
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
+- Install dependencies:
+  ```
+  pip install -e .
+  ```
 
-## Run Frontend
-```
-cd frontend
-npm install
-npm run dev
-```
+- Run Backend
+  ```
+  cocoindex setup main.py
+  uvicorn main:app --reload --host 0.0.0.0 --port 8000
+  ```
+
+- Run Frontend
+  ```
+  cd frontend
+  npm install
+  npm run dev
+  ```
 
 Go to `http://localhost:5174` to search.
 
