@@ -3,7 +3,6 @@ This example shows how to extract relationships from Markdown documents and buil
 """
 import dataclasses
 import datetime
-from dotenv import load_dotenv
 import cocoindex
 from jinja2 import Template
 
@@ -175,11 +174,3 @@ def store_product_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
         ),
         primary_key_fields=["id"],
     )
-
-@cocoindex.main_fn()
-def _run():
-    pass
-
-if __name__ == "__main__":
-    load_dotenv(override=True)
-    _run()

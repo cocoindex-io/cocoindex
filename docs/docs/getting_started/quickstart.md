@@ -46,7 +46,7 @@ We'll need to install a bunch of dependencies for this project.
 2.  Prepare input files for the index. Put them in a directory, e.g. `markdown_files`.
     If you don't have any files at hand, you may download the example [markdown_files.zip](markdown_files.zip) and unzip it in the current directory.
 
-## Step 2: Create the Python file `quickstart.py`
+## Step 2: Define the indexing flow
 
 Create a new file `quickstart.py` and import the `cocoindex` library:
 
@@ -54,11 +54,7 @@ Create a new file `quickstart.py` and import the `cocoindex` library:
 import cocoindex
 ```
 
-Then we'll create the indexing flow.
-
-### Step 2.1: Define the indexing flow
-
-Starting from the indexing flow:
+Then we'll create the indexing flow as follows.
 
 ```python title="quickstart.py"
 @cocoindex.flow_def(name="TextEmbedding")
@@ -117,24 +113,6 @@ Notes:
 
 6. In CocoIndex, a *collector* collects multiple entries of data together. In this example, the `doc_embeddings` collector collects data from all `chunk`s across all `doc`s, and using the collected data to build a vector index `"doc_embeddings"`, using `Postgres`.
 
-### Step 2.2: Define the main function
-
-We can provide an empty main function for now, with a `@cocoindex.main_fn()` decorator:
-
-```python title="quickstart.py"
-@cocoindex.main_fn()
-def _main():
-    pass
-
-if __name__ == "__main__":
-    _main()
-```
-
-The `@cocoindex.main_fn` declares a function as the main function for an indexing application. This achieves the following effects:
-
-*   Initialize the CocoIndex library states. Settings (e.g. database URL) are loaded from environment variables by default.
-*   When the CLI is invoked with `cocoindex` subcommand, `cocoindex CLI` takes over the control, which provides convenient ways to manage the index. See the next step for more details.
-
 ## Step 3: Run the indexing pipeline and queries
 
 Specify the database URL by environment variable:
@@ -148,7 +126,7 @@ export COCOINDEX_DATABASE_URL="postgresql://cocoindex:cocoindex@localhost:5432/c
 We need to setup the index:
 
 ```bash
-python quickstart.py cocoindex setup
+cocoindex setup quickstart.py
 ```
 
 Enter `yes` and it will automatically create a few tables in the database.
@@ -160,7 +138,7 @@ Now we have tables needed by this CocoIndex flow.
 Now we're ready to build the index:
 
 ```bash
-python quickstart.py cocoindex update
+cocoindex update quickstart.py
 ```
 
 It will run for a few seconds and output the following statistics:
@@ -260,13 +238,15 @@ There're two CocoIndex-specific logic:
     It's done by the `eval()` method of the transform flow `text_to_embedding`.
     The return type of this method is `list[float]` as declared in the `text_to_embedding()` function (`cocoindex.DataSlice[list[float]]`).
 
-### Step 4.3: Update the main function
+### Step 4.3: Add the main script logic
 
-Now we can update the main function to use the query function we just defined:
+Now we can add the main logic to the program. It uses the query function we just defined:
 
 ```python title="quickstart.py"
-@cocoindex.main_fn()
-def _run():
+if __name__ == "__main__":
+    # Initialize CocoIndex library states
+    cocoindex.init()
+
     # Initialize the database connection pool.
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
@@ -291,7 +271,7 @@ It interacts with users and search the database by calling the `search()` method
 
 ### Step 4.4: Run queries against the index
 
-Now we can run the same Python file, which will run the new main function:
+Now we can run the same Python file, which will run the new added main logic:
 
 ```bash
 python quickstart.py

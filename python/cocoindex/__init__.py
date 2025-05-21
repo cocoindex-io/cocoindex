@@ -5,7 +5,7 @@ from . import functions, query, sources, storages, cli, utils
 
 from .auth_registry import AuthEntryReference, add_auth_entry, ref_auth_entry
 from .flow import FlowBuilder, DataScope, DataSlice, Flow, transform_flow
-from .flow import flow_def, flow_def as flow
+from .flow import flow_def
 from .flow import EvaluateAndDumpOptions, GeneratedField
 from .flow import update_all_flows_async, FlowLiveUpdater, FlowLiveUpdaterOptions
 from .lib import init, start_server, stop, main_fn

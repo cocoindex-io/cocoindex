@@ -48,6 +48,9 @@ pub enum BasicValueType {
     /// Date and time with timezone.
     OffsetDateTime,
 
+    /// A time duration.
+    TimeDelta,
+
     /// A JSON value.
     Json,
 
@@ -73,6 +76,7 @@ impl std::fmt::Display for BasicValueType {
             BasicValueType::Time => write!(f, "Time"),
             BasicValueType::LocalDateTime => write!(f, "LocalDateTime"),
             BasicValueType::OffsetDateTime => write!(f, "OffsetDateTime"),
+            BasicValueType::TimeDelta => write!(f, "TimeDelta"),
             BasicValueType::Json => write!(f, "Json"),
             BasicValueType::Vector(s) => {
                 write!(f, "Vector[{}", s.element_type)?;

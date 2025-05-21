@@ -32,13 +32,13 @@ pip install -e .
 Setup:
 
 ```bash
-python main.py cocoindex setup
+cocoindex setup main.py
 ```
 
 Update index:
 
 ```bash
-python main.py cocoindex update
+cocoindex update main.py
 ```
 
 ### Query the index
@@ -65,7 +65,7 @@ CocoInsight is a tool to help you understand your data pipeline and data index. 
 Run CocoInsight to understand your RAG data pipeline:
 
 ```
-python main.py cocoindex server -ci
+cocoindex server -ci main.py
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight). It connects to your local CocoIndex server with zero data retention.

@@ -49,6 +49,17 @@ const config: Config = {
         ],
       }),
     }),
+    [
+      '@docusaurus/plugin-client-redirects',
+      {
+        redirects: [
+          {
+            from: '/core/initialization',
+            to: '/core/settings',
+          },
+        ],
+      },
+    ],
   ],
 
   presets: [

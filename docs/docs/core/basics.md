@@ -101,4 +101,4 @@ As an indexing flow is long-lived, it needs to store intermediate data to keep t
 CocoIndex uses internal storage for this purpose.
 
 Currently, CocoIndex uses Postgres database as the internal storage.
-See [Initialization](initialization) for configuring its location, and `cocoindex setup` CLI command (see [CocoIndex CLI](cli)) creates tables for the internal storage.
+See [Settings](settings#databaseconnectionspec) for configuring its location, and `cocoindex setup` CLI command (see [CocoIndex CLI](cli)) creates tables for the internal storage.

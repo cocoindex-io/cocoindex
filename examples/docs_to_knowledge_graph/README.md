@@ -34,13 +34,13 @@ pip install -e .
 Setup:
 
 ```bash
-python main.py cocoindex setup
+cocoindex setup main.py
 ```
 
 Update index:
 
 ```bash
-python main.py cocoindex update
+cocoindex update main.py
 ```
 
 ### Browse the knowledge graph
@@ -66,7 +66,7 @@ I used CocoInsight (Free beta now) to troubleshoot the index generation and unde
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```bash
-python main.py cocoindex server -ci
+cocoindex server -ci main.py
 ```
 
 And then open the url https://cocoindex.io/cocoinsight. 

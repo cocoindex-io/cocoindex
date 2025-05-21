@@ -489,7 +489,7 @@ class Flow:
         tree = Tree(f"Flow: {self.full_name}", style="cyan")
 
         def build_tree(label: str, lines: list):
-            node = Tree(label, style="bold magenta" if lines else "cyan")
+            node = Tree(label=label if lines else label + " None", style="cyan")
             for line in lines:
                 child_node = node.add(Text(line.content, style="yellow"))
                 child_node.children = build_tree("", line.children).children
@@ -657,7 +657,7 @@ async def update_all_flows_async(options: FlowLiveUpdaterOptions) -> dict[str, _
 
 def _get_data_slice_annotation_type(data_slice_type: Type[DataSlice[T]]) -> Type[T] | None:
     type_args = get_args(data_slice_type)
-    if data_slice_type is DataSlice:
+    if data_slice_type is inspect.Parameter.empty or data_slice_type is DataSlice:
         return None
     if get_origin(data_slice_type) != DataSlice or len(type_args) != 1:
         raise ValueError(f"Expect a DataSlice[T] type, but got {data_slice_type}")

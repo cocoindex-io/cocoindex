@@ -1,6 +1,6 @@
 use std::{sync::Arc, vec};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::evaluator::evaluate_transient_flow;
@@ -92,6 +92,7 @@ impl SimpleSemanticsQueryHandler {
                         | value::BasicValue::Time(_)
                         | value::BasicValue::LocalDateTime(_)
                         | value::BasicValue::OffsetDateTime(_)
+                        | value::BasicValue::TimeDelta(_)
                         | value::BasicValue::Json(_)
                         | value::BasicValue::Vector(_) => {
                             bail!("Query results is not a vector of number")

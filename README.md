@@ -138,7 +138,7 @@ It defines an index flow like this:
 | [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |
 | [FastAPI Server with Docker](examples/fastapi_server_docker) | Run the semantic search server in a Dockerized FastAPI setup | 
 | [Product Recommendation](examples/product_recommendation) | Build real-time product recommendations with LLM and graph database| 
-| [Image Search with Vision API](examples/image_search_example) | Generates detailed captions for images using a vision model, embeds them, enables live-updating semantic search via FastAPI and served on a React frontend|
+| [Image Search with Vision API](examples/image_search) | Generates detailed captions for images using a vision model, embeds them, enables live-updating semantic search via FastAPI and served on a React frontend|
 
 More coming and stay tuned 👀!
 

@@ -1,11 +1,11 @@
 use bytes::Bytes;
 use pyo3::exceptions::PyTypeError;
-use pyo3::types::{PyList, PyTuple};
 use pyo3::IntoPyObjectExt;
+use pyo3::types::{PyList, PyTuple};
 use pyo3::{exceptions::PyException, prelude::*};
 use pythonize::{depythonize, pythonize};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -72,6 +72,7 @@ fn basic_value_to_py_object<'py>(
         value::BasicValue::Time(v) => v.into_bound_py_any(py)?,
         value::BasicValue::LocalDateTime(v) => v.into_bound_py_any(py)?,
         value::BasicValue::OffsetDateTime(v) => v.into_bound_py_any(py)?,
+        value::BasicValue::TimeDelta(v) => v.into_bound_py_any(py)?,
         value::BasicValue::Json(v) => pythonize(py, v).into_py_result()?,
         value::BasicValue::Vector(v) => v
             .iter()
@@ -144,6 +145,9 @@ fn basic_value_from_py_object<'py>(
         }
         schema::BasicValueType::OffsetDateTime => {
             value::BasicValue::OffsetDateTime(v.extract::<chrono::DateTime<chrono::FixedOffset>>()?)
+        }
+        schema::BasicValueType::TimeDelta => {
+            value::BasicValue::TimeDelta(v.extract::<chrono::TimeDelta>()?)
         }
         schema::BasicValueType::Json => {
             value::BasicValue::Json(Arc::from(depythonize::<serde_json::Value>(v)?))

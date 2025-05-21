@@ -31,7 +31,7 @@ In this case, you can:
 
 3.  At query time, you usually want to directly run the function with specific input data, instead of letting it called as part of a long-lived indexing flow.
     To do this, declare the function as a *transform flow*, by decorating it with `@cocoindex.transform_flow()`.
-    This will add a `eval()` method to the function, so that you can directly call with specific input data.
+    This will add `eval()` and `eval_async()` methods to the function, so that you can directly call with specific input data.
 
 
 <Tabs>
@@ -65,6 +65,12 @@ Any time, you can call the `eval()` method with specific string, which will retu
 
 ```python
 print(text_to_embedding.eval("Hello, world!"))
+```
+
+If you're in an async context, please call the `eval_async()` method instead:
+
+```python
+print(await text_to_embedding.eval_async("Hello, world!"))
 ```
 
 </TabItem>
