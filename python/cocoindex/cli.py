@@ -354,7 +354,7 @@ def evaluate(app_flow_specifier: str, output_dir: str | None, cache: bool = True
 
     fl = _flow_by_name(flow_ref)
     if output_dir is None:
-        output_dir = f"eval_{setting.get_app_namespace(trailing_delimiter='_')}{flow_name}_{datetime.datetime.now().strftime('%y%m%d_%H%M%S')}"
+        output_dir = f"eval_{setting.get_app_namespace(trailing_delimiter='_')}{fl.name}_{datetime.datetime.now().strftime('%y%m%d_%H%M%S')}"
     options = flow.EvaluateAndDumpOptions(output_dir=output_dir, use_cache=cache)
     fl.evaluate_and_dump(options)
 

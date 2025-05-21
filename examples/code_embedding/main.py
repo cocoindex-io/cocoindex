@@ -66,6 +66,10 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
             ]
 
 def _main():
+    # Make sure the flow is built and up-to-date.
+    stats = code_embedding_flow.update()
+    print("Updated index: ", stats)
+
     # Initialize the database connection pool.
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
