@@ -3,8 +3,7 @@
 ![image](https://github.com/user-attachments/assets/3a696344-c9b4-46e8-9413-6229dbb8672a)
 
 - Qdrant for Vector Storage
-- Ollama Gemma3 (Image to Text)
-- CLIP ViT-L/14 - Embeddings Model
+- CLIP ViT-L/14 - Embeddings Model for both images and text
 - Live Update
 
 ## Make sure Postgres and Qdrant are running
@@ -26,16 +25,6 @@ curl -X PUT 'http://localhost:6333/collections/image_search' \
     }
   }'
 ```
-
-## Run Ollama
-```
-ollama pull gemma3
-ollama serve
-```
-
-### Place your images in the `img` directory.
-- No need to update manually. CocoIndex will automatically update the index as new images are added to the directory.
-
 
 ## Run Backend
 - Install dependencies:
