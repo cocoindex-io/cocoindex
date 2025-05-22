@@ -45,10 +45,13 @@ jobs:
             pip install maturin pytest mypy
         - name: Build
           run: |
+            source .venv/bin/activate
             maturin develop
         - name: Type check
           run: |
+            source .venv/bin/activate
             mypy python
         - name: Test
           run: |
+            source .venv/bin/activate
             pytest python/cocoindex/tests
