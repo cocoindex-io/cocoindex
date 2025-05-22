@@ -5,4 +5,3 @@ fastapi-cli==0.0.7
 uvicorn==0.34.2
 psycopg==3.2.6
 psycopg_pool==3.2.6
-ruff
