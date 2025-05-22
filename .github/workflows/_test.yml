@@ -16,16 +16,6 @@ jobs:
         steps:
         - uses: actions/checkout@v4
 
-        - run: rustup toolchain install stable --profile minimal
-        - name: Rust Cache
-          uses: Swatinem/rust-cache@v2
-          with:
-            key: ${{ runner.os }}-rust-${{ matrix.python-version }}
-        - name: Rust build
-          run: cargo build --verbose
-        - name: Rust tests
-          run: cargo test --verbose
-
         - uses: actions/setup-python@v5
           with:
             python-version: ${{ matrix.python-version }}
@@ -43,6 +33,21 @@ jobs:
           run: |
             source .venv/bin/activate
             pip install maturin pytest mypy ruff
+        - name: Check Python formatting
+          run: |
+            source .venv/bin/activate
+            python -m ruff format --check .
+
+        - run: rustup toolchain install stable --profile minimal
+        - name: Rust Cache
+          uses: Swatinem/rust-cache@v2
+          with:
+            key: ${{ runner.os }}-rust-${{ matrix.python-version }}
+        - name: Rust build
+          run: cargo build --verbose
+        - name: Rust tests
+          run: cargo test --verbose
+
         - name: Python build
           run: |
             source .venv/bin/activate
@@ -55,7 +60,3 @@ jobs:
           run: |
             source .venv/bin/activate
             pytest python/cocoindex/tests
-        - name: Check Python formatting
-          run: |
-            source .venv/bin/activate
-            python -m ruff format --check .
