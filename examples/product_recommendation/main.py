@@ -1,6 +1,7 @@
 """
 This example shows how to extract relationships from Markdown documents and build a knowledge graph.
 """
+
 import dataclasses
 import datetime
 import cocoindex
@@ -25,6 +26,7 @@ PRODUCT_TEMPLATE = """
 
  """
 
+
 @dataclasses.dataclass
 class ProductInfo:
     id: str
@@ -32,11 +34,12 @@ class ProductInfo:
     price: float
     detail: str
 
+
 @dataclasses.dataclass
 class ProductTaxonomy:
     """
     Taxonomy for the product.
-    
+
     A taxonomy is a concise noun (or short noun phrase), based on its core functionality, without specific details such as branding, style, etc.
 
     Always use the most common words in US English.
@@ -45,7 +48,9 @@ class ProductTaxonomy:
 
     A product may have multiple taxonomies. Avoid large categories like "office supplies" or "electronics". Use specific ones, like "pen" or "printer".
     """
+
     name: str
+
 
 @dataclasses.dataclass
 class ProductTaxonomyInfo:
@@ -56,8 +61,10 @@ class ProductTaxonomyInfo:
     - taxonomies: Taxonomies for the current product.
     - complementary_taxonomies: Think about when customers buy this product, what else they might need as complementary products. Put labels for these complentary products.
     """
+
     taxonomies: list[ProductTaxonomy]
     complementary_taxonomies: list[ProductTaxonomy]
+
 
 @cocoindex.op.function(behavior_version=2)
 def extract_product_info(product: cocoindex.Json, filename: str) -> ProductInfo:
@@ -71,35 +78,49 @@ def extract_product_info(product: cocoindex.Json, filename: str) -> ProductInfo:
 
 
 @cocoindex.flow_def(name="StoreProduct")
-def store_product_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+def store_product_flow(
+    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
+):
     """
     Define an example flow that extracts triples from files and build knowledge graph.
     """
     data_scope["products"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="products",
-                                    included_patterns=["*.json"]),
-        refresh_interval=datetime.timedelta(seconds=5))
+        cocoindex.sources.LocalFile(path="products", included_patterns=["*.json"]),
+        refresh_interval=datetime.timedelta(seconds=5),
+    )
 
     product_node = data_scope.add_collector()
     product_taxonomy = data_scope.add_collector()
     product_complementary_taxonomy = data_scope.add_collector()
 
-
     with data_scope["products"].row() as product:
-        data = (product["content"].transform(cocoindex.functions.ParseJson(), language="json")
-                            .transform(extract_product_info, filename=product["filename"]))
-        taxonomy = data["detail"].transform(cocoindex.functions.ExtractByLlm(
-                    llm_spec=cocoindex.LlmSpec(
-                        api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4.1"),
-                        output_type=ProductTaxonomyInfo))
-        
+        data = (
+            product["content"]
+            .transform(cocoindex.functions.ParseJson(), language="json")
+            .transform(extract_product_info, filename=product["filename"])
+        )
+        taxonomy = data["detail"].transform(
+            cocoindex.functions.ExtractByLlm(
+                llm_spec=cocoindex.LlmSpec(
+                    api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4.1"
+                ),
+                output_type=ProductTaxonomyInfo,
+            )
+        )
+
         product_node.collect(id=data["id"], title=data["title"], price=data["price"])
-        with taxonomy['taxonomies'].row() as t:
-            product_taxonomy.collect(id=cocoindex.GeneratedField.UUID, product_id=data["id"], taxonomy=t["name"])
-        with taxonomy['complementary_taxonomies'].row() as t:
-            product_complementary_taxonomy.collect(id=cocoindex.GeneratedField.UUID, product_id=data["id"], taxonomy=t["name"])
-
-
+        with taxonomy["taxonomies"].row() as t:
+            product_taxonomy.collect(
+                id=cocoindex.GeneratedField.UUID,
+                product_id=data["id"],
+                taxonomy=t["name"],
+            )
+        with taxonomy["complementary_taxonomies"].row() as t:
+            product_complementary_taxonomy.collect(
+                id=cocoindex.GeneratedField.UUID,
+                product_id=data["id"],
+                taxonomy=t["name"],
+            )
 
     conn_spec = cocoindex.add_auth_entry(
         "Neo4jConnection",
@@ -107,13 +128,13 @@ def store_product_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
             uri="bolt://localhost:7687",
             user="neo4j",
             password="cocoindex",
-    ))
+        ),
+    )
 
     product_node.export(
         "product_node",
         cocoindex.storages.Neo4j(
-            connection=conn_spec,
-            mapping=cocoindex.storages.Nodes(label="Product")
+            connection=conn_spec, mapping=cocoindex.storages.Nodes(label="Product")
         ),
         primary_key_fields=["id"],
     )
@@ -136,15 +157,17 @@ def store_product_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
                     label="Product",
                     fields=[
                         cocoindex.storages.TargetFieldMapping(
-                            source="product_id", target="id"),
-                    ]
+                            source="product_id", target="id"
+                        ),
+                    ],
                 ),
                 target=cocoindex.storages.NodeFromFields(
                     label="Taxonomy",
                     fields=[
                         cocoindex.storages.TargetFieldMapping(
-                            source="taxonomy", target="value"),
-                    ]
+                            source="taxonomy", target="value"
+                        ),
+                    ],
                 ),
             ),
         ),
@@ -160,15 +183,17 @@ def store_product_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
                     label="Product",
                     fields=[
                         cocoindex.storages.TargetFieldMapping(
-                            source="product_id", target="id"),
-                    ]
+                            source="product_id", target="id"
+                        ),
+                    ],
                 ),
                 target=cocoindex.storages.NodeFromFields(
                     label="Taxonomy",
                     fields=[
                         cocoindex.storages.TargetFieldMapping(
-                            source="taxonomy", target="value"),
-                    ]
+                            source="taxonomy", target="value"
+                        ),
+                    ],
                 ),
             ),
         ),

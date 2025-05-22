@@ -20,6 +20,7 @@ from transformers import CLIPModel, CLIPProcessor
 QDRANT_GRPC_URL = os.getenv("QDRANT_GRPC_URL", "http://localhost:6334/")
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
 
+
 @functools.cache
 def get_clip_model() -> tuple[CLIPModel, CLIPProcessor]:
     model = CLIPModel.from_pretrained(CLIP_MODEL_NAME)
@@ -49,14 +50,20 @@ def embed_image(img_bytes: bytes) -> cocoindex.Vector[cocoindex.Float32, Literal
     with torch.no_grad():
         features = model.get_image_features(**inputs)
     return features[0].tolist()
-    
+
 
 # CocoIndex flow: Ingest images, extract captions, embed, export to Qdrant
 @cocoindex.flow_def(name="ImageObjectEmbedding")
-def image_object_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+def image_object_embedding_flow(
+    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
+):
     data_scope["images"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="img", included_patterns=["*.jpg", "*.jpeg", "*.png"], binary=True),
-        refresh_interval=datetime.timedelta(minutes=1)  # Poll for changes every 1 minute
+        cocoindex.sources.LocalFile(
+            path="img", included_patterns=["*.jpg", "*.jpeg", "*.png"], binary=True
+        ),
+        refresh_interval=datetime.timedelta(
+            minutes=1
+        ),  # Poll for changes every 1 minute
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
@@ -76,6 +83,7 @@ def image_object_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope:
         setup_by_user=True,
     )
 
+
 # --- FastAPI app for web API ---
 app = FastAPI()
 app.add_middleware(
@@ -88,36 +96,35 @@ app.add_middleware(
 # Serve images from the 'img' directory at /img
 app.mount("/img", StaticFiles(directory="img"), name="img")
 
+
 # --- CocoIndex initialization on startup ---
 @app.on_event("startup")
 def startup_event():
     load_dotenv()
     cocoindex.init()
     # Initialize Qdrant client
-    app.state.qdrant_client = QdrantClient(
-        url=QDRANT_GRPC_URL,
-        prefer_grpc=True
-    )
+    app.state.qdrant_client = QdrantClient(url=QDRANT_GRPC_URL, prefer_grpc=True)
     app.state.live_updater = cocoindex.FlowLiveUpdater(image_object_embedding_flow)
     app.state.live_updater.start()
 
+
 @app.get("/search")
-def search(q: str = Query(..., description="Search query"), limit: int = Query(5, description="Number of results")):
+def search(
+    q: str = Query(..., description="Search query"),
+    limit: int = Query(5, description="Number of results"),
+):
     # Get the embedding for the query
     query_embedding = embed_query(q)
-    
+
     # Search in Qdrant
     search_results = app.state.qdrant_client.search(
         collection_name="image_search",
         query_vector=("embedding", query_embedding),
-        limit=limit
+        limit=limit,
     )
-    
+
     # Format results
     out = []
     for result in search_results:
-        out.append({
-            "filename": result.payload["filename"],
-            "score": result.score
-        })
+        out.append({"filename": result.payload["filename"], "score": result.score})
     return {"results": out}

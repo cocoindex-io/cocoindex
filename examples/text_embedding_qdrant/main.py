@@ -9,14 +9,18 @@ QDRANT_COLLECTION = "cocoindex"
 
 
 @cocoindex.transform_flow()
-def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
+def text_to_embedding(
+    text: cocoindex.DataSlice[str],
+) -> cocoindex.DataSlice[list[float]]:
     """
     Embed the text using a SentenceTransformer model.
     This is a shared logic between indexing and querying, so extract it as a function.
     """
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"))
+            model="sentence-transformers/all-MiniLM-L6-v2"
+        )
+    )
 
 
 @cocoindex.flow_def(name="TextEmbeddingWithQdrant")
@@ -60,23 +64,24 @@ def text_embedding_flow(
         setup_by_user=True,
     )
 
+
 def _main():
     # Initialize Qdrant client
     client = QdrantClient(url=QDRANT_GRPC_URL, prefer_grpc=True)
-    
+
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         query = input("Enter search query (or Enter to quit): ")
         if query == "":
             break
-        
+
         # Get the embedding for the query
         query_embedding = text_to_embedding.eval(query)
-        
+
         search_results = client.search(
             collection_name=QDRANT_COLLECTION,
             query_vector=("text_embedding", query_embedding),
-            limit=10
+            limit=10,
         )
         print("\nSearch results:")
         for result in search_results:
