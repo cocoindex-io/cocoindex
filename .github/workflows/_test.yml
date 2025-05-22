@@ -30,16 +30,25 @@ jobs:
           with:
             python-version: ${{ matrix.python-version }}
             cache: 'pip'
+        - name: Setup venv
+          run: |
+            python -m venv .venv
         - uses: actions/cache@v4
           with:
             path: .venv
             key: ${{ runner.os }}-pythonenv-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
             restore-keys: |
               ${{ runner.os }}-pythonenv-${{ matrix.python-version }}-
-        - name: Python build & test
+        - name: Install toolchains
           run: |
-            python -m venv .venv
             source .venv/bin/activate
-            pip install maturin pytest
+            pip install maturin pytest mypy
+        - name: Build
+          run: |
             maturin develop
+        - name: Type check
+          run: |
+            mypy python
+        - name: Test
+          run: |
             pytest python/cocoindex/tests
