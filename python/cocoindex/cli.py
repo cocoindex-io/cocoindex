@@ -177,8 +177,7 @@ def ls(app_target: str | None):
             click.echo("No persisted flow setups found in the backend.")
             return
 
-        persisted_flow_names = set(persisted_flow_names)
-        for name in persisted_flow_names:
+        for name in sorted(persisted_flow_names):
             click.echo(name)
 
 @cli.command()
