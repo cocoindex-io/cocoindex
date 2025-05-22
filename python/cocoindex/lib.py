@@ -4,7 +4,8 @@ Library level functions and states.
 import warnings
 from typing import Callable, Any
 
-from . import _engine, flow, query, setting
+from . import _engine  # type: ignore
+from . import flow, query, setting
 from .convert import dump_engine_object
 
 

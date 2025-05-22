@@ -90,6 +90,8 @@ def _load_user_app(app_target: str) -> types.ModuleType:
                 raise ImportError(f"Could not create spec for file: {app_path}")
             module = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = module 
+            if spec.loader is None:
+                raise ImportError(f"Could not create loader for file: {app_path}")
             spec.loader.exec_module(module)
             return module
         except (ImportError, FileNotFoundError, PermissionError) as e:
@@ -145,20 +147,21 @@ def ls(app_target: str | None):
     If APP_TARGET is omitted, lists all flows that have a persisted
     setup in the backend.
     """
+    persisted_flow_names = flow_names_with_setup()
     if app_target:
         app_ref = _get_app_ref_from_specifier(app_target)
         _load_user_app(app_ref)
 
         current_flow_names = set(flow.flow_names())
-        persisted_flow_names = set(flow_names_with_setup())
 
         if not current_flow_names:
             click.echo(f"No flows are defined in '{app_ref}'.")
             return
 
         has_missing = False
+        persisted_flow_names_set = set(persisted_flow_names)
         for name in sorted(current_flow_names):
-            if name in persisted_flow_names:
+            if name in persisted_flow_names_set:
                 click.echo(name)
             else:
                 click.echo(f"{name} [+]")
@@ -170,13 +173,11 @@ def ls(app_target: str | None):
             click.echo('  [+]: Flows present in the current process, but missing setup.')
 
     else:
-        persisted_flow_names = sorted(flow_names_with_setup())
-
         if not persisted_flow_names:
             click.echo("No persisted flow setups found in the backend.")
             return
 
-        for name in persisted_flow_names:
+        for name in sorted(persisted_flow_names):
             click.echo(name)
 
 @cli.command()

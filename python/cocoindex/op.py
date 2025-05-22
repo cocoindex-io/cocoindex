@@ -10,7 +10,7 @@ from enum import Enum
 
 from .typing import encode_enriched_type, resolve_forward_ref
 from .convert import encode_engine_value, make_engine_value_decoder
-from . import _engine
+from . import _engine  # type: ignore
 
 class OpCategory(Enum):
     """The category of the operation."""
@@ -101,7 +101,7 @@ def _register_op_factory(
 
     class _WrappedClass(executor_cls, _Fallback):
         _args_decoders: list[Callable[[Any], Any]]
-        _kwargs_decoders: dict[str, Callable[[str, Any], Any]]
+        _kwargs_decoders: dict[str, Callable[[Any], Any]]
         _acall: Callable
 
         def __init__(self, spec):
@@ -247,13 +247,13 @@ def function(**args) -> Callable[[Callable], FunctionSpec]:
                 return fn(*args, **kwargs)
 
         class _Spec(FunctionSpec):
-            pass
+            def __call__(self, *args, **kwargs):
+                return fn(*args, **kwargs)
 
         _Spec.__name__ = op_name
         _Spec.__doc__ = fn.__doc__
         _Spec.__module__ = fn.__module__
         _Spec.__qualname__ = fn.__qualname__
-        _Spec.__wrapped__ = fn
 
         _register_op_factory(
             category=OpCategory.FUNCTION,

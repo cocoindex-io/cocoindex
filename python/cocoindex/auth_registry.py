@@ -5,7 +5,7 @@ Auth registry is used to register and reference auth entries.
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from . import _engine
+from . import _engine  # type: ignore
 from .convert import dump_engine_object
 
 T = TypeVar("T")

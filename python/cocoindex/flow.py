@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from rich.text import Text
 from rich.tree import Tree
 
-from . import _engine
+from . import _engine  # type: ignore
 from . import index
 from . import op
 from . import setting
