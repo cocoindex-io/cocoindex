@@ -42,7 +42,7 @@ jobs:
         - name: Install Python toolchains
           run: |
             source .venv/bin/activate
-            pip install maturin pytest mypy
+            pip install maturin pytest mypy ruff
         - name: Python build
           run: |
             source .venv/bin/activate
@@ -55,3 +55,7 @@ jobs:
           run: |
             source .venv/bin/activate
             pytest python/cocoindex/tests
+        - name: Check Python formatting
+          run: |
+            source .venv/bin/activate
+            python -m ruff format --check .
