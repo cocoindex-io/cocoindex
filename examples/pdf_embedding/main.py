@@ -111,15 +111,12 @@ def _main():
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
-        try:
-            query = input("Enter search query (or Enter to quit): ")
-            if query == '':
-                break
-            # Run the query function with the database connection pool and the query.
-            results = search(pool, query)
-            print(SEARCH_RESULTS_TEMPLATE.render(results=results))
-        except KeyboardInterrupt:
+        query = input("Enter search query (or Enter to quit): ")
+        if query == '':
             break
+        # Run the query function with the database connection pool and the query.
+        results = search(pool, query)
+        print(SEARCH_RESULTS_TEMPLATE.render(results=results))
 
 
 if __name__ == "__main__":

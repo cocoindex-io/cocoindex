@@ -66,29 +66,26 @@ def _main():
     
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
-        try:
-            query = input("Enter search query (or Enter to quit): ")
-            if query == "":
-                break
-            
-            # Get the embedding for the query
-            query_embedding = text_to_embedding.eval(query)
-            
-            search_results = client.search(
-                collection_name=QDRANT_COLLECTION,
-                query_vector=("text_embedding", query_embedding),
-                limit=10
-            )
-            print("\nSearch results:")
-            for result in search_results:
-                score = result.score
-                payload = result.payload
-                print(f"[{score:.3f}] {payload['filename']}")
-                print(f"    {payload['text']}")
-                print("---")
-            print()
-        except KeyboardInterrupt:
+        query = input("Enter search query (or Enter to quit): ")
+        if query == "":
             break
+        
+        # Get the embedding for the query
+        query_embedding = text_to_embedding.eval(query)
+        
+        search_results = client.search(
+            collection_name=QDRANT_COLLECTION,
+            query_vector=("text_embedding", query_embedding),
+            limit=10
+        )
+        print("\nSearch results:")
+        for result in search_results:
+            score = result.score
+            payload = result.payload
+            print(f"[{score:.3f}] {payload['filename']}")
+            print(f"    {payload['text']}")
+            print("---")
+        print()
 
 
 if __name__ == "__main__":

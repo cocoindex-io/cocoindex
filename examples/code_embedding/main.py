@@ -74,20 +74,17 @@ def _main():
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
-        try:
-            query = input("Enter search query (or Enter to quit): ")
-            if query == '':
-                break
-            # Run the query function with the database connection pool and the query.
-            results = search(pool, query)
-            print("\nSearch results:")
-            for result in results:
-                print(f"[{result['score']:.3f}] {result['filename']}")
-                print(f"    {result['code']}")
-                print("---")
-            print()
-        except KeyboardInterrupt:
+        query = input("Enter search query (or Enter to quit): ")
+        if query == '':
             break
+        # Run the query function with the database connection pool and the query.
+        results = search(pool, query)
+        print("\nSearch results:")
+        for result in results:
+            print(f"[{result['score']:.3f}] {result['filename']}")
+            print(f"    {result['code']}")
+            print("---")
+        print()
 
 if __name__ == "__main__":
     load_dotenv()
