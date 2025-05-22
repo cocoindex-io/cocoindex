@@ -521,35 +521,6 @@ impl BasicValue {
             BasicValue::Vector(_) => "vector",
         }
     }
-
-    pub fn to_basic_value_type(&self) -> Result<BasicValueType> {
-        Ok(match self {
-            &BasicValue::Bytes(_) => BasicValueType::Bytes,
-            &BasicValue::Str(_) => BasicValueType::Str,
-            &BasicValue::Bool(_) => BasicValueType::Bool,
-            &BasicValue::Int64(_) => BasicValueType::Int64,
-            &BasicValue::Float32(_) => BasicValueType::Float32,
-            &BasicValue::Float64(_) => BasicValueType::Float64,
-            &BasicValue::Range(_) => BasicValueType::Range,
-            &BasicValue::Uuid(_) => BasicValueType::Uuid,
-            &BasicValue::Date(_) => BasicValueType::Date,
-            &BasicValue::Time(_) => BasicValueType::Time,
-            &BasicValue::LocalDateTime(_) => BasicValueType::LocalDateTime,
-            &BasicValue::OffsetDateTime(_) => BasicValueType::OffsetDateTime,
-            &BasicValue::TimeDelta(_) => BasicValueType::TimeDelta,
-            &BasicValue::Json(_) => BasicValueType::Json,
-            BasicValue::Vector(elements) => {
-                if elements.len() == 0 {
-                    anyhow::bail!("Inconclusive basic value type");
-                }
-
-                BasicValueType::Vector(VectorTypeSchema {
-                    element_type: Box::new(elements[0].to_basic_value_type()?),
-                    dimension: Some(elements.len()),
-                })
-            },
-        })
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -964,34 +935,57 @@ impl BasicValue {
                 BasicValue::Vector(Arc::from(vec))
             }
             (v, BasicValueType::Union(typ)) => {
-                match v.as_array() {
-                    Some(arr) if arr.len() == 2 => {
-                        let t = arr[0].as_str();
-                        let value = arr[1];
+                let types = typ.types();
 
-                        match t {
-                            Some(t) => BasicValue::from_json(value, &match t {
-                                "Bytes" => BasicValueType::Bytes,
-                                "Str" => BasicValueType::Str,
-                                "Bool" => BasicValueType::Bool,
-                                "Int64" => BasicValueType::Int64,
-                                "Float32" => BasicValueType::Float32,
-                                "Float64" => BasicValueType::Float64,
-                                "Range" => BasicValueType::Range,
-                                "Uuid" => BasicValueType::Uuid,
-                                "Date" => BasicValueType::Date,
-                                "Time" => BasicValueType::Time,
-                                "LocalDateTime" => BasicValueType::LocalDateTime,
-                                "OffsetDateTime" => BasicValueType::OffsetDateTime,
-                                "TimeDelta" => BasicValueType::TimeDelta,
-                                "Json" => BasicValueType::Json,
-                                other => {
-                                }
-                            }),
-                            None => anyhow::bail!("Invalid type value for union"),
+                match v {
+                    serde_json::Value::Bool(b) if types.contains(&BasicValueType::Bool) => {
+                        BasicValue::Bool(b)
+                    }
+                    serde_json::Value::Number(n) => {
+                        if types.contains(&BasicValueType::Int64) {
+                            match n.as_i64() {
+                                Some(n) => return Ok(BasicValue::Int64(n)),
+                                None => {}
+                            }
+                        }
+
+                        if types.contains(&BasicValueType::Float64) {
+                            match n.as_f64() {
+                                Some(n) => return Ok(BasicValue::Float64(n)),
+                                None => {}
+                            }
+                        }
+
+                        if types.contains(&BasicValueType::Float32) {
+                            match n.as_f64().map(|v| v as f32) {
+                                Some(n) => return Ok(BasicValue::Float32(n)),
+                                None => {}
+                            }
+                        }
+
+                        anyhow::bail!("Invalid number value {n}")
+                    }
+                    serde_json::Value::Object(obj) if types.contains(&BasicValueType::Range) => {
+                        let start = obj.get("start").and_then(|val| val.as_u64());
+                        let end = obj.get("end").and_then(|val| val.as_u64());
+
+                        match (start, end) {
+                            (Some(start), Some(end)) => {
+                                BasicValue::Range(RangeValue::new(start as usize, end as usize))
+                            }
+                            _ => anyhow::bail!("Invalid range value")
                         }
                     }
-                    _ => anyhow::bail!("Invalid JSON data type for union"),
+                    serde_json::Value::String(s) => {
+                        match types.parse_str(&s) {
+                            Ok(val) => return Ok(val),
+                            Err(_) => {}
+                        }
+
+                        anyhow::bail!("Invalid string value \"{s}\"")
+                    }
+
+                    _ => anyhow::bail!("Invalid union value {v}, expect type {}", types.iter().join(" | ")),
                 }
             }
             (v, t) => {
@@ -1126,28 +1120,7 @@ impl Serialize for TypedValue<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match (self.t, self.v) {
             (_, Value::Null) => serializer.serialize_none(),
-            (ValueType::Basic(t), v) => match t {
-                BasicValueType::Union(u) => {
-                    let mut s = serializer.serialize_tuple(2)?;
-                    s.serialize_element(match v {
-                        Value::Basic(bv) => {
-                            let typ = match bv.to_basic_value_type() {
-                                Ok(conv_t) => match conv_t {
-                                    BasicValueType::Vector(s) => {
-                                        todo!("inner type stringify");
-                                    }
-                                    other => u.types().get(&other),
-                                },
-                                Err(err) => return Err(serde::ser::Error::custom(err.to_string())),
-                            };
-                        }
-                        _ => return Err(serde::ser::Error::custom("Invalid union value")),
-                    })?;
-                    s.serialize_element(&v)?;
-                    s.end()
-                }
-                _ => Ok(v.serialize(serializer)?),
-            },
+            (ValueType::Basic(_), v) => v.serialize(serializer),
             (ValueType::Struct(s), Value::Struct(field_values)) => TypedFieldsValue {
                 schema: &s.fields,
                 values_iter: field_values.fields.iter(),
