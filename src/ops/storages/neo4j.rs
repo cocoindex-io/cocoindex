@@ -1,6 +1,7 @@
 use crate::prelude::*;
 
-use super::spec::{GraphDeclaration, GraphElementMapping, NodeFromFieldsSpec, TargetFieldMapping};
+use super::shared::property_graph::*;
+
 use crate::setup::components::{self, State, apply_component_changes};
 use crate::setup::{ResourceSetupStatus, SetupChangeType};
 use crate::{ops::sdk::*, setup::CombinedState};
@@ -33,6 +34,8 @@ pub struct Declaration {
     decl: GraphDeclaration,
 }
 
+type Neo4jGraphElement = GraphElement<ConnectionSpec>;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 struct GraphKey {
     uri: String,
@@ -44,61 +47,6 @@ impl GraphKey {
         Self {
             uri: spec.uri.clone(),
             db: spec.db.clone().unwrap_or_else(|| DEFAULT_DB.to_string()),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Clone)]
-enum ElementType {
-    Node(String),
-    Relationship(String),
-}
-
-impl ElementType {
-    fn label(&self) -> &str {
-        match self {
-            ElementType::Node(label) => label,
-            ElementType::Relationship(label) => label,
-        }
-    }
-
-    fn from_mapping_spec(spec: &GraphElementMapping) -> Self {
-        match spec {
-            GraphElementMapping::Relationship(spec) => {
-                ElementType::Relationship(spec.rel_type.clone())
-            }
-            GraphElementMapping::Node(spec) => ElementType::Node(spec.label.clone()),
-        }
-    }
-
-    fn matcher(&self, var_name: &str) -> String {
-        match self {
-            ElementType::Relationship(label) => format!("()-[{var_name}:{label}]->()"),
-            ElementType::Node(label) => format!("({var_name}:{label})"),
-        }
-    }
-}
-
-impl std::fmt::Display for ElementType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ElementType::Node(label) => write!(f, "Node(label:{label})"),
-            ElementType::Relationship(rel_type) => write!(f, "Relationship(type:{rel_type})"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct GraphElement {
-    connection: AuthEntryReference<ConnectionSpec>,
-    typ: ElementType,
-}
-
-impl GraphElement {
-    fn from_spec(spec: &Spec) -> Self {
-        Self {
-            connection: spec.connection.clone(),
-            typ: ElementType::from_mapping_spec(&spec.mapping),
         }
     }
 }
@@ -856,7 +804,7 @@ fn build_composite_field_names(qualifier: &str, field_names: &[String]) -> Strin
 }
 #[derive(Debug)]
 pub struct GraphElementDataSetupStatus {
-    key: GraphElement,
+    key: Neo4jGraphElement,
     conn_spec: ConnectionSpec,
     data_clear: Option<DataClearAction>,
     change_type: SetupChangeType,
@@ -864,7 +812,7 @@ pub struct GraphElementDataSetupStatus {
 
 impl GraphElementDataSetupStatus {
     fn new(
-        key: GraphElement,
+        key: Neo4jGraphElement,
         conn_spec: ConnectionSpec,
         desired_state: Option<&SetupState>,
         existing: &CombinedState<SetupState>,
@@ -936,7 +884,7 @@ impl ResourceSetupStatus for GraphElementDataSetupStatus {
 
 async fn clear_graph_element_data(
     graph: &Graph,
-    key: &GraphElement,
+    key: &Neo4jGraphElement,
     is_self_contained: bool,
 ) -> Result<()> {
     let var_name = CORE_ELEMENT_MATCHER_VAR;
@@ -1083,7 +1031,7 @@ impl StorageFactoryBase for Factory {
         GraphElementDataSetupStatus,
         components::SetupStatus<SetupComponentOperator>,
     );
-    type Key = GraphElement;
+    type Key = Neo4jGraphElement;
     type ExportContext = ExportContext;
 
     fn name(&self) -> &str {
@@ -1097,7 +1045,7 @@ impl StorageFactoryBase for Factory {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         Vec<TypedExportDataCollectionBuildOutput<Self>>,
-        Vec<(GraphElement, SetupState)>,
+        Vec<(Neo4jGraphElement, SetupState)>,
     )> {
         let node_labels_index_options = data_collections
             .iter()
@@ -1116,7 +1064,10 @@ impl StorageFactoryBase for Factory {
         let data_coll_output = data_collections
             .into_iter()
             .map(|d| {
-                let setup_key = GraphElement::from_spec(&d.spec);
+                let setup_key = Neo4jGraphElement {
+                    connection: d.spec.connection.clone(),
+                    typ: ElementType::from_mapping_spec(&d.spec.mapping),
+                };
 
                 let (value_fields_info, rel_end_label_info, dependent_node_labels) = match &d
                     .spec
@@ -1257,7 +1208,7 @@ impl StorageFactoryBase for Factory {
 
     async fn check_setup_status(
         &self,
-        key: GraphElement,
+        key: Neo4jGraphElement,
         desired: Option<SetupState>,
         existing: CombinedState<SetupState>,
         auth_registry: &Arc<AuthRegistry>,
@@ -1284,7 +1235,7 @@ impl StorageFactoryBase for Factory {
         Ok(desired.check_compatible(existing))
     }
 
-    fn describe_resource(&self, key: &GraphElement) -> Result<String> {
+    fn describe_resource(&self, key: &Neo4jGraphElement) -> Result<String> {
         Ok(format!("Neo4j {}", key.typ))
     }
 
@@ -1339,9 +1290,9 @@ impl StorageFactoryBase for Factory {
             changes.into_iter().map(|c| (&c.0, &c.1)).unzip();
 
         // Relationships first, then nodes, as relationships need to be deleted before nodes they referenced.
-        let mut relationship_types = IndexMap::<&GraphElement, &ConnectionSpec>::new();
-        let mut node_labels = IndexMap::<&GraphElement, &ConnectionSpec>::new();
-        let mut dependent_node_labels = IndexMap::<GraphElement, &ConnectionSpec>::new();
+        let mut relationship_types = IndexMap::<&Neo4jGraphElement, &ConnectionSpec>::new();
+        let mut node_labels = IndexMap::<&Neo4jGraphElement, &ConnectionSpec>::new();
+        let mut dependent_node_labels = IndexMap::<Neo4jGraphElement, &ConnectionSpec>::new();
         for data_status in data_statuses.iter() {
             if let Some(data_clear) = &data_status.data_clear {
                 match &data_status.key.typ {
@@ -1349,7 +1300,7 @@ impl StorageFactoryBase for Factory {
                         relationship_types.insert(&data_status.key, &data_status.conn_spec);
                         for label in &data_clear.dependent_node_labels {
                             dependent_node_labels.insert(
-                                GraphElement {
+                                Neo4jGraphElement {
                                     connection: data_status.key.connection.clone(),
                                     typ: ElementType::Node(label.clone()),
                                 },
