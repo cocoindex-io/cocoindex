@@ -47,11 +47,11 @@ jobs:
           run: |
             source .venv/bin/activate
             maturin develop
-        - name: Type check
+        - name: Type check (mypy)
           run: |
             source .venv/bin/activate
             mypy python
-        - name: Test
+        - name: Run tests
           run: |
             source .venv/bin/activate
             pytest python/cocoindex/tests
