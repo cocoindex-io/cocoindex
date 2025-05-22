@@ -5,7 +5,6 @@ use anyhow::Result;
 use base64::prelude::*;
 use bytes::Bytes;
 use chrono::Offset;
-use itertools::Itertools;
 use log::warn;
 use serde::{
     Deserialize, Serialize,
@@ -359,6 +358,10 @@ pub enum BasicValue {
     TimeDelta(chrono::Duration),
     Json(Arc<serde_json::Value>),
     Vector(Arc<[BasicValue]>),
+    UnionVariant {
+        tag_id: usize,
+        value: Box<BasicValue>,
+    },
 }
 
 impl From<Bytes> for BasicValue {
@@ -476,7 +479,8 @@ impl BasicValue {
             | BasicValue::OffsetDateTime(_)
             | BasicValue::TimeDelta(_)
             | BasicValue::Json(_)
-            | BasicValue::Vector(_) => api_bail!("invalid key value type"),
+            | BasicValue::Vector(_)
+            | BasicValue::UnionVariant { .. } => api_bail!("invalid key value type"),
         };
         Ok(result)
     }
@@ -497,7 +501,8 @@ impl BasicValue {
             | BasicValue::OffsetDateTime(_)
             | BasicValue::TimeDelta(_)
             | BasicValue::Json(_)
-            | BasicValue::Vector(_) => api_bail!("invalid key value type"),
+            | BasicValue::Vector(_)
+            | BasicValue::UnionVariant { .. } => api_bail!("invalid key value type"),
         };
         Ok(result)
     }
@@ -519,6 +524,7 @@ impl BasicValue {
             BasicValue::TimeDelta(_) => "timedelta",
             BasicValue::Json(_) => "json",
             BasicValue::Vector(_) => "vector",
+            BasicValue::UnionVariant { .. } => "union",
         }
     }
 }
@@ -870,6 +876,12 @@ impl serde::Serialize for BasicValue {
             BasicValue::TimeDelta(v) => serializer.serialize_str(&v.to_string()),
             BasicValue::Json(v) => v.serialize(serializer),
             BasicValue::Vector(v) => v.serialize(serializer),
+            BasicValue::UnionVariant { tag_id, value } => {
+                let mut s = serializer.serialize_tuple(2)?;
+                s.serialize_element(tag_id)?;
+                s.serialize_element(value)?;
+                s.end()
+            }
         }
     }
 }
@@ -935,57 +947,24 @@ impl BasicValue {
                 BasicValue::Vector(Arc::from(vec))
             }
             (v, BasicValueType::Union(typ)) => {
-                let types = typ.types();
+                let obj = v.as_array()
+                    .ok_or_else(|| anyhow::anyhow!("Invalid JSON value for union"))?;
 
-                match v {
-                    serde_json::Value::Bool(b) if types.contains(&BasicValueType::Bool) => {
-                        BasicValue::Bool(b)
-                    }
-                    serde_json::Value::Number(n) => {
-                        if types.contains(&BasicValueType::Int64) {
-                            match n.as_i64() {
-                                Some(n) => return Ok(BasicValue::Int64(n)),
-                                None => {}
-                            }
-                        }
+                let tag_id = obj.get(0)
+                    .and_then(|value| value.as_u64())
+                    .map(|num_u64| num_u64 as usize)
+                    .ok_or_else(|| anyhow::anyhow!("`tag_id` is not available in the value"))?;
 
-                        if types.contains(&BasicValueType::Float64) {
-                            match n.as_f64() {
-                                Some(n) => return Ok(BasicValue::Float64(n)),
-                                None => {}
-                            }
-                        }
+                let value = obj.get(1)
+                    .ok_or_else(|| anyhow::anyhow!("`value` is not available in the value"))?;
 
-                        if types.contains(&BasicValueType::Float32) {
-                            match n.as_f64().map(|v| v as f32) {
-                                Some(n) => return Ok(BasicValue::Float32(n)),
-                                None => {}
-                            }
-                        }
+                let cur_type = typ.types().iter()
+                    .nth(tag_id)
+                    .ok_or_else(|| anyhow::anyhow!("No type in `tag_id` \"{tag_id}\" found"))?;
 
-                        anyhow::bail!("Invalid number value {n}")
-                    }
-                    serde_json::Value::Object(obj) if types.contains(&BasicValueType::Range) => {
-                        let start = obj.get("start").and_then(|val| val.as_u64());
-                        let end = obj.get("end").and_then(|val| val.as_u64());
-
-                        match (start, end) {
-                            (Some(start), Some(end)) => {
-                                BasicValue::Range(RangeValue::new(start as usize, end as usize))
-                            }
-                            _ => anyhow::bail!("Invalid range value")
-                        }
-                    }
-                    serde_json::Value::String(s) => {
-                        match types.parse_str(&s) {
-                            Ok(val) => return Ok(val),
-                            Err(_) => {}
-                        }
-
-                        anyhow::bail!("Invalid string value \"{s}\"")
-                    }
-
-                    _ => anyhow::bail!("Invalid union value {v}, expect type {}", types.iter().join(" | ")),
+                BasicValue::UnionVariant {
+                    tag_id,
+                    value: Box::new(BasicValue::from_json(value.clone(), cur_type)?),
                 }
             }
             (v, t) => {

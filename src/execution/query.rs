@@ -94,7 +94,8 @@ impl SimpleSemanticsQueryHandler {
                         | value::BasicValue::OffsetDateTime(_)
                         | value::BasicValue::TimeDelta(_)
                         | value::BasicValue::Json(_)
-                        | value::BasicValue::Vector(_) => {
+                        | value::BasicValue::Vector(_)
+                        | value::BasicValue::UnionVariant { .. } => {
                             bail!("Query results is not a vector of number")
                         }
                     })
