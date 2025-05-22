@@ -1,32 +1,41 @@
 # Image Search with CocoIndex
+[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
-![image](https://github.com/user-attachments/assets/3a696344-c9b4-46e8-9413-6229dbb8672a)
+We will build live image search and query it with natural language, using multimodal embedding model. We are going use CocoIndex to build real-time indexing flow. During running, you can add new files to the folder and it only process changed files and will be indexed within a minute.
 
+We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
+
+<img width="1105" alt="cover" src="https://github.com/user-attachments/assets/7f1a59e0-77cf-45ed-b45b-4e3eb6e826b9" />
+
+## Technologies
+- CocoIndex for ETL and live update
+- CLIP ViT-L/14 - Embeddings Model for images and query
 - Qdrant for Vector Storage
-- CLIP ViT-L/14 - Embeddings Model for both images and text
-- Live Update
+- FastApi for backend
 
-## Make sure Postgres and Qdrant are running
-```
-docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
-export COCOINDEX_DATABASE_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
-```
 
-## Create Qdrant Collection
-```
-curl -X PUT 'http://localhost:6333/collections/image_search' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "vectors": {
-      "embedding": {
-        "size": 768,
-        "distance": "Cosine"
+## Setup
+- Make sure Postgres and Qdrant are running
+  ```
+  docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
+  export COCOINDEX_DATABASE_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
+  ```
+
+- Create Qdrant Collection
+  ```
+  curl -X PUT 'http://localhost:6333/collections/image_search' \
+    -H 'Content-Type: application/json' \
+    -d '{
+      "vectors": {
+        "embedding": {
+          "size": 768,
+          "distance": "Cosine"
+        }
       }
-    }
-  }'
-```
+    }'
+  ```
 
-## Run Backend
+## Run
 - Install dependencies:
   ```
   pip install -e .
