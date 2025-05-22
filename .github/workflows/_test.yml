@@ -39,19 +39,19 @@ jobs:
             key: ${{ runner.os }}-pythonenv-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
             restore-keys: |
               ${{ runner.os }}-pythonenv-${{ matrix.python-version }}-
-        - name: Install toolchains
+        - name: Install Python toolchains
           run: |
             source .venv/bin/activate
             pip install maturin pytest mypy
-        - name: Build
+        - name: Python build
           run: |
             source .venv/bin/activate
             maturin develop
-        - name: Type check (mypy)
+        - name: Python type check (mypy)
           run: |
             source .venv/bin/activate
             mypy python
-        - name: Run tests
+        - name: Python tests
           run: |
             source .venv/bin/activate
             pytest python/cocoindex/tests
