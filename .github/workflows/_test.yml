@@ -30,15 +30,15 @@ jobs:
           with:
             python-version: ${{ matrix.python-version }}
             cache: 'pip'
-        - name: Setup venv
-          run: |
-            python -m venv .venv
         - uses: actions/cache@v4
           with:
             path: .venv
             key: ${{ runner.os }}-pythonenv-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
             restore-keys: |
               ${{ runner.os }}-pythonenv-${{ matrix.python-version }}-
+        - name: Setup venv
+          run: |
+            python -m venv .venv
         - name: Install Python toolchains
           run: |
             source .venv/bin/activate
