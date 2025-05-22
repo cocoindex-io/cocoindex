@@ -26,6 +26,21 @@ permissions:
   contents: read
 
 jobs:
+  format-check:
+    name: Check Python formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.11
+      - name: Install Ruff
+        run: |
+          pip install ruff
+      - name: Check Python formatting
+        run: |
+          ruff format --check .
+
   test:
     name: Run test
     uses: ./.github/workflows/_test.yml
