@@ -162,15 +162,13 @@ fn basic_value_from_py_object<'py>(
                 .collect::<PyResult<Vec<_>>>()?,
         )),
         schema::BasicValueType::Union(s) => {
-            // Try parsing the value in the reversed order of the enum elements
-            for typ in s.types().iter().rev() {
-                match typ {
-                    BasicValueType::Union(_) => {
-                        // Nested union never happens
-                    }
-                    other => if let Ok(value) = basic_value_from_py_object(other, v) {
-                        return Ok(value);
-                    },
+            // Try parsing the value
+            for (i, typ) in s.types().iter().enumerate() {
+                if let Ok(value) = basic_value_from_py_object(typ, v) {
+                    return Ok(value::BasicValue::UnionVariant {
+                        tag_id: i,
+                        value: Box::new(value),
+                    });
                 }
             }
 
