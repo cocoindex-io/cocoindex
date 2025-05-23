@@ -1,15 +1,15 @@
-use crate::prelude::*;
+use crate::{prelude::*, utils::union::UnionType};
 
 use super::spec::*;
 use crate::builder::plan::AnalyzedValueMapping;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VectorTypeSchema {
     pub element_type: Box<BasicValueType>,
     pub dimension: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(tag = "kind")]
 pub enum BasicValueType {
     /// A sequence of bytes in binary.
@@ -56,6 +56,9 @@ pub enum BasicValueType {
 
     /// A vector of values (usually numbers, for embeddings).
     Vector(VectorTypeSchema),
+
+    /// A union
+    Union(UnionType),
 }
 
 impl std::fmt::Display for BasicValueType {
@@ -79,6 +82,17 @@ impl std::fmt::Display for BasicValueType {
                 write!(f, "Vector[{}", s.element_type)?;
                 if let Some(dimension) = s.dimension {
                     write!(f, ", {}", dimension)?;
+                }
+                write!(f, "]")
+            }
+            BasicValueType::Union(s) => {
+                write!(f, "Union[")?;
+                for (i, typ) in s.types().iter().enumerate() {
+                    if i > 0 {
+                        // Add type delimiter
+                        write!(f, " | ")?;
+                    }
+                    write!(f, "{}", typ)?;
                 }
                 write!(f, "]")
             }

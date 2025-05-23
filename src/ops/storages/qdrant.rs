@@ -11,8 +11,7 @@ use futures::FutureExt;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::vectors_output::VectorsOptions;
 use qdrant_client::qdrant::{
-    DeletePointsBuilder, NamedVectors, PointId, PointStruct, PointsIdsList, UpsertPointsBuilder,
-    Value as QdrantValue,
+    DeletePointsBuilder, NamedVectors, PointId, PointStruct, PointsIdsList, UpsertPointsBuilder, Value as QdrantValue
 };
 use qdrant_client::qdrant::{Query, QueryPointsBuilder, ScoredPoint};
 use serde_json::json;
@@ -139,6 +138,9 @@ fn values_to_payload(
                         vectors = vectors.add_vector(field_name, vector);
                         continue;
                     }
+                    BasicValue::UnionVariant { tag_id, value } => {
+                        json!([tag_id, value])
+                    }
                 };
                 payload.insert(field_name.clone(), json_value.into());
             }
@@ -163,46 +165,88 @@ fn convert_to_vector(v: Vec<BasicValue>) -> Vec<f32> {
         .collect()
 }
 
+fn parse_payload_value(
+    value: &qdrant_client::qdrant::Value,
+    basic_type: &BasicValueType,
+) -> Option<BasicValue> {
+    match basic_type {
+        &BasicValueType::Str => {
+            value.as_str()
+                .map(|s| BasicValue::Str(Arc::from(s.to_string())))
+        }
+        &BasicValueType::Bool => value.as_bool().map(BasicValue::Bool),
+        &BasicValueType::Int64 => value.as_integer().map(BasicValue::Int64),
+        &BasicValueType::Float32 => value.as_double().map(|f| BasicValue::Float32(f as f32)),
+        &BasicValueType::Float64 => value.as_double().map(BasicValue::Float64),
+        &BasicValueType::TimeDelta => {
+            value.as_str()
+                .and_then(|s| parse_duration(s).ok().map(BasicValue::TimeDelta))
+        }
+        &BasicValueType::Json => Some(BasicValue::Json(Arc::from(value.clone().into_json()))),
+        BasicValueType::Vector(s) => {
+            let elem_type = &s.element_type;
+
+            value.as_list().and_then(|list| {
+                let v: Vec<BasicValue> = list.iter()
+                    .filter_map(|item| parse_payload_value(item, elem_type))
+                    .collect();
+                Some(BasicValue::Vector(Arc::from(v)))
+            })
+        }
+        &BasicValueType::Uuid => value.as_str()?.parse().ok().map(BasicValue::Uuid),
+        &BasicValueType::Date => value.as_str()?.parse().ok().map(BasicValue::Date),
+        &BasicValueType::Time => value.as_str()?.parse().ok().map(BasicValue::Time),
+        &BasicValueType::LocalDateTime => {
+            value.as_str()?.parse().ok().map(BasicValue::LocalDateTime)
+        }
+        &BasicValueType::OffsetDateTime => {
+            value.as_str()?.parse().ok().map(BasicValue::OffsetDateTime)
+        }
+        &BasicValueType::Range => {
+            value.as_struct().and_then(|s| {
+                let start = s.fields.get("start").and_then(|f| f.as_integer());
+                let end = s.fields.get("end").and_then(|f| f.as_integer());
+
+                match (start, end) {
+                    (Some(start), Some(end)) => Some(BasicValue::Range(RangeValue {
+                        start: start as usize,
+                        end: end as usize,
+                    })),
+                    _ => None,
+                }
+            })
+        }
+        BasicValueType::Union(typ) => {
+            value.as_list().and_then(|arr| {
+                let tag_id = arr.get(0)
+                    .and_then(|f| f.as_integer())
+                    .map(|f| f as usize);
+                let inner_value = arr.get(1);
+
+                match (tag_id, inner_value) {
+                    (Some(tag_id), Some(value)) => {
+                        typ.types().iter()
+                            .nth(tag_id)
+                            .and_then(|t| parse_payload_value(value, t))
+                            .map(|basic_value| BasicValue::UnionVariant {
+                                tag_id,
+                                value: Box::new(basic_value),
+                            })
+                    }
+                    _ => None,
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
 fn into_value(point: &ScoredPoint, schema: &FieldSchema) -> Result<Value> {
     let field_name = &schema.name;
     let typ = schema.value_type.typ.clone();
     let value = match typ {
         ValueType::Basic(basic_type) => {
             let basic_value = match basic_type {
-                BasicValueType::Str => point.payload.get(field_name).and_then(|v| {
-                    v.as_str()
-                        .map(|s| BasicValue::Str(Arc::from(s.to_string())))
-                }),
-                BasicValueType::Bool => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_bool().map(BasicValue::Bool)),
-
-                BasicValueType::Int64 => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_integer().map(BasicValue::Int64)),
-
-                BasicValueType::Float32 => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_double().map(|f| BasicValue::Float32(f as f32))),
-
-                BasicValueType::Float64 => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_double().map(BasicValue::Float64)),
-
-                BasicValueType::TimeDelta => point.payload.get(field_name).and_then(|v| {
-                    v.as_str()
-                        .and_then(|s| parse_duration(s).ok().map(BasicValue::TimeDelta))
-                }),
-
-                BasicValueType::Json => point
-                    .payload
-                    .get(field_name)
-                    .map(|v| BasicValue::Json(Arc::from(v.clone().into_json()))),
-
                 BasicValueType::Vector(_) => point
                     .vectors
                     .as_ref()
@@ -228,48 +272,15 @@ fn into_value(point: &ScoredPoint, schema: &FieldSchema) -> Result<Value> {
                         }
                     }),
 
-                BasicValueType::Uuid => point
+
+                other_type => match point
                     .payload
                     .get(field_name)
-                    .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::Uuid)),
-
-                BasicValueType::Date => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::Date)),
-
-                BasicValueType::Time => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::Time)),
-
-                BasicValueType::LocalDateTime => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::LocalDateTime)),
-
-                BasicValueType::OffsetDateTime => point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| v.as_str()?.parse().ok().map(BasicValue::OffsetDateTime)),
-
-                BasicValueType::Range => point.payload.get(field_name).and_then(|v| {
-                    v.as_struct().and_then(|s| {
-                        let start = s.fields.get("start").and_then(|f| f.as_integer());
-                        let end = s.fields.get("end").and_then(|f| f.as_integer());
-
-                        match (start, end) {
-                            (Some(start), Some(end)) => Some(BasicValue::Range(RangeValue {
-                                start: start as usize,
-                                end: end as usize,
-                            })),
-                            _ => None,
-                        }
-                    })
-                }),
-                _ => {
-                    anyhow::bail!("Unsupported value type")
-                }
+                    .and_then(|v| parse_payload_value(v, &other_type))
+                {
+                    Some(value) => Some(value),
+                    None => anyhow::bail!("Unsupported value type")
+                },
             };
             basic_value.map(Value::Basic)
         }
