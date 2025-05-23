@@ -10,7 +10,7 @@ CocoIndex is a ultra performant real-time data transformation framework for AI, 
 As a data framework, CocoIndex takes it to the next level on data freshness. **Incremental processing** is one of the core values provided by CocoIndex.
 
 <p align="center">
-    <img src="https://github.com/user-attachments/assets/f4eb29b3-84ee-4fa0-a1e2-80eedeeabde6" alt="Incremental Processing" width="700">
+    <img src="https://github.com/user-attachments/assets/f4eb29b3-84ee-4fa0-a1e2-80eedeeabde6" alt="Incremental Processing" width="700" />
 </p>
 
 
@@ -37,7 +37,7 @@ collector.export(...)
 
 An example dataflow diagram:
 <p align="center">
-<img width="700" alt="DataFlow" src="https://github.com/user-attachments/assets/22069379-99b1-478b-a131-15e2a9539d35" />
+    <img width="700" alt="DataFlow" src="https://github.com/user-attachments/assets/22069379-99b1-478b-a131-15e2a9539d35" />
 </p>
 
 
