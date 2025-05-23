@@ -11,7 +11,6 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use super::IntoPyResult;
-use crate::base::schema::BasicValueType;
 use crate::base::{schema, value};
 
 pub struct Pythonized<T>(pub T);
@@ -162,17 +161,20 @@ fn basic_value_from_py_object<'py>(
                 .collect::<PyResult<Vec<_>>>()?,
         )),
         schema::BasicValueType::Union(s) => {
+            let mut valid_value = None;
+
             // Try parsing the value
             for (i, typ) in s.types().iter().enumerate() {
                 if let Ok(value) = basic_value_from_py_object(typ, v) {
-                    return Ok(value::BasicValue::UnionVariant {
+                    valid_value = Some(value::BasicValue::UnionVariant {
                         tag_id: i,
                         value: Box::new(value),
                     });
+                    break;
                 }
             }
 
-            Err(PyErr::new::<PyTypeError, _>("invalid union"))?
+            valid_value.ok_or_else(|| PyErr::new::<PyTypeError, _>("invalid union"))?
         }
     };
     Ok(result)
