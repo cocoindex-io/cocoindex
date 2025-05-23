@@ -157,8 +157,8 @@ fn bind_value_field<'arg>(
                     builder.push_bind(sqlx::types::Json(v));
                 }
             },
-            BasicValue::UnionVariant { tag_id, value } => match &field_schema.value_type.typ {
-                _ => todo!("Union conversion postgres"),
+            BasicValue::UnionVariant { tag_id, value } => {
+                builder.push_bind(sqlx::types::Json(serde_json::json!([tag_id, value])));
             },
         },
         Value::Null => {
