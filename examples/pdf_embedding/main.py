@@ -25,7 +25,9 @@ class PdfToMarkdownExecutor:
 
     def prepare(self):
         config_parser = ConfigParser({})
-        self._converter = PdfConverter(create_model_dict(), config=config_parser.generate_config_dict())
+        self._converter = PdfConverter(
+            create_model_dict(), config=config_parser.generate_config_dict()
+        )
 
     def __call__(self, content: bytes) -> str:
         with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as temp_file:
@@ -36,22 +38,30 @@ class PdfToMarkdownExecutor:
 
 
 @cocoindex.transform_flow()
-def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
+def text_to_embedding(
+    text: cocoindex.DataSlice[str],
+) -> cocoindex.DataSlice[list[float]]:
     """
     Embed the text using a SentenceTransformer model.
     This is a shared logic between indexing and querying, so extract it as a function.
     """
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"))
+            model="sentence-transformers/all-MiniLM-L6-v2"
+        )
+    )
 
 
 @cocoindex.flow_def(name="PdfEmbedding")
-def pdf_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+def pdf_embedding_flow(
+    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
+):
     """
     Define an example flow that embeds files into a vector database.
     """
-    data_scope["documents"] = flow_builder.add_source(cocoindex.sources.LocalFile(path="pdf_files", binary=True))
+    data_scope["documents"] = flow_builder.add_source(
+        cocoindex.sources.LocalFile(path="pdf_files", binary=True)
+    )
 
     pdf_embeddings = data_scope.add_collector()
 
@@ -59,13 +69,20 @@ def pdf_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
         doc["markdown"] = doc["content"].transform(PdfToMarkdown())
         doc["chunks"] = doc["markdown"].transform(
             cocoindex.functions.SplitRecursively(),
-            language="markdown", chunk_size=2000, chunk_overlap=500)
+            language="markdown",
+            chunk_size=2000,
+            chunk_overlap=500,
+        )
 
         with doc["chunks"].row() as chunk:
             chunk["embedding"] = text_to_embedding(chunk["text"])
-            pdf_embeddings.collect(id=cocoindex.GeneratedField.UUID,
-                                   filename=doc["filename"], location=chunk["location"],
-                                   text=chunk["text"], embedding=chunk["embedding"])
+            pdf_embeddings.collect(
+                id=cocoindex.GeneratedField.UUID,
+                filename=doc["filename"],
+                location=chunk["location"],
+                text=chunk["text"],
+                embedding=chunk["embedding"],
+            )
 
     pdf_embeddings.export(
         "pdf_embeddings",
@@ -74,21 +91,29 @@ def pdf_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
         vector_indexes=[
             cocoindex.VectorIndexDef(
                 field_name="embedding",
-                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
+                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+            )
+        ],
+    )
 
 
 def search(pool: ConnectionPool, query: str, top_k: int = 5):
     # Get the table name, for the export target in the pdf_embedding_flow above.
-    table_name = cocoindex.utils.get_target_storage_default_name(pdf_embedding_flow, "pdf_embeddings")
+    table_name = cocoindex.utils.get_target_storage_default_name(
+        pdf_embedding_flow, "pdf_embeddings"
+    )
     # Evaluate the transform flow defined above with the input query, to get the embedding.
     query_vector = text_to_embedding.eval(query)
     # Run the query and get the results.
     with pool.connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(f"""
+            cur.execute(
+                f"""
                 SELECT filename, text, embedding <=> %s::vector AS distance
                 FROM {table_name} ORDER BY distance LIMIT %s
-            """, (query_vector, top_k))
+            """,
+                (query_vector, top_k),
+            )
             return [
                 {"filename": row[0], "text": row[1], "score": 1.0 - row[2]}
                 for row in cur.fetchall()
@@ -111,15 +136,12 @@ def _main():
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
-        try:
-            query = input("Enter search query (or Enter to quit): ")
-            if query == '':
-                break
-            # Run the query function with the database connection pool and the query.
-            results = search(pool, query)
-            print(SEARCH_RESULTS_TEMPLATE.render(results=results))
-        except KeyboardInterrupt:
+        query = input("Enter search query (or Enter to quit): ")
+        if query == "":
             break
+        # Run the query function with the database connection pool and the query.
+        results = search(pool, query)
+        print(SEARCH_RESULTS_TEMPLATE.render(results=results))
 
 
 if __name__ == "__main__":

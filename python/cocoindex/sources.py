@@ -1,6 +1,8 @@
 """All builtin sources."""
+
 from . import op
 import datetime
+
 
 class LocalFile(op.SourceSpec):
     """Import data from local file system."""

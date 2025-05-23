@@ -1,10 +1,12 @@
 """
 Library level functions and states.
 """
+
 import warnings
 from typing import Callable, Any
 
-from . import _engine, flow, query, setting
+from . import _engine  # type: ignore
+from . import flow, query, setting
 from .convert import dump_engine_object
 
 
@@ -25,14 +27,16 @@ def start_server(settings: setting.ServerSettings):
     query.ensure_all_handlers_built()
     _engine.start_server(settings.__dict__)
 
+
 def stop():
     """Stop the cocoindex library."""
     _engine.stop()
 
+
 def main_fn(
-        settings: Any | None = None,
-        cocoindex_cmd: str | None = None,
-        ) -> Callable[[Callable], Callable]:
+    settings: Any | None = None,
+    cocoindex_cmd: str | None = None,
+) -> Callable[[Callable], Callable]:
     """
     DEPRECATED: The @cocoindex.main_fn() decorator is obsolete and has no effect.
     It will be removed in a future version, which will cause an AttributeError.
@@ -63,9 +67,10 @@ def main_fn(
         "See cocoindex <command> --help for more details.\n"
         "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n",
         DeprecationWarning,
-        stacklevel=2
+        stacklevel=2,
     )
 
     def _main_wrapper(fn: Callable) -> Callable:
         return fn
+
     return _main_wrapper
