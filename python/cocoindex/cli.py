@@ -8,9 +8,10 @@ import types
 
 from dotenv import load_dotenv, find_dotenv
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
-from . import flow, lib, setting, query
+from . import flow, lib, setting
 from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
 
 # Create ServerSettings lazily upon first call, as environment variables may be loaded from files, etc.
@@ -521,9 +522,29 @@ def _flow_name(name: str | None) -> str:
     elif len(names) == 1:
         return names[0]
     else:
-        raise click.UsageError(
-            f"Multiple flows available, please specify which flow to target by appending :FlowName to the APP_TARGET.\nAvailable: {available}"
-        )
+        console = Console()
+        index = 0
+
+        while True:
+            console.clear()
+            console.print(
+                Panel.fit("Select a Flow", title_align="left", border_style="cyan")
+            )
+            for i, fname in enumerate(names):
+                console.print(
+                    f"> [bold green]{fname}[/bold green]"
+                    if i == index
+                    else f"  {fname}"
+                )
+
+            key = click.getchar()
+            if key == "\x1b[A":  # Up arrow
+                index = (index - 1) % len(names)
+            elif key == "\x1b[B":  # Down arrow
+                index = (index + 1) % len(names)
+            elif key in ("\r", "\n"):  # Enter
+                console.clear()
+                return names[index]
 
 
 def _flow_by_name(name: str | None) -> flow.Flow:
