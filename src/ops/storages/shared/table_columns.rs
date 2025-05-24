@@ -100,6 +100,48 @@ impl<T: PartialEq + Serialize + DeserializeOwned> TableMainSetupAction<T> {
         }
     }
 
+    pub fn describe_changes(&self) -> Vec<String>
+    where
+        T: std::fmt::Display,
+    {
+        let mut descriptions = vec![];
+        if self.drop_existing {
+            descriptions.push("Drop table".to_string());
+        }
+        if let Some(table_upsertion) = &self.table_upsertion {
+            match table_upsertion {
+                TableUpsertionAction::Create { keys, values } => {
+                    descriptions.push(format!(
+                        "Create table:\n  key columns: {}\n  value columns: {}\n",
+                        keys.iter().map(|(k, v)| format!("{k} {v}")).join(",  "),
+                        values.iter().map(|(k, v)| format!("{k} {v}")).join(",  "),
+                    ));
+                }
+                TableUpsertionAction::Update {
+                    columns_to_delete,
+                    columns_to_upsert,
+                } => {
+                    if !columns_to_delete.is_empty() {
+                        descriptions.push(format!(
+                            "Delete column from table: {}",
+                            columns_to_delete.iter().join(",  "),
+                        ));
+                    }
+                    if !columns_to_upsert.is_empty() {
+                        descriptions.push(format!(
+                            "Add / update columns in table: {}",
+                            columns_to_upsert
+                                .iter()
+                                .map(|(k, v)| format!("{k} {v}"))
+                                .join(",  "),
+                        ));
+                    }
+                }
+            }
+        }
+        descriptions
+    }
+
     pub fn change_type(&self, has_other_update: bool) -> SetupChangeType {
         match (self.drop_existing, &self.table_upsertion) {
             (_, Some(TableUpsertionAction::Create { .. })) => SetupChangeType::Create,

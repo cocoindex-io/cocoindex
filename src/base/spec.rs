@@ -406,6 +406,16 @@ pub struct IndexOptions {
     pub vector_indexes: Vec<VectorIndexDef>,
 }
 
+impl IndexOptions {
+    pub fn primary_key_fields(&self) -> Result<&[FieldName]> {
+        Ok(self
+            .primary_key_fields
+            .as_ref()
+            .ok_or(api_error!("Primary key fields are not set"))?
+            .as_ref())
+    }
+}
+
 impl fmt::Display for IndexOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let primary_keys = self

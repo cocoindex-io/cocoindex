@@ -685,58 +685,15 @@ fn to_vector_index_name(table_name: &str, vector_index_def: &spec::VectorIndexDe
     )
 }
 
-fn describe_field_schema(field_name: &str, value_type: &str) -> String {
-    format!("{} {}", field_name, value_type)
-}
-
 fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String {
     format!("{} {}", index_name, to_index_spec_sql(index_spec))
 }
 
 impl setup::ResourceSetupStatus for SetupStatus {
     fn describe_changes(&self) -> Vec<String> {
-        let mut descriptions = vec![];
-        if self.actions.table_action.drop_existing {
-            descriptions.push("Drop table".to_string());
-        }
+        let mut descriptions = self.actions.table_action.describe_changes();
         if self.create_pgvector_extension {
             descriptions.push("Create pg_vector extension (if not exists)".to_string());
-        }
-        if let Some(table_upsertion) = &self.actions.table_action.table_upsertion {
-            match table_upsertion {
-                TableUpsertionAction::Create { keys, values } => {
-                    descriptions.push(format!(
-                        "Create table:\n  key columns: {}\n  value columns: {}\n",
-                        keys.iter()
-                            .map(|(k, v)| describe_field_schema(k, v))
-                            .join(",  "),
-                        values
-                            .iter()
-                            .map(|(k, v)| describe_field_schema(k, v))
-                            .join(",  "),
-                    ));
-                }
-                TableUpsertionAction::Update {
-                    columns_to_delete,
-                    columns_to_upsert,
-                } => {
-                    if !columns_to_delete.is_empty() {
-                        descriptions.push(format!(
-                            "Delete column from table: {}",
-                            columns_to_delete.iter().join(",  "),
-                        ));
-                    }
-                    if !columns_to_upsert.is_empty() {
-                        descriptions.push(format!(
-                            "Add / update columns in table: {}",
-                            columns_to_upsert
-                                .iter()
-                                .map(|(k, v)| describe_field_schema(k, v))
-                                .join(",  "),
-                        ));
-                    }
-                }
-            }
         }
         if !self.actions.indexes_to_delete.is_empty() {
             descriptions.push(format!(
