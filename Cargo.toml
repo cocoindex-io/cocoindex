@@ -14,7 +14,7 @@ name = "cocoindex_engine"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.24.1", features = ["chrono"] }
+pyo3 = { version = "0.24.1", features = ["chrono", "auto-initialize"] }
 pythonize = "0.24.0"
 pyo3-async-runtimes = { version = "0.24.0", features = ["tokio-runtime"] }
 
