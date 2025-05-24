@@ -18,3 +18,4 @@ dist/
 
 # Output of `cocoindex eval`
 examples/**/eval_*
+venv/
