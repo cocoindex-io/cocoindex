@@ -607,7 +607,8 @@ pub struct SetupStatus {
 
 impl SetupStatus {
     fn new(desired_state: Option<SetupState>, existing: setup::CombinedState<SetupState>) -> Self {
-        let table_action = TableMainSetupAction::from_states(desired_state.as_ref(), &existing);
+        let table_action =
+            TableMainSetupAction::from_states(desired_state.as_ref(), &existing, false);
         let (indexes_to_delete, indexes_to_create) = desired_state
             .as_ref()
             .map(|desired| {

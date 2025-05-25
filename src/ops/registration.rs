@@ -6,6 +6,8 @@ use anyhow::Result;
 use std::sync::{Arc, LazyLock, RwLock, RwLockReadGuard};
 
 fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
+    let reqwest_client = reqwest::Client::new();
+
     sources::local_file::Factory.register(registry)?;
     sources::google_drive::Factory.register(registry)?;
     sources::amazon_s3::Factory.register(registry)?;
@@ -16,6 +18,7 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
 
     storages::postgres::Factory::default().register(registry)?;
     Arc::new(storages::qdrant::Factory::default()).register(registry)?;
+    storages::kuzu::Factory::new(reqwest_client).register(registry)?;
 
     storages::neo4j::Factory::new().register(registry)?;
 

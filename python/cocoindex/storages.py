@@ -26,16 +26,6 @@ class Qdrant(op.StorageSpec):
 
 
 @dataclass
-class Neo4jConnection:
-    """Connection spec for Neo4j."""
-
-    uri: str
-    user: str
-    password: str
-    db: str | None = None
-
-
-@dataclass
 class TargetFieldMapping:
     """Mapping for a graph element (node or relationship) field."""
 
@@ -88,6 +78,16 @@ RelationshipMapping = Relationships
 NodeReferenceMapping = NodeFromFields
 
 
+@dataclass
+class Neo4jConnection:
+    """Connection spec for Neo4j."""
+
+    uri: str
+    user: str
+    password: str
+    db: str | None = None
+
+
 class Neo4j(op.StorageSpec):
     """Graph storage powered by Neo4j."""
 
@@ -103,3 +103,26 @@ class Neo4jDeclaration(op.DeclarationSpec):
     nodes_label: str
     primary_key_fields: Sequence[str]
     vector_indexes: Sequence[index.VectorIndexDef] = ()
+
+
+@dataclass
+class KuzuConnection:
+    """Connection spec for Kuzu."""
+
+    api_server_url: str
+
+
+class Kuzu(op.StorageSpec):
+    """Graph storage powered by Kuzu."""
+
+    connection: AuthEntryReference[KuzuConnection]
+    mapping: Nodes | Relationships
+
+
+class KuzuDeclaration(op.DeclarationSpec):
+    """Declarations for Kuzu."""
+
+    kind = "Kuzu"
+    connection: AuthEntryReference[KuzuConnection]
+    nodes_label: str
+    primary_key_fields: Sequence[str]

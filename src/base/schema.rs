@@ -86,7 +86,7 @@ impl std::fmt::Display for BasicValueType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct StructSchema {
     pub fields: Arc<Vec<FieldSchema>>,
 
@@ -138,7 +138,7 @@ impl std::fmt::Display for TableKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TableSchema {
     pub kind: TableKind,
     pub row: StructSchema,
@@ -191,7 +191,7 @@ impl TableSchema {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
 pub enum ValueType {
     Struct(StructSchema),
@@ -222,7 +222,7 @@ impl ValueType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EnrichedValueType<DataType = ValueType> {
     #[serde(rename = "type")]
     pub typ: DataType,
@@ -295,7 +295,7 @@ impl std::fmt::Display for ValueType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FieldSchema<DataType = ValueType> {
     /// ID is used to identify the field in the schema.
     pub name: FieldName,
