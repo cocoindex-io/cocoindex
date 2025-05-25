@@ -73,17 +73,17 @@ else:
                 return Annotated[list[elem_type], VectorInfo(dim=dim)]
 
 
-TABLE_TYPES = ("KTable", "LTable")
-KEY_FIELD_NAME = "_key"
+TABLE_TYPES: tuple[str, str] = ("KTable", "LTable")
+KEY_FIELD_NAME: str = "_key"
 
 ElementType = type | tuple[type, type]
 
 
-def is_namedtuple_type(t) -> bool:
+def is_namedtuple_type(t: type) -> bool:
     return isinstance(t, type) and issubclass(t, tuple) and hasattr(t, "_fields")
 
 
-def _is_struct_type(t) -> bool:
+def _is_struct_type(t: ElementType | None) -> bool:
     return isinstance(t, type) and (
         dataclasses.is_dataclass(t) or is_namedtuple_type(t)
     )
@@ -106,7 +106,7 @@ class AnalyzedTypeInfo:
     nullable: bool = False
 
 
-def analyze_type_info(t) -> AnalyzedTypeInfo:
+def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     """
     Analyze a Python type and return the analyzed info.
     """
@@ -139,9 +139,9 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         else:
             break
 
-    attrs = None
-    vector_info = None
-    kind = None
+    attrs: dict[str, Any] | None = None
+    vector_info: VectorInfo | None = None
+    kind: str | None = None
     for attr in annotations:
         if isinstance(attr, TypeAttr):
             if attrs is None:
@@ -152,9 +152,8 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         elif isinstance(attr, TypeKind):
             kind = attr.kind
 
-    struct_type = None
-    elem_type = None
-    key_type = None
+    struct_type: type | None = None
+    elem_type: ElementType | None = None
     if _is_struct_type(t):
         struct_type = t
 
@@ -223,7 +222,7 @@ def _encode_fields_schema(
 ) -> list[dict[str, Any]]:
     result = []
 
-    def add_field(name: str, t) -> None:
+    def add_field(name: str, t: Any) -> None:
         try:
             type_info = encode_enriched_type_info(analyze_type_info(t))
         except ValueError as e:
@@ -302,7 +301,7 @@ def encode_enriched_type(t: None) -> None: ...
 def encode_enriched_type(t: Any) -> dict[str, Any]: ...
 
 
-def encode_enriched_type(t) -> dict[str, Any] | None:
+def encode_enriched_type(t: Any) -> dict[str, Any] | None:
     """
     Convert a Python type to a CocoIndex engine's type representation
     """
@@ -312,7 +311,7 @@ def encode_enriched_type(t) -> dict[str, Any] | None:
     return encode_enriched_type_info(analyze_type_info(t))
 
 
-def resolve_forward_ref(t):
-    if t is str:
+def resolve_forward_ref(t: Any) -> Any:
+    if isinstance(t, str):
         return eval(t)  # pylint: disable=eval-used
     return t

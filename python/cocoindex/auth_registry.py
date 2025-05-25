@@ -24,6 +24,6 @@ def add_auth_entry(key: str, value: T) -> AuthEntryReference[T]:
     return AuthEntryReference(key)
 
 
-def ref_auth_entry(key: str) -> AuthEntryReference:
+def ref_auth_entry(key: str) -> AuthEntryReference[T]:
     """Reference an auth entry by its key."""
     return AuthEntryReference(key)

@@ -1,6 +1,6 @@
 """All builtin functions."""
 
-from typing import Annotated, Any, TYPE_CHECKING
+from typing import Annotated, Any, Type, TYPE_CHECKING
 
 from .typing import Float32, Vector, TypeAttr
 from . import op, llm
@@ -47,16 +47,18 @@ class SentenceTransformerEmbedExecutor:
     spec: SentenceTransformerEmbed
     _model: "sentence_transformers.SentenceTransformer"
 
-    def analyze(self, text):
+    def analyze(self, text: Any) -> Type[Any]:
         import sentence_transformers  # pylint: disable=import-outside-toplevel
 
         args = self.spec.args or {}
         self._model = sentence_transformers.SentenceTransformer(self.spec.model, **args)
         dim = self._model.get_sentence_embedding_dimension()
-        return Annotated[
-            Vector[Float32, dim],
+        result: Type[Any] = Annotated[
+            Vector[Float32, dim],  # type: ignore
             TypeAttr("cocoindex.io/vector_origin_text", text.analyzed_value),
         ]
+        return result
 
     def __call__(self, text: str) -> list[Float32]:
-        return self._model.encode(text).tolist()
+        result: list[Float32] = self._model.encode(text).tolist()
+        return result

@@ -9,8 +9,9 @@ import types
 from dotenv import load_dotenv, find_dotenv
 from rich.console import Console
 from rich.table import Table
+from typing import Any
 
-from . import flow, lib, setting, query
+from . import flow, lib, setting
 from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
 
 # Create ServerSettings lazily upon first call, as environment variables may be loaded from files, etc.
@@ -126,7 +127,7 @@ def _load_user_app(app_target: str) -> types.ModuleType:
     default=None,
     show_default=False,
 )
-def cli(env_file: str | None):
+def cli(env_file: str | None) -> None:
     """
     CLI for Cocoindex.
     """
@@ -146,7 +147,7 @@ def cli(env_file: str | None):
 
 @cli.command()
 @click.argument("app_target", type=str, required=False)
-def ls(app_target: str | None):
+def ls(app_target: str | None) -> None:
     """
     List all flows.
 
@@ -198,7 +199,7 @@ def ls(app_target: str | None):
     "--color/--no-color", default=True, help="Enable or disable colored output."
 )
 @click.option("--verbose", is_flag=True, help="Show verbose output with full details.")
-def show(app_flow_specifier: str, color: bool, verbose: bool):
+def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
     """
     Show the flow spec and schema.
 
@@ -235,7 +236,7 @@ def show(app_flow_specifier: str, color: bool, verbose: bool):
 
 @cli.command()
 @click.argument("app_target", type=str)
-def setup(app_target: str):
+def setup(app_target: str) -> None:
     """
     Check and apply backend setup changes for flows, including the internal and target storage
     (to export).
@@ -273,7 +274,7 @@ def setup(app_target: str):
     "even if not defined in the current process."
     "If used, APP_TARGET and any listed flow names are ignored.",
 )
-def drop(app_target: str | None, flow_name: tuple[str, ...], drop_all: bool):
+def drop(app_target: str | None, flow_name: tuple[str, ...], drop_all: bool) -> None:
     """
     Drop the backend setup for flows.
 
@@ -354,7 +355,7 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], drop_all: bool):
     default=False,
     help="Avoid printing anything to the standard output, e.g. statistics.",
 )
-def update(app_flow_specifier: str, live: bool, quiet: bool):
+def update(app_flow_specifier: str, live: bool, quiet: bool) -> Any:
     """
     Update the index to reflect the latest data from data sources.
 
@@ -389,7 +390,9 @@ def update(app_flow_specifier: str, live: bool, quiet: bool):
     default=True,
     help="Use already-cached intermediate data if available.",
 )
-def evaluate(app_flow_specifier: str, output_dir: str | None, cache: bool = True):
+def evaluate(
+    app_flow_specifier: str, output_dir: str | None, cache: bool = True
+) -> None:
     """
     Evaluate the flow and dump flow outputs to files.
 
@@ -472,7 +475,7 @@ def server(
     cors_origin: str | None,
     cors_cocoindex: bool,
     cors_local: int | None,
-):
+) -> None:
     """
     Start a HTTP server providing REST APIs.
 

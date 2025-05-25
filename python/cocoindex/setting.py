@@ -25,7 +25,7 @@ def split_app_namespace(full_name: str, delimiter: str) -> tuple[str, str]:
     return (parts[0], parts[1])
 
 
-def set_app_namespace(app_namespace: str):
+def set_app_namespace(app_namespace: str) -> None:
     """Set the application namespace."""
     global _app_namespace  # pylint: disable=global-statement
     _app_namespace = app_namespace
@@ -49,7 +49,7 @@ def _load_field(
     env_name: str,
     required: bool = False,
     parse: Callable[[str], Any] | None = None,
-):
+) -> None:
     value = os.getenv(env_name)
     if value is None:
         if required:
@@ -112,7 +112,7 @@ class ServerSettings:
     def parse_cors_origins(s: str | None) -> list[str] | None: ...
 
     @staticmethod
-    def parse_cors_origins(s):
+    def parse_cors_origins(s: str | None) -> list[str] | None:
         """
         Parse the CORS origins from a string.
         """

@@ -10,7 +10,7 @@ from . import flow, query, setting
 from .convert import dump_engine_object
 
 
-def init(settings: setting.Settings | None = None):
+def init(settings: setting.Settings | None = None) -> None:
     """
     Initialize the cocoindex library.
 
@@ -21,14 +21,14 @@ def init(settings: setting.Settings | None = None):
     setting.set_app_namespace(settings.app_namespace)
 
 
-def start_server(settings: setting.ServerSettings):
+def start_server(settings: setting.ServerSettings) -> None:
     """Start the cocoindex server."""
     flow.ensure_all_flows_built()
     query.ensure_all_handlers_built()
     _engine.start_server(settings.__dict__)
 
 
-def stop():
+def stop() -> None:
     """Stop the cocoindex library."""
     _engine.stop()
 
@@ -36,7 +36,7 @@ def stop():
 def main_fn(
     settings: Any | None = None,
     cocoindex_cmd: str | None = None,
-) -> Callable[[Callable], Callable]:
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     DEPRECATED: The @cocoindex.main_fn() decorator is obsolete and has no effect.
     It will be removed in a future version, which will cause an AttributeError.
@@ -70,7 +70,7 @@ def main_fn(
         stacklevel=2,
     )
 
-    def _main_wrapper(fn: Callable) -> Callable:
+    def _main_wrapper(fn: Callable[..., Any]) -> Callable[..., Any]:
         return fn
 
     return _main_wrapper

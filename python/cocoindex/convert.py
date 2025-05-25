@@ -8,7 +8,7 @@ import inspect
 import uuid
 
 from enum import Enum
-from typing import Any, Callable, get_origin, Mapping
+from typing import Any, Callable, get_origin, Mapping, Type
 from .typing import (
     analyze_type_info,
     encode_enriched_type,
@@ -41,7 +41,7 @@ def encode_engine_value(value: Any) -> Any:
 def make_engine_value_decoder(
     field_path: list[str],
     src_type: dict[str, Any],
-    dst_annotation,
+    dst_annotation: Type[Any] | None,
 ) -> Callable[[Any], Any]:
     """
     Make a decoder from an engine value to a Python value.
@@ -60,7 +60,7 @@ def make_engine_value_decoder(
     if (
         dst_annotation is None
         or dst_annotation is inspect.Parameter.empty
-        or dst_annotation is Any
+        or get_origin(dst_annotation) is Any
     ):
         if src_type_kind == "Struct" or src_type_kind in TABLE_TYPES:
             raise ValueError(
@@ -102,7 +102,7 @@ def make_engine_value_decoder(
                 field_path, engine_fields_schema[1:], elem_type_info.struct_type
             )
 
-            def decode(value):
+            def decode(value: Any) -> Any | None:
                 if value is None:
                     return None
                 return {key_decoder(v[0]): value_decoder(v[1:]) for v in value}
@@ -111,7 +111,7 @@ def make_engine_value_decoder(
                 field_path, engine_fields_schema, elem_type_info.struct_type
             )
 
-            def decode(value):
+            def decode(value: Any) -> Any | None:
                 if value is None:
                     return None
                 return [elem_decoder(v) for v in value]
@@ -129,7 +129,7 @@ def _make_engine_struct_value_decoder(
     field_path: list[str],
     src_fields: list[dict[str, Any]],
     dst_struct_type: type,
-) -> Callable[[list], Any]:
+) -> Callable[[list[Any]], Any]:
     """Make a decoder from an engine field values to a Python value."""
 
     src_name_to_idx = {f["name"]: i for i, f in enumerate(src_fields)}
@@ -156,7 +156,7 @@ def _make_engine_struct_value_decoder(
 
     def make_closure_for_value(
         name: str, param: inspect.Parameter
-    ) -> Callable[[list], Any]:
+    ) -> Callable[[list[Any]], Any]:
         src_idx = src_name_to_idx.get(name)
         if src_idx is not None:
             field_path.append(f".{name}")
