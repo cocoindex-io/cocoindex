@@ -67,7 +67,7 @@ pub struct GraphPool {
 }
 
 impl GraphPool {
-    pub async fn get_graph(&self, spec: &ConnectionSpec) -> Result<Arc<Graph>> {
+    async fn get_graph(&self, spec: &ConnectionSpec) -> Result<Arc<Graph>> {
         let graph_key = GraphKey::from_spec(spec);
         let cell = {
             let mut graphs = self.graphs.lock().unwrap();
@@ -86,6 +86,15 @@ impl GraphPool {
             })
             .await?;
         Ok(graph.clone())
+    }
+
+    async fn get_graph_for_key(
+        &self,
+        key: &Neo4jGraphElement,
+        auth_registry: &AuthRegistry,
+    ) -> Result<Arc<Graph>> {
+        let spec = auth_registry.get::<ConnectionSpec>(&key.connection)?;
+        self.get_graph(&spec).await
     }
 }
 
@@ -798,19 +807,12 @@ fn build_composite_field_names(qualifier: &str, field_names: &[String]) -> Strin
 }
 #[derive(Debug)]
 pub struct GraphElementDataSetupStatus {
-    key: Neo4jGraphElement,
-    conn_spec: ConnectionSpec,
     data_clear: Option<DataClearAction>,
     change_type: SetupChangeType,
 }
 
 impl GraphElementDataSetupStatus {
-    fn new(
-        key: Neo4jGraphElement,
-        conn_spec: ConnectionSpec,
-        desired_state: Option<&SetupState>,
-        existing: &CombinedState<SetupState>,
-    ) -> Self {
+    fn new(desired_state: Option<&SetupState>, existing: &CombinedState<SetupState>) -> Self {
         let mut data_clear: Option<DataClearAction> = None;
         for v in existing.possible_versions() {
             if desired_state.as_ref().is_none_or(|desired| {
@@ -837,8 +839,6 @@ impl GraphElementDataSetupStatus {
         };
 
         Self {
-            key,
-            conn_spec,
             data_clear,
             change_type,
         }
@@ -1024,8 +1024,7 @@ impl StorageFactoryBase for Factory {
         auth_registry: &Arc<AuthRegistry>,
     ) -> Result<Self::SetupStatus> {
         let conn_spec = auth_registry.get::<ConnectionSpec>(&key.connection)?;
-        let data_status =
-            GraphElementDataSetupStatus::new(key, conn_spec.clone(), desired.as_ref(), &existing);
+        let data_status = GraphElementDataSetupStatus::new(desired.as_ref(), &existing);
         let components = components::SetupStatus::create(
             SetupComponentOperator {
                 graph_pool: self.graph_pool.clone(),
@@ -1094,51 +1093,58 @@ impl StorageFactoryBase for Factory {
 
     async fn apply_setup_changes(
         &self,
-        changes: Vec<&'async_trait Self::SetupStatus>,
+        changes: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<()> {
-        let (data_statuses, components): (Vec<_>, Vec<_>) =
-            changes.into_iter().map(|c| (&c.0, &c.1)).unzip();
-
         // Relationships first, then nodes, as relationships need to be deleted before nodes they referenced.
-        let mut relationship_types = IndexMap::<&Neo4jGraphElement, &ConnectionSpec>::new();
-        let mut node_labels = IndexMap::<&Neo4jGraphElement, &ConnectionSpec>::new();
-        let mut dependent_node_labels = IndexMap::<Neo4jGraphElement, &ConnectionSpec>::new();
-        for data_status in data_statuses.iter() {
-            if let Some(data_clear) = &data_status.data_clear {
-                match &data_status.key.typ {
+        let mut relationship_types = IndexSet::<&Neo4jGraphElement>::new();
+        let mut node_labels = IndexSet::<&Neo4jGraphElement>::new();
+        let mut dependent_node_labels = IndexSet::<Neo4jGraphElement>::new();
+
+        let mut components = vec![];
+        for change in changes.iter() {
+            if let Some(data_clear) = &change.setup_status.0.data_clear {
+                match &change.key.typ {
                     ElementType::Relationship(_) => {
-                        relationship_types.insert(&data_status.key, &data_status.conn_spec);
+                        relationship_types.insert(&change.key);
                         for label in &data_clear.dependent_node_labels {
-                            dependent_node_labels.insert(
-                                Neo4jGraphElement {
-                                    connection: data_status.key.connection.clone(),
-                                    typ: ElementType::Node(label.clone()),
-                                },
-                                &data_status.conn_spec,
-                            );
+                            dependent_node_labels.insert(Neo4jGraphElement {
+                                connection: change.key.connection.clone(),
+                                typ: ElementType::Node(label.clone()),
+                            });
                         }
                     }
                     ElementType::Node(_) => {
-                        node_labels.insert(&data_status.key, &data_status.conn_spec);
+                        node_labels.insert(&change.key);
                     }
                 }
             }
+            components.push(&change.setup_status.1);
         }
 
         // Relationships have no dependency, so can be cleared first.
-        for (rel_type, conn_spec) in relationship_types.iter() {
-            let graph = self.graph_pool.get_graph(conn_spec).await?;
+        for rel_type in relationship_types.into_iter() {
+            let graph = self
+                .graph_pool
+                .get_graph_for_key(rel_type, auth_registry)
+                .await?;
             clear_graph_element_data(&graph, rel_type, true).await?;
         }
         // Clear standalone nodes, which is simpler than dependent nodes.
-        for (node_label, conn_spec) in node_labels.iter() {
-            let graph = self.graph_pool.get_graph(conn_spec).await?;
+        for node_label in node_labels.iter() {
+            let graph = self
+                .graph_pool
+                .get_graph_for_key(node_label, auth_registry)
+                .await?;
             clear_graph_element_data(&graph, node_label, true).await?;
         }
         // Clear dependent nodes if they're not covered by standalone nodes.
-        for (node_label, conn_spec) in dependent_node_labels.iter() {
-            if !node_labels.contains_key(node_label) {
-                let graph = self.graph_pool.get_graph(conn_spec).await?;
+        for node_label in dependent_node_labels.iter() {
+            if !node_labels.contains(node_label) {
+                let graph = self
+                    .graph_pool
+                    .get_graph_for_key(node_label, auth_registry)
+                    .await?;
                 clear_graph_element_data(&graph, node_label, false).await?;
             }
         }
