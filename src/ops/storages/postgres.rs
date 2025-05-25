@@ -1,9 +1,11 @@
 use crate::prelude::*;
 
+use super::shared::table_columns::{
+    TableColumnsSchema, TableMainSetupAction, TableUpsertionAction, check_table_compatibility,
+};
 use crate::base::spec::{self, *};
 use crate::ops::sdk::*;
 use crate::settings::DatabaseConnectionSpec;
-use crate::setup;
 use crate::utils::db::ValidIdentifier;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -504,11 +506,8 @@ impl std::fmt::Display for TableId {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetupState {
-    #[serde(with = "indexmap::map::serde_seq")]
-    key_fields_schema: IndexMap<String, ValueType>,
-
-    #[serde(with = "indexmap::map::serde_seq")]
-    value_fields_schema: IndexMap<String, ValueType>,
+    #[serde(flatten)]
+    columns: TableColumnsSchema<ValueType>,
 
     vector_indexes: BTreeMap<String, VectorIndexDef>,
 }
@@ -521,14 +520,16 @@ impl SetupState {
         index_options: &IndexOptions,
     ) -> Self {
         Self {
-            key_fields_schema: key_fields_schema
-                .iter()
-                .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
-                .collect(),
-            value_fields_schema: value_fields_schema
-                .iter()
-                .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
-                .collect(),
+            columns: TableColumnsSchema {
+                key_columns: key_fields_schema
+                    .iter()
+                    .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
+                    .collect(),
+                value_columns: value_fields_schema
+                    .iter()
+                    .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
+                    .collect(),
+            },
             vector_indexes: index_options
                 .vector_indexes
                 .iter()
@@ -537,12 +538,9 @@ impl SetupState {
         }
     }
 
-    fn is_compatible(&self, other: &Self) -> bool {
-        self.key_fields_schema == other.key_fields_schema
-    }
-
     fn uses_pgvector(&self) -> bool {
-        self.value_fields_schema
+        self.columns
+            .value_columns
             .iter()
             .any(|(_, value)| match &value {
                 ValueType::Basic(BasicValueType::Vector(vec_schema)) => {
@@ -553,148 +551,7 @@ impl SetupState {
     }
 }
 
-#[derive(Debug)]
-pub enum TableUpsertionAction {
-    Create {
-        keys: IndexMap<String, ValueType>,
-        values: IndexMap<String, ValueType>,
-    },
-    Update {
-        columns_to_delete: IndexSet<String>,
-        columns_to_upsert: IndexMap<String, ValueType>,
-    },
-}
-
-impl TableUpsertionAction {
-    fn is_empty(&self) -> bool {
-        match self {
-            TableUpsertionAction::Create { .. } => false,
-            TableUpsertionAction::Update {
-                columns_to_delete,
-                columns_to_upsert,
-            } => columns_to_delete.is_empty() && columns_to_upsert.is_empty(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct TableSetupAction {
-    table_upsertion: TableUpsertionAction,
-    indexes_to_delete: IndexSet<String>,
-    indexes_to_create: IndexMap<String, VectorIndexDef>,
-}
-
-impl TableSetupAction {
-    fn is_empty(&self) -> bool {
-        self.table_upsertion.is_empty()
-            && self.indexes_to_delete.is_empty()
-            && self.indexes_to_create.is_empty()
-    }
-}
-
-#[derive(Debug)]
-pub struct SetupStatus {
-    db_pool: PgPool,
-    table_name: String,
-
-    desired_state: Option<SetupState>,
-    drop_existing: bool,
-    create_pgvector_extension: bool,
-    desired_table_setup: Option<TableSetupAction>,
-}
-
-impl SetupStatus {
-    fn new(
-        db_pool: PgPool,
-        table_name: String,
-        desired_state: Option<SetupState>,
-        existing: setup::CombinedState<SetupState>,
-    ) -> Self {
-        let desired_table_setup = desired_state
-            .as_ref()
-            .map(|desired| {
-                let table_upsertion = if existing.always_exists()
-                    && existing
-                        .possible_versions()
-                        .all(|v| v.is_compatible(desired))
-                {
-                    TableUpsertionAction::Update {
-                        columns_to_delete: existing
-                            .possible_versions()
-                            .flat_map(|v| v.value_fields_schema.keys())
-                            .filter(|column_name| {
-                                !desired.value_fields_schema.contains_key(*column_name)
-                            })
-                            .cloned()
-                            .collect(),
-                        columns_to_upsert: desired
-                            .value_fields_schema
-                            .iter()
-                            .filter(|(field_name, schema)| {
-                                !existing.current.as_ref().is_some_and(|v| {
-                                    v.value_fields_schema
-                                        .get(*field_name)
-                                        .map(to_column_type_sql)
-                                        == Some(to_column_type_sql(schema))
-                                })
-                            })
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect(),
-                    }
-                } else {
-                    TableUpsertionAction::Create {
-                        keys: desired.key_fields_schema.clone(),
-                        values: desired.value_fields_schema.clone(),
-                    }
-                };
-                TableSetupAction {
-                    table_upsertion,
-                    indexes_to_delete: existing
-                        .possible_versions()
-                        .flat_map(|v| v.vector_indexes.keys())
-                        .filter(|index_name| !desired.vector_indexes.contains_key(*index_name))
-                        .cloned()
-                        .collect(),
-                    indexes_to_create: desired
-                        .vector_indexes
-                        .iter()
-                        .filter(|(name, def)| {
-                            !existing.always_exists()
-                                || existing
-                                    .possible_versions()
-                                    .any(|v| v.vector_indexes.get(*name) != Some(def))
-                        })
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                }
-            })
-            .filter(|action| !action.is_empty());
-        let drop_existing = desired_state
-            .as_ref()
-            .map(|state| {
-                existing
-                    .possible_versions()
-                    .any(|v| !v.is_compatible(state))
-            })
-            .unwrap_or(true);
-        let create_pgvector_extension = desired_state
-            .as_ref()
-            .map(|s| s.uses_pgvector())
-            .unwrap_or(false)
-            && !existing.current.map(|s| s.uses_pgvector()).unwrap_or(false);
-
-        Self {
-            db_pool,
-            table_name,
-            desired_state,
-            drop_existing,
-            create_pgvector_extension,
-            desired_table_setup,
-        }
-    }
-}
-
-fn to_column_type_sql(column_type: &ValueType) -> Cow<'static, str> {
+fn to_column_type_sql(column_type: &ValueType) -> String {
     match column_type {
         ValueType::Basic(basic_type) => match basic_type {
             BasicValueType::Bytes => "bytea".into(),
@@ -724,6 +581,92 @@ fn to_column_type_sql(column_type: &ValueType) -> Cow<'static, str> {
     }
 }
 
+impl<'a> Into<Cow<'a, TableColumnsSchema<String>>> for &'a SetupState {
+    fn into(self) -> Cow<'a, TableColumnsSchema<String>> {
+        Cow::Owned(TableColumnsSchema {
+            key_columns: self
+                .columns
+                .key_columns
+                .iter()
+                .map(|(k, v)| (k.clone(), to_column_type_sql(v)))
+                .collect(),
+            value_columns: self
+                .columns
+                .value_columns
+                .iter()
+                .map(|(k, v)| (k.clone(), to_column_type_sql(v)))
+                .collect(),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct TableSetupAction {
+    table_action: TableMainSetupAction<String>,
+    indexes_to_delete: IndexSet<String>,
+    indexes_to_create: IndexMap<String, VectorIndexDef>,
+}
+
+#[derive(Debug)]
+pub struct SetupStatus {
+    db_pool: PgPool,
+    table_name: String,
+
+    create_pgvector_extension: bool,
+    actions: TableSetupAction,
+}
+
+impl SetupStatus {
+    fn new(
+        db_pool: PgPool,
+        table_name: String,
+        desired_state: Option<SetupState>,
+        existing: setup::CombinedState<SetupState>,
+    ) -> Self {
+        let table_action = TableMainSetupAction::from_states(desired_state.as_ref(), &existing);
+        let (indexes_to_delete, indexes_to_create) = desired_state
+            .as_ref()
+            .map(|desired| {
+                (
+                    existing
+                        .possible_versions()
+                        .flat_map(|v| v.vector_indexes.keys())
+                        .filter(|index_name| !desired.vector_indexes.contains_key(*index_name))
+                        .cloned()
+                        .collect::<IndexSet<_>>(),
+                    desired
+                        .vector_indexes
+                        .iter()
+                        .filter(|(name, def)| {
+                            !existing.always_exists()
+                                || existing
+                                    .possible_versions()
+                                    .any(|v| v.vector_indexes.get(*name) != Some(def))
+                        })
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<IndexMap<_, _>>(),
+                )
+            })
+            .unwrap_or_default();
+        let create_pgvector_extension = desired_state
+            .as_ref()
+            .map(|s| s.uses_pgvector())
+            .unwrap_or(false)
+            && !existing.current.map(|s| s.uses_pgvector()).unwrap_or(false);
+
+        Self {
+            db_pool,
+            table_name,
+            create_pgvector_extension,
+            actions: TableSetupAction {
+                table_action,
+                indexes_to_delete,
+                indexes_to_create,
+            },
+        }
+    }
+}
+
 fn to_vector_similarity_metric_sql(metric: VectorSimilarityMetric) -> &'static str {
     match metric {
         VectorSimilarityMetric::CosineSimilarity => "vector_cosine_ops",
@@ -750,94 +693,39 @@ fn to_vector_index_name(table_name: &str, vector_index_def: &spec::VectorIndexDe
     )
 }
 
-fn describe_field_schema(field_name: &str, value_type: &ValueType) -> String {
-    format!("{} {}", field_name, to_column_type_sql(value_type))
-}
-
 fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String {
     format!("{} {}", index_name, to_index_spec_sql(index_spec))
 }
 
 impl setup::ResourceSetupStatus for SetupStatus {
     fn describe_changes(&self) -> Vec<String> {
-        let mut descriptions = vec![];
-        if self.drop_existing {
-            descriptions.push("Drop table".to_string());
-        }
+        let mut descriptions = self.actions.table_action.describe_changes();
         if self.create_pgvector_extension {
             descriptions.push("Create pg_vector extension (if not exists)".to_string());
         }
-        if let Some(desired_table_setup) = &self.desired_table_setup {
-            match &desired_table_setup.table_upsertion {
-                TableUpsertionAction::Create { keys, values } => {
-                    descriptions.push(format!(
-                        "Create table:\n  key columns: {}\n  value columns: {}\n",
-                        keys.iter()
-                            .map(|(k, v)| describe_field_schema(k, v))
-                            .join(",  "),
-                        values
-                            .iter()
-                            .map(|(k, v)| describe_field_schema(k, v))
-                            .join(",  "),
-                    ));
-                }
-                TableUpsertionAction::Update {
-                    columns_to_delete,
-                    columns_to_upsert,
-                } => {
-                    if !columns_to_delete.is_empty() {
-                        descriptions.push(format!(
-                            "Delete column from table: {}",
-                            columns_to_delete.iter().join(",  "),
-                        ));
-                    }
-                    if !columns_to_upsert.is_empty() {
-                        descriptions.push(format!(
-                            "Add / update columns in table: {}",
-                            columns_to_upsert
-                                .iter()
-                                .map(|(k, v)| describe_field_schema(k, v))
-                                .join(",  "),
-                        ));
-                    }
-                }
-            }
-            if !desired_table_setup.indexes_to_delete.is_empty() {
-                descriptions.push(format!(
-                    "Delete indexes from table: {}",
-                    desired_table_setup.indexes_to_delete.iter().join(",  "),
-                ));
-            }
-            if !desired_table_setup.indexes_to_create.is_empty() {
-                descriptions.push(format!(
-                    "Create indexes in table: {}",
-                    desired_table_setup
-                        .indexes_to_create
-                        .iter()
-                        .map(|(index_name, index_spec)| describe_index_spec(index_name, index_spec))
-                        .join(",  "),
-                ));
-            }
+        if !self.actions.indexes_to_delete.is_empty() {
+            descriptions.push(format!(
+                "Delete indexes from table: {}",
+                self.actions.indexes_to_delete.iter().join(",  "),
+            ));
+        }
+        if !self.actions.indexes_to_create.is_empty() {
+            descriptions.push(format!(
+                "Create indexes in table: {}",
+                self.actions
+                    .indexes_to_create
+                    .iter()
+                    .map(|(index_name, index_spec)| describe_index_spec(index_name, index_spec))
+                    .join(",  "),
+            ));
         }
         descriptions
     }
 
     fn change_type(&self) -> setup::SetupChangeType {
-        if self.drop_existing {
-            if self.desired_state.is_none() {
-                setup::SetupChangeType::Delete
-            } else {
-                setup::SetupChangeType::Update
-            }
-        } else {
-            match &self.desired_table_setup {
-                Some(setup) => match setup.table_upsertion {
-                    TableUpsertionAction::Create { .. } => setup::SetupChangeType::Create,
-                    TableUpsertionAction::Update { .. } => setup::SetupChangeType::Update,
-                },
-                None => setup::SetupChangeType::NoChange,
-            }
-        }
+        let has_other_update = !self.actions.indexes_to_create.is_empty()
+            || !self.actions.indexes_to_delete.is_empty();
+        self.actions.table_action.change_type(has_other_update)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -848,7 +736,7 @@ impl setup::ResourceSetupStatus for SetupStatus {
 impl SetupStatus {
     async fn apply_change(&self) -> Result<()> {
         let table_name = &self.table_name;
-        if self.drop_existing {
+        if self.actions.table_action.drop_existing {
             sqlx::query(&format!("DROP TABLE IF EXISTS {table_name}"))
                 .execute(&self.db_pool)
                 .await?;
@@ -858,21 +746,15 @@ impl SetupStatus {
                 .execute(&self.db_pool)
                 .await?;
         }
-        if let Some(desired_table_setup) = &self.desired_table_setup {
-            for index_name in desired_table_setup.indexes_to_delete.iter() {
-                let sql = format!("DROP INDEX IF EXISTS {}", index_name);
-                sqlx::query(&sql).execute(&self.db_pool).await?;
-            }
-            match &desired_table_setup.table_upsertion {
+        for index_name in self.actions.indexes_to_delete.iter() {
+            let sql = format!("DROP INDEX IF EXISTS {}", index_name);
+            sqlx::query(&sql).execute(&self.db_pool).await?;
+        }
+        if let Some(table_upsertion) = &self.actions.table_action.table_upsertion {
+            match table_upsertion {
                 TableUpsertionAction::Create { keys, values } => {
-                    let mut fields = (keys
-                        .iter()
-                        .map(|(k, v)| format!("{} {} NOT NULL", k, to_column_type_sql(v))))
-                    .chain(
-                        values
-                            .iter()
-                            .map(|(k, v)| format!("{} {}", k, to_column_type_sql(v))),
-                    );
+                    let mut fields = (keys.iter().map(|(k, v)| format!("{k} {v} NOT NULL")))
+                        .chain(values.iter().map(|(k, v)| format!("{k} {v}")));
                     let sql = format!(
                         "CREATE TABLE IF NOT EXISTS {table_name} ({}, PRIMARY KEY ({}))",
                         fields.join(", "),
@@ -892,20 +774,19 @@ impl SetupStatus {
                     }
                     for (column_name, column_type) in columns_to_upsert.iter() {
                         let sql = format!(
-                            "ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}, ADD COLUMN {column_name} {}",
-                            to_column_type_sql(column_type)
+                            "ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}, ADD COLUMN {column_name} {column_type}"
                         );
                         sqlx::query(&sql).execute(&self.db_pool).await?;
                     }
                 }
             }
-            for (index_name, index_spec) in desired_table_setup.indexes_to_create.iter() {
-                let sql = format!(
-                    "CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} {}",
-                    to_index_spec_sql(index_spec)
-                );
-                sqlx::query(&sql).execute(&self.db_pool).await?;
-            }
+        }
+        for (index_name, index_spec) in self.actions.indexes_to_create.iter() {
+            let sql = format!(
+                "CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} {}",
+                to_index_spec_sql(index_spec)
+            );
+            sqlx::query(&sql).execute(&self.db_pool).await?;
         }
         Ok(())
     }
@@ -1018,25 +899,10 @@ impl StorageFactoryBase for Factory {
         desired: &SetupState,
         existing: &SetupState,
     ) -> Result<SetupStateCompatibility> {
-        let is_key_identical = existing.key_fields_schema.len() == desired.key_fields_schema.len()
-            && existing
-                .key_fields_schema
-                .iter()
-                .all(|(k, v)| desired.key_fields_schema.get(k) == Some(v));
-        let compatibility = if is_key_identical {
-            let is_value_lossy = existing
-                .value_fields_schema
-                .iter()
-                .any(|(k, v)| desired.value_fields_schema.get(k) != Some(v));
-            if is_value_lossy {
-                SetupStateCompatibility::PartialCompatible
-            } else {
-                SetupStateCompatibility::Compatible
-            }
-        } else {
-            SetupStateCompatibility::NotCompatible
-        };
-        Ok(compatibility)
+        Ok(check_table_compatibility(
+            &desired.columns,
+            &existing.columns,
+        ))
     }
 
     fn describe_resource(&self, key: &TableId) -> Result<String> {

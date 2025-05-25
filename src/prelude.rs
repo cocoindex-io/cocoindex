@@ -23,10 +23,10 @@ pub(crate) use crate::builder::{self, plan};
 pub(crate) use crate::execution;
 pub(crate) use crate::lib_context::{FlowContext, LibContext, get_lib_context, get_runtime};
 pub(crate) use crate::ops::interface;
-pub(crate) use crate::service::error::ApiError;
+pub(crate) use crate::service::error::{ApiError, invariance_violation};
+pub(crate) use crate::setup;
 pub(crate) use crate::setup::AuthRegistry;
 pub(crate) use crate::utils::{self, retryable};
-
 pub(crate) use crate::{api_bail, api_error};
 
 pub(crate) use anyhow::{anyhow, bail};

@@ -155,6 +155,10 @@ impl<'a, T> SharedResultExtRef<'a, T> for &'a Result<T, SharedError> {
     }
 }
 
+pub fn invariance_violation() -> anyhow::Error {
+    anyhow::anyhow!("Invariance violation")
+}
+
 #[macro_export]
 macro_rules! api_bail {
     ( $fmt:literal $(, $($arg:tt)*)?) => {
