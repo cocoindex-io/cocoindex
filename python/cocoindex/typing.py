@@ -111,9 +111,9 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     Analyze a Python type and return the analyzed info.
     """
     if isinstance(t, tuple) and len(t) == 2:
-        key_type, value_type = t
-        result = analyze_type_info(value_type)
-        result.key_type = key_type
+        kt, vt = t
+        result = analyze_type_info(vt)
+        result.key_type = kt
         return result
 
     annotations: tuple[Annotation, ...] = ()
@@ -154,6 +154,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
 
     struct_type: type | None = None
     elem_type: ElementType | None = None
+    key_type: type | None = None
     if _is_struct_type(t):
         struct_type = t
 
