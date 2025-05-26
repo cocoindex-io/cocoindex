@@ -12,6 +12,12 @@ use crate::prelude::*;
 use crate::setup::{ResourceSetupStatus, SetupChangeType};
 use crate::{ops::sdk::*, setup::CombinedState};
 
+const SELF_CONTAINED_TAG_FIELD_NAME: &str = "__self_contained";
+
+////////////////////////////////////////////////////////////
+// Public Types
+////////////////////////////////////////////////////////////
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct ConnectionSpec {
     /// The URL of the [Kuzu API server](https://kuzu.com/docs/api/server/overview),
@@ -19,13 +25,22 @@ pub struct ConnectionSpec {
     api_server_url: String,
 }
 
-type KuzuGraphElement = GraphElementType<ConnectionSpec>;
-
 #[derive(Debug, Deserialize)]
 pub struct Spec {
     connection: spec::AuthEntryReference<ConnectionSpec>,
     mapping: GraphElementMapping,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct Declaration {
+    connection: spec::AuthEntryReference<ConnectionSpec>,
+    #[serde(flatten)]
+    decl: GraphDeclaration,
+}
+
+////////////////////////////////////////////////////////////
+// Utils to deal with Kuzu
+////////////////////////////////////////////////////////////
 
 struct CypherBuilder {
     query: String,
@@ -47,13 +62,6 @@ impl CypherBuilder {
     fn add_param(&mut self, key: String, value: serde_json::Value) {
         self.params.push((key, value));
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Declaration {
-    connection: spec::AuthEntryReference<ConnectionSpec>,
-    #[serde(flatten)]
-    decl: GraphDeclaration,
 }
 
 struct KuzuThinClient {
@@ -93,8 +101,6 @@ impl KuzuThinClient {
         Ok(())
     }
 }
-
-const SELF_CONTAINED_TAG_FIELD_NAME: &str = "__self_contained";
 
 fn kuzu_table_type(elem_type: &ElementType) -> &'static str {
     match elem_type {
@@ -151,6 +157,10 @@ fn value_type_to_kuzu(value_type: &ValueType) -> Result<String> {
         ValueType::Table(table_type) => format!("{}[]", struct_schema_to_kuzu(&table_type.row)?),
     })
 }
+
+////////////////////////////////////////////////////////////
+// Setup
+////////////////////////////////////////////////////////////
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 struct ReferencedNodeTable {
@@ -288,6 +298,12 @@ impl GraphElementDataSetupStatus {
         Ok(())
     }
 }
+
+////////////////////////////////////////////////////////////
+// Factory implementation
+////////////////////////////////////////////////////////////
+
+type KuzuGraphElement = GraphElementType<ConnectionSpec>;
 
 pub struct Factory {
     reqwest_client: reqwest::Client,
