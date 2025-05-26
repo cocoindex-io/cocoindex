@@ -24,20 +24,11 @@ pub fn extract_primary_key(
     primary_key_def: &AnalyzedPrimaryKeyDef,
     record: &FieldValues,
 ) -> Result<KeyValue> {
-    let key = match primary_key_def {
+    match primary_key_def {
         AnalyzedPrimaryKeyDef::Fields(fields) => {
-            if fields.len() == 1 {
-                record.fields[fields[0] as usize].as_key()?
-            } else {
-                let mut key_values = Vec::with_capacity(fields.len());
-                for field in fields.iter() {
-                    key_values.push(record.fields[*field as usize].as_key()?);
-                }
-                KeyValue::Struct(key_values)
-            }
+            KeyValue::from_values(fields.iter().map(|field| &record.fields[*field as usize]))
         }
-    };
-    Ok(key)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]

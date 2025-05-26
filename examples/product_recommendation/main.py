@@ -77,10 +77,38 @@ def extract_product_info(product: cocoindex.Json, filename: str) -> ProductInfo:
     )
 
 
+neo4j_conn_spec = cocoindex.add_auth_entry(
+    "Neo4jConnection",
+    cocoindex.storages.Neo4jConnection(
+        uri="bolt://localhost:7687",
+        user="neo4j",
+        password="cocoindex",
+    ),
+)
+kuzu_conn_spec = cocoindex.add_auth_entry(
+    "KuzuConnection",
+    cocoindex.storages.KuzuConnection(
+        api_server_url="http://localhost:8123",
+    ),
+)
+
+# Use Neo4j as the graph database
+GraphDbSpec = cocoindex.storages.Neo4j
+GraphDbConnection = cocoindex.storages.Neo4jConnection
+GraphDbDeclaration = cocoindex.storages.Neo4jDeclaration
+conn_spec = neo4j_conn_spec
+
+# Use Kuzu as the graph database
+#  GraphDbSpec = cocoindex.storages.Kuzu
+#  GraphDbConnection = cocoindex.storages.KuzuConnection
+#  GraphDbDeclaration = cocoindex.storages.KuzuDeclaration
+#  conn_spec = kuzu_conn_spec
+
+
 @cocoindex.flow_def(name="StoreProduct")
 def store_product_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-):
+) -> None:
     """
     Define an example flow that extracts triples from files and build knowledge graph.
     """
@@ -122,25 +150,16 @@ def store_product_flow(
                 taxonomy=t["name"],
             )
 
-    conn_spec = cocoindex.add_auth_entry(
-        "Neo4jConnection",
-        cocoindex.storages.Neo4jConnection(
-            uri="bolt://localhost:7687",
-            user="neo4j",
-            password="cocoindex",
-        ),
-    )
-
     product_node.export(
         "product_node",
-        cocoindex.storages.Neo4j(
+        GraphDbSpec(
             connection=conn_spec, mapping=cocoindex.storages.Nodes(label="Product")
         ),
         primary_key_fields=["id"],
     )
 
     flow_builder.declare(
-        cocoindex.storages.Neo4jDeclaration(
+        GraphDbDeclaration(
             connection=conn_spec,
             nodes_label="Taxonomy",
             primary_key_fields=["value"],
@@ -149,7 +168,7 @@ def store_product_flow(
 
     product_taxonomy.export(
         "product_taxonomy",
-        cocoindex.storages.Neo4j(
+        GraphDbSpec(
             connection=conn_spec,
             mapping=cocoindex.storages.Relationships(
                 rel_type="PRODUCT_TAXONOMY",
@@ -175,7 +194,7 @@ def store_product_flow(
     )
     product_complementary_taxonomy.export(
         "product_complementary_taxonomy",
-        cocoindex.storages.Neo4j(
+        GraphDbSpec(
             connection=conn_spec,
             mapping=cocoindex.storages.Relationships(
                 rel_type="PRODUCT_COMPLEMENTARY_TAXONOMY",

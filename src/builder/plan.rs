@@ -94,7 +94,7 @@ pub struct AnalyzedCollectOp {
 }
 
 pub enum AnalyzedPrimaryKeyDef {
-    Fields(Vec<u32>),
+    Fields(Vec<usize>),
 }
 
 pub struct AnalyzedExportOp {

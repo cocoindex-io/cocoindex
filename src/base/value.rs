@@ -1,5 +1,6 @@
 use super::schema::*;
 use crate::base::duration::parse_duration;
+use crate::prelude::invariance_violation;
 use crate::{api_bail, api_error};
 use anyhow::Result;
 use base64::prelude::*;
@@ -175,6 +176,26 @@ impl std::fmt::Display for KeyValue {
 }
 
 impl KeyValue {
+    pub fn from_json(value: serde_json::Value, fields_schema: &[FieldSchema]) -> Result<Self> {
+        let value = if fields_schema.len() == 1 {
+            Value::from_json(value, &fields_schema[0].value_type.typ)?
+        } else {
+            let field_values: FieldValues = FieldValues::from_json(value, fields_schema)?;
+            Value::Struct(field_values)
+        };
+        Ok(value.as_key()?)
+    }
+
+    pub fn from_values<'a>(values: impl ExactSizeIterator<Item = &'a Value>) -> Result<Self> {
+        let key = if values.len() == 1 {
+            let mut values = values;
+            values.next().ok_or_else(invariance_violation)?.as_key()?
+        } else {
+            KeyValue::Struct(values.map(|v| v.as_key()).collect::<Result<Vec<_>>>()?)
+        };
+        Ok(key)
+    }
+
     pub fn fields_iter(&self, num_fields: usize) -> Result<impl Iterator<Item = &KeyValue>> {
         let slice = if num_fields == 1 {
             std::slice::from_ref(self)

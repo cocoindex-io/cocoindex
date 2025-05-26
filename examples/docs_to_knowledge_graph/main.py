@@ -42,21 +42,22 @@ kuzu_conn_spec = cocoindex.add_auth_entry(
 )
 
 # Use Neo4j as the graph database
-#   GraphDbSpec = cocoindex.storages.Neo4j
-#   GraphDbConnection = cocoindex.storages.Neo4jConnection
-#   GraphDbDeclaration = cocoindex.storages.Neo4jDeclaration
-#   conn_spec = neo4j_conn_spec
+GraphDbSpec = cocoindex.storages.Neo4j
+GraphDbConnection = cocoindex.storages.Neo4jConnection
+GraphDbDeclaration = cocoindex.storages.Neo4jDeclaration
+conn_spec = neo4j_conn_spec
 
-GraphDbSpec = cocoindex.storages.Kuzu
-GraphDbConnection = cocoindex.storages.KuzuConnection
-GraphDbDeclaration = cocoindex.storages.KuzuDeclaration
-conn_spec = kuzu_conn_spec
+# Use Kuzu as the graph database
+#  GraphDbSpec = cocoindex.storages.Kuzu
+#  GraphDbConnection = cocoindex.storages.KuzuConnection
+#  GraphDbDeclaration = cocoindex.storages.KuzuDeclaration
+#  conn_spec = kuzu_conn_spec
 
 
 @cocoindex.flow_def(name="DocsToKG")
 def docs_to_kg_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-):
+) -> None:
     """
     Define an example flow that extracts relationship from files and build knowledge graph.
     """
@@ -168,25 +169,25 @@ def docs_to_kg_flow(
         ),
         primary_key_fields=["id"],
     )
-    # entity_mention.export(
-    #     "entity_mention",
-    #     GraphDbSpec(
-    #         connection=conn_spec,
-    #         mapping=cocoindex.storages.Relationships(
-    #             rel_type="MENTION",
-    #             source=cocoindex.storages.NodeFromFields(
-    #                 label="Document",
-    #                 fields=[cocoindex.storages.TargetFieldMapping("filename")],
-    #             ),
-    #             target=cocoindex.storages.NodeFromFields(
-    #                 label="Entity",
-    #                 fields=[
-    #                     cocoindex.storages.TargetFieldMapping(
-    #                         source="entity", target="value"
-    #                     )
-    #                 ],
-    #             ),
-    #         ),
-    #     ),
-    #     primary_key_fields=["id"],
-    # )
+    entity_mention.export(
+        "entity_mention",
+        GraphDbSpec(
+            connection=conn_spec,
+            mapping=cocoindex.storages.Relationships(
+                rel_type="MENTION",
+                source=cocoindex.storages.NodeFromFields(
+                    label="Document",
+                    fields=[cocoindex.storages.TargetFieldMapping("filename")],
+                ),
+                target=cocoindex.storages.NodeFromFields(
+                    label="Entity",
+                    fields=[
+                        cocoindex.storages.TargetFieldMapping(
+                            source="entity", target="value"
+                        )
+                    ],
+                ),
+            ),
+        ),
+        primary_key_fields=["id"],
+    )

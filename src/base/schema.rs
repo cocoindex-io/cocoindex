@@ -342,7 +342,7 @@ impl std::fmt::Display for FieldSchema {
 pub struct CollectorSchema {
     pub fields: Vec<FieldSchema>,
     /// If specified, the collector will have an automatically generated UUID field with the given index.
-    pub auto_uuid_field_idx: Option<u32>,
+    pub auto_uuid_field_idx: Option<usize>,
 }
 
 impl std::fmt::Display for CollectorSchema {
