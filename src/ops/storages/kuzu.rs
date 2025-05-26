@@ -206,98 +206,96 @@ impl setup::ResourceSetupStatus for GraphElementDataSetupStatus {
     }
 }
 
-impl GraphElementDataSetupStatus {
-    fn add_drop_cypher(
-        &self,
-        elem_type: &ElementType,
-        cypher_builder: &mut CypherBuilder,
-    ) -> Result<()> {
-        if !self.actions.drop_existing {
-            return Ok(());
+fn add_drop_cypher(
+    setup_status: &GraphElementDataSetupStatus,
+    elem_type: &ElementType,
+    cypher_builder: &mut CypherBuilder,
+) -> Result<()> {
+    if !setup_status.actions.drop_existing {
+        return Ok(());
+    }
+    write!(
+        cypher_builder.query_mut(),
+        "DROP TABLE IF EXISTS {};\n",
+        elem_type.label()
+    )?;
+    Ok(())
+}
+
+fn add_delete_orphaned_nodes_cypher(
+    node_table: &str,
+    cypher_builder: &mut CypherBuilder,
+) -> Result<()> {
+    write!(
+        cypher_builder.query_mut(),
+        "MATCH (n:{node_table}) WITH n WHERE NOT (n)--() DELETE n;\n"
+    )?;
+    Ok(())
+}
+
+fn add_create_alter_cypher(
+    setup_status: &GraphElementDataSetupStatus,
+    elem_type: &ElementType,
+    cypher_builder: &mut CypherBuilder,
+) -> Result<()> {
+    let table_upsertion = if let Some(table_upsertion) = &setup_status.actions.table_upsertion {
+        table_upsertion
+    } else {
+        return Ok(());
+    };
+    match table_upsertion {
+        TableUpsertionAction::Create { keys, values } => {
+            write!(
+                cypher_builder.query_mut(),
+                "CREATE {kuzu_table_type} TABLE IF NOT EXISTS {table_name} (",
+                kuzu_table_type = kuzu_table_type(elem_type),
+                table_name = elem_type.label(),
+            )?;
+            if let Some((src, tgt)) = &setup_status.referenced_node_tables {
+                write!(cypher_builder.query_mut(), "FROM {src} TO {tgt}, ")?;
+            }
+            cypher_builder.query_mut().push_str(
+                keys.iter()
+                    .chain(values.iter())
+                    .map(|(name, kuzu_type)| format!("{} {}", name, kuzu_type))
+                    .join(", ")
+                    .as_str(),
+            );
+            match elem_type {
+                ElementType::Node(_) => {
+                    write!(
+                        cypher_builder.query_mut(),
+                        ", {SELF_CONTAINED_TAG_FIELD_NAME} BOOL, PRIMARY KEY ({})",
+                        keys.iter().map(|(name, _)| name).join(", ")
+                    )?;
+                }
+                ElementType::Relationship(_) => {}
+            }
+            write!(cypher_builder.query_mut(), ");\n\n")?;
         }
-        write!(
-            cypher_builder.query_mut(),
-            "DROP TABLE IF EXISTS {};\n",
-            elem_type.label()
-        )?;
-        Ok(())
-    }
-
-    fn add_delete_orphaned_nodes_cypher(
-        node_table: &str,
-        cypher_builder: &mut CypherBuilder,
-    ) -> Result<()> {
-        write!(
-            cypher_builder.query_mut(),
-            "MATCH (n:{node_table}) WITH n WHERE NOT (n)--() DELETE n;\n"
-        )?;
-        Ok(())
-    }
-
-    fn add_create_alter_cypher(
-        &self,
-        elem_type: &ElementType,
-        cypher_builder: &mut CypherBuilder,
-    ) -> Result<()> {
-        let table_upsertion = if let Some(table_upsertion) = &self.actions.table_upsertion {
-            table_upsertion
-        } else {
-            return Ok(());
-        };
-        match table_upsertion {
-            TableUpsertionAction::Create { keys, values } => {
+        TableUpsertionAction::Update {
+            columns_to_delete,
+            columns_to_upsert,
+        } => {
+            let table_name = elem_type.label();
+            for name in columns_to_delete
+                .iter()
+                .chain(columns_to_upsert.iter().map(|(name, _)| name))
+            {
                 write!(
                     cypher_builder.query_mut(),
-                    "CREATE {kuzu_table_type} TABLE IF NOT EXISTS {table_name} (",
-                    kuzu_table_type = kuzu_table_type(elem_type),
-                    table_name = elem_type.label(),
+                    "ALTER TABLE {table_name} DROP IF EXISTS {name};\n"
                 )?;
-                if let Some((src, tgt)) = &self.referenced_node_tables {
-                    write!(cypher_builder.query_mut(), "FROM {src} TO {tgt}, ")?;
-                }
-                cypher_builder.query_mut().push_str(
-                    keys.iter()
-                        .chain(values.iter())
-                        .map(|(name, kuzu_type)| format!("{} {}", name, kuzu_type))
-                        .join(", ")
-                        .as_str(),
-                );
-                match elem_type {
-                    ElementType::Node(_) => {
-                        write!(
-                            cypher_builder.query_mut(),
-                            ", {SELF_CONTAINED_TAG_FIELD_NAME} BOOL, PRIMARY KEY ({})",
-                            keys.iter().map(|(name, _)| name).join(", ")
-                        )?;
-                    }
-                    ElementType::Relationship(_) => {}
-                }
-                write!(cypher_builder.query_mut(), ");\n\n")?;
             }
-            TableUpsertionAction::Update {
-                columns_to_delete,
-                columns_to_upsert,
-            } => {
-                let table_name = elem_type.label();
-                for name in columns_to_delete
-                    .iter()
-                    .chain(columns_to_upsert.iter().map(|(name, _)| name))
-                {
-                    write!(
-                        cypher_builder.query_mut(),
-                        "ALTER TABLE {table_name} DROP IF EXISTS {name};\n"
-                    )?;
-                }
-                for (name, kuzu_type) in columns_to_upsert.iter() {
-                    write!(
-                        cypher_builder.query_mut(),
-                        "ALTER TABLE {table_name} ADD {name} {kuzu_type};\n",
-                    )?;
-                }
+            for (name, kuzu_type) in columns_to_upsert.iter() {
+                write!(
+                    cypher_builder.query_mut(),
+                    "ALTER TABLE {table_name} ADD {name} {kuzu_type};\n",
+                )?;
             }
         }
-        Ok(())
     }
+    Ok(())
 }
 
 ////////////////////////////////////////////////////////////
@@ -501,9 +499,7 @@ impl StorageFactoryBase for Factory {
                 if !change.setup_status.actions.drop_existing {
                     continue;
                 }
-                change
-                    .setup_status
-                    .add_drop_cypher(&change.key.typ, &mut cypher_builder)?;
+                add_drop_cypher(&change.setup_status, &change.key.typ, &mut cypher_builder)?;
 
                 partial_affected_node_tables.extend(
                     change
@@ -517,9 +513,11 @@ impl StorageFactoryBase for Factory {
             }
             // Nodes first when creating.
             for change in node_changes.iter().chain(rel_changes.iter()) {
-                change
-                    .setup_status
-                    .add_create_alter_cypher(&change.key.typ, &mut cypher_builder)?;
+                add_create_alter_cypher(
+                    &change.setup_status,
+                    &change.key.typ,
+                    &mut cypher_builder,
+                )?;
             }
 
             debug!(
@@ -527,10 +525,7 @@ impl StorageFactoryBase for Factory {
                 partial_affected_node_tables
             );
             for table in partial_affected_node_tables {
-                GraphElementDataSetupStatus::add_delete_orphaned_nodes_cypher(
-                    table,
-                    &mut cypher_builder,
-                )?;
+                add_delete_orphaned_nodes_cypher(table, &mut cypher_builder)?;
             }
 
             client.run_cypher(cypher_builder).await?;
