@@ -7,6 +7,7 @@ use super::shared::property_graph::*;
 use super::shared::table_columns::{
     TableColumnsSchema, TableMainSetupAction, TableUpsertionAction, check_table_compatibility,
 };
+use crate::ops::registry::ExecutorFactoryRegistry;
 use crate::prelude::*;
 
 use crate::setup::{ResourceSetupStatus, SetupChangeType};
@@ -171,7 +172,7 @@ struct ReferencedNodeTable {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SetupState {
+struct SetupState {
     schema: TableColumnsSchema<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,7 +186,7 @@ impl<'a> Into<Cow<'a, TableColumnsSchema<String>>> for &'a SetupState {
 }
 
 #[derive(Debug)]
-pub struct GraphElementDataSetupStatus {
+struct GraphElementDataSetupStatus {
     actions: TableMainSetupAction<String>,
     referenced_node_tables: Option<(String, String)>,
     drop_affected_referenced_node_tables: IndexSet<String>,
@@ -305,14 +306,8 @@ impl GraphElementDataSetupStatus {
 
 type KuzuGraphElement = GraphElementType<ConnectionSpec>;
 
-pub struct Factory {
+struct Factory {
     reqwest_client: reqwest::Client,
-}
-
-impl Factory {
-    pub fn new(reqwest_client: reqwest::Client) -> Self {
-        Self { reqwest_client }
-    }
 }
 
 #[async_trait]
@@ -542,4 +537,11 @@ impl StorageFactoryBase for Factory {
         }
         Ok(())
     }
+}
+
+pub fn register(
+    registry: &mut ExecutorFactoryRegistry,
+    reqwest_client: reqwest::Client,
+) -> Result<()> {
+    Factory { reqwest_client }.register(registry)
 }
