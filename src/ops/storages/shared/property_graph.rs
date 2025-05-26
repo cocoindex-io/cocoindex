@@ -132,22 +132,24 @@ impl AnalyzedGraphElementFieldMapping {
     }
 }
 
+pub struct AnalyzedRelationshipInfo {
+    pub source: AnalyzedGraphElementFieldMapping,
+    pub target: AnalyzedGraphElementFieldMapping,
+}
+
 pub struct AnalyzedDataCollection {
     pub schema: Arc<GraphElementSchema>,
     pub value_fields_input_idx: Vec<usize>,
 
-    pub source: Option<AnalyzedGraphElementFieldMapping>,
-    pub target: Option<AnalyzedGraphElementFieldMapping>,
+    pub rel: Option<AnalyzedRelationshipInfo>,
 }
 
 impl AnalyzedDataCollection {
     pub fn dependent_node_labels(&self) -> IndexSet<&str> {
         let mut dependent_node_labels = IndexSet::new();
-        if let Some(source) = &self.source {
-            dependent_node_labels.insert(source.schema.elem_type.label());
-        }
-        if let Some(target) = &self.target {
-            dependent_node_labels.insert(target.schema.elem_type.label());
+        if let Some(rel) = &self.rel {
+            dependent_node_labels.insert(rel.source.schema.elem_type.label());
+            dependent_node_labels.insert(rel.target.schema.elem_type.label());
         }
         dependent_node_labels
     }
@@ -514,26 +516,27 @@ pub fn analyze_graph_mappings<'a, AuthEntry: 'a>(
                             .ok_or_else(invariance_violation)?
                             .clone(),
                         value_fields_input_idx: processed_info.value_input_fields_idx,
-                        source: None,
-                        target: None,
+                        rel: None,
                     },
                     // Relationship
                     Some(rel_info) => AnalyzedDataCollection {
                         schema: Arc::new(rel_info.rel_schema),
                         value_fields_input_idx: processed_info.value_input_fields_idx,
-                        source: Some(AnalyzedGraphElementFieldMapping {
-                            schema: node_schemas
-                                .get(&rel_info.source_typ)
-                                .ok_or_else(invariance_violation)?
-                                .clone(),
-                            fields_input_idx: rel_info.source_fields_idx,
-                        }),
-                        target: Some(AnalyzedGraphElementFieldMapping {
-                            schema: node_schemas
-                                .get(&rel_info.target_typ)
-                                .ok_or_else(invariance_violation)?
-                                .clone(),
-                            fields_input_idx: rel_info.target_fields_idx,
+                        rel: Some(AnalyzedRelationshipInfo {
+                            source: AnalyzedGraphElementFieldMapping {
+                                schema: node_schemas
+                                    .get(&rel_info.source_typ)
+                                    .ok_or_else(invariance_violation)?
+                                    .clone(),
+                                fields_input_idx: rel_info.source_fields_idx,
+                            },
+                            target: AnalyzedGraphElementFieldMapping {
+                                schema: node_schemas
+                                    .get(&rel_info.target_typ)
+                                    .ok_or_else(invariance_violation)?
+                                    .clone(),
+                                fields_input_idx: rel_info.target_fields_idx,
+                            },
                         }),
                     },
                 };
