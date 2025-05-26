@@ -8,7 +8,7 @@ import inspect
 import uuid
 
 from enum import Enum
-from typing import Any, Callable, get_origin, Mapping, Type
+from typing import Any, Callable, get_origin, Mapping
 from .typing import (
     analyze_type_info,
     encode_enriched_type,
@@ -41,7 +41,7 @@ def encode_engine_value(value: Any) -> Any:
 def make_engine_value_decoder(
     field_path: list[str],
     src_type: dict[str, Any],
-    dst_annotation: Type[Any] | None,
+    dst_annotation: Any,
 ) -> Callable[[Any], Any]:
     """
     Make a decoder from an engine value to a Python value.
@@ -60,7 +60,7 @@ def make_engine_value_decoder(
     if (
         dst_annotation is None
         or dst_annotation is inspect.Parameter.empty
-        or get_origin(dst_annotation) is Any
+        or dst_annotation is Any
     ):
         if src_type_kind == "Struct" or src_type_kind in TABLE_TYPES:
             raise ValueError(

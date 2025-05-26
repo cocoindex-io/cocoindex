@@ -18,7 +18,6 @@ from typing import (
     Generic,
     get_args,
     get_origin,
-    Type,
     NamedTuple,
     cast,
 )
@@ -786,14 +785,14 @@ async def update_all_flows_async(
 
 
 def _get_data_slice_annotation_type(
-    data_slice_type: Type[DataSlice[T] | inspect._empty],
-) -> Type[T] | None:
+    data_slice_type: type[DataSlice[T] | inspect._empty],
+) -> type[T] | None:
     type_args = get_args(data_slice_type)
     if data_slice_type is inspect.Parameter.empty or data_slice_type is DataSlice:
         return None
     if get_origin(data_slice_type) != DataSlice or len(type_args) != 1:
         raise ValueError(f"Expect a DataSlice[T] type, but got {data_slice_type}")
-    return cast(Type[T] | None, type_args[0])
+    return cast(type[T] | None, type_args[0])
 
 
 _transform_flow_name_builder = _NameBuilder()
@@ -892,7 +891,7 @@ class TransformFlow(Generic[T]):
         engine_return_type = (
             _data_slice_state(output).engine_data_slice.data_type().schema()
         )
-        python_return_type: Type[T] | None = _get_data_slice_annotation_type(
+        python_return_type: type[T] | None = _get_data_slice_annotation_type(
             sig.return_annotation
         )
         result_decoder = make_engine_value_decoder(
@@ -952,7 +951,7 @@ def transform_flow() -> Callable[[Callable[..., DataSlice[T]]], TransformFlow[T]
                 raise ValueError(
                     f"Parameter `{param_name}` is not a parameter can be passed by name"
                 )
-            value_type_annotation: Type[T] | None = _get_data_slice_annotation_type(
+            value_type_annotation: type[T] | None = _get_data_slice_annotation_type(
                 param.annotation
             )
             if value_type_annotation is None:
