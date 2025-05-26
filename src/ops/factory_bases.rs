@@ -327,6 +327,14 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
 
     fn describe_resource(&self, key: &Self::Key) -> Result<String>;
 
+    fn prepare_upsert_entry<'ctx>(
+        &self,
+        entry: ExportTargetUpsertEntry,
+        _export_context: &'ctx Self::ExportContext,
+    ) -> Result<ExportTargetUpsertEntry> {
+        Ok(entry)
+    }
+
     fn register(self, registry: &mut ExecutorFactoryRegistry) -> Result<()>
     where
         Self: Sized,
@@ -451,6 +459,20 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         Ok(result)
     }
 
+    fn prepare_upsert_entry<'ctx>(
+        &self,
+        entry: ExportTargetUpsertEntry,
+        export_context: &'ctx (dyn Any + Send + Sync),
+    ) -> Result<ExportTargetUpsertEntry> {
+        StorageFactoryBase::prepare_upsert_entry(
+            self,
+            entry,
+            export_context
+                .downcast_ref::<T::ExportContext>()
+                .ok_or_else(invariance_violation)?,
+        )
+    }
+
     async fn apply_mutation(
         &self,
         mutations: Vec<ExportTargetMutationWithContext<'async_trait, dyn Any + Send + Sync>>,
@@ -463,7 +485,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
                     export_context: m
                         .export_context
                         .downcast_ref::<T::ExportContext>()
-                        .ok_or_else(|| anyhow!("Unexpected export context type"))?,
+                        .ok_or_else(invariance_violation)?,
                 })
             })
             .collect::<Result<_>>()?;
@@ -486,7 +508,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
                             .setup_status
                             .as_any()
                             .downcast_ref::<T::SetupStatus>()
-                            .ok_or_else(|| anyhow!("Unexpected setup status type"))?,
+                            .ok_or_else(invariance_violation)?,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,

@@ -4,10 +4,10 @@ use futures::future::try_join_all;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 
-use super::db_tracking::{self, read_source_tracking_info_for_processing, TrackedTargetKey};
+use super::db_tracking::{self, TrackedTargetKey, read_source_tracking_info_for_processing};
 use super::db_tracking_setup;
 use super::evaluator::{
-    evaluate_source_entry, EvaluateSourceEntryOutput, SourceRowEvaluationContext,
+    EvaluateSourceEntryOutput, SourceRowEvaluationContext, evaluate_source_entry,
 };
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, StoredMemoizationInfo};
 use super::stats;
@@ -254,10 +254,17 @@ async fn precommit_source_tracking_info(
                     .existing_staging_keys_info
                     .remove(&primary_key_json);
 
+                let upsert_entry = export_op.export_target_factory.prepare_upsert_entry(
+                    ExportTargetUpsertEntry {
+                        key: primary_key,
+                        value: field_values,
+                    },
+                    export_op.export_context.as_ref(),
+                )?;
                 let curr_fp = if !export_op.value_stable {
                     Some(
                         Fingerprinter::default()
-                            .with(&field_values)?
+                            .with(&upsert_entry.value)?
                             .into_fingerprint(),
                     )
                 } else {
@@ -273,15 +280,15 @@ async fn precommit_source_tracking_info(
                 {
                     // Already exists, with exactly the same value fingerprint.
                     // Nothing need to be changed, except carrying over the existing target keys info.
-                    let (existing_ordinal, existing_fp) =
-                        existing_target_keys.unwrap().into_iter().next().unwrap();
+                    let (existing_ordinal, existing_fp) = existing_target_keys
+                        .ok_or_else(invariance_violation)?
+                        .into_iter()
+                        .next()
+                        .ok_or_else(invariance_violation)?;
                     keys_info.push((primary_key_json, existing_ordinal, existing_fp));
                 } else {
                     // Entry with new value. Needs to be upserted.
-                    target_info.mutation.upserts.push(ExportTargetUpsertEntry {
-                        key: primary_key,
-                        value: field_values,
-                    });
+                    target_info.mutation.upserts.push(upsert_entry);
                     target_info.new_staging_keys_info.push((
                         primary_key_json.clone(),
                         process_ordinal,

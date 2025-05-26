@@ -286,6 +286,12 @@ pub trait ExportTargetFactory: Send + Sync {
 
     fn describe_resource(&self, key: &serde_json::Value) -> Result<String>;
 
+    fn prepare_upsert_entry<'ctx>(
+        &self,
+        entry: ExportTargetUpsertEntry,
+        export_context: &'ctx (dyn Any + Send + Sync),
+    ) -> Result<ExportTargetUpsertEntry>;
+
     async fn apply_mutation(
         &self,
         mutations: Vec<ExportTargetMutationWithContext<'async_trait, dyn Any + Send + Sync>>,
