@@ -327,12 +327,13 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
 
     fn describe_resource(&self, key: &Self::Key) -> Result<String>;
 
-    fn prepare_upsert_entry<'ctx>(
+    fn extract_additional_key<'ctx>(
         &self,
-        entry: ExportTargetUpsertEntry,
+        _key: &value::KeyValue,
+        _value: &value::FieldValues,
         _export_context: &'ctx Self::ExportContext,
-    ) -> Result<ExportTargetUpsertEntry> {
-        Ok(entry)
+    ) -> Result<serde_json::Value> {
+        Ok(serde_json::Value::Null)
     }
 
     fn register(self, registry: &mut ExecutorFactoryRegistry) -> Result<()>
@@ -459,14 +460,16 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         Ok(result)
     }
 
-    fn prepare_upsert_entry<'ctx>(
+    fn extract_additional_key<'ctx>(
         &self,
-        entry: ExportTargetUpsertEntry,
+        key: &value::KeyValue,
+        value: &value::FieldValues,
         export_context: &'ctx (dyn Any + Send + Sync),
-    ) -> Result<ExportTargetUpsertEntry> {
-        StorageFactoryBase::prepare_upsert_entry(
+    ) -> Result<serde_json::Value> {
+        StorageFactoryBase::extract_additional_key(
             self,
-            entry,
+            key,
+            value,
             export_context
                 .downcast_ref::<T::ExportContext>()
                 .ok_or_else(invariance_violation)?,

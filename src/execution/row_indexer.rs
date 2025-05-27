@@ -4,7 +4,7 @@ use futures::future::try_join_all;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 
-use super::db_tracking::{self, TrackedTargetKey, read_source_tracking_info_for_processing};
+use super::db_tracking::{self, TrackedTargetKeyInfo, read_source_tracking_info_for_processing};
 use super::db_tracking_setup;
 use super::evaluator::{
     EvaluateSourceEntryOutput, SourceRowEvaluationContext, evaluate_source_entry,
@@ -119,6 +119,12 @@ pub enum SkippedOr<T> {
     Skipped(SourceVersion),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TargetKeyPair {
+    pub key: serde_json::Value,
+    pub additional_key: serde_json::Value,
+}
+
 #[derive(Default)]
 struct TrackingInfoForTarget<'a> {
     export_op: Option<&'a AnalyzedExportOp>,
@@ -126,11 +132,11 @@ struct TrackingInfoForTarget<'a> {
     // Existing keys info. Keyed by target key.
     // Will be removed after new rows for the same key are added into `new_staging_keys_info` and `mutation.upserts`,
     // hence all remaining ones are to be deleted.
-    existing_staging_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<Fingerprint>)>>,
-    existing_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<Fingerprint>)>>,
+    existing_staging_keys_info: HashMap<TargetKeyPair, Vec<(i64, Option<Fingerprint>)>>,
+    existing_keys_info: HashMap<TargetKeyPair, Vec<(i64, Option<Fingerprint>)>>,
 
     // New keys info for staging.
-    new_staging_keys_info: Vec<TrackedTargetKey>,
+    new_staging_keys_info: Vec<TrackedTargetKeyInfo>,
 
     // Mutation to apply to the target storage.
     mutation: ExportTargetMutation,
@@ -208,9 +214,12 @@ async fn precommit_source_tracking_info(
             for key_info in keys_info.into_iter() {
                 target_info
                     .existing_staging_keys_info
-                    .entry(key_info.0)
+                    .entry(TargetKeyPair {
+                        key: key_info.key,
+                        additional_key: key_info.additional_key,
+                    })
                     .or_default()
-                    .push((key_info.1, key_info.2));
+                    .push((key_info.process_ordinal, key_info.fingerprint));
             }
         }
 
@@ -220,9 +229,12 @@ async fn precommit_source_tracking_info(
                 for key_info in keys_info.into_iter() {
                     target_info
                         .existing_keys_info
-                        .entry(key_info.0)
+                        .entry(TargetKeyPair {
+                            key: key_info.key,
+                            additional_key: key_info.additional_key,
+                        })
                         .or_default()
-                        .push((key_info.1, key_info.2));
+                        .push((key_info.process_ordinal, key_info.fingerprint));
                 }
             }
         }
@@ -249,22 +261,24 @@ async fn precommit_source_tracking_info(
                         .fields
                         .push(value.fields[*field as usize].clone());
                 }
-                let existing_target_keys = target_info.existing_keys_info.remove(&primary_key_json);
-                let existing_staging_target_keys = target_info
-                    .existing_staging_keys_info
-                    .remove(&primary_key_json);
-
-                let upsert_entry = export_op.export_target_factory.prepare_upsert_entry(
-                    ExportTargetUpsertEntry {
-                        key: primary_key,
-                        value: field_values,
-                    },
+                let additional_key = export_op.export_target_factory.extract_additional_key(
+                    &primary_key,
+                    &field_values,
                     export_op.export_context.as_ref(),
                 )?;
+                let target_key_pair = TargetKeyPair {
+                    key: primary_key_json,
+                    additional_key,
+                };
+                let existing_target_keys = target_info.existing_keys_info.remove(&target_key_pair);
+                let existing_staging_target_keys = target_info
+                    .existing_staging_keys_info
+                    .remove(&target_key_pair);
+
                 let curr_fp = if !export_op.value_stable {
                     Some(
                         Fingerprinter::default()
-                            .with(&upsert_entry.value)?
+                            .with(&field_values)?
                             .into_fingerprint(),
                     )
                 } else {
@@ -285,16 +299,29 @@ async fn precommit_source_tracking_info(
                         .into_iter()
                         .next()
                         .ok_or_else(invariance_violation)?;
-                    keys_info.push((primary_key_json, existing_ordinal, existing_fp));
+                    keys_info.push(TrackedTargetKeyInfo {
+                        key: target_key_pair.key,
+                        additional_key: target_key_pair.additional_key,
+                        process_ordinal: existing_ordinal,
+                        fingerprint: existing_fp,
+                    });
                 } else {
                     // Entry with new value. Needs to be upserted.
-                    target_info.mutation.upserts.push(upsert_entry);
-                    target_info.new_staging_keys_info.push((
-                        primary_key_json.clone(),
+                    let tracked_target_key = TrackedTargetKeyInfo {
+                        key: target_key_pair.key.clone(),
+                        additional_key: target_key_pair.additional_key.clone(),
                         process_ordinal,
-                        curr_fp,
-                    ));
-                    keys_info.push((primary_key_json, process_ordinal, curr_fp));
+                        fingerprint: curr_fp,
+                    };
+                    target_info.mutation.upserts.push(ExportTargetUpsertEntry {
+                        key: primary_key,
+                        additional_key: target_key_pair.additional_key,
+                        value: field_values,
+                    });
+                    target_info
+                        .new_staging_keys_info
+                        .push(tracked_target_key.clone());
+                    keys_info.push(tracked_target_key);
                 }
             }
             new_target_keys_info.push((export_op.target_id, keys_info));
@@ -304,7 +331,7 @@ async fn precommit_source_tracking_info(
     let mut new_staging_target_keys = db_tracking::TrackedTargetKeyForSource::default();
     let mut target_mutations = HashMap::with_capacity(export_ops.len());
     for (target_id, target_tracking_info) in tracking_info_for_targets.into_iter() {
-        let legacy_keys: HashSet<serde_json::Value> = target_tracking_info
+        let legacy_keys: HashSet<TargetKeyPair> = target_tracking_info
             .existing_keys_info
             .into_keys()
             .chain(target_tracking_info.existing_staging_keys_info.into_keys())
@@ -312,24 +339,27 @@ async fn precommit_source_tracking_info(
 
         let mut new_staging_keys_info = target_tracking_info.new_staging_keys_info;
         // Add tracking info for deletions.
-        new_staging_keys_info.extend(
-            legacy_keys
-                .iter()
-                .map(|key| ((*key).clone(), process_ordinal, None)),
-        );
+        new_staging_keys_info.extend(legacy_keys.iter().map(|key| TrackedTargetKeyInfo {
+            key: key.key.clone(),
+            additional_key: key.additional_key.clone(),
+            process_ordinal,
+            fingerprint: None,
+        }));
         new_staging_target_keys.push((target_id, new_staging_keys_info));
 
         if let Some(export_op) = target_tracking_info.export_op {
             let mut mutation = target_tracking_info.mutation;
-            mutation.delete_keys.reserve(legacy_keys.len());
+            mutation.deletes.reserve(legacy_keys.len());
             for legacy_key in legacy_keys.into_iter() {
-                mutation.delete_keys.push(
-                    value::Value::<value::ScopeValue>::from_json(
-                        legacy_key,
-                        &export_op.primary_key_type,
-                    )?
-                    .as_key()?,
-                );
+                let key = value::Value::<value::ScopeValue>::from_json(
+                    legacy_key.key,
+                    &export_op.primary_key_type,
+                )?
+                .as_key()?;
+                mutation.deletes.push(interface::ExportTargetDeleteEntry {
+                    key,
+                    additional_key: legacy_key.additional_key,
+                });
             }
             target_mutations.insert(target_id, mutation);
         }
@@ -398,9 +428,10 @@ async fn commit_source_tracking_info(
                 .filter_map(|(target_id, target_keys)| {
                     let cleaned_target_keys: Vec<_> = target_keys
                         .into_iter()
-                        .filter(|(_, ordinal, _)| {
-                            Some(*ordinal) > precommit_metadata.existing_process_ordinal
-                                && *ordinal != precommit_metadata.process_ordinal
+                        .filter(|key_info| {
+                            Some(key_info.process_ordinal)
+                                > precommit_metadata.existing_process_ordinal
+                                && key_info.process_ordinal != precommit_metadata.process_ordinal
                         })
                         .collect();
                     if !cleaned_target_keys.is_empty() {

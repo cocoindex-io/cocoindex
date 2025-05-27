@@ -1056,8 +1056,8 @@ impl StorageFactoryBase for Factory {
                     }
                     for mut_with_ctx in muts.iter().rev() {
                         let export_ctx = &mut_with_ctx.export_context;
-                        for delete_key in mut_with_ctx.mutation.delete_keys.iter() {
-                            export_ctx.add_delete_queries(delete_key, &mut queries)?;
+                        for deletion in mut_with_ctx.mutation.deletes.iter() {
+                            export_ctx.add_delete_queries(&deletion.key, &mut queries)?;
                         }
                     }
                     let mut txn = graph.start_txn().await?;

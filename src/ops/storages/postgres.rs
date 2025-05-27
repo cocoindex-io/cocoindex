@@ -388,17 +388,17 @@ impl ExportContext {
 
     async fn delete(
         &self,
-        delete_keys: &[KeyValue],
+        deletions: &[interface::ExportTargetDeleteEntry],
         txn: &mut sqlx::PgTransaction<'_>,
     ) -> Result<()> {
         // TODO: Find a way to batch delete.
-        for delete_key in delete_keys.iter() {
+        for deletion in deletions.iter() {
             let mut query_builder = sqlx::QueryBuilder::new("");
             query_builder.push(&self.delete_sql_prefix);
             for (i, (schema, value)) in self
                 .key_fields_schema
                 .iter()
-                .zip(key_value_fields_iter(&self.key_fields_schema, delete_key)?.iter())
+                .zip(key_value_fields_iter(&self.key_fields_schema, &deletion.key)?.iter())
                 .enumerate()
             {
                 if i > 0 {
@@ -912,7 +912,7 @@ impl StorageFactoryBase for Factory {
             for mut_group in mut_groups.iter() {
                 mut_group
                     .export_context
-                    .delete(&mut_group.mutation.delete_keys, &mut txn)
+                    .delete(&mut_group.mutation.deletes, &mut txn)
                     .await?;
             }
             txn.commit().await?;
