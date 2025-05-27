@@ -33,5 +33,6 @@ dev = ["ruff"]
 
 [tool.mypy]
 python_version = "3.11"
-# Disable for not as we have missing type annotations. See https://github.com/cocoindex-io/cocoindex/issues/539
-#   strict = true
+strict = true
+files = "python/cocoindex"
+exclude = "python/cocoindex/tests"

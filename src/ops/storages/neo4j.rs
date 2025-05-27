@@ -67,7 +67,7 @@ pub struct GraphPool {
 }
 
 impl GraphPool {
-    pub async fn get_graph(&self, spec: &ConnectionSpec) -> Result<Arc<Graph>> {
+    async fn get_graph(&self, spec: &ConnectionSpec) -> Result<Arc<Graph>> {
         let graph_key = GraphKey::from_spec(spec);
         let cell = {
             let mut graphs = self.graphs.lock().unwrap();
@@ -86,6 +86,15 @@ impl GraphPool {
             })
             .await?;
         Ok(graph.clone())
+    }
+
+    async fn get_graph_for_key(
+        &self,
+        key: &Neo4jGraphElement,
+        auth_registry: &AuthRegistry,
+    ) -> Result<Arc<Graph>> {
+        let spec = auth_registry.get::<ConnectionSpec>(&key.connection)?;
+        self.get_graph(&spec).await
     }
 }
 
@@ -363,14 +372,12 @@ impl ExportContext {
                     rel_type = rel_spec.rel_type,
                 };
 
-                let analyzed_src = analyzed_data_coll
-                    .source
+                let analyzed_rel = analyzed_data_coll
+                    .rel
                     .as_ref()
-                    .ok_or_else(|| anyhow!("Relationship spec requires source fields"))?;
-                let analyzed_tgt = analyzed_data_coll
-                    .target
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("Relationship spec requires target fields"))?;
+                    .ok_or_else(invariance_violation)?;
+                let analyzed_src = &analyzed_rel.source;
+                let analyzed_tgt = &analyzed_rel.target;
 
                 let (src_key_field_params, src_key_fields_literal) =
                     Self::build_key_field_params_n_literal(
@@ -476,57 +483,41 @@ impl ExportContext {
         }
 
         let value = &upsert.value;
-        let mut insert_cypher =
+        let mut query =
             self.bind_rel_key_field_params(neo4rs::query(&self.insert_cypher), &upsert.key)?;
 
-        if let Some(analyzed_src) = &self.analyzed_data_coll.source {
-            insert_cypher = Self::bind_key_field_params(
-                insert_cypher,
-                &self.src_key_field_params,
-                std::iter::zip(
-                    analyzed_src.schema.key_fields.iter(),
-                    analyzed_src.fields_input_idx.key.iter(),
-                )
-                .map(|(f, field_idx)| (&f.value_type.typ, &value.fields[*field_idx])),
-            )?;
-
-            if analyzed_src.has_value_fields() {
-                insert_cypher = insert_cypher.param(
-                    SRC_PROPS_PARAM,
-                    mapped_field_values_to_bolt(
-                        &analyzed_src.schema.value_fields,
-                        &analyzed_src.fields_input_idx.value,
-                        value,
-                    )?,
-                );
-            }
-        }
-
-        if let Some(analyzed_tgt) = &self.analyzed_data_coll.target {
-            insert_cypher = Self::bind_key_field_params(
-                insert_cypher,
-                &self.tgt_key_field_params,
-                std::iter::zip(
-                    analyzed_tgt.schema.key_fields.iter(),
-                    analyzed_tgt.fields_input_idx.key.iter(),
-                )
-                .map(|(f, field_idx)| (&f.value_type.typ, &value.fields[*field_idx])),
-            )?;
-
-            if analyzed_tgt.has_value_fields() {
-                insert_cypher = insert_cypher.param(
-                    TGT_PROPS_PARAM,
-                    mapped_field_values_to_bolt(
-                        &analyzed_tgt.schema.value_fields,
-                        &analyzed_tgt.fields_input_idx.value,
-                        value,
-                    )?,
-                );
-            }
+        if let Some(analyzed_rel) = &self.analyzed_data_coll.rel {
+            let bind_params = |query: neo4rs::Query,
+                               analyzed: &AnalyzedGraphElementFieldMapping,
+                               key_field_params: &[String]|
+             -> Result<neo4rs::Query> {
+                let mut query = Self::bind_key_field_params(
+                    query,
+                    key_field_params,
+                    std::iter::zip(
+                        analyzed.schema.key_fields.iter(),
+                        analyzed.fields_input_idx.key.iter(),
+                    )
+                    .map(|(f, field_idx)| (&f.value_type.typ, &value.fields[*field_idx])),
+                )?;
+                if analyzed.has_value_fields() {
+                    query = query.param(
+                        SRC_PROPS_PARAM,
+                        mapped_field_values_to_bolt(
+                            &analyzed.schema.value_fields,
+                            &analyzed.fields_input_idx.value,
+                            value,
+                        )?,
+                    );
+                }
+                Ok(query)
+            };
+            query = bind_params(query, &analyzed_rel.source, &self.src_key_field_params)?;
+            query = bind_params(query, &analyzed_rel.target, &self.tgt_key_field_params)?;
         }
 
         if !self.analyzed_data_coll.value_fields_input_idx.is_empty() {
-            insert_cypher = insert_cypher.param(
+            query = query.param(
                 CORE_PROPS_PARAM,
                 mapped_field_values_to_bolt(
                     &self.analyzed_data_coll.schema.value_fields,
@@ -535,7 +526,7 @@ impl ExportContext {
                 )?,
             );
         }
-        queries.push(insert_cypher);
+        queries.push(query);
         Ok(())
     }
 
@@ -808,19 +799,12 @@ fn build_composite_field_names(qualifier: &str, field_names: &[String]) -> Strin
 }
 #[derive(Debug)]
 pub struct GraphElementDataSetupStatus {
-    key: Neo4jGraphElement,
-    conn_spec: ConnectionSpec,
     data_clear: Option<DataClearAction>,
     change_type: SetupChangeType,
 }
 
 impl GraphElementDataSetupStatus {
-    fn new(
-        key: Neo4jGraphElement,
-        conn_spec: ConnectionSpec,
-        desired_state: Option<&SetupState>,
-        existing: &CombinedState<SetupState>,
-    ) -> Self {
+    fn new(desired_state: Option<&SetupState>, existing: &CombinedState<SetupState>) -> Self {
         let mut data_clear: Option<DataClearAction> = None;
         for v in existing.possible_versions() {
             if desired_state.as_ref().is_none_or(|desired| {
@@ -847,8 +831,6 @@ impl GraphElementDataSetupStatus {
         };
 
         Self {
-            key,
-            conn_spec,
             data_clear,
             change_type,
         }
@@ -1034,8 +1016,7 @@ impl StorageFactoryBase for Factory {
         auth_registry: &Arc<AuthRegistry>,
     ) -> Result<Self::SetupStatus> {
         let conn_spec = auth_registry.get::<ConnectionSpec>(&key.connection)?;
-        let data_status =
-            GraphElementDataSetupStatus::new(key, conn_spec.clone(), desired.as_ref(), &existing);
+        let data_status = GraphElementDataSetupStatus::new(desired.as_ref(), &existing);
         let components = components::SetupStatus::create(
             SetupComponentOperator {
                 graph_pool: self.graph_pool.clone(),
@@ -1104,51 +1085,58 @@ impl StorageFactoryBase for Factory {
 
     async fn apply_setup_changes(
         &self,
-        changes: Vec<&'async_trait Self::SetupStatus>,
+        changes: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<()> {
-        let (data_statuses, components): (Vec<_>, Vec<_>) =
-            changes.into_iter().map(|c| (&c.0, &c.1)).unzip();
-
         // Relationships first, then nodes, as relationships need to be deleted before nodes they referenced.
-        let mut relationship_types = IndexMap::<&Neo4jGraphElement, &ConnectionSpec>::new();
-        let mut node_labels = IndexMap::<&Neo4jGraphElement, &ConnectionSpec>::new();
-        let mut dependent_node_labels = IndexMap::<Neo4jGraphElement, &ConnectionSpec>::new();
-        for data_status in data_statuses.iter() {
-            if let Some(data_clear) = &data_status.data_clear {
-                match &data_status.key.typ {
+        let mut relationship_types = IndexSet::<&Neo4jGraphElement>::new();
+        let mut node_labels = IndexSet::<&Neo4jGraphElement>::new();
+        let mut dependent_node_labels = IndexSet::<Neo4jGraphElement>::new();
+
+        let mut components = vec![];
+        for change in changes.iter() {
+            if let Some(data_clear) = &change.setup_status.0.data_clear {
+                match &change.key.typ {
                     ElementType::Relationship(_) => {
-                        relationship_types.insert(&data_status.key, &data_status.conn_spec);
+                        relationship_types.insert(&change.key);
                         for label in &data_clear.dependent_node_labels {
-                            dependent_node_labels.insert(
-                                Neo4jGraphElement {
-                                    connection: data_status.key.connection.clone(),
-                                    typ: ElementType::Node(label.clone()),
-                                },
-                                &data_status.conn_spec,
-                            );
+                            dependent_node_labels.insert(Neo4jGraphElement {
+                                connection: change.key.connection.clone(),
+                                typ: ElementType::Node(label.clone()),
+                            });
                         }
                     }
                     ElementType::Node(_) => {
-                        node_labels.insert(&data_status.key, &data_status.conn_spec);
+                        node_labels.insert(&change.key);
                     }
                 }
             }
+            components.push(&change.setup_status.1);
         }
 
         // Relationships have no dependency, so can be cleared first.
-        for (rel_type, conn_spec) in relationship_types.iter() {
-            let graph = self.graph_pool.get_graph(conn_spec).await?;
+        for rel_type in relationship_types.into_iter() {
+            let graph = self
+                .graph_pool
+                .get_graph_for_key(rel_type, auth_registry)
+                .await?;
             clear_graph_element_data(&graph, rel_type, true).await?;
         }
         // Clear standalone nodes, which is simpler than dependent nodes.
-        for (node_label, conn_spec) in node_labels.iter() {
-            let graph = self.graph_pool.get_graph(conn_spec).await?;
+        for node_label in node_labels.iter() {
+            let graph = self
+                .graph_pool
+                .get_graph_for_key(node_label, auth_registry)
+                .await?;
             clear_graph_element_data(&graph, node_label, true).await?;
         }
         // Clear dependent nodes if they're not covered by standalone nodes.
-        for (node_label, conn_spec) in dependent_node_labels.iter() {
-            if !node_labels.contains_key(node_label) {
-                let graph = self.graph_pool.get_graph(conn_spec).await?;
+        for node_label in dependent_node_labels.iter() {
+            if !node_labels.contains(node_label) {
+                let graph = self
+                    .graph_pool
+                    .get_graph_for_key(node_label, auth_registry)
+                    .await?;
                 clear_graph_element_data(&graph, node_label, false).await?;
             }
         }

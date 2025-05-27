@@ -18,8 +18,8 @@ from typing import (
     Generic,
     get_args,
     get_origin,
-    Type,
     NamedTuple,
+    cast,
 )
 from threading import Lock
 from enum import Enum
@@ -40,7 +40,7 @@ class _NameBuilder:
     _existing_names: set[str]
     _next_name_index: dict[str, int]
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._existing_names = set()
         self._next_name_index = {}
 
@@ -73,7 +73,7 @@ def _create_data_slice(
     flow_builder_state: _FlowBuilderState,
     creator: Callable[[_engine.DataScopeRef | None, str | None], _engine.DataSlice],
     name: str | None = None,
-) -> DataSlice:
+) -> DataSlice[T]:
     if name is None:
         return DataSlice(
             _DataSliceState(
@@ -88,7 +88,7 @@ def _create_data_slice(
 
 
 def _spec_kind(spec: Any) -> str:
-    return spec.__class__.__name__
+    return cast(str, spec.__class__.__name__)
 
 
 T = TypeVar("T")
@@ -157,13 +157,13 @@ class DataSlice(Generic[T]):
     def __init__(self, state: _DataSliceState):
         self._state = state
 
-    def __str__(self):
+    def __str__(self) -> str:
         return str(self._state.engine_data_slice)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return repr(self._state.engine_data_slice)
 
-    def __getitem__(self, field_name: str) -> DataSlice:
+    def __getitem__(self, field_name: str) -> DataSlice[T]:
         field_slice = self._state.engine_data_slice.field(field_name)
         if field_slice is None:
             raise KeyError(field_name)
@@ -183,7 +183,9 @@ class DataSlice(Generic[T]):
         with self.row() as scope:
             f(scope)
 
-    def transform(self, fn_spec: op.FunctionSpec, *args, **kwargs) -> DataSlice:
+    def transform(
+        self, fn_spec: op.FunctionSpec, *args: Any, **kwargs: Any
+    ) -> DataSlice[T]:
         """
         Apply a function to the data slice.
         """
@@ -214,14 +216,14 @@ class DataSlice(Generic[T]):
             ),
         )
 
-    def call(self, func: Callable[[DataSlice], T], *args, **kwargs) -> T:
+    def call(self, func: Callable[[DataSlice[T]], T], *args: Any, **kwargs: Any) -> T:
         """
         Call a function with the data slice.
         """
         return func(self, *args, **kwargs)
 
 
-def _data_slice_state(data_slice: DataSlice) -> _DataSliceState:
+def _data_slice_state(data_slice: DataSlice[T]) -> _DataSliceState:
     return data_slice._state  # pylint: disable=protected-access
 
 
@@ -240,13 +242,13 @@ class DataScope:
         self._flow_builder_state = flow_builder_state
         self._engine_data_scope = data_scope
 
-    def __str__(self):
+    def __str__(self) -> str:
         return str(self._engine_data_scope)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return repr(self._engine_data_scope)
 
-    def __getitem__(self, field_name: str) -> DataSlice:
+    def __getitem__(self, field_name: str) -> DataSlice[T]:
         return DataSlice(
             _DataSliceState(
                 self._flow_builder_state,
@@ -256,13 +258,13 @@ class DataScope:
             )
         )
 
-    def __setitem__(self, field_name: str, value: DataSlice):
+    def __setitem__(self, field_name: str, value: DataSlice[T]) -> None:
         value._state.attach_to_scope(self._engine_data_scope, field_name)
 
-    def __enter__(self):
+    def __enter__(self) -> DataScope:
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         del self._engine_data_scope
 
     def add_collector(self, name: str | None = None) -> DataCollector:
@@ -301,7 +303,7 @@ class DataCollector:
         self._flow_builder_state = flow_builder_state
         self._engine_data_collector = data_collector
 
-    def collect(self, **kwargs):
+    def collect(self, **kwargs: Any) -> None:
         """
         Collect data into the collector.
         """
@@ -332,7 +334,7 @@ class DataCollector:
         vector_indexes: Sequence[index.VectorIndexDef] = (),
         vector_index: Sequence[tuple[str, index.VectorSimilarityMetric]] = (),
         setup_by_user: bool = False,
-    ):
+    ) -> None:
         """
         Export the collected data to the specified target.
 
@@ -407,10 +409,10 @@ class FlowBuilder:
     def __init__(self, state: _FlowBuilderState):
         self._state = state
 
-    def __str__(self):
+    def __str__(self) -> str:
         return str(self._state.engine_flow_builder)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return repr(self._state.engine_flow_builder)
 
     def add_source(
@@ -420,7 +422,7 @@ class FlowBuilder:
         *,
         name: str | None = None,
         refresh_interval: datetime.timedelta | None = None,
-    ) -> DataSlice:
+    ) -> DataSlice[T]:
         """
         Import a source to the flow.
         """
@@ -442,7 +444,7 @@ class FlowBuilder:
             name,
         )
 
-    def declare(self, spec: op.DeclarationSpec):
+    def declare(self, spec: op.DeclarationSpec) -> None:
         """
         Add a declaration to the flow.
         """
@@ -476,7 +478,7 @@ class FlowLiveUpdater:
         self.start()
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         self.abort()
         self.wait()
 
@@ -484,7 +486,7 @@ class FlowLiveUpdater:
         await self.start_async()
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback):
+    async def __aexit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         self.abort()
         await self.wait_async()
 
@@ -576,7 +578,7 @@ class Flow:
         spec = self._get_spec(verbose=verbose)
         tree = Tree(f"Flow: {self.full_name}", style="cyan")
 
-        def build_tree(label: str, lines: list):
+        def build_tree(label: str, lines: list[Any]) -> Tree:
             node = Tree(label=label if lines else label + " None", style="cyan")
             for line in lines:
                 child_node = node.add(Text(line.content, style="yellow"))
@@ -594,12 +596,12 @@ class Flow:
         )
 
     def _get_schema(self) -> list[tuple[str, str, str]]:
-        return self._lazy_engine_flow().get_schema()
+        return cast(list[tuple[str, str, str]], self._lazy_engine_flow().get_schema())
 
-    def __str__(self):
+    def __str__(self) -> str:
         return str(self._get_spec())
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return repr(self._lazy_engine_flow())
 
     @property
@@ -634,7 +636,9 @@ class Flow:
             await updater.wait_async()
         return updater.update_stats()
 
-    def evaluate_and_dump(self, options: EvaluateAndDumpOptions):
+    def evaluate_and_dump(
+        self, options: EvaluateAndDumpOptions
+    ) -> _engine.IndexUpdateInfo:
         """
         Evaluate the flow and dump flow outputs to files.
         """
@@ -700,7 +704,9 @@ def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) ->
     return fl
 
 
-def flow_def(name=None) -> Callable[[Callable[[FlowBuilder, DataScope], None]], Flow]:
+def flow_def(
+    name: str | None = None,
+) -> Callable[[Callable[[FlowBuilder, DataScope], None]], Flow]:
     """
     A decorator to wrap the flow definition.
     """
@@ -752,7 +758,10 @@ def update_all_flows(
     """
     Update all flows.
     """
-    return execution_context.run(update_all_flows_async(options))
+    return cast(
+        dict[str, _engine.IndexUpdateInfo],
+        execution_context.run(update_all_flows_async(options)),
+    )
 
 
 async def update_all_flows_async(
@@ -776,14 +785,14 @@ async def update_all_flows_async(
 
 
 def _get_data_slice_annotation_type(
-    data_slice_type: Type[DataSlice[T]],
-) -> Type[T] | None:
+    data_slice_type: type[DataSlice[T] | inspect._empty],
+) -> type[T] | None:
     type_args = get_args(data_slice_type)
     if data_slice_type is inspect.Parameter.empty or data_slice_type is DataSlice:
         return None
     if get_origin(data_slice_type) != DataSlice or len(type_args) != 1:
         raise ValueError(f"Expect a DataSlice[T] type, but got {data_slice_type}")
-    return type_args[0]
+    return cast(type[T] | None, type_args[0])
 
 
 _transform_flow_name_builder = _NameBuilder()
@@ -821,14 +830,14 @@ class TransformFlow(Generic[T]):
         self._flow_arg_types = list(flow_arg_types)
         self._lazy_lock = asyncio.Lock()
 
-    def __call__(self, *args, **kwargs) -> DataSlice[T]:
+    def __call__(self, *args: Any, **kwargs: Any) -> DataSlice[T]:
         return self._flow_fn(*args, **kwargs)
 
     @property
     def _flow_info(self) -> TransformFlowInfo:
         if self._lazy_flow_info is not None:
             return self._lazy_flow_info
-        return execution_context.run(self._flow_info_async())
+        return cast(TransformFlowInfo, execution_context.run(self._flow_info_async()))
 
     async def _flow_info_async(self) -> TransformFlowInfo:
         if self._lazy_flow_info is not None:
@@ -847,7 +856,7 @@ class TransformFlow(Generic[T]):
                 f"does not match the number of argument types ({len(self._flow_arg_types)})"
             )
 
-        kwargs: dict[str, DataSlice] = {}
+        kwargs: dict[str, DataSlice[T]] = {}
         for (param_name, param), param_type in zip(
             sig.parameters.items(), self._flow_arg_types
         ):
@@ -882,17 +891,19 @@ class TransformFlow(Generic[T]):
         engine_return_type = (
             _data_slice_state(output).engine_data_slice.data_type().schema()
         )
-        python_return_type = _get_data_slice_annotation_type(sig.return_annotation)
+        python_return_type: type[T] | None = _get_data_slice_annotation_type(
+            sig.return_annotation
+        )
         result_decoder = make_engine_value_decoder(
             [], engine_return_type["type"], python_return_type
         )
 
         return TransformFlowInfo(engine_flow, result_decoder)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return str(self._flow_info.engine_flow)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return repr(self._flow_info.engine_flow)
 
     def internal_flow(self) -> _engine.TransientFlow:
@@ -901,13 +912,13 @@ class TransformFlow(Generic[T]):
         """
         return self._flow_info.engine_flow
 
-    def eval(self, *args, **kwargs) -> T:
+    def eval(self, *args: Any, **kwargs: Any) -> T:
         """
         Evaluate the transform flow.
         """
-        return execution_context.run(self.eval_async(*args, **kwargs))
+        return cast(T, execution_context.run(self.eval_async(*args, **kwargs)))
 
-    async def eval_async(self, *args, **kwargs) -> T:
+    async def eval_async(self, *args: Any, **kwargs: Any) -> T:
         """
         Evaluate the transform flow.
         """
@@ -929,7 +940,7 @@ def transform_flow() -> Callable[[Callable[..., DataSlice[T]]], TransformFlow[T]
     A decorator to wrap the transform function.
     """
 
-    def _transform_flow_wrapper(fn: Callable[..., DataSlice[T]]):
+    def _transform_flow_wrapper(fn: Callable[..., DataSlice[T]]) -> TransformFlow[T]:
         sig = inspect.signature(fn)
         arg_types = []
         for param_name, param in sig.parameters.items():
@@ -940,7 +951,9 @@ def transform_flow() -> Callable[[Callable[..., DataSlice[T]]], TransformFlow[T]
                 raise ValueError(
                     f"Parameter `{param_name}` is not a parameter can be passed by name"
                 )
-            value_type_annotation = _get_data_slice_annotation_type(param.annotation)
+            value_type_annotation: type[T] | None = _get_data_slice_annotation_type(
+                param.annotation
+            )
             if value_type_annotation is None:
                 raise ValueError(
                     f"Parameter `{param_name}` for {fn} has no value type annotation. "

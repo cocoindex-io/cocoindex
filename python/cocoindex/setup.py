@@ -22,5 +22,5 @@ def flow_names_with_setup() -> list[str]:
     return result
 
 
-def apply_setup_changes(setup_status: _engine.SetupStatus):
+def apply_setup_changes(setup_status: _engine.SetupStatus) -> None:
     _engine.apply_setup_changes(setup_status)

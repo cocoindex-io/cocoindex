@@ -216,6 +216,11 @@ pub struct ExportTargetMutationWithContext<'ctx, T: ?Sized + Send + Sync> {
     pub export_context: &'ctx T,
 }
 
+pub struct ResourceSetupChangeItem<'a> {
+    pub key: &'a serde_json::Value,
+    pub setup_status: &'a dyn setup::ResourceSetupStatus,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupStateCompatibility {
     /// The resource is fully compatible with the desired state.
@@ -281,6 +286,12 @@ pub trait ExportTargetFactory: Send + Sync {
 
     fn describe_resource(&self, key: &serde_json::Value) -> Result<String>;
 
+    fn prepare_upsert_entry<'ctx>(
+        &self,
+        entry: ExportTargetUpsertEntry,
+        export_context: &'ctx (dyn Any + Send + Sync),
+    ) -> Result<ExportTargetUpsertEntry>;
+
     async fn apply_mutation(
         &self,
         mutations: Vec<ExportTargetMutationWithContext<'async_trait, dyn Any + Send + Sync>>,
@@ -288,7 +299,8 @@ pub trait ExportTargetFactory: Send + Sync {
 
     async fn apply_setup_changes(
         &self,
-        setup_status: Vec<&'async_trait dyn setup::ResourceSetupStatus>,
+        setup_status: Vec<ResourceSetupChangeItem<'async_trait>>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<()>;
 }
 

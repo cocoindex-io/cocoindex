@@ -609,20 +609,12 @@ pub struct TableSetupAction {
 
 #[derive(Debug)]
 pub struct SetupStatus {
-    db_pool: PgPool,
-    table_name: String,
-
     create_pgvector_extension: bool,
     actions: TableSetupAction,
 }
 
 impl SetupStatus {
-    fn new(
-        db_pool: PgPool,
-        table_name: String,
-        desired_state: Option<SetupState>,
-        existing: setup::CombinedState<SetupState>,
-    ) -> Self {
+    fn new(desired_state: Option<SetupState>, existing: setup::CombinedState<SetupState>) -> Self {
         let table_action = TableMainSetupAction::from_states(desired_state.as_ref(), &existing);
         let (indexes_to_delete, indexes_to_create) = desired_state
             .as_ref()
@@ -655,8 +647,6 @@ impl SetupStatus {
             && !existing.current.map(|s| s.uses_pgvector()).unwrap_or(false);
 
         Self {
-            db_pool,
-            table_name,
             create_pgvector_extension,
             actions: TableSetupAction {
                 table_action,
@@ -734,21 +724,20 @@ impl setup::ResourceSetupStatus for SetupStatus {
 }
 
 impl SetupStatus {
-    async fn apply_change(&self) -> Result<()> {
-        let table_name = &self.table_name;
+    async fn apply_change(&self, db_pool: &PgPool, table_name: &str) -> Result<()> {
         if self.actions.table_action.drop_existing {
             sqlx::query(&format!("DROP TABLE IF EXISTS {table_name}"))
-                .execute(&self.db_pool)
+                .execute(db_pool)
                 .await?;
         }
         if self.create_pgvector_extension {
             sqlx::query("CREATE EXTENSION IF NOT EXISTS vector;")
-                .execute(&self.db_pool)
+                .execute(db_pool)
                 .await?;
         }
         for index_name in self.actions.indexes_to_delete.iter() {
             let sql = format!("DROP INDEX IF EXISTS {}", index_name);
-            sqlx::query(&sql).execute(&self.db_pool).await?;
+            sqlx::query(&sql).execute(db_pool).await?;
         }
         if let Some(table_upsertion) = &self.actions.table_action.table_upsertion {
             match table_upsertion {
@@ -760,7 +749,7 @@ impl SetupStatus {
                         fields.join(", "),
                         keys.keys().join(", ")
                     );
-                    sqlx::query(&sql).execute(&self.db_pool).await?;
+                    sqlx::query(&sql).execute(db_pool).await?;
                 }
                 TableUpsertionAction::Update {
                     columns_to_delete,
@@ -770,13 +759,13 @@ impl SetupStatus {
                         let sql = format!(
                             "ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}",
                         );
-                        sqlx::query(&sql).execute(&self.db_pool).await?;
+                        sqlx::query(&sql).execute(db_pool).await?;
                     }
                     for (column_name, column_type) in columns_to_upsert.iter() {
                         let sql = format!(
                             "ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}, ADD COLUMN {column_name} {column_type}"
                         );
-                        sqlx::query(&sql).execute(&self.db_pool).await?;
+                        sqlx::query(&sql).execute(db_pool).await?;
                     }
                 }
             }
@@ -786,7 +775,7 @@ impl SetupStatus {
                 "CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} {}",
                 to_index_spec_sql(index_spec)
             );
-            sqlx::query(&sql).execute(&self.db_pool).await?;
+            sqlx::query(&sql).execute(db_pool).await?;
         }
         Ok(())
     }
@@ -881,17 +870,12 @@ impl StorageFactoryBase for Factory {
 
     async fn check_setup_status(
         &self,
-        key: TableId,
+        _key: TableId,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
-        auth_registry: &Arc<AuthRegistry>,
+        _auth_registry: &Arc<AuthRegistry>,
     ) -> Result<SetupStatus> {
-        Ok(SetupStatus::new(
-            get_db_pool(key.database.as_ref(), auth_registry).await?,
-            key.table_name,
-            desired,
-            existing,
-        ))
+        Ok(SetupStatus::new(desired, existing))
     }
 
     fn check_state_compatibility(
@@ -946,10 +930,15 @@ impl StorageFactoryBase for Factory {
 
     async fn apply_setup_changes(
         &self,
-        setup_status: Vec<&'async_trait Self::SetupStatus>,
+        changes: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<()> {
-        for setup_status in setup_status.iter() {
-            setup_status.apply_change().await?;
+        for change in changes.iter() {
+            let db_pool = get_db_pool(change.key.database.as_ref(), &auth_registry).await?;
+            change
+                .setup_status
+                .apply_change(&db_pool, &change.key.table_name)
+                .await?;
         }
         Ok(())
     }

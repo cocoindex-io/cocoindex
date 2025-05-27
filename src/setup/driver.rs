@@ -6,12 +6,12 @@ use std::{
     str::FromStr,
 };
 
-use super::{
-    db_metadata, CombinedState, DesiredMode, ExistingMode, FlowSetupState, FlowSetupStatus,
-    ObjectSetupStatus, ObjectStatus, ResourceIdentifier, ResourceSetupInfo, ResourceSetupStatus,
-    SetupChangeType, StateChange, TargetSetupState,
-};
 use super::{AllSetupState, AllSetupStatus};
+use super::{
+    CombinedState, DesiredMode, ExistingMode, FlowSetupState, FlowSetupStatus, ObjectSetupStatus,
+    ObjectStatus, ResourceIdentifier, ResourceSetupInfo, ResourceSetupStatus, SetupChangeType,
+    StateChange, TargetSetupState, db_metadata,
+};
 use crate::execution::db_tracking_setup;
 use crate::{
     lib_context::FlowContext,
@@ -405,6 +405,11 @@ pub async fn drop_setup(
     })
 }
 
+struct ResourceSetupChangeItem<'a, K: 'a, C: ResourceSetupStatus> {
+    key: &'a K,
+    setup_status: &'a C,
+}
+
 async fn maybe_update_resource_setup<
     'a,
     K: 'a,
@@ -415,13 +420,16 @@ async fn maybe_update_resource_setup<
     resource_kind: &str,
     write: &mut impl std::io::Write,
     resources: impl Iterator<Item = &'a ResourceSetupInfo<K, S, C>>,
-    apply_change: impl FnOnce(Vec<&'a C>) -> ChangeApplierResultFut,
+    apply_change: impl FnOnce(Vec<ResourceSetupChangeItem<'a, K, C>>) -> ChangeApplierResultFut,
 ) -> Result<()> {
     let mut changes = Vec::new();
     for resource in resources {
         if let Some(setup_status) = &resource.setup_status {
             if setup_status.change_type() != SetupChangeType::NoChange {
-                changes.push(setup_status);
+                changes.push(ResourceSetupChangeItem {
+                    key: &resource.key,
+                    setup_status,
+                });
                 writeln!(write, "{}:", resource.description)?;
                 for change in setup_status.describe_changes() {
                     writeln!(write, "  - {}", change)?;
@@ -446,7 +454,7 @@ pub async fn apply_changes(
         "metadata table",
         write,
         std::iter::once(&setup_status.metadata_table),
-        |setup_status| setup_status[0].apply_change(),
+        |setup_status| setup_status[0].setup_status.apply_change(),
     )
     .await?;
 
@@ -521,7 +529,7 @@ pub async fn apply_changes(
                 "tracking table",
                 write,
                 std::iter::once(tracking_table),
-                |setup_status| setup_status[0].apply_change(),
+                |setup_status| setup_status[0].setup_status.apply_change(),
             )
             .await?;
         }
@@ -543,7 +551,16 @@ pub async fn apply_changes(
                         anyhow::anyhow!("No factory found for target kind: {}", target_kind)
                     })?;
                     factory
-                        .apply_setup_changes(setup_status.into_iter().map(|s| s.as_ref()).collect())
+                        .apply_setup_changes(
+                            setup_status
+                                .into_iter()
+                                .map(|s| interface::ResourceSetupChangeItem {
+                                    key: &s.key.key,
+                                    setup_status: s.setup_status.as_ref(),
+                                })
+                                .collect(),
+                            get_auth_registry(),
+                        )
                         .await?;
                     Ok(())
                 },

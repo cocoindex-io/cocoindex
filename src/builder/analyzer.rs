@@ -1064,6 +1064,7 @@ impl AnalyzerContext<'_> {
                     existing_target_states,
                 )?;
                 let op_name = export_op.name.clone();
+                let export_target_factory = export_op_group.target_factory.clone();
                 Ok(async move {
                     trace!("Start building executor for export op `{op_name}`");
                     let executors = data_coll_output
@@ -1075,6 +1076,7 @@ impl AnalyzerContext<'_> {
                         name: op_name,
                         target_id,
                         input: data_fields_info.local_collector_ref,
+                        export_target_factory,
                         export_context: executors.export_context,
                         query_target: executors.query_target,
                         primary_key_def: data_fields_info.primary_key_def,

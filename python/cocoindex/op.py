@@ -27,7 +27,13 @@ class OpCategory(Enum):
 class SpecMeta(type):
     """Meta class for spec classes."""
 
-    def __new__(mcs, name, bases, attrs, category: OpCategory | None = None):
+    def __new__(
+        mcs,
+        name: str,
+        bases: tuple[type, ...],
+        attrs: dict[str, Any],
+        category: OpCategory | None = None,
+    ) -> type:
         cls: type = super().__new__(mcs, name, bases, attrs)
         if category is not None:
             # It's the base class.
@@ -68,7 +74,9 @@ class _FunctionExecutorFactory:
         self._spec_cls = spec_cls
         self._executor_cls = executor_cls
 
-    def __call__(self, spec: dict[str, Any], *args, **kwargs):
+    def __call__(
+        self, spec: dict[str, Any], *args: Any, **kwargs: Any
+    ) -> tuple[dict[str, Any], Executor]:
         spec = self._spec_cls(**spec)
         executor = self._executor_cls(spec)
         result_type = executor.analyze(*args, **kwargs)
@@ -92,7 +100,7 @@ class OpArgs:
     behavior_version: int | None = None
 
 
-def _to_async_call(call: Callable) -> Callable[..., Awaitable[Any]]:
+def _to_async_call(call: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
     if inspect.iscoroutinefunction(call):
         return call
     return lambda *args, **kwargs: asyncio.to_thread(lambda: call(*args, **kwargs))
@@ -101,33 +109,35 @@ def _to_async_call(call: Callable) -> Callable[..., Awaitable[Any]]:
 def _register_op_factory(
     category: OpCategory,
     expected_args: list[tuple[str, inspect.Parameter]],
-    expected_return,
+    expected_return: Any,
     executor_cls: type,
     spec_cls: type,
     op_args: OpArgs,
-):
+) -> type:
     """
     Register an op factory.
     """
 
     class _Fallback:
-        def enable_cache(self):
+        def enable_cache(self) -> bool:
             return op_args.cache
 
-        def behavior_version(self):
+        def behavior_version(self) -> int | None:
             return op_args.behavior_version
 
-    class _WrappedClass(executor_cls, _Fallback):
+    class _WrappedClass(executor_cls, _Fallback):  # type: ignore[misc]
         _args_decoders: list[Callable[[Any], Any]]
         _kwargs_decoders: dict[str, Callable[[Any], Any]]
-        _acall: Callable
+        _acall: Callable[..., Awaitable[Any]]
 
-        def __init__(self, spec):
+        def __init__(self, spec: Any) -> None:
             super().__init__()
             self.spec = spec
             self._acall = _to_async_call(super().__call__)
 
-        def analyze(self, *args: _engine.OpArgSchema, **kwargs: _engine.OpArgSchema):
+        def analyze(
+            self, *args: _engine.OpArgSchema, **kwargs: _engine.OpArgSchema
+        ) -> Any:
             """
             Analyze the spec and arguments. In this phase, argument types should be validated.
             It should return the expected result type for the current op.
@@ -211,7 +221,7 @@ def _register_op_factory(
             else:
                 return expected_return
 
-        async def prepare(self):
+        async def prepare(self) -> None:
             """
             Prepare for execution.
             It's executed after `analyze` and before any `__call__` execution.
@@ -220,7 +230,7 @@ def _register_op_factory(
             if setup_method is not None:
                 await _to_async_call(setup_method)()
 
-        async def __call__(self, *args, **kwargs):
+        async def __call__(self, *args: Any, **kwargs: Any) -> Any:
             decoded_args = (
                 decoder(arg) for decoder, arg in zip(self._args_decoders, args)
             )
@@ -257,7 +267,7 @@ def _register_op_factory(
     return _WrappedClass
 
 
-def executor_class(**args) -> Callable[[type], type]:
+def executor_class(**args: Any) -> Callable[[type], type]:
     """
     Decorate a class to provide an executor for an op.
     """
@@ -285,23 +295,23 @@ def executor_class(**args) -> Callable[[type], type]:
     return _inner
 
 
-def function(**args) -> Callable[[Callable], FunctionSpec]:
+def function(**args: Any) -> Callable[[Callable[..., Any]], FunctionSpec]:
     """
     Decorate a function to provide a function for an op.
     """
     op_args = OpArgs(**args)
 
-    def _inner(fn: Callable) -> FunctionSpec:
+    def _inner(fn: Callable[..., Any]) -> FunctionSpec:
         # Convert snake case to camel case.
         op_name = "".join(word.capitalize() for word in fn.__name__.split("_"))
         sig = inspect.signature(fn)
 
         class _Executor:
-            def __call__(self, *args, **kwargs):
+            def __call__(self, *args: Any, **kwargs: Any) -> Any:
                 return fn(*args, **kwargs)
 
         class _Spec(FunctionSpec):
-            def __call__(self, *args, **kwargs):
+            def __call__(self, *args: Any, **kwargs: Any) -> Any:
                 return fn(*args, **kwargs)
 
         _Spec.__name__ = op_name

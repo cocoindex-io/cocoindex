@@ -43,7 +43,7 @@ class SimpleSemanticsQueryHandler:
         name: str,
         flow: fl.Flow,
         target_name: str,
-        query_transform_flow: Callable[..., fl.DataSlice],
+        query_transform_flow: Callable[..., fl.DataSlice[Any]],
         default_similarity_metric: index.VectorSimilarityMetric = index.VectorSimilarityMetric.COSINE_SIMILARITY,
     ) -> None:
         engine_handler = None

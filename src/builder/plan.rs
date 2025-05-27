@@ -101,6 +101,7 @@ pub struct AnalyzedExportOp {
     pub name: String,
     pub target_id: i32,
     pub input: AnalyzedLocalCollectorReference,
+    pub export_target_factory: Arc<dyn ExportTargetFactory + Send + Sync>,
     pub export_context: Arc<dyn Any + Send + Sync>,
     pub query_target: Option<Arc<dyn QueryTarget>>,
     pub primary_key_def: AnalyzedPrimaryKeyDef,
