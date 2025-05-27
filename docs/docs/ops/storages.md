@@ -443,7 +443,7 @@ docker run -d --name kuzu -p ${KUZU_PORT}:8000 -v ${KUZU_DB_DIR}:/database kuzud
 
 The `Kuzu` target spec takes the following fields:
 
-*   `connection` (type: [auth reference](../core/flow_def#auth-registry) to `KuzuConnectionSpec`): The connection to the Neo4j database. `KuzuConnectionSpec` has the following fields:
+*   `connection` (type: [auth reference](../core/flow_def#auth-registry) to `KuzuConnectionSpec`): The connection to the Kuzu database. `KuzuConnectionSpec` has the following fields:
     *   `api_server_url` (type: `str`): The URL of the Kuzu API server, e.g. `http://localhost:8123`.
 *   `mapping` (type: `Nodes | Relationships`): The mapping from collected row to nodes or relationships of the graph. For either [nodes to export](#nodes-to-export) or [relationships to export](#relationships-to-export).
 
