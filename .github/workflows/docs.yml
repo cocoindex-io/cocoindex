@@ -82,7 +82,5 @@ jobs:
           export COCOINDEX_DOCS_MIXPANEL_API_KEY=${{ vars.COCOINDEX_DOCS_MIXPANEL_API_KEY }}
           export COCOINDEX_DOCS_ALGOLIA_APP_ID=${{ vars.COCOINDEX_DOCS_ALGOLIA_APP_ID }}
           export COCOINDEX_DOCS_ALGOLIA_API_KEY=${{ vars.COCOINDEX_DOCS_ALGOLIA_API_KEY }}
-          git config --global user.email "${{ vars.COCOINDEX_DOCS_DEPLOY_USER_EMAIL }}"
-          git config --global user.name "${{ vars.COCOINDEX_DOCS_DEPLOY_USER_NAME }}"
           yarn install --frozen-lockfile
           yarn deploy
