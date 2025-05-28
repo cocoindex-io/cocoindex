@@ -95,6 +95,7 @@ This is how to setup:
                 "Service": "s3.amazonaws.com"
               },
               "Resource": "${SQS_QUEUE_ARN}",
+              "Action": "SQS:SendMessage",
               "Condition": {
                 "ArnLike": {
                   "aws:SourceArn": "${S3_BUCKET_ARN}"
