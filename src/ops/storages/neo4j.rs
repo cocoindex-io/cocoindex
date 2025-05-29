@@ -226,16 +226,19 @@ fn basic_value_to_bolt(value: &BasicValue, schema: &BasicValueType) -> Result<Bo
             _ => anyhow::bail!("Non-vector type got vector value: {}", schema),
         },
         BasicValue::Json(v) => json_value_to_bolt_value(v)?,
-        BasicValue::UnionVariant { tag_id, value } => match schema {
-            BasicValueType::Union(s) => {
-                let typ = s.types().iter()
-                    .nth(*tag_id)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid `tag_id`: {}", *tag_id))?;
+        BasicValue::UnionVariant { tag_id: tag_id_ref, value } => {
+            let tag_id = *tag_id_ref;
 
-                basic_value_to_bolt(value, typ)?
+            match schema {
+                BasicValueType::Union(s) => {
+                    let typ = s.types().get(tag_id)
+                        .ok_or_else(|| anyhow::anyhow!("Invalid `tag_id`: {}", tag_id))?;
+
+                    basic_value_to_bolt(value, typ)?
+                }
+                _ => anyhow::bail!("Non-union type got union value: {}", schema),
             }
-            _ => anyhow::bail!("Non-union type got union value: {}", schema),
-        },
+        }
     };
     Ok(bolt_value)
 }

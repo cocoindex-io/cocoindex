@@ -225,8 +225,7 @@ fn parse_payload_value(
 
                 match (tag_id, inner_value) {
                     (Some(tag_id), Some(value)) => {
-                        typ.types().iter()
-                            .nth(tag_id)
+                        typ.types().get(tag_id)
                             .and_then(|t| parse_payload_value(value, t))
                             .map(|basic_value| BasicValue::UnionVariant {
                                 tag_id,

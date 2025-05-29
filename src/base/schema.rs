@@ -3,13 +3,13 @@ use crate::{prelude::*, utils::union::UnionType};
 use super::spec::*;
 use crate::builder::plan::AnalyzedValueMapping;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VectorTypeSchema {
     pub element_type: Box<BasicValueType>,
     pub dimension: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
 pub enum BasicValueType {
     /// A sequence of bytes in binary.
