@@ -22,22 +22,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          sparse-checkout: docs
-          path: src-staging
-      - name: Move docs
-        run: |
-          shopt -s dotglob
-          mv src-staging/docs/* .
       - uses: actions/setup-node@v4
         with:
           node-version: 18
           cache: yarn
+          cache-dependency-path: docs/yarn.lock
       - name: Install dependencies
-        run: yarn install --frozen-lockfile
+        run: yarn --cwd docs install --frozen-lockfile
       - name: Test build website
-        run: yarn build
+        run: yarn --cwd docs build
 
   deploy-precheck:
     if: ${{ github.event_name != 'pull_request' }}
@@ -59,18 +52,11 @@ jobs:
     environment: docs-release
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          sparse-checkout: docs
-          path: src-staging
-      - name: Move docs
-        run: |
-          shopt -s dotglob
-          mv src-staging/docs/* .
       - uses: actions/setup-node@v4
         with:
           node-version: 18
           cache: yarn
+          cache-dependency-path: docs/yarn.lock
       - uses: webfactory/ssh-agent@v0.5.0
         with:
           ssh-private-key: ${{ secrets.GH_PAGES_DEPLOY }}
@@ -84,5 +70,5 @@ jobs:
           export COCOINDEX_DOCS_ALGOLIA_API_KEY=${{ vars.COCOINDEX_DOCS_ALGOLIA_API_KEY }}
           git config --global user.email "${{ vars.COCOINDEX_DOCS_DEPLOY_USER_EMAIL }}"
           git config --global user.name "${{ vars.COCOINDEX_DOCS_DEPLOY_USER_NAME }}"
-          yarn install --frozen-lockfile
-          yarn deploy
+          yarn --cwd docs install --frozen-lockfile
+          yarn --cwd docs deploy

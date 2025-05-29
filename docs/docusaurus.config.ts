@@ -86,6 +86,11 @@ const config: Config = {
     // Replace with your project's social card
     image: 'img/social-card.jpg',
     metadata: [{ name: 'description', content: 'Official documentation for CocoIndex - Learn how to use CocoIndex to build robust data indexing pipelines for AI applications. Comprehensive guides, API references, and best practices for implementing efficient data processing workflows.' }],
+    colorMode: {
+      defaultMode: 'light',
+      disableSwitch: false,
+      respectPrefersColorScheme: true,
+    },
     navbar: {
       title: 'CocoIndex',
       logo: {
