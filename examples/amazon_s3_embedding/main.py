@@ -98,19 +98,20 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
 def _main():
     # Initialize the database connection pool.
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
-    # Run queries in a loop to demonstrate the query capabilities.
-    while True:
-        query = input("Enter search query (or Enter to quit): ")
-        if query == "":
-            break
-        # Run the query function with the database connection pool and the query.
-        results = search(pool, query)
-        print("\nSearch results:")
-        for result in results:
-            print(f"[{result['score']:.3f}] {result['filename']}")
-            print(f"    {result['text']}")
-            print("---")
-        print()
+    with cocoindex.FlowLiveUpdater(amazon_s3_text_embedding_flow):
+        # Run queries in a loop to demonstrate the query capabilities.
+        while True:
+            query = input("Enter search query (or Enter to quit): ")
+            if query == "":
+                break
+            # Run the query function with the database connection pool and the query.
+            results = search(pool, query)
+            print("\nSearch results:")
+            for result in results:
+                print(f"[{result['score']:.3f}] {result['filename']}")
+                print(f"    {result['text']}")
+                print("---")
+            print()
 
 
 if __name__ == "__main__":
