@@ -43,8 +43,12 @@ pub struct TableMainSetupAction<T> {
     pub table_upsertion: Option<TableUpsertionAction<T>>,
 }
 
-impl<T: PartialEq + Serialize + DeserializeOwned> TableMainSetupAction<T> {
-    pub fn from_states<S>(desired_state: Option<&S>, existing: &CombinedState<S>) -> Self
+impl<T: Eq + Serialize + DeserializeOwned> TableMainSetupAction<T> {
+    pub fn from_states<S>(
+        desired_state: Option<&S>,
+        existing: &CombinedState<S>,
+        existing_invalidated: bool,
+    ) -> Self
     where
         for<'a> &'a S: Into<Cow<'a, TableColumnsSchema<T>>>,
         T: Clone,
@@ -56,14 +60,16 @@ impl<T: PartialEq + Serialize + DeserializeOwned> TableMainSetupAction<T> {
             .map(|v| Into::<Cow<'_, TableColumnsSchema<T>>>::into(v))
             .collect();
         let drop_existing = desired_cols.as_ref().map_or(true, |desired| {
-            possible_existing_cols
-                .iter()
-                .any(|v| v.key_columns != desired.key_columns)
+            existing_invalidated
+                || possible_existing_cols
+                    .iter()
+                    .any(|v| v.key_columns != desired.key_columns)
         });
 
         let table_upsertion = desired_cols
             .map(|desired| {
-                if existing.always_exists()
+                if !existing_invalidated
+                    && existing.always_exists()
                     && possible_existing_cols
                         .iter()
                         .all(|v| desired.key_columns == v.key_columns)
@@ -158,7 +164,7 @@ impl<T: PartialEq + Serialize + DeserializeOwned> TableMainSetupAction<T> {
     }
 }
 
-pub fn check_table_compatibility<T: PartialEq + Serialize + DeserializeOwned>(
+pub fn check_table_compatibility<T: Eq + Serialize + DeserializeOwned>(
     desired: &TableColumnsSchema<T>,
     existing: &TableColumnsSchema<T>,
 ) -> SetupStateCompatibility {

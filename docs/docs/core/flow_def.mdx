@@ -348,7 +348,7 @@ It will use `Staging__doc_embeddings` as the collection name if the current app 
 Most time a target storage is created by calling `export()` method on a collector, and this `export()` call comes with configurations needed for the target storage, e.g. options for storage indexes.
 Occasionally, you may need to specify some configurations for target storage out of the context of any specific data collector.
 
-For example, for graph database targets like `Neo4j`, you may have a data collector to export data to Neo4j relationships, which will create nodes referenced by various relationships in turn.
+For example, for graph database targets like `Neo4j` and `Kuzu`, you may have a data collector to export data to relationships, which will create nodes referenced by various relationships in turn.
 These nodes don't directly come from any specific data collector (consider relationships from different data collectors may share the same nodes).
 To specify configurations for these nodes, you can *declare* spec for related node labels.
 

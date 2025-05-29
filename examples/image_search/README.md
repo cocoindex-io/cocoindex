@@ -5,7 +5,8 @@ We will build live image search and query it with natural language, using multim
 
 We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
-<img width="1105" alt="cover" src="https://github.com/user-attachments/assets/7f1a59e0-77cf-45ed-b45b-4e3eb6e826b9" />
+<img width="1105" alt="cover" src="https://github.com/user-attachments/assets/544fb80d-c085-4150-84b6-b6e62c4a12b9" />
+
 
 ## Technologies
 - CocoIndex for ETL and live update

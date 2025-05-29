@@ -121,6 +121,12 @@ pub struct GraphElementInputFieldsIdx {
     pub value: Vec<usize>,
 }
 
+impl GraphElementInputFieldsIdx {
+    pub fn extract_key(&self, fields: &[value::Value]) -> Result<value::KeyValue> {
+        value::KeyValue::from_values(self.key.iter().map(|idx| &fields[*idx]))
+    }
+}
+
 pub struct AnalyzedGraphElementFieldMapping {
     pub schema: Arc<GraphElementSchema>,
     pub fields_input_idx: GraphElementInputFieldsIdx,

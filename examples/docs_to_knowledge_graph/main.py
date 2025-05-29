@@ -26,23 +26,41 @@ class Relationship:
     object: str
 
 
+neo4j_conn_spec = cocoindex.add_auth_entry(
+    "Neo4jConnection",
+    cocoindex.storages.Neo4jConnection(
+        uri="bolt://localhost:7687",
+        user="neo4j",
+        password="cocoindex",
+    ),
+)
+kuzu_conn_spec = cocoindex.add_auth_entry(
+    "KuzuConnection",
+    cocoindex.storages.KuzuConnection(
+        api_server_url="http://localhost:8123",
+    ),
+)
+
+# Use Neo4j as the graph database
+GraphDbSpec = cocoindex.storages.Neo4j
+GraphDbConnection = cocoindex.storages.Neo4jConnection
+GraphDbDeclaration = cocoindex.storages.Neo4jDeclaration
+conn_spec = neo4j_conn_spec
+
+# Use Kuzu as the graph database
+#  GraphDbSpec = cocoindex.storages.Kuzu
+#  GraphDbConnection = cocoindex.storages.KuzuConnection
+#  GraphDbDeclaration = cocoindex.storages.KuzuDeclaration
+#  conn_spec = kuzu_conn_spec
+
+
 @cocoindex.flow_def(name="DocsToKG")
 def docs_to_kg_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-):
+) -> None:
     """
     Define an example flow that extracts relationship from files and build knowledge graph.
     """
-    # configure neo4j connection
-    conn_spec = cocoindex.add_auth_entry(
-        "Neo4jConnection",
-        cocoindex.storages.Neo4jConnection(
-            uri="bolt://localhost:7687",
-            user="neo4j",
-            password="cocoindex",
-        ),
-    )
-
     data_scope["documents"] = flow_builder.add_source(
         cocoindex.sources.LocalFile(
             path="../../docs/docs/core", included_patterns=["*.md", "*.mdx"]
@@ -112,14 +130,14 @@ def docs_to_kg_flow(
     # export to neo4j
     document_node.export(
         "document_node",
-        cocoindex.storages.Neo4j(
+        GraphDbSpec(
             connection=conn_spec, mapping=cocoindex.storages.Nodes(label="Document")
         ),
         primary_key_fields=["filename"],
     )
     # Declare reference Node to reference entity node in a relationship
     flow_builder.declare(
-        cocoindex.storages.Neo4jDeclaration(
+        GraphDbDeclaration(
             connection=conn_spec,
             nodes_label="Entity",
             primary_key_fields=["value"],
@@ -127,7 +145,7 @@ def docs_to_kg_flow(
     )
     entity_relationship.export(
         "entity_relationship",
-        cocoindex.storages.Neo4j(
+        GraphDbSpec(
             connection=conn_spec,
             mapping=cocoindex.storages.Relationships(
                 rel_type="RELATIONSHIP",
@@ -153,7 +171,7 @@ def docs_to_kg_flow(
     )
     entity_mention.export(
         "entity_mention",
-        cocoindex.storages.Neo4j(
+        GraphDbSpec(
             connection=conn_spec,
             mapping=cocoindex.storages.Relationships(
                 rel_type="MENTION",

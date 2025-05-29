@@ -987,7 +987,6 @@ impl AnalyzerContext<'_> {
                                     .fields
                                     .iter()
                                     .position(|field| &field.name == f)
-                                    .map(|idx| idx as u32)
                                     .ok_or_else(|| anyhow!("field not found: {}", f))
                             })
                             .collect::<Result<Vec<_>>>()?;
@@ -1007,7 +1006,7 @@ impl AnalyzerContext<'_> {
                         let mut value_fields_schema: Vec<FieldSchema> = vec![];
                         let mut value_fields_idx = vec![];
                         for (idx, field) in collector_schema.fields.iter().enumerate() {
-                            if !pk_fields_idx.contains(&(idx as u32)) {
+                            if !pk_fields_idx.contains(&idx) {
                                 value_fields_schema.push(field.clone());
                                 value_fields_idx.push(idx as u32);
                             }

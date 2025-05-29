@@ -77,9 +77,9 @@ impl ExportContext {
         }
 
         let ids = mutation
-            .delete_keys
+            .deletes
             .iter()
-            .map(key_to_point_id)
+            .map(|deletion| key_to_point_id(&deletion.key))
             .collect::<Result<Vec<_>>>()?;
 
         if !ids.is_empty() {

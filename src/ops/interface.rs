@@ -195,18 +195,25 @@ pub trait SimpleFunctionFactory {
 #[derive(Debug)]
 pub struct ExportTargetUpsertEntry {
     pub key: KeyValue,
+    pub additional_key: serde_json::Value,
     pub value: FieldValues,
+}
+
+#[derive(Debug)]
+pub struct ExportTargetDeleteEntry {
+    pub key: KeyValue,
+    pub additional_key: serde_json::Value,
 }
 
 #[derive(Debug, Default)]
 pub struct ExportTargetMutation {
     pub upserts: Vec<ExportTargetUpsertEntry>,
-    pub delete_keys: Vec<KeyValue>,
+    pub deletes: Vec<ExportTargetDeleteEntry>,
 }
 
 impl ExportTargetMutation {
     pub fn is_empty(&self) -> bool {
-        self.upserts.is_empty() && self.delete_keys.is_empty()
+        self.upserts.is_empty() && self.deletes.is_empty()
     }
 }
 
@@ -286,11 +293,12 @@ pub trait ExportTargetFactory: Send + Sync {
 
     fn describe_resource(&self, key: &serde_json::Value) -> Result<String>;
 
-    fn prepare_upsert_entry<'ctx>(
+    fn extract_additional_key<'ctx>(
         &self,
-        entry: ExportTargetUpsertEntry,
+        key: &KeyValue,
+        value: &FieldValues,
         export_context: &'ctx (dyn Any + Send + Sync),
-    ) -> Result<ExportTargetUpsertEntry>;
+    ) -> Result<serde_json::Value>;
 
     async fn apply_mutation(
         &self,
