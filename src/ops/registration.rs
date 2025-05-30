@@ -17,7 +17,7 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
     functions::extract_by_llm::Factory.register(registry)?;
 
     storages::postgres::Factory::default().register(registry)?;
-    Arc::new(storages::qdrant::Factory::default()).register(registry)?;
+    storages::qdrant::register(registry)?;
     storages::kuzu::register(registry, reqwest_client)?;
 
     storages::neo4j::Factory::new().register(registry)?;

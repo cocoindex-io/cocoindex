@@ -26,7 +26,7 @@ def text_to_embedding(
 @cocoindex.flow_def(name="TextEmbeddingWithQdrant")
 def text_embedding_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-):
+) -> None:
     """
     Define an example flow that embeds text into a vector database.
     """
@@ -65,7 +65,7 @@ def text_embedding_flow(
     )
 
 
-def _main():
+def _main() -> None:
     # Initialize Qdrant client
     client = QdrantClient(url=QDRANT_GRPC_URL, prefer_grpc=True)
 
@@ -87,6 +87,8 @@ def _main():
         for result in search_results:
             score = result.score
             payload = result.payload
+            if payload is None:
+                continue
             print(f"[{score:.3f}] {payload['filename']}")
             print(f"    {payload['text']}")
             print("---")
