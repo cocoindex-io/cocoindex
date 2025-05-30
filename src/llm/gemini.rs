@@ -1,12 +1,10 @@
-use crate::api_bail;
-use crate::llm::{
-    LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, LlmSpec, OutputFormat,
-    ToJsonSchemaOptions,
-};
-use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
+use crate::llm::{LlmGenerationClient, LlmSpec, LlmGenerateRequest, LlmGenerateResponse, ToJsonSchemaOptions, OutputFormat};
+use anyhow::{Result, bail, Context};
 use serde_json::Value;
+use crate::api_bail;
 use urlencoding::encode;
+use crate::llm::prompt_utils::STRICT_JSON_PROMPT;
 
 pub struct Client {
     model: String,
@@ -60,11 +58,14 @@ impl LlmGenerationClient for Client {
 
         // Prepare payload
         let mut payload = serde_json::json!({ "contents": contents });
-        if let Some(system) = request.system_prompt {
-            payload["systemInstruction"] = serde_json::json!({
-                "parts": [ { "text": system } ]
-            });
-        }
+        if let Some(mut system) = request.system_prompt {
+    if matches!(request.output_format, Some(OutputFormat::JsonSchema { .. })) {
+        system = format!("{STRICT_JSON_PROMPT}\n\n{system}").into();
+    }
+    payload["systemInstruction"] = serde_json::json!({
+        "parts": [ { "text": system } ]
+    });
+}
 
         // If structured output is requested, add schema and responseMimeType
         if let Some(OutputFormat::JsonSchema { schema, .. }) = &request.output_format {
@@ -79,13 +80,10 @@ impl LlmGenerationClient for Client {
         let api_key = &self.api_key;
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            encode(&self.model),
-            encode(api_key)
+            encode(&self.model), encode(api_key)
         );
 
-        let resp = self
-            .client
-            .post(&url)
+        let resp = self.client.post(&url)
             .json(&payload)
             .send()
             .await
@@ -102,7 +100,15 @@ impl LlmGenerationClient for Client {
             _ => bail!("No text in response"),
         };
 
-        Ok(LlmGenerateResponse { text })
+        // If output_format is JsonSchema, try to parse as JSON
+        if let Some(OutputFormat::JsonSchema { .. }) = request.output_format {
+            match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(val) => Ok(LlmGenerateResponse::Json(val)),
+                Err(_) => Ok(LlmGenerateResponse::Text(text)),
+            }
+        } else {
+            Ok(LlmGenerateResponse::Text(text))
+        }
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {

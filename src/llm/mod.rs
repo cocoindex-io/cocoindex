@@ -22,7 +22,7 @@ pub struct LlmSpec {
     model: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum OutputFormat<'a> {
     JsonSchema {
         name: Cow<'a, str>,
@@ -38,8 +38,9 @@ pub struct LlmGenerateRequest<'a> {
 }
 
 #[derive(Debug)]
-pub struct LlmGenerateResponse {
-    pub text: String,
+pub enum LlmGenerateResponse {
+    Json(serde_json::Value),
+    Text(String),
 }
 
 #[async_trait]
@@ -56,6 +57,7 @@ mod anthropic;
 mod gemini;
 mod ollama;
 mod openai;
+mod prompt_utils;
 
 pub async fn new_llm_generation_client(spec: LlmSpec) -> Result<Box<dyn LlmGenerationClient>> {
     let client = match spec.api_type {
