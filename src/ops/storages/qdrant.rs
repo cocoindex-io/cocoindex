@@ -22,11 +22,15 @@ struct Spec {
     api_key: Option<String>,
 }
 
+struct FieldInfo {
+    field_name: String,
+    is_qdrant_vector: bool,
+}
+
 struct ExportContext {
     client: Qdrant,
     collection_name: String,
-    value_fields_schema: Vec<FieldSchema>,
-    all_fields: Vec<FieldSchema>,
+    fields_info: Vec<FieldInfo>,
 }
 
 impl ExportContext {
@@ -34,27 +38,14 @@ impl ExportContext {
         url: String,
         collection_name: String,
         api_key: Option<String>,
-        key_fields_schema: Vec<FieldSchema>,
-        value_fields_schema: Vec<FieldSchema>,
+        fields_info: Vec<FieldInfo>,
     ) -> Result<Self> {
-        let all_fields = key_fields_schema
-            .iter()
-            .chain(value_fields_schema.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-
-        // Hotfix to resolve
-        // `no process-level CryptoProvider available -- call CryptoProvider::install_default() before this point`
-        // when using HTTPS URLs.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
         Ok(Self {
             client: Qdrant::from_url(&url)
                 .api_key(api_key)
                 .skip_compatibility_check()
                 .build()?,
-            value_fields_schema,
-            all_fields,
+            fields_info,
             collection_name,
         })
     }
@@ -63,8 +54,7 @@ impl ExportContext {
         let mut points: Vec<PointStruct> = Vec::with_capacity(mutation.upserts.len());
         for upsert in mutation.upserts.iter() {
             let point_id = key_to_point_id(&upsert.key)?;
-            let (payload, vectors) =
-                values_to_payload(&upsert.value.fields, &self.value_fields_schema)?;
+            let (payload, vectors) = values_to_payload(&upsert.value.fields, &self.fields_info)?;
 
             points.push(PointStruct::new(point_id, vectors, payload));
         }
@@ -105,15 +95,42 @@ fn key_to_point_id(key_value: &KeyValue) -> Result<PointId> {
     Ok(point_id)
 }
 
+fn is_supported_vector_type(typ: &schema::ValueType) -> bool {
+    match typ {
+        schema::ValueType::Basic(schema::BasicValueType::Vector(vector_schema)) => {
+            match &*vector_schema.element_type {
+                schema::BasicValueType::Float32 => true,
+                schema::BasicValueType::Float64 => true,
+                schema::BasicValueType::Int64 => true,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn encode_vector(v: &[BasicValue]) -> Result<Vec<f32>> {
+    v.iter()
+        .map(|elem| {
+            Ok(match elem {
+                BasicValue::Float32(f) => *f,
+                BasicValue::Float64(f) => *f as f32,
+                BasicValue::Int64(i) => *i as f32,
+                _ => bail!("Unsupported vector type: {:?}", elem.kind()),
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
 fn values_to_payload(
     value_fields: &[Value],
-    schema: &[FieldSchema],
+    fields_info: &[FieldInfo],
 ) -> Result<(HashMap<String, QdrantValue>, NamedVectors)> {
     let mut payload = HashMap::with_capacity(value_fields.len());
     let mut vectors = NamedVectors::default();
 
-    for (value, field_schema) in value_fields.iter().zip(schema.iter()) {
-        let field_name = &field_schema.name;
+    for (value, field_info) in value_fields.iter().zip(fields_info.iter()) {
+        let field_name = &field_info.field_name;
 
         match value {
             Value::Basic(basic_value) => {
@@ -133,9 +150,12 @@ fn values_to_payload(
                     BasicValue::TimeDelta(v) => v.to_string().into(),
                     BasicValue::Json(v) => (**v).clone(),
                     BasicValue::Vector(v) => {
-                        let vector = convert_to_vector(v.to_vec());
-                        vectors = vectors.add_vector(field_name, vector);
-                        continue;
+                        if field_info.is_qdrant_vector {
+                            let vector = encode_vector(v.as_ref())?;
+                            vectors = vectors.add_vector(field_name, vector);
+                            continue;
+                        }
+                        serde_json::to_value(v)?
                     }
                 };
                 payload.insert(field_name.clone(), json_value.into());
@@ -149,18 +169,6 @@ fn values_to_payload(
 
     Ok((payload, vectors))
 }
-
-fn convert_to_vector(v: Vec<BasicValue>) -> Vec<f32> {
-    v.iter()
-        .filter_map(|elem| match elem {
-            BasicValue::Float32(f) => Some(*f),
-            BasicValue::Float64(f) => Some(*f as f32),
-            BasicValue::Int64(i) => Some(*i as f32),
-            _ => None,
-        })
-        .collect()
-}
-
 #[derive(Default)]
 struct Factory {}
 
@@ -198,9 +206,21 @@ impl StorageFactoryBase for Factory {
         Vec<TypedExportDataCollectionBuildOutput<Self>>,
         Vec<(String, ())>,
     )> {
+        // Hotfix to resolve
+        // `no process-level CryptoProvider available -- call CryptoProvider::install_default() before this point`
+        // when using HTTPS URLs.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let data_coll_output = data_collections
             .into_iter()
             .map(|d| {
+                let mut fields_info = Vec::<FieldInfo>::new();
+                for field in d.value_fields_schema.iter() {
+                    fields_info.push(FieldInfo {
+                        field_name: field.name.clone(),
+                        is_qdrant_vector: is_supported_vector_type(&field.value_type.typ),
+                    });
+                }
                 if d.key_fields_schema.len() != 1 {
                     api_bail!(
                         "Expected one primary key field for the point ID. Got {}.",
@@ -212,10 +232,9 @@ impl StorageFactoryBase for Factory {
 
                 let export_context = Arc::new(ExportContext::new(
                     d.spec.grpc_url,
-                    d.spec.collection_name.clone(),
+                    collection_name.clone(),
                     d.spec.api_key,
-                    d.key_fields_schema,
-                    d.value_fields_schema,
+                    fields_info,
                 )?);
                 let executors = async move {
                     Ok(TypedExportTargetExecutors {
