@@ -3,7 +3,7 @@ use super::{
     storages,
 };
 use anyhow::Result;
-use std::sync::{Arc, LazyLock, RwLock, RwLockReadGuard};
+use std::sync::{LazyLock, RwLock, RwLockReadGuard};
 
 fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
     let reqwest_client = reqwest::Client::new();

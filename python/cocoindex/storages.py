@@ -17,12 +17,19 @@ class Postgres(op.StorageSpec):
 
 
 @dataclass
+class QdrantConnection:
+    """Connection spec for Qdrant."""
+
+    url: str
+    api_key: str | None = None
+
+
+@dataclass
 class Qdrant(op.StorageSpec):
     """Storage powered by Qdrant - https://qdrant.tech/."""
 
+    connection: AuthEntryReference[QdrantConnection]
     collection_name: str
-    grpc_url: str = "http://localhost:6334/"
-    api_key: str | None = None
 
 
 @dataclass
