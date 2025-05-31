@@ -20,7 +20,7 @@ class Postgres(op.StorageSpec):
 class QdrantConnection:
     """Connection spec for Qdrant."""
 
-    url: str
+    grpc_url: str
     api_key: str | None = None
 
 
@@ -28,8 +28,8 @@ class QdrantConnection:
 class Qdrant(op.StorageSpec):
     """Storage powered by Qdrant - https://qdrant.tech/."""
 
-    connection: AuthEntryReference[QdrantConnection]
     collection_name: str
+    connection: AuthEntryReference[QdrantConnection] | None = None
 
 
 @dataclass

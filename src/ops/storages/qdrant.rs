@@ -24,13 +24,13 @@ const DEFAULT_URL: &str = "http://localhost:6334/";
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ConnectionSpec {
-    url: String,
+    grpc_url: String,
     api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 struct Spec {
-    connection: spec::AuthEntryReference<ConnectionSpec>,
+    connection: Option<spec::AuthEntryReference<ConnectionSpec>>,
     collection_name: String,
 }
 
@@ -150,10 +150,14 @@ impl setup::ResourceSetupStatus for SetupStatus {
 }
 
 impl SetupStatus {
-    async fn apply(&self, collection_name: &String, qdrant_client: &Qdrant) -> Result<()> {
+    async fn apply_delete(&self, collection_name: &String, qdrant_client: &Qdrant) -> Result<()> {
         if self.delete_collection {
             qdrant_client.delete_collection(collection_name).await?;
         }
+        Ok(())
+    }
+
+    async fn apply_create(&self, collection_name: &String, qdrant_client: &Qdrant) -> Result<()> {
         if let Some(add_collection) = &self.add_collection {
             let mut builder = CreateCollectionBuilder::new(collection_name);
             if !add_collection.vectors.is_empty() {
@@ -382,10 +386,9 @@ impl StorageFactoryBase for Factory {
                     }
                 }
 
-                let connection = Some(d.spec.connection);
                 let export_context = Arc::new(ExportContext {
                     qdrant_client: self
-                        .get_qdrant_client(&connection, &context.auth_registry)?,
+                        .get_qdrant_client(&d.spec.connection, &context.auth_registry)?,
                     collection_name: d.spec.collection_name.clone(),
                     fields_info,
                 });
@@ -398,7 +401,7 @@ impl StorageFactoryBase for Factory {
                 Ok(TypedExportDataCollectionBuildOutput {
                     executors: executors.boxed(),
                     setup_key: CollectionKey {
-                        connection,
+                        connection: d.spec.connection,
                         collection_name: d.spec.collection_name,
                     },
                     desired_setup_state: SetupState {
@@ -489,12 +492,20 @@ impl StorageFactoryBase for Factory {
         setup_status: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
         auth_registry: &Arc<AuthRegistry>,
     ) -> Result<()> {
-        for setup_change in setup_status.into_iter() {
+        for setup_change in setup_status.iter() {
             let qdrant_client =
                 self.get_qdrant_client(&setup_change.key.connection, auth_registry)?;
             setup_change
                 .setup_status
-                .apply(&setup_change.key.collection_name, &qdrant_client)
+                .apply_delete(&setup_change.key.collection_name, &qdrant_client)
+                .await?;
+        }
+        for setup_change in setup_status.iter() {
+            let qdrant_client =
+                self.get_qdrant_client(&setup_change.key.connection, auth_registry)?;
+            setup_change
+                .setup_status
+                .apply_create(&setup_change.key.collection_name, &qdrant_client)
                 .await?;
         }
         Ok(())
@@ -521,14 +532,14 @@ impl Factory {
         let spec = auth_entry.as_ref().map_or_else(
             || {
                 Ok(ConnectionSpec {
-                    url: DEFAULT_URL.to_string(),
+                    grpc_url: DEFAULT_URL.to_string(),
                     api_key: None,
                 })
             },
             |auth_entry| auth_registry.get(auth_entry),
         )?;
         let client = Arc::new(
-            Qdrant::from_url(&spec.url)
+            Qdrant::from_url(&spec.grpc_url)
                 .api_key(spec.api_key)
                 .skip_compatibility_check()
                 .build()?,

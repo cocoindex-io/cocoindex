@@ -12,13 +12,14 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from qdrant_client import QdrantClient
+from typing import Any
 
 from PIL import Image
 from transformers import CLIPModel, CLIPProcessor
 
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
-QDRANT_COLLECTION = "cocoindex_image_search"
+QDRANT_COLLECTION = "ImageSearch"
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
 CLIP_MODEL_DIMENSION = 768
 
@@ -78,15 +79,9 @@ def image_object_embedding_flow(
             embedding=img["embedding"],
         )
 
-    qdrant_conn = cocoindex.add_auth_entry(
-        "Qdrant", cocoindex.storages.QdrantConnection(url=QDRANT_URL)
-    )
     img_embeddings.export(
         "img_embeddings",
-        cocoindex.storages.Qdrant(
-            connection=qdrant_conn,
-            collection_name=QDRANT_COLLECTION,
-        ),
+        cocoindex.storages.Qdrant(collection_name=QDRANT_COLLECTION),
         primary_key_fields=["id"],
     )
 
@@ -106,7 +101,7 @@ app.mount("/img", StaticFiles(directory="img"), name="img")
 
 # --- CocoIndex initialization on startup ---
 @app.on_event("startup")
-def startup_event():
+def startup_event() -> None:
     load_dotenv()
     cocoindex.init()
     # Initialize Qdrant client
@@ -119,7 +114,7 @@ def startup_event():
 def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
-):
+) -> Any:
     # Get the embedding for the query
     query_embedding = embed_query(q)
 

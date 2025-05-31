@@ -1,11 +1,10 @@
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 import cocoindex
 
 # Define Qdrant connection constants
 QDRANT_URL = "http://localhost:6334"
-QDRANT_COLLECTION = "cocoindex_text_embedding"
+QDRANT_COLLECTION = "TextEmbedding"
 
 
 @cocoindex.transform_flow()
@@ -55,15 +54,9 @@ def text_embedding_flow(
                 text_embedding=chunk["embedding"],
             )
 
-    qdrant_conn = cocoindex.add_auth_entry(
-        "Qdrant", cocoindex.storages.QdrantConnection(url=QDRANT_URL)
-    )
     doc_embeddings.export(
         "doc_embeddings",
-        cocoindex.storages.Qdrant(
-            connection=qdrant_conn,
-            collection_name=QDRANT_COLLECTION,
-        ),
+        cocoindex.storages.Qdrant(collection_name=QDRANT_COLLECTION),
         primary_key_fields=["id"],
     )
 
