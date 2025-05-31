@@ -54,34 +54,21 @@ Here's how CocoIndex data elements map to Qdrant elements during export:
 |-------------------|------------------|
 | an export target  | a unique collection |  
 | a collected row   | a point |
-| a field           | a named vector (for fields with vector type); a field within payload (otherwise) |
+| a field           | a named vector, if fits into Qdrant vector; or a field within payload otherwise |
+
+A vector with `Float32`, `Float64` or `Int64` type, and with fixed dimension, fits into Qdrant vector.
 
 #### Spec
 
 The spec takes the following fields:
 
+*   `connection` (type: [auth reference](../core/flow_def#auth-registry) to `QdrantConnection`, optional): The connection to the Qdrant instance. `QdrantConnection` has the following fields:
+    *   `grpc_url` (type: `str`): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance, e.g. `http://localhost:6334/`.
+    *   `api_key` (type: `str`, optional). API key to authenticate requests with.
+
+    If `connection` is not provided, will use local Qdrant instance at `http://localhost:6334/` by default.
+
 *   `collection_name` (type: `str`, required): The name of the collection to export the data to.
-
-*   `grpc_url` (type: `str`, optional): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance. Defaults to `http://localhost:6334/`.
-
-*   `api_key` (type: `str`, optional). API key to authenticate requests with.
-
-Before exporting, you must create a collection with a [vector name](https://qdrant.tech/documentation/concepts/vectors/#named-vectors) that matches the vector field name in CocoIndex, and set `setup_by_user=True` during export.
-
-Example:
-
-```python
-doc_embeddings.export(
-    "doc_embeddings",
-    cocoindex.storages.Qdrant(
-        collection_name="cocoindex",
-        grpc_url="https://xyz-example.cloud-region.cloud-provider.cloud.qdrant.io:6334/",
-        api_key="<your-api-key-here>",
-    ),
-    primary_key_fields=["id_field"],
-    setup_by_user=True,
-)
-```
 
 You can find an end-to-end example [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_qdrant).
 
