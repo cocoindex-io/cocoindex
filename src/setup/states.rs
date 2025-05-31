@@ -18,6 +18,7 @@ use owo_colors::{AnsiColors, OwoColorize};
 use std::fmt::Debug;
 use std::fmt::{Display, Write};
 use std::hash::Hash;
+use std::any::Any;
 
 use super::db_metadata;
 use crate::execution::db_tracking_setup::{
@@ -218,15 +219,10 @@ pub enum SetupChangeType {
     Invalid,
 }
 
-pub trait ResourceSetupStatus: Send + Sync + Debug + 'static {
+pub trait ResourceSetupStatus: Send + Sync + Debug + Any {
     fn describe_changes(&self) -> Vec<String>;
 
     fn change_type(&self) -> SetupChangeType;
-
-    // Workaround as Rust doesn't support dyn upcasting before 1.86.
-    // (https://github.com/rust-lang/rust/issues/65991)
-    // Can be replaced by a `Any` bound when we require Rust 1.86 or newer.
-    fn as_any(&self) -> &dyn Any;
 }
 
 impl ResourceSetupStatus for Box<dyn ResourceSetupStatus> {
