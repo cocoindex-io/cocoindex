@@ -13,7 +13,7 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
     sources::amazon_s3::Factory.register(registry)?;
 
     functions::parse_json::Factory.register(registry)?;
-    functions::split_recursively::Factory.register(registry)?;
+    functions::split_recursively::register(registry)?;
     functions::extract_by_llm::Factory.register(registry)?;
 
     storages::postgres::Factory::default().register(registry)?;

@@ -1,6 +1,7 @@
 """All builtin functions."""
 
 from typing import Annotated, Any, TYPE_CHECKING
+import dataclasses
 
 from .typing import Float32, Vector, TypeAttr
 from . import op, llm
@@ -14,8 +15,19 @@ class ParseJson(op.FunctionSpec):
     """Parse a text into a JSON object."""
 
 
+@dataclasses.dataclass
+class CustomLanguageSpec:
+    """Custom language specification."""
+
+    language_name: str
+    separators_regex: list[str]
+    aliases: list[str] = dataclasses.field(default_factory=list)
+
+
 class SplitRecursively(op.FunctionSpec):
     """Split a document (in string) recursively."""
+
+    custom_languages: list[CustomLanguageSpec] = dataclasses.field(default_factory=list)
 
 
 class ExtractByLlm(op.FunctionSpec):
