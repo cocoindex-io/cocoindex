@@ -386,19 +386,7 @@ You can find end-to-end examples fitting into any of supported property graphs i
 
 ### Neo4j
 
-If you don't have a Neo4j database, you can start a Neo4j database using our docker compose config:
-
-```bash
-docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/neo4j.yaml) up -d
-```
-
-:::warning
-
-The docker compose config above will start a Neo4j Enterprise instance under the [Evaluation License](https://neo4j.com/terms/enterprise_us/),
-with 30 days trial period.
-Please read and agree the license before starting the instance.
-
-:::
+#### Spec
 
 The `Neo4j` target spec takes the following fields:
 
@@ -417,16 +405,31 @@ Neo4j also provides a declaration spec `Neo4jDeclaration`, to configure indexing
     *   `primary_key_fields` (required)
     *   `vector_indexes` (optional)
 
-### Kuzu
+#### Neo4j dev instance
 
-CocoIndex supports talking to Kuzu through its [API server](https://github.com/kuzudb/api-server).
-You can bring up a Kuzu API server locally by running:
+If you don't have a Neo4j database, you can start a Neo4j database using our docker compose config:
 
 ```bash
-KUZU_DB_DIR=$HOME/.kuzudb
-KUZU_PORT=8123
-docker run -d --name kuzu -p ${KUZU_PORT}:8000 -v ${KUZU_DB_DIR}:/database kuzudb/api-server:latest
+docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/neo4j.yaml) up -d
 ```
+
+If will bring up a Neo4j instance, which can be accessed by username `neo4j` and password `cocoindex`.
+You can access the Neo4j browser at [http://localhost:7474](http://localhost:7474).
+
+:::warning
+
+The docker compose config above will start a Neo4j Enterprise instance under the [Evaluation License](https://neo4j.com/terms/enterprise_us/),
+with 30 days trial period.
+Please read and agree the license before starting the instance.
+
+:::
+
+
+### Kuzu
+
+#### Spec
+
+CocoIndex supports talking to Kuzu through its [API server](https://github.com/kuzudb/api-server).
 
 The `Kuzu` target spec takes the following fields:
 
@@ -440,3 +443,25 @@ Kuzu also provides a declaration spec `KuzuDeclaration`, to configure indexing o
 *   Fields for [nodes to declare](#declare-extra-node-labels), including
     *   `nodes_label` (required)
     *   `primary_key_fields` (required)
+
+#### Kuzu dev instance
+
+If you don't have a Kuzu instance yet, you can bring up a Kuzu API server locally by running:
+
+```bash
+KUZU_DB_DIR=$HOME/.kuzudb
+KUZU_PORT=8123
+docker run -d --name kuzu -p ${KUZU_PORT}:8000 -v ${KUZU_DB_DIR}:/database kuzudb/api-server:latest
+```
+
+To explore the graph you built with Kuzu, you can use the [Kuzu Explorer](https://github.com/kuzudb/explorer).
+Currently Kuzu API server and the explorer cannot be up at the same time. So you need to stop the API server before running the explorer.
+
+To start the instance of the explorer, run:
+
+```bash
+KUZU_EXPLORER_PORT=8124
+docker run -d --name kuzu-explorer -p ${KUZU_EXPLORER_PORT}:8000  -v ${KUZU_DB_DIR}:/database -e MODE=READ_ONLY  kuzudb/explorer:latest
+```
+
+You can then access the explorer at [http://localhost:8124](http://localhost:8124).
