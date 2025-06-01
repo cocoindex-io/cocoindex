@@ -7,6 +7,7 @@ dependencies = [
     "cocoindex>=0.1.42",
     "python-dotenv>=1.0.1",
     "psycopg[binary,pool]",
+    "numpy",
 ]
 
 [tool.setuptools]

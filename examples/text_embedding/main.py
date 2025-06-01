@@ -2,12 +2,14 @@ from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 import cocoindex
 import os
+from numpy.typing import NDArray
+import numpy as np
 
 
 @cocoindex.transform_flow()
 def text_to_embedding(
     text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[list[float]]:
+) -> cocoindex.DataSlice[NDArray[np.float32]]:
     """
     Embed the text using a SentenceTransformer model.
     This is a shared logic between indexing and querying, so extract it as a function.
@@ -68,7 +70,7 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
         text_embedding_flow, "doc_embeddings"
     )
     # Evaluate the transform flow defined above with the input query, to get the embedding.
-    query_vector = text_to_embedding.eval(query)
+    query_vector = text_to_embedding.eval(query).tolist()
     # Run the query and get the results.
     with pool.connection() as conn:
         with conn.cursor() as cur:
