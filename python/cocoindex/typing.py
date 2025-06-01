@@ -12,11 +12,12 @@ from typing import (
     TypeVar,
     TYPE_CHECKING,
     overload,
-    Sequence,
     Generic,
     Literal,
     Protocol,
 )
+import numpy as np
+from numpy.typing import NDArray
 
 
 class VectorInfo(NamedTuple):
@@ -50,7 +51,7 @@ if TYPE_CHECKING:
     Dim_co = TypeVar("Dim_co", bound=int, covariant=True)
 
     class Vector(Protocol, Generic[T_co, Dim_co]):
-        """Vector[T, Dim] is a special typing alias for a list[T] with optional dimension info"""
+        """Vector[T, Dim] is a special typing alias for an NDArray[T] with optional dimension info"""
 
         def __getitem__(self, index: int) -> T_co: ...
         def __len__(self) -> int: ...
@@ -58,19 +59,20 @@ if TYPE_CHECKING:
 else:
 
     class Vector:  # type: ignore[unreachable]
-        """A special typing alias for a list[T] with optional dimension info"""
+        """A special typing alias for an NDArray[T] with optional dimension info"""
 
         def __class_getitem__(self, params):
             if not isinstance(params, tuple):
-                # Only element type provided
-                elem_type = params
-                return Annotated[list[elem_type], VectorInfo(dim=None)]
+                numpy_dtype = params
+                return Annotated[NDArray[numpy_dtype], VectorInfo(dim=None)]
             else:
-                # Element type and dimension provided
-                elem_type, dim = params
-                if typing.get_origin(dim) is Literal:
-                    dim = typing.get_args(dim)[0]  # Extract the literal value
-                return Annotated[list[elem_type], VectorInfo(dim=dim)]
+                # Element type and dimension provided, e.g., Vector[np.float32, Literal[3]]
+                numpy_dtype, dim_literal = params
+                if typing.get_origin(dim_literal) is Literal:
+                    dim_val = typing.get_args(dim_literal)[
+                        0
+                    ]  # Extract the literal value
+                return Annotated[NDArray[numpy_dtype], VectorInfo(dim=dim_val)]
 
 
 TABLE_TYPES: tuple[str, str] = ("KTable", "LTable")
@@ -179,6 +181,32 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
                     vector_info = VectorInfo(dim=None)
         elif not (kind == "Vector" or kind in TABLE_TYPES):
             raise ValueError(f"Unexpected type kind for list: {kind}")
+    elif base_type is np.ndarray:
+        kind = "Vector"
+        args = typing.get_args(t)
+        _, dtype_spec = args
+
+        dtype_args = typing.get_args(dtype_spec)
+        if not dtype_args:
+            raise ValueError("Invalid dtype specification for NDArray")
+
+        numpy_dtype_type = dtype_args[0]
+        vector_info = VectorInfo(dim=None) if vector_info is None else vector_info
+
+        if numpy_dtype_type is np.float32:
+            elem_type = Float32
+        elif numpy_dtype_type is np.float64:
+            elem_type = Float64
+        elif numpy_dtype_type is np.int32:
+            elem_type = Annotated[int, TypeKind("Int32")]
+        elif numpy_dtype_type is np.int64:
+            elem_type = Annotated[int, TypeKind("Int64")]
+        elif numpy_dtype_type is Any or isinstance(numpy_dtype_type, TypeVar):
+            raise ValueError(
+                f"NDArray for Vector must use a concrete numpy dtype (e.g., np.float32), not {numpy_dtype_type}"
+            )
+        else:
+            raise ValueError(f"Unsupported numpy dtype for Vector: {numpy_dtype_type}")
     elif base_type is collections.abc.Mapping or base_type is dict:
         args = typing.get_args(t)
         elem_type = (args[0], args[1])
@@ -190,10 +218,12 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             kind = "Str"
         elif t is bool:
             kind = "Bool"
-        elif t is int:
+        elif t is int or np.int64:
             kind = "Int64"
-        elif t is float:
+        elif t is float or np.float64:
             kind = "Float64"
+        elif t is np.float32:
+            kind = "Float32"
         elif t is uuid.UUID:
             kind = "Uuid"
         elif t is datetime.date:
