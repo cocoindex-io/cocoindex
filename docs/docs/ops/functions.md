@@ -39,9 +39,27 @@ Input data:
 
 *   `chunk_overlap` (type: `int`, optional): The maximum overlap size between adjacent chunks, in bytes.
 *   `language` (type: `str`, optional): The language of the document.
-    Can be a langauge name (e.g. `Python`, `Javascript`, `Markdown`) or a file extension (e.g. `.py`, `.js`, `.md`).
-    To see all supported language names and extensions, see [the code](https://github.com/search?q=org%3Acocoindex-io+lang%3Arust++%22static+TREE_SITTER_LANGUAGE_BY_LANG%22&type=code).
-    If it's unspecified or the specified language is not supported, it will be treated as plain text.
+    Can be a language name (e.g. `Python`, `Javascript`, `Markdown`) or a file extension (e.g. `.py`, `.js`, `.md`).
+
+*   `custom_languages` (type: `list[CustomLanguageSpec]`, optional): This allows you to customize the way to chunking specific languages using regular expressions. Each `CustomLanguageSpec` is a dict with the following fields:
+    *   `language_name` (type: `str`, required): Name of the language.
+    *   `aliases` (type: `list[str]`, optional): A list of aliases for the language.
+        It's an error if any language name or alias is duplicated.
+
+    *   `separators_regex` (type: `list[str]`, required): A list of regex patterns to split the text.
+        Higher-level boundaries should come first, and lower-level should be listed later. e.g. `[r"\n# ", r"\n## ", r"\n\n", r"\. "]`.
+        See [regex Syntax](https://docs.rs/regex/latest/regex/#syntax) for supported regular expression syntax.
+
+    :::note
+
+    We use the `language` field to determine how to split the input text, following these rules:
+    
+    *   We'll match the input `language` field against the `language_name` or `aliases` of each custom language specification, and use the matched one. If value of `language` is null, it'll be treated as empty string when matching `language_name` or `aliases`.
+    *   If no match is found, we'll match the `language` field against the builtin language configurations.
+        For all supported builtin language names and aliases (extensions), see [the code](https://github.com/search?q=org%3Acocoindex-io+lang%3Arust++%22static+TREE_SITTER_LANGUAGE_BY_LANG%22&type=code).
+    *   If no match is found, the input will be treated as plain text.
+
+    :::
 
 Return type: [KTable](/docs/core/data_types#ktable), each row represents a chunk, with the following sub fields:
 
