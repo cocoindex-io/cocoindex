@@ -972,9 +972,7 @@ impl BasicValue {
                     .map_err(|_| anyhow::anyhow!("Invalid JSON value for union"))?;
 
                 if obj.len() != 2 {
-                    return Err(
-                        anyhow::anyhow!("Invalid union tuple: expect 2 values, received {}", obj.len())
-                    );
+                    anyhow::bail!("Invalid union tuple: expect 2 values, received {}", obj.len());
                 }
 
                 let mut obj_iter = obj.into_iter();
