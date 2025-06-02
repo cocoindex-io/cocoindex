@@ -174,7 +174,9 @@ fn basic_value_from_py_object<'py>(
                 }
             }
 
-            valid_value.ok_or_else(|| PyErr::new::<PyTypeError, _>("invalid union"))?
+            valid_value.ok_or_else(|| {
+                PyErr::new::<PyTypeError, _>(format!("invalid union value: {}, available types: {:?}", v, s.types()))
+            })?
         }
     };
     Ok(result)
