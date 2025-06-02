@@ -268,10 +268,7 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
                             .transpose()?
                     }
                 }
-                BasicValueType::Union(_) => row
-                    .try_get::<Option<serde_json::Value>, _>(field_idx)?
-                    .map(|v| BasicValue::from_json(v, basic_type))
-                    .transpose()?,
+                t @ BasicValueType::Union(_) => anyhow::bail!("unsupported type: {}", t),
             };
             basic_value.map(Value::Basic)
         }
