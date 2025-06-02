@@ -15,6 +15,7 @@ from typing import (
     Generic,
     Literal,
     Protocol,
+    Type,
 )
 import numpy as np
 from numpy.typing import NDArray
@@ -68,6 +69,10 @@ else:
             else:
                 # Element type and dimension provided, e.g., Vector[np.float32, Literal[3]]
                 numpy_dtype, dim_literal = params
+                if numpy_dtype not in DtypeRegistry.supported_dtypes():
+                    raise TypeError(
+                        f"Vector dtype must be a NumPy dtype, got {numpy_dtype}"
+                    )
                 if typing.get_origin(dim_literal) is Literal:
                     dim_val = typing.get_args(dim_literal)[
                         0
@@ -89,6 +94,47 @@ def _is_struct_type(t: ElementType | None) -> bool:
     return isinstance(t, type) and (
         dataclasses.is_dataclass(t) or is_namedtuple_type(t)
     )
+
+
+class DtypeInfo:
+    """Metadata for a NumPy dtype."""
+
+    def __init__(self, numpy_dtype: Type, kind: str, python_type: Type) -> None:
+        self.numpy_dtype = numpy_dtype
+        self.kind = kind
+        self.python_type = python_type
+        self.annotated_type = Annotated[python_type, TypeKind(kind)]
+
+
+class DtypeRegistry:
+    _mappings: dict[Type, DtypeInfo] = {
+        np.float32: DtypeInfo(np.float32, "Float32", float),
+        np.float64: DtypeInfo(np.float64, "Float64", float),
+        np.int32: DtypeInfo(np.int32, "Int32", int),
+        np.int64: DtypeInfo(np.int64, "Int64", int),
+        np.uint8: DtypeInfo(np.uint8, "UInt8", int),
+        np.uint16: DtypeInfo(np.uint16, "UInt16", int),
+        np.uint32: DtypeInfo(np.uint32, "UInt32", int),
+        np.uint64: DtypeInfo(np.uint64, "UInt64", int),
+    }
+
+    @staticmethod
+    def get_by_dtype(numpy_dtype: Any) -> DtypeInfo:
+        info = DtypeRegistry._mappings.get(numpy_dtype)
+        if info is None:
+            raise ValueError(f"Unsupported NumPy dtype: {numpy_dtype}")
+        return info
+
+    @staticmethod
+    def get_by_kind(kind: str) -> DtypeInfo:
+        for info in DtypeRegistry._mappings.values():
+            if info.kind == kind:
+                return info
+        raise ValueError(f"Unsupported type kind: {kind}")
+
+    @staticmethod
+    def supported_dtypes() -> set:
+        return set(DtypeRegistry._mappings.keys())
 
 
 @dataclasses.dataclass
@@ -190,52 +236,42 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         if not dtype_args:
             raise ValueError("Invalid dtype specification for NDArray")
 
-        numpy_dtype_type = dtype_args[0]
+        numpy_dtype = dtype_args[0]
+        dtype_info = DtypeRegistry.get_by_dtype(numpy_dtype)
+        elem_type = dtype_info.annotated_type
         vector_info = VectorInfo(dim=None) if vector_info is None else vector_info
 
-        if numpy_dtype_type is np.float32:
-            elem_type = Float32
-        elif numpy_dtype_type is np.float64:
-            elem_type = Float64
-        elif numpy_dtype_type is np.int32:
-            elem_type = Annotated[int, TypeKind("Int32")]
-        elif numpy_dtype_type is np.int64:
-            elem_type = Annotated[int, TypeKind("Int64")]
-        elif numpy_dtype_type is Any or isinstance(numpy_dtype_type, TypeVar):
-            raise ValueError(
-                f"NDArray for Vector must use a concrete numpy dtype (e.g., np.float32), not {numpy_dtype_type}"
-            )
-        else:
-            raise ValueError(f"Unsupported numpy dtype for Vector: {numpy_dtype_type}")
     elif base_type is collections.abc.Mapping or base_type is dict:
         args = typing.get_args(t)
         elem_type = (args[0], args[1])
         kind = "KTable"
     elif kind is None:
-        if t is bytes:
-            kind = "Bytes"
-        elif t is str:
-            kind = "Str"
-        elif t is bool:
-            kind = "Bool"
-        elif t is int or np.int64:
-            kind = "Int64"
-        elif t is float or np.float64:
-            kind = "Float64"
-        elif t is np.float32:
-            kind = "Float32"
-        elif t is uuid.UUID:
-            kind = "Uuid"
-        elif t is datetime.date:
-            kind = "Date"
-        elif t is datetime.time:
-            kind = "Time"
-        elif t is datetime.datetime:
-            kind = "OffsetDateTime"
-        elif t is datetime.timedelta:
-            kind = "TimeDelta"
-        else:
-            raise ValueError(f"type unsupported yet: {t}")
+        try:
+            dtype_info = DtypeRegistry.get_by_dtype(t)
+            kind = dtype_info.kind
+        except ValueError:
+            if t is bytes:
+                kind = "Bytes"
+            elif t is str:
+                kind = "Str"
+            elif t is bool:
+                kind = "Bool"
+            elif t is int:
+                kind = "Int64"
+            elif t is float:
+                kind = "Float64"
+            elif t is uuid.UUID:
+                kind = "Uuid"
+            elif t is datetime.date:
+                kind = "Date"
+            elif t is datetime.time:
+                kind = "Time"
+            elif t is datetime.datetime:
+                kind = "OffsetDateTime"
+            elif t is datetime.timedelta:
+                kind = "TimeDelta"
+            else:
+                raise ValueError(f"type unsupported yet: {t}")
 
     return AnalyzedTypeInfo(
         kind=kind,

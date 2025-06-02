@@ -16,6 +16,7 @@ from .typing import (
     is_namedtuple_type,
     TABLE_TYPES,
     KEY_FIELD_NAME,
+    DtypeRegistry,
 )
 
 
@@ -125,38 +126,22 @@ def make_engine_value_decoder(
     if src_type_kind == "Uuid":
         return lambda value: uuid.UUID(bytes=value)
 
-    if dst_type_info.kind == "Vector":
+    if src_type_kind == "Vector":
         elem_coco_type_info = analyze_type_info(dst_type_info.elem_type)
-        elem_kind = elem_coco_type_info.kind
-
-        numpy_dtype: Any
-        if elem_kind == "Float32":
-            numpy_dtype = np.float32
-        elif elem_kind == "Float64":
-            numpy_dtype = np.float64
-        elif elem_kind == "Int32":
-            numpy_dtype = np.int32
-        elif elem_kind == "Int64":
-            numpy_dtype = np.int64
-        else:
-            raise ValueError(
-                f"Unsupported vector element kind for NDArray conversion: {elem_kind} for `{''.join(field_path)}`"
-            )
+        dtype_info = DtypeRegistry.get_by_kind(elem_coco_type_info.kind)
 
         def decode_vector(value: Any) -> Any | None:
             if value is None:
                 if dst_type_info.nullable:
                     return None
-                else:
-                    raise ValueError(
-                        f"Received null for non-nullable vector `{''.join(field_path)}`"
-                    )
+                raise ValueError(
+                    f"Received null for non-nullable vector `{''.join(field_path)}`"
+                )
 
             if not isinstance(value, list):
                 raise TypeError(
                     f"Expected a list for vector `{''.join(field_path)}`, got {type(value)}"
                 )
-
             expected_dim = (
                 dst_type_info.vector_info.dim if dst_type_info.vector_info else None
             )
@@ -166,7 +151,7 @@ def make_engine_value_decoder(
                     f"expected {expected_dim}, got {len(value)}"
                 )
 
-            return np.array(value, dtype=numpy_dtype)
+            return np.array(value, dtype=dtype_info.numpy_dtype)
 
         return decode_vector
 
