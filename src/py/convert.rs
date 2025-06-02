@@ -78,8 +78,8 @@ fn basic_value_to_py_object<'py>(
             .map(|v| basic_value_to_py_object(py, v))
             .collect::<PyResult<Vec<_>>>()?
             .into_bound_py_any(py)?,
-        value::BasicValue::UnionVariant { value, .. } => {
-            basic_value_to_py_object(py, &value)?
+        value::BasicValue::UnionVariant { tag_id, value } => {
+            (*tag_id, basic_value_to_py_object(py, &value)?).into_bound_py_any(py)?
         }
     };
     Ok(result)
