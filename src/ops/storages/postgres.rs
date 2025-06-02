@@ -159,9 +159,12 @@ fn bind_value_field<'arg>(
                     builder.push_bind(sqlx::types::Json(v));
                 }
             },
-            BasicValue::UnionVariant { tag_id, value } => {
-                builder.push_bind(sqlx::types::Json(serde_json::json!([tag_id, value])));
-            },
+            BasicValue::UnionVariant { .. } => {
+                builder.push_bind(sqlx::types::Json(TypedValue {
+                    t: &field_schema.value_type.typ,
+                    v: value,
+                }));
+            }
         },
         Value::Null => {
             builder.push("NULL");
