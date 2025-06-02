@@ -15,7 +15,6 @@ from typing import (
     Generic,
     Literal,
     Protocol,
-    Type,
 )
 import numpy as np
 from numpy.typing import NDArray
@@ -83,7 +82,7 @@ else:
 TABLE_TYPES: tuple[str, str] = ("KTable", "LTable")
 KEY_FIELD_NAME: str = "_key"
 
-ElementType = type | tuple[type, type]
+ElementType = type | tuple[type, type] | Annotated[Any, TypeKind]
 
 
 def is_namedtuple_type(t: type) -> bool:
@@ -99,7 +98,7 @@ def _is_struct_type(t: ElementType | None) -> bool:
 class DtypeInfo:
     """Metadata for a NumPy dtype."""
 
-    def __init__(self, numpy_dtype: Type, kind: str, python_type: Type) -> None:
+    def __init__(self, numpy_dtype: type, kind: str, python_type: type) -> None:
         self.numpy_dtype = numpy_dtype
         self.kind = kind
         self.python_type = python_type
@@ -107,7 +106,7 @@ class DtypeInfo:
 
 
 class DtypeRegistry:
-    _mappings: dict[Type, DtypeInfo] = {
+    _mappings: dict[type, DtypeInfo] = {
         np.float32: DtypeInfo(np.float32, "Float32", float),
         np.float64: DtypeInfo(np.float64, "Float64", float),
         np.int32: DtypeInfo(np.int32, "Int32", int),
@@ -118,12 +117,16 @@ class DtypeRegistry:
         np.uint64: DtypeInfo(np.uint64, "UInt64", int),
     }
 
-    @staticmethod
-    def get_by_dtype(numpy_dtype: Any) -> DtypeInfo:
-        info = DtypeRegistry._mappings.get(numpy_dtype)
-        if info is None:
-            raise ValueError(f"Unsupported NumPy dtype: {numpy_dtype}")
-        return info
+    @classmethod
+    def get_by_dtype(cls, dtype: Any) -> DtypeInfo:
+        if dtype is Any:
+            raise TypeError(
+                "NDArray for Vector must use a concrete numpy dtype, got `Any`."
+            )
+        try:
+            return cls._mappings[dtype]
+        except KeyError:
+            raise ValueError(f"Unsupported NumPy dtype: {dtype}")
 
     @staticmethod
     def get_by_kind(kind: str) -> DtypeInfo:
@@ -133,7 +136,7 @@ class DtypeRegistry:
         raise ValueError(f"Unsupported type kind: {kind}")
 
     @staticmethod
-    def supported_dtypes() -> set:
+    def supported_dtypes() -> set[type]:
         return set(DtypeRegistry._mappings.keys())
 
 

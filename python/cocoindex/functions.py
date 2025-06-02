@@ -56,11 +56,11 @@ class SentenceTransformerEmbedExecutor:
         self._model = sentence_transformers.SentenceTransformer(self.spec.model, **args)
         dim = self._model.get_sentence_embedding_dimension()
         result: type = Annotated[
-            Vector[np.float32, Literal[dim]],
+            Vector[np.float32, Literal[dim]],  # type: ignore
             TypeAttr("cocoindex.io/vector_origin_text", text.analyzed_value),
         ]
         return result
 
     def __call__(self, text: str) -> NDArray[np.float32]:
-        result: NDArray[np.float32] = self._model.encode(text)
+        result: NDArray[np.float32] = self._model.encode(text, convert_to_numpy=True)
         return result
