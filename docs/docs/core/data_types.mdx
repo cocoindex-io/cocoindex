@@ -36,8 +36,8 @@ This is the list of all basic types supported by CocoIndex:
 | LocalDatetime | Date and time without timezone | `cocoindex.LocalDateTime` | `datetime.datetime` |
 | OffsetDatetime | Date and time with a timezone offset | `cocoindex.OffsetDateTime` | `datetime.datetime` |
 | TimeDelta | A duration of time | `datetime.timedelta` | `datetime.timedelta` |
-| Vector[*T*, *Dim*?] | *T* must be basic type. *Dim* is a positive integer and optional. |`cocoindex.Vector[T]` or `cocoindex.Vector[T, Dim]` | `list[T]` | 
 | Json | | `cocoindex.Json` | Any data convertible to JSON by `json` package | 
+| Vector[*T*, *Dim*?] | A vector of numbers with type *T* (`np.float32`, `np.float64`, `np.int32`, `np.int64`, `np.uint8`, `np.uint16`, `np.uint32`, or `np.uint64`). *Dim* is a positive integer and optional. | `cocoindex.Vector[T]` or `cocoindex.Vector[T, Dim]` | `numpy.typing.NDArray[T]` or `list[T]` |
 
 Values of all data types can be represented by values in Python's native types (as described under the Native Python Type column).
 However, the underlying execution engine and some storage system (like Postgres) has finer distinctions for some types, specifically:
