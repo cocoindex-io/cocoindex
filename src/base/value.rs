@@ -969,7 +969,7 @@ impl BasicValue {
             }
             (v, BasicValueType::Union(typ)) => {
                 let obj: Vec<serde_json::Value> = serde_json::from_value(v) 
-                    .map_err(|_| anyhow::anyhow!("Invalid JSON value for union"))?;
+                    .map_err(|_| anyhow::anyhow!("Invalid JSON value for union, expect array"))?;
 
                 if obj.len() != 2 {
                     anyhow::bail!("Invalid union tuple: expect 2 values, received {}", obj.len());
