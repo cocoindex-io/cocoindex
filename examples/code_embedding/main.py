@@ -27,7 +27,7 @@ def code_to_embedding(
 @cocoindex.flow_def(name="CodeEmbedding")
 def code_embedding_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-):
+) -> None:
     """
     Define an example flow that embeds files into a vector database.
     """
@@ -46,6 +46,7 @@ def code_embedding_flow(
             cocoindex.functions.SplitRecursively(),
             language=file["extension"],
             chunk_size=1000,
+            min_chunk_size=300,
             chunk_overlap=300,
         )
         with file["chunks"].row() as chunk:

@@ -696,6 +696,7 @@ impl components::SetupOperator for SetupComponentOperator {
     type Key = ComponentKey;
     type State = ComponentState;
     type SetupState = SetupState;
+    type Context = ();
 
     fn describe_key(&self, key: &Self::Key) -> String {
         format!("{} {}", key.kind.describe(), key.name)
@@ -724,7 +725,7 @@ impl components::SetupOperator for SetupComponentOperator {
         current == desired
     }
 
-    async fn create(&self, state: &ComponentState) -> Result<()> {
+    async fn create(&self, state: &ComponentState, _context: &Self::Context) -> Result<()> {
         let graph = self.graph_pool.get_graph(&self.conn_spec).await?;
         let key = state.key();
         let qualifier = CORE_ELEMENT_MATCHER_VAR;
@@ -762,7 +763,7 @@ impl components::SetupOperator for SetupComponentOperator {
         Ok(graph.run(query).await?)
     }
 
-    async fn delete(&self, key: &ComponentKey) -> Result<()> {
+    async fn delete(&self, key: &ComponentKey, _context: &Self::Context) -> Result<()> {
         let graph = self.graph_pool.get_graph(&self.conn_spec).await?;
         let query = neo4rs::query(&format!(
             "DROP {kind} {name} IF EXISTS",
@@ -1131,7 +1132,7 @@ impl StorageFactoryBase for Factory {
             }
         }
 
-        apply_component_changes(components).await?;
+        apply_component_changes(components, &()).await?;
         Ok(())
     }
 }

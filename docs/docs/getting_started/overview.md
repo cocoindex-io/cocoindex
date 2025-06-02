@@ -5,10 +5,30 @@ slug: /
 
 # Welcome to CocoIndex
 
-Prepare high quality data that is tailored for the purpose is essential for a successful AI application in production.   
+CocoIndex is an ultra-performant real-time data transformation framework for AI, with incremental processing. 
 
-CocoIndex is a data indexing platform for AI use cases - semantic search, RAG, agentic workflow on top of embedding / knowledge graph etc.  CocoIndex aims to be the best in class scalable data indexing infrastructure with built in observability and lineage. 
+As a data framework, CocoIndex takes it to the next level on data freshness. **Incremental processing** is one of the core values provided by CocoIndex.
 
-CocoIndex can help you connecting to all the data sources, identify the best indexing strategy and setup the most robust pipeline -  chunking, embedding model, deduping/reconciling, vector stores, knowledge graph etc.  And then providing standard API to access the index.
+## Programming Model
+CocoIndex follows the idea of [Dataflow programming](https://en.wikipedia.org/wiki/Dataflow_programming) model. Each transformation creates a new field solely based on input fields, without hidden states and value mutation. All data before/after each transformation is observable, with lineage out of the box.
 
-CocoIndex does all the heavy lifting work and plumbing for the data, so you can focus on your business logic and build your AI application on top of robust data indices.
+The gist of an example data transformation:
+```python
+# import
+data['content'] = flow_builder.add_source(...) 
+
+# transform
+data['out'] = data['content'] 
+    .transform(...)
+    .transform(...)
+
+# collect data
+collector.collect(...)
+
+# export to db, vector db, graph db ...
+collector.export(...)
+```
+
+Get Started:
+- [Quick Start](https://cocoindex.io/docs/getting_started/quickstart)
+

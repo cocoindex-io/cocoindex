@@ -19,7 +19,6 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 ### Query
 We use Qdrant client to query the index, and reuse the embedding operation in the indexing flow.
 
-
 ## Pre-requisites
 
 - [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. Although the target store is Qdrant, CocoIndex uses Postgress to track the data lineage for incremental processing.
@@ -29,24 +28,6 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
    ```bash
    docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
    ```
-
-- [Create a collection](https://qdrant.tech/documentation/concepts/vectors/#named-vectors) to export the embeddings to.
-
-   ```bash
-   curl  -X PUT \
-     'http://localhost:6333/collections/cocoindex' \
-     --header 'Content-Type: application/json' \
-     --data-raw '{
-     "vectors": {
-       "text_embedding": {
-         "size": 384,
-         "distance": "Cosine"
-       }
-     }
-   }'
-   ```
-
-   You can view the collections and data with the Qdrant dashboard at <http://localhost:6333/dashboard>.
 
 ## Run
 
@@ -61,6 +42,9 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
    ```bash
    cocoindex setup main.py
    ```
+
+   It will automatically create a collection in Qdrant.
+   You can view the collections and data with the Qdrant dashboard at <http://localhost:6333/dashboard>.
 
 - Update index:
 

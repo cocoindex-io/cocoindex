@@ -5,6 +5,37 @@ This example shows how to extract relationships from documents and build a knowl
 import dataclasses
 import cocoindex
 
+neo4j_conn_spec = cocoindex.add_auth_entry(
+    "Neo4jConnection",
+    cocoindex.storages.Neo4jConnection(
+        uri="bolt://localhost:7687",
+        user="neo4j",
+        password="cocoindex",
+    ),
+)
+kuzu_conn_spec = cocoindex.add_auth_entry(
+    "KuzuConnection",
+    cocoindex.storages.KuzuConnection(
+        api_server_url="http://localhost:8123",
+    ),
+)
+
+# SELECT ONE GRAPH DATABASE TO USE
+# This example can use either Neo4j or Kuzu as the graph database.
+# Please make sure only one branch is live and others are commented out.
+
+# Use Neo4j
+GraphDbSpec = cocoindex.storages.Neo4j
+GraphDbConnection = cocoindex.storages.Neo4jConnection
+GraphDbDeclaration = cocoindex.storages.Neo4jDeclaration
+conn_spec = neo4j_conn_spec
+
+# Use Kuzu
+#  GraphDbSpec = cocoindex.storages.Kuzu
+#  GraphDbConnection = cocoindex.storages.KuzuConnection
+#  GraphDbDeclaration = cocoindex.storages.KuzuDeclaration
+#  conn_spec = kuzu_conn_spec
+
 
 @dataclasses.dataclass
 class DocumentSummary:
@@ -24,34 +55,6 @@ class Relationship:
     subject: str
     predicate: str
     object: str
-
-
-neo4j_conn_spec = cocoindex.add_auth_entry(
-    "Neo4jConnection",
-    cocoindex.storages.Neo4jConnection(
-        uri="bolt://localhost:7687",
-        user="neo4j",
-        password="cocoindex",
-    ),
-)
-kuzu_conn_spec = cocoindex.add_auth_entry(
-    "KuzuConnection",
-    cocoindex.storages.KuzuConnection(
-        api_server_url="http://localhost:8123",
-    ),
-)
-
-# Use Neo4j as the graph database
-GraphDbSpec = cocoindex.storages.Neo4j
-GraphDbConnection = cocoindex.storages.Neo4jConnection
-GraphDbDeclaration = cocoindex.storages.Neo4jDeclaration
-conn_spec = neo4j_conn_spec
-
-# Use Kuzu as the graph database
-#  GraphDbSpec = cocoindex.storages.Kuzu
-#  GraphDbConnection = cocoindex.storages.KuzuConnection
-#  GraphDbDeclaration = cocoindex.storages.KuzuDeclaration
-#  conn_spec = kuzu_conn_spec
 
 
 @cocoindex.flow_def(name="DocsToKG")

@@ -7,6 +7,38 @@ import datetime
 import cocoindex
 from jinja2 import Template
 
+neo4j_conn_spec = cocoindex.add_auth_entry(
+    "Neo4jConnection",
+    cocoindex.storages.Neo4jConnection(
+        uri="bolt://localhost:7687",
+        user="neo4j",
+        password="cocoindex",
+    ),
+)
+kuzu_conn_spec = cocoindex.add_auth_entry(
+    "KuzuConnection",
+    cocoindex.storages.KuzuConnection(
+        api_server_url="http://localhost:8123",
+    ),
+)
+
+# SELECT ONE GRAPH DATABASE TO USE
+# This example can use either Neo4j or Kuzu as the graph database.
+# Please make sure only one branch is live and others are commented out.
+
+# Use Neo4j
+GraphDbSpec = cocoindex.storages.Neo4j
+GraphDbConnection = cocoindex.storages.Neo4jConnection
+GraphDbDeclaration = cocoindex.storages.Neo4jDeclaration
+conn_spec = neo4j_conn_spec
+
+# Use Kuzu
+#  GraphDbSpec = cocoindex.storages.Kuzu
+#  GraphDbConnection = cocoindex.storages.KuzuConnection
+#  GraphDbDeclaration = cocoindex.storages.KuzuDeclaration
+#  conn_spec = kuzu_conn_spec
+
+
 # Template for rendering product information as markdown to provide information to LLMs
 PRODUCT_TEMPLATE = """
 # {{ title }}
@@ -75,34 +107,6 @@ def extract_product_info(product: cocoindex.Json, filename: str) -> ProductInfo:
         price=float(product["price"].lstrip("$").replace(",", "")),
         detail=Template(PRODUCT_TEMPLATE).render(**product),
     )
-
-
-neo4j_conn_spec = cocoindex.add_auth_entry(
-    "Neo4jConnection",
-    cocoindex.storages.Neo4jConnection(
-        uri="bolt://localhost:7687",
-        user="neo4j",
-        password="cocoindex",
-    ),
-)
-kuzu_conn_spec = cocoindex.add_auth_entry(
-    "KuzuConnection",
-    cocoindex.storages.KuzuConnection(
-        api_server_url="http://localhost:8123",
-    ),
-)
-
-# Use Neo4j as the graph database
-GraphDbSpec = cocoindex.storages.Neo4j
-GraphDbConnection = cocoindex.storages.Neo4jConnection
-GraphDbDeclaration = cocoindex.storages.Neo4jDeclaration
-conn_spec = neo4j_conn_spec
-
-# Use Kuzu as the graph database
-#  GraphDbSpec = cocoindex.storages.Kuzu
-#  GraphDbConnection = cocoindex.storages.KuzuConnection
-#  GraphDbDeclaration = cocoindex.storages.KuzuDeclaration
-#  conn_spec = kuzu_conn_spec
 
 
 @cocoindex.flow_def(name="StoreProduct")
