@@ -125,7 +125,7 @@ fn basic_type_to_kuzu(basic_type: &BasicValueType) -> Result<String> {
         ),
         BasicValueType::Union(t) => format!(
             "UNION({})",
-            t.types().iter()
+            t.types.iter()
                 .enumerate()
                 .map(|(i,typ)| Ok(format!("val{} {}", i, basic_type_to_kuzu(typ)?)))
                 .collect::<Result<Vec<_>>>()?

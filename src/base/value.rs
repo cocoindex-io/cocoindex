@@ -990,7 +990,7 @@ impl BasicValue {
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("`value` is not available in the value"))?;
 
-                let cur_type = typ.types().get(tag_id)
+                let cur_type = typ.types.get(tag_id)
                     .ok_or_else(|| anyhow::anyhow!("No type in `tag_id` \"{tag_id}\" found"))?;
 
                 BasicValue::UnionVariant {

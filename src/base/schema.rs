@@ -1,4 +1,4 @@
-use crate::{prelude::*, utils::union::UnionType};
+use crate::prelude::*;
 
 use super::spec::*;
 use crate::builder::plan::AnalyzedValueMapping;
@@ -7,6 +7,11 @@ use crate::builder::plan::AnalyzedValueMapping;
 pub struct VectorTypeSchema {
     pub element_type: Box<BasicValueType>,
     pub dimension: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnionTypeSchema {
+    pub types: Vec<BasicValueType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -58,7 +63,7 @@ pub enum BasicValueType {
     Vector(VectorTypeSchema),
 
     /// A union
-    Union(UnionType),
+    Union(UnionTypeSchema),
 }
 
 impl std::fmt::Display for BasicValueType {
@@ -87,7 +92,7 @@ impl std::fmt::Display for BasicValueType {
             }
             BasicValueType::Union(s) => {
                 write!(f, "Union[")?;
-                for (i, typ) in s.types().iter().enumerate() {
+                for (i, typ) in s.types.iter().enumerate() {
                     if i > 0 {
                         // Add type delimiter
                         write!(f, " | ")?;

@@ -164,7 +164,7 @@ fn basic_value_from_py_object<'py>(
             let mut valid_value = None;
 
             // Try parsing the value
-            for (i, typ) in s.types().iter().enumerate() {
+            for (i, typ) in s.types.iter().enumerate() {
                 if let Ok(value) = basic_value_from_py_object(typ, v) {
                     valid_value = Some(value::BasicValue::UnionVariant {
                         tag_id: i,
@@ -175,7 +175,7 @@ fn basic_value_from_py_object<'py>(
             }
 
             valid_value.ok_or_else(|| {
-                PyErr::new::<PyTypeError, _>(format!("invalid union value: {}, available types: {:?}", v, s.types()))
+                PyErr::new::<PyTypeError, _>(format!("invalid union value: {}, available types: {:?}", v, s.types))
             })?
         }
     };

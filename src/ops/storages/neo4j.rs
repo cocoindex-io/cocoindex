@@ -228,7 +228,7 @@ fn basic_value_to_bolt(value: &BasicValue, schema: &BasicValueType) -> Result<Bo
         BasicValue::Json(v) => json_value_to_bolt_value(v)?,
         BasicValue::UnionVariant { tag_id, value } => match schema {
             BasicValueType::Union(s) => {
-                let typ = s.types().get(*tag_id)
+                let typ = s.types.get(*tag_id)
                     .ok_or_else(|| anyhow::anyhow!("Invalid `tag_id`: {}", tag_id))?;
 
                 basic_value_to_bolt(value, typ)?
