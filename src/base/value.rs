@@ -968,15 +968,26 @@ impl BasicValue {
                 BasicValue::Vector(Arc::from(vec))
             }
             (v, BasicValueType::Union(typ)) => {
-                let obj = v.as_array()
-                    .ok_or_else(|| anyhow::anyhow!("Invalid JSON value for union"))?;
+                let obj: Vec<serde_json::Value> = serde_json::from_value(v) 
+                    .map_err(|_| anyhow::anyhow!("Invalid JSON value for union"))?;
 
-                let tag_id = obj.get(0)
-                    .and_then(|value| value.as_u64())
-                    .map(|num_u64| num_u64 as usize)
+                if obj.len() != 2 {
+                    return Err(
+                        anyhow::anyhow!("Invalid union tuple: expect 2 values, received {}", obj.len())
+                    );
+                }
+
+                let mut obj_iter = obj.into_iter();
+
+                // Take first element
+                let tag_id = obj_iter
+                    .next()
+                    .and_then(|value| value.as_u64().map(|num_u64| num_u64 as usize))
                     .ok_or_else(|| anyhow::anyhow!("`tag_id` is not available in the value"))?;
 
-                let value = obj.get(1)
+                // Take second element
+                let value = obj_iter
+                    .next()
                     .ok_or_else(|| anyhow::anyhow!("`value` is not available in the value"))?;
 
                 let cur_type = typ.types().get(tag_id)
@@ -984,7 +995,7 @@ impl BasicValue {
 
                 BasicValue::UnionVariant {
                     tag_id,
-                    value: Box::new(BasicValue::from_json(value.clone(), cur_type)?),
+                    value: Box::new(BasicValue::from_json(value, cur_type)?),
                 }
             }
             (v, t) => {
