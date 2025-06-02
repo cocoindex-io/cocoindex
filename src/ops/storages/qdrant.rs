@@ -12,7 +12,6 @@ use qdrant_client::qdrant::{
     PointsIdsList, UpsertPointsBuilder, Value as QdrantValue, VectorParamsBuilder,
     VectorsConfigBuilder,
 };
-use serde_json::json;
 
 const DEFAULT_VECTOR_SIMILARITY_METRIC: spec::VectorSimilarityMetric =
     spec::VectorSimilarityMetric::CosineSimilarity;
@@ -39,7 +38,7 @@ struct Spec {
 ////////////////////////////////////////////////////////////
 
 struct FieldInfo {
-    field_name: String,
+    field_schema: schema::FieldSchema,
     is_qdrant_vector: bool,
 }
 
@@ -241,40 +240,19 @@ fn values_to_payload(
     let mut vectors = NamedVectors::default();
 
     for (value, field_info) in value_fields.iter().zip(fields_info.iter()) {
-        let field_name = &field_info.field_name;
-
+        let field_name = &field_info.field_schema.name;
         match value {
-            Value::Basic(basic_value) => {
-                let json_value: serde_json::Value = match basic_value {
-                    BasicValue::Bytes(v) => String::from_utf8_lossy(v).into(),
-                    BasicValue::Str(v) => v.clone().to_string().into(),
-                    BasicValue::Bool(v) => (*v).into(),
-                    BasicValue::Int64(v) => (*v).into(),
-                    BasicValue::Float32(v) => (*v as f64).into(),
-                    BasicValue::Float64(v) => (*v).into(),
-                    BasicValue::Range(v) => json!({ "start": v.start, "end": v.end }),
-                    BasicValue::Uuid(v) => v.to_string().into(),
-                    BasicValue::Date(v) => v.to_string().into(),
-                    BasicValue::Time(v) => v.to_string().into(),
-                    BasicValue::LocalDateTime(v) => v.to_string().into(),
-                    BasicValue::OffsetDateTime(v) => v.to_string().into(),
-                    BasicValue::TimeDelta(v) => v.to_string().into(),
-                    BasicValue::Json(v) => (**v).clone(),
-                    BasicValue::Vector(v) => {
-                        if field_info.is_qdrant_vector {
-                            let vector = encode_vector(v.as_ref())?;
-                            vectors = vectors.add_vector(field_name, vector);
-                            continue;
-                        }
-                        serde_json::to_value(v)?
-                    }
-                };
+            Value::Basic(BasicValue::Vector(v)) if field_info.is_qdrant_vector => {
+                let vector = encode_vector(v.as_ref())?;
+                vectors = vectors.add_vector(field_name, vector);
+            }
+            v => {
+                let json_value = serde_json::to_value(TypedValue {
+                    t: &field_info.field_schema.value_type.typ,
+                    v,
+                })?;
                 payload.insert(field_name.clone(), json_value.into());
             }
-            Value::Null => {
-                payload.insert(field_name.clone(), QdrantValue { kind: None });
-            }
-            _ => bail!("Unsupported Value variant: {:?}", value),
         }
     }
 
@@ -345,7 +323,7 @@ impl StorageFactoryBase for Factory {
                 for field in d.value_fields_schema.iter() {
                     let vector_size = parse_supported_vector_size(&field.value_type.typ);
                     fields_info.push(FieldInfo {
-                        field_name: field.name.clone(),
+                        field_schema: field.clone(),
                         is_qdrant_vector: vector_size.is_some(),
                     });
                     if let Some(vector_size) = vector_size {
