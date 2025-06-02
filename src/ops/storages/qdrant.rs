@@ -268,7 +268,7 @@ fn values_to_payload(
                         }
                         serde_json::to_value(v)?
                     }
-                    BasicValue::UnionVariant { value, .. } => json!(value),
+                    BasicValue::UnionVariant { value, .. } => serde_json::to_value(value)?,
                 };
                 payload.insert(field_name.clone(), json_value.into());
             }
