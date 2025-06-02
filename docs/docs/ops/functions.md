@@ -26,6 +26,17 @@ Input data:
 
 *   `text` (type: `str`, required): The text to split.
 *   `chunk_size` (type: `int`, required): The maximum size of each chunk, in bytes.
+*   `min_chunk_size` (type: `int`, optional): The minimum size of each chunk, in bytes. If not provided, default to `chunk_size / 2`.
+
+    :::note
+
+    `SplitRecursively` will do its best to make the output chunks sized between `min_chunk_size` and `chunk_size`.
+    However, it's possible that some chunks are smaller than `min_chunk_size` or larger than `chunk_size` in rare cases, e.g. too short input text, or non-splittable large text.
+
+    Please avoid setting `min_chunk_size` to a value too close to `chunk_size`, to leave more rooms for the function to plan the optimal chunking.
+
+    :::
+
 *   `chunk_overlap` (type: `int`, optional): The maximum overlap size between adjacent chunks, in bytes.
 *   `language` (type: `str`, optional): The language of the document.
     Can be a langauge name (e.g. `Python`, `Javascript`, `Markdown`) or a file extension (e.g. `.py`, `.js`, `.md`).

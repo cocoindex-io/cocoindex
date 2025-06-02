@@ -1,77 +1,204 @@
-use std::collections::HashMap;
-use std::convert::Infallible;
-use std::fmt::Display;
-use std::sync::Arc;
-
-use crate::base::duration::parse_duration;
 use crate::ops::sdk::*;
+use crate::prelude::*;
+
+use std::fmt::Display;
+
+use crate::ops::registry::ExecutorFactoryRegistry;
 use crate::setup;
-use anyhow::{Result, bail};
 use futures::FutureExt;
 use qdrant_client::Qdrant;
-use qdrant_client::qdrant::vectors_output::VectorsOptions;
 use qdrant_client::qdrant::{
-    DeletePointsBuilder, NamedVectors, PointId, PointStruct, PointsIdsList, UpsertPointsBuilder, Value as QdrantValue
+    CreateCollectionBuilder, DeletePointsBuilder, Distance, NamedVectors, PointId, PointStruct,
+    PointsIdsList, UpsertPointsBuilder, Value as QdrantValue, VectorParamsBuilder,
+    VectorsConfigBuilder,
 };
-use qdrant_client::qdrant::{Query, QueryPointsBuilder, ScoredPoint};
 use serde_json::json;
 
+const DEFAULT_VECTOR_SIMILARITY_METRIC: spec::VectorSimilarityMetric =
+    spec::VectorSimilarityMetric::CosineSimilarity;
+const DEFAULT_URL: &str = "http://localhost:6334/";
+
+////////////////////////////////////////////////////////////
+// Public Types
+////////////////////////////////////////////////////////////
+
 #[derive(Debug, Deserialize, Clone)]
-pub struct Spec {
-    collection_name: String,
+pub struct ConnectionSpec {
     grpc_url: String,
     api_key: Option<String>,
 }
 
-pub struct ExportContext {
-    client: Qdrant,
+#[derive(Debug, Deserialize, Clone)]
+struct Spec {
+    connection: Option<spec::AuthEntryReference<ConnectionSpec>>,
     collection_name: String,
-    value_fields_schema: Vec<FieldSchema>,
-    all_fields: Vec<FieldSchema>,
+}
+
+////////////////////////////////////////////////////////////
+// Common
+////////////////////////////////////////////////////////////
+
+struct FieldInfo {
+    field_name: String,
+    is_qdrant_vector: bool,
+}
+
+fn parse_supported_vector_size(typ: &schema::ValueType) -> Option<usize> {
+    match typ {
+        schema::ValueType::Basic(schema::BasicValueType::Vector(vector_schema)) => {
+            match &*vector_schema.element_type {
+                schema::BasicValueType::Float32
+                | schema::BasicValueType::Float64
+                | schema::BasicValueType::Int64 => vector_schema.dimension,
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn encode_vector(v: &[BasicValue]) -> Result<Vec<f32>> {
+    v.iter()
+        .map(|elem| {
+            Ok(match elem {
+                BasicValue::Float32(f) => *f,
+                BasicValue::Float64(f) => *f as f32,
+                BasicValue::Int64(i) => *i as f32,
+                _ => bail!("Unsupported vector type: {:?}", elem.kind()),
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
+fn embedding_metric_to_qdrant(metric: spec::VectorSimilarityMetric) -> Result<Distance> {
+    Ok(match metric {
+        spec::VectorSimilarityMetric::CosineSimilarity => Distance::Cosine,
+        spec::VectorSimilarityMetric::L2Distance => Distance::Euclid,
+        spec::VectorSimilarityMetric::InnerProduct => Distance::Dot,
+    })
+}
+
+////////////////////////////////////////////////////////////
+// Setup
+////////////////////////////////////////////////////////////
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+struct CollectionKey {
+    connection: Option<spec::AuthEntryReference<ConnectionSpec>>,
+    collection_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+struct VectorDef {
+    vector_size: usize,
+    metric: spec::VectorSimilarityMetric,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SetupState {
+    #[serde(default)]
+    vectors: BTreeMap<String, VectorDef>,
+}
+
+#[derive(Debug)]
+struct SetupStatus {
+    delete_collection: bool,
+    add_collection: Option<SetupState>,
+}
+
+impl setup::ResourceSetupStatus for SetupStatus {
+    fn describe_changes(&self) -> Vec<String> {
+        let mut result = vec![];
+        if self.delete_collection {
+            result.push("Delete collection".to_string());
+        }
+        if let Some(add_collection) = &self.add_collection {
+            let vector_descriptions = add_collection
+                .vectors
+                .iter()
+                .map(|(name, vector_def)| {
+                    format!(
+                        "{}[{}], {}",
+                        name, vector_def.vector_size, vector_def.metric
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            result.push(format!(
+                "Create collection{}",
+                if vector_descriptions.is_empty() {
+                    "".to_string()
+                } else {
+                    format!(" with vectors: {vector_descriptions}")
+                }
+            ));
+        }
+        result
+    }
+
+    fn change_type(&self) -> setup::SetupChangeType {
+        match (self.delete_collection, self.add_collection.is_some()) {
+            (false, false) => setup::SetupChangeType::NoChange,
+            (false, true) => setup::SetupChangeType::Create,
+            (true, false) => setup::SetupChangeType::Delete,
+            (true, true) => setup::SetupChangeType::Update,
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl SetupStatus {
+    async fn apply_delete(&self, collection_name: &String, qdrant_client: &Qdrant) -> Result<()> {
+        if self.delete_collection {
+            qdrant_client.delete_collection(collection_name).await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_create(&self, collection_name: &String, qdrant_client: &Qdrant) -> Result<()> {
+        if let Some(add_collection) = &self.add_collection {
+            let mut builder = CreateCollectionBuilder::new(collection_name);
+            if !add_collection.vectors.is_empty() {
+                let mut vectors_config = VectorsConfigBuilder::default();
+                for (name, vector_def) in add_collection.vectors.iter() {
+                    let params = VectorParamsBuilder::new(
+                        vector_def.vector_size as u64,
+                        embedding_metric_to_qdrant(vector_def.metric)?,
+                    );
+                    vectors_config.add_named_vector_params(name, params);
+                }
+                builder = builder.vectors_config(vectors_config);
+            }
+            qdrant_client.create_collection(builder).await?;
+        }
+        Ok(())
+    }
+}
+
+////////////////////////////////////////////////////////////
+// Deal with mutations
+////////////////////////////////////////////////////////////
+
+struct ExportContext {
+    qdrant_client: Arc<Qdrant>,
+    collection_name: String,
+    fields_info: Vec<FieldInfo>,
 }
 
 impl ExportContext {
-    fn new(
-        url: String,
-        collection_name: String,
-        api_key: Option<String>,
-        key_fields_schema: Vec<FieldSchema>,
-        value_fields_schema: Vec<FieldSchema>,
-    ) -> Result<Self> {
-        let all_fields = key_fields_schema
-            .iter()
-            .chain(value_fields_schema.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-
-        // Hotfix to resolve
-        // `no process-level CryptoProvider available -- call CryptoProvider::install_default() before this point`
-        // when using HTTPS URLs.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
-        Ok(Self {
-            client: Qdrant::from_url(&url)
-                .api_key(api_key)
-                .skip_compatibility_check()
-                .build()?,
-            value_fields_schema,
-            all_fields,
-            collection_name,
-        })
-    }
-
     async fn apply_mutation(&self, mutation: ExportTargetMutation) -> Result<()> {
         let mut points: Vec<PointStruct> = Vec::with_capacity(mutation.upserts.len());
         for upsert in mutation.upserts.iter() {
             let point_id = key_to_point_id(&upsert.key)?;
-            let (payload, vectors) =
-                values_to_payload(&upsert.value.fields, &self.value_fields_schema)?;
+            let (payload, vectors) = values_to_payload(&upsert.value.fields, &self.fields_info)?;
 
             points.push(PointStruct::new(point_id, vectors, payload));
         }
 
         if !points.is_empty() {
-            self.client
+            self.qdrant_client
                 .upsert_points(UpsertPointsBuilder::new(&self.collection_name, points).wait(true))
                 .await?;
         }
@@ -83,7 +210,7 @@ impl ExportContext {
             .collect::<Result<Vec<_>>>()?;
 
         if !ids.is_empty() {
-            self.client
+            self.qdrant_client
                 .delete_points(
                     DeletePointsBuilder::new(&self.collection_name)
                         .points(PointsIdsList { ids })
@@ -108,13 +235,13 @@ fn key_to_point_id(key_value: &KeyValue) -> Result<PointId> {
 
 fn values_to_payload(
     value_fields: &[Value],
-    schema: &[FieldSchema],
+    fields_info: &[FieldInfo],
 ) -> Result<(HashMap<String, QdrantValue>, NamedVectors)> {
     let mut payload = HashMap::with_capacity(value_fields.len());
     let mut vectors = NamedVectors::default();
 
-    for (value, field_schema) in value_fields.iter().zip(schema.iter()) {
-        let field_name = &field_schema.name;
+    for (value, field_info) in value_fields.iter().zip(fields_info.iter()) {
+        let field_name = &field_info.field_name;
 
         match value {
             Value::Basic(basic_value) => {
@@ -128,15 +255,18 @@ fn values_to_payload(
                     BasicValue::Range(v) => json!({ "start": v.start, "end": v.end }),
                     BasicValue::Uuid(v) => v.to_string().into(),
                     BasicValue::Date(v) => v.to_string().into(),
-                    BasicValue::LocalDateTime(v) => v.to_string().into(),
                     BasicValue::Time(v) => v.to_string().into(),
+                    BasicValue::LocalDateTime(v) => v.to_string().into(),
                     BasicValue::OffsetDateTime(v) => v.to_string().into(),
                     BasicValue::TimeDelta(v) => v.to_string().into(),
                     BasicValue::Json(v) => (**v).clone(),
                     BasicValue::Vector(v) => {
-                        let vector = convert_to_vector(v.to_vec());
-                        vectors = vectors.add_vector(field_name, vector);
-                        continue;
+                        if field_info.is_qdrant_vector {
+                            let vector = encode_vector(v.as_ref())?;
+                            vectors = vectors.add_vector(field_name, vector);
+                            continue;
+                        }
+                        serde_json::to_value(v)?
                     }
                     BasicValue::UnionVariant { tag_id, value } => {
                         json!([tag_id, value])
@@ -154,186 +284,17 @@ fn values_to_payload(
     Ok((payload, vectors))
 }
 
-fn convert_to_vector(v: Vec<BasicValue>) -> Vec<f32> {
-    v.iter()
-        .filter_map(|elem| match elem {
-            BasicValue::Float32(f) => Some(*f),
-            BasicValue::Float64(f) => Some(*f as f32),
-            BasicValue::Int64(i) => Some(*i as f32),
-            _ => None,
-        })
-        .collect()
-}
-
-fn parse_payload_value(
-    value: &qdrant_client::qdrant::Value,
-    basic_type: &BasicValueType,
-) -> Option<BasicValue> {
-    match basic_type {
-        &BasicValueType::Str => {
-            value.as_str()
-                .map(|s| BasicValue::Str(Arc::from(s.to_string())))
-        }
-        &BasicValueType::Bool => value.as_bool().map(BasicValue::Bool),
-        &BasicValueType::Int64 => value.as_integer().map(BasicValue::Int64),
-        &BasicValueType::Float32 => value.as_double().map(|f| BasicValue::Float32(f as f32)),
-        &BasicValueType::Float64 => value.as_double().map(BasicValue::Float64),
-        &BasicValueType::TimeDelta => {
-            value.as_str()
-                .and_then(|s| parse_duration(s).ok().map(BasicValue::TimeDelta))
-        }
-        &BasicValueType::Json => Some(BasicValue::Json(Arc::from(value.clone().into_json()))),
-        BasicValueType::Vector(s) => {
-            let elem_type = &s.element_type;
-
-            value.as_list().and_then(|list| {
-                let v: Vec<BasicValue> = list.iter()
-                    .filter_map(|item| parse_payload_value(item, elem_type))
-                    .collect();
-                Some(BasicValue::Vector(Arc::from(v)))
-            })
-        }
-        &BasicValueType::Uuid => value.as_str()?.parse().ok().map(BasicValue::Uuid),
-        &BasicValueType::Date => value.as_str()?.parse().ok().map(BasicValue::Date),
-        &BasicValueType::Time => value.as_str()?.parse().ok().map(BasicValue::Time),
-        &BasicValueType::LocalDateTime => {
-            value.as_str()?.parse().ok().map(BasicValue::LocalDateTime)
-        }
-        &BasicValueType::OffsetDateTime => {
-            value.as_str()?.parse().ok().map(BasicValue::OffsetDateTime)
-        }
-        &BasicValueType::Range => {
-            value.as_struct().and_then(|s| {
-                let start = s.fields.get("start").and_then(|f| f.as_integer());
-                let end = s.fields.get("end").and_then(|f| f.as_integer());
-
-                match (start, end) {
-                    (Some(start), Some(end)) => Some(BasicValue::Range(RangeValue {
-                        start: start as usize,
-                        end: end as usize,
-                    })),
-                    _ => None,
-                }
-            })
-        }
-        BasicValueType::Union(typ) => {
-            value.as_list().and_then(|arr| {
-                let tag_id = arr.get(0)
-                    .and_then(|f| f.as_integer())
-                    .map(|f| f as usize);
-                let inner_value = arr.get(1);
-
-                match (tag_id, inner_value) {
-                    (Some(tag_id), Some(value)) => {
-                        typ.types().get(tag_id)
-                            .and_then(|t| parse_payload_value(value, t))
-                            .map(|basic_value| BasicValue::UnionVariant {
-                                tag_id,
-                                value: Box::new(basic_value),
-                            })
-                    }
-                    _ => None,
-                }
-            })
-        }
-        _ => None,
-    }
-}
-
-fn into_value(point: &ScoredPoint, schema: &FieldSchema) -> Result<Value> {
-    let field_name = &schema.name;
-    let typ = schema.value_type.typ.clone();
-    let value = match typ {
-        ValueType::Basic(basic_type) => {
-            let basic_value = match basic_type {
-                BasicValueType::Vector(_) => point
-                    .vectors
-                    .as_ref()
-                    .and_then(|v| v.vectors_options.as_ref())
-                    .and_then(|vectors_options| match vectors_options {
-                        VectorsOptions::Vector(vector) => {
-                            let values = vector
-                                .data
-                                .iter()
-                                .map(|f| BasicValue::Float32(*f))
-                                .collect::<Vec<_>>();
-                            Some(BasicValue::Vector(Arc::from(values)))
-                        }
-                        VectorsOptions::Vectors(vectors) => {
-                            vectors.vectors.get(field_name).map(|vector| {
-                                let values = vector
-                                    .data
-                                    .iter()
-                                    .map(|f| BasicValue::Float32(*f))
-                                    .collect::<Vec<_>>();
-                                BasicValue::Vector(Arc::from(values))
-                            })
-                        }
-                    }),
-
-
-                other_type => match point
-                    .payload
-                    .get(field_name)
-                    .and_then(|v| parse_payload_value(v, &other_type))
-                {
-                    Some(value) => Some(value),
-                    None => anyhow::bail!("Unsupported value type")
-                },
-            };
-            basic_value.map(Value::Basic)
-        }
-        _ => point
-            .payload
-            .get(field_name)
-            .map(|v| Value::from_json(v.clone().into_json(), &typ))
-            .transpose()?,
-    };
-
-    let final_value = if let Some(v) = value { v } else { Value::Null };
-    Ok(final_value)
-}
-
-#[async_trait]
-impl QueryTarget for ExportContext {
-    async fn search(&self, query: VectorMatchQuery) -> Result<QueryResults> {
-        let points = self
-            .client
-            .query(
-                QueryPointsBuilder::new(&self.collection_name)
-                    .query(Query::new_nearest(query.vector))
-                    .limit(query.limit as u64)
-                    .using(query.vector_field_name)
-                    .with_payload(true)
-                    .with_vectors(true),
-            )
-            .await?
-            .result;
-
-        let results = points
-            .iter()
-            .map(|point| {
-                let score = point.score as f64;
-                let data = self
-                    .all_fields
-                    .iter()
-                    .map(|schema| into_value(point, schema))
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(QueryResult { data, score })
-            })
-            .collect::<Result<Vec<QueryResult>>>()?;
-        Ok(QueryResults {
-            fields: self.all_fields.clone(),
-            results,
-        })
-    }
-}
+////////////////////////////////////////////////////////////
+// Factory implementation
+////////////////////////////////////////////////////////////
 
 #[derive(Default)]
-pub struct Factory {}
+struct Factory {
+    qdrant_clients: Mutex<HashMap<Option<spec::AuthEntryReference<ConnectionSpec>>, Arc<Qdrant>>>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct CollectionId {
+struct CollectionId {
     collection_name: String,
 }
 
@@ -345,12 +306,12 @@ impl Display for CollectionId {
 }
 
 #[async_trait]
-impl StorageFactoryBase for Arc<Factory> {
+impl StorageFactoryBase for Factory {
     type Spec = Spec;
     type DeclarationSpec = ();
-    type SetupState = ();
-    type SetupStatus = Infallible;
-    type Key = String;
+    type SetupState = SetupState;
+    type SetupStatus = SetupStatus;
+    type Key = CollectionKey;
     type ExportContext = ExportContext;
 
     fn name(&self) -> &str {
@@ -361,11 +322,16 @@ impl StorageFactoryBase for Arc<Factory> {
         self: Arc<Self>,
         data_collections: Vec<TypedExportDataCollectionSpec<Self>>,
         _declarations: Vec<()>,
-        _context: Arc<FlowInstanceContext>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<(
         Vec<TypedExportDataCollectionBuildOutput<Self>>,
-        Vec<(String, ())>,
+        Vec<(CollectionKey, SetupState)>,
     )> {
+        // Hotfix to resolve
+        // `no process-level CryptoProvider available -- call CryptoProvider::install_default() before this point`
+        // when using HTTPS URLs.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let data_coll_output = data_collections
             .into_iter()
             .map(|d| {
@@ -376,52 +342,139 @@ impl StorageFactoryBase for Arc<Factory> {
                     )
                 }
 
-                let collection_name = d.spec.collection_name.clone();
+                let mut fields_info = Vec::<FieldInfo>::new();
+                let mut vector_def = BTreeMap::<String, VectorDef>::new();
 
-                let export_context = Arc::new(ExportContext::new(
-                    d.spec.grpc_url,
-                    d.spec.collection_name.clone(),
-                    d.spec.api_key,
-                    d.key_fields_schema,
-                    d.value_fields_schema,
-                )?);
-                let query_target = export_context.clone();
+                for field in d.value_fields_schema.iter() {
+                    let vector_size = parse_supported_vector_size(&field.value_type.typ);
+                    fields_info.push(FieldInfo {
+                        field_name: field.name.clone(),
+                        is_qdrant_vector: vector_size.is_some(),
+                    });
+                    if let Some(vector_size) = vector_size {
+                        vector_def.insert(
+                            field.name.clone(),
+                            VectorDef {
+                                vector_size,
+                                metric: DEFAULT_VECTOR_SIMILARITY_METRIC,
+                            },
+                        );
+                    }
+                }
+
+                let mut specified_vector_fields = HashSet::new();
+                for vector_index in d.index_options.vector_indexes {
+                    match vector_def.get_mut(&vector_index.field_name) {
+                        Some(vector_def) => {
+                            if specified_vector_fields.insert(vector_index.field_name.clone()) {
+                                // Validate the metric is supported by Qdrant
+                                embedding_metric_to_qdrant(vector_index.metric)
+                                    .with_context(||
+                                        format!("Parsing vector index metric {} for field `{}`", vector_index.metric, vector_index.field_name))?;
+                                vector_def.metric = vector_index.metric;
+                            } else {
+                                api_bail!("Field `{}` specified more than once in vector index definition", vector_index.field_name);
+                            }
+                        }
+                        None => {
+                            if let Some(field) = d.value_fields_schema.iter().find(|f| f.name == vector_index.field_name) {
+                                api_bail!(
+                                    "Field `{}` specified in vector index is expected to be a number vector with fixed size, actual type: {}",
+                                    vector_index.field_name, field.value_type.typ
+                                );
+                            } else {
+                                api_bail!("Field `{}` specified in vector index is not found", vector_index.field_name);
+                            }
+                        }
+                    }
+                }
+
+                let export_context = Arc::new(ExportContext {
+                    qdrant_client: self
+                        .get_qdrant_client(&d.spec.connection, &context.auth_registry)?,
+                    collection_name: d.spec.collection_name.clone(),
+                    fields_info,
+                });
                 let executors = async move {
                     Ok(TypedExportTargetExecutors {
                         export_context,
-                        query_target: Some(query_target as Arc<dyn QueryTarget>),
+                        query_target: None,
                     })
                 };
                 Ok(TypedExportDataCollectionBuildOutput {
                     executors: executors.boxed(),
-                    setup_key: collection_name,
-                    desired_setup_state: (),
+                    setup_key: CollectionKey {
+                        connection: d.spec.connection,
+                        collection_name: d.spec.collection_name,
+                    },
+                    desired_setup_state: SetupState {
+                        vectors: vector_def,
+                    },
                 })
             })
             .collect::<Result<Vec<_>>>()?;
         Ok((data_coll_output, vec![]))
     }
 
+    fn deserialize_setup_key(key: serde_json::Value) -> Result<CollectionKey> {
+        Ok(match key {
+            serde_json::Value::String(s) => {
+                // For backward compatibility.
+                CollectionKey {
+                    collection_name: s,
+                    connection: None,
+                }
+            }
+            _ => serde_json::from_value(key)?,
+        })
+    }
+
     async fn check_setup_status(
         &self,
-        _key: String,
-        _desired: Option<()>,
-        _existing: setup::CombinedState<()>,
+        _key: CollectionKey,
+        desired: Option<SetupState>,
+        existing: setup::CombinedState<SetupState>,
         _auth_registry: &Arc<AuthRegistry>,
     ) -> Result<Self::SetupStatus> {
-        Err(anyhow!("Set `setup_by_user` to `true` to export to Qdrant")) as Result<Infallible, _>
+        let desired_exists = desired.is_some();
+        let add_collection = desired
+            .filter(|state| {
+                !existing.always_exists()
+                    || existing
+                        .possible_versions()
+                        .any(|v| v.vectors != state.vectors)
+            })
+            .map(|state| SetupState {
+                vectors: state.vectors,
+            });
+        let delete_collection = existing.possible_versions().next().is_some()
+            && (!desired_exists || add_collection.is_some());
+        Ok(SetupStatus {
+            delete_collection,
+            add_collection,
+        })
     }
 
     fn check_state_compatibility(
         &self,
-        _desired: &(),
-        _existing: &(),
+        desired: &SetupState,
+        existing: &SetupState,
     ) -> Result<SetupStateCompatibility> {
-        Ok(SetupStateCompatibility::Compatible)
+        Ok(if desired.vectors == existing.vectors {
+            SetupStateCompatibility::Compatible
+        } else {
+            SetupStateCompatibility::NotCompatible
+        })
     }
 
-    fn describe_resource(&self, key: &String) -> Result<String> {
-        Ok(format!("Qdrant collection {}", key))
+    fn describe_resource(&self, key: &CollectionKey) -> Result<String> {
+        Ok(format!(
+            "Qdrant collection {}{}",
+            key.collection_name,
+            key.connection
+                .as_ref()
+                .map_or_else(|| "".to_string(), |auth_entry| format!(" @ {}", auth_entry))
+        ))
     }
 
     async fn apply_mutation(
@@ -439,9 +492,66 @@ impl StorageFactoryBase for Arc<Factory> {
 
     async fn apply_setup_changes(
         &self,
-        _setup_status: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
-        _auth_registry: &Arc<AuthRegistry>,
+        setup_status: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<()> {
-        Err(anyhow!("Qdrant does not support setup changes"))
+        for setup_change in setup_status.iter() {
+            let qdrant_client =
+                self.get_qdrant_client(&setup_change.key.connection, auth_registry)?;
+            setup_change
+                .setup_status
+                .apply_delete(&setup_change.key.collection_name, &qdrant_client)
+                .await?;
+        }
+        for setup_change in setup_status.iter() {
+            let qdrant_client =
+                self.get_qdrant_client(&setup_change.key.connection, auth_registry)?;
+            setup_change
+                .setup_status
+                .apply_create(&setup_change.key.collection_name, &qdrant_client)
+                .await?;
+        }
+        Ok(())
     }
+}
+
+impl Factory {
+    fn new() -> Self {
+        Self {
+            qdrant_clients: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn get_qdrant_client(
+        &self,
+        auth_entry: &Option<spec::AuthEntryReference<ConnectionSpec>>,
+        auth_registry: &AuthRegistry,
+    ) -> Result<Arc<Qdrant>> {
+        let mut clients = self.qdrant_clients.lock().unwrap();
+        if let Some(client) = clients.get(auth_entry) {
+            return Ok(client.clone());
+        }
+
+        let spec = auth_entry.as_ref().map_or_else(
+            || {
+                Ok(ConnectionSpec {
+                    grpc_url: DEFAULT_URL.to_string(),
+                    api_key: None,
+                })
+            },
+            |auth_entry| auth_registry.get(auth_entry),
+        )?;
+        let client = Arc::new(
+            Qdrant::from_url(&spec.grpc_url)
+                .api_key(spec.api_key)
+                .skip_compatibility_check()
+                .build()?,
+        );
+        clients.insert(auth_entry.clone(), client.clone());
+        Ok(client)
+    }
+}
+
+pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
+    Factory::new().register(registry)
 }

@@ -11,6 +11,7 @@ pub trait SetupOperator: 'static + Send + Sync {
     type Key: Debug + Hash + Eq + Clone + Send + Sync;
     type State: State<Self::Key>;
     type SetupState: Send + Sync + IntoIterator<Item = Self::State>;
+    type Context: Sync;
 
     fn describe_key(&self, key: &Self::Key) -> String;
 
@@ -18,13 +19,13 @@ pub trait SetupOperator: 'static + Send + Sync {
 
     fn is_up_to_date(&self, current: &Self::State, desired: &Self::State) -> bool;
 
-    async fn create(&self, state: &Self::State) -> Result<()>;
+    async fn create(&self, state: &Self::State, context: &Self::Context) -> Result<()>;
 
-    async fn delete(&self, key: &Self::Key) -> Result<()>;
+    async fn delete(&self, key: &Self::Key, context: &Self::Context) -> Result<()>;
 
-    async fn update(&self, state: &Self::State) -> Result<()> {
-        self.delete(&state.key()).await?;
-        self.create(state).await
+    async fn update(&self, state: &Self::State, context: &Self::Context) -> Result<()> {
+        self.delete(&state.key(), context).await?;
+        self.create(state, context).await
     }
 }
 
@@ -150,11 +151,12 @@ impl<D: SetupOperator + Send + Sync> ResourceSetupStatus for SetupStatus<D> {
 
 pub async fn apply_component_changes<D: SetupOperator>(
     changes: Vec<&SetupStatus<D>>,
+    context: &D::Context,
 ) -> Result<()> {
     // First delete components that need to be removed
     for change in changes.iter() {
         for key in &change.keys_to_delete {
-            change.desc.delete(key).await?;
+            change.desc.delete(key, context).await?;
         }
     }
 
@@ -162,9 +164,9 @@ pub async fn apply_component_changes<D: SetupOperator>(
     for change in changes.iter() {
         for state in &change.states_to_upsert {
             if state.already_exists {
-                change.desc.update(&state.state).await?;
+                change.desc.update(&state.state, context).await?;
             } else {
-                change.desc.create(&state.state).await?;
+                change.desc.create(&state.state, context).await?;
             }
         }
     }
