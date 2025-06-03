@@ -4,9 +4,9 @@ use crate::execution::{evaluator, indexing_status, memoization, row_indexer, sta
 use crate::lib_context::LibContext;
 use crate::{base::schema::FlowSchema, ops::interface::SourceExecutorListOptions};
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
-    Json,
 };
 use axum_extra::extract::Query;
 
@@ -18,20 +18,39 @@ pub async fn list_flows(
     ))
 }
 
-pub async fn get_flow_spec(
-    Path(flow_name): Path<String>,
-    State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<spec::FlowInstanceSpec>, ApiError> {
-    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
-    Ok(Json(flow_ctx.flow.flow_instance.clone()))
-}
-
 pub async fn get_flow_schema(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<FlowSchema>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     Ok(Json(flow_ctx.flow.data_schema.clone()))
+}
+
+#[derive(Serialize)]
+pub struct GetFlowResponse {
+    flow_spec: spec::FlowInstanceSpec,
+    data_schema: FlowSchema,
+    fingerprint: utils::fingerprint::Fingerprint,
+}
+
+pub async fn get_flow(
+    Path(flow_name): Path<String>,
+    State(lib_context): State<Arc<LibContext>>,
+) -> Result<Json<GetFlowResponse>, ApiError> {
+    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
+    let flow_spec = flow_ctx.flow.flow_instance.clone();
+    let data_schema = flow_ctx.flow.data_schema.clone();
+    let fingerprint = utils::fingerprint::Fingerprinter::default()
+        .with(&flow_spec)
+        .map_err(|e| api_error!("failed to fingerprint flow spec: {e}"))?
+        .with(&data_schema)
+        .map_err(|e| api_error!("failed to fingerprint data schema: {e}"))?
+        .into_fingerprint();
+    Ok(Json(GetFlowResponse {
+        flow_spec,
+        data_schema,
+        fingerprint,
+    }))
 }
 
 #[derive(Deserialize)]
