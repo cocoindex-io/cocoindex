@@ -127,16 +127,20 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             t = t.__origin__
         elif base_type is types.UnionType:
             possible_types = typing.get_args(t)
-            non_none_types = [
-                arg for arg in possible_types if arg not in (None, types.NoneType)
-            ]
-            if len(non_none_types) != 1:
-                raise ValueError(
-                    f"Expect exactly one non-None choice for Union type, but got {len(non_none_types)}: {t}"
-                )
-            t = non_none_types[0]
-            if len(possible_types) > 1:
-                nullable = True
+            non_none_types = [arg for arg in possible_types if arg not in (None, types.NoneType)]
+
+            if len(non_none_types) == 0:
+                return analyze_type_info(None)
+
+            nullable = len(non_none_types) < len(possible_types)
+
+            if len(non_none_types) == 1:
+                result = analyze_type_info(non_none_types[0])
+                result.nullable = nullable
+                return result
+
+            kind = 'Union'
+            union_variant_types = non_none_types
         else:
             break
 
@@ -185,22 +189,6 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         args = typing.get_args(t)
         elem_type = (args[0], args[1])
         kind = 'KTable'
-    elif base_type is types.UnionType:
-        possible_types = typing.get_args(t)
-        non_none_types = [arg for arg in possible_types if arg not in (None, types.NoneType)]
-
-        if len(non_none_types) == 0:
-            return analyze_type_info(None)
-
-        nullable = len(non_none_types) < len(possible_types)
-
-        if len(non_none_types) == 1:
-            result = analyze_type_info(non_none_types[0])
-            result.nullable = nullable
-            return result
-
-        kind = 'Union'
-        union_variant_types = non_none_types
     elif kind is None:
         if t is bytes:
             kind = "Bytes"
