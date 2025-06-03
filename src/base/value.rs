@@ -981,12 +981,10 @@ impl BasicValue {
                 let tag_id = obj_iter
                     .next()
                     .and_then(|value| value.as_u64().map(|num_u64| num_u64 as usize))
-                    .ok_or_else(|| anyhow::anyhow!("`tag_id` is not available in the value"))?;
+                    .unwrap();
 
                 // Take second element
-                let value = obj_iter
-                    .next()
-                    .ok_or_else(|| anyhow::anyhow!("`value` is not available in the value"))?;
+                let value = obj_iter.next().unwrap();
 
                 let cur_type = typ.types.get(tag_id)
                     .ok_or_else(|| anyhow::anyhow!("No type in `tag_id` \"{tag_id}\" found"))?;
