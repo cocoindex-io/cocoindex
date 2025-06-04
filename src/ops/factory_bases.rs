@@ -309,6 +309,12 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         Vec<(Self::Key, Self::SetupState)>,
     )>;
 
+    /// Deserialize the setup key from a JSON value.
+    /// You can override this method to provide a custom deserialization logic, e.g. to perform backward compatible deserialization.
+    fn deserialize_setup_key(key: serde_json::Value) -> Result<Self::Key> {
+        Ok(serde_json::from_value(key)?)
+    }
+
     /// Will not be called if it's setup by user.
     /// It returns an error if the target only supports setup by user.
     async fn check_setup_status(
@@ -421,7 +427,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         existing_states: setup::CombinedState<serde_json::Value>,
         auth_registry: &Arc<AuthRegistry>,
     ) -> Result<Box<dyn setup::ResourceSetupStatus>> {
-        let key: T::Key = serde_json::from_value(key.clone())?;
+        let key: T::Key = Self::deserialize_setup_key(key.clone())?;
         let desired_state: Option<T::SetupState> = desired_state
             .map(|v| serde_json::from_value(v.clone()))
             .transpose()?;
@@ -438,12 +444,12 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
     }
 
     fn describe_resource(&self, key: &serde_json::Value) -> Result<String> {
-        let key: T::Key = serde_json::from_value(key.clone())?;
+        let key: T::Key = Self::deserialize_setup_key(key.clone())?;
         StorageFactoryBase::describe_resource(self, &key)
     }
 
     fn normalize_setup_key(&self, key: &serde_json::Value) -> Result<serde_json::Value> {
-        let key: T::Key = serde_json::from_value(key.clone())?;
+        let key: T::Key = Self::deserialize_setup_key(key.clone())?;
         Ok(serde_json::to_value(key)?)
     }
 

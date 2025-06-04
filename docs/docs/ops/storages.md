@@ -54,34 +54,21 @@ Here's how CocoIndex data elements map to Qdrant elements during export:
 |-------------------|------------------|
 | an export target  | a unique collection |  
 | a collected row   | a point |
-| a field           | a named vector (for fields with vector type); a field within payload (otherwise) |
+| a field           | a named vector, if fits into Qdrant vector; or a field within payload otherwise |
+
+A vector with `Float32`, `Float64` or `Int64` type, and with fixed dimension, fits into Qdrant vector.
 
 #### Spec
 
 The spec takes the following fields:
 
+*   `connection` (type: [auth reference](../core/flow_def#auth-registry) to `QdrantConnection`, optional): The connection to the Qdrant instance. `QdrantConnection` has the following fields:
+    *   `grpc_url` (type: `str`): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance, e.g. `http://localhost:6334/`.
+    *   `api_key` (type: `str`, optional). API key to authenticate requests with.
+
+    If `connection` is not provided, will use local Qdrant instance at `http://localhost:6334/` by default.
+
 *   `collection_name` (type: `str`, required): The name of the collection to export the data to.
-
-*   `grpc_url` (type: `str`, optional): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance. Defaults to `http://localhost:6334/`.
-
-*   `api_key` (type: `str`, optional). API key to authenticate requests with.
-
-Before exporting, you must create a collection with a [vector name](https://qdrant.tech/documentation/concepts/vectors/#named-vectors) that matches the vector field name in CocoIndex, and set `setup_by_user=True` during export.
-
-Example:
-
-```python
-doc_embeddings.export(
-    "doc_embeddings",
-    cocoindex.storages.Qdrant(
-        collection_name="cocoindex",
-        grpc_url="https://xyz-example.cloud-region.cloud-provider.cloud.qdrant.io:6334/",
-        api_key="<your-api-key-here>",
-    ),
-    primary_key_fields=["id_field"],
-    setup_by_user=True,
-)
-```
 
 You can find an end-to-end example [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_qdrant).
 
@@ -399,19 +386,7 @@ You can find end-to-end examples fitting into any of supported property graphs i
 
 ### Neo4j
 
-If you don't have a Neo4j database, you can start a Neo4j database using our docker compose config:
-
-```bash
-docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/neo4j.yaml) up -d
-```
-
-:::warning
-
-The docker compose config above will start a Neo4j Enterprise instance under the [Evaluation License](https://neo4j.com/terms/enterprise_us/),
-with 30 days trial period.
-Please read and agree the license before starting the instance.
-
-:::
+#### Spec
 
 The `Neo4j` target spec takes the following fields:
 
@@ -430,16 +405,31 @@ Neo4j also provides a declaration spec `Neo4jDeclaration`, to configure indexing
     *   `primary_key_fields` (required)
     *   `vector_indexes` (optional)
 
-### Kuzu
+#### Neo4j dev instance
 
-CocoIndex supports talking to Kuzu through its [API server](https://github.com/kuzudb/api-server).
-You can bring up a Kuzu API server locally by running:
+If you don't have a Neo4j database, you can start a Neo4j database using our docker compose config:
 
 ```bash
-KUZU_DB_DIR=$HOME/.kuzudb
-KUZU_PORT=8123
-docker run -d --name kuzu -p ${KUZU_PORT}:8000 -v ${KUZU_DB_DIR}:/database kuzudb/api-server:latest
+docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/neo4j.yaml) up -d
 ```
+
+If will bring up a Neo4j instance, which can be accessed by username `neo4j` and password `cocoindex`.
+You can access the Neo4j browser at [http://localhost:7474](http://localhost:7474).
+
+:::warning
+
+The docker compose config above will start a Neo4j Enterprise instance under the [Evaluation License](https://neo4j.com/terms/enterprise_us/),
+with 30 days trial period.
+Please read and agree the license before starting the instance.
+
+:::
+
+
+### Kuzu
+
+#### Spec
+
+CocoIndex supports talking to Kuzu through its [API server](https://github.com/kuzudb/api-server).
 
 The `Kuzu` target spec takes the following fields:
 
@@ -453,3 +443,25 @@ Kuzu also provides a declaration spec `KuzuDeclaration`, to configure indexing o
 *   Fields for [nodes to declare](#declare-extra-node-labels), including
     *   `nodes_label` (required)
     *   `primary_key_fields` (required)
+
+#### Kuzu dev instance
+
+If you don't have a Kuzu instance yet, you can bring up a Kuzu API server locally by running:
+
+```bash
+KUZU_DB_DIR=$HOME/.kuzudb
+KUZU_PORT=8123
+docker run -d --name kuzu -p ${KUZU_PORT}:8000 -v ${KUZU_DB_DIR}:/database kuzudb/api-server:latest
+```
+
+To explore the graph you built with Kuzu, you can use the [Kuzu Explorer](https://github.com/kuzudb/explorer).
+Currently Kuzu API server and the explorer cannot be up at the same time. So you need to stop the API server before running the explorer.
+
+To start the instance of the explorer, run:
+
+```bash
+KUZU_EXPLORER_PORT=8124
+docker run -d --name kuzu-explorer -p ${KUZU_EXPLORER_PORT}:8000  -v ${KUZU_DB_DIR}:/database -e MODE=READ_ONLY  kuzudb/explorer:latest
+```
+
+You can then access the explorer at [http://localhost:8124](http://localhost:8124).

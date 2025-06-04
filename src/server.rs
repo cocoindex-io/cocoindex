@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 use crate::{lib_context::LibContext, service};
-use axum::{routing, Router};
+use axum::{Router, routing};
 use tower::ServiceBuilder;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -47,7 +47,7 @@ pub async fn init_server(
                 .route("/flows", routing::get(service::flows::list_flows))
                 .route(
                     "/flows/:flowInstName",
-                    routing::get(service::flows::get_flow_spec),
+                    routing::get(service::flows::get_flow),
                 )
                 .route(
                     "/flows/:flowInstName/schema",
