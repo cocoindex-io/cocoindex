@@ -20,8 +20,8 @@ pyo3-async-runtimes = { version = "0.24.0", features = ["tokio-runtime"] }
 
 anyhow = { version = "1.0.97", features = ["std"] }
 async-trait = "0.1.88"
-axum = "0.7.9"
-axum-extra = { version = "0.9.6", features = ["query"] }
+axum = "0.8.4"
+axum-extra = { version = "0.10.1", features = ["query"] }
 base64 = "0.22.1"
 chrono = "0.4.40"
 config = "0.14.1"
