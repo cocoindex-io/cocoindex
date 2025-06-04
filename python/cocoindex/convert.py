@@ -151,7 +151,10 @@ def make_engine_value_decoder(
                     f"expected {expected_dim}, got {len(value)}"
                 )
 
-            return np.array(value, dtype=dtype_info.numpy_dtype)
+            # Use NDArray for supported numeric dtypes, else return list
+            if dtype_info is not None:
+                return np.array(value, dtype=dtype_info.numpy_dtype)
+            return value
 
         return decode_vector
 

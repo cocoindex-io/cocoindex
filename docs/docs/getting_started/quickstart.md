@@ -154,11 +154,11 @@ The goal of transforming your data is usually to query against it.
 Once you already have your index built, you can directly access the transformed data in the target database.
 CocoIndex also provides utilities for you to do this more seamlessly.
 
-In this example, we'll use the [`psycopg` library](https://www.psycopg.org/) to connect to the database and run queries.
-Please make sure it's installed:
+In this example, we'll use the [`psycopg` library](https://www.psycopg.org/) along with pgvector to connect to the database and run queries on vector data.
+Please make sure the required packages are installed:
 
 ```bash
-pip install psycopg[binary,pool]
+pip install numpy psycopg[binary,pool] pgvector
 ```
 
 ### Step 4.1: Extract common transformations
@@ -169,8 +169,11 @@ i.e. they should use exactly the same embedding model and parameters.
 Let's extract that into a function:
 
 ```python title="quickstart.py"
+from numpy.typing import NDArray
+import numpy as np
+
 @cocoindex.transform_flow()
-def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
+def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[NDArray[np.float32]]:
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
             model="sentence-transformers/all-MiniLM-L6-v2"))
@@ -207,6 +210,7 @@ Now we can create a function to query the index upon a given input query:
 
 ```python title="quickstart.py"
 from psycopg_pool import ConnectionPool
+from pgvector.psycopg import register_vector
 
 def search(pool: ConnectionPool, query: str, top_k: int = 5):
     # Get the table name, for the export target in the text_embedding_flow above.
@@ -215,9 +219,10 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
     query_vector = text_to_embedding.eval(query)
     # Run the query and get the results.
     with pool.connection() as conn:
+        register_vector(conn)
         with conn.cursor() as cur:
             cur.execute(f"""
-                SELECT filename, text, embedding <=> %s::vector AS distance
+                SELECT filename, text, embedding <=> %s AS distance
                 FROM {table_name} ORDER BY distance LIMIT %s
             """, (query_vector, top_k))
             return [
@@ -236,7 +241,7 @@ There're two CocoIndex-specific logic:
 
 2.  Evaluate the transform flow defined above with the input query, to get the embedding.
     It's done by the `eval()` method of the transform flow `text_to_embedding`.
-    The return type of this method is `list[float]` as declared in the `text_to_embedding()` function (`cocoindex.DataSlice[list[float]]`).
+    The return type of this method is `NDArray[np.float32]` as declared in the `text_to_embedding()` function (`cocoindex.DataSlice[NDArray[np.float32]]`).
 
 ### Step 4.3: Add the main script logic
 

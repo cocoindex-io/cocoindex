@@ -9,6 +9,7 @@ from typing import (
     Annotated,
     NamedTuple,
     Any,
+    KeysView,
     TypeVar,
     TYPE_CHECKING,
     overload,
@@ -63,20 +64,23 @@ else:
 
         def __class_getitem__(self, params):
             if not isinstance(params, tuple):
-                numpy_dtype = params
-                return Annotated[NDArray[numpy_dtype], VectorInfo(dim=None)]
+                dtype = params
+                # Use NDArray for supported numeric dtypes, else list
+                if DtypeRegistry.get_by_dtype(dtype) is not None:
+                    return Annotated[NDArray[dtype], VectorInfo(dim=None)]
+                return Annotated[list[dtype], VectorInfo(dim=None)]
             else:
                 # Element type and dimension provided, e.g., Vector[np.float32, Literal[3]]
-                numpy_dtype, dim_literal = params
-                if numpy_dtype not in DtypeRegistry.supported_dtypes():
-                    raise TypeError(
-                        f"Vector dtype must be a NumPy dtype, got {numpy_dtype}"
-                    )
-                if typing.get_origin(dim_literal) is Literal:
-                    dim_val = typing.get_args(dim_literal)[
-                        0
-                    ]  # Extract the literal value
-                return Annotated[NDArray[numpy_dtype], VectorInfo(dim=dim_val)]
+                dtype, dim_literal = params
+                # Extract the literal value
+                dim_val = (
+                    typing.get_args(dim_literal)[0]
+                    if typing.get_origin(dim_literal) is Literal
+                    else None
+                )
+                if dtype in DtypeRegistry.supported_dtypes():
+                    return Annotated[NDArray[dtype], VectorInfo(dim=dim_val)]
+                return Annotated[list[dtype], VectorInfo(dim=dim_val)]
 
 
 TABLE_TYPES: tuple[str, str] = ("KTable", "LTable")
@@ -118,26 +122,23 @@ class DtypeRegistry:
     }
 
     @classmethod
-    def get_by_dtype(cls, dtype: Any) -> DtypeInfo:
+    def get_by_dtype(cls, dtype: Any) -> DtypeInfo | None:
         if dtype is Any:
             raise TypeError(
                 "NDArray for Vector must use a concrete numpy dtype, got `Any`."
             )
-        try:
-            return cls._mappings[dtype]
-        except KeyError:
-            raise ValueError(f"Unsupported NumPy dtype: {dtype}")
+        return cls._mappings.get(dtype)
 
     @staticmethod
-    def get_by_kind(kind: str) -> DtypeInfo:
-        for info in DtypeRegistry._mappings.values():
-            if info.kind == kind:
-                return info
-        raise ValueError(f"Unsupported type kind: {kind}")
+    def get_by_kind(kind: str) -> DtypeInfo | None:
+        return next(
+            (info for info in DtypeRegistry._mappings.values() if info.kind == kind),
+            None,
+        )
 
     @staticmethod
-    def supported_dtypes() -> set[type]:
-        return set(DtypeRegistry._mappings.keys())
+    def supported_dtypes() -> KeysView[type]:
+        return DtypeRegistry._mappings.keys()
 
 
 @dataclasses.dataclass
@@ -241,7 +242,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
 
         numpy_dtype = dtype_args[0]
         dtype_info = DtypeRegistry.get_by_dtype(numpy_dtype)
-        elem_type = dtype_info.annotated_type
+        elem_type = None if dtype_info is None else dtype_info.annotated_type
         vector_info = VectorInfo(dim=None) if vector_info is None else vector_info
 
     elif base_type is collections.abc.Mapping or base_type is dict:
@@ -249,32 +250,31 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         elem_type = (args[0], args[1])
         kind = "KTable"
     elif kind is None:
-        try:
-            dtype_info = DtypeRegistry.get_by_dtype(t)
+        dtype_info = DtypeRegistry.get_by_dtype(t)
+        if dtype_info is not None:
             kind = dtype_info.kind
-        except ValueError:
-            if t is bytes:
-                kind = "Bytes"
-            elif t is str:
-                kind = "Str"
-            elif t is bool:
-                kind = "Bool"
-            elif t is int:
-                kind = "Int64"
-            elif t is float:
-                kind = "Float64"
-            elif t is uuid.UUID:
-                kind = "Uuid"
-            elif t is datetime.date:
-                kind = "Date"
-            elif t is datetime.time:
-                kind = "Time"
-            elif t is datetime.datetime:
-                kind = "OffsetDateTime"
-            elif t is datetime.timedelta:
-                kind = "TimeDelta"
-            else:
-                raise ValueError(f"type unsupported yet: {t}")
+        elif t is bytes:
+            kind = "Bytes"
+        elif t is str:
+            kind = "Str"
+        elif t is bool:
+            kind = "Bool"
+        elif t is int:
+            kind = "Int64"
+        elif t is float:
+            kind = "Float64"
+        elif t is uuid.UUID:
+            kind = "Uuid"
+        elif t is datetime.date:
+            kind = "Date"
+        elif t is datetime.time:
+            kind = "Time"
+        elif t is datetime.datetime:
+            kind = "OffsetDateTime"
+        elif t is datetime.timedelta:
+            kind = "TimeDelta"
+        else:
+            raise ValueError(f"type unsupported yet: {t}")
 
     return AnalyzedTypeInfo(
         kind=kind,

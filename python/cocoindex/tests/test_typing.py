@@ -136,13 +136,28 @@ def test_nullable_ndarray():
     )
 
 
-def test_unsupported_dtype():
-    typ = NDArray[np.complex64]
-    with pytest.raises(
-        ValueError,
-        match="Unsupported NumPy dtype: <class 'numpy.complex64'>",
-    ):
-        analyze_type_info(typ)
+def test_vector_str():
+    typ = Vector[str]
+    result = analyze_type_info(typ)
+    assert result.kind == "Vector"
+    assert result.elem_type == str
+    assert result.vector_info == VectorInfo(dim=None)
+
+
+def test_vector_complex64():
+    typ = Vector[np.complex64]
+    result = analyze_type_info(typ)
+    assert result.kind == "Vector"
+    assert result.elem_type == np.complex64
+    assert result.vector_info == VectorInfo(dim=None)
+
+
+def test_non_numpy_vector():
+    typ = Vector[float, Literal[3]]
+    result = analyze_type_info(typ)
+    assert result.kind == "Vector"
+    assert result.elem_type == float
+    assert result.vector_info == VectorInfo(dim=3)
 
 
 def test_ndarray_any_dtype():
@@ -150,14 +165,6 @@ def test_ndarray_any_dtype():
     with pytest.raises(
         TypeError, match="NDArray for Vector must use a concrete numpy dtype"
     ):
-        analyze_type_info(typ)
-
-
-def test_non_numpy_vector():
-    with pytest.raises(
-        TypeError, match="Vector dtype must be a NumPy dtype, got <class 'float'>"
-    ):
-        typ = Vector[float, Literal[3]]
         analyze_type_info(typ)
 
 

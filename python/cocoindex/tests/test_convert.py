@@ -729,6 +729,17 @@ def test_decode_nullable_ndarray_none_or_value_input():
     )
 
 
+def test_decode_vector_string():
+    """Test decoding a vector of strings works for Python native list type."""
+    src_type_dict = {
+        "kind": "Vector",
+        "element_type": {"kind": "Str"},
+        "dimension": None,
+    }
+    decoder = make_engine_value_decoder([], src_type_dict, Vector[str])
+    assert decoder(["hello", "world"]) == ["hello", "world"]
+
+
 def test_decode_error_non_nullable_or_non_list_vector():
     """Test decoding errors for non-nullable vectors or non-list inputs."""
     src_type_dict = {

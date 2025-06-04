@@ -6,6 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
     "cocoindex>=0.1.42",
     "python-dotenv>=1.0.1",
+    "pgvector>=0.4.1",
     "psycopg[binary,pool]",
     "numpy",
 ]

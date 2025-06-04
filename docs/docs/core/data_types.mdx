@@ -37,15 +37,16 @@ This is the list of all basic types supported by CocoIndex:
 | OffsetDatetime | Date and time with a timezone offset | `cocoindex.OffsetDateTime` | `datetime.datetime` |
 | TimeDelta | A duration of time | `datetime.timedelta` | `datetime.timedelta` |
 | Json | | `cocoindex.Json` | Any data convertible to JSON by `json` package | 
-| Vector[*T*, *Dim*?] | A vector of numbers with type *T* (`np.float32`, `np.float64`, `np.int32`, `np.int64`, `np.uint8`, `np.uint16`, `np.uint32`, or `np.uint64`). *Dim* is a positive integer and optional. | `cocoindex.Vector[T]` or `cocoindex.Vector[T, Dim]` | `numpy.typing.NDArray[T]` or `list[T]` |
+| Vector[*T*, *Dim*?] | *T* can be a basic type or a numeric type. *Dim* is a positive integer and optional. | `cocoindex.Vector[T]` or `cocoindex.Vector[T, Dim]` | `numpy.typing.NDArray[T]` or `list[T]` |
 
 Values of all data types can be represented by values in Python's native types (as described under the Native Python Type column).
 However, the underlying execution engine and some storage system (like Postgres) has finer distinctions for some types, specifically:
 
 *   *Float32* and *Float64* for `float`, with different precision.
 *   *LocalDateTime* and *OffsetDateTime* for `datetime.datetime`, with different timezone awareness.
-*   *Vector* has optional dimension information.
 *   *Range* and *Json* provide a clear tag for the type, to clearly distinguish the type in CocoIndex.
+*   *Vector* holds elements of type *T*. If *T* is numeric (e.g., `np.float32` or `np.float64`), it's represented as `NDArray[T]`; otherwise, as `list[T]`.
+*   *Vector* also has optional dimension information.
 
 The native Python type is always more permissive and can represent a superset of possible values.
 *   Only when you annotate the return type of a custom function, you should use the specific type,
