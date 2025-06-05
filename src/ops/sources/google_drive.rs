@@ -1,12 +1,13 @@
 use chrono::Duration;
 use google_drive3::{
-    api::{File, Scope},
-    yup_oauth2::{read_service_account_key, ServiceAccountAuthenticator},
     DriveHub,
+    api::{File, Scope},
+    yup_oauth2::{ServiceAccountAuthenticator, read_service_account_key},
 };
 use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
+use phf::phf_map;
 
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
@@ -18,45 +19,33 @@ struct ExportMimeType {
 
 const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 const FILE_MIME_TYPE: &str = "application/vnd.google-apps.file";
-static EXPORT_MIME_TYPES: LazyLock<HashMap<&'static str, ExportMimeType>> = LazyLock::new(|| {
-    HashMap::from([
-        (
-            "application/vnd.google-apps.document",
-            ExportMimeType {
-                text: "text/markdown",
-                binary: "application/pdf",
-            },
-        ),
-        (
-            "application/vnd.google-apps.spreadsheet",
-            ExportMimeType {
-                text: "text/csv",
-                binary: "application/pdf",
-            },
-        ),
-        (
-            "application/vnd.google-apps.presentation",
-            ExportMimeType {
-                text: "text/plain",
-                binary: "application/pdf",
-            },
-        ),
-        (
-            "application/vnd.google-apps.drawing",
-            ExportMimeType {
-                text: "image/svg+xml",
-                binary: "image/png",
-            },
-        ),
-        (
-            "application/vnd.google-apps.script",
-            ExportMimeType {
-                text: "application/vnd.google-apps.script+json",
-                binary: "application/vnd.google-apps.script+json",
-            },
-        ),
-    ])
-});
+static EXPORT_MIME_TYPES: phf::Map<&'static str, ExportMimeType> = phf_map! {
+    "application/vnd.google-apps.document" =>
+    ExportMimeType {
+        text: "text/markdown",
+        binary: "application/pdf",
+    },
+    "application/vnd.google-apps.spreadsheet" =>
+    ExportMimeType {
+        text: "text/csv",
+        binary: "application/pdf",
+    },
+    "application/vnd.google-apps.presentation" =>
+    ExportMimeType {
+        text: "text/plain",
+        binary: "application/pdf",
+    },
+    "application/vnd.google-apps.drawing" =>
+    ExportMimeType {
+        text: "image/svg+xml",
+        binary: "image/png",
+    },
+    "application/vnd.google-apps.script" =>
+    ExportMimeType {
+        text: "application/vnd.google-apps.script+json",
+        binary: "application/vnd.google-apps.script+json",
+    },
+};
 
 fn is_supported_file_type(mime_type: &str) -> bool {
     !mime_type.starts_with("application/vnd.google-apps.")
@@ -291,11 +280,7 @@ impl<T> ResultExt<T> for google_drive3::Result<T> {
 }
 
 fn optional_modified_time(include_ordinal: bool) -> &'static str {
-    if include_ordinal {
-        ",modifiedTime"
-    } else {
-        ""
-    }
+    if include_ordinal { ",modifiedTime" } else { "" }
 }
 
 #[async_trait]
