@@ -1,14 +1,14 @@
-use anyhow::anyhow;
+use crate::prelude::*;
+
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use log::debug;
 use pyo3::{exceptions::PyException, prelude::*};
 use std::{
     error::Error,
     fmt::{Debug, Display},
-    sync::Arc,
 };
 
 #[derive(Debug)]
@@ -38,10 +38,18 @@ impl Error for ApiError {
     }
 }
 
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         debug!("Internal server error:\n{:?}", self.err);
-        (self.status_code, format!("{:#}", self.err)).into_response()
+        let error_response = ErrorResponse {
+            error: self.err.to_string(),
+        };
+        (self.status_code, Json(error_response)).into_response()
     }
 }
 
