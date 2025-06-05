@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
-use axum::async_trait;
-use futures::{future::BoxFuture, FutureExt};
+use async_trait::async_trait;
+use futures::{FutureExt, future::BoxFuture};
 use pyo3::{
-    pyclass, pymethods,
+    IntoPyObjectExt, Py, PyAny, Python, pyclass, pymethods,
     types::{IntoPyDict, PyString, PyTuple},
-    IntoPyObjectExt, Py, PyAny, Python,
 };
 use pythonize::pythonize;
 
@@ -14,7 +13,7 @@ use crate::{
     builder::plan,
     py::{self, FromPyResult},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 use super::interface::{FlowInstanceContext, SimpleFunctionExecutor, SimpleFunctionFactory};
 

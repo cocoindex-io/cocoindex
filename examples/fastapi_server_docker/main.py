@@ -2,7 +2,9 @@ import cocoindex
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query
+from fastapi import Request
 from psycopg_pool import ConnectionPool
+from contextlib import asynccontextmanager
 import os
 
 
@@ -86,27 +88,31 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
             ]
 
 
-fastapi_app = FastAPI()
-
-
-@fastapi_app.on_event("startup")
-def startup_event():
+@asynccontextmanager
+def lifespan(app: FastAPI):
     load_dotenv()
     cocoindex.init()
-    # Initialize database connection pool
-    fastapi_app.state.pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
+    pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
+    app.state.pool = pool
+    try:
+        yield
+    finally:
+        pool.close()
+
+
+fastapi_app = FastAPI(lifespan=lifespan)
 
 
 @fastapi_app.get("/search")
 def search_endpoint(
+    request: Request,
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
 ):
-    results = search(fastapi_app.state.pool, q, limit)
+    pool = request.app.state.pool
+    results = search(pool, q, limit)
     return {"results": results}
 
 
 if __name__ == "__main__":
-    load_dotenv()
-    cocoindex.init()
     uvicorn.run(fastapi_app, host="0.0.0.0", port=8080)
