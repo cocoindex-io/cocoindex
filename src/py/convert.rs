@@ -259,68 +259,7 @@ mod tests {
                 });
 
             println!("Roundtripped value: {:?}", roundtripped_value);
-            // Compare values
-            match (&original_value, &roundtripped_value) {
-                (value::Value::Basic(orig), value::Value::Basic(round)) => {
-                    assert_eq!(orig, round, "BasicValue mismatch");
-                }
-                (value::Value::Struct(orig), value::Value::Struct(round)) => {
-                    assert_eq!(
-                        orig.fields.len(),
-                        round.fields.len(),
-                        "Struct field count mismatch"
-                    );
-                    for (o, r) in orig.fields.iter().zip(round.fields.iter()) {
-                        assert_eq!(o, r, "Struct field value mismatch");
-                    }
-                }
-                (value::Value::UTable(orig), value::Value::UTable(round)) => {
-                    assert_eq!(orig.len(), round.len(), "UTable row count mismatch");
-                    for (o, r) in orig.iter().zip(round.iter()) {
-                        assert_eq!(
-                            o.fields.len(),
-                            r.fields.len(),
-                            "UTable field count mismatch"
-                        );
-                        for (of, rf) in o.fields.iter().zip(r.fields.iter()) {
-                            assert_eq!(of, rf, "UTable field value mismatch");
-                        }
-                    }
-                }
-                (value::Value::LTable(orig), value::Value::LTable(round)) => {
-                    assert_eq!(orig.len(), round.len(), "LTable row count mismatch");
-                    for (o, r) in orig.iter().zip(round.iter()) {
-                        assert_eq!(
-                            o.fields.len(),
-                            r.fields.len(),
-                            "LTable field count mismatch"
-                        );
-                        for (of, rf) in o.fields.iter().zip(r.fields.iter()) {
-                            assert_eq!(of, rf, "LTable field value mismatch");
-                        }
-                    }
-                }
-                (value::Value::KTable(orig), value::Value::KTable(round)) => {
-                    assert_eq!(orig.len(), round.len(), "KTable entry count mismatch");
-                    for (ok, ov) in orig.iter() {
-                        let rv = round
-                            .get(ok)
-                            .unwrap_or_else(|| panic!("Missing key in KTable roundtrip: {:?}", ok));
-                        assert_eq!(
-                            ov.fields.len(),
-                            rv.fields.len(),
-                            "KTable field count mismatch"
-                        );
-                        for (of, rf) in ov.fields.iter().zip(rv.fields.iter()) {
-                            assert_eq!(of, rf, "KTable field value mismatch");
-                        }
-                    }
-                }
-                _ => panic!(
-                    "Value type mismatch: expected {:?}, got {:?}",
-                    original_value, roundtripped_value
-                ),
-            }
+            assert_eq!(original_value, &roundtripped_value, "Value mismatch after roundtrip");
         });
     }
 
