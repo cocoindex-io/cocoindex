@@ -243,9 +243,8 @@ mod tests {
 
     fn assert_roundtrip_conversion(original_value: &value::Value, value_type: &schema::ValueType) {
         Python::with_gil(|py| {
-            // Convert Rust value to Python object
-            let pythonized_value = Pythonized(original_value.clone());
-            let py_object = pythonized_value.into_pyobject(py).unwrap_or_else(|e| {
+            // Convert Rust value to Python object using value_to_py_object
+            let py_object = value_to_py_object(py, original_value).unwrap_or_else(|e| {
                 panic!("Failed to convert Rust value to Python object: {:?}", e)
             });
 
