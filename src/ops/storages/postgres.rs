@@ -159,6 +159,12 @@ fn bind_value_field<'arg>(
                     builder.push_bind(sqlx::types::Json(v));
                 }
             },
+            BasicValue::UnionVariant { .. } => {
+                builder.push_bind(sqlx::types::Json(TypedValue {
+                    t: &field_schema.value_type.typ,
+                    v: value,
+                }));
+            }
         },
         Value::Null => {
             builder.push("NULL");
@@ -262,6 +268,7 @@ fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value
                             .transpose()?
                     }
                 }
+                t @ BasicValueType::Union(_) => anyhow::bail!("unsupported type: {}", t),
             };
             basic_value.map(Value::Basic)
         }
@@ -568,6 +575,7 @@ fn to_column_type_sql(column_type: &ValueType) -> String {
                     "jsonb".into()
                 }
             }
+            BasicValueType::Union(_) => "jsonb".into(),
         },
         _ => "jsonb".into(),
     }

@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use pyo3::exceptions::PyTypeError;
 use pyo3::IntoPyObjectExt;
 use pyo3::types::{PyList, PyTuple};
 use pyo3::{exceptions::PyException, prelude::*};
@@ -77,6 +78,9 @@ fn basic_value_to_py_object<'py>(
             .map(|v| basic_value_to_py_object(py, v))
             .collect::<PyResult<Vec<_>>>()?
             .into_bound_py_any(py)?,
+        value::BasicValue::UnionVariant { tag_id, value } => {
+            (*tag_id, basic_value_to_py_object(py, &value)?).into_bound_py_any(py)?
+        }
     };
     Ok(result)
 }
@@ -156,6 +160,24 @@ fn basic_value_from_py_object<'py>(
                 .map(|v| basic_value_from_py_object(&elem.element_type, &v))
                 .collect::<PyResult<Vec<_>>>()?,
         )),
+        schema::BasicValueType::Union(s) => {
+            let mut valid_value = None;
+
+            // Try parsing the value
+            for (i, typ) in s.types.iter().enumerate() {
+                if let Ok(value) = basic_value_from_py_object(typ, v) {
+                    valid_value = Some(value::BasicValue::UnionVariant {
+                        tag_id: i,
+                        value: Box::new(value),
+                    });
+                    break;
+                }
+            }
+
+            valid_value.ok_or_else(|| {
+                PyErr::new::<PyTypeError, _>(format!("invalid union value: {}, available types: {:?}", v, s.types))
+            })?
+        }
     };
     Ok(result)
 }
