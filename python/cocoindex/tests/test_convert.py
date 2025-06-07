@@ -67,6 +67,11 @@ def build_engine_value_decoder(
 def validate_full_roundtrip(
     value: Any, output_type: Any, input_type: Any | None = None
 ) -> None:
+    """
+    Validate the given value doesn't change after encoding, sending to engine (using output_type), receiving back and decoding (using input_type).
+
+    If `input_type` is not specified, uses `output_type` as the target.
+    """
     from cocoindex import _engine
 
     encoded_value = encode_engine_value(value)
