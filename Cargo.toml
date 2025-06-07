@@ -14,9 +14,9 @@ name = "cocoindex_engine"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.24.1", features = ["chrono"] }
-pythonize = "0.24.0"
-pyo3-async-runtimes = { version = "0.24.0", features = ["tokio-runtime"] }
+pyo3 = { version = "0.25.0", features = ["chrono"] }
+pythonize = "0.25.0"
+pyo3-async-runtimes = { version = "0.25.0", features = ["tokio-runtime"] }
 
 anyhow = { version = "1.0.97", features = ["std"] }
 async-trait = "0.1.88"
@@ -113,3 +113,4 @@ json5 = "0.4.1"
 aws-config = "1.6.2"
 aws-sdk-s3 = "1.85.0"
 aws-sdk-sqs = "1.67.0"
+numpy = "0.25.0"
