@@ -6,6 +6,7 @@ import dataclasses
 import datetime
 import inspect
 import uuid
+import numpy as np
 
 from enum import Enum
 from typing import Any, Callable, get_origin, Mapping
@@ -15,6 +16,7 @@ from .typing import (
     is_namedtuple_type,
     TABLE_TYPES,
     KEY_FIELD_NAME,
+    DtypeRegistry,
 )
 
 
@@ -27,6 +29,8 @@ def encode_engine_value(value: Any) -> Any:
         ]
     if is_namedtuple_type(type(value)):
         return [encode_engine_value(getattr(value, name)) for name in value._fields]
+    if isinstance(value, np.ndarray):
+        return value
     if isinstance(value, (list, tuple)):
         return [encode_engine_value(v) for v in value]
     if isinstance(value, dict):
@@ -121,6 +125,38 @@ def make_engine_value_decoder(
 
     if src_type_kind == "Uuid":
         return lambda value: uuid.UUID(bytes=value)
+
+    if src_type_kind == "Vector":
+        elem_coco_type_info = analyze_type_info(dst_type_info.elem_type)
+        dtype_info = DtypeRegistry.get_by_kind(elem_coco_type_info.kind)
+
+        def decode_vector(value: Any) -> Any | None:
+            if value is None:
+                if dst_type_info.nullable:
+                    return None
+                raise ValueError(
+                    f"Received null for non-nullable vector `{''.join(field_path)}`"
+                )
+
+            if not isinstance(value, (np.ndarray, list)):
+                raise TypeError(
+                    f"Expected NDArray or list for vector `{''.join(field_path)}`, got {type(value)}"
+                )
+            expected_dim = (
+                dst_type_info.vector_info.dim if dst_type_info.vector_info else None
+            )
+            if expected_dim is not None and len(value) != expected_dim:
+                raise ValueError(
+                    f"Vector dimension mismatch for `{''.join(field_path)}`: "
+                    f"expected {expected_dim}, got {len(value)}"
+                )
+
+            # Use NDArray for supported numeric dtypes, else return list
+            if dtype_info is not None:
+                return np.array(value, dtype=dtype_info.numpy_dtype)
+            return value
+
+        return decode_vector
 
     return lambda value: value
 
