@@ -1,7 +1,7 @@
 import uuid
 import datetime
 from dataclasses import dataclass, make_dataclass
-from typing import NamedTuple, Literal
+from typing import NamedTuple, Literal, Any, Callable
 import pytest
 import cocoindex
 from cocoindex.typing import encode_enriched_type
@@ -53,13 +53,31 @@ class CustomerNamedTuple(NamedTuple):
     tags: list[Tag] | None = None
 
 
-def build_engine_value_decoder(engine_type_in_py, python_type=None):
+def build_engine_value_decoder(
+    engine_type_in_py: Any, python_type: Any | None = None
+) -> Callable[[Any], Any]:
     """
     Helper to build a converter for the given engine-side type (as represented in Python).
     If python_type is not specified, uses engine_type_in_py as the target.
     """
     engine_type = encode_enriched_type(engine_type_in_py)["type"]
     return make_engine_value_decoder([], engine_type, python_type or engine_type_in_py)
+
+
+def validate_full_roundtrip(
+    value: Any, output_type: Any, input_type: Any | None = None
+) -> None:
+    from cocoindex import _engine
+
+    encoded_value = encode_engine_value(value)
+    encoded_output_type = encode_enriched_type(output_type)["type"]
+    value_from_engine = _engine.testutil.seder_roundtrip(
+        encoded_value, encoded_output_type
+    )
+    decoded_value = build_engine_value_decoder(input_type or output_type, output_type)(
+        value_from_engine
+    )
+    assert decoded_value == value
 
 
 def test_encode_engine_value_basic_types():
@@ -434,57 +452,33 @@ def test_field_position_cases(
     assert decoder(engine_val) == PythonOrder(**expected_dict)
 
 
-def test_roundtrip_ltable():
+def test_roundtrip_ltable() -> None:
     t = list[Order]
     value = [Order("O1", "item1", 10.0), Order("O2", "item2", 20.0)]
-    encoded = encode_engine_value(value)
-    assert encoded == [
-        ["O1", "item1", 10.0, "default_extra"],
-        ["O2", "item2", 20.0, "default_extra"],
-    ]
-    decoded = build_engine_value_decoder(t)(encoded)
-    assert decoded == value
+    validate_full_roundtrip(value, t)
 
     t_nt = list[OrderNamedTuple]
     value_nt = [
         OrderNamedTuple("O1", "item1", 10.0),
         OrderNamedTuple("O2", "item2", 20.0),
     ]
-    encoded = encode_engine_value(value_nt)
-    assert encoded == [
-        ["O1", "item1", 10.0, "default_extra"],
-        ["O2", "item2", 20.0, "default_extra"],
-    ]
-    decoded = build_engine_value_decoder(t_nt)(encoded)
-    assert decoded == value_nt
+    validate_full_roundtrip(value_nt, t_nt)
 
 
-def test_roundtrip_ktable_str_key():
+def test_roundtrip_ktable_str_key() -> None:
     t = dict[str, Order]
     value = {"K1": Order("O1", "item1", 10.0), "K2": Order("O2", "item2", 20.0)}
-    encoded = encode_engine_value(value)
-    assert encoded == [
-        ["K1", "O1", "item1", 10.0, "default_extra"],
-        ["K2", "O2", "item2", 20.0, "default_extra"],
-    ]
-    decoded = build_engine_value_decoder(t)(encoded)
-    assert decoded == value
+    validate_full_roundtrip(value, t)
 
     t_nt = dict[str, OrderNamedTuple]
     value_nt = {
         "K1": OrderNamedTuple("O1", "item1", 10.0),
         "K2": OrderNamedTuple("O2", "item2", 20.0),
     }
-    encoded = encode_engine_value(value_nt)
-    assert encoded == [
-        ["K1", "O1", "item1", 10.0, "default_extra"],
-        ["K2", "O2", "item2", 20.0, "default_extra"],
-    ]
-    decoded = build_engine_value_decoder(t_nt)(encoded)
-    assert decoded == value_nt
+    validate_full_roundtrip(value_nt, t_nt)
 
 
-def test_roundtrip_ktable_struct_key():
+def test_roundtrip_ktable_struct_key() -> None:
     @dataclass(frozen=True)
     class OrderKey:
         shop_id: str
@@ -495,26 +489,14 @@ def test_roundtrip_ktable_struct_key():
         OrderKey("A", 3): Order("O1", "item1", 10.0),
         OrderKey("B", 4): Order("O2", "item2", 20.0),
     }
-    encoded = encode_engine_value(value)
-    assert encoded == [
-        [["A", 3], "O1", "item1", 10.0, "default_extra"],
-        [["B", 4], "O2", "item2", 20.0, "default_extra"],
-    ]
-    decoded = build_engine_value_decoder(t)(encoded)
-    assert decoded == value
+    validate_full_roundtrip(value, t)
 
     t_nt = dict[OrderKey, OrderNamedTuple]
     value_nt = {
         OrderKey("A", 3): OrderNamedTuple("O1", "item1", 10.0),
         OrderKey("B", 4): OrderNamedTuple("O2", "item2", 20.0),
     }
-    encoded = encode_engine_value(value_nt)
-    assert encoded == [
-        [["A", 3], "O1", "item1", 10.0, "default_extra"],
-        [["B", 4], "O2", "item2", 20.0, "default_extra"],
-    ]
-    decoded = build_engine_value_decoder(t_nt)(encoded)
-    assert decoded == value_nt
+    validate_full_roundtrip(value_nt, t_nt)
 
 
 IntVectorType = cocoindex.Vector[int, Literal[5]]
