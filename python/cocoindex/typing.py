@@ -64,6 +64,7 @@ else:
 
         def __class_getitem__(self, params):
             if not isinstance(params, tuple):
+                # No dimension provided, e.g., Vector[np.float32]
                 dtype = params
                 # Use NDArray for supported numeric dtypes, else list
                 if DtypeRegistry.get_by_dtype(dtype) is not None:
@@ -78,7 +79,7 @@ else:
                     if typing.get_origin(dim_literal) is Literal
                     else None
                 )
-                if dtype in DtypeRegistry.supported_dtypes():
+                if DtypeRegistry.get_by_dtype(dtype) is not None:
                     return Annotated[NDArray[dtype], VectorInfo(dim=dim_val)]
                 return Annotated[list[dtype], VectorInfo(dim=dim_val)]
 
@@ -242,7 +243,12 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
 
         numpy_dtype = dtype_args[0]
         dtype_info = DtypeRegistry.get_by_dtype(numpy_dtype)
-        elem_type = None if dtype_info is None else dtype_info.annotated_type
+        if dtype_info is None:
+            raise ValueError(
+                f"Unsupported numpy dtype for NDArray: {numpy_dtype}. "
+                f"Supported dtypes: {DtypeRegistry.supported_dtypes()}"
+            )
+        elem_type = dtype_info.annotated_type
         vector_info = VectorInfo(dim=None) if vector_info is None else vector_info
 
     elif base_type is collections.abc.Mapping or base_type is dict:

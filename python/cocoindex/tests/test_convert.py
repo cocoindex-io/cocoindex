@@ -561,13 +561,13 @@ NDArrayInt64Type = NDArray[np.int64]
 def test_encode_engine_value_ndarray():
     """Test encoding NDArray vectors to lists for the Rust engine."""
     vec_f32: Float32VectorType = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-    assert encode_engine_value(vec_f32) == [1.0, 2.0, 3.0]
+    assert np.array_equal(encode_engine_value(vec_f32), [1.0, 2.0, 3.0])
     vec_f64: Float64VectorType = np.array([1.0, 2.0, 3.0], dtype=np.float64)
-    assert encode_engine_value(vec_f64) == [1.0, 2.0, 3.0]
+    assert np.array_equal(encode_engine_value(vec_f64), [1.0, 2.0, 3.0])
     vec_i64: Int64VectorType = np.array([1, 2, 3], dtype=np.int64)
-    assert encode_engine_value(vec_i64) == [1, 2, 3]
+    assert np.array_equal(encode_engine_value(vec_i64), [1, 2, 3])
     vec_nd_f32: NDArrayFloat32Type = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-    assert encode_engine_value(vec_nd_f32) == [1.0, 2.0, 3.0]
+    assert np.array_equal(encode_engine_value(vec_nd_f32), [1.0, 2.0, 3.0])
 
 
 def test_make_engine_value_decoder_ndarray():
@@ -598,21 +598,21 @@ def test_roundtrip_ndarray_vector():
     """Test roundtrip encoding and decoding of NDArray vectors."""
     value_f32: Float32VectorType = np.array([1.0, 2.0, 3.0], dtype=np.float32)
     encoded_f32 = encode_engine_value(value_f32)
-    assert encoded_f32 == [1.0, 2.0, 3.0]
+    np.array_equal(encoded_f32, [1.0, 2.0, 3.0])
     decoded_f32 = build_engine_value_decoder(Float32VectorType)(encoded_f32)
     assert isinstance(decoded_f32, np.ndarray)
     assert decoded_f32.dtype == np.float32
     assert np.array_equal(decoded_f32, value_f32)
     value_i64: Int64VectorType = np.array([1, 2, 3], dtype=np.int64)
     encoded_i64 = encode_engine_value(value_i64)
-    assert encoded_i64 == [1, 2, 3]
+    assert np.array_equal(encoded_i64, [1, 2, 3])
     decoded_i64 = build_engine_value_decoder(Int64VectorType)(encoded_i64)
     assert isinstance(decoded_i64, np.ndarray)
     assert decoded_i64.dtype == np.int64
     assert np.array_equal(decoded_i64, value_i64)
     value_nd_f64: NDArrayFloat64Type = np.array([1.0, 2.0, 3.0], dtype=np.float64)
     encoded_nd_f64 = encode_engine_value(value_nd_f64)
-    assert encoded_nd_f64 == [1.0, 2.0, 3.0]
+    assert np.array_equal(encoded_nd_f64, [1.0, 2.0, 3.0])
     decoded_nd_f64 = build_engine_value_decoder(NDArrayFloat64Type)(encoded_nd_f64)
     assert isinstance(decoded_nd_f64, np.ndarray)
     assert decoded_nd_f64.dtype == np.float64
@@ -623,7 +623,7 @@ def test_uint_support():
     """Test encoding and decoding of unsigned integer vectors."""
     value_uint8 = np.array([1, 2, 3, 4], dtype=np.uint8)
     encoded = encode_engine_value(value_uint8)
-    assert encoded == [1, 2, 3, 4]
+    assert np.array_equal(encoded, [1, 2, 3, 4])
     decoder = make_engine_value_decoder(
         [], {"kind": "Vector", "element_type": {"kind": "UInt8"}}, NDArray[np.uint8]
     )
@@ -632,7 +632,7 @@ def test_uint_support():
     assert decoded.dtype == np.uint8
     value_uint16 = np.array([1, 2, 3, 4], dtype=np.uint16)
     encoded = encode_engine_value(value_uint16)
-    assert encoded == [1, 2, 3, 4]
+    assert np.array_equal(encoded, [1, 2, 3, 4])
     decoder = make_engine_value_decoder(
         [], {"kind": "Vector", "element_type": {"kind": "UInt16"}}, NDArray[np.uint16]
     )
@@ -641,7 +641,7 @@ def test_uint_support():
     assert decoded.dtype == np.uint16
     value_uint32 = np.array([1, 2, 3], dtype=np.uint32)
     encoded = encode_engine_value(value_uint32)
-    assert encoded == [1, 2, 3]
+    assert np.array_equal(encoded, [1, 2, 3])
     decoder = make_engine_value_decoder(
         [], {"kind": "Vector", "element_type": {"kind": "UInt32"}}, NDArray[np.uint32]
     )
@@ -650,7 +650,7 @@ def test_uint_support():
     assert decoded.dtype == np.uint32
     value_uint64 = np.array([1, 2, 3], dtype=np.uint64)
     encoded = encode_engine_value(value_uint64)
-    assert encoded == [1, 2, 3]
+    assert np.array_equal(encoded, [1, 2, 3])
     decoder = make_engine_value_decoder(
         [], {"kind": "Vector", "element_type": {"kind": "UInt8"}}, NDArray[np.uint64]
     )
@@ -663,7 +663,7 @@ def test_ndarray_dimension_mismatch():
     """Test dimension enforcement for Vector with specified dimension."""
     value: Float32VectorType = np.array([1.0, 2.0], dtype=np.float32)
     encoded = encode_engine_value(value)
-    assert encoded == [1.0, 2.0]
+    assert np.array_equal(encoded, [1.0, 2.0])
     with pytest.raises(ValueError, match="Vector dimension mismatch"):
         build_engine_value_decoder(Float32VectorType)(encoded)
 
@@ -679,9 +679,9 @@ def test_list_vector_backward_compatibility():
     assert np.array_equal(decoded, np.array([1, 2, 3, 4, 5], dtype=np.int64))
     value_list: ListIntType = [1, 2, 3, 4, 5]
     encoded = encode_engine_value(value_list)
-    assert encoded == [1, 2, 3, 4, 5]
+    assert np.array_equal(encoded, [1, 2, 3, 4, 5])
     decoded = build_engine_value_decoder(ListIntType)(encoded)
-    assert decoded.tolist() == [1, 2, 3, 4, 5]
+    assert np.array_equal(decoded, [1, 2, 3, 4, 5])
 
 
 def test_encode_complex_structure_with_ndarray():
@@ -702,7 +702,9 @@ def test_encode_complex_structure_with_ndarray():
         [1.0, 0.5],
         100,
     ]
-    assert encoded == expected
+    assert encoded[0] == expected[0]
+    assert np.array_equal(encoded[1], expected[1])
+    assert encoded[2] == expected[2]
 
 
 def test_decode_nullable_ndarray_none_or_value_input():
@@ -750,7 +752,7 @@ def test_decode_error_non_nullable_or_non_list_vector():
     decoder = make_engine_value_decoder([], src_type_dict, NDArrayFloat32Type)
     with pytest.raises(ValueError, match="Received null for non-nullable vector"):
         decoder(None)
-    with pytest.raises(TypeError, match="Expected a list for vector"):
+    with pytest.raises(TypeError, match="Expected NDArray or list for vector"):
         decoder("not a list")
 
 

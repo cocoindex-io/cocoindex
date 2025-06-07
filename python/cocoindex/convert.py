@@ -30,7 +30,7 @@ def encode_engine_value(value: Any) -> Any:
     if is_namedtuple_type(type(value)):
         return [encode_engine_value(getattr(value, name)) for name in value._fields]
     if isinstance(value, np.ndarray):
-        return value.tolist()
+        return value
     if isinstance(value, (list, tuple)):
         return [encode_engine_value(v) for v in value]
     if isinstance(value, dict):
@@ -138,9 +138,9 @@ def make_engine_value_decoder(
                     f"Received null for non-nullable vector `{''.join(field_path)}`"
                 )
 
-            if not isinstance(value, list):
+            if not isinstance(value, (np.ndarray, list)):
                 raise TypeError(
-                    f"Expected a list for vector `{''.join(field_path)}`, got {type(value)}"
+                    f"Expected NDArray or list for vector `{''.join(field_path)}`, got {type(value)}"
                 )
             expected_dim = (
                 dst_type_info.vector_info.dim if dst_type_info.vector_info else None
