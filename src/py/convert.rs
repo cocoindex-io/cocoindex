@@ -189,7 +189,6 @@ fn handle_ndarray_from_py<'py>(
             try_convert!(u8, |v| value::BasicValue::Int64(v as i64));
             try_convert!(u16, |v| value::BasicValue::Int64(v as i64));
             try_convert!(u32, |v| value::BasicValue::Int64(v as i64));
-            try_convert!(u64, |v| value::BasicValue::Int64(v as i64));
         }
         _ => {}
     }
@@ -206,40 +205,40 @@ fn handle_vector_to_py<'py>(
         Some(value::BasicValue::Float32(_)) => {
             let data = v
                 .iter()
-                .filter_map(|x| {
-                    if let value::BasicValue::Float32(f) = x {
-                        Some(*f)
-                    } else {
-                        None
-                    }
+                .map(|x| match x {
+                    value::BasicValue::Float32(f) => Ok(*f),
+                    _ => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                        "Expected all elements to be Float32",
+                    )),
                 })
-                .collect::<Vec<_>>();
+                .collect::<PyResult<Vec<_>>>()?;
+
             Ok(PyArray1::from_vec(py, data).into_any())
         }
         Some(value::BasicValue::Float64(_)) => {
             let data = v
                 .iter()
-                .filter_map(|x| {
-                    if let value::BasicValue::Float64(f) = x {
-                        Some(*f)
-                    } else {
-                        None
-                    }
+                .map(|x| match x {
+                    value::BasicValue::Float64(f) => Ok(*f),
+                    _ => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                        "Expected all elements to be Float64",
+                    )),
                 })
-                .collect::<Vec<_>>();
+                .collect::<PyResult<Vec<_>>>()?;
+
             Ok(PyArray1::from_vec(py, data).into_any())
         }
         Some(value::BasicValue::Int64(_)) => {
             let data = v
                 .iter()
-                .filter_map(|x| {
-                    if let value::BasicValue::Int64(i) = x {
-                        Some(*i)
-                    } else {
-                        None
-                    }
+                .map(|x| match x {
+                    value::BasicValue::Int64(i) => Ok(*i),
+                    _ => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                        "Expected all elements to be Int64",
+                    )),
                 })
-                .collect::<Vec<_>>();
+                .collect::<PyResult<Vec<_>>>()?;
+
             Ok(PyArray1::from_vec(py, data).into_any())
         }
         _ => Ok(v

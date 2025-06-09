@@ -124,7 +124,6 @@ class DtypeRegistry:
         np.uint8: DtypeInfo(np.uint8, "UInt8", int),
         np.uint16: DtypeInfo(np.uint16, "UInt16", int),
         np.uint32: DtypeInfo(np.uint32, "UInt32", int),
-        np.uint64: DtypeInfo(np.uint64, "UInt64", int),
     }
 
     @classmethod

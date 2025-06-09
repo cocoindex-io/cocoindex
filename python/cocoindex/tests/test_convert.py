@@ -640,15 +640,6 @@ def test_uint_support():
     decoded = decoder(encoded)
     assert np.array_equal(decoded, value_uint32)
     assert decoded.dtype == np.uint32
-    value_uint64 = np.array([1, 2, 3], dtype=np.uint64)
-    encoded = encode_engine_value(value_uint64)
-    assert np.array_equal(encoded, [1, 2, 3])
-    decoder = make_engine_value_decoder(
-        [], {"kind": "Vector", "element_type": {"kind": "UInt8"}}, NDArray[np.uint64]
-    )
-    decoded = decoder(encoded)
-    assert np.array_equal(decoded, value_uint64)
-    assert decoded.dtype == np.uint64
 
 
 def test_ndarray_dimension_mismatch():
@@ -772,7 +763,7 @@ def test_dump_vector_type_annotation_no_dim():
     assert dump_engine_object(Float64VectorTypeNoDim) == expected_dump_no_dim
 
 
-def test_roundtrip_vector_numeric_types() -> None:
+def test_full_roundtrip_vector_numeric_types() -> None:
     """Test full roundtrip for numeric vector types using NDArray."""
     value_f32: Vector[np.float32, Literal[3]] = np.array(
         [1.0, 2.0, 3.0], dtype=np.float32
@@ -793,7 +784,8 @@ def test_roundtrip_vector_numeric_types() -> None:
     value_u32: Vector[np.uint32, Literal[3]] = np.array([1, 2, 3], dtype=np.uint32)
     validate_full_roundtrip(value_u32, Vector[np.uint32, Literal[3]])
     value_u64: Vector[np.uint64, Literal[3]] = np.array([1, 2, 3], dtype=np.uint64)
-    validate_full_roundtrip(value_u64, Vector[np.uint64, Literal[3]])
+    with pytest.raises(ValueError, match="type unsupported yet"):
+        validate_full_roundtrip(value_u64, Vector[np.uint64, Literal[3]])
 
 
 def test_roundtrip_vector_no_dimension() -> None:
