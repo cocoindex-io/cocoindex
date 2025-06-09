@@ -6,18 +6,13 @@ use super::shared::table_columns::{
 use crate::base::spec::{self, *};
 use crate::ops::sdk::*;
 use crate::settings::DatabaseConnectionSpec;
-use crate::utils::db::ValidIdentifier;
 use async_trait::async_trait;
-use bytes::Bytes;
-use futures::FutureExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
 use serde::Serialize;
-use sqlx::postgres::PgRow;
+use sqlx::PgPool;
 use sqlx::postgres::types::PgRange;
-use sqlx::{PgPool, Row};
 use std::ops::Bound;
-use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
@@ -173,115 +168,11 @@ fn bind_value_field<'arg>(
     Ok(())
 }
 
-fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value> {
-    let value = match typ {
-        ValueType::Basic(basic_type) => {
-            let basic_value = match basic_type {
-                BasicValueType::Bytes => row
-                    .try_get::<Option<Vec<u8>>, _>(field_idx)?
-                    .map(|v| BasicValue::Bytes(Bytes::from(v))),
-                BasicValueType::Str => row
-                    .try_get::<Option<String>, _>(field_idx)?
-                    .map(|v| BasicValue::Str(Arc::from(v))),
-                BasicValueType::Bool => row
-                    .try_get::<Option<bool>, _>(field_idx)?
-                    .map(BasicValue::Bool),
-                BasicValueType::Int64 => row
-                    .try_get::<Option<i64>, _>(field_idx)?
-                    .map(BasicValue::Int64),
-                BasicValueType::Float32 => row
-                    .try_get::<Option<f32>, _>(field_idx)?
-                    .map(BasicValue::Float32),
-                BasicValueType::Float64 => row
-                    .try_get::<Option<f64>, _>(field_idx)?
-                    .map(BasicValue::Float64),
-                BasicValueType::Range => row
-                    .try_get::<Option<PgRange<i64>>, _>(field_idx)?
-                    .map(|v| match (v.start, v.end) {
-                        (Bound::Included(start), Bound::Excluded(end)) => {
-                            Ok(BasicValue::Range(RangeValue {
-                                start: start as usize,
-                                end: end as usize,
-                            }))
-                        }
-                        _ => anyhow::bail!("invalid range value"),
-                    })
-                    .transpose()?,
-                BasicValueType::Uuid => row
-                    .try_get::<Option<Uuid>, _>(field_idx)?
-                    .map(BasicValue::Uuid),
-                BasicValueType::Date => row
-                    .try_get::<Option<chrono::NaiveDate>, _>(field_idx)?
-                    .map(BasicValue::Date),
-                BasicValueType::Time => row
-                    .try_get::<Option<chrono::NaiveTime>, _>(field_idx)?
-                    .map(BasicValue::Time),
-                BasicValueType::LocalDateTime => row
-                    .try_get::<Option<chrono::NaiveDateTime>, _>(field_idx)?
-                    .map(BasicValue::LocalDateTime),
-                BasicValueType::OffsetDateTime => row
-                    .try_get::<Option<chrono::DateTime<chrono::FixedOffset>>, _>(field_idx)?
-                    .map(BasicValue::OffsetDateTime),
-                BasicValueType::TimeDelta => row
-                    .try_get::<Option<sqlx::postgres::types::PgInterval>, _>(field_idx)?
-                    .map(|pg_interval| {
-                        let duration = chrono::Duration::microseconds(pg_interval.microseconds)
-                            + chrono::Duration::days(pg_interval.days as i64)
-                            + chrono::Duration::days((pg_interval.months as i64) * 30);
-                        BasicValue::TimeDelta(duration)
-                    }),
-                BasicValueType::Json => row
-                    .try_get::<Option<serde_json::Value>, _>(field_idx)?
-                    .map(|v| BasicValue::Json(Arc::from(v))),
-                BasicValueType::Vector(vs) => {
-                    if convertible_to_pgvector(vs) {
-                        row.try_get::<Option<pgvector::Vector>, _>(field_idx)?
-                            .map(|v| -> Result<_> {
-                                Ok(BasicValue::Vector(Arc::from(
-                                    v.as_slice()
-                                        .iter()
-                                        .map(|e| {
-                                            Ok(match *vs.element_type {
-                                                BasicValueType::Float32 => BasicValue::Float32(*e),
-                                                BasicValueType::Float64 => {
-                                                    BasicValue::Float64(*e as f64)
-                                                }
-                                                BasicValueType::Int64 => {
-                                                    BasicValue::Int64(*e as i64)
-                                                }
-                                                _ => anyhow::bail!("invalid vector element type"),
-                                            })
-                                        })
-                                        .collect::<Result<Vec<_>>>()?,
-                                )))
-                            })
-                            .transpose()?
-                    } else {
-                        row.try_get::<Option<serde_json::Value>, _>(field_idx)?
-                            .map(|v| BasicValue::from_json(v, basic_type))
-                            .transpose()?
-                    }
-                }
-            };
-            basic_value.map(Value::Basic)
-        }
-        _ => row
-            .try_get::<Option<serde_json::Value>, _>(field_idx)?
-            .map(|v| Value::from_json(v, typ))
-            .transpose()?,
-    };
-    let final_value = if let Some(v) = value { v } else { Value::Null };
-    Ok(final_value)
-}
-
 pub struct ExportContext {
     db_ref: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
     db_pool: PgPool,
-    table_name: ValidIdentifier,
     key_fields_schema: Vec<FieldSchema>,
     value_fields_schema: Vec<FieldSchema>,
-    all_fields: Vec<FieldSchema>,
-    all_fields_comma_separated: String,
     upsert_sql_prefix: String,
     upsert_sql_suffix: String,
     delete_sql_prefix: String,
@@ -311,23 +202,11 @@ impl ExportContext {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let all_fields = key_fields_schema
-            .iter()
-            .chain(value_fields_schema.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-        let table_name = ValidIdentifier::try_from(table_name)?;
         Ok(Self {
             db_ref,
             db_pool,
             key_fields_schema,
             value_fields_schema,
-            all_fields_comma_separated: all_fields
-                .iter()
-                .map(|f| f.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-            all_fields,
             upsert_sql_prefix: format!(
                 "INSERT INTO {table_name} ({key_fields}, {value_fields}) VALUES "
             ),
@@ -335,7 +214,6 @@ impl ExportContext {
                 " ON CONFLICT ({key_fields}) DO UPDATE SET {set_value_fields};"
             ),
             delete_sql_prefix: format!("DELETE FROM {table_name} WHERE "),
-            table_name,
         })
     }
 }
@@ -411,69 +289,6 @@ impl ExportContext {
             query_builder.build().execute(&mut **txn).await?;
         }
         Ok(())
-    }
-}
-
-static SCORE_FIELD_NAME: &str = "__score";
-
-struct PostgresQueryTarget {
-    db_pool: PgPool,
-    context: Arc<ExportContext>,
-}
-
-#[async_trait]
-impl QueryTarget for PostgresQueryTarget {
-    async fn search(&self, query: VectorMatchQuery) -> Result<QueryResults> {
-        let query_str = format!(
-            "SELECT {} {} $1 AS {SCORE_FIELD_NAME}, {} FROM {} ORDER BY {SCORE_FIELD_NAME} LIMIT $2",
-            ValidIdentifier::try_from(query.vector_field_name)?,
-            to_distance_operator(query.similarity_metric),
-            self.context.all_fields_comma_separated,
-            self.context.table_name,
-        );
-        let results = sqlx::query(&query_str)
-            .bind(pgvector::Vector::from(query.vector))
-            .bind(query.limit as i64)
-            .fetch_all(&self.db_pool)
-            .await?
-            .into_iter()
-            .map(|r| -> Result<QueryResult> {
-                let score: f64 = distance_to_similarity(query.similarity_metric, r.try_get(0)?);
-                let data = self
-                    .context
-                    .key_fields_schema
-                    .iter()
-                    .chain(self.context.value_fields_schema.iter())
-                    .enumerate()
-                    .map(|(idx, schema)| from_pg_value(&r, idx + 1, &schema.value_type.typ))
-                    .collect::<Result<Vec<_>>>()?;
-                let result = QueryResult { data, score };
-                Ok(result)
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(QueryResults {
-            fields: self.context.all_fields.clone(),
-            results,
-        })
-    }
-}
-
-fn to_distance_operator(metric: VectorSimilarityMetric) -> &'static str {
-    match metric {
-        VectorSimilarityMetric::CosineSimilarity => "<=>",
-        VectorSimilarityMetric::L2Distance => "<->",
-        VectorSimilarityMetric::InnerProduct => "<#>",
-    }
-}
-
-fn distance_to_similarity(metric: VectorSimilarityMetric, distance: f64) -> f64 {
-    match metric {
-        // cosine distance => cosine similarity
-        VectorSimilarityMetric::CosineSimilarity => 1.0 - distance,
-        VectorSimilarityMetric::L2Distance => distance,
-        // negative inner product => inner product
-        VectorSimilarityMetric::InnerProduct => -distance,
     }
 }
 
@@ -833,7 +648,7 @@ impl StorageFactoryBase for Factory {
                 let table_name = table_id.table_name.clone();
                 let db_ref = d.spec.database;
                 let auth_registry = context.auth_registry.clone();
-                let executors = async move {
+                let export_context = Box::pin(async move {
                     let db_pool = get_db_pool(db_ref.as_ref(), &auth_registry).await?;
                     let export_context = Arc::new(ExportContext::new(
                         db_ref,
@@ -842,19 +657,12 @@ impl StorageFactoryBase for Factory {
                         d.key_fields_schema,
                         d.value_fields_schema,
                     )?);
-                    let query_target = Arc::new(PostgresQueryTarget {
-                        db_pool,
-                        context: export_context.clone(),
-                    });
-                    Ok(TypedExportTargetExecutors {
-                        export_context: export_context.clone(),
-                        query_target: Some(query_target as Arc<dyn QueryTarget>),
-                    })
-                };
+                    Ok(export_context)
+                });
                 Ok(TypedExportDataCollectionBuildOutput {
                     setup_key: table_id,
                     desired_setup_state: setup_state,
-                    executors: executors.boxed(),
+                    export_context,
                 })
             })
             .collect::<Result<Vec<_>>>()?;

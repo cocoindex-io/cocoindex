@@ -6,7 +6,7 @@ import warnings
 from typing import Callable, Any
 
 from . import _engine  # type: ignore
-from . import flow, query, setting
+from . import flow, setting
 from .convert import dump_engine_object
 
 
@@ -24,7 +24,6 @@ def init(settings: setting.Settings | None = None) -> None:
 def start_server(settings: setting.ServerSettings) -> None:
     """Start the cocoindex server."""
     flow.ensure_all_flows_built()
-    query.ensure_all_handlers_built()
     _engine.start_server(settings.__dict__)
 
 

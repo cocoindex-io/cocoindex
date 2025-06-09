@@ -1,10 +1,6 @@
 use std::time::SystemTime;
 
-use crate::base::{
-    schema::*,
-    spec::{IndexOptions, VectorSimilarityMetric},
-    value::*,
-};
+use crate::base::{schema::*, spec::IndexOptions, value::*};
 use crate::prelude::*;
 use crate::setup;
 use chrono::TimeZone;
@@ -241,12 +237,8 @@ pub enum SetupStateCompatibility {
     NotCompatible,
 }
 
-pub struct ExportTargetExecutors {
-    pub export_context: Arc<dyn Any + Send + Sync>,
-    pub query_target: Option<Arc<dyn QueryTarget>>,
-}
 pub struct ExportDataCollectionBuildOutput {
-    pub executors: BoxFuture<'static, Result<ExportTargetExecutors>>,
+    pub export_context: BoxFuture<'static, Result<Arc<dyn Any + Send + Sync>>>,
     pub setup_key: serde_json::Value,
     pub desired_setup_state: serde_json::Value,
 }
@@ -317,59 +309,4 @@ pub enum ExecutorFactory {
     Source(Arc<dyn SourceFactory + Send + Sync>),
     SimpleFunction(Arc<dyn SimpleFunctionFactory + Send + Sync>),
     ExportTarget(Arc<dyn ExportTargetFactory + Send + Sync>),
-}
-
-#[derive(Debug)]
-pub struct VectorMatchQuery {
-    pub vector_field_name: String,
-    pub vector: Vec<f32>,
-    pub similarity_metric: VectorSimilarityMetric,
-    pub limit: u32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct QueryResult<Row = Vec<Value>> {
-    pub data: Row,
-    pub score: f64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct QueryResults<Row = Vec<Value>> {
-    pub fields: Vec<FieldSchema>,
-    pub results: Vec<QueryResult<Row>>,
-}
-
-impl TryFrom<QueryResults<Vec<Value>>> for QueryResults<serde_json::Value> {
-    type Error = anyhow::Error;
-
-    fn try_from(values: QueryResults<Vec<Value>>) -> Result<Self, Self::Error> {
-        let results = values
-            .results
-            .into_iter()
-            .map(|r| {
-                let data = serde_json::to_value(TypedFieldsValue {
-                    schema: &values.fields,
-                    values_iter: r.data.iter(),
-                })?;
-                Ok(QueryResult {
-                    data,
-                    score: r.score,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(QueryResults {
-            fields: values.fields,
-            results,
-        })
-    }
-}
-#[derive(Debug, Clone, Serialize)]
-pub struct QueryResponse {
-    pub results: QueryResults<serde_json::Value>,
-    pub info: serde_json::Value,
-}
-
-#[async_trait]
-pub trait QueryTarget: Send + Sync {
-    async fn search(&self, query: VectorMatchQuery) -> Result<QueryResults>;
 }
