@@ -1,7 +1,7 @@
 import uuid
 import datetime
 from dataclasses import dataclass, make_dataclass
-from typing import NamedTuple, Literal, Any, Callable
+from typing import NamedTuple, Literal, Any, Callable, Union
 import pytest
 import cocoindex
 from cocoindex.typing import (
@@ -91,7 +91,7 @@ def validate_full_roundtrip(
     decoded_value = build_engine_value_decoder(input_type or output_type, output_type)(
         value_from_engine
     )
-    assert decoded_value == value
+    np.testing.assert_array_equal(decoded_value, value)
 
 
 def test_encode_engine_value_basic_types():
@@ -540,6 +540,11 @@ Float32VectorType = Vector[np.float32, Literal[3]]
 Float64VectorType = Vector[np.float64, Literal[3]]
 Int64VectorType = Vector[np.int64, Literal[3]]
 Int32VectorType = Vector[np.int32, Literal[3]]
+UInt8VectorType = Vector[np.uint8, Literal[3]]
+UInt16VectorType = Vector[np.uint16, Literal[3]]
+UInt32VectorType = Vector[np.uint32, Literal[3]]
+UInt64VectorType = Vector[np.uint64, Literal[3]]
+StrVectorType = Vector[str]
 NDArrayFloat32Type = NDArray[np.float32]
 NDArrayFloat64Type = NDArray[np.float64]
 NDArrayInt64Type = NDArray[np.int64]
@@ -765,3 +770,58 @@ def test_dump_vector_type_annotation_no_dim():
         }
     }
     assert dump_engine_object(Float64VectorTypeNoDim) == expected_dump_no_dim
+
+
+def test_roundtrip_vector_numeric_types() -> None:
+    """Test full roundtrip for numeric vector types using NDArray."""
+    value_f32: Vector[np.float32, Literal[3]] = np.array(
+        [1.0, 2.0, 3.0], dtype=np.float32
+    )
+    validate_full_roundtrip(value_f32, Vector[np.float32, Literal[3]])
+    value_f64: Vector[np.float64, Literal[3]] = np.array(
+        [1.0, 2.0, 3.0], dtype=np.float64
+    )
+    validate_full_roundtrip(value_f64, Vector[np.float64, Literal[3]])
+    value_i32: Vector[np.int32, Literal[3]] = np.array([1, 2, 3], dtype=np.int32)
+    validate_full_roundtrip(value_i32, Vector[np.int32, Literal[3]])
+    value_i64: Vector[np.int64, Literal[3]] = np.array([1, 2, 3], dtype=np.int64)
+    validate_full_roundtrip(value_i64, Vector[np.int64, Literal[3]])
+    value_u8: Vector[np.uint8, Literal[3]] = np.array([1, 2, 3], dtype=np.uint8)
+    validate_full_roundtrip(value_u8, Vector[np.uint8, Literal[3]])
+    value_u16: Vector[np.uint16, Literal[3]] = np.array([1, 2, 3], dtype=np.uint16)
+    validate_full_roundtrip(value_u16, Vector[np.uint16, Literal[3]])
+    value_u32: Vector[np.uint32, Literal[3]] = np.array([1, 2, 3], dtype=np.uint32)
+    validate_full_roundtrip(value_u32, Vector[np.uint32, Literal[3]])
+    value_u64: Vector[np.uint64, Literal[3]] = np.array([1, 2, 3], dtype=np.uint64)
+    validate_full_roundtrip(value_u64, Vector[np.uint64, Literal[3]])
+
+
+def test_roundtrip_vector_no_dimension() -> None:
+    """Test full roundtrip for vector types without dimension annotation."""
+    value_f64: Vector[np.float64] = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    validate_full_roundtrip(value_f64, Vector[np.float64])
+
+
+def test_roundtrip_string_vector() -> None:
+    """Test full roundtrip for string vector using list."""
+    value_str: Vector[str] = ["hello", "world"]
+    validate_full_roundtrip(value_str, Vector[str])
+
+
+def test_roundtrip_empty_vector() -> None:
+    """Test full roundtrip for empty numeric vector."""
+    value_empty: Vector[np.float32] = np.array([], dtype=np.float32)
+    validate_full_roundtrip(value_empty, Vector[np.float32])
+
+
+def test_roundtrip_dimension_mismatch() -> None:
+    """Test that dimension mismatch raises an error during roundtrip."""
+    value_f32: Vector[np.float32, Literal[3]] = np.array([1.0, 2.0], dtype=np.float32)
+    with pytest.raises(ValueError, match="Vector dimension mismatch"):
+        validate_full_roundtrip(value_f32, Vector[np.float32, Literal[3]])
+
+
+def test_roundtrip_list_backward_compatibility() -> None:
+    """Test full roundtrip for list-based vectors for backward compatibility."""
+    value_list: list[int] = [1, 2, 3]
+    validate_full_roundtrip(value_list, list[int])

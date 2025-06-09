@@ -111,6 +111,11 @@ class DtypeInfo:
 
 
 class DtypeRegistry:
+    """
+    Registry for NumPy dtypes used in CocoIndex.
+    Provides mappings from NumPy dtypes to CocoIndex's type representation.
+    """
+
     _mappings: dict[type, DtypeInfo] = {
         np.float32: DtypeInfo(np.float32, "Float32", float),
         np.float64: DtypeInfo(np.float64, "Float64", float),
@@ -124,6 +129,7 @@ class DtypeRegistry:
 
     @classmethod
     def get_by_dtype(cls, dtype: Any) -> DtypeInfo | None:
+        """Get DtypeInfo by NumPy dtype."""
         if dtype is Any:
             raise TypeError(
                 "NDArray for Vector must use a concrete numpy dtype, got `Any`."
@@ -132,13 +138,21 @@ class DtypeRegistry:
 
     @staticmethod
     def get_by_kind(kind: str) -> DtypeInfo | None:
+        """Get DtypeInfo by kind."""
         return next(
             (info for info in DtypeRegistry._mappings.values() if info.kind == kind),
             None,
         )
 
     @staticmethod
+    def rust_compatible_kind(kind: str) -> str:
+        """Map to a Rust-compatible kind for schema encoding."""
+        # incompatible_integer_kinds = {"Int32", "UInt8", "UInt16", "UInt32", "UInt64"}
+        return "Int64" if "Int" in kind else kind
+
+    @staticmethod
     def supported_dtypes() -> KeysView[type]:
+        """Get a list of supported NumPy dtypes."""
         return DtypeRegistry._mappings.keys()
 
 
@@ -340,8 +354,10 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
             raise ValueError("Vector type must have a vector info")
         if type_info.elem_type is None:
             raise ValueError("Vector type must have an element type")
-        encoded_type["element_type"] = _encode_type(
-            analyze_type_info(type_info.elem_type)
+        elem_type_info = analyze_type_info(type_info.elem_type)
+        encoded_type["element_type"] = _encode_type(elem_type_info)
+        encoded_type["element_type"]["kind"] = DtypeRegistry.rust_compatible_kind(
+            elem_type_info.kind
         )
         encoded_type["dimension"] = type_info.vector_info.dim
 

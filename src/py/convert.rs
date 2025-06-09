@@ -165,6 +165,7 @@ fn basic_value_from_py_object<'py>(
     Ok(result)
 }
 
+// Helper function to convert PyAny to BasicValue for NDArray
 fn handle_ndarray_from_py<'py>(
     elem_type: &schema::BasicValueType,
     v: &Bound<'py, PyAny>,
