@@ -158,7 +158,7 @@ In this example, we'll use the [`psycopg` library](https://www.psycopg.org/) alo
 Please make sure the required packages are installed:
 
 ```bash
-pip install numpy psycopg[binary,pool] pgvector
+pip install numpy "psycopg[binary,pool]" pgvector
 ```
 
 ### Step 4.1: Extract common transformations
