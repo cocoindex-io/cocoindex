@@ -112,3 +112,4 @@ jobs:
     name: Release Docs
     needs: [release]
     uses: ./.github/workflows/_doc_release.yml
+    secrets: inherit
