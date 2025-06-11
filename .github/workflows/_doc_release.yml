@@ -6,7 +6,6 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: docs-release
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

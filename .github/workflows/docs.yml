@@ -30,4 +30,5 @@ jobs:
   deploy:
     name: Release Docs
     if: ${{ github.event_name == 'workflow_dispatch' }}
+    environment: docs-release
     uses: ./.github/workflows/_doc_release.yml

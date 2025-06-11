@@ -111,4 +111,5 @@ jobs:
   release-docs:
     name: Release Docs
     needs: [release]
+    environment: docs-release
     uses: ./.github/workflows/_doc_release.yml
