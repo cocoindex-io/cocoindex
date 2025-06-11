@@ -34,9 +34,9 @@ jobs:
         - uses: actions/cache@v4
           with:
             path: .venv
-            key: ${{ runner.os }}-pyenvlib-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
+            key: ${{ runner.os }}-pyenv-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
             restore-keys: |
-              ${{ runner.os }}-pyenvlib-${{ steps.setup_python.outputs.python-version }}-
+              ${{ runner.os }}-pyenv-${{ steps.setup_python.outputs.python-version }}-
         - name: Setup venv
           run: |
             python -m venv .venv
