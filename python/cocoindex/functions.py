@@ -1,6 +1,8 @@
 """All builtin functions."""
 
-from typing import Annotated, Any, TYPE_CHECKING
+from typing import Annotated, Any, TYPE_CHECKING, Literal
+import numpy as np
+from numpy.typing import NDArray
 import dataclasses
 
 from .typing import Float32, Vector, TypeAttr
@@ -66,11 +68,11 @@ class SentenceTransformerEmbedExecutor:
         self._model = sentence_transformers.SentenceTransformer(self.spec.model, **args)
         dim = self._model.get_sentence_embedding_dimension()
         result: type = Annotated[
-            Vector[Float32, dim],  # type: ignore
+            Vector[np.float32, Literal[dim]],  # type: ignore
             TypeAttr("cocoindex.io/vector_origin_text", text.analyzed_value),
         ]
         return result
 
-    def __call__(self, text: str) -> list[Float32]:
-        result: list[Float32] = self._model.encode(text).tolist()
+    def __call__(self, text: str) -> NDArray[np.float32]:
+        result: NDArray[np.float32] = self._model.encode(text, convert_to_numpy=True)
         return result

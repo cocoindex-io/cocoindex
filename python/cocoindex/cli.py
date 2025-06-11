@@ -237,7 +237,15 @@ def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
 
 @cli.command()
 @click.argument("app_target", type=str)
-def setup(app_target: str) -> None:
+@click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Force setup without confirmation prompts.",
+)
+def setup(app_target: str, force: bool) -> None:
     """
     Check and apply backend setup changes for flows, including the internal and target storage
     (to export).
@@ -252,7 +260,7 @@ def setup(app_target: str) -> None:
     if setup_status.is_up_to_date():
         click.echo("No changes need to be pushed.")
         return
-    if not click.confirm(
+    if not force and not click.confirm(
         "Changes need to be pushed. Continue? [yes/N]",
         default=False,
         show_default=False,
@@ -275,7 +283,17 @@ def setup(app_target: str) -> None:
     "even if not defined in the current process."
     "If used, APP_TARGET and any listed flow names are ignored.",
 )
-def drop(app_target: str | None, flow_name: tuple[str, ...], drop_all: bool) -> None:
+@click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Force drop without confirmation prompts.",
+)
+def drop(
+    app_target: str | None, flow_name: tuple[str, ...], drop_all: bool, force: bool
+) -> None:
     """
     Drop the backend setup for flows.
 
@@ -328,7 +346,7 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], drop_all: bool) -> 
     if setup_status.is_up_to_date():
         click.echo("No flows need to be dropped.")
         return
-    if not click.confirm(
+    if not force and not click.confirm(
         f"\nThis will apply changes to drop setup for: {', '.join(flow_names)}. Continue? [yes/N]",
         default=False,
         show_default=False,

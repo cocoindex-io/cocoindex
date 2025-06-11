@@ -103,7 +103,6 @@ pub struct AnalyzedExportOp {
     pub input: AnalyzedLocalCollectorReference,
     pub export_target_factory: Arc<dyn ExportTargetFactory + Send + Sync>,
     pub export_context: Arc<dyn Any + Send + Sync>,
-    pub query_target: Option<Arc<dyn QueryTarget>>,
     pub primary_key_def: AnalyzedPrimaryKeyDef,
     pub primary_key_type: schema::ValueType,
     /// idx for value fields - excluding the primary key field.

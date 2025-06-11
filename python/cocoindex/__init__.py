@@ -2,7 +2,7 @@
 Cocoindex is a framework for building and running indexing pipelines.
 """
 
-from . import functions, query, sources, storages, cli, utils
+from . import functions, sources, storages, cli, utils
 
 from .auth_registry import AuthEntryReference, add_auth_entry, ref_auth_entry
 from .flow import FlowBuilder, DataScope, DataSlice, Flow, transform_flow

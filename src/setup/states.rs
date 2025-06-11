@@ -15,6 +15,7 @@ use crate::prelude::*;
 
 use indenter::indented;
 use owo_colors::{AnsiColors, OwoColorize};
+use std::any::Any;
 use std::fmt::Debug;
 use std::fmt::{Display, Write};
 use std::hash::Hash;
@@ -218,15 +219,10 @@ pub enum SetupChangeType {
     Invalid,
 }
 
-pub trait ResourceSetupStatus: Send + Sync + Debug + 'static {
+pub trait ResourceSetupStatus: Send + Sync + Debug + Any + 'static {
     fn describe_changes(&self) -> Vec<String>;
 
     fn change_type(&self) -> SetupChangeType;
-
-    // Workaround as Rust doesn't support dyn upcasting before 1.86.
-    // (https://github.com/rust-lang/rust/issues/65991)
-    // Can be replaced by a `Any` bound when we require Rust 1.86 or newer.
-    fn as_any(&self) -> &dyn Any;
 }
 
 impl ResourceSetupStatus for Box<dyn ResourceSetupStatus> {
@@ -237,10 +233,6 @@ impl ResourceSetupStatus for Box<dyn ResourceSetupStatus> {
     fn change_type(&self) -> SetupChangeType {
         self.as_ref().change_type()
     }
-
-    fn as_any(&self) -> &dyn Any {
-        self as &dyn Any
-    }
 }
 
 impl ResourceSetupStatus for std::convert::Infallible {
@@ -250,10 +242,6 @@ impl ResourceSetupStatus for std::convert::Infallible {
 
     fn change_type(&self) -> SetupChangeType {
         unreachable!()
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self as &dyn Any
     }
 }
 

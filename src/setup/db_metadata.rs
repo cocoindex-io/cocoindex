@@ -349,9 +349,7 @@ impl ResourceSetupStatus for MetadataTableSetup {
         }
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self as &dyn Any
-    }
+
 }
 
 impl MetadataTableSetup {

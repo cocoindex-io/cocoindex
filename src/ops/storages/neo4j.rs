@@ -863,9 +863,7 @@ impl ResourceSetupStatus for GraphElementDataSetupStatus {
         self.change_type
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+
 }
 
 async fn clear_graph_element_data(
@@ -976,18 +974,17 @@ impl StorageFactoryBase for Factory {
                     .auth_registry
                     .get::<ConnectionSpec>(&data_coll.spec.connection)?;
                 let factory = self.clone();
-                let executors = async move {
-                    let graph = factory.graph_pool.get_graph(&conn_spec).await?;
-                    let executor = Arc::new(ExportContext::new(graph, data_coll.spec, analyzed)?);
-                    Ok(TypedExportTargetExecutors {
-                        export_context: executor,
-                        query_target: None,
-                    })
+                let export_context = async move {
+                    Ok(Arc::new(ExportContext::new(
+                        factory.graph_pool.get_graph(&conn_spec).await?,
+                        data_coll.spec,
+                        analyzed,
+                    )?))
                 }
                 .boxed();
 
                 Ok(TypedExportDataCollectionBuildOutput {
-                    executors,
+                    export_context,
                     setup_key,
                     desired_setup_state,
                 })

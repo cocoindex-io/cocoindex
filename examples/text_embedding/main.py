@@ -1,13 +1,16 @@
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
+from pgvector.psycopg import register_vector
 import cocoindex
 import os
+from numpy.typing import NDArray
+import numpy as np
 
 
 @cocoindex.transform_flow()
 def text_to_embedding(
     text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[list[float]]:
+) -> cocoindex.DataSlice[NDArray[np.float32]]:
     """
     Embed the text using a SentenceTransformer model.
     This is a shared logic between indexing and querying, so extract it as a function.
@@ -71,10 +74,11 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
     query_vector = text_to_embedding.eval(query)
     # Run the query and get the results.
     with pool.connection() as conn:
+        register_vector(conn)
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT filename, text, embedding <=> %s::vector AS distance
+                SELECT filename, text, embedding <=> %s AS distance
                 FROM {table_name} ORDER BY distance LIMIT %s
             """,
                 (query_vector, top_k),

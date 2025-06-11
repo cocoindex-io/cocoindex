@@ -4,6 +4,7 @@ name = "cocoindex"
 # Will be overridden for specific release versions.
 version = "999.0.0"
 edition = "2024"
+rust-version = "1.86"
 
 [profile.release]
 codegen-units = 1
@@ -50,6 +51,7 @@ tower-http = { version = "0.6.2", features = ["cors", "trace"] }
 indexmap = { version = "2.8.0", features = ["serde"] }
 blake2 = "0.10.6"
 pgvector = { version = "0.4.0", features = ["sqlx"] }
+phf = { version = "0.11.3", features = ["macros"] }
 indenter = "0.3.3"
 itertools = "0.14.0"
 derivative = "2.2.0"

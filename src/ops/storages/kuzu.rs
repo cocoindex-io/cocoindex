@@ -203,9 +203,7 @@ impl setup::ResourceSetupStatus for GraphElementDataSetupStatus {
         self.actions.change_type(false)
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+
 }
 
 fn append_drop_table(
@@ -840,14 +838,8 @@ impl StorageFactoryBase for Factory {
                         ),
                         analyzed_data_coll: analyzed,
                     };
-                    let executors = Box::pin(async move {
-                        Ok(TypedExportTargetExecutors {
-                            export_context: Arc::new(export_context),
-                            query_target: None,
-                        })
-                    });
                     Ok(TypedExportDataCollectionBuildOutput {
-                        executors,
+                        export_context: async move { Ok(Arc::new(export_context)) }.boxed(),
                         setup_key,
                         desired_setup_state,
                     })

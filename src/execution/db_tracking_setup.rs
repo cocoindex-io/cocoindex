@@ -155,9 +155,7 @@ impl ResourceSetupStatus for TrackingTableSetupStatus {
         }
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self as &dyn Any
-    }
+
 }
 
 impl TrackingTableSetupStatus {

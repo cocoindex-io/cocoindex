@@ -1,0 +1,31 @@
+name: Release Docs
+
+on:
+  workflow_call:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: docs-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: yarn
+          cache-dependency-path: docs/yarn.lock
+      - uses: webfactory/ssh-agent@v0.5.0
+        with:
+          ssh-private-key: ${{ secrets.GH_PAGES_DEPLOY }}
+      - name: Deploy to GitHub Pages
+        env:
+          USE_SSH: true
+        run: |
+          export COCOINDEX_DOCS_POSTHOG_API_KEY=${{ vars.COCOINDEX_DOCS_POSTHOG_API_KEY }}
+          export COCOINDEX_DOCS_MIXPANEL_API_KEY=${{ vars.COCOINDEX_DOCS_MIXPANEL_API_KEY }}
+          export COCOINDEX_DOCS_ALGOLIA_APP_ID=${{ vars.COCOINDEX_DOCS_ALGOLIA_APP_ID }}
+          export COCOINDEX_DOCS_ALGOLIA_API_KEY=${{ vars.COCOINDEX_DOCS_ALGOLIA_API_KEY }}
+          git config --global user.email "${{ vars.COCOINDEX_DOCS_DEPLOY_USER_EMAIL }}"
+          git config --global user.name "${{ vars.COCOINDEX_DOCS_DEPLOY_USER_NAME }}"
+          yarn --cwd docs install --frozen-lockfile
+          yarn --cwd docs deploy

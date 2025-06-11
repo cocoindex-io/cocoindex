@@ -143,10 +143,6 @@ impl<D: SetupOperator + Send + Sync> ResourceSetupStatus for SetupStatus<D> {
             SetupChangeType::Update
         }
     }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 pub async fn apply_component_changes<D: SetupOperator>(
@@ -190,9 +186,5 @@ impl<A: ResourceSetupStatus, B: ResourceSetupStatus> ResourceSetupStatus for (A,
             (SetupChangeType::NoChange, b) => b,
             (a, _) => a,
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }

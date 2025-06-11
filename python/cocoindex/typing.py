@@ -9,14 +9,16 @@ from typing import (
     Annotated,
     NamedTuple,
     Any,
+    KeysView,
     TypeVar,
     TYPE_CHECKING,
     overload,
-    Sequence,
     Generic,
     Literal,
     Protocol,
 )
+import numpy as np
+from numpy.typing import NDArray
 
 
 class VectorInfo(NamedTuple):
@@ -50,7 +52,7 @@ if TYPE_CHECKING:
     Dim_co = TypeVar("Dim_co", bound=int, covariant=True)
 
     class Vector(Protocol, Generic[T_co, Dim_co]):
-        """Vector[T, Dim] is a special typing alias for a list[T] with optional dimension info"""
+        """Vector[T, Dim] is a special typing alias for an NDArray[T] with optional dimension info"""
 
         def __getitem__(self, index: int) -> T_co: ...
         def __len__(self) -> int: ...
@@ -58,25 +60,34 @@ if TYPE_CHECKING:
 else:
 
     class Vector:  # type: ignore[unreachable]
-        """A special typing alias for a list[T] with optional dimension info"""
+        """A special typing alias for an NDArray[T] with optional dimension info"""
 
         def __class_getitem__(self, params):
             if not isinstance(params, tuple):
-                # Only element type provided
-                elem_type = params
-                return Annotated[list[elem_type], VectorInfo(dim=None)]
+                # No dimension provided, e.g., Vector[np.float32]
+                dtype = params
+                # Use NDArray for supported numeric dtypes, else list
+                if DtypeRegistry.get_by_dtype(dtype) is not None:
+                    return Annotated[NDArray[dtype], VectorInfo(dim=None)]
+                return Annotated[list[dtype], VectorInfo(dim=None)]
             else:
-                # Element type and dimension provided
-                elem_type, dim = params
-                if typing.get_origin(dim) is Literal:
-                    dim = typing.get_args(dim)[0]  # Extract the literal value
-                return Annotated[list[elem_type], VectorInfo(dim=dim)]
+                # Element type and dimension provided, e.g., Vector[np.float32, Literal[3]]
+                dtype, dim_literal = params
+                # Extract the literal value
+                dim_val = (
+                    typing.get_args(dim_literal)[0]
+                    if typing.get_origin(dim_literal) is Literal
+                    else None
+                )
+                if DtypeRegistry.get_by_dtype(dtype) is not None:
+                    return Annotated[NDArray[dtype], VectorInfo(dim=dim_val)]
+                return Annotated[list[dtype], VectorInfo(dim=dim_val)]
 
 
 TABLE_TYPES: tuple[str, str] = ("KTable", "LTable")
 KEY_FIELD_NAME: str = "_key"
 
-ElementType = type | tuple[type, type]
+ElementType = type | tuple[type, type] | Annotated[Any, TypeKind]
 
 
 def is_namedtuple_type(t: type) -> bool:
@@ -87,6 +98,48 @@ def _is_struct_type(t: ElementType | None) -> bool:
     return isinstance(t, type) and (
         dataclasses.is_dataclass(t) or is_namedtuple_type(t)
     )
+
+
+class DtypeInfo:
+    """Metadata for a NumPy dtype."""
+
+    def __init__(self, numpy_dtype: type, kind: str, python_type: type) -> None:
+        self.numpy_dtype = numpy_dtype
+        self.kind = kind
+        self.python_type = python_type
+        self.annotated_type = Annotated[python_type, TypeKind(kind)]
+
+
+class DtypeRegistry:
+    _mappings: dict[type, DtypeInfo] = {
+        np.float32: DtypeInfo(np.float32, "Float32", float),
+        np.float64: DtypeInfo(np.float64, "Float64", float),
+        np.int32: DtypeInfo(np.int32, "Int32", int),
+        np.int64: DtypeInfo(np.int64, "Int64", int),
+        np.uint8: DtypeInfo(np.uint8, "UInt8", int),
+        np.uint16: DtypeInfo(np.uint16, "UInt16", int),
+        np.uint32: DtypeInfo(np.uint32, "UInt32", int),
+        np.uint64: DtypeInfo(np.uint64, "UInt64", int),
+    }
+
+    @classmethod
+    def get_by_dtype(cls, dtype: Any) -> DtypeInfo | None:
+        if dtype is Any:
+            raise TypeError(
+                "NDArray for Vector must use a concrete numpy dtype, got `Any`."
+            )
+        return cls._mappings.get(dtype)
+
+    @staticmethod
+    def get_by_kind(kind: str) -> DtypeInfo | None:
+        return next(
+            (info for info in DtypeRegistry._mappings.values() if info.kind == kind),
+            None,
+        )
+
+    @staticmethod
+    def supported_dtypes() -> KeysView[type]:
+        return DtypeRegistry._mappings.keys()
 
 
 @dataclasses.dataclass
@@ -185,12 +238,34 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
                     vector_info = VectorInfo(dim=None)
         elif not (kind == "Vector" or kind in TABLE_TYPES):
             raise ValueError(f"Unexpected type kind for list: {kind}")
+    elif base_type is np.ndarray:
+        kind = "Vector"
+        args = typing.get_args(t)
+        _, dtype_spec = args
+
+        dtype_args = typing.get_args(dtype_spec)
+        if not dtype_args:
+            raise ValueError("Invalid dtype specification for NDArray")
+
+        numpy_dtype = dtype_args[0]
+        dtype_info = DtypeRegistry.get_by_dtype(numpy_dtype)
+        if dtype_info is None:
+            raise ValueError(
+                f"Unsupported numpy dtype for NDArray: {numpy_dtype}. "
+                f"Supported dtypes: {DtypeRegistry.supported_dtypes()}"
+            )
+        elem_type = dtype_info.annotated_type
+        vector_info = VectorInfo(dim=None) if vector_info is None else vector_info
+
     elif base_type is collections.abc.Mapping or base_type is dict:
         args = typing.get_args(t)
         elem_type = (args[0], args[1])
         kind = 'KTable'
     elif kind is None:
-        if t is bytes:
+        dtype_info = DtypeRegistry.get_by_dtype(t)
+        if dtype_info is not None:
+            kind = dtype_info.kind
+        elif t is bytes:
             kind = "Bytes"
         elif t is str:
             kind = "Str"

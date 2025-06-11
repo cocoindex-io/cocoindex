@@ -1,20 +1,19 @@
 use crate::prelude::*;
 
+use crate::builder::AnalyzedFlow;
 use crate::execution::source_indexer::SourceIndexingContext;
 use crate::service::error::ApiError;
 use crate::settings;
 use crate::setup;
-use crate::{builder::AnalyzedFlow, execution::query::SimpleSemanticsQueryHandler};
 use axum::http::StatusCode;
-use sqlx::postgres::PgConnectOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgConnectOptions;
 use std::collections::BTreeMap;
 use tokio::runtime::Runtime;
 
 pub struct FlowContext {
     pub flow: Arc<AnalyzedFlow>,
     pub source_indexing_contexts: Vec<tokio::sync::OnceCell<Arc<SourceIndexingContext>>>,
-    pub query_handlers: Mutex<BTreeMap<String, Arc<SimpleSemanticsQueryHandler>>>,
 }
 
 impl FlowContext {
@@ -26,7 +25,6 @@ impl FlowContext {
         Self {
             flow,
             source_indexing_contexts,
-            query_handlers: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -42,20 +40,6 @@ impl FlowContext {
                 ))
             })
             .await
-    }
-
-    pub fn get_query_handler(&self, name: &str) -> Result<Arc<SimpleSemanticsQueryHandler>> {
-        let query_handlers = self.query_handlers.lock().unwrap();
-        let query_handler = query_handlers
-            .get(name)
-            .ok_or_else(|| {
-                ApiError::new(
-                    &format!("Query handler not found: {name}"),
-                    StatusCode::NOT_FOUND,
-                )
-            })?
-            .clone();
-        Ok(query_handler)
     }
 }
 

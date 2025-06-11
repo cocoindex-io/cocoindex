@@ -5,7 +5,6 @@ use std::fmt::Display;
 
 use crate::ops::registry::ExecutorFactoryRegistry;
 use crate::setup;
-use futures::FutureExt;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     CreateCollectionBuilder, DeletePointsBuilder, Distance, NamedVectors, PointId, PointStruct,
@@ -143,9 +142,7 @@ impl setup::ResourceSetupStatus for SetupStatus {
         }
     }
 
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+
 }
 
 impl SetupStatus {
@@ -370,14 +367,8 @@ impl StorageFactoryBase for Factory {
                     collection_name: d.spec.collection_name.clone(),
                     fields_info,
                 });
-                let executors = async move {
-                    Ok(TypedExportTargetExecutors {
-                        export_context,
-                        query_target: None,
-                    })
-                };
                 Ok(TypedExportDataCollectionBuildOutput {
-                    executors: executors.boxed(),
+                    export_context: Box::pin(async move { Ok(export_context) }),
                     setup_key: CollectionKey {
                         connection: d.spec.connection,
                         collection_name: d.spec.collection_name,

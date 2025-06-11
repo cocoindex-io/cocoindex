@@ -9,7 +9,7 @@ __pycache__/
 *.so
 
 # Distribution / packaging
-.venv/
+.venv*/
 dist/
 
 .DS_Store

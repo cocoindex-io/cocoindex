@@ -2,11 +2,8 @@ use crate::execution::evaluator::evaluate_transient_flow;
 use crate::prelude::*;
 
 use crate::base::schema::{FieldSchema, ValueType};
-use crate::base::spec::VectorSimilarityMetric;
 use crate::base::spec::{NamedSpec, OutputMode, ReactiveOpSpec, SpecFormatter};
-use crate::execution::query;
 use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
-use crate::ops::interface::{QueryResult, QueryResults};
 use crate::ops::py_factory::PyOpArgSchema;
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
 use crate::server::{self, ServerSettings};
@@ -15,7 +12,6 @@ use crate::setup;
 use pyo3::IntoPyObjectExt;
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
-use std::collections::btree_map;
 use std::fmt::Write;
 use std::sync::Arc;
 
@@ -375,82 +371,6 @@ impl TransientFlow {
 }
 
 #[pyclass]
-pub struct SimpleSemanticsQueryHandler(pub Arc<query::SimpleSemanticsQueryHandler>);
-
-#[pymethods]
-impl SimpleSemanticsQueryHandler {
-    #[new]
-    pub fn new(
-        py: Python<'_>,
-        flow: &Flow,
-        target_name: &str,
-        query_transform_flow: &TransientFlow,
-        default_similarity_metric: Pythonized<VectorSimilarityMetric>,
-    ) -> PyResult<Self> {
-        py.allow_threads(|| {
-            let handler = get_runtime()
-                .block_on(query::SimpleSemanticsQueryHandler::new(
-                    flow.0.flow.clone(),
-                    target_name,
-                    query_transform_flow.0.clone(),
-                    default_similarity_metric.0,
-                ))
-                .into_py_result()?;
-            Ok(Self(Arc::new(handler)))
-        })
-    }
-
-    pub fn register_query_handler(&self, name: String) -> PyResult<()> {
-        let flow_ctx = get_lib_context()
-            .into_py_result()?
-            .get_flow_context(&self.0.flow_name)
-            .into_py_result()?;
-        let mut query_handlers = flow_ctx.query_handlers.lock().unwrap();
-        match query_handlers.entry(name) {
-            btree_map::Entry::Occupied(entry) => {
-                return Err(PyException::new_err(format!(
-                    "query handler name already exists: {}",
-                    entry.key()
-                )));
-            }
-            btree_map::Entry::Vacant(entry) => {
-                entry.insert(self.0.clone());
-            }
-        }
-        Ok(())
-    }
-
-    #[pyo3(signature = (query, limit, vector_field_name = None, similarity_metric = None))]
-    pub fn search(
-        &self,
-        py: Python<'_>,
-        query: String,
-        limit: u32,
-        vector_field_name: Option<String>,
-        similarity_metric: Option<Pythonized<VectorSimilarityMetric>>,
-    ) -> PyResult<(
-        Pythonized<Vec<QueryResult<serde_json::Value>>>,
-        Pythonized<query::SimpleSemanticsQueryInfo>,
-    )> {
-        py.allow_threads(|| {
-            let (results, info) = get_runtime().block_on(async move {
-                self.0
-                    .search(
-                        query,
-                        limit,
-                        vector_field_name,
-                        similarity_metric.map(|m| m.0),
-                    )
-                    .await
-            })?;
-            let results = QueryResults::<serde_json::Value>::try_from(results)?;
-            anyhow::Ok((Pythonized(results.results), Pythonized(info)))
-        })
-        .into_py_result()
-    }
-}
-
-#[pyclass]
 pub struct SetupStatus(setup::AllSetupStatus);
 
 #[pymethods]
@@ -530,6 +450,18 @@ fn add_auth_entry(key: String, value: Pythonized<serde_json::Value>) -> PyResult
     Ok(())
 }
 
+#[pyfunction]
+fn seder_roundtrip<'py>(
+    py: Python<'py>,
+    value: Bound<'py, PyAny>,
+    typ: Pythonized<ValueType>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let typ = typ.into_inner();
+    let value = value_from_py_object(&typ, &value)?;
+    let value = value::test_util::seder_roundtrip(&value, &typ).into_py_result()?;
+    Ok(value_to_py_object(py, &value)?)
+}
+
 /// A Python module implemented in Rust.
 #[pymodule]
 #[pyo3(name = "_engine")]
@@ -552,11 +484,14 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FlowLiveUpdater>()?;
     m.add_class::<TransientFlow>()?;
     m.add_class::<IndexUpdateInfo>()?;
-    m.add_class::<SimpleSemanticsQueryHandler>()?;
     m.add_class::<SetupStatus>()?;
     m.add_class::<PyOpArgSchema>()?;
     m.add_class::<RenderedSpec>()?;
     m.add_class::<RenderedSpecLine>()?;
+
+    let testutil_module = PyModule::new(m.py(), "testutil")?;
+    testutil_module.add_function(wrap_pyfunction!(seder_roundtrip, &testutil_module)?)?;
+    m.add_submodule(&testutil_module)?;
 
     Ok(())
 }

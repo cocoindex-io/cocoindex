@@ -265,13 +265,8 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
     }
 }
 
-pub struct TypedExportTargetExecutors<F: StorageFactoryBase + ?Sized> {
-    pub export_context: Arc<F::ExportContext>,
-    pub query_target: Option<Arc<dyn QueryTarget>>,
-}
-
 pub struct TypedExportDataCollectionBuildOutput<F: StorageFactoryBase + ?Sized> {
-    pub executors: BoxFuture<'static, Result<TypedExportTargetExecutors<F>>>,
+    pub export_context: BoxFuture<'static, Result<Arc<F::ExportContext>>>,
     pub setup_key: F::Key,
     pub desired_setup_state: F::SetupState,
 }
@@ -400,12 +395,8 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             .into_iter()
             .map(|d| {
                 Ok(interface::ExportDataCollectionBuildOutput {
-                    executors: async move {
-                        let executors = d.executors.await?;
-                        Ok(interface::ExportTargetExecutors {
-                            export_context: executors.export_context,
-                            query_target: executors.query_target,
-                        })
+                    export_context: async move {
+                        Ok(d.export_context.await? as Arc<dyn Any + Send + Sync>)
                     }
                     .boxed(),
                     setup_key: serde_json::to_value(d.setup_key)?,
@@ -513,9 +504,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
                 .map(|item| -> anyhow::Result<_> {
                     Ok(TypedResourceSetupChangeItem {
                         key: serde_json::from_value(item.key.clone())?,
-                        setup_status: item
-                            .setup_status
-                            .as_any()
+                        setup_status: (item.setup_status as &dyn Any)
                             .downcast_ref::<T::SetupStatus>()
                             .ok_or_else(invariance_violation)?,
                     })

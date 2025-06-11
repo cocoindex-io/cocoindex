@@ -41,7 +41,7 @@ The [quickstart](getting_started/quickstart#step-41-extract-common-transformatio
 
 ```python
 @cocoindex.transform_flow()
-def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
+def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[NDArray[np.float32]]:
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
             model="sentence-transformers/all-MiniLM-L6-v2"))
@@ -61,7 +61,7 @@ with doc["chunks"].row() as chunk:
     chunk["embedding"] = chunk["text"].call(text_to_embedding)
 ```
 
-Any time, you can call the `eval()` method with specific string, which will return a `list[float]`:
+Any time, you can call the `eval()` method with specific string, which will return a `NDArray[np.float32]`:
 
 ```python
 print(text_to_embedding.eval("Hello, world!"))
@@ -93,7 +93,7 @@ For example:
 
 ```python
 table_name = cocoindex.utils.get_target_storage_default_name(text_embedding_flow, "doc_embeddings")
-query = f"SELECT filename, text FROM {table_name} ORDER BY embedding <=> %s::vector DESC LIMIT 5"
+query = f"SELECT filename, text FROM {table_name} ORDER BY embedding <=> %s DESC LIMIT 5"
 ...
 ```
 

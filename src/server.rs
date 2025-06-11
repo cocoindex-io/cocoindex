@@ -69,10 +69,6 @@ pub async fn init_server(
                     "/flows/{flowInstName}/update",
                     routing::post(service::flows::update),
                 )
-                .route(
-                    "/flows/{flowInstName}/search",
-                    routing::get(service::search::search),
-                )
                 .layer(
                     ServiceBuilder::new()
                         .layer(TraceLayer::new_for_http())
