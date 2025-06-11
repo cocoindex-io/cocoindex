@@ -1,4 +1,6 @@
 use super::schema::*;
+use crate::base::duration::parse_duration;
+use crate::prelude::invariance_violation;
 use crate::{api_bail, api_error};
 use anyhow::Result;
 use base64::prelude::*;
@@ -6,9 +8,9 @@ use bytes::Bytes;
 use chrono::Offset;
 use log::warn;
 use serde::{
+    Deserialize, Serialize,
     de::{SeqAccess, Visitor},
     ser::{SerializeMap, SerializeSeq, SerializeTuple},
-    Deserialize, Serialize,
 };
 use std::{collections::BTreeMap, ops::Deref, sync::Arc};
 
@@ -174,6 +176,26 @@ impl std::fmt::Display for KeyValue {
 }
 
 impl KeyValue {
+    pub fn from_json(value: serde_json::Value, fields_schema: &[FieldSchema]) -> Result<Self> {
+        let value = if fields_schema.len() == 1 {
+            Value::from_json(value, &fields_schema[0].value_type.typ)?
+        } else {
+            let field_values: FieldValues = FieldValues::from_json(value, fields_schema)?;
+            Value::Struct(field_values)
+        };
+        Ok(value.as_key()?)
+    }
+
+    pub fn from_values<'a>(values: impl ExactSizeIterator<Item = &'a Value>) -> Result<Self> {
+        let key = if values.len() == 1 {
+            let mut values = values;
+            values.next().ok_or_else(invariance_violation)?.as_key()?
+        } else {
+            KeyValue::Struct(values.map(|v| v.as_key()).collect::<Result<Vec<_>>>()?)
+        };
+        Ok(key)
+    }
+
     pub fn fields_iter(&self, num_fields: usize) -> Result<impl Iterator<Item = &KeyValue>> {
         let slice = if num_fields == 1 {
             std::slice::from_ref(self)
@@ -354,6 +376,7 @@ pub enum BasicValue {
     Time(chrono::NaiveTime),
     LocalDateTime(chrono::NaiveDateTime),
     OffsetDateTime(chrono::DateTime<chrono::FixedOffset>),
+    TimeDelta(chrono::Duration),
     Json(Arc<serde_json::Value>),
     Vector(Arc<[BasicValue]>),
 }
@@ -436,6 +459,12 @@ impl From<chrono::DateTime<chrono::FixedOffset>> for BasicValue {
     }
 }
 
+impl From<chrono::Duration> for BasicValue {
+    fn from(value: chrono::Duration) -> Self {
+        BasicValue::TimeDelta(value)
+    }
+}
+
 impl From<serde_json::Value> for BasicValue {
     fn from(value: serde_json::Value) -> Self {
         BasicValue::Json(Arc::from(value))
@@ -465,6 +494,7 @@ impl BasicValue {
             | BasicValue::Time(_)
             | BasicValue::LocalDateTime(_)
             | BasicValue::OffsetDateTime(_)
+            | BasicValue::TimeDelta(_)
             | BasicValue::Json(_)
             | BasicValue::Vector(_) => api_bail!("invalid key value type"),
         };
@@ -485,6 +515,7 @@ impl BasicValue {
             | BasicValue::Time(_)
             | BasicValue::LocalDateTime(_)
             | BasicValue::OffsetDateTime(_)
+            | BasicValue::TimeDelta(_)
             | BasicValue::Json(_)
             | BasicValue::Vector(_) => api_bail!("invalid key value type"),
         };
@@ -505,6 +536,7 @@ impl BasicValue {
             BasicValue::Time(_) => "time",
             BasicValue::LocalDateTime(_) => "local_datetime",
             BasicValue::OffsetDateTime(_) => "offset_datetime",
+            BasicValue::TimeDelta(_) => "timedelta",
             BasicValue::Json(_) => "json",
             BasicValue::Vector(_) => "vector",
         }
@@ -855,6 +887,7 @@ impl serde::Serialize for BasicValue {
             BasicValue::OffsetDateTime(v) => {
                 serializer.serialize_str(&v.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
             }
+            BasicValue::TimeDelta(v) => serializer.serialize_str(&v.to_string()),
             BasicValue::Json(v) => v.serialize(serializer),
             BasicValue::Vector(v) => v.serialize(serializer),
         }
@@ -906,6 +939,9 @@ impl BasicValue {
                         }
                     }
                 }
+            }
+            (serde_json::Value::String(v), BasicValueType::TimeDelta) => {
+                BasicValue::TimeDelta(parse_duration(&v)?)
             }
             (v, BasicValueType::Json) => BasicValue::Json(Arc::from(v)),
             (
@@ -1104,5 +1140,15 @@ impl<'a, I: Iterator<Item = &'a Value> + Clone> Serialize for TypedFieldsValue<'
             )?;
         }
         map.end()
+    }
+}
+
+pub mod test_util {
+    use super::*;
+
+    pub fn seder_roundtrip(value: &Value, typ: &ValueType) -> Result<Value> {
+        let json_value = serde_json::to_value(value)?;
+        let roundtrip_value = Value::from_json(json_value, typ)?;
+        Ok(roundtrip_value)
     }
 }

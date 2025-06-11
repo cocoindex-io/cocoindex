@@ -3,7 +3,8 @@ name = "cocoindex"
 # Version used for local development is always higher than others to take precedence.
 # Will be overridden for specific release versions.
 version = "999.0.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.86"
 
 [profile.release]
 codegen-units = 1
@@ -14,14 +15,14 @@ name = "cocoindex_engine"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.24.1", features = ["chrono", "auto-initialize"] }
-pythonize = "0.24.0"
-pyo3-async-runtimes = { version = "0.24.0", features = ["tokio-runtime"] }
+pyo3 = { version = "0.25.0", features = ["chrono", "auto-initialize"] }
+pythonize = "0.25.0"
+pyo3-async-runtimes = { version = "0.25.0", features = ["tokio-runtime"] }
 
 anyhow = { version = "1.0.97", features = ["std"] }
 async-trait = "0.1.88"
-axum = "0.7.9"
-axum-extra = { version = "0.9.6", features = ["query"] }
+axum = "0.8.4"
+axum-extra = { version = "0.10.1", features = ["query"] }
 base64 = "0.22.1"
 chrono = "0.4.40"
 config = "0.14.1"
@@ -50,6 +51,7 @@ tower-http = { version = "0.6.2", features = ["cors", "trace"] }
 indexmap = { version = "2.8.0", features = ["serde"] }
 blake2 = "0.10.6"
 pgvector = { version = "0.4.0", features = ["sqlx"] }
+phf = { version = "0.11.3", features = ["macros"] }
 indenter = "0.3.3"
 itertools = "0.14.0"
 derivative = "2.2.0"
@@ -109,3 +111,7 @@ rand = "0.9.0"
 indoc = "2.0.6"
 owo-colors = "4.2.0"
 json5 = "0.4.1"
+aws-config = "1.6.2"
+aws-sdk-s3 = "1.85.0"
+aws-sdk-sqs = "1.67.0"
+numpy = "0.25.0"

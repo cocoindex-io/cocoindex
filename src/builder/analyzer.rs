@@ -12,8 +12,8 @@ use crate::{
     base::{schema::*, spec::*},
     ops::{interface::*, registry::*},
 };
-use futures::future::{try_join3, BoxFuture};
-use futures::{future::try_join_all, FutureExt};
+use futures::future::{BoxFuture, try_join3};
+use futures::{FutureExt, future::try_join_all};
 
 #[derive(Debug)]
 pub(super) enum ValueTypeBuilder {
@@ -668,7 +668,7 @@ impl AnalyzerContext<'_> {
         import_op: NamedSpec<ImportOpSpec>,
         metadata: Option<&mut FlowSetupMetadata>,
         existing_source_states: Option<&Vec<&SourceSetupState>>,
-    ) -> Result<impl Future<Output = Result<AnalyzedImportOp>> + Send> {
+    ) -> Result<impl Future<Output = Result<AnalyzedImportOp>> + Send + use<>> {
         let factory = self.registry.get(&import_op.spec.source.kind);
         let source_factory = match factory {
             Some(ExecutorFactory::Source(source_executor)) => source_executor.clone(),
@@ -676,7 +676,7 @@ impl AnalyzerContext<'_> {
                 return Err(anyhow::anyhow!(
                     "Source executor not found for kind: {}",
                     import_op.spec.source.kind
-                ))
+                ));
             }
         };
         let (output_type, executor) = source_factory.build(
@@ -817,7 +817,7 @@ impl AnalyzerContext<'_> {
                         return Err(anyhow::anyhow!(
                             "Transform op kind not found: {}",
                             op.op.kind
-                        ))
+                        ));
                     }
                 }
             }
@@ -967,7 +967,7 @@ impl AnalyzerContext<'_> {
         declarations: Vec<serde_json::Value>,
         flow_setup_state: &mut FlowSetupState<DesiredMode>,
         existing_target_states: &HashMap<&ResourceIdentifier, Vec<&TargetSetupState>>,
-    ) -> Result<Vec<impl Future<Output = Result<AnalyzedExportOp>> + Send>> {
+    ) -> Result<Vec<impl Future<Output = Result<AnalyzedExportOp>> + Send + use<>>> {
         let mut collection_specs = Vec::<interface::ExportDataCollectionSpec>::new();
         let mut data_fields_infos = Vec::<ExportDataFieldsInfo>::new();
         for idx in export_op_group.op_idx.iter() {
@@ -987,7 +987,6 @@ impl AnalyzerContext<'_> {
                                     .fields
                                     .iter()
                                     .position(|field| &field.name == f)
-                                    .map(|idx| idx as u32)
                                     .ok_or_else(|| anyhow!("field not found: {}", f))
                             })
                             .collect::<Result<Vec<_>>>()?;
@@ -1007,7 +1006,7 @@ impl AnalyzerContext<'_> {
                         let mut value_fields_schema: Vec<FieldSchema> = vec![];
                         let mut value_fields_idx = vec![];
                         for (idx, field) in collector_schema.fields.iter().enumerate() {
-                            if !pk_fields_idx.contains(&(idx as u32)) {
+                            if !pk_fields_idx.contains(&idx) {
                                 value_fields_schema.push(field.clone());
                                 value_fields_idx.push(idx as u32);
                             }
@@ -1064,10 +1063,11 @@ impl AnalyzerContext<'_> {
                     existing_target_states,
                 )?;
                 let op_name = export_op.name.clone();
+                let export_target_factory = export_op_group.target_factory.clone();
                 Ok(async move {
                     trace!("Start building executor for export op `{op_name}`");
-                    let executors = data_coll_output
-                        .executors
+                    let export_context = data_coll_output
+                        .export_context
                         .await
                         .with_context(|| format!("Analyzing export op: {op_name}"))?;
                     trace!("Finished building executor for export op `{op_name}`");
@@ -1075,8 +1075,8 @@ impl AnalyzerContext<'_> {
                         name: op_name,
                         target_id,
                         input: data_fields_info.local_collector_ref,
-                        export_context: executors.export_context,
-                        query_target: executors.query_target,
+                        export_target_factory,
+                        export_context,
                         primary_key_def: data_fields_info.primary_key_def,
                         primary_key_type: data_fields_info.primary_key_type,
                         value_fields: data_fields_info.value_fields_idx,
@@ -1104,7 +1104,7 @@ impl AnalyzerContext<'_> {
         &self,
         op_scope: &Arc<OpScope>,
         reactive_ops: &[NamedSpec<ReactiveOpSpec>],
-    ) -> Result<impl Future<Output = Result<AnalyzedOpScope>> + Send> {
+    ) -> Result<impl Future<Output = Result<AnalyzedOpScope>> + Send + use<>> {
         let op_futs = reactive_ops
             .iter()
             .map(|reactive_op| self.analyze_reactive_op(op_scope, reactive_op))
@@ -1147,7 +1147,7 @@ pub fn analyze_flow(
     registry: &ExecutorFactoryRegistry,
 ) -> Result<(
     FlowSchema,
-    impl Future<Output = Result<ExecutionPlan>> + Send,
+    impl Future<Output = Result<ExecutionPlan>> + Send + use<>,
     setup::FlowSetupState<setup::DesiredMode>,
 )> {
     let existing_metadata_versions = || {
@@ -1302,14 +1302,17 @@ pub fn analyze_flow(
 pub fn analyze_transient_flow<'a>(
     flow_inst: &TransientFlowSpec,
     flow_ctx: &'_ Arc<FlowInstanceContext>,
-    registry: &'a ExecutorFactoryRegistry,
 ) -> Result<(
     EnrichedValueType,
     FlowSchema,
     impl Future<Output = Result<TransientExecutionPlan>> + Send + 'a,
 )> {
     let mut root_data_scope = DataScopeBuilder::new();
-    let analyzer_ctx = AnalyzerContext { registry, flow_ctx };
+    let registry = crate::ops::executor_factory_registry();
+    let analyzer_ctx = AnalyzerContext {
+        registry: &registry,
+        flow_ctx,
+    };
     let mut input_fields = vec![];
     for field in flow_inst.input_fields.iter() {
         let analyzed_field = root_data_scope.add_field(field.name.clone(), &field.value_type)?;

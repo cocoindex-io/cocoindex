@@ -1,17 +1,17 @@
 use std::sync::{Mutex, OnceLock};
 use std::{borrow::Cow, collections::BTreeMap};
 
-use anyhow::{bail, Context, Ok, Result};
+use anyhow::{Context, Ok, Result, bail};
 use futures::future::try_join_all;
 
-use crate::builder::{plan::*, AnalyzedTransientFlow};
+use crate::builder::{AnalyzedTransientFlow, plan::*};
 use crate::py::IntoPyResult;
 use crate::{
     base::{schema, value},
     utils::immutable::RefList,
 };
 
-use super::memoization::{evaluate_with_cell, EvaluationMemory, EvaluationMemoryOptions};
+use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, evaluate_with_cell};
 
 #[derive(Debug)]
 pub struct ScopeValueBuilder {
@@ -183,7 +183,7 @@ impl<'a> ScopeEntry<'a> {
     ) -> &'b value::KeyValue {
         if indices.is_empty() {
             key_val
-        } else if let value::KeyValue::Struct(ref fields) = key_val {
+        } else if let value::KeyValue::Struct(fields) = key_val {
             Self::get_local_key_field(&fields[indices[0] as usize], &indices[1..])
         } else {
             panic!("Only struct can be accessed by sub field");
@@ -196,7 +196,7 @@ impl<'a> ScopeEntry<'a> {
     ) -> &'b value::Value<ScopeValueBuilder> {
         if indices.is_empty() {
             val
-        } else if let value::Value::Struct(ref fields) = val {
+        } else if let value::Value::Struct(fields) = val {
             Self::get_local_field(&fields.fields[indices[0] as usize], &indices[1..])
         } else {
             panic!("Only struct can be accessed by sub field");
@@ -446,6 +446,13 @@ async fn evaluate_op_scope(
     Ok(())
 }
 
+pub struct SourceRowEvaluationContext<'a> {
+    pub plan: &'a ExecutionPlan,
+    pub import_op: &'a AnalyzedImportOp,
+    pub schema: &'a schema::FlowSchema,
+    pub key: &'a value::KeyValue,
+}
+
 #[derive(Debug)]
 pub struct EvaluateSourceEntryOutput {
     pub data_scope: ScopeValueBuilder,
@@ -453,23 +460,20 @@ pub struct EvaluateSourceEntryOutput {
 }
 
 pub async fn evaluate_source_entry(
-    plan: &ExecutionPlan,
-    import_op: &AnalyzedImportOp,
-    schema: &schema::FlowSchema,
-    key: &value::KeyValue,
+    src_eval_ctx: &SourceRowEvaluationContext<'_>,
     source_value: value::FieldValues,
     memory: &EvaluationMemory,
 ) -> Result<EvaluateSourceEntryOutput> {
-    let root_schema = &schema.schema;
+    let root_schema = &src_eval_ctx.schema.schema;
     let root_scope_value = ScopeValueBuilder::new(root_schema.fields.len());
     let root_scope_entry = ScopeEntry::new(
         ScopeKey::None,
         &root_scope_value,
         root_schema,
-        &plan.op_scope,
+        &src_eval_ctx.plan.op_scope,
     );
 
-    let table_schema = match &root_schema.fields[import_op.output.field_idx as usize]
+    let table_schema = match &root_schema.fields[src_eval_ctx.import_op.output.field_idx as usize]
         .value_type
         .typ
     {
@@ -482,12 +486,12 @@ pub async fn evaluate_source_entry(
     let scope_value =
         ScopeValueBuilder::augmented_from(&value::ScopeValue(source_value), table_schema)?;
     root_scope_entry.define_field_w_builder(
-        &import_op.output,
-        value::Value::KTable(BTreeMap::from([(key.clone(), scope_value)])),
+        &src_eval_ctx.import_op.output,
+        value::Value::KTable(BTreeMap::from([(src_eval_ctx.key.clone(), scope_value)])),
     );
 
     evaluate_op_scope(
-        &plan.op_scope,
+        &src_eval_ctx.plan.op_scope,
         RefList::Nil.prepend(&root_scope_entry),
         memory,
     )

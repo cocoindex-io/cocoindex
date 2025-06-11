@@ -40,10 +40,10 @@ impl Executor {
 
 #[async_trait]
 impl SourceExecutor for Executor {
-    fn list(
-        &self,
-        options: SourceExecutorListOptions,
-    ) -> BoxStream<'_, Result<Vec<SourceRowMetadata>>> {
+    fn list<'a>(
+        &'a self,
+        options: &'a SourceExecutorListOptions,
+    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>> {
         let root_component_size = self.root_path.components().count();
         let mut dirs = Vec::new();
         dirs.push(Cow::Borrowed(&self.root_path));
@@ -69,7 +69,7 @@ impl SourceExecutor for Executor {
                             None
                         };
                         if let Some(relative_path) = relative_path.to_str() {
-                            yield vec![SourceRowMetadata {
+                            yield vec![PartialSourceRowMetadata {
                                 key: KeyValue::Str(relative_path.into()),
                                 ordinal,
                             }];
@@ -84,24 +84,42 @@ impl SourceExecutor for Executor {
         .boxed()
     }
 
-    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
+    async fn get_value(
+        &self,
+        key: &KeyValue,
+        options: &SourceExecutorGetOptions,
+    ) -> Result<PartialSourceRowData> {
         if !self.is_file_included(key.str_value()?.as_ref()) {
-            return Ok(None);
+            return Ok(PartialSourceRowData {
+                value: Some(SourceValue::NonExistence),
+                ordinal: Some(Ordinal::unavailable()),
+            });
         }
         let path = self.root_path.join(key.str_value()?.as_ref());
-        let value = match std::fs::read(path) {
-            Ok(content) => {
-                let content = if self.binary {
-                    fields_value!(content)
-                } else {
-                    fields_value!(String::from_utf8_lossy(&content).to_string())
-                };
-                Some(content)
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => Err(e)?,
+        let ordinal = if options.include_ordinal {
+            Some(path.metadata()?.modified()?.try_into()?)
+        } else {
+            None
         };
-        Ok(value)
+        let value = if options.include_value {
+            match std::fs::read(path) {
+                Ok(content) => {
+                    let content = if self.binary {
+                        fields_value!(content)
+                    } else {
+                        fields_value!(String::from_utf8_lossy(&content).to_string())
+                    };
+                    Some(SourceValue::Existence(content))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Some(SourceValue::NonExistence)
+                }
+                Err(e) => Err(e)?,
+            }
+        } else {
+            None
+        };
+        Ok(PartialSourceRowData { value, ordinal })
     }
 }
 

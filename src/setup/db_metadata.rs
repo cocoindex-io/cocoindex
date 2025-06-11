@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use super::{ResourceSetupInfo, ResourceSetupStatusCheck, SetupChangeType, StateChange};
+use super::{ResourceSetupInfo, ResourceSetupStatus, SetupChangeType, StateChange};
 use crate::utils::db::WriteAction;
 use axum::http::StatusCode;
 use sqlx::PgPool;
@@ -324,14 +324,13 @@ impl MetadataTableSetup {
             key: (),
             state: None,
             description: "CocoIndex Metadata Table".to_string(),
-            status_check: Some(self),
+            setup_status: Some(self),
             legacy_key: None,
         }
     }
 }
 
-#[async_trait]
-impl ResourceSetupStatusCheck for MetadataTableSetup {
+impl ResourceSetupStatus for MetadataTableSetup {
     fn describe_changes(&self) -> Vec<String> {
         if self.metadata_table_missing {
             vec![format!(
@@ -350,11 +349,16 @@ impl ResourceSetupStatusCheck for MetadataTableSetup {
         }
     }
 
-    async fn apply_change(&self) -> Result<()> {
+
+}
+
+impl MetadataTableSetup {
+    pub async fn apply_change(&self) -> Result<()> {
         if !self.metadata_table_missing {
             return Ok(());
         }
-        let pool = &get_lib_context()?.builtin_db_pool;
+        let lib_context = get_lib_context()?;
+        let pool = lib_context.require_builtin_db_pool()?;
         let query_str = format!(
             "CREATE TABLE IF NOT EXISTS {SETUP_METADATA_TABLE_NAME} (
                 flow_name TEXT NOT NULL,

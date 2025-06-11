@@ -1,0 +1,15 @@
+[project]
+name = "image-search"
+version = "0.1.0"
+description = "Simple example for cocoindex: build embedding index based on images."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex>=0.1.42",
+    "python-dotenv>=1.0.1",
+    "fastapi>=0.100.0",
+    "torch>=2.0.0",
+    "transformers>=4.29.0",
+]
+
+[tool.setuptools]
+packages = []

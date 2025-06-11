@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 use crate::{lib_context::LibContext, service};
-use axum::{routing, Router};
+use axum::{Router, routing};
 use tower::ServiceBuilder;
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -46,28 +46,28 @@ pub async fn init_server(
             Router::new()
                 .route("/flows", routing::get(service::flows::list_flows))
                 .route(
-                    "/flows/:flowInstName",
-                    routing::get(service::flows::get_flow_spec),
+                    "/flows/{flowInstName}",
+                    routing::get(service::flows::get_flow),
                 )
                 .route(
-                    "/flows/:flowInstName/schema",
+                    "/flows/{flowInstName}/schema",
                     routing::get(service::flows::get_flow_schema),
                 )
                 .route(
-                    "/flows/:flowInstName/keys",
+                    "/flows/{flowInstName}/keys",
                     routing::get(service::flows::get_keys),
                 )
                 .route(
-                    "/flows/:flowInstName/data",
+                    "/flows/{flowInstName}/data",
                     routing::get(service::flows::evaluate_data),
                 )
                 .route(
-                    "/flows/:flowInstName/update",
-                    routing::post(service::flows::update),
+                    "/flows/{flowInstName}/rowStatus",
+                    routing::get(service::flows::get_row_indexing_status),
                 )
                 .route(
-                    "/flows/:flowInstName/search",
-                    routing::get(service::search::search),
+                    "/flows/{flowInstName}/update",
+                    routing::post(service::flows::update),
                 )
                 .layer(
                     ServiceBuilder::new()

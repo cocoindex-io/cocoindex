@@ -3,12 +3,80 @@ use crate::prelude::*;
 use super::{db_tracking_setup::TrackingTableSetupState, memoization::StoredMemoizationInfo};
 use crate::utils::{db::WriteAction, fingerprint::Fingerprint};
 use futures::Stream;
+use serde::de::{self, Deserializer, SeqAccess, Visitor};
+use serde::ser::SerializeSeq;
 use sqlx::PgPool;
+use std::fmt;
 
-/// (target_key, process_ordinal, fingerprint)
-pub type TrackedTargetKey = (serde_json::Value, i64, Option<Fingerprint>);
+#[derive(Debug, Clone)]
+pub struct TrackedTargetKeyInfo {
+    pub key: serde_json::Value,
+    pub additional_key: serde_json::Value,
+    pub process_ordinal: i64,
+    // None means deletion.
+    pub fingerprint: Option<Fingerprint>,
+}
+
+impl Serialize for TrackedTargetKeyInfo {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut seq = serializer.serialize_seq(None)?;
+        seq.serialize_element(&self.key)?;
+        seq.serialize_element(&self.process_ordinal)?;
+        seq.serialize_element(&self.fingerprint)?;
+        if !self.additional_key.is_null() {
+            seq.serialize_element(&self.additional_key)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TrackedTargetKeyInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct TrackedTargetKeyVisitor;
+
+        impl<'de> Visitor<'de> for TrackedTargetKeyVisitor {
+            type Value = TrackedTargetKeyInfo;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a sequence of 3 or 4 elements for TrackedTargetKey")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<TrackedTargetKeyInfo, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let target_key: serde_json::Value = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let process_ordinal: i64 = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                let fingerprint: Option<Fingerprint> = seq
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(2, &self))?;
+                let additional_key: Option<serde_json::Value> = seq.next_element()?;
+
+                Ok(TrackedTargetKeyInfo {
+                    key: target_key,
+                    process_ordinal,
+                    fingerprint,
+                    additional_key: additional_key.unwrap_or(serde_json::Value::Null),
+                })
+            }
+        }
+
+        deserializer.deserialize_seq(TrackedTargetKeyVisitor)
+    }
+}
+
 /// (source_id, target_key)
-pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKey>)>;
+pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKeyInfo>)>;
 
 #[derive(sqlx::FromRow, Debug)]
 pub struct SourceTrackingInfoForProcessing {
@@ -80,7 +148,8 @@ pub async fn precommit_source_tracking_info(
     let query_str = match action {
         WriteAction::Insert => format!(
             "INSERT INTO {} (source_id, source_key, max_process_ordinal, staging_target_keys, memoization_info) VALUES ($1, $2, $3, $4, $5)",
-            db_setup.table_name),
+            db_setup.table_name
+        ),
         WriteAction::Update => format!(
             "UPDATE {} SET max_process_ordinal = $3, staging_target_keys = $4, memoization_info = $5 WHERE source_id = $1 AND source_key = $2",
             db_setup.table_name
@@ -205,9 +274,34 @@ impl ListTrackedSourceKeyMetadataState {
         pool: &'a PgPool,
     ) -> impl Stream<Item = Result<TrackedSourceKeyMetadata, sqlx::Error>> + 'a {
         self.query_str = format!(
-        "SELECT source_key, processed_source_ordinal, process_logic_fingerprint FROM {} WHERE source_id = $1",
-        db_setup.table_name
-    );
+            "SELECT source_key, processed_source_ordinal, process_logic_fingerprint FROM {} WHERE source_id = $1",
+            db_setup.table_name
+        );
         sqlx::query_as(&self.query_str).bind(source_id).fetch(pool)
     }
+}
+
+#[derive(sqlx::FromRow, Debug)]
+pub struct SourceLastProcessedInfo {
+    pub processed_source_ordinal: Option<i64>,
+    pub process_logic_fingerprint: Option<Vec<u8>>,
+    pub process_time_micros: Option<i64>,
+}
+
+pub async fn read_source_last_processed_info(
+    source_id: i32,
+    source_key_json: &serde_json::Value,
+    db_setup: &TrackingTableSetupState,
+    pool: &PgPool,
+) -> Result<Option<SourceLastProcessedInfo>> {
+    let query_str = format!(
+        "SELECT processed_source_ordinal, process_logic_fingerprint, process_time_micros FROM {} WHERE source_id = $1 AND source_key = $2",
+        db_setup.table_name
+    );
+    let last_processed_info = sqlx::query_as(&query_str)
+        .bind(source_id)
+        .bind(source_key_json)
+        .fetch_optional(pool)
+        .await?;
+    Ok(last_processed_info)
 }

@@ -1,17 +1,17 @@
 ---
-title: Basics
-description: "CocoIndex basic concepts: indexing flow, data, operations, data updates, etc."
+title: Indexing Basics
+description: "CocoIndex basic concepts for indexing: indexing flow, data, operations, data updates, etc."
 ---
 
-# CocoIndex Basics
+# CocoIndex Indexing Basics
 
 An **index** is a collection of data stored in a way that is easy for retrieval.
 
-CocoIndex is an ETL framework for building indexes from specified data sources, a.k.a. indexing. It also offers utilities for users to retrieve data from the indexes.
+CocoIndex is an ETL framework for building indexes from specified data sources, a.k.a. **indexing**. It also offers utilities for users to retrieve data from the indexes.
 
-## Indexing flow
+An **indexing flow** extracts data from specified data sources, upon specified transformations, and puts the transformed data into specified storage for later retrieval.
 
-An indexing flow extracts data from speicfied data sources, upon specified transformations, and puts the transformed data into specified storage for later retrieval.
+## Indexing flow elements
 
 An indexing flow has two aspects: data and operations on data.
 
@@ -42,7 +42,7 @@ An **operation** in an indexing flow defines a step in the flow. An operation is
 
 "import" and "transform" operations produce output data, whose data type is determined based on the operation spec and data types of input data (for "transform" operation only).
 
-### Example
+## An indexing flow example
 
 For the example shown in the [Quickstart](../getting_started/quickstart) section, the indexing flow is as follows:
 
@@ -60,7 +60,7 @@ This shows schema and example data for the indexing flow:
 
 ![Data Example](data_example.svg)
 
-### Life cycle of an indexing flow
+## Life cycle of an indexing flow
 
 An indexing flow, once set up, maintains a long-lived relationship between data source and data in target storage. This means:
 
@@ -95,19 +95,10 @@ CocoIndex works the same way, but with more powerful capabilities:
 
 This means when writing your flow operations, you can treat source data as if it were static - focusing purely on defining the transformation logic. CocoIndex takes care of maintaining the dynamic relationship between sources and target data behind the scenes.
 
-### Internal storage
+## Internal storage
 
 As an indexing flow is long-lived, it needs to store intermediate data to keep track of the states.
 CocoIndex uses internal storage for this purpose.
 
 Currently, CocoIndex uses Postgres database as the internal storage.
-See [Initialization](initialization) for configuring its location, and `cocoindex setup` CLI command (see [CocoIndex CLI](cli)) creates tables for the internal storage.
-
-## Retrieval
-
-There are two ways to retrieve data from target storage built by an indexing flow:
-
-*   Query the underlying target storage directly for maximum flexibility.
-*   Use CocoIndex *query handlers* for a more convenient experience with built-in tooling support (e.g. CocoInsight) to understand query performance against the target data.
-
-Query handlers are tied to specific indexing flows. They accept query inputs, transform them by defined operations, and retrieve matching data from the target storage that was created by the flow.
+See [Settings](settings#databaseconnectionspec) for configuring its location, and `cocoindex setup` CLI command (see [CocoIndex CLI](cli)) creates tables for the internal storage.

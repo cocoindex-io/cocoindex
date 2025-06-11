@@ -2,5 +2,12 @@
 name = "text-embedding-qdrant"
 version = "0.1.0"
 description = "Simple example for cocoindex: build embedding index based on local text files."
-requires-python = ">=3.10"
-dependencies = ["cocoindex>=0.1.32", "python-dotenv>=1.0.1"]
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex>=0.1.42",
+    "python-dotenv>=1.0.1",
+    "qdrant-client>=1.6.0",
+]
+
+[tool.setuptools]
+packages = []

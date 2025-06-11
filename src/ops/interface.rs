@@ -1,10 +1,6 @@
 use std::time::SystemTime;
 
-use crate::base::{
-    schema::*,
-    spec::{IndexOptions, VectorSimilarityMetric},
-    value::*,
-};
+use crate::base::{schema::*, spec::IndexOptions, value::*};
 use crate::prelude::*;
 use crate::setup;
 use chrono::TimeZone;
@@ -16,10 +12,20 @@ pub struct FlowInstanceContext {
     pub py_exec_ctx: Option<Arc<crate::py::PythonExecutionContext>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Ordinal(pub i64);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+pub struct Ordinal(pub Option<i64>);
 
-impl From<Ordinal> for i64 {
+impl Ordinal {
+    pub fn unavailable() -> Self {
+        Self(None)
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
+impl From<Ordinal> for Option<i64> {
     fn from(val: Ordinal) -> Self {
         val.0
     }
@@ -30,7 +36,7 @@ impl TryFrom<SystemTime> for Ordinal {
 
     fn try_from(time: SystemTime) -> Result<Self, Self::Error> {
         let duration = time.duration_since(std::time::UNIX_EPOCH)?;
-        Ok(duration.as_micros().try_into().map(Ordinal)?)
+        Ok(Ordinal(Some(duration.as_micros().try_into()?)))
     }
 }
 
@@ -38,27 +44,56 @@ impl<TZ: TimeZone> TryFrom<chrono::DateTime<TZ>> for Ordinal {
     type Error = anyhow::Error;
 
     fn try_from(time: chrono::DateTime<TZ>) -> Result<Self, Self::Error> {
-        Ok(Ordinal(time.timestamp_micros()))
+        Ok(Ordinal(Some(time.timestamp_micros())))
     }
 }
 
-pub struct SourceRowMetadata {
+pub struct PartialSourceRowMetadata {
     pub key: KeyValue,
-    /// None means the ordinal is unavailable.
     pub ordinal: Option<Ordinal>,
 }
 
-pub enum SourceValueChange {
-    /// None means value unavailable in this change - needs a separate poll by get_value() API.
-    Upsert(Option<FieldValues>),
-    Delete,
+#[derive(Debug)]
+pub enum SourceValue {
+    Existence(FieldValues),
+    NonExistence,
+}
+
+impl SourceValue {
+    pub fn is_existent(&self) -> bool {
+        matches!(self, Self::Existence(_))
+    }
+
+    pub fn as_optional(&self) -> Option<&FieldValues> {
+        match self {
+            Self::Existence(value) => Some(value),
+            Self::NonExistence => None,
+        }
+    }
+
+    pub fn into_optional(self) -> Option<FieldValues> {
+        match self {
+            Self::Existence(value) => Some(value),
+            Self::NonExistence => None,
+        }
+    }
+}
+
+pub struct SourceData {
+    pub value: SourceValue,
+    pub ordinal: Ordinal,
 }
 
 pub struct SourceChange {
-    /// Last update/deletion ordinal. None means unavailable.
-    pub ordinal: Option<Ordinal>,
     pub key: KeyValue,
-    pub value: SourceValueChange,
+
+    /// If None, the engine will poll to get the latest existence state and value.
+    pub data: Option<SourceData>,
+}
+
+pub struct SourceChangeMessage {
+    pub changes: Vec<SourceChange>,
+    pub ack_fn: Option<Box<dyn FnOnce() -> BoxFuture<'static, Result<()>> + Send + Sync>>,
 }
 
 #[derive(Debug, Default)]
@@ -66,18 +101,50 @@ pub struct SourceExecutorListOptions {
     pub include_ordinal: bool,
 }
 
+#[derive(Debug, Default)]
+pub struct SourceExecutorGetOptions {
+    pub include_ordinal: bool,
+    pub include_value: bool,
+}
+
+#[derive(Debug)]
+pub struct PartialSourceRowData {
+    pub value: Option<SourceValue>,
+    pub ordinal: Option<Ordinal>,
+}
+
+impl TryFrom<PartialSourceRowData> for SourceData {
+    type Error = anyhow::Error;
+
+    fn try_from(data: PartialSourceRowData) -> Result<Self, Self::Error> {
+        Ok(Self {
+            value: data
+                .value
+                .ok_or_else(|| anyhow::anyhow!("value is missing"))?,
+            ordinal: data
+                .ordinal
+                .ok_or_else(|| anyhow::anyhow!("ordinal is missing"))?,
+        })
+    }
+}
 #[async_trait]
 pub trait SourceExecutor: Send + Sync {
     /// Get the list of keys for the source.
-    fn list(
-        &self,
-        options: SourceExecutorListOptions,
-    ) -> BoxStream<'_, Result<Vec<SourceRowMetadata>>>;
+    fn list<'a>(
+        &'a self,
+        options: &'a SourceExecutorListOptions,
+    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>>;
 
     // Get the value for the given key.
-    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>>;
+    async fn get_value(
+        &self,
+        key: &KeyValue,
+        options: &SourceExecutorGetOptions,
+    ) -> Result<PartialSourceRowData>;
 
-    async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
+    async fn change_stream(
+        &self,
+    ) -> Result<Option<BoxStream<'async_trait, Result<SourceChangeMessage>>>> {
         Ok(None)
     }
 }
@@ -124,18 +191,25 @@ pub trait SimpleFunctionFactory {
 #[derive(Debug)]
 pub struct ExportTargetUpsertEntry {
     pub key: KeyValue,
+    pub additional_key: serde_json::Value,
     pub value: FieldValues,
+}
+
+#[derive(Debug)]
+pub struct ExportTargetDeleteEntry {
+    pub key: KeyValue,
+    pub additional_key: serde_json::Value,
 }
 
 #[derive(Debug, Default)]
 pub struct ExportTargetMutation {
     pub upserts: Vec<ExportTargetUpsertEntry>,
-    pub delete_keys: Vec<KeyValue>,
+    pub deletes: Vec<ExportTargetDeleteEntry>,
 }
 
 impl ExportTargetMutation {
     pub fn is_empty(&self) -> bool {
-        self.upserts.is_empty() && self.delete_keys.is_empty()
+        self.upserts.is_empty() && self.deletes.is_empty()
     }
 }
 
@@ -143,6 +217,11 @@ impl ExportTargetMutation {
 pub struct ExportTargetMutationWithContext<'ctx, T: ?Sized + Send + Sync> {
     pub mutation: ExportTargetMutation,
     pub export_context: &'ctx T,
+}
+
+pub struct ResourceSetupChangeItem<'a> {
+    pub key: &'a serde_json::Value,
+    pub setup_status: &'a dyn setup::ResourceSetupStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,12 +237,8 @@ pub enum SetupStateCompatibility {
     NotCompatible,
 }
 
-pub struct ExportTargetExecutors {
-    pub export_context: Arc<dyn Any + Send + Sync>,
-    pub query_target: Option<Arc<dyn QueryTarget>>,
-}
 pub struct ExportDataCollectionBuildOutput {
-    pub executors: BoxFuture<'static, Result<ExportTargetExecutors>>,
+    pub export_context: BoxFuture<'static, Result<Arc<dyn Any + Send + Sync>>>,
     pub setup_key: serde_json::Value,
     pub desired_setup_state: serde_json::Value,
 }
@@ -196,7 +271,7 @@ pub trait ExportTargetFactory: Send + Sync {
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
         auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<Box<dyn setup::ResourceSetupStatusCheck>>;
+    ) -> Result<Box<dyn setup::ResourceSetupStatus>>;
 
     /// Normalize the key. e.g. the JSON format may change (after code change, e.g. new optional field or field ordering), even if the underlying value is not changed.
     /// This should always return the canonical serialized form.
@@ -210,9 +285,22 @@ pub trait ExportTargetFactory: Send + Sync {
 
     fn describe_resource(&self, key: &serde_json::Value) -> Result<String>;
 
+    fn extract_additional_key<'ctx>(
+        &self,
+        key: &KeyValue,
+        value: &FieldValues,
+        export_context: &'ctx (dyn Any + Send + Sync),
+    ) -> Result<serde_json::Value>;
+
     async fn apply_mutation(
         &self,
         mutations: Vec<ExportTargetMutationWithContext<'async_trait, dyn Any + Send + Sync>>,
+    ) -> Result<()>;
+
+    async fn apply_setup_changes(
+        &self,
+        setup_status: Vec<ResourceSetupChangeItem<'async_trait>>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<()>;
 }
 
@@ -221,59 +309,4 @@ pub enum ExecutorFactory {
     Source(Arc<dyn SourceFactory + Send + Sync>),
     SimpleFunction(Arc<dyn SimpleFunctionFactory + Send + Sync>),
     ExportTarget(Arc<dyn ExportTargetFactory + Send + Sync>),
-}
-
-#[derive(Debug)]
-pub struct VectorMatchQuery {
-    pub vector_field_name: String,
-    pub vector: Vec<f32>,
-    pub similarity_metric: VectorSimilarityMetric,
-    pub limit: u32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct QueryResult<Row = Vec<Value>> {
-    pub data: Row,
-    pub score: f64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct QueryResults<Row = Vec<Value>> {
-    pub fields: Vec<FieldSchema>,
-    pub results: Vec<QueryResult<Row>>,
-}
-
-impl TryFrom<QueryResults<Vec<Value>>> for QueryResults<serde_json::Value> {
-    type Error = anyhow::Error;
-
-    fn try_from(values: QueryResults<Vec<Value>>) -> Result<Self, Self::Error> {
-        let results = values
-            .results
-            .into_iter()
-            .map(|r| {
-                let data = serde_json::to_value(TypedFieldsValue {
-                    schema: &values.fields,
-                    values_iter: r.data.iter(),
-                })?;
-                Ok(QueryResult {
-                    data,
-                    score: r.score,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(QueryResults {
-            fields: values.fields,
-            results,
-        })
-    }
-}
-#[derive(Debug, Clone, Serialize)]
-pub struct QueryResponse {
-    pub results: QueryResults<serde_json::Value>,
-    pub info: serde_json::Value,
-}
-
-#[async_trait]
-pub trait QueryTarget: Send + Sync {
-    async fn search(&self, query: VectorMatchQuery) -> Result<QueryResults>;
 }

@@ -1,0 +1,9 @@
+[project]
+name = "amazon-s3-text-embedding"
+version = "0.1.0"
+description = "Simple example for cocoindex: build embedding index based on Amazon S3 files."
+requires-python = ">=3.11"
+dependencies = ["cocoindex>=0.1.42", "python-dotenv>=1.0.1"]
+
+[tool.setuptools]
+packages = []

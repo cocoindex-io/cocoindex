@@ -1,12 +1,14 @@
-use crate::{ops::interface::SourceValueChange, prelude::*};
+use crate::prelude::*;
 
+use futures::future::Ready;
 use sqlx::PgPool;
 use std::collections::{hash_map, HashMap};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use super::{
     db_tracking,
-    row_indexer::{self, SkippedOr, SourceVersion, SourceVersionKind},
+    evaluator::SourceRowEvaluationContext,
+    row_indexer::{self, SkippedOr, SourceVersion},
     stats,
 };
 struct SourceRowIndexingState {
@@ -34,6 +36,8 @@ pub struct SourceIndexingContext {
     source_idx: usize,
     state: Mutex<SourceIndexingState>,
 }
+
+pub const NO_ACK: Option<fn() -> Ready<Result<()>>> = None;
 
 impl SourceIndexingContext {
     pub async fn load(
@@ -78,38 +82,59 @@ impl SourceIndexingContext {
         })
     }
 
-    async fn process_source_key(
+    pub async fn process_source_key<
+        AckFut: Future<Output = Result<()>> + Send + 'static,
+        AckFn: FnOnce() -> AckFut,
+    >(
         self: Arc<Self>,
         key: value::KeyValue,
-        source_version: SourceVersion,
-        value: Option<value::FieldValues>,
+        source_data: Option<interface::SourceData>,
         update_stats: Arc<stats::UpdateStats>,
-        processing_sem: Arc<Semaphore>,
+        ack_fn: Option<AckFn>,
         pool: PgPool,
     ) {
         let process = async {
-            let permit = processing_sem.acquire().await?;
             let plan = self.flow.get_execution_plan().await?;
             let import_op = &plan.import_ops[self.source_idx];
-            let source_value = if source_version.kind == row_indexer::SourceVersionKind::Deleted {
-                None
-            } else if let Some(value) = value {
-                Some(value)
-            } else {
-                // Even if the source version kind is not Deleted, the source value might be gone one polling.
-                // In this case, we still use the current source version even if it's already stale - actually this version skew
-                // also happens for update cases and there's no way to keep them always in sync for many sources.
-                //
-                // We only need source version <= actual version for value.
-                import_op.executor.get_value(&key).await?
-            };
             let schema = &self.flow.data_schema;
+            let source_data = match source_data {
+                Some(source_data) => source_data,
+                None => import_op
+                    .executor
+                    .get_value(
+                        &key,
+                        &interface::SourceExecutorGetOptions {
+                            include_value: true,
+                            include_ordinal: true,
+                        },
+                    )
+                    .await?
+                    .try_into()?,
+            };
+
+            let source_version = SourceVersion::from_current_data(&source_data);
+            let processing_sem = {
+                let mut state = self.state.lock().unwrap();
+                let row_state = state.rows.entry(key.clone()).or_default();
+                if row_state
+                    .source_version
+                    .should_skip(&source_version, Some(update_stats.as_ref()))
+                {
+                    return anyhow::Ok(());
+                }
+                row_state.source_version = source_version.clone();
+                row_state.processing_sem.clone()
+            };
+
+            let permit = processing_sem.acquire().await?;
             let result = row_indexer::update_source_row(
-                &plan,
-                import_op,
-                schema,
-                &key,
-                source_value,
+                &SourceRowEvaluationContext {
+                    plan: &plan,
+                    import_op,
+                    schema,
+                    key: &key,
+                },
+                source_data.value,
                 &source_version,
                 &pool,
                 &update_stats,
@@ -118,7 +143,7 @@ impl SourceIndexingContext {
             let target_source_version = if let SkippedOr::Skipped(existing_source_version) = result
             {
                 Some(existing_source_version)
-            } else if source_version.kind == row_indexer::SourceVersionKind::Deleted {
+            } else if source_version.kind == row_indexer::SourceVersionKind::NonExistence {
                 Some(source_version)
             } else {
                 None
@@ -134,7 +159,8 @@ impl SourceIndexingContext {
                             .source_version
                             .should_skip(&target_source_version, None)
                         {
-                            if target_source_version.kind == row_indexer::SourceVersionKind::Deleted
+                            if target_source_version.kind
+                                == row_indexer::SourceVersionKind::NonExistence
                             {
                                 entry.remove();
                             } else {
@@ -154,44 +180,47 @@ impl SourceIndexingContext {
                 }
             }
             drop(permit);
+            if let Some(ack_fn) = ack_fn {
+                ack_fn().await?;
+            }
             anyhow::Ok(())
         };
         if let Err(e) = process.await {
             update_stats.num_errors.inc(1);
-            error!("{:?}", e.context("Error in processing a source row"));
+            error!(
+                "{:?}",
+                e.context(format!(
+                    "Error in processing row from source `{source}` with key: {key}",
+                    source = self.flow.flow_instance.import_ops[self.source_idx].name
+                ))
+            );
         }
     }
 
+    // Expected to be called during scan, which has no value.
     fn process_source_key_if_newer(
         self: &Arc<Self>,
         key: value::KeyValue,
         source_version: SourceVersion,
-        value: Option<value::FieldValues>,
         update_stats: &Arc<stats::UpdateStats>,
         pool: &PgPool,
     ) -> Option<impl Future<Output = ()> + Send + 'static> {
-        let processing_sem = {
+        {
             let mut state = self.state.lock().unwrap();
             let scan_generation = state.scan_generation;
             let row_state = state.rows.entry(key.clone()).or_default();
             row_state.touched_generation = scan_generation;
             if row_state
                 .source_version
-                .should_skip(&source_version, Some(update_stats))
+                .should_skip(&source_version, Some(update_stats.as_ref()))
             {
                 return None;
             }
-            row_state.source_version = source_version.clone();
-            row_state.processing_sem.clone()
-        };
-        Some(self.clone().process_source_key(
-            key,
-            source_version,
-            value,
-            update_stats.clone(),
-            processing_sem,
-            pool.clone(),
-        ))
+        }
+        Some(
+            self.clone()
+                .process_source_key(key, None, update_stats.clone(), NO_ACK, pool.clone()),
+        )
     }
 
     pub async fn update(
@@ -203,7 +232,7 @@ impl SourceIndexingContext {
         let import_op = &plan.import_ops[self.source_idx];
         let mut rows_stream = import_op
             .executor
-            .list(interface::SourceExecutorListOptions {
+            .list(&interface::SourceExecutorListOptions {
                 include_ordinal: true,
             });
         let mut join_set = JoinSet::new();
@@ -216,8 +245,10 @@ impl SourceIndexingContext {
             for row in row? {
                 self.process_source_key_if_newer(
                     row.key,
-                    SourceVersion::from_current(row.ordinal),
-                    None,
+                    SourceVersion::from_current(
+                        row.ordinal
+                            .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
+                    ),
                     update_stats,
                     pool,
                 )
@@ -237,22 +268,24 @@ impl SourceIndexingContext {
             let mut state = self.state.lock().unwrap();
             for (key, row_state) in state.rows.iter_mut() {
                 if row_state.touched_generation < scan_generation {
-                    deleted_key_versions.push((
-                        key.clone(),
-                        row_state.source_version.for_deletion(),
-                        row_state.processing_sem.clone(),
-                    ));
+                    deleted_key_versions.push((key.clone(), row_state.source_version.ordinal));
                 }
             }
             deleted_key_versions
         };
-        for (key, source_version, processing_sem) in deleted_key_versions {
+        for (key, source_ordinal) in deleted_key_versions {
+            // If the source ordinal is unavailable, call without source ordinal so that another polling will be triggered to avoid out-of-order.
+            let source_data = source_ordinal
+                .is_available()
+                .then(|| interface::SourceData {
+                    value: interface::SourceValue::NonExistence,
+                    ordinal: source_ordinal,
+                });
             join_set.spawn(self.clone().process_source_key(
                 key,
-                source_version,
-                None,
+                source_data,
                 update_stats.clone(),
-                processing_sem,
+                NO_ACK,
                 pool.clone(),
             ));
         }
@@ -265,27 +298,5 @@ impl SourceIndexingContext {
         }
 
         Ok(())
-    }
-
-    pub fn process_change(
-        self: &Arc<Self>,
-        change: interface::SourceChange,
-        pool: &PgPool,
-        update_stats: &Arc<stats::UpdateStats>,
-    ) -> Option<impl Future<Output = ()> + Send + 'static> {
-        let (source_version_kind, value) = match change.value {
-            SourceValueChange::Upsert(value) => (SourceVersionKind::CurrentLogic, value),
-            SourceValueChange::Delete => (SourceVersionKind::Deleted, None),
-        };
-        self.process_source_key_if_newer(
-            change.key,
-            SourceVersion {
-                ordinal: change.ordinal,
-                kind: source_version_kind,
-            },
-            value,
-            update_stats,
-            pool,
-        )
     }
 }

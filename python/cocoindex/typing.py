@@ -5,13 +5,29 @@ import datetime
 import types
 import inspect
 import uuid
-from typing import Annotated, NamedTuple, Any, TypeVar, TYPE_CHECKING, overload, Sequence, Protocol, Generic, Literal
+from typing import (
+    Annotated,
+    NamedTuple,
+    Any,
+    KeysView,
+    TypeVar,
+    TYPE_CHECKING,
+    overload,
+    Generic,
+    Literal,
+    Protocol,
+)
+import numpy as np
+from numpy.typing import NDArray
+
 
 class VectorInfo(NamedTuple):
     dim: int | None
 
+
 class TypeKind(NamedTuple):
     kind: str
+
 
 class TypeAttr:
     key: str
@@ -21,67 +37,138 @@ class TypeAttr:
         self.key = key
         self.value = value
 
+
 Annotation = TypeKind | TypeAttr | VectorInfo
 
-Float32 = Annotated[float, TypeKind('Float32')]
-Float64 = Annotated[float, TypeKind('Float64')]
-Range = Annotated[tuple[int, int], TypeKind('Range')]
-Json = Annotated[Any, TypeKind('Json')]
-LocalDateTime = Annotated[datetime.datetime, TypeKind('LocalDateTime')]
-OffsetDateTime = Annotated[datetime.datetime, TypeKind('OffsetDateTime')]
+Float32 = Annotated[float, TypeKind("Float32")]
+Float64 = Annotated[float, TypeKind("Float64")]
+Range = Annotated[tuple[int, int], TypeKind("Range")]
+Json = Annotated[Any, TypeKind("Json")]
+LocalDateTime = Annotated[datetime.datetime, TypeKind("LocalDateTime")]
+OffsetDateTime = Annotated[datetime.datetime, TypeKind("OffsetDateTime")]
 
 if TYPE_CHECKING:
-    T_co = TypeVar('T_co', covariant=True)
-    Dim_co = TypeVar('Dim_co', bound=int, covariant=True)
+    T_co = TypeVar("T_co", covariant=True)
+    Dim_co = TypeVar("Dim_co", bound=int, covariant=True)
 
-    class Vector(Sequence[T_co], Generic[T_co, Dim_co], Protocol):
-        """Vector[T, Dim] is a special typing alias for a list[T] with optional dimension info"""
+    class Vector(Protocol, Generic[T_co, Dim_co]):
+        """Vector[T, Dim] is a special typing alias for an NDArray[T] with optional dimension info"""
+
+        def __getitem__(self, index: int) -> T_co: ...
+        def __len__(self) -> int: ...
+
 else:
+
     class Vector:  # type: ignore[unreachable]
-        """ A special typing alias for a list[T] with optional dimension info """
+        """A special typing alias for an NDArray[T] with optional dimension info"""
+
         def __class_getitem__(self, params):
             if not isinstance(params, tuple):
-                # Only element type provided
-                elem_type = params
-                return Annotated[list[elem_type], VectorInfo(dim=None)]
+                # No dimension provided, e.g., Vector[np.float32]
+                dtype = params
+                # Use NDArray for supported numeric dtypes, else list
+                if DtypeRegistry.get_by_dtype(dtype) is not None:
+                    return Annotated[NDArray[dtype], VectorInfo(dim=None)]
+                return Annotated[list[dtype], VectorInfo(dim=None)]
             else:
-                # Element type and dimension provided
-                elem_type, dim = params
-                if typing.get_origin(dim) is Literal:
-                    dim = typing.get_args(dim)[0]  # Extract the literal value
-                return Annotated[list[elem_type], VectorInfo(dim=dim)]
+                # Element type and dimension provided, e.g., Vector[np.float32, Literal[3]]
+                dtype, dim_literal = params
+                # Extract the literal value
+                dim_val = (
+                    typing.get_args(dim_literal)[0]
+                    if typing.get_origin(dim_literal) is Literal
+                    else None
+                )
+                if DtypeRegistry.get_by_dtype(dtype) is not None:
+                    return Annotated[NDArray[dtype], VectorInfo(dim=dim_val)]
+                return Annotated[list[dtype], VectorInfo(dim=dim_val)]
 
-TABLE_TYPES = ('KTable', 'LTable')
-KEY_FIELD_NAME = '_key'
 
-ElementType = type | tuple[type, type]
+TABLE_TYPES: tuple[str, str] = ("KTable", "LTable")
+KEY_FIELD_NAME: str = "_key"
 
-def _is_struct_type(t) -> bool:
-    return isinstance(t, type) and dataclasses.is_dataclass(t)
+ElementType = type | tuple[type, type] | Annotated[Any, TypeKind]
+
+
+def is_namedtuple_type(t: type) -> bool:
+    return isinstance(t, type) and issubclass(t, tuple) and hasattr(t, "_fields")
+
+
+def _is_struct_type(t: ElementType | None) -> bool:
+    return isinstance(t, type) and (
+        dataclasses.is_dataclass(t) or is_namedtuple_type(t)
+    )
+
+
+class DtypeInfo:
+    """Metadata for a NumPy dtype."""
+
+    def __init__(self, numpy_dtype: type, kind: str, python_type: type) -> None:
+        self.numpy_dtype = numpy_dtype
+        self.kind = kind
+        self.python_type = python_type
+        self.annotated_type = Annotated[python_type, TypeKind(kind)]
+
+
+class DtypeRegistry:
+    """
+    Registry for NumPy dtypes used in CocoIndex.
+    Provides mappings from NumPy dtypes to CocoIndex's type representation.
+    """
+
+    _mappings: dict[type, DtypeInfo] = {
+        np.float32: DtypeInfo(np.float32, "Float32", float),
+        np.float64: DtypeInfo(np.float64, "Float64", float),
+        np.int32: DtypeInfo(np.int32, "Int64", int),
+        np.int64: DtypeInfo(np.int64, "Int64", int),
+        np.uint8: DtypeInfo(np.uint8, "Int64", int),
+        np.uint16: DtypeInfo(np.uint16, "Int64", int),
+        np.uint32: DtypeInfo(np.uint32, "Int64", int),
+    }
+
+    @classmethod
+    def get_by_dtype(cls, dtype: Any) -> DtypeInfo | None:
+        """Get DtypeInfo by NumPy dtype."""
+        if dtype is Any:
+            raise TypeError(
+                "NDArray for Vector must use a concrete numpy dtype, got `Any`."
+            )
+        return cls._mappings.get(dtype)
+
+    @staticmethod
+    def supported_dtypes() -> KeysView[type]:
+        """Get a list of supported NumPy dtypes."""
+        return DtypeRegistry._mappings.keys()
+
 
 @dataclasses.dataclass
 class AnalyzedTypeInfo:
     """
     Analyzed info of a Python type.
     """
+
     kind: str
     vector_info: VectorInfo | None  # For Vector
-    elem_type: ElementType | None   # For Vector and Table
+    elem_type: ElementType | None  # For Vector and Table
 
-    key_type: type | None           # For element of KTable
-    dataclass_type: type | None     # For Struct
+    key_type: type | None  # For element of KTable
+    struct_type: type | None  # For Struct, a dataclass or namedtuple
+    np_number_type: (
+        type | None
+    )  # NumPy dtype for the element type, if represented by numpy.ndarray or a NumPy scalar
 
     attrs: dict[str, Any] | None
     nullable: bool = False
 
-def analyze_type_info(t) -> AnalyzedTypeInfo:
+
+def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     """
     Analyze a Python type and return the analyzed info.
     """
     if isinstance(t, tuple) and len(t) == 2:
-        key_type, value_type = t
-        result = analyze_type_info(value_type)
-        result.key_type = key_type
+        kt, vt = t
+        result = analyze_type_info(vt)
+        result.key_type = kt
         return result
 
     annotations: tuple[Annotation, ...] = ()
@@ -94,19 +181,22 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
             t = t.__origin__
         elif base_type is types.UnionType:
             possible_types = typing.get_args(t)
-            non_none_types = [arg for arg in possible_types if arg not in (None, types.NoneType)]
+            non_none_types = [
+                arg for arg in possible_types if arg not in (None, types.NoneType)
+            ]
             if len(non_none_types) != 1:
                 raise ValueError(
-                    f"Expect exactly one non-None choice for Union type, but got {len(non_none_types)}: {t}")
+                    f"Expect exactly one non-None choice for Union type, but got {len(non_none_types)}: {t}"
+                )
             t = non_none_types[0]
             if len(possible_types) > 1:
                 nullable = True
         else:
             break
 
-    attrs = None
-    vector_info = None
-    kind = None
+    attrs: dict[str, Any] | None = None
+    vector_info: VectorInfo | None = None
+    kind: str | None = None
     for attr in annotations:
         if isinstance(attr, TypeAttr):
             if attrs is None:
@@ -117,127 +207,181 @@ def analyze_type_info(t) -> AnalyzedTypeInfo:
         elif isinstance(attr, TypeKind):
             kind = attr.kind
 
-    dataclass_type = None
-    elem_type = None
-    key_type = None
+    struct_type: type | None = None
+    elem_type: ElementType | None = None
+    key_type: type | None = None
+    np_number_type: type | None = None
     if _is_struct_type(t):
+        struct_type = t
+
         if kind is None:
-            kind = 'Struct'
-        elif kind != 'Struct':
+            kind = "Struct"
+        elif kind != "Struct":
             raise ValueError(f"Unexpected type kind for struct: {kind}")
-        dataclass_type = t
     elif base_type is collections.abc.Sequence or base_type is list:
         args = typing.get_args(t)
         elem_type = args[0]
 
         if kind is None:
             if _is_struct_type(elem_type):
-                kind = 'LTable'
+                kind = "LTable"
                 if vector_info is not None:
-                    raise ValueError("Vector element must be a simple type, not a struct")
+                    raise ValueError(
+                        "Vector element must be a simple type, not a struct"
+                    )
             else:
-                kind = 'Vector'
+                kind = "Vector"
                 if vector_info is None:
                     vector_info = VectorInfo(dim=None)
-        elif not (kind == 'Vector' or kind in TABLE_TYPES):
+        elif not (kind == "Vector" or kind in TABLE_TYPES):
             raise ValueError(f"Unexpected type kind for list: {kind}")
+    elif base_type is np.ndarray:
+        kind = "Vector"
+        args = typing.get_args(t)
+        _, dtype_spec = args
+
+        dtype_args = typing.get_args(dtype_spec)
+        if not dtype_args:
+            raise ValueError("Invalid dtype specification for NDArray")
+
+        np_number_type = dtype_args[0]
+        dtype_info = DtypeRegistry.get_by_dtype(np_number_type)
+        if dtype_info is None:
+            raise ValueError(
+                f"Unsupported numpy dtype for NDArray: {np_number_type}. "
+                f"Supported dtypes: {DtypeRegistry.supported_dtypes()}"
+            )
+        elem_type = dtype_info.annotated_type
+        vector_info = VectorInfo(dim=None) if vector_info is None else vector_info
+
     elif base_type is collections.abc.Mapping or base_type is dict:
         args = typing.get_args(t)
         elem_type = (args[0], args[1])
-        kind = 'KTable'
+        kind = "KTable"
     elif kind is None:
-        if t is bytes:
-            kind = 'Bytes'
+        dtype_info = DtypeRegistry.get_by_dtype(t)
+        if dtype_info is not None:
+            kind = dtype_info.kind
+            np_number_type = dtype_info.numpy_dtype
+        elif t is bytes:
+            kind = "Bytes"
         elif t is str:
-            kind = 'Str'
+            kind = "Str"
         elif t is bool:
-            kind = 'Bool'
+            kind = "Bool"
         elif t is int:
-            kind = 'Int64'
+            kind = "Int64"
         elif t is float:
-            kind = 'Float64'
+            kind = "Float64"
         elif t is uuid.UUID:
-            kind = 'Uuid'
+            kind = "Uuid"
         elif t is datetime.date:
-            kind = 'Date'
+            kind = "Date"
         elif t is datetime.time:
-            kind = 'Time'
+            kind = "Time"
         elif t is datetime.datetime:
-            kind = 'OffsetDateTime'
+            kind = "OffsetDateTime"
+        elif t is datetime.timedelta:
+            kind = "TimeDelta"
         else:
             raise ValueError(f"type unsupported yet: {t}")
 
-    return AnalyzedTypeInfo(kind=kind, vector_info=vector_info,
-                            elem_type=elem_type, key_type=key_type, dataclass_type=dataclass_type,
-                            attrs=attrs, nullable=nullable)
+    return AnalyzedTypeInfo(
+        kind=kind,
+        vector_info=vector_info,
+        elem_type=elem_type,
+        key_type=key_type,
+        struct_type=struct_type,
+        np_number_type=np_number_type,
+        attrs=attrs,
+        nullable=nullable,
+    )
 
-def _encode_fields_schema(dataclass_type: type, key_type: type | None = None) -> list[dict[str, Any]]:
+
+def _encode_fields_schema(
+    struct_type: type, key_type: type | None = None
+) -> list[dict[str, Any]]:
     result = []
-    def add_field(name: str, t) -> None:
+
+    def add_field(name: str, t: Any) -> None:
         try:
             type_info = encode_enriched_type_info(analyze_type_info(t))
         except ValueError as e:
-            e.add_note(f"Failed to encode annotation for field - "
-                       f"{dataclass_type.__name__}.{name}: {t}")
+            e.add_note(
+                f"Failed to encode annotation for field - "
+                f"{struct_type.__name__}.{name}: {t}"
+            )
             raise
-        type_info['name'] = name
+        type_info["name"] = name
         result.append(type_info)
 
     if key_type is not None:
         add_field(KEY_FIELD_NAME, key_type)
-    for field in dataclasses.fields(dataclass_type):
-        add_field(field.name, field.type)
+
+    if dataclasses.is_dataclass(struct_type):
+        for field in dataclasses.fields(struct_type):
+            add_field(field.name, field.type)
+    elif is_namedtuple_type(struct_type):
+        for name, field_type in struct_type.__annotations__.items():
+            add_field(name, field_type)
+
     return result
 
+
 def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
-    encoded_type: dict[str, Any] = { 'kind': type_info.kind }
+    encoded_type: dict[str, Any] = {"kind": type_info.kind}
 
-    if type_info.kind == 'Struct':
-        if type_info.dataclass_type is None:
-            raise ValueError("Struct type must have a dataclass type")
-        encoded_type['fields'] = _encode_fields_schema(type_info.dataclass_type, type_info.key_type)
-        if doc := inspect.getdoc(type_info.dataclass_type):
-            encoded_type['description'] = doc
+    if type_info.kind == "Struct":
+        if type_info.struct_type is None:
+            raise ValueError("Struct type must have a dataclass or namedtuple type")
+        encoded_type["fields"] = _encode_fields_schema(
+            type_info.struct_type, type_info.key_type
+        )
+        if doc := inspect.getdoc(type_info.struct_type):
+            encoded_type["description"] = doc
 
-    elif type_info.kind == 'Vector':
+    elif type_info.kind == "Vector":
         if type_info.vector_info is None:
             raise ValueError("Vector type must have a vector info")
         if type_info.elem_type is None:
             raise ValueError("Vector type must have an element type")
-        encoded_type['element_type'] = _encode_type(analyze_type_info(type_info.elem_type))
-        encoded_type['dimension'] = type_info.vector_info.dim
+        elem_type_info = analyze_type_info(type_info.elem_type)
+        encoded_type["element_type"] = _encode_type(elem_type_info)
+        encoded_type["dimension"] = type_info.vector_info.dim
 
     elif type_info.kind in TABLE_TYPES:
         if type_info.elem_type is None:
             raise ValueError(f"{type_info.kind} type must have an element type")
         row_type_info = analyze_type_info(type_info.elem_type)
-        encoded_type['row'] = _encode_type(row_type_info)
+        encoded_type["row"] = _encode_type(row_type_info)
 
     return encoded_type
+
 
 def encode_enriched_type_info(enriched_type_info: AnalyzedTypeInfo) -> dict[str, Any]:
     """
     Encode an enriched type info to a CocoIndex engine's type representation
     """
-    encoded: dict[str, Any] = {'type': _encode_type(enriched_type_info)}
+    encoded: dict[str, Any] = {"type": _encode_type(enriched_type_info)}
 
     if enriched_type_info.attrs is not None:
-        encoded['attrs'] = enriched_type_info.attrs
+        encoded["attrs"] = enriched_type_info.attrs
 
     if enriched_type_info.nullable:
-        encoded['nullable'] = True
+        encoded["nullable"] = True
 
     return encoded
 
-@overload
-def encode_enriched_type(t: None) -> None:
-    ...
 
 @overload
-def encode_enriched_type(t: Any) -> dict[str, Any]:
-    ...
+def encode_enriched_type(t: None) -> None: ...
 
-def encode_enriched_type(t) -> dict[str, Any] | None:
+
+@overload
+def encode_enriched_type(t: Any) -> dict[str, Any]: ...
+
+
+def encode_enriched_type(t: Any) -> dict[str, Any] | None:
     """
     Convert a Python type to a CocoIndex engine's type representation
     """
@@ -246,7 +390,8 @@ def encode_enriched_type(t) -> dict[str, Any] | None:
 
     return encode_enriched_type_info(analyze_type_info(t))
 
-def resolve_forward_ref(t):
-    if t is str:
-        return eval(t) # pylint: disable=eval-used
+
+def resolve_forward_ref(t: Any) -> Any:
+    if isinstance(t, str):
+        return eval(t)  # pylint: disable=eval-used
     return t

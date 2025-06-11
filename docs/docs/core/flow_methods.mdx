@@ -1,12 +1,13 @@
 ---
-title: Flow Running
+title: Run a Flow
+toc_max_heading_level: 4
 description: Run a CocoIndex Flow, including build / update data in the target storage and evaluate the flow without changing the target storage.
 ---
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# Running a CocoIndex Flow
+# Run a CocoIndex Flow
 
 After a flow is defined as discussed in [Flow Definition](/docs/core/flow_def), you can start to transform data with it.
 
@@ -29,17 +30,7 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 ```
 
 It creates a `demo_flow` object in `cocoindex.Flow` type.
-To enable CLI, you also need to make sure you have a main function decorated with `@cocoindex.main_fn()`:
 
-
-```python title="main.py"
-@cocoindex.main_fn()
-def main():
-    ...
-
-if __name__ == "__main__":
-    main()
-```
 </TabItem>
 </Tabs>
 
@@ -70,18 +61,19 @@ This is to achieve best efficiency.
 
 ### One time update
 
-<Tabs>
-<TabItem value="shell" label="Shell" default>
+#### CLI
 
 The `cocoindex update` subcommand creates/updates data in the target storage.
 
 Once it's done, the target data is fresh up to the moment when the function is called.
 
 ```sh
-python main.py cocoindex update
+cocoindex update main.py
 ```
 
-</TabItem>
+#### Library API
+
+<Tabs>
 <TabItem value="python" label="Python">
 
 The `update()` async method creates/updates data in the target storage.
@@ -103,24 +95,25 @@ A data source may enable one or multiple *change capture mechanisms*:
 *   Configured with a [refresh interval](flow_def#refresh-interval), which is generally applicable to all data sources.
 
 *   Specific data sources also provide their specific change capture mechanisms.
-    For example, [`GoogleDrive` source](../ops/sources#googledrive) allows polling recent modified files.
+    For example, [`AmazonS3` source](../ops/sources/#amazons3) watches S3 bucket's change events, and [`GoogleDrive` source](../ops/sources#googledrive) allows polling recent modified files.
     See documentations for specific data sources.
 
 Change capture mechanisms enable CocoIndex to continuously capture changes from the source data and update the target data accordingly, under live update mode.
 
-<Tabs>
-<TabItem value="shell" label="Shell" default>
+#### CLI
 
 To perform live update, run the `cocoindex update` subcommand with `-L` option:
 
 ```sh
-python main.py cocoindex update -L
+cocoindex update main.py -L
 ```
 
 If there's at least one data source with change capture mechanism enabled, it will keep running until the aborted (e.g. by `Ctrl-C`).
 Otherwise, it falls back to the same behavior as one time update, and will finish after a one-time update is done.
 
-</TabItem>
+#### Library API
+
+<Tabs>
 <TabItem value="python" label="Python">
 
 To perform live update, you need to create a `cocoindex.FlowLiveUpdater` object using the `cocoindex.Flow` object.
@@ -145,8 +138,10 @@ my_updater = cocoindex.FlowLiveUpdater(
 
 A `FlowLiveUpdater` object supports the following methods:
 
+*   `start()`: Start the updater.
+    CocoIndex will continuously capture changes from the source data and update the target data accordingly in background threads managed by the engine.
 *   `abort()`: Abort the updater.
-*   `wait()` (async): Wait for the updater to finish. It only unblocks in one of the following cases:
+*   `wait()`: Wait for the updater to finish. It only unblocks in one of the following cases:
     *   The updater was aborted.
     *   A one time update is done, and live update is not enabled:
         either `live_mode` is `False`, or all data sources have no change capture mechanisms enabled.
@@ -154,6 +149,8 @@ A `FlowLiveUpdater` object supports the following methods:
 
 ```python
 my_updater = cocoindex.FlowLiveUpdater(demo_flow)
+# Start the updater.
+my_updater.start()
 
 # Perform your own logic (e.g. a query loop).
 ...
@@ -163,26 +160,47 @@ print(my_updater.update_stats())
 # Abort the updater.
 my_updater.abort()
 # Wait for the updater to finish.
-await my_updater.wait()
+my_updater.wait()
 ```
 
 Python SDK also allows you to use the updater as a context manager.
-It will abort and wait for the updater to finish automatically when the context is exited.
-The following code is equivalent to the code above:
+It will automatically start the updater during the context entry, and abort and wait for the updater to finish automatically when the context is exited.
+The following code is equivalent to the code above (if no early return happens):
 
 ```python
-async with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
+with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
     # Perform your own logic (e.g. a query loop).
     ...
     print(my_updater.update_stats())
 ```
 
-Within a synchronous function, remove `async` before `with`, like this:
+CocoIndex also provides asynchronous versions of APIs for blocking operations, including:
 
-```python
-with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
+*   `start_async()` and `wait_async()`, e.g.
+
+    ```python
+    my_updater = cocoindex.FlowLiveUpdater(demo_flow)
+    # Start the updater.
+    await my_updater.start_async()
+    
+    # Perform your own logic (e.g. a query loop).
     ...
-```
+    
+    # Print the update stats.
+    print(my_updater.update_stats())
+    # Abort the updater.
+    my_updater.abort()
+    # Wait for the updater to finish.
+    await my_updater.wait_async()
+    ```
+*   Async context manager, e.g.
+
+    ```python
+    async with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
+        # Perform your own logic (e.g. a query loop).
+        ...
+        print(my_updater.update_stats())
+    ```
 
 </TabItem>
 </Tabs>
@@ -191,8 +209,7 @@ with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
 
 CocoIndex allows you to run the transformations defined by the flow without updating the target storage.
 
-<Tabs>
-<TabItem value="shell" label="Shell" default>
+### CLI
 
 The `cocoindex evaluate` subcommand runs the transformation and dumps flow outputs.
 It takes the following options:
@@ -205,10 +222,12 @@ It takes the following options:
 Example:
 
 ```sh
-python main.py cocoindex evaluate --output-dir ./eval_output
+cocoindex evaluate main.py --output-dir ./eval_output
 ```
 
-</TabItem>
+### Library API
+
+<Tabs>
 <TabItem value="python" label="Python">
 
 The `evaluate_and_dump()` method runs the transformation and dumps flow outputs to files.

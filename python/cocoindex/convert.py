@@ -1,33 +1,52 @@
 """
 Utilities to convert between Python and engine values.
 """
+
 import dataclasses
 import datetime
 import inspect
 import uuid
+import numpy as np
 
 from enum import Enum
-from typing import Any, Callable, get_origin
-from .typing import analyze_type_info, encode_enriched_type, TABLE_TYPES, KEY_FIELD_NAME
+from typing import Any, Callable, get_origin, Mapping
+from .typing import (
+    analyze_type_info,
+    encode_enriched_type,
+    is_namedtuple_type,
+    TABLE_TYPES,
+    KEY_FIELD_NAME,
+    DtypeRegistry,
+)
 
 
 def encode_engine_value(value: Any) -> Any:
     """Encode a Python value to an engine value."""
     if dataclasses.is_dataclass(value):
-        return [encode_engine_value(getattr(value, f.name)) for f in dataclasses.fields(value)]
+        return [
+            encode_engine_value(getattr(value, f.name))
+            for f in dataclasses.fields(value)
+        ]
+    if is_namedtuple_type(type(value)):
+        return [encode_engine_value(getattr(value, name)) for name in value._fields]
+    if isinstance(value, np.ndarray):
+        return value
     if isinstance(value, (list, tuple)):
         return [encode_engine_value(v) for v in value]
     if isinstance(value, dict):
-        return [[encode_engine_value(k)] + encode_engine_value(v) for k, v in value.items()]
+        return [
+            [encode_engine_value(k)] + encode_engine_value(v) for k, v in value.items()
+        ]
     if isinstance(value, uuid.UUID):
         return value.bytes
     return value
 
+
 def make_engine_value_decoder(
-        field_path: list[str],
-        src_type: dict[str, Any],
-        dst_annotation,
-    ) -> Callable[[Any], Any]:
+    field_path: list[str],
+    src_type: dict[str, Any],
+    dst_annotation: Any,
+) -> Callable[[Any], Any]:
     """
     Make a decoder from an engine value to a Python value.
 
@@ -40,12 +59,18 @@ def make_engine_value_decoder(
         A decoder from an engine value to a Python value.
     """
 
-    src_type_kind = src_type['kind']
+    src_type_kind = src_type["kind"]
 
-    if dst_annotation is inspect.Parameter.empty:
-        if src_type_kind == 'Struct' or src_type_kind in TABLE_TYPES:
-            raise ValueError(f"Missing type annotation for `{''.join(field_path)}`."
-                             f"It's required for {src_type_kind} type.")
+    if (
+        dst_annotation is None
+        or dst_annotation is inspect.Parameter.empty
+        or dst_annotation is Any
+    ):
+        if src_type_kind == "Struct" or src_type_kind in TABLE_TYPES:
+            raise ValueError(
+                f"Missing type annotation for `{''.join(field_path)}`."
+                f"It's required for {src_type_kind} type."
+            )
         return lambda value: value
 
     dst_type_info = analyze_type_info(dst_annotation)
@@ -53,76 +78,149 @@ def make_engine_value_decoder(
     if src_type_kind != dst_type_info.kind:
         raise ValueError(
             f"Type mismatch for `{''.join(field_path)}`: "
-            f"passed in {src_type_kind}, declared {dst_annotation} ({dst_type_info.kind})")
+            f"passed in {src_type_kind}, declared {dst_annotation} ({dst_type_info.kind})"
+        )
 
-    if dst_type_info.dataclass_type is not None:
+    if dst_type_info.struct_type is not None:
         return _make_engine_struct_value_decoder(
-            field_path, src_type['fields'], dst_type_info.dataclass_type)
+            field_path, src_type["fields"], dst_type_info.struct_type
+        )
 
     if src_type_kind in TABLE_TYPES:
-        field_path.append('[*]')
+        field_path.append("[*]")
         elem_type_info = analyze_type_info(dst_type_info.elem_type)
-        if elem_type_info.dataclass_type is None:
-            raise ValueError(f"Type mismatch for `{''.join(field_path)}`: "
-                            f"declared `{dst_type_info.kind}`, a dataclass type expected")
-        engine_fields_schema = src_type['row']['fields']
+        if elem_type_info.struct_type is None:
+            raise ValueError(
+                f"Type mismatch for `{''.join(field_path)}`: "
+                f"declared `{dst_type_info.kind}`, a dataclass or NamedTuple type expected"
+            )
+        engine_fields_schema = src_type["row"]["fields"]
         if elem_type_info.key_type is not None:
             key_field_schema = engine_fields_schema[0]
             field_path.append(f".{key_field_schema.get('name', KEY_FIELD_NAME)}")
             key_decoder = make_engine_value_decoder(
-                field_path, key_field_schema['type'], elem_type_info.key_type)
+                field_path, key_field_schema["type"], elem_type_info.key_type
+            )
             field_path.pop()
             value_decoder = _make_engine_struct_value_decoder(
-                field_path, engine_fields_schema[1:], elem_type_info.dataclass_type)
-            def decode(value):
+                field_path, engine_fields_schema[1:], elem_type_info.struct_type
+            )
+
+            def decode(value: Any) -> Any | None:
                 if value is None:
                     return None
                 return {key_decoder(v[0]): value_decoder(v[1:]) for v in value}
         else:
             elem_decoder = _make_engine_struct_value_decoder(
-                field_path, engine_fields_schema, elem_type_info.dataclass_type)
-            def decode(value):
+                field_path, engine_fields_schema, elem_type_info.struct_type
+            )
+
+            def decode(value: Any) -> Any | None:
                 if value is None:
                     return None
                 return [elem_decoder(v) for v in value]
+
         field_path.pop()
         return decode
 
-    if src_type_kind == 'Uuid':
+    if src_type_kind == "Uuid":
         return lambda value: uuid.UUID(bytes=value)
+
+    if src_type_kind == "Vector":
+        dtype_info = DtypeRegistry.get_by_dtype(dst_type_info.np_number_type)
+
+        def decode_vector(value: Any) -> Any | None:
+            if value is None:
+                if dst_type_info.nullable:
+                    return None
+                raise ValueError(
+                    f"Received null for non-nullable vector `{''.join(field_path)}`"
+                )
+
+            if not isinstance(value, (np.ndarray, list)):
+                raise TypeError(
+                    f"Expected NDArray or list for vector `{''.join(field_path)}`, got {type(value)}"
+                )
+            expected_dim = (
+                dst_type_info.vector_info.dim if dst_type_info.vector_info else None
+            )
+            if expected_dim is not None and len(value) != expected_dim:
+                raise ValueError(
+                    f"Vector dimension mismatch for `{''.join(field_path)}`: "
+                    f"expected {expected_dim}, got {len(value)}"
+                )
+
+            # Use NDArray for supported numeric dtypes, else return list
+            if dtype_info is not None:
+                return np.array(value, dtype=dtype_info.numpy_dtype)
+            return value
+
+        return decode_vector
 
     return lambda value: value
 
+
 def _make_engine_struct_value_decoder(
-        field_path: list[str],
-        src_fields: list[dict[str, Any]],
-        dst_dataclass_type: type,
-    ) -> Callable[[list], Any]:
+    field_path: list[str],
+    src_fields: list[dict[str, Any]],
+    dst_struct_type: type,
+) -> Callable[[list[Any]], Any]:
     """Make a decoder from an engine field values to a Python value."""
 
-    src_name_to_idx = {f['name']: i for i, f in enumerate(src_fields)}
-    def make_closure_for_value(name: str, param: inspect.Parameter) -> Callable[[list], Any]:
+    src_name_to_idx = {f["name"]: i for i, f in enumerate(src_fields)}
+
+    parameters: Mapping[str, inspect.Parameter]
+    if dataclasses.is_dataclass(dst_struct_type):
+        parameters = inspect.signature(dst_struct_type).parameters
+    elif is_namedtuple_type(dst_struct_type):
+        defaults = getattr(dst_struct_type, "_field_defaults", {})
+        fields = getattr(dst_struct_type, "_fields", ())
+        parameters = {
+            name: inspect.Parameter(
+                name=name,
+                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=defaults.get(name, inspect.Parameter.empty),
+                annotation=dst_struct_type.__annotations__.get(
+                    name, inspect.Parameter.empty
+                ),
+            )
+            for name in fields
+        }
+    else:
+        raise ValueError(f"Unsupported struct type: {dst_struct_type}")
+
+    def make_closure_for_value(
+        name: str, param: inspect.Parameter
+    ) -> Callable[[list[Any]], Any]:
         src_idx = src_name_to_idx.get(name)
         if src_idx is not None:
-            field_path.append(f'.{name}')
+            field_path.append(f".{name}")
             field_decoder = make_engine_value_decoder(
-                field_path, src_fields[src_idx]['type'], param.annotation)
+                field_path, src_fields[src_idx]["type"], param.annotation
+            )
             field_path.pop()
-            return lambda values: field_decoder(values[src_idx])
+            return (
+                lambda values: field_decoder(values[src_idx])
+                if len(values) > src_idx
+                else param.default
+            )
 
         default_value = param.default
         if default_value is inspect.Parameter.empty:
             raise ValueError(
-                f"Field without default value is missing in input: {''.join(field_path)}")
+                f"Field without default value is missing in input: {''.join(field_path)}"
+            )
 
         return lambda _: default_value
 
     field_value_decoder = [
-        make_closure_for_value(name, param)
-        for (name, param) in inspect.signature(dst_dataclass_type).parameters.items()]
+        make_closure_for_value(name, param) for (name, param) in parameters.items()
+    ]
 
-    return lambda values: dst_dataclass_type(
-        *(decoder(values) for decoder in field_value_decoder))
+    return lambda values: dst_struct_type(
+        *(decoder(values) for decoder in field_value_decoder)
+    )
+
 
 def dump_engine_object(v: Any) -> Any:
     """Recursively dump an object for engine. Engine side uses `Pythonized` to catch."""
@@ -136,11 +234,16 @@ def dump_engine_object(v: Any) -> Any:
         total_secs = v.total_seconds()
         secs = int(total_secs)
         nanos = int((total_secs - secs) * 1e9)
-        return {'secs': secs, 'nanos': nanos}
-    elif hasattr(v, '__dict__'):
-        s = {k: dump_engine_object(v) for k, v in v.__dict__.items()}
-        if hasattr(v, 'kind') and 'kind' not in s:
-            s['kind'] = v.kind
+        return {"secs": secs, "nanos": nanos}
+    elif hasattr(v, "__dict__"):
+        s = {}
+        for k, val in v.__dict__.items():
+            if val is None:
+                # Skip None values
+                continue
+            s[k] = dump_engine_object(val)
+        if hasattr(v, "kind") and "kind" not in s:
+            s["kind"] = v.kind
         return s
     elif isinstance(v, (list, tuple)):
         return [dump_engine_object(item) for item in v]

@@ -26,26 +26,21 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: ${{ matrix.platform.runner }}
-    strategy:
-      matrix:
-        platform:
-          - { os: linux, runner: ubuntu-24.04, target: x86_64, container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64" }
-          - { os: macos, runner: macos-15, target: aarch64 }
+  format-check:
+    name: Check Python formatting
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.x
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
-          sccache: 'true'
-          manylinux: auto
-          container: ${{ matrix.platform.container }}
+          python-version: 3.11
+      - name: Install Ruff
+        run: |
+          pip install ruff
+      - name: Check Python formatting
+        run: |
+          ruff format --check .
+
   test:
     name: Run test
     uses: ./.github/workflows/_test.yml

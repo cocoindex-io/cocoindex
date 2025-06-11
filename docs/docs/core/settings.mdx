@@ -1,0 +1,116 @@
+---
+title: CocoIndex Settings
+description: Provide settings for CocoIndex, e.g. database connection, app namespace, etc.
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# CocoIndex Setting
+
+Certain settings need to be provided for CocoIndex to work, e.g. database connections, app namespace, etc.
+
+## Launch CocoIndex
+
+You have two ways to launch CocoIndex:
+
+*   Use [Cocoindex CLI](cli). It's handy for most routine indexing building and management tasks.
+    It will load settings from environment variables, either already set in your environment, or specified in `.env` file.
+    See [CLI](cli#environment-variables) for more details.
+
+*   Call CocoIndex functionality from your own Python application or library.
+    It's needed when you want to leverage CocoIndex support for query, or have your custom logic to trigger indexing, etc.
+
+    <Tabs>
+    <TabItem value="python" label="Python" default>
+
+    You need to explicitly call `cocoindex.init()` before doing anything with CocoIndex, and settings will be loaded during the call.
+
+    *   If it's called without any argument, it will load settings from environment variables.
+        Only existing environment variables already set in your environment will be used.
+        If you want to load environment variables from a specific `.env` file, consider call `load_dotenv()` provided by the [`python-dotenv`](https://github.com/theskumar/python-dotenv) package.
+
+        ```py
+        from dotenv import load_dotenv
+        import cocoindex
+
+        load_dotenv()
+        cocoindex.init()
+        ```
+
+    *   It takes an optional `cocoindex.Settings` dataclass object as argument, so you can also construct settings explicitly and pass to it:
+
+        ```py
+        import cocoindex
+
+        cocoindex.init(
+            cocoindex.Settings(
+                database=cocoindex.DatabaseConnectionSpec(
+                    url="postgres://cocoindex:cocoindex@localhost/cocoindex"
+                )
+            )
+        )
+        ```
+    </TabItem>
+    </Tabs>
+
+## List of Settings
+
+`cocoindex.Settings` is a dataclass that contains the following fields:
+
+*   `app_namespace` (type: `str`, required): The namespace of the application.
+*   `database` (type: `DatabaseConnectionSpec`, required): The connection to the Postgres database.
+
+### App Namespace
+
+The `app_namespace` field helps organize flows across different environments (e.g., dev, staging, production), team members, etc. When set, it prefixes flow names with the namespace.
+
+For example, if the namespace is `Staging`, for a flow with name specified as `Flow1` in code, the full name of the flow will be `Staging.Flow1`.
+You can also get the current app namespace by calling `cocoindex.get_app_namespace()` (see [Getting App Namespace](flow_def#getting-app-namespace) for more details).
+
+If not set, all flows are in a default unnamed namespace.
+
+*Environment variable*: `COCOINDEX_APP_NAMESPACE`
+
+### DatabaseConnectionSpec
+
+`DatabaseConnectionSpec` configures the connection to a database. Only Postgres is supported for now. It has the following fields:
+
+*   `url` (type: `str`, required): The URL of the Postgres database to use as the internal storage, e.g. `postgres://cocoindex:cocoindex@localhost/cocoindex`.
+
+    *Environment variable* for `Settings.database.url`: `COCOINDEX_DATABASE_URL`
+
+*   `user` (type: `str`, optional): The username for the Postgres database. If not provided, username will come from `url`.
+
+    *Environment variable* for `Settings.database.user`: `COCOINDEX_DATABASE_USER`
+
+*   `password` (type: `str`, optional): The password for the Postgres database. If not provided, password will come from `url`.
+
+    *Environment variable* for `Settings.database.password`: `COCOINDEX_DATABASE_PASSWORD`
+
+:::tip
+
+Please be careful that all values in `url` needs to be url-encoded if they contain special characters.
+For this reason, prefer to use the separated `user` and `password` fields for username and password.
+
+:::
+
+:::info
+
+If you use the Postgres database hosted by [Supabase](https://supabase.com/), please click **Connect** on your project dashboard and find the following URL:
+
+*    If you're on a IPv6 network, use the URL under **Direct connection**. You can visit [IPv6 test](https://test-ipv6.com/) to see if you have IPv6 Internet connection.
+*    Otherwise, use the URL under **Session pooler**.
+
+:::
+
+## List of Environment Variables
+
+This is the list of environment variables, each of which has a corresponding field in `Settings`:
+
+| environment variable | corresponding field in `Settings` | required? |
+|---------------------|-------------------|----------|
+| `COCOINDEX_DATABASE_URL` | `database.url` | Yes |
+| `COCOINDEX_DATABASE_USER` | `database.user` | No |
+| `COCOINDEX_DATABASE_PASSWORD` | `database.password` | No |
+| `COCOINDEX_APP_NAMESPACE` | `app_namespace` | No |

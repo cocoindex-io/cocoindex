@@ -1,18 +1,17 @@
+use crate::execution::evaluator::evaluate_transient_flow;
 use crate::prelude::*;
 
 use crate::base::schema::{FieldSchema, ValueType};
-use crate::base::spec::VectorSimilarityMetric;
-use crate::execution::query;
+use crate::base::spec::{NamedSpec, OutputMode, ReactiveOpSpec, SpecFormatter};
 use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
-use crate::ops::interface::{QueryResult, QueryResults};
 use crate::ops::py_factory::PyOpArgSchema;
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
 use crate::server::{self, ServerSettings};
 use crate::settings::Settings;
 use crate::setup;
+use pyo3::IntoPyObjectExt;
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
-use std::collections::btree_map;
 use std::fmt::Write;
 use std::sync::Arc;
 
@@ -113,6 +112,24 @@ impl IndexUpdateInfo {
 #[pyclass]
 pub struct Flow(pub Arc<FlowContext>);
 
+/// A single line in the rendered spec, with hierarchical children
+#[pyclass(get_all, set_all)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderedSpecLine {
+    /// The formatted content of the line (e.g., "Import: name=documents, source=LocalFile")
+    pub content: String,
+    /// Child lines in the hierarchy
+    pub children: Vec<RenderedSpecLine>,
+}
+
+/// A rendered specification, grouped by sections
+#[pyclass(get_all, set_all)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderedSpec {
+    /// List of (section_name, lines) pairs
+    pub sections: Vec<(String, Vec<RenderedSpecLine>)>,
+}
+
 #[pyclass]
 pub struct FlowLiveUpdater(pub Arc<tokio::sync::RwLock<execution::FlowLiveUpdater>>);
 
@@ -126,9 +143,10 @@ impl FlowLiveUpdater {
     ) -> PyResult<Bound<'py, PyAny>> {
         let flow = flow.0.clone();
         future_into_py(py, async move {
+            let lib_context = get_lib_context().into_py_result()?;
             let live_updater = execution::FlowLiveUpdater::start(
                 flow,
-                &get_lib_context().into_py_result()?.builtin_db_pool,
+                lib_context.require_builtin_db_pool().into_py_result()?,
                 options.into_inner(),
             )
             .await
@@ -183,16 +201,86 @@ impl Flow {
             get_runtime()
                 .block_on(async {
                     let exec_plan = self.0.flow.get_execution_plan().await?;
+                    let lib_context = get_lib_context()?;
                     execution::dumper::evaluate_and_dump(
                         &exec_plan,
                         &self.0.flow.data_schema,
                         options.into_inner(),
-                        &get_lib_context()?.builtin_db_pool,
+                        lib_context.require_builtin_db_pool()?,
                     )
                     .await
                 })
                 .into_py_result()?;
             Ok(())
+        })
+    }
+
+    #[pyo3(signature = (output_mode=None))]
+    pub fn get_spec(&self, output_mode: Option<Pythonized<OutputMode>>) -> PyResult<RenderedSpec> {
+        let mode = output_mode.map_or(OutputMode::Concise, |m| m.into_inner());
+        let spec = &self.0.flow.flow_instance;
+        let mut sections: IndexMap<String, Vec<RenderedSpecLine>> = IndexMap::new();
+
+        // Sources
+        sections.insert(
+            "Source".to_string(),
+            spec.import_ops
+                .iter()
+                .map(|op| RenderedSpecLine {
+                    content: format!("Import: name={}, {}", op.name, op.spec.format(mode)),
+                    children: vec![],
+                })
+                .collect(),
+        );
+
+        // Processing
+        fn walk(op: &NamedSpec<ReactiveOpSpec>, mode: OutputMode) -> RenderedSpecLine {
+            let content = format!("{}: {}", op.name, op.spec.format(mode));
+
+            let children = match &op.spec {
+                ReactiveOpSpec::ForEach(fe) => fe
+                    .op_scope
+                    .ops
+                    .iter()
+                    .map(|nested| walk(nested, mode))
+                    .collect(),
+                _ => vec![],
+            };
+
+            RenderedSpecLine { content, children }
+        }
+
+        sections.insert(
+            "Processing".to_string(),
+            spec.reactive_ops.iter().map(|op| walk(op, mode)).collect(),
+        );
+
+        // Targets
+        sections.insert(
+            "Targets".to_string(),
+            spec.export_ops
+                .iter()
+                .map(|op| RenderedSpecLine {
+                    content: format!("Export: name={}, {}", op.name, op.spec.format(mode)),
+                    children: vec![],
+                })
+                .collect(),
+        );
+
+        // Declarations
+        sections.insert(
+            "Declarations".to_string(),
+            spec.declarations
+                .iter()
+                .map(|decl| RenderedSpecLine {
+                    content: format!("Declaration: {}", decl.format(mode)),
+                    children: vec![],
+                })
+                .collect(),
+        );
+
+        Ok(RenderedSpec {
+            sections: sections.into_iter().collect(),
         })
     }
 
@@ -261,89 +349,34 @@ impl TransientFlow {
     pub fn __repr__(&self) -> String {
         self.__str__()
     }
-}
 
-#[pyclass]
-pub struct SimpleSemanticsQueryHandler(pub Arc<query::SimpleSemanticsQueryHandler>);
-
-#[pymethods]
-impl SimpleSemanticsQueryHandler {
-    #[new]
-    pub fn new(
-        py: Python<'_>,
-        flow: &Flow,
-        target_name: &str,
-        query_transform_flow: &TransientFlow,
-        default_similarity_metric: Pythonized<VectorSimilarityMetric>,
-    ) -> PyResult<Self> {
-        py.allow_threads(|| {
-            let handler = get_runtime()
-                .block_on(query::SimpleSemanticsQueryHandler::new(
-                    flow.0.flow.clone(),
-                    target_name,
-                    query_transform_flow.0.clone(),
-                    default_similarity_metric.0,
-                ))
-                .into_py_result()?;
-            Ok(Self(Arc::new(handler)))
-        })
-    }
-
-    pub fn register_query_handler(&self, name: String) -> PyResult<()> {
-        let flow_ctx = get_lib_context()
-            .into_py_result()?
-            .get_flow_context(&self.0.flow_name)
-            .into_py_result()?;
-        let mut query_handlers = flow_ctx.query_handlers.lock().unwrap();
-        match query_handlers.entry(name) {
-            btree_map::Entry::Occupied(entry) => {
-                return Err(PyException::new_err(format!(
-                    "query handler name already exists: {}",
-                    entry.key()
-                )));
-            }
-            btree_map::Entry::Vacant(entry) => {
-                entry.insert(self.0.clone());
-            }
-        }
-        Ok(())
-    }
-
-    #[pyo3(signature = (query, limit, vector_field_name = None, similarity_metric = None))]
-    pub fn search(
+    pub fn evaluate_async<'py>(
         &self,
-        py: Python<'_>,
-        query: String,
-        limit: u32,
-        vector_field_name: Option<String>,
-        similarity_metric: Option<Pythonized<VectorSimilarityMetric>>,
-    ) -> PyResult<(
-        Pythonized<Vec<QueryResult<serde_json::Value>>>,
-        Pythonized<query::SimpleSemanticsQueryInfo>,
-    )> {
-        py.allow_threads(|| {
-            let (results, info) = get_runtime().block_on(async move {
-                self.0
-                    .search(
-                        query,
-                        limit,
-                        vector_field_name,
-                        similarity_metric.map(|m| m.0),
-                    )
-                    .await
-            })?;
-            let results = QueryResults::<serde_json::Value>::try_from(results)?;
-            anyhow::Ok((Pythonized(results.results), Pythonized(info)))
+        py: Python<'py>,
+        args: Vec<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let flow = self.0.clone();
+        let input_values: Vec<value::Value> = std::iter::zip(
+            self.0.transient_flow_instance.input_fields.iter(),
+            args.into_iter(),
+        )
+        .map(|(input_schema, arg)| value_from_py_object(&input_schema.value_type.typ, &arg))
+        .collect::<PyResult<_>>()?;
+
+        future_into_py(py, async move {
+            let result = evaluate_transient_flow(&flow, &input_values)
+                .await
+                .into_py_result()?;
+            Python::with_gil(|py| value_to_py_object(py, &result)?.into_py_any(py))
         })
-        .into_py_result()
     }
 }
 
 #[pyclass]
-pub struct SetupStatusCheck(setup::AllSetupStatusCheck);
+pub struct SetupStatus(setup::AllSetupStatus);
 
 #[pymethods]
-impl SetupStatusCheck {
+impl SetupStatus {
     pub fn __str__(&self) -> String {
         format!("{}", &self.0)
     }
@@ -358,29 +391,29 @@ impl SetupStatusCheck {
 }
 
 #[pyfunction]
-fn sync_setup(py: Python<'_>) -> PyResult<SetupStatusCheck> {
+fn sync_setup(py: Python<'_>) -> PyResult<SetupStatus> {
     let lib_context = get_lib_context().into_py_result()?;
     let flows = lib_context.flows.lock().unwrap();
-    let all_setup_states = lib_context.all_setup_states.read().unwrap();
+    let all_setup_states = lib_context.require_all_setup_states().into_py_result()?.read().unwrap();
     py.allow_threads(|| {
         get_runtime()
             .block_on(async {
                 let setup_status = setup::sync_setup(&flows, &all_setup_states).await?;
-                anyhow::Ok(SetupStatusCheck(setup_status))
+                anyhow::Ok(SetupStatus(setup_status))
             })
             .into_py_result()
     })
 }
 
 #[pyfunction]
-fn drop_setup(py: Python<'_>, flow_names: Vec<String>) -> PyResult<SetupStatusCheck> {
+fn drop_setup(py: Python<'_>, flow_names: Vec<String>) -> PyResult<SetupStatus> {
     let lib_context = get_lib_context().into_py_result()?;
-    let all_setup_states = lib_context.all_setup_states.read().unwrap();
+    let all_setup_states = lib_context.require_all_setup_states().into_py_result()?.read().unwrap();
     py.allow_threads(|| {
         get_runtime()
             .block_on(async {
                 let setup_status = setup::drop_setup(flow_names, &all_setup_states).await?;
-                anyhow::Ok(SetupStatusCheck(setup_status))
+                anyhow::Ok(SetupStatus(setup_status))
             })
             .into_py_result()
     })
@@ -389,20 +422,21 @@ fn drop_setup(py: Python<'_>, flow_names: Vec<String>) -> PyResult<SetupStatusCh
 #[pyfunction]
 fn flow_names_with_setup() -> PyResult<Vec<String>> {
     let lib_context = get_lib_context().into_py_result()?;
-    let all_setup_states = lib_context.all_setup_states.read().unwrap();
+    let all_setup_states = lib_context.require_all_setup_states().into_py_result()?.read().unwrap();
     let flow_names = all_setup_states.flows.keys().cloned().collect();
     Ok(flow_names)
 }
 
 #[pyfunction]
-fn apply_setup_changes(py: Python<'_>, setup_status: &SetupStatusCheck) -> PyResult<()> {
+fn apply_setup_changes(py: Python<'_>, setup_status: &SetupStatus) -> PyResult<()> {
     py.allow_threads(|| {
         get_runtime()
             .block_on(async {
+                let lib_context = get_lib_context()?;
                 setup::apply_changes(
                     &mut std::io::stdout(),
                     &setup_status.0,
-                    &get_lib_context()?.builtin_db_pool,
+                    lib_context.require_builtin_db_pool()?,
                 )
                 .await
             })
@@ -417,6 +451,18 @@ fn add_auth_entry(key: String, value: Pythonized<serde_json::Value>) -> PyResult
         .add(key, value.into_inner())
         .into_py_result()?;
     Ok(())
+}
+
+#[pyfunction]
+fn seder_roundtrip<'py>(
+    py: Python<'py>,
+    value: Bound<'py, PyAny>,
+    typ: Pythonized<ValueType>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let typ = typ.into_inner();
+    let value = value_from_py_object(&typ, &value)?;
+    let value = value::test_util::seder_roundtrip(&value, &typ).into_py_result()?;
+    Ok(value_to_py_object(py, &value)?)
 }
 
 /// A Python module implemented in Rust.
@@ -441,9 +487,14 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FlowLiveUpdater>()?;
     m.add_class::<TransientFlow>()?;
     m.add_class::<IndexUpdateInfo>()?;
-    m.add_class::<SimpleSemanticsQueryHandler>()?;
-    m.add_class::<SetupStatusCheck>()?;
+    m.add_class::<SetupStatus>()?;
     m.add_class::<PyOpArgSchema>()?;
+    m.add_class::<RenderedSpec>()?;
+    m.add_class::<RenderedSpecLine>()?;
+
+    let testutil_module = PyModule::new(m.py(), "testutil")?;
+    testutil_module.add_function(wrap_pyfunction!(seder_roundtrip, &testutil_module)?)?;
+    m.add_submodule(&testutil_module)?;
 
     Ok(())
 }

@@ -1,12 +1,13 @@
 use chrono::Duration;
 use google_drive3::{
-    api::{File, Scope},
-    yup_oauth2::{read_service_account_key, ServiceAccountAuthenticator},
     DriveHub,
+    api::{File, Scope},
+    yup_oauth2::{ServiceAccountAuthenticator, read_service_account_key},
 };
 use http_body_util::BodyExt;
 use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
+use phf::phf_map;
 
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
@@ -18,45 +19,33 @@ struct ExportMimeType {
 
 const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 const FILE_MIME_TYPE: &str = "application/vnd.google-apps.file";
-static EXPORT_MIME_TYPES: LazyLock<HashMap<&'static str, ExportMimeType>> = LazyLock::new(|| {
-    HashMap::from([
-        (
-            "application/vnd.google-apps.document",
-            ExportMimeType {
-                text: "text/markdown",
-                binary: "application/pdf",
-            },
-        ),
-        (
-            "application/vnd.google-apps.spreadsheet",
-            ExportMimeType {
-                text: "text/csv",
-                binary: "application/pdf",
-            },
-        ),
-        (
-            "application/vnd.google-apps.presentation",
-            ExportMimeType {
-                text: "text/plain",
-                binary: "application/pdf",
-            },
-        ),
-        (
-            "application/vnd.google-apps.drawing",
-            ExportMimeType {
-                text: "image/svg+xml",
-                binary: "image/png",
-            },
-        ),
-        (
-            "application/vnd.google-apps.script",
-            ExportMimeType {
-                text: "application/vnd.google-apps.script+json",
-                binary: "application/vnd.google-apps.script+json",
-            },
-        ),
-    ])
-});
+static EXPORT_MIME_TYPES: phf::Map<&'static str, ExportMimeType> = phf_map! {
+    "application/vnd.google-apps.document" =>
+    ExportMimeType {
+        text: "text/markdown",
+        binary: "application/pdf",
+    },
+    "application/vnd.google-apps.spreadsheet" =>
+    ExportMimeType {
+        text: "text/csv",
+        binary: "application/pdf",
+    },
+    "application/vnd.google-apps.presentation" =>
+    ExportMimeType {
+        text: "text/plain",
+        binary: "application/pdf",
+    },
+    "application/vnd.google-apps.drawing" =>
+    ExportMimeType {
+        text: "image/svg+xml",
+        binary: "image/png",
+    },
+    "application/vnd.google-apps.script" =>
+    ExportMimeType {
+        text: "application/vnd.google-apps.script+json",
+        binary: "application/vnd.google-apps.script+json",
+    },
+};
 
 fn is_supported_file_type(mime_type: &str) -> bool {
     !mime_type.starts_with("application/vnd.google-apps.")
@@ -126,7 +115,7 @@ impl Executor {
         file: File,
         new_folder_ids: &mut Vec<Arc<str>>,
         seen_ids: &mut HashSet<Arc<str>>,
-    ) -> Result<Option<SourceRowMetadata>> {
+    ) -> Result<Option<PartialSourceRowMetadata>> {
         if file.trashed == Some(true) {
             return Ok(None);
         }
@@ -144,7 +133,7 @@ impl Executor {
             new_folder_ids.push(id);
             None
         } else if is_supported_file_type(&mime_type) {
-            Some(SourceRowMetadata {
+            Some(PartialSourceRowMetadata {
                 key: KeyValue::Str(id),
                 ordinal: file.modified_time.map(|t| t.try_into()).transpose()?,
             })
@@ -190,7 +179,7 @@ impl Executor {
     async fn get_recent_updates(
         &self,
         cutoff_time: &mut DateTime<Utc>,
-    ) -> Result<Vec<SourceChange>> {
+    ) -> Result<SourceChangeMessage> {
         let mut page_size: i32 = 10;
         let mut next_page_token: Option<String> = None;
         let mut changes = Vec::new();
@@ -220,13 +209,8 @@ impl Executor {
                 let file_id = file.id.ok_or_else(|| anyhow!("File has no id"))?;
                 if self.is_file_covered(&file_id).await? {
                     changes.push(SourceChange {
-                        ordinal: Some(modified_time.try_into()?),
                         key: KeyValue::Str(Arc::from(file_id)),
-                        value: if file.trashed == Some(true) {
-                            SourceValueChange::Delete
-                        } else {
-                            SourceValueChange::Upsert(None)
-                        },
+                        data: None,
                     });
                 }
             }
@@ -239,7 +223,10 @@ impl Executor {
             page_size = 100;
         }
         *cutoff_time = Self::make_cutoff_time(most_recent_modified_time, start_time);
-        Ok(changes)
+        Ok(SourceChangeMessage {
+            changes,
+            ack_fn: None,
+        })
     }
 
     async fn is_file_covered(&self, file_id: &str) -> Result<bool> {
@@ -292,21 +279,21 @@ impl<T> ResultExt<T> for google_drive3::Result<T> {
     }
 }
 
+fn optional_modified_time(include_ordinal: bool) -> &'static str {
+    if include_ordinal { ",modifiedTime" } else { "" }
+}
+
 #[async_trait]
 impl SourceExecutor for Executor {
-    fn list(
-        &self,
-        options: SourceExecutorListOptions,
-    ) -> BoxStream<'_, Result<Vec<SourceRowMetadata>>> {
+    fn list<'a>(
+        &'a self,
+        options: &'a SourceExecutorListOptions,
+    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>> {
         let mut seen_ids = HashSet::new();
         let mut folder_ids = self.root_folder_ids.clone();
         let fields = format!(
             "files(id,name,mimeType,trashed{})",
-            if options.include_ordinal {
-                ",modifiedTime"
-            } else {
-                ""
-            }
+            optional_modified_time(options.include_ordinal)
         );
         let mut new_folder_ids = Vec::new();
         try_stream! {
@@ -333,20 +320,38 @@ impl SourceExecutor for Executor {
         .boxed()
     }
 
-    async fn get_value(&self, key: &KeyValue) -> Result<Option<FieldValues>> {
+    async fn get_value(
+        &self,
+        key: &KeyValue,
+        options: &SourceExecutorGetOptions,
+    ) -> Result<PartialSourceRowData> {
         let file_id = key.str_value()?;
+        let fields = format!(
+            "id,name,mimeType,trashed{}",
+            optional_modified_time(options.include_ordinal)
+        );
         let resp = self
             .drive_hub
             .files()
             .get(file_id)
             .add_scope(Scope::Readonly)
-            .param("fields", "id,name,mimeType,trashed")
+            .param("fields", &fields)
             .doit()
             .await
             .or_not_found()?;
         let file = match resp {
             Some((_, file)) if file.trashed != Some(true) => file,
-            _ => return Ok(None),
+            _ => {
+                return Ok(PartialSourceRowData {
+                    value: Some(SourceValue::NonExistence),
+                    ordinal: Some(Ordinal::unavailable()),
+                });
+            }
+        };
+        let ordinal = if options.include_ordinal {
+            file.modified_time.map(|t| t.try_into()).transpose()?
+        } else {
+            None
         };
         let type_n_body = if let Some(export_mime_type) = file
             .mime_type
@@ -392,14 +397,16 @@ impl SourceExecutor for Executor {
                             .into()
                     },
                 ];
-                Some(FieldValues { fields })
+                Some(SourceValue::Existence(FieldValues { fields }))
             }
             None => None,
         };
-        Ok(value)
+        Ok(PartialSourceRowData { value, ordinal })
     }
 
-    async fn change_stream(&self) -> Result<Option<BoxStream<'async_trait, SourceChange>>> {
+    async fn change_stream(
+        &self,
+    ) -> Result<Option<BoxStream<'async_trait, Result<SourceChangeMessage>>>> {
         let poll_interval = if let Some(poll_interval) = self.recent_updates_poll_interval {
             poll_interval
         } else {
@@ -411,17 +418,7 @@ impl SourceExecutor for Executor {
         let stream = stream! {
             loop {
                 interval.tick().await;
-                let changes = self.get_recent_updates(&mut cutoff_time).await;
-                match changes {
-                    Ok(changes) => {
-                        for change in changes {
-                            yield change;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error getting recent updates: {e}");
-                    }
-                }
+                yield self.get_recent_updates(&mut cutoff_time).await;
             }
         };
         Ok(Some(stream.boxed()))

@@ -1,15 +1,14 @@
 use crate::prelude::*;
 
-use crate::setup::{CombinedState, ResourceSetupInfo, ResourceSetupStatusCheck, SetupChangeType};
+use crate::setup::{CombinedState, ResourceSetupInfo, ResourceSetupStatus, SetupChangeType};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 pub fn default_tracking_table_name(flow_name: &str) -> String {
-    let sanitized_name = flow_name
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect::<String>();
-    format!("{}__cocoindex_tracking", sanitized_name)
+    format!(
+        "{}__cocoindex_tracking",
+        utils::db::sanitize_identifier(flow_name)
+    )
 }
 
 pub const CURRENT_TRACKING_TABLE_VERSION: i32 = 1;
@@ -53,7 +52,7 @@ pub struct TrackingTableSetupState {
 }
 
 #[derive(Debug)]
-pub struct TrackingTableSetupStatusCheck {
+pub struct TrackingTableSetupStatus {
     pub desired_state: Option<TrackingTableSetupState>,
 
     pub legacy_table_names: Vec<String>,
@@ -62,7 +61,7 @@ pub struct TrackingTableSetupStatusCheck {
     pub source_ids_to_delete: Vec<i32>,
 }
 
-impl TrackingTableSetupStatusCheck {
+impl TrackingTableSetupStatus {
     pub fn new(
         desired: Option<&TrackingTableSetupState>,
         existing: &CombinedState<TrackingTableSetupState>,
@@ -91,19 +90,18 @@ impl TrackingTableSetupStatusCheck {
 
     pub fn into_setup_info(
         self,
-    ) -> ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupStatusCheck> {
+    ) -> ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupStatus> {
         ResourceSetupInfo {
             key: (),
             state: self.desired_state.clone(),
             description: "Tracking Table".to_string(),
-            status_check: Some(self),
+            setup_status: Some(self),
             legacy_key: None,
         }
     }
 }
 
-#[async_trait]
-impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
+impl ResourceSetupStatus for TrackingTableSetupStatus {
     fn describe_changes(&self) -> Vec<String> {
         let mut changes: Vec<String> = vec![];
         if self.desired_state.is_some() && !self.legacy_table_names.is_empty() {
@@ -157,8 +155,13 @@ impl ResourceSetupStatusCheck for TrackingTableSetupStatusCheck {
         }
     }
 
-    async fn apply_change(&self) -> Result<()> {
-        let pool = &get_lib_context()?.builtin_db_pool;
+
+}
+
+impl TrackingTableSetupStatus {
+    pub async fn apply_change(&self) -> Result<()> {
+        let lib_context = get_lib_context()?;
+        let pool = lib_context.require_builtin_db_pool()?;
         if let Some(desired) = &self.desired_state {
             for lagacy_name in self.legacy_table_names.iter() {
                 let query = format!(

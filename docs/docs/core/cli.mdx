@@ -8,51 +8,50 @@ import TabItem from '@theme/TabItem';
 
 # CocoIndex CLI
 
-CocoIndex CLI embeds CLI functionality in your program.
-It provides a bunch of commands for easily managing and inspecting your flows and indexes.
+CocoIndex CLI is a standalone tool for easily managing and inspecting your flows and indexes.
 
-## Enable CocoIndex CLI
+## Invoke the CLI
 
-### Use Packaged Main
+Once CocoIndex is installed, you can invoke the CLI directly using the `cocoindex` command. Most commands require an `APP_TARGET` argument, which tells the CLI where your flow definitions are located.
 
-The easiest way is to use a packaged main function:
+### APP_TARGET Format
 
-<Tabs>
-<TabItem value="python" label="Python" default>
+The `APP_TARGET` can be:
+1.  A **path to a Python file** defining your flows (e.g., `main.py`, `path/to/my_flows.py`).
+2.  An **installed Python module name** that contains your flow definitions (e.g., `my_package.flows`).
+3.  For commands that operate on a *specific flow* (like `show`, `update`, `evaluate`), you can combine the application reference with a flow name:
+    * `path/to/my_flows.py:MyFlow`
+    * `my_package.flows:MyFlow`
 
-```python title="main.py"
-import cocoindex
+### Environment Variables
 
-@cocoindex.main_fn()
-def main():
-  ...
-```
+Environment variables are needed as CocoIndex library settings, as described in [CocoIndex Settings](settings#list-of-environment-variables).
 
-</TabItem>
-</Tabs>
+You can set environment variables in an environment file.
 
-With this, when the program is executed with `cocoindex` as its first argument, CocoIndex CLI will take over the control. For example:
+*   By default, the `cocoindex` CLI searches upward from the current directory for a `.env` file.
+*   You can use `--env-file <path>` to specify one explicitly:
 
-```sh
-$ python main.py cocoindex ls       # Run "ls" subcommand: list all flows
-```
+    ```sh
+    cocoindex --env-file path/to/custom.env <COMMAND> ...
+    ```
 
-You may also provide a `cocoindex_cmd` argument to the `main_fn` decorator to change the command from `cocoindex` to something else.
+Loaded variables do *NOT* override existing system ones.
+If no file is found, only existing system environment variables are used.
 
-### Explicitly CLI Invoke
+### Global Options
 
-An alterntive way is to use `cocoindex.cli.cli` (with type [`click.Group`](https://click.palletsprojects.com/en/stable/api/#click.Group)).
-For example, you may invoke the CLI explicitly with additional arguments:
+CocoIndex CLI supports the following global options:
 
-<Tabs>
-<TabItem value="python" label="Python" default>
+* `--env-file <path>`: Load environment variables from a specified `.env` file. If not provided, `.env` in the current directory is loaded if it exists.
+* `--version`: Show the CocoIndex version and exit.
+* `--help`: Show the main help message and exit.
 
-```python
-cocoindex.cli.cli.main(args)
-```
+:::caution Deprecated Usage
 
-</TabItem>
-</Tabs>
+The old method of invoking the CLI using `python main.py cocoindex ...` via the `@cocoindex.main_fn()` decorator is now deprecated. Please remove `@cocoindex.main_fn()` from your scripts and use the standalone cocoindex command as described.
+
+:::
 
 ## Subcommands
 
@@ -60,8 +59,8 @@ The following subcommands are available:
 
 | Subcommand | Description |
 | ---------- | ----------- |
-| `ls` | List all flows. |
-| `show` | Show the spec for a specific flow. |
+| `ls` | List all flows present in the given file/module. Or list all persisted flows under the current app namespace if no file/module specified. |
+| `show` | Show the spec and schema for a specific flow. |
 | `setup` | Check and apply backend setup changes for flows, including the internal and target storage (to export). |
 | `drop` | Drop the backend setup for specified flows. |
 | `update` | Update the index defined by the flow. |
@@ -71,6 +70,6 @@ The following subcommands are available:
 Use `--help` to see the full list of subcommands, and `subcommand --help` to see the usage of a specific one.
 
 ```sh
-python main.py cocoindex --help       # Show all subcommands
-python main.py cocoindex show --help  # Show usage of "show" subcommand
+cocoindex --help       # Show all subcommands
+cocoindex show --help  # Show usage of "show" subcommand
 ```

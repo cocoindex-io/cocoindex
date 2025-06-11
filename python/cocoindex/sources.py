@@ -1,6 +1,8 @@
 """All builtin sources."""
+
 from . import op
 import datetime
+
 
 class LocalFile(op.SourceSpec):
     """Import data from local file system."""
@@ -28,3 +30,16 @@ class GoogleDrive(op.SourceSpec):
     root_folder_ids: list[str]
     binary: bool = False
     recent_changes_poll_interval: datetime.timedelta | None = None
+
+
+class AmazonS3(op.SourceSpec):
+    """Import data from an Amazon S3 bucket. Supports optional prefix and file filtering by glob patterns."""
+
+    _op_category = op.OpCategory.SOURCE
+
+    bucket_name: str
+    prefix: str | None = None
+    binary: bool = False
+    included_patterns: list[str] | None = None
+    excluded_patterns: list[str] | None = None
+    sqs_queue_url: str | None = None

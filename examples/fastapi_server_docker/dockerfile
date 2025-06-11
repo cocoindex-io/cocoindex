@@ -2,6 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install PostgreSQL client libraries
+RUN apt-get update && apt-get install -y \
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 
 RUN pip install -r requirements.txt
@@ -10,4 +16,4 @@ COPY . .
 
 RUN cat .env
 
-CMD ["sh", "-c", "echo yes | python main.py cocoindex setup && python main.py cocoindex update && python main.py"]
+CMD ["sh", "-c", "echo yes | cocoindex setup main.py && cocoindex update main.py && python main.py"]

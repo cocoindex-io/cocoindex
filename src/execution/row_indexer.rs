@@ -4,16 +4,19 @@ use futures::future::try_join_all;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 
-use super::db_tracking::{self, read_source_tracking_info_for_processing, TrackedTargetKey};
+use super::db_tracking::{self, TrackedTargetKeyInfo, read_source_tracking_info_for_processing};
 use super::db_tracking_setup;
-use super::evaluator::{evaluate_source_entry, EvaluateSourceEntryOutput};
+use super::evaluator::{
+    EvaluateSourceEntryOutput, SourceRowEvaluationContext, evaluate_source_entry,
+};
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, StoredMemoizationInfo};
 use super::stats;
 
-use crate::base::schema;
 use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
-use crate::ops::interface::{ExportTargetMutation, ExportTargetUpsertEntry, Ordinal};
+use crate::ops::interface::{
+    ExportTargetMutation, ExportTargetUpsertEntry, Ordinal, SourceExecutorGetOptions,
+};
 use crate::utils::db::WriteAction;
 use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 
@@ -21,34 +24,25 @@ pub fn extract_primary_key(
     primary_key_def: &AnalyzedPrimaryKeyDef,
     record: &FieldValues,
 ) -> Result<KeyValue> {
-    let key = match primary_key_def {
+    match primary_key_def {
         AnalyzedPrimaryKeyDef::Fields(fields) => {
-            if fields.len() == 1 {
-                record.fields[fields[0] as usize].as_key()?
-            } else {
-                let mut key_values = Vec::with_capacity(fields.len());
-                for field in fields.iter() {
-                    key_values.push(record.fields[*field as usize].as_key()?);
-                }
-                KeyValue::Struct(key_values)
-            }
+            KeyValue::from_values(fields.iter().map(|field| &record.fields[*field as usize]))
         }
-    };
-    Ok(key)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum SourceVersionKind {
     #[default]
-    NonExistent,
+    UnknownLogic,
     DifferentLogic,
     CurrentLogic,
-    Deleted,
+    NonExistence,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SourceVersion {
-    pub ordinal: Option<Ordinal>,
+    pub ordinal: Ordinal,
     pub kind: SourceVersionKind,
 }
 
@@ -59,7 +53,7 @@ impl SourceVersion {
         curr_fp: Fingerprint,
     ) -> Self {
         Self {
-            ordinal: stored_ordinal.map(Ordinal),
+            ordinal: Ordinal(stored_ordinal),
             kind: match &stored_fp {
                 Some(stored_fp) => {
                     if stored_fp.as_slice() == curr_fp.0.as_slice() {
@@ -68,22 +62,26 @@ impl SourceVersion {
                         SourceVersionKind::DifferentLogic
                     }
                 }
-                None => SourceVersionKind::NonExistent,
+                None => SourceVersionKind::UnknownLogic,
             },
         }
     }
 
-    pub fn from_current(ordinal: Option<Ordinal>) -> Self {
+    pub fn from_current(ordinal: Ordinal) -> Self {
         Self {
             ordinal,
             kind: SourceVersionKind::CurrentLogic,
         }
     }
 
-    pub fn for_deletion(&self) -> Self {
+    pub fn from_current_data(data: &interface::SourceData) -> Self {
+        let kind = match &data.value {
+            interface::SourceValue::Existence(_) => SourceVersionKind::CurrentLogic,
+            interface::SourceValue::NonExistence => SourceVersionKind::NonExistence,
+        };
         Self {
-            ordinal: self.ordinal,
-            kind: SourceVersionKind::Deleted,
+            ordinal: data.ordinal,
+            kind,
         }
     }
 
@@ -92,7 +90,7 @@ impl SourceVersion {
         target: &SourceVersion,
         update_stats: Option<&stats::UpdateStats>,
     ) -> bool {
-        let should_skip = match (self.ordinal, target.ordinal) {
+        let should_skip = match (self.ordinal.0, target.ordinal.0) {
             (Some(orginal), Some(target_ordinal)) => {
                 orginal > target_ordinal || (orginal == target_ordinal && self.kind >= target.kind)
             }
@@ -112,6 +110,12 @@ pub enum SkippedOr<T> {
     Skipped(SourceVersion),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TargetKeyPair {
+    pub key: serde_json::Value,
+    pub additional_key: serde_json::Value,
+}
+
 #[derive(Default)]
 struct TrackingInfoForTarget<'a> {
     export_op: Option<&'a AnalyzedExportOp>,
@@ -119,11 +123,11 @@ struct TrackingInfoForTarget<'a> {
     // Existing keys info. Keyed by target key.
     // Will be removed after new rows for the same key are added into `new_staging_keys_info` and `mutation.upserts`,
     // hence all remaining ones are to be deleted.
-    existing_staging_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<Fingerprint>)>>,
-    existing_keys_info: HashMap<serde_json::Value, Vec<(i64, Option<Fingerprint>)>>,
+    existing_staging_keys_info: HashMap<TargetKeyPair, Vec<(i64, Option<Fingerprint>)>>,
+    existing_keys_info: HashMap<TargetKeyPair, Vec<(i64, Option<Fingerprint>)>>,
 
     // New keys info for staging.
-    new_staging_keys_info: Vec<TrackedTargetKey>,
+    new_staging_keys_info: Vec<TrackedTargetKeyInfo>,
 
     // Mutation to apply to the target storage.
     mutation: ExportTargetMutation,
@@ -201,9 +205,12 @@ async fn precommit_source_tracking_info(
             for key_info in keys_info.into_iter() {
                 target_info
                     .existing_staging_keys_info
-                    .entry(key_info.0)
+                    .entry(TargetKeyPair {
+                        key: key_info.key,
+                        additional_key: key_info.additional_key,
+                    })
                     .or_default()
-                    .push((key_info.1, key_info.2));
+                    .push((key_info.process_ordinal, key_info.fingerprint));
             }
         }
 
@@ -213,9 +220,12 @@ async fn precommit_source_tracking_info(
                 for key_info in keys_info.into_iter() {
                     target_info
                         .existing_keys_info
-                        .entry(key_info.0)
+                        .entry(TargetKeyPair {
+                            key: key_info.key,
+                            additional_key: key_info.additional_key,
+                        })
                         .or_default()
-                        .push((key_info.1, key_info.2));
+                        .push((key_info.process_ordinal, key_info.fingerprint));
                 }
             }
         }
@@ -242,10 +252,19 @@ async fn precommit_source_tracking_info(
                         .fields
                         .push(value.fields[*field as usize].clone());
                 }
-                let existing_target_keys = target_info.existing_keys_info.remove(&primary_key_json);
+                let additional_key = export_op.export_target_factory.extract_additional_key(
+                    &primary_key,
+                    &field_values,
+                    export_op.export_context.as_ref(),
+                )?;
+                let target_key_pair = TargetKeyPair {
+                    key: primary_key_json,
+                    additional_key,
+                };
+                let existing_target_keys = target_info.existing_keys_info.remove(&target_key_pair);
                 let existing_staging_target_keys = target_info
                     .existing_staging_keys_info
-                    .remove(&primary_key_json);
+                    .remove(&target_key_pair);
 
                 let curr_fp = if !export_op.value_stable {
                     Some(
@@ -266,21 +285,34 @@ async fn precommit_source_tracking_info(
                 {
                     // Already exists, with exactly the same value fingerprint.
                     // Nothing need to be changed, except carrying over the existing target keys info.
-                    let (existing_ordinal, existing_fp) =
-                        existing_target_keys.unwrap().into_iter().next().unwrap();
-                    keys_info.push((primary_key_json, existing_ordinal, existing_fp));
+                    let (existing_ordinal, existing_fp) = existing_target_keys
+                        .ok_or_else(invariance_violation)?
+                        .into_iter()
+                        .next()
+                        .ok_or_else(invariance_violation)?;
+                    keys_info.push(TrackedTargetKeyInfo {
+                        key: target_key_pair.key,
+                        additional_key: target_key_pair.additional_key,
+                        process_ordinal: existing_ordinal,
+                        fingerprint: existing_fp,
+                    });
                 } else {
                     // Entry with new value. Needs to be upserted.
+                    let tracked_target_key = TrackedTargetKeyInfo {
+                        key: target_key_pair.key.clone(),
+                        additional_key: target_key_pair.additional_key.clone(),
+                        process_ordinal,
+                        fingerprint: curr_fp,
+                    };
                     target_info.mutation.upserts.push(ExportTargetUpsertEntry {
                         key: primary_key,
+                        additional_key: target_key_pair.additional_key,
                         value: field_values,
                     });
-                    target_info.new_staging_keys_info.push((
-                        primary_key_json.clone(),
-                        process_ordinal,
-                        curr_fp,
-                    ));
-                    keys_info.push((primary_key_json, process_ordinal, curr_fp));
+                    target_info
+                        .new_staging_keys_info
+                        .push(tracked_target_key.clone());
+                    keys_info.push(tracked_target_key);
                 }
             }
             new_target_keys_info.push((export_op.target_id, keys_info));
@@ -290,7 +322,7 @@ async fn precommit_source_tracking_info(
     let mut new_staging_target_keys = db_tracking::TrackedTargetKeyForSource::default();
     let mut target_mutations = HashMap::with_capacity(export_ops.len());
     for (target_id, target_tracking_info) in tracking_info_for_targets.into_iter() {
-        let legacy_keys: HashSet<serde_json::Value> = target_tracking_info
+        let legacy_keys: HashSet<TargetKeyPair> = target_tracking_info
             .existing_keys_info
             .into_keys()
             .chain(target_tracking_info.existing_staging_keys_info.into_keys())
@@ -298,24 +330,27 @@ async fn precommit_source_tracking_info(
 
         let mut new_staging_keys_info = target_tracking_info.new_staging_keys_info;
         // Add tracking info for deletions.
-        new_staging_keys_info.extend(
-            legacy_keys
-                .iter()
-                .map(|key| ((*key).clone(), process_ordinal, None)),
-        );
+        new_staging_keys_info.extend(legacy_keys.iter().map(|key| TrackedTargetKeyInfo {
+            key: key.key.clone(),
+            additional_key: key.additional_key.clone(),
+            process_ordinal,
+            fingerprint: None,
+        }));
         new_staging_target_keys.push((target_id, new_staging_keys_info));
 
         if let Some(export_op) = target_tracking_info.export_op {
             let mut mutation = target_tracking_info.mutation;
-            mutation.delete_keys.reserve(legacy_keys.len());
+            mutation.deletes.reserve(legacy_keys.len());
             for legacy_key in legacy_keys.into_iter() {
-                mutation.delete_keys.push(
-                    value::Value::<value::ScopeValue>::from_json(
-                        legacy_key,
-                        &export_op.primary_key_type,
-                    )?
-                    .as_key()?,
-                );
+                let key = value::Value::<value::ScopeValue>::from_json(
+                    legacy_key.key,
+                    &export_op.primary_key_type,
+                )?
+                .as_key()?;
+                mutation.deletes.push(interface::ExportTargetDeleteEntry {
+                    key,
+                    additional_key: legacy_key.additional_key,
+                });
             }
             target_mutations.insert(target_id, mutation);
         }
@@ -384,9 +419,10 @@ async fn commit_source_tracking_info(
                 .filter_map(|(target_id, target_keys)| {
                     let cleaned_target_keys: Vec<_> = target_keys
                         .into_iter()
-                        .filter(|(_, ordinal, _)| {
-                            Some(*ordinal) > precommit_metadata.existing_process_ordinal
-                                && *ordinal != precommit_metadata.process_ordinal
+                        .filter(|key_info| {
+                            Some(key_info.process_ordinal)
+                                > precommit_metadata.existing_process_ordinal
+                                && key_info.process_ordinal != precommit_metadata.process_ordinal
                         })
                         .collect();
                     if !cleaned_target_keys.is_empty() {
@@ -415,7 +451,7 @@ async fn commit_source_tracking_info(
             source_id,
             source_key_json,
             cleaned_staging_target_keys,
-            source_version.ordinal.map(|o| o.into()),
+            source_version.ordinal.into(),
             logic_fingerprint,
             precommit_metadata.process_ordinal,
             process_timestamp.timestamp_micros(),
@@ -437,19 +473,16 @@ async fn commit_source_tracking_info(
 }
 
 pub async fn evaluate_source_entry_with_memory(
-    plan: &ExecutionPlan,
-    import_op: &AnalyzedImportOp,
-    schema: &schema::FlowSchema,
-    key: &value::KeyValue,
+    src_eval_ctx: &SourceRowEvaluationContext<'_>,
     options: EvaluationMemoryOptions,
     pool: &PgPool,
 ) -> Result<Option<EvaluateSourceEntryOutput>> {
     let stored_info = if options.enable_cache || !options.evaluation_only {
-        let source_key_json = serde_json::to_value(key)?;
+        let source_key_json = serde_json::to_value(src_eval_ctx.key)?;
         let existing_tracking_info = read_source_tracking_info_for_processing(
-            import_op.source_id,
+            src_eval_ctx.import_op.source_id,
             &source_key_json,
-            &plan.tracking_table_setup,
+            &src_eval_ctx.plan.tracking_table_setup,
             pool,
         )
         .await?;
@@ -460,32 +493,43 @@ pub async fn evaluate_source_entry_with_memory(
         None
     };
     let memory = EvaluationMemory::new(chrono::Utc::now(), stored_info, options);
-    let source_value = match import_op.executor.get_value(key).await? {
-        Some(d) => d,
-        None => return Ok(None),
+    let source_value = src_eval_ctx
+        .import_op
+        .executor
+        .get_value(
+            src_eval_ctx.key,
+            &SourceExecutorGetOptions {
+                include_value: true,
+                include_ordinal: false,
+            },
+        )
+        .await?
+        .value
+        .ok_or_else(|| anyhow::anyhow!("value not returned"))?;
+    let output = match source_value {
+        interface::SourceValue::Existence(source_value) => {
+            Some(evaluate_source_entry(src_eval_ctx, source_value, &memory).await?)
+        }
+        interface::SourceValue::NonExistence => None,
     };
-    let output = evaluate_source_entry(plan, import_op, schema, key, source_value, &memory).await?;
-    Ok(Some(output))
+    Ok(output)
 }
 
 pub async fn update_source_row(
-    plan: &ExecutionPlan,
-    import_op: &AnalyzedImportOp,
-    schema: &schema::FlowSchema,
-    key: &value::KeyValue,
-    source_value: Option<FieldValues>,
+    src_eval_ctx: &SourceRowEvaluationContext<'_>,
+    source_value: interface::SourceValue,
     source_version: &SourceVersion,
     pool: &PgPool,
     update_stats: &stats::UpdateStats,
 ) -> Result<SkippedOr<()>> {
-    let source_key_json = serde_json::to_value(key)?;
-    let process_timestamp = chrono::Utc::now();
+    let source_key_json = serde_json::to_value(src_eval_ctx.key)?;
+    let process_time = chrono::Utc::now();
 
     // Phase 1: Evaluate with memoization info.
     let existing_tracking_info = read_source_tracking_info_for_processing(
-        import_op.source_id,
+        src_eval_ctx.import_op.source_id,
         &source_key_json,
-        &plan.tracking_table_setup,
+        &src_eval_ctx.plan.tracking_table_setup,
         pool,
     )
     .await?;
@@ -494,7 +538,7 @@ pub async fn update_source_row(
             let existing_version = SourceVersion::from_stored(
                 info.processed_source_ordinal,
                 &info.process_logic_fingerprint,
-                plan.logic_fingerprint,
+                src_eval_ctx.plan.logic_fingerprint,
             );
             if existing_version.should_skip(source_version, Some(update_stats)) {
                 return Ok(SkippedOr::Skipped(existing_version));
@@ -507,42 +551,35 @@ pub async fn update_source_row(
         None => Default::default(),
     };
     let (output, stored_mem_info) = match source_value {
-        Some(source_value) => {
+        interface::SourceValue::Existence(source_value) => {
             let evaluation_memory = EvaluationMemory::new(
-                process_timestamp,
+                process_time,
                 memoization_info,
                 EvaluationMemoryOptions {
                     enable_cache: true,
                     evaluation_only: false,
                 },
             );
-            let output = evaluate_source_entry(
-                plan,
-                import_op,
-                schema,
-                key,
-                source_value,
-                &evaluation_memory,
-            )
-            .await?;
+            let output =
+                evaluate_source_entry(src_eval_ctx, source_value, &evaluation_memory).await?;
             (Some(output), evaluation_memory.into_stored()?)
         }
-        None => Default::default(),
+        interface::SourceValue::NonExistence => Default::default(),
     };
 
     // Phase 2 (precommit): Update with the memoization info and stage target keys.
     let precommit_output = precommit_source_tracking_info(
-        import_op.source_id,
+        src_eval_ctx.import_op.source_id,
         &source_key_json,
         source_version,
-        plan.logic_fingerprint,
+        src_eval_ctx.plan.logic_fingerprint,
         output.as_ref().map(|scope_value| PrecommitData {
             evaluate_output: scope_value,
             memoization_info: &stored_mem_info,
         }),
-        &process_timestamp,
-        &plan.tracking_table_setup,
-        &plan.export_ops,
+        &process_time,
+        &src_eval_ctx.plan.tracking_table_setup,
+        &src_eval_ctx.plan.export_ops,
         update_stats,
         pool,
     )
@@ -554,47 +591,51 @@ pub async fn update_source_row(
 
     // Phase 3: Apply changes to the target storage, including upserting new target records and removing existing ones.
     let mut target_mutations = precommit_output.target_mutations;
-    let apply_futs = plan.export_op_groups.iter().filter_map(|export_op_group| {
-        let mutations_w_ctx: Vec<_> = export_op_group
-            .op_idx
-            .iter()
-            .filter_map(|export_op_idx| {
-                let export_op = &plan.export_ops[*export_op_idx];
-                target_mutations
-                    .remove(&export_op.target_id)
-                    .filter(|m| !m.is_empty())
-                    .map(|mutation| interface::ExportTargetMutationWithContext {
-                        mutation,
-                        export_context: export_op.export_context.as_ref(),
-                    })
+    let apply_futs = src_eval_ctx
+        .plan
+        .export_op_groups
+        .iter()
+        .filter_map(|export_op_group| {
+            let mutations_w_ctx: Vec<_> = export_op_group
+                .op_idx
+                .iter()
+                .filter_map(|export_op_idx| {
+                    let export_op = &src_eval_ctx.plan.export_ops[*export_op_idx];
+                    target_mutations
+                        .remove(&export_op.target_id)
+                        .filter(|m| !m.is_empty())
+                        .map(|mutation| interface::ExportTargetMutationWithContext {
+                            mutation,
+                            export_context: export_op.export_context.as_ref(),
+                        })
+                })
+                .collect();
+            (!mutations_w_ctx.is_empty()).then(|| {
+                export_op_group
+                    .target_factory
+                    .apply_mutation(mutations_w_ctx)
             })
-            .collect();
-        (!mutations_w_ctx.is_empty()).then(|| {
-            export_op_group
-                .target_factory
-                .apply_mutation(mutations_w_ctx)
-        })
-    });
+        });
 
     // TODO: Handle errors.
     try_join_all(apply_futs).await?;
 
     // Phase 4: Update the tracking record.
     commit_source_tracking_info(
-        import_op.source_id,
+        src_eval_ctx.import_op.source_id,
         &source_key_json,
         source_version,
-        &plan.logic_fingerprint.0,
+        &src_eval_ctx.plan.logic_fingerprint.0,
         precommit_output.metadata,
-        &process_timestamp,
-        &plan.tracking_table_setup,
+        &process_time,
+        &src_eval_ctx.plan.tracking_table_setup,
         pool,
     )
     .await?;
 
     if let Some(existing_version) = existing_version {
         if output.is_some() {
-            if source_version.ordinal.is_none()
+            if !source_version.ordinal.is_available()
                 || source_version.ordinal != existing_version.ordinal
             {
                 update_stats.num_updates.inc(1);

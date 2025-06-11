@@ -1,4 +1,5 @@
 use crate::prelude::*;
+use crate::setup::ResourceSetupStatus;
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -264,13 +265,8 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
     }
 }
 
-pub struct TypedExportTargetExecutors<F: StorageFactoryBase + ?Sized> {
-    pub export_context: Arc<F::ExportContext>,
-    pub query_target: Option<Arc<dyn QueryTarget>>,
-}
-
 pub struct TypedExportDataCollectionBuildOutput<F: StorageFactoryBase + ?Sized> {
-    pub executors: BoxFuture<'static, Result<TypedExportTargetExecutors<F>>>,
+    pub export_context: BoxFuture<'static, Result<Arc<F::ExportContext>>>,
     pub setup_key: F::Key,
     pub desired_setup_state: F::SetupState,
 }
@@ -282,12 +278,18 @@ pub struct TypedExportDataCollectionSpec<F: StorageFactoryBase + ?Sized> {
     pub index_options: IndexOptions,
 }
 
+pub struct TypedResourceSetupChangeItem<'a, F: StorageFactoryBase + ?Sized> {
+    pub key: F::Key,
+    pub setup_status: &'a F::SetupStatus,
+}
+
 #[async_trait]
 pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
     type Spec: DeserializeOwned + Send + Sync;
     type DeclarationSpec: DeserializeOwned + Send + Sync;
     type Key: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash + Send + Sync;
     type SetupState: Debug + Clone + Serialize + DeserializeOwned + Send + Sync;
+    type SetupStatus: ResourceSetupStatus;
     type ExportContext: Send + Sync + 'static;
 
     fn name(&self) -> &str;
@@ -302,6 +304,12 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         Vec<(Self::Key, Self::SetupState)>,
     )>;
 
+    /// Deserialize the setup key from a JSON value.
+    /// You can override this method to provide a custom deserialization logic, e.g. to perform backward compatible deserialization.
+    fn deserialize_setup_key(key: serde_json::Value) -> Result<Self::Key> {
+        Ok(serde_json::from_value(key)?)
+    }
+
     /// Will not be called if it's setup by user.
     /// It returns an error if the target only supports setup by user.
     async fn check_setup_status(
@@ -310,7 +318,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         desired_state: Option<Self::SetupState>,
         existing_states: setup::CombinedState<Self::SetupState>,
         auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<impl setup::ResourceSetupStatusCheck + 'static>;
+    ) -> Result<Self::SetupStatus>;
 
     fn check_state_compatibility(
         &self,
@@ -319,6 +327,15 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
     ) -> Result<SetupStateCompatibility>;
 
     fn describe_resource(&self, key: &Self::Key) -> Result<String>;
+
+    fn extract_additional_key<'ctx>(
+        &self,
+        _key: &value::KeyValue,
+        _value: &value::FieldValues,
+        _export_context: &'ctx Self::ExportContext,
+    ) -> Result<serde_json::Value> {
+        Ok(serde_json::Value::Null)
+    }
 
     fn register(self, registry: &mut ExecutorFactoryRegistry) -> Result<()>
     where
@@ -333,6 +350,12 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
     async fn apply_mutation(
         &self,
         mutations: Vec<ExportTargetMutationWithContext<'async_trait, Self::ExportContext>>,
+    ) -> Result<()>;
+
+    async fn apply_setup_changes(
+        &self,
+        setup_status: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
+        auth_registry: &Arc<AuthRegistry>,
     ) -> Result<()>;
 }
 
@@ -372,12 +395,8 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             .into_iter()
             .map(|d| {
                 Ok(interface::ExportDataCollectionBuildOutput {
-                    executors: async move {
-                        let executors = d.executors.await?;
-                        Ok(interface::ExportTargetExecutors {
-                            export_context: executors.export_context,
-                            query_target: executors.query_target,
-                        })
+                    export_context: async move {
+                        Ok(d.export_context.await? as Arc<dyn Any + Send + Sync>)
                     }
                     .boxed(),
                     setup_key: serde_json::to_value(d.setup_key)?,
@@ -398,13 +417,13 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
         auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<Box<dyn setup::ResourceSetupStatusCheck>> {
-        let key: T::Key = serde_json::from_value(key.clone())?;
+    ) -> Result<Box<dyn setup::ResourceSetupStatus>> {
+        let key: T::Key = Self::deserialize_setup_key(key.clone())?;
         let desired_state: Option<T::SetupState> = desired_state
             .map(|v| serde_json::from_value(v.clone()))
             .transpose()?;
         let existing_states = from_json_combined_state(existing_states)?;
-        let status_check = StorageFactoryBase::check_setup_status(
+        let setup_status = StorageFactoryBase::check_setup_status(
             self,
             key,
             desired_state,
@@ -412,16 +431,16 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             auth_registry,
         )
         .await?;
-        Ok(Box::new(status_check))
+        Ok(Box::new(setup_status))
     }
 
     fn describe_resource(&self, key: &serde_json::Value) -> Result<String> {
-        let key: T::Key = serde_json::from_value(key.clone())?;
+        let key: T::Key = Self::deserialize_setup_key(key.clone())?;
         StorageFactoryBase::describe_resource(self, &key)
     }
 
     fn normalize_setup_key(&self, key: &serde_json::Value) -> Result<serde_json::Value> {
-        let key: T::Key = serde_json::from_value(key.clone())?;
+        let key: T::Key = Self::deserialize_setup_key(key.clone())?;
         Ok(serde_json::to_value(key)?)
     }
 
@@ -438,6 +457,22 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         Ok(result)
     }
 
+    fn extract_additional_key<'ctx>(
+        &self,
+        key: &value::KeyValue,
+        value: &value::FieldValues,
+        export_context: &'ctx (dyn Any + Send + Sync),
+    ) -> Result<serde_json::Value> {
+        StorageFactoryBase::extract_additional_key(
+            self,
+            key,
+            value,
+            export_context
+                .downcast_ref::<T::ExportContext>()
+                .ok_or_else(invariance_violation)?,
+        )
+    }
+
     async fn apply_mutation(
         &self,
         mutations: Vec<ExportTargetMutationWithContext<'async_trait, dyn Any + Send + Sync>>,
@@ -450,14 +485,36 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
                     export_context: m
                         .export_context
                         .downcast_ref::<T::ExportContext>()
-                        .ok_or_else(|| anyhow!("Unexpected export context type"))?,
+                        .ok_or_else(invariance_violation)?,
                 })
             })
             .collect::<Result<_>>()?;
         StorageFactoryBase::apply_mutation(self, mutations).await
     }
-}
 
+    async fn apply_setup_changes(
+        &self,
+        setup_status: Vec<ResourceSetupChangeItem<'async_trait>>,
+        auth_registry: &Arc<AuthRegistry>,
+    ) -> Result<()> {
+        StorageFactoryBase::apply_setup_changes(
+            self,
+            setup_status
+                .into_iter()
+                .map(|item| -> anyhow::Result<_> {
+                    Ok(TypedResourceSetupChangeItem {
+                        key: serde_json::from_value(item.key.clone())?,
+                        setup_status: (item.setup_status as &dyn Any)
+                            .downcast_ref::<T::SetupStatus>()
+                            .ok_or_else(invariance_violation)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            auth_registry,
+        )
+        .await
+    }
+}
 fn from_json_combined_state<T: Debug + Clone + Serialize + DeserializeOwned>(
     existing_states: setup::CombinedState<serde_json::Value>,
 ) -> Result<setup::CombinedState<T>> {

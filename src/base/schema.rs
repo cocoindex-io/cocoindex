@@ -48,6 +48,9 @@ pub enum BasicValueType {
     /// Date and time with timezone.
     OffsetDateTime,
 
+    /// A time duration.
+    TimeDelta,
+
     /// A JSON value.
     Json,
 
@@ -70,6 +73,7 @@ impl std::fmt::Display for BasicValueType {
             BasicValueType::Time => write!(f, "Time"),
             BasicValueType::LocalDateTime => write!(f, "LocalDateTime"),
             BasicValueType::OffsetDateTime => write!(f, "OffsetDateTime"),
+            BasicValueType::TimeDelta => write!(f, "TimeDelta"),
             BasicValueType::Json => write!(f, "Json"),
             BasicValueType::Vector(s) => {
                 write!(f, "Vector[{}", s.element_type)?;
@@ -82,7 +86,7 @@ impl std::fmt::Display for BasicValueType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct StructSchema {
     pub fields: Arc<Vec<FieldSchema>>,
 
@@ -134,7 +138,7 @@ impl std::fmt::Display for TableKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TableSchema {
     pub kind: TableKind,
     pub row: StructSchema,
@@ -187,7 +191,7 @@ impl TableSchema {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
 pub enum ValueType {
     Struct(StructSchema),
@@ -218,7 +222,7 @@ impl ValueType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EnrichedValueType<DataType = ValueType> {
     #[serde(rename = "type")]
     pub typ: DataType,
@@ -291,7 +295,7 @@ impl std::fmt::Display for ValueType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FieldSchema<DataType = ValueType> {
     /// ID is used to identify the field in the schema.
     pub name: FieldName,
@@ -338,7 +342,7 @@ impl std::fmt::Display for FieldSchema {
 pub struct CollectorSchema {
     pub fields: Vec<FieldSchema>,
     /// If specified, the collector will have an automatically generated UUID field with the given index.
-    pub auto_uuid_field_idx: Option<u32>,
+    pub auto_uuid_field_idx: Option<usize>,
 }
 
 impl std::fmt::Display for CollectorSchema {

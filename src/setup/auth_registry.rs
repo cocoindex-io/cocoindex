@@ -36,7 +36,13 @@ impl AuthRegistry {
         let entries = self.entries.read().unwrap();
         match entries.get(&entry_ref.key) {
             Some(value) => Ok(serde_json::from_value(value.clone())?),
-            None => api_bail!("Auth entry not found: {}", entry_ref.key),
+            None => api_bail!(
+                "Auth entry `{key}` not found.\n\
+                Hint: If you're not referencing `{key}` in your flow, it will likely be caused by a previously persisted storage target using it. \
+                You need to bring back the definition for the auth entry `{key}`, so that CocoIndex will be able to do a cleanup in the next `setup` run. \
+                See https://cocoindex.io/docs/core/flow_def#auth-registry for more details.",
+                key = entry_ref.key
+            ),
         }
     }
 }

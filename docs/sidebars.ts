@@ -19,8 +19,8 @@ const sidebars: SidebarsConfig = {
       items: [
         'core/basics',
         'core/data_types',
-        'core/initialization',
         'core/flow_def',
+        'core/settings',
         'core/flow_methods',
         'core/cli',
         'core/custom_function',
@@ -43,6 +43,11 @@ const sidebars: SidebarsConfig = {
       items: [
         'ai/llm',
       ],
+    },
+    {
+      type: 'doc',
+      id: 'query',
+      label: 'Query Support',
     },
     {
       type: 'category',

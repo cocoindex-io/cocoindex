@@ -12,10 +12,10 @@ Please drop [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a s
 
 ![example-explanation](https://github.com/user-attachments/assets/07ddbd60-106f-427f-b7cc-16b73b142d27)
 
-
 ## Prerequisite
 *   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
-*   [Install Neo4j](https://cocoindex.io/docs/ops/storages#neo4j) if you don't have one.
+*   Install [Neo4j](https://cocoindex.io/docs/ops/storages#neo4j-dev-instance) or [Kuzu](https://cocoindex.io/docs/ops/storages#kuzu-dev-instance) if you don't have one.
+    *   The example uses Neo4j by default for now. If you want to use Kuzu, find out the "SELECT ONE GRAPH DATABASE TO USE" section and switch the active branch.
 *   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).
 
 ## Documentation
@@ -34,39 +34,36 @@ pip install -e .
 Setup:
 
 ```bash
-python main.py cocoindex setup
+cocoindex setup main.py
 ```
 
 Update index:
 
 ```bash
-python main.py cocoindex update
+cocoindex update main.py
 ```
 
 ### Browse the knowledge graph
 
-After the knowledge graph is build, you can explore the knowledge graph you built in Neo4j Browser.
+After the knowledge graph is built, you can explore the knowledge graph.
 
-For the dev enviroment, you can connect neo4j browser using credentials:
-- username: `neo4j`
-- password: `cocoindex`
-which is pre-configured in the our docker compose [config.yaml](https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/neo4j.yaml).
+* If you're using Neo4j, you can open the explorer at [http://localhost:7474](http://localhost:7474), with username `neo4j` and password `cocoindex`.
+* If you're using Kuzu, you can start a Kuzu explorer locally. See [Kuzu dev instance](https://cocoindex.io/docs/ops/storages#kuzu-dev-instance) for more details.
 
-You can open it at [http://localhost:7474](http://localhost:7474), and run the following Cypher query to get all relationships:
+You can run the following Cypher query to get all relationships:
 
 ```cypher
 MATCH p=()-->() RETURN p
 ```
+
 <img width="1366" alt="neo4j-for-coco-docs" src="https://github.com/user-attachments/assets/3c8b6329-6fee-4533-9480-571399b57e57" />
-
-
 
 ## CocoInsight 
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```bash
-python main.py cocoindex server -ci
+cocoindex server -ci main.py
 ```
 
 And then open the url https://cocoindex.io/cocoinsight. 

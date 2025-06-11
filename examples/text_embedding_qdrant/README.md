@@ -1,69 +1,71 @@
-## Description
+# Build text embedding and semantic search 🔍 with Qdrant
 
-Example to build a vector index in Qdrant based on local files.
+[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+
+CocoIndex supports Qdrant natively - [documentation](https://cocoindex.io/docs/ops/storages#qdrant). In this example, we will build index flow from text embedding from local markdown files, and query the index. We will use **Qdrant** as the vector database.
+
+We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
+
+<img width="860" alt="CocoIndex supports Qdrant" src="https://github.com/user-attachments/assets/a9deecfa-dd94-4b97-a1b1-90488d8178df" />
+
+## Steps
+### Indexing Flow
+<img width="480" alt="Index flow for text embedding" src="https://github.com/user-attachments/assets/44d47b5e-b49b-4f05-9a00-dcb8027602a1" />
+
+1. We will ingest a list of local files.
+2. For each file, perform chunking (recursively split) and then embedding. 
+3. We will save the embeddings and the metadata in Postgres with PGVector.
+   
+### Query
+We use Qdrant client to query the index, and reuse the embedding operation in the indexing flow.
 
 ## Pre-requisites
 
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. Although the target store is Qdrant, CocoIndex uses Postgress to track the data lineage for incremental processing.
 
 - Run Qdrant.
 
-```bash
-docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
-```
-
-- [Create a collection](https://qdrant.tech/documentation/concepts/vectors/#named-vectors) to export the embeddings to.
-
-```bash
-curl  -X PUT \
-  'http://localhost:6333/collections/cocoindex' \
-  --header 'Content-Type: application/json' \
-  --data-raw '{
-  "vectors": {
-    "text_embedding": {
-      "size": 384,
-      "distance": "Cosine"
-    }
-  }
-}'
-```
-
-You can view the collections and data with the Qdrant dashboard at <http://localhost:6333/dashboard>.
+   ```bash
+   docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
+   ```
 
 ## Run
 
-Install dependencies:
+- Install dependencies:
 
-```bash
-pip install -e .
-```
+   ```bash
+   pip install -e .
+   ```
 
-Setup:
+- Setup:
 
-```bash
-python main.py cocoindex setup
-```
+   ```bash
+   cocoindex setup main.py
+   ```
 
-Update index:
+   It will automatically create a collection in Qdrant.
+   You can view the collections and data with the Qdrant dashboard at <http://localhost:6333/dashboard>.
 
-```bash
-python main.py cocoindex update
-```
+- Update index:
 
-Run:
+   ```bash
+   cocoindex update main.py
+   ```
 
-```bash
-python main.py
-```
+- Run:
+
+   ```bash
+   python main.py
+   ```
 
 ## CocoInsight
-
-CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
-
-Run CocoInsight to understand your RAG data pipeline:
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
+It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```bash
-python main.py cocoindex server -ci
+cocoindex server -ci main.py
 ```
 
-Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
+Open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
+
+

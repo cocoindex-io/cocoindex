@@ -1,10 +1,12 @@
 use bytes::Bytes;
-use pyo3::types::{PyList, PyTuple};
+use numpy::{PyArray1, PyArrayDyn, PyArrayMethods};
 use pyo3::IntoPyObjectExt;
+use pyo3::types::PyAny;
+use pyo3::types::{PyList, PyTuple};
 use pyo3::{exceptions::PyException, prelude::*};
 use pythonize::{depythonize, pythonize};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -71,12 +73,9 @@ fn basic_value_to_py_object<'py>(
         value::BasicValue::Time(v) => v.into_bound_py_any(py)?,
         value::BasicValue::LocalDateTime(v) => v.into_bound_py_any(py)?,
         value::BasicValue::OffsetDateTime(v) => v.into_bound_py_any(py)?,
+        value::BasicValue::TimeDelta(v) => v.into_bound_py_any(py)?,
         value::BasicValue::Json(v) => pythonize(py, v).into_py_result()?,
-        value::BasicValue::Vector(v) => v
-            .iter()
-            .map(|v| basic_value_to_py_object(py, v))
-            .collect::<PyResult<Vec<_>>>()?
-            .into_bound_py_any(py)?,
+        value::BasicValue::Vector(v) => handle_vector_to_py(py, v)?,
     };
     Ok(result)
 }
@@ -144,17 +143,111 @@ fn basic_value_from_py_object<'py>(
         schema::BasicValueType::OffsetDateTime => {
             value::BasicValue::OffsetDateTime(v.extract::<chrono::DateTime<chrono::FixedOffset>>()?)
         }
+        schema::BasicValueType::TimeDelta => {
+            value::BasicValue::TimeDelta(v.extract::<chrono::TimeDelta>()?)
+        }
         schema::BasicValueType::Json => {
             value::BasicValue::Json(Arc::from(depythonize::<serde_json::Value>(v)?))
         }
-        schema::BasicValueType::Vector(elem) => value::BasicValue::Vector(Arc::from(
-            v.extract::<Vec<Bound<'py, PyAny>>>()?
-                .into_iter()
-                .map(|v| basic_value_from_py_object(&elem.element_type, &v))
-                .collect::<PyResult<Vec<_>>>()?,
-        )),
+        schema::BasicValueType::Vector(elem) => {
+            if let Some(vector) = handle_ndarray_from_py(&elem.element_type, v)? {
+                vector
+            } else {
+                // Fallback to list
+                value::BasicValue::Vector(Arc::from(
+                    v.extract::<Vec<Bound<'py, PyAny>>>()?
+                        .into_iter()
+                        .map(|v| basic_value_from_py_object(&elem.element_type, &v))
+                        .collect::<PyResult<Vec<_>>>()?,
+                ))
+            }
+        }
     };
     Ok(result)
+}
+
+// Helper function to convert PyAny to BasicValue for NDArray
+fn handle_ndarray_from_py<'py>(
+    elem_type: &schema::BasicValueType,
+    v: &Bound<'py, PyAny>,
+) -> PyResult<Option<value::BasicValue>> {
+    macro_rules! try_convert {
+        ($t:ty, $cast:expr) => {
+            if let Ok(array) = v.downcast::<PyArrayDyn<$t>>() {
+                let data = array.readonly().as_slice()?.to_vec();
+                let vec = data.into_iter().map($cast).collect::<Vec<_>>();
+                return Ok(Some(value::BasicValue::Vector(Arc::from(vec))));
+            }
+        };
+    }
+
+    match elem_type {
+        &schema::BasicValueType::Float32 => try_convert!(f32, value::BasicValue::Float32),
+        &schema::BasicValueType::Float64 => try_convert!(f64, value::BasicValue::Float64),
+        &schema::BasicValueType::Int64 => {
+            try_convert!(i32, |v| value::BasicValue::Int64(v as i64));
+            try_convert!(i64, value::BasicValue::Int64);
+            try_convert!(u8, |v| value::BasicValue::Int64(v as i64));
+            try_convert!(u16, |v| value::BasicValue::Int64(v as i64));
+            try_convert!(u32, |v| value::BasicValue::Int64(v as i64));
+        }
+        _ => {}
+    }
+
+    Ok(None)
+}
+
+// Helper function to convert BasicValue::Vector to PyAny
+fn handle_vector_to_py<'py>(
+    py: Python<'py>,
+    v: &[value::BasicValue],
+) -> PyResult<Bound<'py, PyAny>> {
+    match v.first() {
+        Some(value::BasicValue::Float32(_)) => {
+            let data = v
+                .iter()
+                .map(|x| match x {
+                    value::BasicValue::Float32(f) => Ok(*f),
+                    _ => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                        "Expected all elements to be Float32",
+                    )),
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+
+            Ok(PyArray1::from_vec(py, data).into_any())
+        }
+        Some(value::BasicValue::Float64(_)) => {
+            let data = v
+                .iter()
+                .map(|x| match x {
+                    value::BasicValue::Float64(f) => Ok(*f),
+                    _ => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                        "Expected all elements to be Float64",
+                    )),
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+
+            Ok(PyArray1::from_vec(py, data).into_any())
+        }
+        Some(value::BasicValue::Int64(_)) => {
+            let data = v
+                .iter()
+                .map(|x| match x {
+                    value::BasicValue::Int64(i) => Ok(*i),
+                    _ => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                        "Expected all elements to be Int64",
+                    )),
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+
+            Ok(PyArray1::from_vec(py, data).into_any())
+        }
+        _ => Ok(v
+            .iter()
+            .map(|v| basic_value_to_py_object(py, v))
+            .collect::<PyResult<Vec<_>>>()?
+            .into_bound_py_any(py)?),
+    }
 }
 
 fn field_values_from_py_object<'py>(

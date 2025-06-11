@@ -3,36 +3,65 @@ use log::{error, trace};
 use regex::{Matches, Regex};
 use std::collections::HashSet;
 use std::sync::LazyLock;
+use std::usize;
 use std::{collections::HashMap, sync::Arc};
 use unicase::UniCase;
 
 use crate::base::field_attrs;
+use crate::ops::registry::ExecutorFactoryRegistry;
 use crate::{fields_value, ops::sdk::*};
 
-type Spec = EmptySpec;
+#[derive(Deserialize)]
+struct CustomLanguageSpec {
+    language_name: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    separators_regex: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Spec {
+    #[serde(default)]
+    custom_languages: Vec<CustomLanguageSpec>,
+}
+
+const SYNTAX_LEVEL_GAP_COST: usize = 512;
+const MISSING_OVERLAP_COST: usize = 512;
+const PER_LINE_BREAK_LEVEL_GAP_COST: usize = 64;
+const TOO_SMALL_CHUNK_COST: usize = 1048576;
 
 pub struct Args {
     text: ResolvedOpArg,
     chunk_size: ResolvedOpArg,
+    min_chunk_size: Option<ResolvedOpArg>,
     chunk_overlap: Option<ResolvedOpArg>,
     language: Option<ResolvedOpArg>,
 }
 
-static TEXT_SEPARATOR: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [r"\n\n+", r"\n", r"\s+"]
-        .into_iter()
-        .map(|s| Regex::new(s).unwrap())
-        .collect()
-});
+struct SimpleLanguageConfig {
+    name: String,
+    aliases: Vec<String>,
+    separator_regex: Vec<Regex>,
+}
 
-struct LanguageConfig {
-    name: &'static str,
+static DEFAULT_LANGUAGE_CONFIG: LazyLock<SimpleLanguageConfig> =
+    LazyLock::new(|| SimpleLanguageConfig {
+        name: "_DEFAULT".to_string(),
+        aliases: vec![],
+        separator_regex: [r"\n\n+", r"\n", r"\s+"]
+            .into_iter()
+            .map(|s| Regex::new(s).unwrap())
+            .collect(),
+    });
+
+struct TreesitterLanguageConfig {
+    name: String,
     tree_sitter_lang: tree_sitter::Language,
     terminal_node_kind_ids: HashSet<u16>,
 }
 
-fn add_language<'a>(
-    output: &'a mut HashMap<UniCase<&'static str>, Arc<LanguageConfig>>,
+fn add_treesitter_language<'a>(
+    output: &'a mut HashMap<UniCase<String>, Arc<TreesitterLanguageConfig>>,
     name: &'static str,
     aliases: impl IntoIterator<Item = &'static str>,
     lang_fn: impl Into<tree_sitter::Language>,
@@ -53,8 +82,8 @@ fn add_language<'a>(
         })
         .collect();
 
-    let config = Arc::new(LanguageConfig {
-        name,
+    let config = Arc::new(TreesitterLanguageConfig {
+        name: name.to_string(),
         tree_sitter_lang,
         terminal_node_kind_ids,
     });
@@ -65,144 +94,150 @@ fn add_language<'a>(
     }
 }
 
-static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<HashMap<UniCase<&'static str>, Arc<LanguageConfig>>> =
-    LazyLock::new(|| {
-        let mut map = HashMap::new();
-        add_language(&mut map, "C", [".c"], tree_sitter_c::LANGUAGE, []);
-        add_language(
-            &mut map,
-            "C++",
-            [".cpp", ".cc", ".cxx", ".h", ".hpp", "cpp"],
-            tree_sitter_c::LANGUAGE,
-            [],
-        );
-        add_language(
-            &mut map,
-            "C#",
-            [".cs", "cs"],
-            tree_sitter_c_sharp::LANGUAGE,
-            [],
-        );
-        add_language(
-            &mut map,
-            "CSS",
-            [".css", ".scss"],
-            tree_sitter_css::LANGUAGE,
-            [],
-        );
-        add_language(
-            &mut map,
-            "Fortran",
-            [".f", ".f90", ".f95", ".f03", "f", "f90", "f95", "f03"],
-            tree_sitter_fortran::LANGUAGE,
-            [],
-        );
-        add_language(
-            &mut map,
-            "Go",
-            [".go", "golang"],
-            tree_sitter_go::LANGUAGE,
-            [],
-        );
-        add_language(
-            &mut map,
-            "HTML",
-            [".html", ".htm"],
-            tree_sitter_html::LANGUAGE,
-            [],
-        );
-        add_language(&mut map, "Java", [".java"], tree_sitter_java::LANGUAGE, []);
-        add_language(
-            &mut map,
-            "JavaScript",
-            [".js", "js"],
-            tree_sitter_javascript::LANGUAGE,
-            [],
-        );
-        add_language(&mut map, "JSON", [".json"], tree_sitter_json::LANGUAGE, []);
-        add_language(
-            &mut map,
-            "Markdown",
-            [".md", ".mdx", "md"],
-            tree_sitter_md::LANGUAGE,
-            ["inline"],
-        );
-        add_language(
-            &mut map,
-            "Pascal",
-            [".pas", "pas", ".dpr", "dpr", "Delphi"],
-            tree_sitter_pascal::LANGUAGE,
-            [],
-        );
-        add_language(&mut map, "PHP", [".php"], tree_sitter_php::LANGUAGE_PHP, []);
-        add_language(
-            &mut map,
-            "Python",
-            [".py"],
-            tree_sitter_python::LANGUAGE,
-            [],
-        );
-        add_language(&mut map, "R", [".r"], tree_sitter_r::LANGUAGE, []);
-        add_language(&mut map, "Ruby", [".rb"], tree_sitter_ruby::LANGUAGE, []);
-        add_language(
-            &mut map,
-            "Rust",
-            [".rs", "rs"],
-            tree_sitter_rust::LANGUAGE,
-            [],
-        );
-        add_language(
-            &mut map,
-            "Scala",
-            [".scala"],
-            tree_sitter_scala::LANGUAGE,
-            [],
-        );
-        add_language(&mut map, "SQL", [".sql"], tree_sitter_sequel::LANGUAGE, []);
-        add_language(
-            &mut map,
-            "Swift",
-            [".swift"],
-            tree_sitter_swift::LANGUAGE,
-            [],
-        );
-        add_language(
-            &mut map,
-            "TOML",
-            [".toml"],
-            tree_sitter_toml_ng::LANGUAGE,
-            [],
-        );
-        add_language(
-            &mut map,
-            "TSX",
-            [".tsx"],
-            tree_sitter_typescript::LANGUAGE_TSX,
-            [],
-        );
-        add_language(
-            &mut map,
-            "TypeScript",
-            [".ts", "ts"],
-            tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-            [],
-        );
-        add_language(&mut map, "XML", [".xml"], tree_sitter_xml::LANGUAGE_XML, []);
-        add_language(&mut map, "DTD", [".dtd"], tree_sitter_xml::LANGUAGE_DTD, []);
-        add_language(
-            &mut map,
-            "YAML",
-            [".yaml", ".yml"],
-            tree_sitter_yaml::LANGUAGE,
-            [],
-        );
-        map
-    });
+static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<
+    HashMap<UniCase<String>, Arc<TreesitterLanguageConfig>>,
+> = LazyLock::new(|| {
+    let mut map = HashMap::new();
+    add_treesitter_language(&mut map, "C", [".c"], tree_sitter_c::LANGUAGE, []);
+    add_treesitter_language(
+        &mut map,
+        "C++",
+        [".cpp", ".cc", ".cxx", ".h", ".hpp", "cpp"],
+        tree_sitter_c::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(
+        &mut map,
+        "C#",
+        [".cs", "cs"],
+        tree_sitter_c_sharp::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(
+        &mut map,
+        "CSS",
+        [".css", ".scss"],
+        tree_sitter_css::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(
+        &mut map,
+        "Fortran",
+        [".f", ".f90", ".f95", ".f03", "f", "f90", "f95", "f03"],
+        tree_sitter_fortran::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(
+        &mut map,
+        "Go",
+        [".go", "golang"],
+        tree_sitter_go::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(
+        &mut map,
+        "HTML",
+        [".html", ".htm"],
+        tree_sitter_html::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(&mut map, "Java", [".java"], tree_sitter_java::LANGUAGE, []);
+    add_treesitter_language(
+        &mut map,
+        "JavaScript",
+        [".js", "js"],
+        tree_sitter_javascript::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(&mut map, "JSON", [".json"], tree_sitter_json::LANGUAGE, []);
+    add_treesitter_language(
+        &mut map,
+        "Markdown",
+        [".md", ".mdx", "md"],
+        tree_sitter_md::LANGUAGE,
+        ["inline"],
+    );
+    add_treesitter_language(
+        &mut map,
+        "Pascal",
+        [".pas", "pas", ".dpr", "dpr", "Delphi"],
+        tree_sitter_pascal::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(&mut map, "PHP", [".php"], tree_sitter_php::LANGUAGE_PHP, []);
+    add_treesitter_language(
+        &mut map,
+        "Python",
+        [".py"],
+        tree_sitter_python::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(&mut map, "R", [".r"], tree_sitter_r::LANGUAGE, []);
+    add_treesitter_language(&mut map, "Ruby", [".rb"], tree_sitter_ruby::LANGUAGE, []);
+    add_treesitter_language(
+        &mut map,
+        "Rust",
+        [".rs", "rs"],
+        tree_sitter_rust::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(
+        &mut map,
+        "Scala",
+        [".scala"],
+        tree_sitter_scala::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(&mut map, "SQL", [".sql"], tree_sitter_sequel::LANGUAGE, []);
+    add_treesitter_language(
+        &mut map,
+        "Swift",
+        [".swift"],
+        tree_sitter_swift::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(
+        &mut map,
+        "TOML",
+        [".toml"],
+        tree_sitter_toml_ng::LANGUAGE,
+        [],
+    );
+    add_treesitter_language(
+        &mut map,
+        "TSX",
+        [".tsx"],
+        tree_sitter_typescript::LANGUAGE_TSX,
+        [],
+    );
+    add_treesitter_language(
+        &mut map,
+        "TypeScript",
+        [".ts", "ts"],
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+        [],
+    );
+    add_treesitter_language(&mut map, "XML", [".xml"], tree_sitter_xml::LANGUAGE_XML, []);
+    add_treesitter_language(&mut map, "DTD", [".dtd"], tree_sitter_xml::LANGUAGE_DTD, []);
+    add_treesitter_language(
+        &mut map,
+        "YAML",
+        [".yaml", ".yml"],
+        tree_sitter_yaml::LANGUAGE,
+        [],
+    );
+    map
+});
 
 enum ChunkKind<'t> {
-    TreeSitterNode { node: tree_sitter::Node<'t> },
-    RegexpSepChunk { next_regexp_sep_id: usize },
-    LeafText,
+    TreeSitterNode {
+        lang_config: &'t TreesitterLanguageConfig,
+        node: tree_sitter::Node<'t>,
+    },
+    RegexpSepChunk {
+        lang_config: &'t SimpleLanguageConfig,
+        next_regexp_sep_id: usize,
+    },
 }
 
 struct Chunk<'t, 's: 't> {
@@ -218,17 +253,23 @@ impl<'t, 's: 't> Chunk<'t, 's> {
 }
 
 struct TextChunksIter<'t, 's: 't> {
+    lang_config: &'t SimpleLanguageConfig,
     parent: &'t Chunk<'t, 's>,
-    matches_iter: Matches<'static, 's>,
+    matches_iter: Matches<'t, 's>,
     regexp_sep_id: usize,
     next_start_pos: Option<usize>,
 }
 
 impl<'t, 's: 't> TextChunksIter<'t, 's> {
-    fn new(parent: &'t Chunk<'t, 's>, regexp_sep_id: usize) -> Self {
+    fn new(
+        lang_config: &'t SimpleLanguageConfig,
+        parent: &'t Chunk<'t, 's>,
+        regexp_sep_id: usize,
+    ) -> Self {
         Self {
+            lang_config,
             parent,
-            matches_iter: TEXT_SEPARATOR[regexp_sep_id].find_iter(parent.text()),
+            matches_iter: lang_config.separator_regex[regexp_sep_id].find_iter(parent.text()),
             regexp_sep_id,
             next_start_pos: Some(parent.range.start),
         }
@@ -257,6 +298,7 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
             full_text: self.parent.full_text,
             range: RangeValue::new(start_pos, end_pos),
             kind: ChunkKind::RegexpSepChunk {
+                lang_config: self.lang_config,
                 next_regexp_sep_id: self.regexp_sep_id + 1,
             },
         })
@@ -264,6 +306,7 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
 }
 
 struct TreeSitterNodeIter<'t, 's: 't> {
+    lang_config: &'t TreesitterLanguageConfig,
     full_text: &'s str,
     cursor: Option<tree_sitter::TreeCursor<'t>>,
     next_start_pos: usize,
@@ -282,7 +325,10 @@ impl<'t, 's: 't> TreeSitterNodeIter<'t, 's> {
             Some(Chunk {
                 full_text,
                 range: RangeValue::new(start_pos, gap_end_pos),
-                kind: ChunkKind::LeafText,
+                kind: ChunkKind::RegexpSepChunk {
+                    lang_config: &DEFAULT_LANGUAGE_CONFIG,
+                    next_regexp_sep_id: 0,
+                },
             })
         } else {
             None
@@ -312,156 +358,414 @@ impl<'t, 's: 't> Iterator for TreeSitterNodeIter<'t, 's> {
         Some(Chunk {
             full_text: self.full_text,
             range: RangeValue::new(node.start_byte(), node.end_byte()),
-            kind: ChunkKind::TreeSitterNode { node },
+            kind: ChunkKind::TreeSitterNode {
+                lang_config: self.lang_config,
+                node,
+            },
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LineBreakLevel {
+    Inline,
+    Newline,
+    DoubleNewline,
+}
+
+impl LineBreakLevel {
+    fn ord(self) -> usize {
+        match self {
+            LineBreakLevel::Inline => 0,
+            LineBreakLevel::Newline => 1,
+            LineBreakLevel::DoubleNewline => 2,
+        }
+    }
+}
+
+fn line_break_level(c: &str) -> LineBreakLevel {
+    let mut lb_level = LineBreakLevel::Inline;
+    let mut iter = c.chars();
+    while let Some(c) = iter.next() {
+        if c == '\n' || c == '\r' {
+            lb_level = LineBreakLevel::Newline;
+            while let Some(c2) = iter.next() {
+                if c2 == '\n' || c2 == '\r' {
+                    if c == c2 {
+                        return LineBreakLevel::DoubleNewline;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    lb_level
+}
+
+const INLINE_SPACE_CHARS: [char; 2] = [' ', '\t'];
+
+struct AtomChunk {
+    range: RangeValue,
+    boundary_syntax_level: usize,
+
+    internal_lb_level: LineBreakLevel,
+    boundary_lb_level: LineBreakLevel,
+}
+
+struct AtomChunksCollector<'s> {
+    full_text: &'s str,
+
+    curr_level: usize,
+    min_level: usize,
+    atom_chunks: Vec<AtomChunk>,
+}
+impl<'s> AtomChunksCollector<'s> {
+    fn collect(&mut self, range: RangeValue) {
+        // Trim trailing whitespaces.
+        let end_trimmed_text = &self.full_text[range.start..range.end].trim_end();
+        if end_trimmed_text.is_empty() {
+            return;
+        }
+
+        // Trim leading whitespaces.
+        let trimmed_text = end_trimmed_text.trim_start();
+        let new_start = range.start + (end_trimmed_text.len() - trimmed_text.len());
+        let new_end = new_start + trimmed_text.len();
+
+        // Align to beginning of the line if possible.
+        let prev_end = self.atom_chunks.last().map_or(0, |chunk| chunk.range.end);
+        let gap = &self.full_text[prev_end..new_start];
+        let boundary_lb_level = line_break_level(gap);
+        let range = if boundary_lb_level != LineBreakLevel::Inline {
+            let trimmed_gap = gap.trim_end_matches(INLINE_SPACE_CHARS);
+            RangeValue::new(prev_end + trimmed_gap.len(), new_end)
+        } else {
+            RangeValue::new(new_start, new_end)
+        };
+
+        self.atom_chunks.push(AtomChunk {
+            range,
+            boundary_syntax_level: self.min_level,
+            internal_lb_level: line_break_level(trimmed_text),
+            boundary_lb_level,
+        });
+        self.min_level = self.curr_level;
+    }
+
+    fn into_atom_chunks(mut self) -> Vec<AtomChunk> {
+        self.atom_chunks.push(AtomChunk {
+            range: RangeValue::new(self.full_text.len(), self.full_text.len()),
+            boundary_syntax_level: self.min_level,
+            internal_lb_level: LineBreakLevel::Inline,
+            boundary_lb_level: LineBreakLevel::DoubleNewline,
+        });
+        self.atom_chunks
     }
 }
 
 struct RecursiveChunker<'s> {
     full_text: &'s str,
-    lang_config: Option<&'s LanguageConfig>,
     chunk_size: usize,
     chunk_overlap: usize,
+    min_chunk_size: usize,
 }
 
 impl<'t, 's: 't> RecursiveChunker<'s> {
-    fn flush_small_chunks(&self, chunks: &[RangeValue], output: &mut Vec<(RangeValue, &'s str)>) {
-        if chunks.is_empty() {
-            return;
-        }
-        let mut start_pos = chunks[0].start;
-        for i in 0..chunks.len() - 1 {
-            let next_chunk = &chunks[i + 1];
-            if next_chunk.end - start_pos > self.chunk_size {
-                let chunk = &chunks[i];
-                self.add_output(RangeValue::new(start_pos, chunk.end), output);
-
-                // Find the new start position, allowing overlap within the threshold.
-                let mut new_start_idx = i + 1;
-                while new_start_idx > 0 {
-                    let prev_pos = chunks[new_start_idx - 1].start;
-                    if prev_pos <= start_pos
-                        || chunk.end - prev_pos > self.chunk_overlap
-                        || next_chunk.end - prev_pos > self.chunk_size
-                    {
-                        break;
-                    }
-                    new_start_idx -= 1;
-                }
-                start_pos = chunks[new_start_idx].start;
-            }
-        }
-
-        let last_chunk = &chunks[chunks.len() - 1];
-        self.add_output(RangeValue::new(start_pos, last_chunk.end), output);
-    }
-
-    fn process_sub_chunks(
+    fn collect_atom_chunks_from_iter(
         &self,
         sub_chunks_iter: impl Iterator<Item = Chunk<'t, 's>>,
-        output: &mut Vec<(RangeValue, &'s str)>,
+        atom_collector: &mut AtomChunksCollector<'s>,
     ) -> Result<()> {
-        let mut small_chunks = Vec::new();
+        atom_collector.curr_level += 1;
         for sub_chunk in sub_chunks_iter {
-            let sub_range = sub_chunk.range;
-            if sub_range.len() <= self.chunk_size {
-                small_chunks.push(sub_range);
+            let range = sub_chunk.range;
+            if range.len() <= self.min_chunk_size {
+                atom_collector.collect(range);
             } else {
-                self.flush_small_chunks(&small_chunks, output);
-                small_chunks.clear();
-                self.split_substring(sub_chunk, output)?;
+                self.collect_atom_chunks(sub_chunk, atom_collector)?;
             }
         }
-        self.flush_small_chunks(&small_chunks, output);
+        atom_collector.curr_level -= 1;
+        if atom_collector.curr_level < atom_collector.min_level {
+            atom_collector.min_level = atom_collector.curr_level;
+        }
         Ok(())
     }
 
-    fn split_substring(
+    fn collect_atom_chunks(
         &self,
         chunk: Chunk<'t, 's>,
-        output: &mut Vec<(RangeValue, &'s str)>,
+        atom_collector: &mut AtomChunksCollector<'s>,
     ) -> Result<()> {
         match chunk.kind {
-            ChunkKind::TreeSitterNode { node } => {
-                if !self
-                    .lang_config
-                    .ok_or_else(|| anyhow!("Language not set."))?
-                    .terminal_node_kind_ids
-                    .contains(&node.kind_id())
-                {
+            ChunkKind::TreeSitterNode { lang_config, node } => {
+                if !lang_config.terminal_node_kind_ids.contains(&node.kind_id()) {
                     let mut cursor = node.walk();
                     if cursor.goto_first_child() {
-                        self.process_sub_chunks(
+                        return self.collect_atom_chunks_from_iter(
                             TreeSitterNodeIter {
+                                lang_config,
                                 full_text: self.full_text,
                                 cursor: Some(cursor),
                                 next_start_pos: node.start_byte(),
                                 end_pos: node.end_byte(),
                             },
-                            output,
-                        )?;
-                        return Ok(());
+                            atom_collector,
+                        );
                     }
                 }
-                self.add_output(chunk.range, output);
+                self.collect_atom_chunks(
+                    Chunk {
+                        full_text: self.full_text,
+                        range: chunk.range,
+                        kind: ChunkKind::RegexpSepChunk {
+                            lang_config: &DEFAULT_LANGUAGE_CONFIG,
+                            next_regexp_sep_id: 0,
+                        },
+                    },
+                    atom_collector,
+                )
             }
-            ChunkKind::RegexpSepChunk { next_regexp_sep_id } => {
-                if next_regexp_sep_id >= TEXT_SEPARATOR.len() {
-                    self.add_output(chunk.range, output);
+            ChunkKind::RegexpSepChunk {
+                lang_config,
+                next_regexp_sep_id,
+            } => {
+                if next_regexp_sep_id >= lang_config.separator_regex.len() {
+                    Ok(atom_collector.collect(chunk.range))
                 } else {
-                    self.process_sub_chunks(
-                        TextChunksIter::new(&chunk, next_regexp_sep_id),
-                        output,
-                    )?;
+                    self.collect_atom_chunks_from_iter(
+                        TextChunksIter::new(lang_config, &chunk, next_regexp_sep_id),
+                        atom_collector,
+                    )
                 }
             }
-            ChunkKind::LeafText => {
-                self.add_output(chunk.range, output);
-            }
         }
-        Ok(())
+    }
+
+    fn get_overlap_cost_base(&self, offset: usize) -> usize {
+        if self.chunk_overlap == 0 {
+            0
+        } else {
+            (self.full_text.len() - offset) * MISSING_OVERLAP_COST / self.chunk_overlap
+        }
+    }
+
+    fn merge_atom_chunks(&self, atom_chunks: Vec<AtomChunk>) -> Vec<(RangeValue, &'s str)> {
+        struct AtomRoutingPlan {
+            start_idx: usize,     // index of `atom_chunks` for the start chunk
+            prev_plan_idx: usize, // index of `plans` for the previous plan
+            cost: usize,
+            overlap_cost_base: usize,
+        }
+        type PrevPlanCandidate = (std::cmp::Reverse<usize>, usize); // (cost, start_idx)
+
+        let mut plans = Vec::with_capacity(atom_chunks.len());
+        // Janitor
+        plans.push(AtomRoutingPlan {
+            start_idx: 0,
+            prev_plan_idx: 0,
+            cost: 0,
+            overlap_cost_base: self.get_overlap_cost_base(0),
+        });
+        let mut prev_plan_candidates = std::collections::BinaryHeap::<PrevPlanCandidate>::new();
+
+        let mut gap_cost_cache = vec![0];
+        let mut syntax_level_gap_cost = |boundary: usize, internal: usize| -> usize {
+            if boundary > internal {
+                let gap = boundary - internal;
+                for i in gap_cost_cache.len()..=gap {
+                    gap_cost_cache.push(gap_cost_cache[i - 1] + SYNTAX_LEVEL_GAP_COST / i);
+                }
+                gap_cost_cache[gap]
+            } else {
+                0
+            }
+        };
+
+        for (i, chunk) in (&atom_chunks[0..atom_chunks.len() - 1]).iter().enumerate() {
+            let mut min_cost = usize::MAX;
+            let mut arg_min_start_idx: usize = 0;
+            let mut arg_min_prev_plan_idx: usize = 0;
+            let mut start_idx = i;
+
+            let end_syntax_level = atom_chunks[i + 1].boundary_syntax_level;
+            let end_lb_level = atom_chunks[i + 1].boundary_lb_level;
+
+            let mut internal_syntax_level = usize::MAX;
+            let mut internal_lb_level = LineBreakLevel::Inline;
+
+            fn lb_level_gap(boundary: LineBreakLevel, internal: LineBreakLevel) -> usize {
+                if boundary.ord() < internal.ord() {
+                    internal.ord() - boundary.ord()
+                } else {
+                    0
+                }
+            }
+            loop {
+                let start_chunk = &atom_chunks[start_idx];
+                let chunk_size = chunk.range.end - start_chunk.range.start;
+
+                let mut cost = 0;
+                cost +=
+                    syntax_level_gap_cost(start_chunk.boundary_syntax_level, internal_syntax_level);
+                cost += syntax_level_gap_cost(end_syntax_level, internal_syntax_level);
+                cost += (lb_level_gap(start_chunk.boundary_lb_level, internal_lb_level)
+                    + lb_level_gap(end_lb_level, internal_lb_level))
+                    * PER_LINE_BREAK_LEVEL_GAP_COST;
+                if chunk_size < self.min_chunk_size {
+                    cost += TOO_SMALL_CHUNK_COST;
+                }
+
+                if chunk_size > self.chunk_size {
+                    if min_cost == usize::MAX {
+                        min_cost = cost + plans[start_idx].cost;
+                        arg_min_start_idx = start_idx;
+                        arg_min_prev_plan_idx = start_idx;
+                    }
+                    break;
+                }
+
+                let prev_plan_idx = if self.chunk_overlap > 0 {
+                    while let Some(top_prev_plan) = prev_plan_candidates.peek() {
+                        let overlap_size =
+                            atom_chunks[top_prev_plan.1].range.end - start_chunk.range.start;
+                        if overlap_size <= self.chunk_overlap {
+                            break;
+                        }
+                        prev_plan_candidates.pop();
+                    }
+                    prev_plan_candidates.push((
+                        std::cmp::Reverse(
+                            plans[start_idx].cost + plans[start_idx].overlap_cost_base,
+                        ),
+                        start_idx,
+                    ));
+                    prev_plan_candidates.peek().unwrap().1
+                } else {
+                    start_idx
+                };
+                let prev_plan = &plans[prev_plan_idx];
+                cost += prev_plan.cost;
+                if self.chunk_overlap == 0 {
+                    cost += MISSING_OVERLAP_COST / 2;
+                } else {
+                    let start_cost_base = self.get_overlap_cost_base(start_chunk.range.start);
+                    cost += if prev_plan.overlap_cost_base < start_cost_base {
+                        MISSING_OVERLAP_COST + prev_plan.overlap_cost_base - start_cost_base
+                    } else {
+                        MISSING_OVERLAP_COST
+                    };
+                }
+                if cost < min_cost {
+                    min_cost = cost;
+                    arg_min_start_idx = start_idx;
+                    arg_min_prev_plan_idx = prev_plan_idx;
+                }
+
+                if start_idx == 0 {
+                    break;
+                }
+
+                start_idx -= 1;
+                internal_syntax_level =
+                    internal_syntax_level.min(start_chunk.boundary_syntax_level);
+                internal_lb_level = internal_lb_level.max(start_chunk.internal_lb_level);
+            }
+            plans.push(AtomRoutingPlan {
+                start_idx: arg_min_start_idx,
+                prev_plan_idx: arg_min_prev_plan_idx,
+                cost: min_cost,
+                overlap_cost_base: self.get_overlap_cost_base(chunk.range.end),
+            });
+            prev_plan_candidates.clear();
+        }
+
+        let mut output = Vec::new();
+        let mut plan_idx = plans.len() - 1;
+        while plan_idx > 0 {
+            let plan = &plans[plan_idx];
+            let start_chunk = &atom_chunks[plan.start_idx];
+            let end_chunk = &atom_chunks[plan_idx - 1];
+            let range = RangeValue::new(start_chunk.range.start, end_chunk.range.end);
+            output.push((range, &self.full_text[range.start..range.end]));
+            plan_idx = plan.prev_plan_idx;
+        }
+        output.reverse();
+        output
     }
 
     fn split_root_chunk(&self, kind: ChunkKind<'t>) -> Result<Vec<(RangeValue, &'s str)>> {
-        let mut output = Vec::new();
-        self.split_substring(
+        let mut atom_collector = AtomChunksCollector {
+            full_text: self.full_text,
+            min_level: 0,
+            curr_level: 0,
+            atom_chunks: Vec::new(),
+        };
+        self.collect_atom_chunks(
             Chunk {
                 full_text: self.full_text,
                 range: RangeValue::new(0, self.full_text.len()),
                 kind,
             },
-            &mut output,
+            &mut atom_collector,
         )?;
+        let atom_chunks = atom_collector.into_atom_chunks();
+        let output = self.merge_atom_chunks(atom_chunks);
         Ok(output)
-    }
-
-    fn add_output(&self, range: RangeValue, output: &mut Vec<(RangeValue, &'s str)>) {
-        let text = range.extract_str(self.full_text);
-
-        // Trim leading new lines.
-        let trimmed_text = text.trim_start_matches(['\n', '\r']);
-        let adjusted_start = range.start + (text.len() - trimmed_text.len());
-
-        // Trim trailing whitespaces
-        let trimmed_text = trimmed_text.trim_end();
-
-        // Only record chunks with alphanumeric characters.
-        if trimmed_text.chars().any(|ch| ch.is_alphanumeric()) {
-            output.push((
-                RangeValue::new(adjusted_start, adjusted_start + trimmed_text.len()),
-                trimmed_text,
-            ));
-        }
     }
 }
 
 struct Executor {
     args: Args,
+    custom_languages: HashMap<UniCase<String>, Arc<SimpleLanguageConfig>>,
 }
 
 impl Executor {
-    fn new(args: Args) -> Result<Self> {
-        Ok(Self { args })
+    fn new(args: Args, spec: Spec) -> Result<Self> {
+        let mut custom_languages = HashMap::new();
+        for lang in spec.custom_languages {
+            let separator_regex = lang
+                .separators_regex
+                .iter()
+                .map(|s| Regex::new(s))
+                .collect::<Result<_, _>>()
+                .with_context(|| {
+                    format!(
+                        "failed in parsing regexp for language `{}`",
+                        lang.language_name
+                    )
+                })?;
+            let language_config = Arc::new(SimpleLanguageConfig {
+                name: lang.language_name,
+                aliases: lang.aliases,
+                separator_regex,
+            });
+            if custom_languages
+                .insert(
+                    UniCase::new(language_config.name.clone()),
+                    language_config.clone(),
+                )
+                .is_some()
+            {
+                api_bail!(
+                    "duplicate language name / alias: `{}`",
+                    language_config.name
+                );
+            }
+            for alias in &language_config.aliases {
+                if custom_languages
+                    .insert(UniCase::new(alias.clone()), language_config.clone())
+                    .is_some()
+                {
+                    api_bail!("duplicate language name / alias: `{}`", alias);
+                }
+            }
+        }
+        Ok(Self {
+            args,
+            custom_languages,
+        })
     }
 }
 
@@ -500,40 +804,48 @@ fn translate_bytes_to_chars<'a>(text: &str, offsets: impl Iterator<Item = &'a mu
 impl SimpleFunctionExecutor for Executor {
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
         let full_text = self.args.text.value(&input)?.as_str()?;
-        let lang_config = {
-            let language = self.args.language.value(&input)?;
-            language
-                .optional()
-                .map(|v| anyhow::Ok(v.as_str()?.as_ref()))
-                .transpose()?
-                .and_then(|lang| TREE_SITTER_LANGUAGE_BY_LANG.get(&UniCase::new(lang)))
-        };
-
+        let chunk_size = self.args.chunk_size.value(&input)?.as_int64()?;
         let recursive_chunker = RecursiveChunker {
             full_text,
-            lang_config: lang_config.map(|c| c.as_ref()),
-            chunk_size: self.args.chunk_size.value(&input)?.as_int64()? as usize,
-            chunk_overlap: self
-                .args
-                .chunk_overlap
-                .value(&input)?
+            chunk_size: chunk_size as usize,
+            chunk_overlap: (self.args.chunk_overlap.value(&input)?)
                 .optional()
                 .map(|v| v.as_int64())
                 .transpose()?
                 .unwrap_or(0) as usize,
+            min_chunk_size: (self.args.min_chunk_size.value(&input)?)
+                .optional()
+                .map(|v| v.as_int64())
+                .transpose()?
+                .unwrap_or(chunk_size / 2) as usize,
         };
 
-        let mut output = if let Some(lang_config) = lang_config {
+        let language = UniCase::new(
+            (if let Some(language) = self.args.language.value(&input)?.optional() {
+                language.as_str()?
+            } else {
+                ""
+            })
+            .to_string(),
+        );
+        let mut output = if let Some(lang_config) = self.custom_languages.get(&language) {
+            recursive_chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
+                lang_config,
+                next_regexp_sep_id: 0,
+            })?
+        } else if let Some(lang_config) = TREE_SITTER_LANGUAGE_BY_LANG.get(&language) {
             let mut parser = tree_sitter::Parser::new();
             parser.set_language(&lang_config.tree_sitter_lang)?;
             let tree = parser.parse(full_text.as_ref(), None).ok_or_else(|| {
                 anyhow!("failed in parsing text in language: {}", lang_config.name)
             })?;
             recursive_chunker.split_root_chunk(ChunkKind::TreeSitterNode {
+                lang_config,
                 node: tree.root_node(),
             })?
         } else {
             recursive_chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
+                lang_config: &DEFAULT_LANGUAGE_CONFIG,
                 next_regexp_sep_id: 0,
             })?
         };
@@ -554,7 +866,7 @@ impl SimpleFunctionExecutor for Executor {
     }
 }
 
-pub struct Factory;
+struct Factory;
 
 #[async_trait]
 impl SimpleFunctionFactoryBase for Factory {
@@ -577,6 +889,9 @@ impl SimpleFunctionFactoryBase for Factory {
                 .expect_type(&ValueType::Basic(BasicValueType::Str))?,
             chunk_size: args_resolver
                 .next_arg("chunk_size")?
+                .expect_type(&ValueType::Basic(BasicValueType::Int64))?,
+            min_chunk_size: args_resolver
+                .next_optional_arg("min_chunk_size")?
                 .expect_type(&ValueType::Basic(BasicValueType::Int64))?,
             chunk_overlap: args_resolver
                 .next_optional_arg("chunk_overlap")?
@@ -606,12 +921,16 @@ impl SimpleFunctionFactoryBase for Factory {
 
     async fn build_executor(
         self: Arc<Self>,
-        _spec: Spec,
+        spec: Spec,
         args: Args,
         _context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SimpleFunctionExecutor>> {
-        Ok(Box::new(Executor::new(args)?))
+        Ok(Box::new(Executor::new(args, spec)?))
     }
+}
+
+pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
+    Factory.register(registry)
 }
 
 #[cfg(test)]
@@ -645,13 +964,14 @@ mod tests {
     fn create_test_chunker(
         text: &str,
         chunk_size: usize,
+        min_chunk_size: usize,
         chunk_overlap: usize,
     ) -> RecursiveChunker {
         RecursiveChunker {
             full_text: text,
-            lang_config: None,
             chunk_size,
             chunk_overlap,
+            min_chunk_size,
         }
     }
 
@@ -690,9 +1010,10 @@ mod tests {
     #[test]
     fn test_basic_split_no_overlap() {
         let text = "Linea 1.\nLinea 2.\n\nLinea 3.";
-        let chunker = create_test_chunker(text, 15, 0);
+        let chunker = create_test_chunker(text, 15, 5, 0);
 
         let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
+            lang_config: &DEFAULT_LANGUAGE_CONFIG,
             next_regexp_sep_id: 0,
         });
 
@@ -706,8 +1027,9 @@ mod tests {
 
         // Test splitting when chunk_size forces breaks within segments.
         let text2 = "A very very long text that needs to be split.";
-        let chunker2 = create_test_chunker(text2, 20, 0);
+        let chunker2 = create_test_chunker(text2, 20, 12, 0);
         let result2 = chunker2.split_root_chunk(ChunkKind::RegexpSepChunk {
+            lang_config: &DEFAULT_LANGUAGE_CONFIG,
             next_regexp_sep_id: 0,
         });
 
@@ -722,9 +1044,10 @@ mod tests {
     #[test]
     fn test_basic_split_with_overlap() {
         let text = "This is a test text that is a bit longer to see how the overlap works.";
-        let chunker = create_test_chunker(text, 20, 5);
+        let chunker = create_test_chunker(text, 20, 10, 5);
 
         let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
+            lang_config: &DEFAULT_LANGUAGE_CONFIG,
             next_regexp_sep_id: 0,
         });
 
@@ -743,9 +1066,10 @@ mod tests {
     #[test]
     fn test_split_trims_whitespace() {
         let text = "  \n First chunk. \n\n  Second chunk with spaces at the end.   \n";
-        let chunker = create_test_chunker(text, 30, 0);
+        let chunker = create_test_chunker(text, 30, 10, 0);
 
         let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
+            lang_config: &DEFAULT_LANGUAGE_CONFIG,
             next_regexp_sep_id: 0,
         });
 
@@ -757,34 +1081,15 @@ mod tests {
         assert_chunk_text_consistency(
             text,
             &chunks[0],
-            "  \n First chunk.",
+            " First chunk.",
             "Whitespace Test, Chunk 0",
         );
         assert_chunk_text_consistency(
             text,
             &chunks[1],
-            "  Second chunk with spaces at",
+            "  Second chunk with spaces",
             "Whitespace Test, Chunk 1",
         );
-        assert_chunk_text_consistency(text, &chunks[2], "the end.", "Whitespace Test, Chunk 2");
-    }
-    #[test]
-    fn test_split_discards_empty_chunks() {
-        let text = "Chunk 1.\n\n   \n\nChunk 2.\n\n------\n\nChunk 3.";
-        let chunker = create_test_chunker(text, 10, 0);
-
-        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
-            next_regexp_sep_id: 0,
-        });
-
-        assert!(result.is_ok());
-        let chunks = result.unwrap();
-
-        assert_eq!(chunks.len(), 3);
-
-        // Expect only the chunks with actual alphanumeric content.
-        assert_chunk_text_consistency(text, &chunks[0], "Chunk 1.", "Discard Test, Chunk 0");
-        assert_chunk_text_consistency(text, &chunks[1], "Chunk 2.", "Discard Test, Chunk 1");
-        assert_chunk_text_consistency(text, &chunks[2], "Chunk 3.", "Discard Test, Chunk 2");
+        assert_chunk_text_consistency(text, &chunks[2], "at the end.", "Whitespace Test, Chunk 2");
     }
 }

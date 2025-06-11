@@ -1,21 +1,18 @@
 use crate::prelude::*;
 
+use super::shared::table_columns::{
+    TableColumnsSchema, TableMainSetupAction, TableUpsertionAction, check_table_compatibility,
+};
 use crate::base::spec::{self, *};
 use crate::ops::sdk::*;
 use crate::settings::DatabaseConnectionSpec;
-use crate::setup;
-use crate::utils::db::ValidIdentifier;
 use async_trait::async_trait;
-use bytes::Bytes;
-use futures::FutureExt;
 use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
 use serde::Serialize;
+use sqlx::PgPool;
 use sqlx::postgres::types::PgRange;
-use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Row};
 use std::ops::Bound;
-use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
@@ -132,6 +129,9 @@ fn bind_value_field<'arg>(
             BasicValue::OffsetDateTime(v) => {
                 builder.push_bind(v);
             }
+            BasicValue::TimeDelta(v) => {
+                builder.push_bind(v);
+            }
             BasicValue::Json(v) => {
                 builder.push_bind(sqlx::types::Json(&**v));
             }
@@ -168,107 +168,11 @@ fn bind_value_field<'arg>(
     Ok(())
 }
 
-fn from_pg_value(row: &PgRow, field_idx: usize, typ: &ValueType) -> Result<Value> {
-    let value = match typ {
-        ValueType::Basic(basic_type) => {
-            let basic_value = match basic_type {
-                BasicValueType::Bytes => row
-                    .try_get::<Option<Vec<u8>>, _>(field_idx)?
-                    .map(|v| BasicValue::Bytes(Bytes::from(v))),
-                BasicValueType::Str => row
-                    .try_get::<Option<String>, _>(field_idx)?
-                    .map(|v| BasicValue::Str(Arc::from(v))),
-                BasicValueType::Bool => row
-                    .try_get::<Option<bool>, _>(field_idx)?
-                    .map(BasicValue::Bool),
-                BasicValueType::Int64 => row
-                    .try_get::<Option<i64>, _>(field_idx)?
-                    .map(BasicValue::Int64),
-                BasicValueType::Float32 => row
-                    .try_get::<Option<f32>, _>(field_idx)?
-                    .map(BasicValue::Float32),
-                BasicValueType::Float64 => row
-                    .try_get::<Option<f64>, _>(field_idx)?
-                    .map(BasicValue::Float64),
-                BasicValueType::Range => row
-                    .try_get::<Option<PgRange<i64>>, _>(field_idx)?
-                    .map(|v| match (v.start, v.end) {
-                        (Bound::Included(start), Bound::Excluded(end)) => {
-                            Ok(BasicValue::Range(RangeValue {
-                                start: start as usize,
-                                end: end as usize,
-                            }))
-                        }
-                        _ => anyhow::bail!("invalid range value"),
-                    })
-                    .transpose()?,
-                BasicValueType::Uuid => row
-                    .try_get::<Option<Uuid>, _>(field_idx)?
-                    .map(BasicValue::Uuid),
-                BasicValueType::Date => row
-                    .try_get::<Option<chrono::NaiveDate>, _>(field_idx)?
-                    .map(BasicValue::Date),
-                BasicValueType::Time => row
-                    .try_get::<Option<chrono::NaiveTime>, _>(field_idx)?
-                    .map(BasicValue::Time),
-                BasicValueType::LocalDateTime => row
-                    .try_get::<Option<chrono::NaiveDateTime>, _>(field_idx)?
-                    .map(BasicValue::LocalDateTime),
-                BasicValueType::OffsetDateTime => row
-                    .try_get::<Option<chrono::DateTime<chrono::FixedOffset>>, _>(field_idx)?
-                    .map(BasicValue::OffsetDateTime),
-                BasicValueType::Json => row
-                    .try_get::<Option<serde_json::Value>, _>(field_idx)?
-                    .map(|v| BasicValue::Json(Arc::from(v))),
-                BasicValueType::Vector(vs) => {
-                    if convertible_to_pgvector(vs) {
-                        row.try_get::<Option<pgvector::Vector>, _>(field_idx)?
-                            .map(|v| -> Result<_> {
-                                Ok(BasicValue::Vector(Arc::from(
-                                    v.as_slice()
-                                        .iter()
-                                        .map(|e| {
-                                            Ok(match *vs.element_type {
-                                                BasicValueType::Float32 => BasicValue::Float32(*e),
-                                                BasicValueType::Float64 => {
-                                                    BasicValue::Float64(*e as f64)
-                                                }
-                                                BasicValueType::Int64 => {
-                                                    BasicValue::Int64(*e as i64)
-                                                }
-                                                _ => anyhow::bail!("invalid vector element type"),
-                                            })
-                                        })
-                                        .collect::<Result<Vec<_>>>()?,
-                                )))
-                            })
-                            .transpose()?
-                    } else {
-                        row.try_get::<Option<serde_json::Value>, _>(field_idx)?
-                            .map(|v| BasicValue::from_json(v, basic_type))
-                            .transpose()?
-                    }
-                }
-            };
-            basic_value.map(Value::Basic)
-        }
-        _ => row
-            .try_get::<Option<serde_json::Value>, _>(field_idx)?
-            .map(|v| Value::from_json(v, typ))
-            .transpose()?,
-    };
-    let final_value = if let Some(v) = value { v } else { Value::Null };
-    Ok(final_value)
-}
-
 pub struct ExportContext {
     db_ref: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
     db_pool: PgPool,
-    table_name: ValidIdentifier,
     key_fields_schema: Vec<FieldSchema>,
     value_fields_schema: Vec<FieldSchema>,
-    all_fields: Vec<FieldSchema>,
-    all_fields_comma_separated: String,
     upsert_sql_prefix: String,
     upsert_sql_suffix: String,
     delete_sql_prefix: String,
@@ -298,23 +202,11 @@ impl ExportContext {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let all_fields = key_fields_schema
-            .iter()
-            .chain(value_fields_schema.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-        let table_name = ValidIdentifier::try_from(table_name)?;
         Ok(Self {
             db_ref,
             db_pool,
             key_fields_schema,
             value_fields_schema,
-            all_fields_comma_separated: all_fields
-                .iter()
-                .map(|f| f.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", "),
-            all_fields,
             upsert_sql_prefix: format!(
                 "INSERT INTO {table_name} ({key_fields}, {value_fields}) VALUES "
             ),
@@ -322,7 +214,6 @@ impl ExportContext {
                 " ON CONFLICT ({key_fields}) DO UPDATE SET {set_value_fields};"
             ),
             delete_sql_prefix: format!("DELETE FROM {table_name} WHERE "),
-            table_name,
         })
     }
 }
@@ -375,17 +266,17 @@ impl ExportContext {
 
     async fn delete(
         &self,
-        delete_keys: &[KeyValue],
+        deletions: &[interface::ExportTargetDeleteEntry],
         txn: &mut sqlx::PgTransaction<'_>,
     ) -> Result<()> {
         // TODO: Find a way to batch delete.
-        for delete_key in delete_keys.iter() {
+        for deletion in deletions.iter() {
             let mut query_builder = sqlx::QueryBuilder::new("");
             query_builder.push(&self.delete_sql_prefix);
             for (i, (schema, value)) in self
                 .key_fields_schema
                 .iter()
-                .zip(key_value_fields_iter(&self.key_fields_schema, delete_key)?.iter())
+                .zip(key_value_fields_iter(&self.key_fields_schema, &deletion.key)?.iter())
                 .enumerate()
             {
                 if i > 0 {
@@ -398,69 +289,6 @@ impl ExportContext {
             query_builder.build().execute(&mut **txn).await?;
         }
         Ok(())
-    }
-}
-
-static SCORE_FIELD_NAME: &str = "__score";
-
-struct PostgresQueryTarget {
-    db_pool: PgPool,
-    context: Arc<ExportContext>,
-}
-
-#[async_trait]
-impl QueryTarget for PostgresQueryTarget {
-    async fn search(&self, query: VectorMatchQuery) -> Result<QueryResults> {
-        let query_str = format!(
-            "SELECT {} {} $1 AS {SCORE_FIELD_NAME}, {} FROM {} ORDER BY {SCORE_FIELD_NAME} LIMIT $2",
-            ValidIdentifier::try_from(query.vector_field_name)?,
-            to_distance_operator(query.similarity_metric),
-            self.context.all_fields_comma_separated,
-            self.context.table_name,
-        );
-        let results = sqlx::query(&query_str)
-            .bind(pgvector::Vector::from(query.vector))
-            .bind(query.limit as i64)
-            .fetch_all(&self.db_pool)
-            .await?
-            .into_iter()
-            .map(|r| -> Result<QueryResult> {
-                let score: f64 = distance_to_similarity(query.similarity_metric, r.try_get(0)?);
-                let data = self
-                    .context
-                    .key_fields_schema
-                    .iter()
-                    .chain(self.context.value_fields_schema.iter())
-                    .enumerate()
-                    .map(|(idx, schema)| from_pg_value(&r, idx + 1, &schema.value_type.typ))
-                    .collect::<Result<Vec<_>>>()?;
-                let result = QueryResult { data, score };
-                Ok(result)
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        Ok(QueryResults {
-            fields: self.context.all_fields.clone(),
-            results,
-        })
-    }
-}
-
-fn to_distance_operator(metric: VectorSimilarityMetric) -> &'static str {
-    match metric {
-        VectorSimilarityMetric::CosineSimilarity => "<=>",
-        VectorSimilarityMetric::L2Distance => "<->",
-        VectorSimilarityMetric::InnerProduct => "<#>",
-    }
-}
-
-fn distance_to_similarity(metric: VectorSimilarityMetric, distance: f64) -> f64 {
-    match metric {
-        // cosine distance => cosine similarity
-        VectorSimilarityMetric::CosineSimilarity => 1.0 - distance,
-        VectorSimilarityMetric::L2Distance => distance,
-        // negative inner product => inner product
-        VectorSimilarityMetric::InnerProduct => -distance,
     }
 }
 
@@ -486,11 +314,8 @@ impl std::fmt::Display for TableId {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetupState {
-    #[serde(with = "indexmap::map::serde_seq")]
-    key_fields_schema: IndexMap<String, ValueType>,
-
-    #[serde(with = "indexmap::map::serde_seq")]
-    value_fields_schema: IndexMap<String, ValueType>,
+    #[serde(flatten)]
+    columns: TableColumnsSchema<ValueType>,
 
     vector_indexes: BTreeMap<String, VectorIndexDef>,
 }
@@ -503,14 +328,16 @@ impl SetupState {
         index_options: &IndexOptions,
     ) -> Self {
         Self {
-            key_fields_schema: key_fields_schema
-                .iter()
-                .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
-                .collect(),
-            value_fields_schema: value_fields_schema
-                .iter()
-                .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
-                .collect(),
+            columns: TableColumnsSchema {
+                key_columns: key_fields_schema
+                    .iter()
+                    .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
+                    .collect(),
+                value_columns: value_fields_schema
+                    .iter()
+                    .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
+                    .collect(),
+            },
             vector_indexes: index_options
                 .vector_indexes
                 .iter()
@@ -519,12 +346,9 @@ impl SetupState {
         }
     }
 
-    fn is_compatible(&self, other: &Self) -> bool {
-        self.key_fields_schema == other.key_fields_schema
-    }
-
     fn uses_pgvector(&self) -> bool {
-        self.value_fields_schema
+        self.columns
+            .value_columns
             .iter()
             .any(|(_, value)| match &value {
                 ValueType::Basic(BasicValueType::Vector(vec_schema)) => {
@@ -535,148 +359,7 @@ impl SetupState {
     }
 }
 
-#[derive(Debug)]
-pub enum TableUpsertionAction {
-    Create {
-        keys: IndexMap<String, ValueType>,
-        values: IndexMap<String, ValueType>,
-    },
-    Update {
-        columns_to_delete: IndexSet<String>,
-        columns_to_upsert: IndexMap<String, ValueType>,
-    },
-}
-
-impl TableUpsertionAction {
-    fn is_empty(&self) -> bool {
-        match self {
-            TableUpsertionAction::Create { .. } => false,
-            TableUpsertionAction::Update {
-                columns_to_delete,
-                columns_to_upsert,
-            } => columns_to_delete.is_empty() && columns_to_upsert.is_empty(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct TableSetupAction {
-    table_upsertion: TableUpsertionAction,
-    indexes_to_delete: IndexSet<String>,
-    indexes_to_create: IndexMap<String, VectorIndexDef>,
-}
-
-impl TableSetupAction {
-    fn is_empty(&self) -> bool {
-        self.table_upsertion.is_empty()
-            && self.indexes_to_delete.is_empty()
-            && self.indexes_to_create.is_empty()
-    }
-}
-
-#[derive(Debug)]
-pub struct SetupStatusCheck {
-    db_pool: PgPool,
-    table_name: String,
-
-    desired_state: Option<SetupState>,
-    drop_existing: bool,
-    create_pgvector_extension: bool,
-    desired_table_setup: Option<TableSetupAction>,
-}
-
-impl SetupStatusCheck {
-    fn new(
-        db_pool: PgPool,
-        table_name: String,
-        desired_state: Option<SetupState>,
-        existing: setup::CombinedState<SetupState>,
-    ) -> Self {
-        let desired_table_setup = desired_state
-            .as_ref()
-            .map(|desired| {
-                let table_upsertion = if existing.always_exists()
-                    && existing
-                        .possible_versions()
-                        .all(|v| v.is_compatible(desired))
-                {
-                    TableUpsertionAction::Update {
-                        columns_to_delete: existing
-                            .possible_versions()
-                            .flat_map(|v| v.value_fields_schema.keys())
-                            .filter(|column_name| {
-                                !desired.value_fields_schema.contains_key(*column_name)
-                            })
-                            .cloned()
-                            .collect(),
-                        columns_to_upsert: desired
-                            .value_fields_schema
-                            .iter()
-                            .filter(|(field_name, schema)| {
-                                !existing.current.as_ref().is_some_and(|v| {
-                                    v.value_fields_schema
-                                        .get(*field_name)
-                                        .map(to_column_type_sql)
-                                        == Some(to_column_type_sql(schema))
-                                })
-                            })
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect(),
-                    }
-                } else {
-                    TableUpsertionAction::Create {
-                        keys: desired.key_fields_schema.clone(),
-                        values: desired.value_fields_schema.clone(),
-                    }
-                };
-                TableSetupAction {
-                    table_upsertion,
-                    indexes_to_delete: existing
-                        .possible_versions()
-                        .flat_map(|v| v.vector_indexes.keys())
-                        .filter(|index_name| !desired.vector_indexes.contains_key(*index_name))
-                        .cloned()
-                        .collect(),
-                    indexes_to_create: desired
-                        .vector_indexes
-                        .iter()
-                        .filter(|(name, def)| {
-                            !existing.always_exists()
-                                || existing
-                                    .possible_versions()
-                                    .any(|v| v.vector_indexes.get(*name) != Some(def))
-                        })
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
-                }
-            })
-            .filter(|action| !action.is_empty());
-        let drop_existing = desired_state
-            .as_ref()
-            .map(|state| {
-                existing
-                    .possible_versions()
-                    .any(|v| !v.is_compatible(state))
-            })
-            .unwrap_or(true);
-        let create_pgvector_extension = desired_state
-            .as_ref()
-            .map(|s| s.uses_pgvector())
-            .unwrap_or(false)
-            && !existing.current.map(|s| s.uses_pgvector()).unwrap_or(false);
-
-        Self {
-            db_pool,
-            table_name,
-            desired_state,
-            drop_existing,
-            create_pgvector_extension,
-            desired_table_setup,
-        }
-    }
-}
-
-fn to_column_type_sql(column_type: &ValueType) -> Cow<'static, str> {
+fn to_column_type_sql(column_type: &ValueType) -> String {
     match column_type {
         ValueType::Basic(basic_type) => match basic_type {
             BasicValueType::Bytes => "bytea".into(),
@@ -691,6 +374,7 @@ fn to_column_type_sql(column_type: &ValueType) -> Cow<'static, str> {
             BasicValueType::Time => "time".into(),
             BasicValueType::LocalDateTime => "timestamp".into(),
             BasicValueType::OffsetDateTime => "timestamp with time zone".into(),
+            BasicValueType::TimeDelta => "interval".into(),
             BasicValueType::Json => "jsonb".into(),
             BasicValueType::Vector(vec_schema) => {
                 if convertible_to_pgvector(vec_schema) {
@@ -701,6 +385,83 @@ fn to_column_type_sql(column_type: &ValueType) -> Cow<'static, str> {
             }
         },
         _ => "jsonb".into(),
+    }
+}
+
+impl<'a> Into<Cow<'a, TableColumnsSchema<String>>> for &'a SetupState {
+    fn into(self) -> Cow<'a, TableColumnsSchema<String>> {
+        Cow::Owned(TableColumnsSchema {
+            key_columns: self
+                .columns
+                .key_columns
+                .iter()
+                .map(|(k, v)| (k.clone(), to_column_type_sql(v)))
+                .collect(),
+            value_columns: self
+                .columns
+                .value_columns
+                .iter()
+                .map(|(k, v)| (k.clone(), to_column_type_sql(v)))
+                .collect(),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct TableSetupAction {
+    table_action: TableMainSetupAction<String>,
+    indexes_to_delete: IndexSet<String>,
+    indexes_to_create: IndexMap<String, VectorIndexDef>,
+}
+
+#[derive(Debug)]
+pub struct SetupStatus {
+    create_pgvector_extension: bool,
+    actions: TableSetupAction,
+}
+
+impl SetupStatus {
+    fn new(desired_state: Option<SetupState>, existing: setup::CombinedState<SetupState>) -> Self {
+        let table_action =
+            TableMainSetupAction::from_states(desired_state.as_ref(), &existing, false);
+        let (indexes_to_delete, indexes_to_create) = desired_state
+            .as_ref()
+            .map(|desired| {
+                (
+                    existing
+                        .possible_versions()
+                        .flat_map(|v| v.vector_indexes.keys())
+                        .filter(|index_name| !desired.vector_indexes.contains_key(*index_name))
+                        .cloned()
+                        .collect::<IndexSet<_>>(),
+                    desired
+                        .vector_indexes
+                        .iter()
+                        .filter(|(name, def)| {
+                            !existing.always_exists()
+                                || existing
+                                    .possible_versions()
+                                    .any(|v| v.vector_indexes.get(*name) != Some(def))
+                        })
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<IndexMap<_, _>>(),
+                )
+            })
+            .unwrap_or_default();
+        let create_pgvector_extension = desired_state
+            .as_ref()
+            .map(|s| s.uses_pgvector())
+            .unwrap_or(false)
+            && !existing.current.map(|s| s.uses_pgvector()).unwrap_or(false);
+
+        Self {
+            create_pgvector_extension,
+            actions: TableSetupAction {
+                table_action,
+                indexes_to_delete,
+                indexes_to_create,
+            },
+        }
     }
 }
 
@@ -730,130 +491,71 @@ fn to_vector_index_name(table_name: &str, vector_index_def: &spec::VectorIndexDe
     )
 }
 
-fn describe_field_schema(field_name: &str, value_type: &ValueType) -> String {
-    format!("{} {}", field_name, to_column_type_sql(value_type))
-}
-
 fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String {
     format!("{} {}", index_name, to_index_spec_sql(index_spec))
 }
 
-#[async_trait]
-impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
+impl setup::ResourceSetupStatus for SetupStatus {
     fn describe_changes(&self) -> Vec<String> {
-        let mut descriptions = vec![];
-        if self.drop_existing {
-            descriptions.push("Drop table".to_string());
-        }
+        let mut descriptions = self.actions.table_action.describe_changes();
         if self.create_pgvector_extension {
             descriptions.push("Create pg_vector extension (if not exists)".to_string());
         }
-        if let Some(desired_table_setup) = &self.desired_table_setup {
-            match &desired_table_setup.table_upsertion {
-                TableUpsertionAction::Create { keys, values } => {
-                    descriptions.push(format!(
-                        "Create table:\n  key columns: {}\n  value columns: {}\n",
-                        keys.iter()
-                            .map(|(k, v)| describe_field_schema(k, v))
-                            .join(",  "),
-                        values
-                            .iter()
-                            .map(|(k, v)| describe_field_schema(k, v))
-                            .join(",  "),
-                    ));
-                }
-                TableUpsertionAction::Update {
-                    columns_to_delete,
-                    columns_to_upsert,
-                } => {
-                    if !columns_to_delete.is_empty() {
-                        descriptions.push(format!(
-                            "Delete column from table: {}",
-                            columns_to_delete.iter().join(",  "),
-                        ));
-                    }
-                    if !columns_to_upsert.is_empty() {
-                        descriptions.push(format!(
-                            "Add / update columns in table: {}",
-                            columns_to_upsert
-                                .iter()
-                                .map(|(k, v)| describe_field_schema(k, v))
-                                .join(",  "),
-                        ));
-                    }
-                }
-            }
-            if !desired_table_setup.indexes_to_delete.is_empty() {
-                descriptions.push(format!(
-                    "Delete indexes from table: {}",
-                    desired_table_setup.indexes_to_delete.iter().join(",  "),
-                ));
-            }
-            if !desired_table_setup.indexes_to_create.is_empty() {
-                descriptions.push(format!(
-                    "Create indexes in table: {}",
-                    desired_table_setup
-                        .indexes_to_create
-                        .iter()
-                        .map(|(index_name, index_spec)| describe_index_spec(index_name, index_spec))
-                        .join(",  "),
-                ));
-            }
+        if !self.actions.indexes_to_delete.is_empty() {
+            descriptions.push(format!(
+                "Delete indexes from table: {}",
+                self.actions.indexes_to_delete.iter().join(",  "),
+            ));
+        }
+        if !self.actions.indexes_to_create.is_empty() {
+            descriptions.push(format!(
+                "Create indexes in table: {}",
+                self.actions
+                    .indexes_to_create
+                    .iter()
+                    .map(|(index_name, index_spec)| describe_index_spec(index_name, index_spec))
+                    .join(",  "),
+            ));
         }
         descriptions
     }
 
     fn change_type(&self) -> setup::SetupChangeType {
-        if self.drop_existing {
-            if self.desired_state.is_none() {
-                setup::SetupChangeType::Delete
-            } else {
-                setup::SetupChangeType::Update
-            }
-        } else {
-            match &self.desired_table_setup {
-                Some(setup) => match setup.table_upsertion {
-                    TableUpsertionAction::Create { .. } => setup::SetupChangeType::Create,
-                    TableUpsertionAction::Update { .. } => setup::SetupChangeType::Update,
-                },
-                None => setup::SetupChangeType::NoChange,
-            }
-        }
+        let has_other_update = !self.actions.indexes_to_create.is_empty()
+            || !self.actions.indexes_to_delete.is_empty();
+        self.actions.table_action.change_type(has_other_update)
     }
 
-    async fn apply_change(&self) -> Result<()> {
-        let table_name = &self.table_name;
-        if self.drop_existing {
+
+}
+
+impl SetupStatus {
+    async fn apply_change(&self, db_pool: &PgPool, table_name: &str) -> Result<()> {
+        if self.actions.table_action.drop_existing {
             sqlx::query(&format!("DROP TABLE IF EXISTS {table_name}"))
-                .execute(&self.db_pool)
+                .execute(db_pool)
                 .await?;
         }
         if self.create_pgvector_extension {
             sqlx::query("CREATE EXTENSION IF NOT EXISTS vector;")
-                .execute(&self.db_pool)
+                .execute(db_pool)
                 .await?;
         }
-        if let Some(desired_table_setup) = &self.desired_table_setup {
-            for index_name in desired_table_setup.indexes_to_delete.iter() {
-                let sql = format!("DROP INDEX IF EXISTS {}", index_name);
-                sqlx::query(&sql).execute(&self.db_pool).await?;
-            }
-            match &desired_table_setup.table_upsertion {
+        for index_name in self.actions.indexes_to_delete.iter() {
+            let sql = format!("DROP INDEX IF EXISTS {}", index_name);
+            sqlx::query(&sql).execute(db_pool).await?;
+        }
+        if let Some(table_upsertion) = &self.actions.table_action.table_upsertion {
+            match table_upsertion {
                 TableUpsertionAction::Create { keys, values } => {
-                    let mut fields = (keys
-                        .iter()
-                        .map(|(k, v)| format!("{} {} NOT NULL", k, to_column_type_sql(v))))
-                    .chain(
-                        values
-                            .iter()
-                            .map(|(k, v)| format!("{} {}", k, to_column_type_sql(v))),
-                    );
+                    let mut fields = (keys.iter().map(|(k, v)| format!("{k} {v} NOT NULL")))
+                        .chain(values.iter().map(|(k, v)| format!("{k} {v}")));
                     let sql = format!(
                         "CREATE TABLE IF NOT EXISTS {table_name} ({}, PRIMARY KEY ({}))",
                         fields.join(", "),
                         keys.keys().join(", ")
                     );
-                    sqlx::query(&sql).execute(&self.db_pool).await?;
+                    sqlx::query(&sql).execute(db_pool).await?;
                 }
                 TableUpsertionAction::Update {
                     columns_to_delete,
@@ -863,24 +565,23 @@ impl setup::ResourceSetupStatusCheck for SetupStatusCheck {
                         let sql = format!(
                             "ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}",
                         );
-                        sqlx::query(&sql).execute(&self.db_pool).await?;
+                        sqlx::query(&sql).execute(db_pool).await?;
                     }
                     for (column_name, column_type) in columns_to_upsert.iter() {
                         let sql = format!(
-                            "ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}, ADD COLUMN {column_name} {}",
-                            to_column_type_sql(column_type)
+                            "ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}, ADD COLUMN {column_name} {column_type}"
                         );
-                        sqlx::query(&sql).execute(&self.db_pool).await?;
+                        sqlx::query(&sql).execute(db_pool).await?;
                     }
                 }
             }
-            for (index_name, index_spec) in desired_table_setup.indexes_to_create.iter() {
-                let sql = format!(
-                    "CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} {}",
-                    to_index_spec_sql(index_spec)
-                );
-                sqlx::query(&sql).execute(&self.db_pool).await?;
-            }
+        }
+        for (index_name, index_spec) in self.actions.indexes_to_create.iter() {
+            let sql = format!(
+                "CREATE INDEX IF NOT EXISTS {index_name} ON {table_name} {}",
+                to_index_spec_sql(index_spec)
+            );
+            sqlx::query(&sql).execute(db_pool).await?;
         }
         Ok(())
     }
@@ -897,7 +598,7 @@ async fn get_db_pool(
         .transpose()?;
     let db_pool = match db_conn_spec {
         Some(db_conn_spec) => lib_context.db_pools.get_pool(&db_conn_spec).await?,
-        None => lib_context.builtin_db_pool.clone(),
+        None => lib_context.require_builtin_db_pool()?.clone(),
     };
     Ok(db_pool)
 }
@@ -907,6 +608,7 @@ impl StorageFactoryBase for Factory {
     type Spec = Spec;
     type DeclarationSpec = ();
     type SetupState = SetupState;
+    type SetupStatus = SetupStatus;
     type Key = TableId;
     type ExportContext = ExportContext;
 
@@ -928,10 +630,12 @@ impl StorageFactoryBase for Factory {
             .map(|d| {
                 let table_id = TableId {
                     database: d.spec.database.clone(),
-                    table_name: d
-                        .spec
-                        .table_name
-                        .unwrap_or_else(|| format!("{}__{}", context.flow_instance_name, d.name)),
+                    table_name: d.spec.table_name.unwrap_or_else(|| {
+                        utils::db::sanitize_identifier(&format!(
+                            "{}__{}",
+                            context.flow_instance_name, d.name
+                        ))
+                    }),
                 };
                 let setup_state = SetupState::new(
                     &table_id,
@@ -942,7 +646,7 @@ impl StorageFactoryBase for Factory {
                 let table_name = table_id.table_name.clone();
                 let db_ref = d.spec.database;
                 let auth_registry = context.auth_registry.clone();
-                let executors = async move {
+                let export_context = Box::pin(async move {
                     let db_pool = get_db_pool(db_ref.as_ref(), &auth_registry).await?;
                     let export_context = Arc::new(ExportContext::new(
                         db_ref,
@@ -951,19 +655,12 @@ impl StorageFactoryBase for Factory {
                         d.key_fields_schema,
                         d.value_fields_schema,
                     )?);
-                    let query_target = Arc::new(PostgresQueryTarget {
-                        db_pool,
-                        context: export_context.clone(),
-                    });
-                    Ok(TypedExportTargetExecutors {
-                        export_context: export_context.clone(),
-                        query_target: Some(query_target as Arc<dyn QueryTarget>),
-                    })
-                };
+                    Ok(export_context)
+                });
                 Ok(TypedExportDataCollectionBuildOutput {
                     setup_key: table_id,
                     desired_setup_state: setup_state,
-                    executors: executors.boxed(),
+                    export_context,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -972,17 +669,12 @@ impl StorageFactoryBase for Factory {
 
     async fn check_setup_status(
         &self,
-        key: TableId,
+        _key: TableId,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
-        auth_registry: &Arc<AuthRegistry>,
-    ) -> Result<impl setup::ResourceSetupStatusCheck + 'static> {
-        Ok(SetupStatusCheck::new(
-            get_db_pool(key.database.as_ref(), auth_registry).await?,
-            key.table_name,
-            desired,
-            existing,
-        ))
+        _auth_registry: &Arc<AuthRegistry>,
+    ) -> Result<SetupStatus> {
+        Ok(SetupStatus::new(desired, existing))
     }
 
     fn check_state_compatibility(
@@ -990,25 +682,10 @@ impl StorageFactoryBase for Factory {
         desired: &SetupState,
         existing: &SetupState,
     ) -> Result<SetupStateCompatibility> {
-        let is_key_identical = existing.key_fields_schema.len() == desired.key_fields_schema.len()
-            && existing
-                .key_fields_schema
-                .iter()
-                .all(|(k, v)| desired.key_fields_schema.get(k) == Some(v));
-        let compatibility = if is_key_identical {
-            let is_value_lossy = existing
-                .value_fields_schema
-                .iter()
-                .any(|(k, v)| desired.value_fields_schema.get(k) != Some(v));
-            if is_value_lossy {
-                SetupStateCompatibility::PartialCompatible
-            } else {
-                SetupStateCompatibility::Compatible
-            }
-        } else {
-            SetupStateCompatibility::NotCompatible
-        };
-        Ok(compatibility)
+        Ok(check_table_compatibility(
+            &desired.columns,
+            &existing.columns,
+        ))
     }
 
     fn describe_resource(&self, key: &TableId) -> Result<String> {
@@ -1042,10 +719,25 @@ impl StorageFactoryBase for Factory {
             for mut_group in mut_groups.iter() {
                 mut_group
                     .export_context
-                    .delete(&mut_group.mutation.delete_keys, &mut txn)
+                    .delete(&mut_group.mutation.deletes, &mut txn)
                     .await?;
             }
             txn.commit().await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_setup_changes(
+        &self,
+        changes: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
+        auth_registry: &Arc<AuthRegistry>,
+    ) -> Result<()> {
+        for change in changes.iter() {
+            let db_pool = get_db_pool(change.key.database.as_ref(), &auth_registry).await?;
+            change
+                .setup_status
+                .apply_change(&db_pool, &change.key.table_name)
+                .await?;
         }
         Ok(())
     }

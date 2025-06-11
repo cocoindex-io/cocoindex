@@ -1,7 +1,22 @@
 use crate::prelude::*;
 
 use super::schema::{EnrichedValueType, FieldSchema};
+use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::ops::Deref;
+
+/// OutputMode enum for displaying spec info in different granularity
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputMode {
+    Concise,
+    Verbose,
+}
+
+/// Formatting spec per output mode
+pub trait SpecFormatter {
+    fn format(&self, mode: OutputMode) -> String;
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -34,8 +49,8 @@ impl Deref for FieldPath {
     }
 }
 
-impl std::fmt::Display for FieldPath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for FieldPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_empty() {
             write!(f, "*")
         } else {
@@ -49,8 +64,8 @@ impl std::fmt::Display for FieldPath {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct OpArgName(pub Option<String>);
 
-impl std::fmt::Display for OpArgName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for OpArgName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(arg_name) = &self.0 {
             write!(f, "${}", arg_name)
         } else {
@@ -73,6 +88,12 @@ pub struct NamedSpec<T> {
     pub spec: T,
 }
 
+impl<T: fmt::Display> fmt::Display for NamedSpec<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.name, self.spec)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldMapping {
     /// If unspecified, means the current scope.
@@ -83,10 +104,33 @@ pub struct FieldMapping {
     pub field_path: FieldPath,
 }
 
+impl fmt::Display for FieldMapping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let scope = self.scope.as_deref().unwrap_or("");
+        write!(
+            f,
+            "{}{}",
+            if scope.is_empty() {
+                "".to_string()
+            } else {
+                format!("{}.", scope)
+            },
+            self.field_path
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstantMapping {
     pub schema: EnrichedValueType,
     pub value: serde_json::Value,
+}
+
+impl fmt::Display for ConstantMapping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = serde_json::to_string(&self.value).unwrap_or("#serde_error".to_string());
+        write!(f, "{}", value)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +142,18 @@ pub struct CollectionMapping {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructMapping {
     pub fields: Vec<NamedSpec<ValueMapping>>,
+}
+
+impl fmt::Display for StructMapping {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let fields = self
+            .fields
+            .iter()
+            .map(|field| field.name.clone())
+            .collect::<Vec<_>>()
+            .join(",");
+        write!(f, "{}", fields)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,7 +178,7 @@ impl ValueMapping {
 }
 
 impl std::fmt::Display for ValueMapping {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ValueMapping::Constant(v) => write!(
                 f,
@@ -155,6 +211,16 @@ pub struct OpArgBinding {
     pub value: ValueMapping,
 }
 
+impl fmt::Display for OpArgBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.arg_name.is_unnamed() {
+            write!(f, "{}", self.value)
+        } else {
+            write!(f, "{}={}", self.arg_name, self.value)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpSpec {
     pub kind: String,
@@ -162,9 +228,44 @@ pub struct OpSpec {
     pub spec: serde_json::Map<String, serde_json::Value>,
 }
 
+impl SpecFormatter for OpSpec {
+    fn format(&self, mode: OutputMode) -> String {
+        match mode {
+            OutputMode::Concise => self.kind.clone(),
+            OutputMode::Verbose => {
+                let spec_str = serde_json::to_string_pretty(&self.spec)
+                    .map(|s| {
+                        let lines: Vec<&str> = s.lines().collect();
+                        if lines.len() < s.lines().count() {
+                            lines
+                                .into_iter()
+                                .chain(["..."])
+                                .collect::<Vec<_>>()
+                                .join("\n  ")
+                        } else {
+                            lines.join("\n  ")
+                        }
+                    })
+                    .unwrap_or("#serde_error".to_string());
+                format!("{}({})", self.kind, spec_str)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SourceRefreshOptions {
     pub refresh_interval: Option<std::time::Duration>,
+}
+
+impl fmt::Display for SourceRefreshOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let refresh = self
+            .refresh_interval
+            .map(|d| format!("{:?}", d))
+            .unwrap_or("none".to_string());
+        write!(f, "{}", refresh)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,11 +276,40 @@ pub struct ImportOpSpec {
     pub refresh_options: SourceRefreshOptions,
 }
 
+impl SpecFormatter for ImportOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
+        let source = self.source.format(mode);
+        format!("source={}, refresh={}", source, self.refresh_options)
+    }
+}
+
+impl fmt::Display for ImportOpSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.format(OutputMode::Concise))
+    }
+}
+
 /// Transform data using a given operator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformOpSpec {
     pub inputs: Vec<OpArgBinding>,
     pub op: OpSpec,
+}
+
+impl SpecFormatter for TransformOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
+        let inputs = self
+            .inputs
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let op_str = self.op.format(mode);
+        match mode {
+            OutputMode::Concise => format!("op={}, inputs={}", op_str, inputs),
+            OutputMode::Verbose => format!("op={}, inputs=[{}]", op_str, inputs),
+        }
+    }
 }
 
 /// Apply reactive operations to each row of the input field.
@@ -188,6 +318,21 @@ pub struct ForEachOpSpec {
     /// Mapping that provides a table to apply reactive operations to.
     pub field_path: FieldPath,
     pub op_scope: ReactiveOpScope,
+}
+
+impl ForEachOpSpec {
+    pub fn get_label(&self) -> String {
+        format!("Loop over {}", self.field_path)
+    }
+}
+
+impl SpecFormatter for ForEachOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
+        match mode {
+            OutputMode::Concise => self.get_label(),
+            OutputMode::Verbose => format!("field={}", self.field_path),
+        }
+    }
 }
 
 /// Emit data to a given collector at the given scope.
@@ -204,6 +349,26 @@ pub struct CollectOpSpec {
     pub auto_uuid_field: Option<FieldName>,
 }
 
+impl SpecFormatter for CollectOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
+        let uuid = self.auto_uuid_field.as_deref().unwrap_or("none");
+        match mode {
+            OutputMode::Concise => {
+                format!(
+                    "collector={}, input={}, uuid={}",
+                    self.collector_name, self.input, uuid
+                )
+            }
+            OutputMode::Verbose => {
+                format!(
+                    "scope={}, collector={}, input=[{}], uuid={}",
+                    self.scope_name, self.collector_name, self.input, uuid
+                )
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VectorSimilarityMetric {
     CosineSimilarity,
@@ -211,8 +376,8 @@ pub enum VectorSimilarityMetric {
     InnerProduct,
 }
 
-impl std::fmt::Display for VectorSimilarityMetric {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for VectorSimilarityMetric {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             VectorSimilarityMetric::CosineSimilarity => write!(f, "Cosine"),
             VectorSimilarityMetric::L2Distance => write!(f, "L2"),
@@ -227,12 +392,45 @@ pub struct VectorIndexDef {
     pub metric: VectorSimilarityMetric,
 }
 
+impl fmt::Display for VectorIndexDef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.field_name, self.metric)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_key_fields: Option<Vec<FieldName>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector_indexes: Vec<VectorIndexDef>,
+}
+
+impl IndexOptions {
+    pub fn primary_key_fields(&self) -> Result<&[FieldName]> {
+        Ok(self
+            .primary_key_fields
+            .as_ref()
+            .ok_or(api_error!("Primary key fields are not set"))?
+            .as_ref())
+    }
+}
+
+impl fmt::Display for IndexOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let primary_keys = self
+            .primary_key_fields
+            .as_ref()
+            .map(|p| p.join(","))
+            .unwrap_or_default();
+        let vector_indexes = self
+            .vector_indexes
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        write!(f, "keys={}, indexes={}", primary_keys, vector_indexes)
+    }
 }
 
 /// Store data to a given sink.
@@ -244,6 +442,20 @@ pub struct ExportOpSpec {
     pub setup_by_user: bool,
 }
 
+impl SpecFormatter for ExportOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
+        let target_str = self.target.format(mode);
+        let base = format!(
+            "collector={}, target={}, {}",
+            self.collector_name, target_str, self.index_options
+        );
+        match mode {
+            OutputMode::Concise => base,
+            OutputMode::Verbose => format!("{}, setup_by_user={}", base, self.setup_by_user),
+        }
+    }
+}
+
 /// A reactive operation reacts on given input values.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action")]
@@ -253,11 +465,30 @@ pub enum ReactiveOpSpec {
     Collect(CollectOpSpec),
 }
 
+impl SpecFormatter for ReactiveOpSpec {
+    fn format(&self, mode: OutputMode) -> String {
+        match self {
+            ReactiveOpSpec::Transform(t) => format!("Transform: {}", t.format(mode)),
+            ReactiveOpSpec::ForEach(fe) => match mode {
+                OutputMode::Concise => format!("{}", fe.get_label()),
+                OutputMode::Verbose => format!("ForEach: {}", fe.format(mode)),
+            },
+            ReactiveOpSpec::Collect(c) => format!("Collect: {}", c.format(mode)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReactiveOpScope {
     pub name: ScopeName,
     pub ops: Vec<NamedSpec<ReactiveOpSpec>>,
     // TODO: Suport collectors
+}
+
+impl fmt::Display for ReactiveOpScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Scope: name={}", self.name)
+    }
 }
 
 /// A flow defines the rule to sync data from given sources to given sinks with given transformations.
@@ -301,14 +532,14 @@ pub struct AuthEntryReference<T> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> std::fmt::Debug for AuthEntryReference<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T> fmt::Debug for AuthEntryReference<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "AuthEntryReference({})", self.key)
     }
 }
 
-impl<T> std::fmt::Display for AuthEntryReference<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T> fmt::Display for AuthEntryReference<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "AuthEntryReference({})", self.key)
     }
 }

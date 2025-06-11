@@ -1,14 +1,14 @@
-use anyhow::anyhow;
+use crate::prelude::*;
+
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use log::debug;
 use pyo3::{exceptions::PyException, prelude::*};
 use std::{
     error::Error,
     fmt::{Debug, Display},
-    sync::Arc,
 };
 
 #[derive(Debug)]
@@ -38,10 +38,18 @@ impl Error for ApiError {
     }
 }
 
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         debug!("Internal server error:\n{:?}", self.err);
-        (self.status_code, format!("{:#}", self.err)).into_response()
+        let error_response = ErrorResponse {
+            error: self.err.to_string(),
+        };
+        (self.status_code, Json(error_response)).into_response()
     }
 }
 
@@ -155,16 +163,20 @@ impl<'a, T> SharedResultExtRef<'a, T> for &'a Result<T, SharedError> {
     }
 }
 
+pub fn invariance_violation() -> anyhow::Error {
+    anyhow::anyhow!("Invariance violation")
+}
+
 #[macro_export]
 macro_rules! api_bail {
-    ( $fmt:literal $(, $($arg:expr) , *)?) => {
-        return Err($crate::service::error::ApiError::new(&format!($fmt $(, $($arg) , *)?), axum::http::StatusCode::BAD_REQUEST).into())
+    ( $fmt:literal $(, $($arg:tt)*)?) => {
+        return Err($crate::service::error::ApiError::new(&format!($fmt $(, $($arg)*)?), axum::http::StatusCode::BAD_REQUEST).into())
     };
 }
 
 #[macro_export]
 macro_rules! api_error {
-    ( $fmt:literal $(, $($arg:expr) , *)?) => {
-        $crate::service::error::ApiError::new(&format!($fmt $(, $($arg) , *)?), axum::http::StatusCode::BAD_REQUEST)
+    ( $fmt:literal $(, $($arg:tt)*)?) => {
+        $crate::service::error::ApiError::new(&format!($fmt $(, $($arg)*)?), axum::http::StatusCode::BAD_REQUEST)
     };
 }

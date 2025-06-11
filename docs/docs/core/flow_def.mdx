@@ -1,7 +1,6 @@
 ---
 title: Flow Definition
 description: Define a CocoIndex flow, by specifying source, transformations and storages, and connect input/output data of them.
-toc_max_heading_level: 4
 ---
 
 import Tabs from '@theme/Tabs';
@@ -146,8 +145,9 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 
 :::info
 
-In live update mode, for each refresh, CocoIndex will traverse the data source to figure out the changes,
+In live update mode, for each refresh, CocoIndex will list rows in the data source to figure out the changes based on metadata such as last modified time,
 and only perform transformations on changed source keys.
+If nothing changed during the last refresh cycle, only list operations will be performed, which is usually cheap for most data sources.
 
 :::
 
@@ -311,12 +311,44 @@ Following metrics are supported:
 
 ## Miscellaneous
 
+### Getting App Namespace
+
+You can use the [`app_namespace` setting](settings#app-namespace) or `COCOINDEX_APP_NAMESPACE` environment variable to specify the app namespace,
+to organize flows across different environments (e.g., dev, staging, production), team members, etc.
+
+In the code, You can call `flow.get_app_namespace()` to get the app namespace, and use it to name certain backends. It takes the following arguments:
+
+*   `trailing_delimiter` (optional): a string to append to the app namespace when it's not empty.
+
+e.g. when the current app namespace is `Staging`, `flow.get_app_namespace(trailing_delimiter='.')` will return `Staging.`.
+
+For example,
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+doc_embeddings.export(
+    "doc_embeddings",
+    cocoindex.storages.Qdrant(
+        collection_name=cocoindex.get_app_namespace(trailing_delimiter='__') + "doc_embeddings",
+        ...
+    ),
+    ...
+)
+```
+
+</TabItem>
+</Tabs>
+
+It will use `Staging__doc_embeddings` as the collection name if the current app namespace is `Staging`, and use `doc_embeddings` if the app namespace is empty.
+
 ### Target Declarations
 
 Most time a target storage is created by calling `export()` method on a collector, and this `export()` call comes with configurations needed for the target storage, e.g. options for storage indexes.
 Occasionally, you may need to specify some configurations for target storage out of the context of any specific data collector.
 
-For example, for graph database targets like `Neo4j`, you may have a data collector to export data to Neo4j relationships, which will create nodes referenced by various relationships in turn.
+For example, for graph database targets like `Neo4j` and `Kuzu`, you may have a data collector to export data to relationships, which will create nodes referenced by various relationships in turn.
 These nodes don't directly come from any specific data collector (consider relationships from different data collectors may share the same nodes).
 To specify configurations for these nodes, you can *declare* spec for related node labels.
 
