@@ -244,18 +244,13 @@ mod tests {
     fn assert_roundtrip_conversion(original_value: &value::Value, value_type: &schema::ValueType) {
         Python::with_gil(|py| {
             // Convert Rust value to Python object using value_to_py_object
-            let py_object = value_to_py_object(py, original_value).unwrap_or_else(|e| {
-                panic!("Failed to convert Rust value to Python object: {:?}", e)
-            });
+            let py_object = value_to_py_object(py, original_value)
+                .expect("Failed to convert Rust value to Python object");
 
             println!("Python object: {:?}", py_object);
             let roundtripped_value =
-                value_from_py_object(value_type, &py_object).unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to convert Python object back to Rust value: {:?}",
-                        e
-                    )
-                });
+                value_from_py_object(value_type, &py_object)
+                    .expect("Failed to convert Python object back to Rust value");
 
             println!("Roundtripped value: {:?}", roundtripped_value);
             assert_eq!(original_value, &roundtripped_value, "Value mismatch after roundtrip");

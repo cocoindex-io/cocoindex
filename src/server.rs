@@ -8,7 +8,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug)]
 pub struct ServerSettings {
     pub address: String,
     #[serde(default)]
