@@ -27,15 +27,16 @@ jobs:
           run: cargo test --verbose
 
         - uses: actions/setup-python@v5
+          id: setup_python
           with:
             python-version: ${{ matrix.python-version }}
             cache: 'pip'
         - uses: actions/cache@v4
           with:
             path: .venv/lib
-            key: ${{ runner.os }}-pyenvlib-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+            key: ${{ runner.os }}-pyenvlib-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
             restore-keys: |
-              ${{ runner.os }}-pyenvlib-${{ matrix.python-version }}-
+              ${{ runner.os }}-pyenvlib-${{ steps.setup_python.outputs.python-version }}-
         - name: Setup venv
           run: |
             python -m venv .venv
