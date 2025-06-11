@@ -127,8 +127,7 @@ def make_engine_value_decoder(
         return lambda value: uuid.UUID(bytes=value)
 
     if src_type_kind == "Vector":
-        elem_coco_type_info = analyze_type_info(dst_type_info.elem_type)
-        dtype_info = DtypeRegistry.get_by_kind(elem_coco_type_info.kind)
+        dtype_info = DtypeRegistry.get_by_dtype(dst_type_info.np_number_type)
 
         def decode_vector(value: Any) -> Any | None:
             if value is None:
