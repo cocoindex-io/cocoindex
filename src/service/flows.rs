@@ -194,7 +194,7 @@ pub async fn evaluate_data(
             enable_cache: true,
             evaluation_only: true,
         },
-        &lib_context.builtin_db_pool,
+        lib_context.require_builtin_db_pool()?,
     )
     .await?
     .ok_or_else(|| {
@@ -217,7 +217,7 @@ pub async fn update(
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let mut live_updater = execution::FlowLiveUpdater::start(
         flow_ctx.clone(),
-        &lib_context.builtin_db_pool,
+        lib_context.require_builtin_db_pool()?,
         execution::FlowLiveUpdaterOptions {
             live_mode: false,
             ..Default::default()
@@ -237,7 +237,7 @@ pub async fn get_row_indexing_status(
     let source_row_key_ctx = SourceRowKeyContextHolder::create(&flow_ctx, query).await?;
     let indexing_status = indexing_status::get_source_row_indexing_status(
         &source_row_key_ctx.as_context(),
-        &lib_context.builtin_db_pool,
+        lib_context.require_builtin_db_pool()?,
     )
     .await?;
     Ok(Json(indexing_status))

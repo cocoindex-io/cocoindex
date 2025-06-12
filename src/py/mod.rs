@@ -143,9 +143,10 @@ impl FlowLiveUpdater {
     ) -> PyResult<Bound<'py, PyAny>> {
         let flow = flow.0.clone();
         future_into_py(py, async move {
+            let lib_context = get_lib_context().into_py_result()?;
             let live_updater = execution::FlowLiveUpdater::start(
                 flow,
-                &get_lib_context().into_py_result()?.builtin_db_pool,
+                lib_context.require_builtin_db_pool().into_py_result()?,
                 options.into_inner(),
             )
             .await
@@ -200,11 +201,12 @@ impl Flow {
             get_runtime()
                 .block_on(async {
                     let exec_plan = self.0.flow.get_execution_plan().await?;
+                    let lib_context = get_lib_context()?;
                     execution::dumper::evaluate_and_dump(
                         &exec_plan,
                         &self.0.flow.data_schema,
                         options.into_inner(),
-                        &get_lib_context()?.builtin_db_pool,
+                        lib_context.require_builtin_db_pool()?,
                     )
                     .await
                 })
@@ -392,7 +394,7 @@ impl SetupStatus {
 fn sync_setup(py: Python<'_>) -> PyResult<SetupStatus> {
     let lib_context = get_lib_context().into_py_result()?;
     let flows = lib_context.flows.lock().unwrap();
-    let all_setup_states = lib_context.all_setup_states.read().unwrap();
+    let all_setup_states = lib_context.require_all_setup_states().into_py_result()?.read().unwrap();
     py.allow_threads(|| {
         get_runtime()
             .block_on(async {
@@ -406,7 +408,7 @@ fn sync_setup(py: Python<'_>) -> PyResult<SetupStatus> {
 #[pyfunction]
 fn drop_setup(py: Python<'_>, flow_names: Vec<String>) -> PyResult<SetupStatus> {
     let lib_context = get_lib_context().into_py_result()?;
-    let all_setup_states = lib_context.all_setup_states.read().unwrap();
+    let all_setup_states = lib_context.require_all_setup_states().into_py_result()?.read().unwrap();
     py.allow_threads(|| {
         get_runtime()
             .block_on(async {
@@ -420,7 +422,7 @@ fn drop_setup(py: Python<'_>, flow_names: Vec<String>) -> PyResult<SetupStatus> 
 #[pyfunction]
 fn flow_names_with_setup() -> PyResult<Vec<String>> {
     let lib_context = get_lib_context().into_py_result()?;
-    let all_setup_states = lib_context.all_setup_states.read().unwrap();
+    let all_setup_states = lib_context.require_all_setup_states().into_py_result()?.read().unwrap();
     let flow_names = all_setup_states.flows.keys().cloned().collect();
     Ok(flow_names)
 }
@@ -430,10 +432,11 @@ fn apply_setup_changes(py: Python<'_>, setup_status: &SetupStatus) -> PyResult<(
     py.allow_threads(|| {
         get_runtime()
             .block_on(async {
+                let lib_context = get_lib_context()?;
                 setup::apply_changes(
                     &mut std::io::stdout(),
                     &setup_status.0,
-                    &get_lib_context()?.builtin_db_pool,
+                    lib_context.require_builtin_db_pool()?,
                 )
                 .await
             })

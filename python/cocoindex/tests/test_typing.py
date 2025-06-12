@@ -48,6 +48,7 @@ def test_ndarray_float32_no_dim():
         elem_type=Float32,
         key_type=None,
         struct_type=None,
+        np_number_type=np.float32,
         attrs=None,
         nullable=False,
     )
@@ -62,6 +63,7 @@ def test_vector_float32_no_dim():
         elem_type=Float32,
         key_type=None,
         struct_type=None,
+        np_number_type=np.float32,
         attrs=None,
         nullable=False,
     )
@@ -76,6 +78,7 @@ def test_ndarray_float64_with_dim():
         elem_type=Float64,
         key_type=None,
         struct_type=None,
+        np_number_type=np.float64,
         attrs=None,
         nullable=False,
     )
@@ -90,6 +93,7 @@ def test_vector_float32_with_dim():
         elem_type=Float32,
         key_type=None,
         struct_type=None,
+        np_number_type=np.float32,
         attrs=None,
         nullable=False,
     )
@@ -109,7 +113,7 @@ def test_ndarray_int32_with_dim():
     result = analyze_type_info(typ)
     assert result.kind == "Vector"
     assert result.vector_info == VectorInfo(dim=10)
-    assert get_args(result.elem_type) == (int, TypeKind("Int32"))
+    assert get_args(result.elem_type) == (int, TypeKind("Int64"))
     assert not result.nullable
 
 
@@ -118,7 +122,7 @@ def test_ndarray_uint8_no_dim():
     result = analyze_type_info(typ)
     assert result.kind == "Vector"
     assert result.vector_info == VectorInfo(dim=None)
-    assert get_args(result.elem_type) == (int, TypeKind("UInt8"))
+    assert get_args(result.elem_type) == (int, TypeKind("Int64"))
     assert not result.nullable
 
 
@@ -131,6 +135,7 @@ def test_nullable_ndarray():
         elem_type=Float32,
         key_type=None,
         struct_type=None,
+        np_number_type=np.float32,
         attrs=None,
         nullable=True,
     )
@@ -177,6 +182,7 @@ def test_list_of_primitives():
         elem_type=str,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -191,6 +197,7 @@ def test_list_of_structs():
         elem_type=SimpleDataclass,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -205,6 +212,7 @@ def test_sequence_of_int():
         elem_type=int,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -219,6 +227,7 @@ def test_list_with_vector_info():
         elem_type=int,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -233,6 +242,7 @@ def test_dict_str_int():
         elem_type=(str, int),
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -247,6 +257,7 @@ def test_mapping_str_dataclass():
         elem_type=(str, SimpleDataclass),
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -261,6 +272,7 @@ def test_dataclass():
         elem_type=None,
         key_type=None,
         struct_type=SimpleDataclass,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -275,6 +287,7 @@ def test_named_tuple():
         elem_type=None,
         key_type=None,
         struct_type=SimpleNamedTuple,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -289,6 +302,7 @@ def test_tuple_key_value():
         elem_type=None,
         key_type=str,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -303,6 +317,7 @@ def test_str():
         elem_type=None,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -317,6 +332,7 @@ def test_bool():
         elem_type=None,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -331,6 +347,7 @@ def test_bytes():
         elem_type=None,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -345,6 +362,7 @@ def test_uuid():
         elem_type=None,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -359,6 +377,7 @@ def test_date():
         elem_type=None,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -373,6 +392,7 @@ def test_time():
         elem_type=None,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -387,6 +407,7 @@ def test_timedelta():
         elem_type=None,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -401,6 +422,7 @@ def test_float():
         elem_type=None,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -415,6 +437,7 @@ def test_int():
         elem_type=None,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -429,6 +452,7 @@ def test_type_with_attributes():
         elem_type=None,
         key_type=None,
         struct_type=None,
+        np_number_type=None,
         attrs={"key": "value"},
         nullable=False,
     )

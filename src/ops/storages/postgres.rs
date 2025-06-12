@@ -605,7 +605,7 @@ async fn get_db_pool(
         .transpose()?;
     let db_pool = match db_conn_spec {
         Some(db_conn_spec) => lib_context.db_pools.get_pool(&db_conn_spec).await?,
-        None => lib_context.builtin_db_pool.clone(),
+        None => lib_context.require_builtin_db_pool()?.clone(),
     };
     Ok(db_pool)
 }

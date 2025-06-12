@@ -62,18 +62,22 @@ def _load_field(
 class Settings:
     """Settings for the cocoindex library."""
 
-    database: DatabaseConnectionSpec
+    database: DatabaseConnectionSpec | None = None
     app_namespace: str = ""
 
     @classmethod
     def from_env(cls) -> Self:
         """Load settings from environment variables."""
 
-        db_kwargs: dict[str, str] = dict()
-        _load_field(db_kwargs, "url", "COCOINDEX_DATABASE_URL", required=True)
-        _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
-        _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
-        database = DatabaseConnectionSpec(**db_kwargs)
+        database_url = os.getenv("COCOINDEX_DATABASE_URL")
+        if database_url is not None:
+            db_kwargs: dict[str, str] = dict()
+            _load_field(db_kwargs, "url", "COCOINDEX_DATABASE_URL", required=True)
+            _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
+            _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
+            database = DatabaseConnectionSpec(**db_kwargs)
+        else:
+            database = None
 
         app_namespace = os.getenv("COCOINDEX_APP_NAMESPACE", "")
 

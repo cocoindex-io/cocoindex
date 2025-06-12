@@ -111,19 +111,24 @@ class DtypeInfo:
 
 
 class DtypeRegistry:
+    """
+    Registry for NumPy dtypes used in CocoIndex.
+    Provides mappings from NumPy dtypes to CocoIndex's type representation.
+    """
+
     _mappings: dict[type, DtypeInfo] = {
         np.float32: DtypeInfo(np.float32, "Float32", float),
         np.float64: DtypeInfo(np.float64, "Float64", float),
-        np.int32: DtypeInfo(np.int32, "Int32", int),
+        np.int32: DtypeInfo(np.int32, "Int64", int),
         np.int64: DtypeInfo(np.int64, "Int64", int),
-        np.uint8: DtypeInfo(np.uint8, "UInt8", int),
-        np.uint16: DtypeInfo(np.uint16, "UInt16", int),
-        np.uint32: DtypeInfo(np.uint32, "UInt32", int),
-        np.uint64: DtypeInfo(np.uint64, "UInt64", int),
+        np.uint8: DtypeInfo(np.uint8, "Int64", int),
+        np.uint16: DtypeInfo(np.uint16, "Int64", int),
+        np.uint32: DtypeInfo(np.uint32, "Int64", int),
     }
 
     @classmethod
     def get_by_dtype(cls, dtype: Any) -> DtypeInfo | None:
+        """Get DtypeInfo by NumPy dtype."""
         if dtype is Any:
             raise TypeError(
                 "NDArray for Vector must use a concrete numpy dtype, got `Any`."
@@ -131,14 +136,8 @@ class DtypeRegistry:
         return cls._mappings.get(dtype)
 
     @staticmethod
-    def get_by_kind(kind: str) -> DtypeInfo | None:
-        return next(
-            (info for info in DtypeRegistry._mappings.values() if info.kind == kind),
-            None,
-        )
-
-    @staticmethod
     def supported_dtypes() -> KeysView[type]:
+        """Get a list of supported NumPy dtypes."""
         return DtypeRegistry._mappings.keys()
 
 
@@ -155,6 +154,9 @@ class AnalyzedTypeInfo:
 
     key_type: type | None  # For element of KTable
     struct_type: type | None  # For Struct, a dataclass or namedtuple
+    np_number_type: (
+        type | None
+    )  # NumPy dtype for the element type, if represented by numpy.ndarray or a NumPy scalar
 
     attrs: dict[str, Any] | None
     nullable: bool = False
@@ -214,6 +216,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     elem_type: ElementType | None = None
     union_variant_types: typing.List[ElementType] = None
     key_type: type | None = None
+    np_number_type: type | None = None
     if _is_struct_type(t):
         struct_type = t
 
@@ -247,11 +250,11 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         if not dtype_args:
             raise ValueError("Invalid dtype specification for NDArray")
 
-        numpy_dtype = dtype_args[0]
-        dtype_info = DtypeRegistry.get_by_dtype(numpy_dtype)
+        np_number_type = dtype_args[0]
+        dtype_info = DtypeRegistry.get_by_dtype(np_number_type)
         if dtype_info is None:
             raise ValueError(
-                f"Unsupported numpy dtype for NDArray: {numpy_dtype}. "
+                f"Unsupported numpy dtype for NDArray: {np_number_type}. "
                 f"Supported dtypes: {DtypeRegistry.supported_dtypes()}"
             )
         elem_type = dtype_info.annotated_type
@@ -265,6 +268,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         dtype_info = DtypeRegistry.get_by_dtype(t)
         if dtype_info is not None:
             kind = dtype_info.kind
+            np_number_type = dtype_info.numpy_dtype
         elif t is bytes:
             kind = "Bytes"
         elif t is str:
@@ -295,6 +299,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         union_variant_types=union_variant_types,
         key_type=key_type,
         struct_type=struct_type,
+        np_number_type=np_number_type,
         attrs=attrs,
         nullable=nullable,
     )
@@ -347,9 +352,8 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
             raise ValueError("Vector type must have a vector info")
         if type_info.elem_type is None:
             raise ValueError("Vector type must have an element type")
-        encoded_type["element_type"] = _encode_type(
-            analyze_type_info(type_info.elem_type)
-        )
+        elem_type_info = analyze_type_info(type_info.elem_type)
+        encoded_type["element_type"] = _encode_type(elem_type_info)
         encoded_type["dimension"] = type_info.vector_info.dim
 
     elif type_info.kind == 'Union':

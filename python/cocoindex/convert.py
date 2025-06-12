@@ -127,8 +127,7 @@ def make_engine_value_decoder(
         return lambda value: uuid.UUID(bytes=value)
 
     if src_type_kind == "Vector":
-        elem_coco_type_info = analyze_type_info(dst_type_info.elem_type)
-        dtype_info = DtypeRegistry.get_by_kind(elem_coco_type_info.kind)
+        dtype_info = DtypeRegistry.get_by_dtype(dst_type_info.np_number_type)
 
         def decode_vector(value: Any) -> Any | None:
             if value is None:
@@ -237,7 +236,12 @@ def dump_engine_object(v: Any) -> Any:
         nanos = int((total_secs - secs) * 1e9)
         return {"secs": secs, "nanos": nanos}
     elif hasattr(v, "__dict__"):
-        s = {k: dump_engine_object(v) for k, v in v.__dict__.items()}
+        s = {}
+        for k, val in v.__dict__.items():
+            if val is None:
+                # Skip None values
+                continue
+            s[k] = dump_engine_object(val)
         if hasattr(v, "kind") and "kind" not in s:
             s["kind"] = v.kind
         return s
