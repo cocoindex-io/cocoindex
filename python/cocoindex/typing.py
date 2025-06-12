@@ -119,11 +119,7 @@ class DtypeRegistry:
     _mappings: dict[type, DtypeInfo] = {
         np.float32: DtypeInfo(np.float32, "Float32", float),
         np.float64: DtypeInfo(np.float64, "Float64", float),
-        np.int32: DtypeInfo(np.int32, "Int64", int),
         np.int64: DtypeInfo(np.int64, "Int64", int),
-        np.uint8: DtypeInfo(np.uint8, "Int64", int),
-        np.uint16: DtypeInfo(np.uint16, "Int64", int),
-        np.uint32: DtypeInfo(np.uint32, "Int64", int),
     }
 
     @classmethod
