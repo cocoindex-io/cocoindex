@@ -196,6 +196,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
 
             kind = 'Union'
             union_variant_types = non_none_types
+            break
         else:
             break
 
