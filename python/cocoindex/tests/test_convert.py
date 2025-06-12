@@ -466,6 +466,14 @@ def test_field_position_cases(
     assert decoder(engine_val) == PythonOrder(**expected_dict)
 
 
+def test_roundtrip_union1() -> None:
+    t_in = int | str | float
+    t_out = float
+    value = 10.4
+
+    validate_full_roundtrip(value, t_out, t_in)
+
+
 def test_roundtrip_ltable() -> None:
     t = list[Order]
     value = [Order("O1", "item1", 10.0), Order("O2", "item2", 20.0)]
