@@ -263,7 +263,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     elif base_type is collections.abc.Mapping or base_type is dict:
         args = typing.get_args(t)
         elem_type = (args[0], args[1])
-        kind = 'KTable'
+        kind = "KTable"
     elif kind is None:
         dtype_info = DtypeRegistry.get_by_dtype(t)
         if dtype_info is not None:
