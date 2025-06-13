@@ -48,7 +48,7 @@ def test_ndarray_float32_no_dim():
         elem_type=Float32,
         key_type=None,
         struct_type=None,
-        np_number_type=np.float32,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -63,7 +63,7 @@ def test_vector_float32_no_dim():
         elem_type=Float32,
         key_type=None,
         struct_type=None,
-        np_number_type=np.float32,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -78,7 +78,7 @@ def test_ndarray_float64_with_dim():
         elem_type=Float64,
         key_type=None,
         struct_type=None,
-        np_number_type=np.float64,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -93,7 +93,7 @@ def test_vector_float32_with_dim():
         elem_type=Float32,
         key_type=None,
         struct_type=None,
-        np_number_type=np.float32,
+        np_number_type=None,
         attrs=None,
         nullable=False,
     )
@@ -117,10 +117,27 @@ def test_nullable_ndarray():
         elem_type=Float32,
         key_type=None,
         struct_type=None,
-        np_number_type=np.float32,
+        np_number_type=None,
         attrs=None,
         nullable=True,
     )
+
+
+def test_scalar_numpy_types():
+    for np_type, expected_kind in [
+        (np.int64, "Int64"),
+        (np.float32, "Float32"),
+        (np.float64, "Float64"),
+    ]:
+        type_info = analyze_type_info(np_type)
+        assert (
+            type_info.kind == expected_kind
+        ), f"Expected {expected_kind} for {np_type}, got {type_info.kind}"
+        assert (
+            type_info.np_number_type == np_type
+        ), f"Expected {np_type}, got {type_info.np_number_type}"
+        assert type_info.elem_type is None
+        assert type_info.vector_info is None
 
 
 def test_vector_str():
@@ -485,6 +502,19 @@ def test_encode_enriched_type_nullable():
     result = encode_enriched_type(typ)
     assert result["type"]["kind"] == "Str"
     assert result["nullable"] is True
+
+
+def test_encode_scalar_numpy_types_schema():
+    for np_type, expected_kind in [
+        (np.int64, "Int64"),
+        (np.float32, "Float32"),
+        (np.float64, "Float64"),
+    ]:
+        schema = encode_enriched_type(np_type)
+        assert (
+            schema["type"]["kind"] == expected_kind
+        ), f"Expected {expected_kind} for {np_type}, got {schema['type']['kind']}"
+        assert not schema.get("nullable", False)
 
 
 def test_invalid_struct_kind():

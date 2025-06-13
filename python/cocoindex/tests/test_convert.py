@@ -115,6 +115,19 @@ def test_encode_engine_value_date_time_types():
     assert encode_engine_value(dt) == dt
 
 
+def test_encode_scalar_numpy_values():
+    """Test encoding scalar NumPy values to engine-compatible values."""
+    test_cases = [
+        (np.int64(42), 42),
+        (np.float32(3.14), pytest.approx(3.14)),
+        (np.float64(2.718), pytest.approx(2.718)),
+    ]
+    for np_value, expected in test_cases:
+        encoded = encode_engine_value(np_value)
+        assert encoded == expected
+        assert isinstance(encoded, (int, float))
+
+
 def test_encode_engine_value_struct():
     order = Order(order_id="O123", name="mixed nuts", price=25.0)
     assert encode_engine_value(order) == ["O123", "mixed nuts", 25.0, "default_extra"]
@@ -195,6 +208,19 @@ def test_make_engine_value_decoder_basic_types():
     ]:
         decoder = build_engine_value_decoder(engine_type_in_py)
         assert decoder(value) == value
+
+
+def test_decode_scalar_numpy_values():
+    test_cases = [
+        ({"kind": "Int64"}, np.int64, 42, np.int64(42)),
+        ({"kind": "Float32"}, np.float32, 3.14, np.float32(3.14)),
+        ({"kind": "Float64"}, np.float64, 2.718, np.float64(2.718)),
+    ]
+    for src_type, dst_type, input_value, expected in test_cases:
+        decoder = make_engine_value_decoder(["field"], src_type, dst_type)
+        result = decoder(input_value)
+        assert isinstance(result, dst_type)
+        assert result == expected
 
 
 @pytest.mark.parametrize(

@@ -132,6 +132,13 @@ class DtypeRegistry:
         return cls._mappings.get(dtype)
 
     @staticmethod
+    def get_by_kind(kind: str) -> DtypeInfo | None:
+        return next(
+            (info for info in DtypeRegistry._mappings.values() if info.kind == kind),
+            None,
+        )
+
+    @staticmethod
     def supported_dtypes() -> KeysView[type]:
         """Get a list of supported NumPy dtypes."""
         return DtypeRegistry._mappings.keys()
@@ -193,6 +200,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     attrs: dict[str, Any] | None = None
     vector_info: VectorInfo | None = None
     kind: str | None = None
+    np_number_type: type | None = None
     for attr in annotations:
         if isinstance(attr, TypeAttr):
             if attrs is None:
@@ -202,11 +210,12 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             vector_info = attr
         elif isinstance(attr, TypeKind):
             kind = attr.kind
+            if dtype_info := DtypeRegistry.get_by_kind(attr.kind):
+                np_number_type = dtype_info.numpy_dtype
 
     struct_type: type | None = None
     elem_type: ElementType | None = None
     key_type: type | None = None
-    np_number_type: type | None = None
     if _is_struct_type(t):
         struct_type = t
 
@@ -240,11 +249,11 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         if not dtype_args:
             raise ValueError("Invalid dtype specification for NDArray")
 
-        np_number_type = dtype_args[0]
-        dtype_info = DtypeRegistry.get_by_dtype(np_number_type)
+        numpy_dtype = dtype_args[0]
+        dtype_info = DtypeRegistry.get_by_dtype(numpy_dtype)
         if dtype_info is None:
             raise ValueError(
-                f"Unsupported numpy dtype for NDArray: {np_number_type}. "
+                f"Unsupported numpy dtype for NDArray: {numpy_dtype}. "
                 f"Supported dtypes: {DtypeRegistry.supported_dtypes()}"
             )
         elem_type = dtype_info.annotated_type
