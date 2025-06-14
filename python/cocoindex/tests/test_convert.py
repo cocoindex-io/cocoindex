@@ -478,11 +478,10 @@ def test_field_position_cases(
 
 
 def test_roundtrip_union1() -> None:
-    t_in = int | str | float
-    t_out = float
+    t = int | str | float
     value = 10.4
 
-    validate_full_roundtrip(value, t_out, t_in)
+    validate_full_roundtrip(value, t)
 
 
 def test_roundtrip_ltable() -> None:
