@@ -206,13 +206,7 @@ fn handle_ndarray_from_py<'py>(
     match elem_type {
         &schema::BasicValueType::Float32 => try_convert!(f32, value::BasicValue::Float32),
         &schema::BasicValueType::Float64 => try_convert!(f64, value::BasicValue::Float64),
-        &schema::BasicValueType::Int64 => {
-            try_convert!(i32, |v| value::BasicValue::Int64(v as i64));
-            try_convert!(i64, value::BasicValue::Int64);
-            try_convert!(u8, |v| value::BasicValue::Int64(v as i64));
-            try_convert!(u16, |v| value::BasicValue::Int64(v as i64));
-            try_convert!(u32, |v| value::BasicValue::Int64(v as i64));
-        }
+        &schema::BasicValueType::Int64 => try_convert!(i64, value::BasicValue::Int64),
         _ => {}
     }
 

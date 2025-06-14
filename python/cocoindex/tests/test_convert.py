@@ -521,7 +521,7 @@ def test_roundtrip_ktable_struct_key() -> None:
     validate_full_roundtrip(value_nt, t_nt)
 
 
-IntVectorType = cocoindex.Vector[np.int32, Literal[5]]
+IntVectorType = cocoindex.Vector[np.int64, Literal[5]]
 
 
 def test_vector_as_vector() -> None:
@@ -619,37 +619,6 @@ def test_roundtrip_ndarray_vector():
     assert np.array_equal(decoded_nd_f64, value_nd_f64)
 
 
-def test_uint_support():
-    """Test encoding and decoding of unsigned integer vectors."""
-    value_uint8 = np.array([1, 2, 3, 4], dtype=np.uint8)
-    encoded = encode_engine_value(value_uint8)
-    assert np.array_equal(encoded, [1, 2, 3, 4])
-    decoder = make_engine_value_decoder(
-        [], {"kind": "Vector", "element_type": {"kind": "UInt8"}}, NDArray[np.uint8]
-    )
-    decoded = decoder(encoded)
-    assert np.array_equal(decoded, value_uint8)
-    assert decoded.dtype == np.uint8
-    value_uint16 = np.array([1, 2, 3, 4], dtype=np.uint16)
-    encoded = encode_engine_value(value_uint16)
-    assert np.array_equal(encoded, [1, 2, 3, 4])
-    decoder = make_engine_value_decoder(
-        [], {"kind": "Vector", "element_type": {"kind": "UInt16"}}, NDArray[np.uint16]
-    )
-    decoded = decoder(encoded)
-    assert np.array_equal(decoded, value_uint16)
-    assert decoded.dtype == np.uint16
-    value_uint32 = np.array([1, 2, 3], dtype=np.uint32)
-    encoded = encode_engine_value(value_uint32)
-    assert np.array_equal(encoded, [1, 2, 3])
-    decoder = make_engine_value_decoder(
-        [], {"kind": "Vector", "element_type": {"kind": "UInt32"}}, NDArray[np.uint32]
-    )
-    decoded = decoder(encoded)
-    assert np.array_equal(decoded, value_uint32)
-    assert decoded.dtype == np.uint32
-
-
 def test_ndarray_dimension_mismatch():
     """Test dimension enforcement for Vector with specified dimension."""
     value: Float32VectorType = np.array([1.0, 2.0], dtype=np.float32)
@@ -666,7 +635,7 @@ def test_list_vector_backward_compatibility():
     assert encoded == [1, 2, 3, 4, 5]
     decoded = build_engine_value_decoder(IntVectorType)(encoded)
     assert isinstance(decoded, np.ndarray)
-    assert decoded.dtype == np.int32
+    assert decoded.dtype == np.int64
     assert np.array_equal(decoded, np.array([1, 2, 3, 4, 5], dtype=np.int64))
     value_list: ListIntType = [1, 2, 3, 4, 5]
     encoded = encode_engine_value(value_list)
@@ -781,16 +750,20 @@ def test_full_roundtrip_vector_numeric_types() -> None:
         [1.0, 2.0, 3.0], dtype=np.float64
     )
     validate_full_roundtrip(value_f64, Vector[np.float64, Literal[3]])
-    value_i32: Vector[np.int32, Literal[3]] = np.array([1, 2, 3], dtype=np.int32)
-    validate_full_roundtrip(value_i32, Vector[np.int32, Literal[3]])
     value_i64: Vector[np.int64, Literal[3]] = np.array([1, 2, 3], dtype=np.int64)
     validate_full_roundtrip(value_i64, Vector[np.int64, Literal[3]])
+    value_i32: Vector[np.int32, Literal[3]] = np.array([1, 2, 3], dtype=np.int32)
+    with pytest.raises(ValueError, match="type unsupported yet"):
+        validate_full_roundtrip(value_i32, Vector[np.int32, Literal[3]])
     value_u8: Vector[np.uint8, Literal[3]] = np.array([1, 2, 3], dtype=np.uint8)
-    validate_full_roundtrip(value_u8, Vector[np.uint8, Literal[3]])
+    with pytest.raises(ValueError, match="type unsupported yet"):
+        validate_full_roundtrip(value_u8, Vector[np.uint8, Literal[3]])
     value_u16: Vector[np.uint16, Literal[3]] = np.array([1, 2, 3], dtype=np.uint16)
-    validate_full_roundtrip(value_u16, Vector[np.uint16, Literal[3]])
+    with pytest.raises(ValueError, match="type unsupported yet"):
+        validate_full_roundtrip(value_u16, Vector[np.uint16, Literal[3]])
     value_u32: Vector[np.uint32, Literal[3]] = np.array([1, 2, 3], dtype=np.uint32)
-    validate_full_roundtrip(value_u32, Vector[np.uint32, Literal[3]])
+    with pytest.raises(ValueError, match="type unsupported yet"):
+        validate_full_roundtrip(value_u32, Vector[np.uint32, Literal[3]])
     value_u64: Vector[np.uint64, Literal[3]] = np.array([1, 2, 3], dtype=np.uint64)
     with pytest.raises(ValueError, match="type unsupported yet"):
         validate_full_roundtrip(value_u64, Vector[np.uint64, Literal[3]])

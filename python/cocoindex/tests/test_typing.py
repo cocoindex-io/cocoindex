@@ -108,24 +108,6 @@ def test_ndarray_int64_no_dim():
     assert not result.nullable
 
 
-def test_ndarray_int32_with_dim():
-    typ = Annotated[NDArray[np.int32], VectorInfo(dim=10)]
-    result = analyze_type_info(typ)
-    assert result.kind == "Vector"
-    assert result.vector_info == VectorInfo(dim=10)
-    assert get_args(result.elem_type) == (int, TypeKind("Int64"))
-    assert not result.nullable
-
-
-def test_ndarray_uint8_no_dim():
-    typ = NDArray[np.uint8]
-    result = analyze_type_info(typ)
-    assert result.kind == "Vector"
-    assert result.vector_info == VectorInfo(dim=None)
-    assert get_args(result.elem_type) == (int, TypeKind("Int64"))
-    assert not result.nullable
-
-
 def test_nullable_ndarray():
     typ = NDArray[np.float32] | None
     result = analyze_type_info(typ)
