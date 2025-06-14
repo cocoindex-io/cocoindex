@@ -897,7 +897,12 @@ impl serde::Serialize for BasicValue {
             BasicValue::TimeDelta(v) => serializer.serialize_str(&v.to_string()),
             BasicValue::Json(v) => v.serialize(serializer),
             BasicValue::Vector(v) => v.serialize(serializer),
-            BasicValue::UnionVariant { value, .. } => value.serialize(serializer),
+            BasicValue::UnionVariant { tag_id, value } => {
+                let mut s = serializer.serialize_tuple(2)?;
+                s.serialize_element(tag_id)?;
+                s.serialize_element(value)?;
+                s.end()
+            }
         }
     }
 }
