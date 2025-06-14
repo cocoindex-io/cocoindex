@@ -7,6 +7,8 @@ import cocoindex
 from cocoindex.typing import (
     encode_enriched_type,
     Vector,
+    Float32,
+    Float64,
 )
 from cocoindex.convert import (
     encode_engine_value,
@@ -74,24 +76,35 @@ def build_engine_value_decoder(
 
 
 def validate_full_roundtrip(
-    value: Any, output_type: Any, input_type: Any | None = None
+    value: Any,
+    value_type: Any = None,
+    *other_decoded_values: tuple[Any, Any],
 ) -> None:
     """
     Validate the given value doesn't change after encoding, sending to engine (using output_type), receiving back and decoding (using input_type).
 
-    If `input_type` is not specified, uses `output_type` as the target.
+    `other_decoded_values` is a tuple of (value, type) pairs.
+    If provided, also validate the value can be decoded to the other types.
     """
     from cocoindex import _engine
 
     encoded_value = encode_engine_value(value)
-    encoded_output_type = encode_enriched_type(output_type)["type"]
+    value_type = value_type or type(value)
+    encoded_output_type = encode_enriched_type(value_type)["type"]
     value_from_engine = _engine.testutil.seder_roundtrip(
         encoded_value, encoded_output_type
     )
-    decoded_value = build_engine_value_decoder(input_type or output_type, output_type)(
+    decoded_value = build_engine_value_decoder(value_type, value_type)(
         value_from_engine
     )
     np.testing.assert_array_equal(decoded_value, value)
+
+    if other_decoded_values is not None:
+        for other_value, other_type in other_decoded_values:
+            other_decoded_value = build_engine_value_decoder(other_type, other_type)(
+                value_from_engine
+            )
+            np.testing.assert_array_equal(other_decoded_value, other_value)
 
 
 def test_encode_engine_value_basic_types():
@@ -185,16 +198,14 @@ def test_encode_engine_value_none():
     assert encode_engine_value(None) is None
 
 
-def test_make_engine_value_decoder_basic_types():
-    for engine_type_in_py, value in [
-        (int, 42),
-        (float, 3.14),
-        (str, "hello"),
-        (bool, True),
-        # (type(None), None),  # Removed unsupported NoneType
-    ]:
-        decoder = build_engine_value_decoder(engine_type_in_py)
-        assert decoder(value) == value
+def test_make_engine_value_decoder_basic_types() -> None:
+    validate_full_roundtrip(42, int)
+    validate_full_roundtrip(3.25, float, (3.25, Float64))
+    validate_full_roundtrip(3.25, Float64, (3.25, float))
+    validate_full_roundtrip(3.25, Float32)
+    validate_full_roundtrip("hello", str)
+    validate_full_roundtrip(True, bool)
+    validate_full_roundtrip(False, bool)
 
 
 @pytest.mark.parametrize(
