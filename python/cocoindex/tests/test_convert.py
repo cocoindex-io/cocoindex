@@ -495,6 +495,30 @@ def test_roundtrip_union_with_inactive_uuid() -> None:
     validate_full_roundtrip(value, t)
 
 
+#def test_roundtrip_union_datetime() -> None:
+#    t = str | uuid.UUID | float | int | datetime.datetime
+#    value = datetime.datetime.now()
+#    validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_union_date() -> None:
+    t = str | uuid.UUID | float | int | datetime.date
+    value = datetime.date.today()
+    validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_union_time() -> None:
+    t = str | uuid.UUID | float | int | datetime.time
+    value = datetime.time()
+    validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_union_timedelta() -> None:
+    t = str | uuid.UUID | float | int | datetime.timedelta
+    value = datetime.timedelta(hours=39, minutes=10, seconds=1)
+    validate_full_roundtrip(value, t)
+
+
 def test_roundtrip_ltable() -> None:
     t = list[Order]
     value = [Order("O1", "item1", 10.0), Order("O2", "item2", 20.0)]
