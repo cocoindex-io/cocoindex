@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 use crate::llm::{
-    new_llm_generation_client, LlmGenerateRequest, LlmGenerationClient, LlmSpec, OutputFormat,
+    new_llm_generation_client, LlmGenerateRequest, LlmGenerationClient, LlmGenerateResponse, LlmSpec, OutputFormat,
 };
 use crate::ops::sdk::*;
 use base::json_schema::build_json_schema;
@@ -83,7 +83,10 @@ impl SimpleFunctionExecutor for Executor {
             }),
         };
         let res = self.client.generate(req).await?;
-        let json_value: serde_json::Value = serde_json::from_str(res.text.as_str())?;
+        let json_value = match res {
+            LlmGenerateResponse::Json(val) => val,
+            LlmGenerateResponse::Text(text) => serde_json::from_str(&text)?,
+        };
         let value = self.value_extractor.extract_value(json_value)?;
         Ok(value)
     }
