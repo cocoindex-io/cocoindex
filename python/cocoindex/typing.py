@@ -146,7 +146,6 @@ class AnalyzedTypeInfo:
     kind: str
     vector_info: VectorInfo | None  # For Vector
     elem_type: ElementType | None  # For Vector and Table
-    union_variant_types: list[type] | None  # For Union
 
     key_type: type | None  # For element of KTable
     struct_type: type | None  # For Struct, a dataclass or namedtuple
@@ -156,6 +155,7 @@ class AnalyzedTypeInfo:
 
     attrs: dict[str, Any] | None
     nullable: bool = False
+    union_variant_types: list[type] | None = None  # For Union
 
 
 def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
