@@ -379,6 +379,10 @@ pub enum BasicValue {
     TimeDelta(chrono::Duration),
     Json(Arc<serde_json::Value>),
     Vector(Arc<[BasicValue]>),
+    UnionVariant {
+        tag_id: usize,
+        value: Box<BasicValue>,
+    },
 }
 
 impl From<Bytes> for BasicValue {
@@ -496,7 +500,8 @@ impl BasicValue {
             | BasicValue::OffsetDateTime(_)
             | BasicValue::TimeDelta(_)
             | BasicValue::Json(_)
-            | BasicValue::Vector(_) => api_bail!("invalid key value type"),
+            | BasicValue::Vector(_)
+            | BasicValue::UnionVariant { .. } => api_bail!("invalid key value type"),
         };
         Ok(result)
     }
@@ -517,7 +522,8 @@ impl BasicValue {
             | BasicValue::OffsetDateTime(_)
             | BasicValue::TimeDelta(_)
             | BasicValue::Json(_)
-            | BasicValue::Vector(_) => api_bail!("invalid key value type"),
+            | BasicValue::Vector(_)
+            | BasicValue::UnionVariant { .. } => api_bail!("invalid key value type"),
         };
         Ok(result)
     }
@@ -539,6 +545,7 @@ impl BasicValue {
             BasicValue::TimeDelta(_) => "timedelta",
             BasicValue::Json(_) => "json",
             BasicValue::Vector(_) => "vector",
+            BasicValue::UnionVariant { .. } => "union",
         }
     }
 }
@@ -890,6 +897,12 @@ impl serde::Serialize for BasicValue {
             BasicValue::TimeDelta(v) => serializer.serialize_str(&v.to_string()),
             BasicValue::Json(v) => v.serialize(serializer),
             BasicValue::Vector(v) => v.serialize(serializer),
+            BasicValue::UnionVariant { tag_id, value } => {
+                let mut s = serializer.serialize_tuple(2)?;
+                s.serialize_element(tag_id)?;
+                s.serialize_element(value)?;
+                s.end()
+            }
         }
     }
 }
@@ -953,6 +966,33 @@ impl BasicValue {
                     .map(|v| BasicValue::from_json(v, element_type))
                     .collect::<Result<Vec<_>>>()?;
                 BasicValue::Vector(Arc::from(vec))
+            }
+            (v, BasicValueType::Union(typ)) => {
+                let obj: Vec<serde_json::Value> = serde_json::from_value(v) 
+                    .map_err(|_| anyhow::anyhow!("Invalid JSON value for union, expect array"))?;
+
+                if obj.len() != 2 {
+                    anyhow::bail!("Invalid union tuple: expect 2 values, received {}", obj.len());
+                }
+
+                let mut obj_iter = obj.into_iter();
+
+                // Take first element
+                let tag_id = obj_iter
+                    .next()
+                    .and_then(|value| value.as_u64().map(|num_u64| num_u64 as usize))
+                    .unwrap();
+
+                // Take second element
+                let value = obj_iter.next().unwrap();
+
+                let cur_type = typ.types.get(tag_id)
+                    .ok_or_else(|| anyhow::anyhow!("No type in `tag_id` \"{tag_id}\" found"))?;
+
+                BasicValue::UnionVariant {
+                    tag_id,
+                    value: Box::new(BasicValue::from_json(value, cur_type)?),
+                }
             }
             (v, t) => {
                 anyhow::bail!("Value and type not matched.\nTarget type {t:?}\nJSON value: {v}\n")

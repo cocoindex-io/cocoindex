@@ -157,6 +157,9 @@ def make_engine_value_decoder(
 
         return decode_vector
 
+    if src_type_kind == "Union":
+        return lambda value: value[1]
+
     return lambda value: value
 
 

@@ -10,6 +10,11 @@ pub struct VectorTypeSchema {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnionTypeSchema {
+    pub types: Vec<BasicValueType>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
 pub enum BasicValueType {
     /// A sequence of bytes in binary.
@@ -56,6 +61,9 @@ pub enum BasicValueType {
 
     /// A vector of values (usually numbers, for embeddings).
     Vector(VectorTypeSchema),
+
+    /// A union
+    Union(UnionTypeSchema),
 }
 
 impl std::fmt::Display for BasicValueType {
@@ -79,6 +87,17 @@ impl std::fmt::Display for BasicValueType {
                 write!(f, "Vector[{}", s.element_type)?;
                 if let Some(dimension) = s.dimension {
                     write!(f, ", {}", dimension)?;
+                }
+                write!(f, "]")
+            }
+            BasicValueType::Union(s) => {
+                write!(f, "Union[")?;
+                for (i, typ) in s.types.iter().enumerate() {
+                    if i > 0 {
+                        // Add type delimiter
+                        write!(f, " | ")?;
+                    }
+                    write!(f, "{}", typ)?;
                 }
                 write!(f, "]")
             }
