@@ -29,6 +29,8 @@ def encode_engine_value(value: Any) -> Any:
         ]
     if is_namedtuple_type(type(value)):
         return [encode_engine_value(getattr(value, name)) for name in value._fields]
+    if isinstance(value, np.number):
+        return value.item()
     if isinstance(value, np.ndarray):
         return value
     if isinstance(value, (list, tuple)):
@@ -86,6 +88,20 @@ def make_engine_value_decoder(
             field_path, src_type["fields"], dst_type_info.struct_type
         )
 
+    if dst_type_info.np_number_type is not None:
+        numpy_type = dst_type_info.np_number_type
+
+        def decode_numpy_scalar(value: Any) -> Any | None:
+            if value is None:
+                if dst_type_info.nullable:
+                    return None
+                raise ValueError(
+                    f"Received null for non-nullable scalar `{''.join(field_path)}`"
+                )
+            return numpy_type(value)
+
+        return decode_numpy_scalar
+
     if src_type_kind in TABLE_TYPES:
         field_path.append("[*]")
         elem_type_info = analyze_type_info(dst_type_info.elem_type)
@@ -127,7 +143,8 @@ def make_engine_value_decoder(
         return lambda value: uuid.UUID(bytes=value)
 
     if src_type_kind == "Vector":
-        dtype_info = DtypeRegistry.get_by_dtype(dst_type_info.np_number_type)
+        elem_type_info = analyze_type_info(dst_type_info.elem_type)
+        dtype_info = DtypeRegistry.get_by_dtype(elem_type_info.np_number_type)
 
         def decode_vector(value: Any) -> Any | None:
             if value is None:
