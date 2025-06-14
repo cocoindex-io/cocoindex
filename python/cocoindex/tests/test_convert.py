@@ -477,10 +477,21 @@ def test_field_position_cases(
     assert decoder(engine_val) == PythonOrder(**expected_dict)
 
 
-def test_roundtrip_union1() -> None:
+def test_roundtrip_union_simple() -> None:
     t = int | str | float
     value = 10.4
+    validate_full_roundtrip(value, t)
 
+
+def test_roundtrip_union_with_active_uuid() -> None:
+    t = str | uuid.UUID | int
+    value = uuid.uuid4().bytes
+    validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_union_with_inactive_uuid() -> None:
+    t = str | uuid.UUID | int
+    value = "5a9f8f6a-318f-4f1f-929d-566d7444a62d" # it's a string
     validate_full_roundtrip(value, t)
 
 
