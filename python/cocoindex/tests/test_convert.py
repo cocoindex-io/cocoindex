@@ -510,10 +510,10 @@ def test_roundtrip_union_with_inactive_uuid() -> None:
     validate_full_roundtrip(value, t)
 
 
-#def test_roundtrip_union_datetime() -> None:
-#    t = str | uuid.UUID | float | int | datetime.datetime
-#    value = datetime.datetime.now()
-#    validate_full_roundtrip(value, t)
+def test_roundtrip_union_offset_datetime() -> None:
+    t = str | uuid.UUID | float | int | datetime.datetime
+    value = datetime.datetime.now(datetime.UTC)
+    validate_full_roundtrip(value, t)
 
 
 def test_roundtrip_union_date() -> None:
