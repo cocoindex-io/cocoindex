@@ -198,7 +198,7 @@ def test_encode_engine_value_none() -> None:
     assert encode_engine_value(None) is None
 
 
-def test_make_engine_value_decoder_basic_types() -> None:
+def test_roundtrip_basic_types() -> None:
     validate_full_roundtrip(42, int)
     validate_full_roundtrip(3.25, float, (3.25, Float64))
     validate_full_roundtrip(3.25, Float64, (3.25, float))
@@ -206,6 +206,11 @@ def test_make_engine_value_decoder_basic_types() -> None:
     validate_full_roundtrip("hello", str)
     validate_full_roundtrip(True, bool)
     validate_full_roundtrip(False, bool)
+    validate_full_roundtrip(datetime.date(2025, 1, 1), datetime.date)
+    validate_full_roundtrip(datetime.datetime.now(), cocoindex.LocalDateTime)
+    validate_full_roundtrip(
+        datetime.datetime.now(datetime.UTC), cocoindex.OffsetDateTime
+    )
 
 
 @pytest.mark.parametrize(
