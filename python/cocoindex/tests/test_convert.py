@@ -492,6 +492,48 @@ def test_field_position_cases(
     assert decoder(engine_val) == PythonOrder(**expected_dict)
 
 
+def test_roundtrip_union_simple() -> None:
+    t = int | str | float
+    value = 10.4
+    validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_union_with_active_uuid() -> None:
+    t = str | uuid.UUID | int
+    value = uuid.uuid4().bytes
+    validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_union_with_inactive_uuid() -> None:
+    t = str | uuid.UUID | int
+    value = "5a9f8f6a-318f-4f1f-929d-566d7444a62d" # it's a string
+    validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_union_offset_datetime() -> None:
+    t = str | uuid.UUID | float | int | datetime.datetime
+    value = datetime.datetime.now(datetime.UTC)
+    validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_union_date() -> None:
+    t = str | uuid.UUID | float | int | datetime.date
+    value = datetime.date.today()
+    validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_union_time() -> None:
+    t = str | uuid.UUID | float | int | datetime.time
+    value = datetime.time()
+    validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_union_timedelta() -> None:
+    t = str | uuid.UUID | float | int | datetime.timedelta
+    value = datetime.timedelta(hours=39, minutes=10, seconds=1)
+    validate_full_roundtrip(value, t)
+
+
 def test_roundtrip_ltable() -> None:
     t = list[Order]
     value = [Order("O1", "item1", 10.0), Order("O2", "item2", 20.0)]

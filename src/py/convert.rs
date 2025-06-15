@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use pyo3::exceptions::PyTypeError;
 use numpy::{PyArray1, PyArrayDyn, PyArrayMethods};
 use pyo3::IntoPyObjectExt;
 use pyo3::types::PyAny;
@@ -76,6 +77,9 @@ fn basic_value_to_py_object<'py>(
         value::BasicValue::TimeDelta(v) => v.into_bound_py_any(py)?,
         value::BasicValue::Json(v) => pythonize(py, v).into_py_result()?,
         value::BasicValue::Vector(v) => handle_vector_to_py(py, v)?,
+        value::BasicValue::UnionVariant { tag_id, value } => {
+            (*tag_id, basic_value_to_py_object(py, &value)?).into_bound_py_any(py)?
+        }
     };
     Ok(result)
 }
@@ -161,6 +165,24 @@ fn basic_value_from_py_object<'py>(
                         .collect::<PyResult<Vec<_>>>()?,
                 ))
             }
+        }
+        schema::BasicValueType::Union(s) => {
+            let mut valid_value = None;
+
+            // Try parsing the value
+            for (i, typ) in s.types.iter().enumerate() {
+                if let Ok(value) = basic_value_from_py_object(typ, v) {
+                    valid_value = Some(value::BasicValue::UnionVariant {
+                        tag_id: i,
+                        value: Box::new(value),
+                    });
+                    break;
+                }
+            }
+
+            valid_value.ok_or_else(|| {
+                PyErr::new::<PyTypeError, _>(format!("invalid union value: {}, available types: {:?}", v, s.types))
+            })?
         }
     };
     Ok(result)
