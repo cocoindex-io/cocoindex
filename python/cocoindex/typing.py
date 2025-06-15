@@ -90,6 +90,10 @@ KEY_FIELD_NAME: str = "_key"
 ElementType = type | tuple[type, type] | Annotated[Any, TypeKind]
 
 
+def is_numpy_number_type(t: type) -> bool:
+    return isinstance(t, type) and issubclass(t, np.number)
+
+
 def is_namedtuple_type(t: type) -> bool:
     return isinstance(t, type) and issubclass(t, tuple) and hasattr(t, "_fields")
 
@@ -130,13 +134,6 @@ class DtypeRegistry:
                 "NDArray for Vector must use a concrete numpy dtype, got `Any`."
             )
         return cls._mappings.get(dtype)
-
-    @staticmethod
-    def get_by_kind(kind: str) -> DtypeInfo | None:
-        return next(
-            (info for info in DtypeRegistry._mappings.values() if info.kind == kind),
-            None,
-        )
 
     @staticmethod
     def supported_dtypes() -> KeysView[type]:
@@ -200,7 +197,6 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     attrs: dict[str, Any] | None = None
     vector_info: VectorInfo | None = None
     kind: str | None = None
-    np_number_type: type | None = None
     for attr in annotations:
         if isinstance(attr, TypeAttr):
             if attrs is None:
@@ -210,12 +206,11 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             vector_info = attr
         elif isinstance(attr, TypeKind):
             kind = attr.kind
-            if dtype_info := DtypeRegistry.get_by_kind(attr.kind):
-                np_number_type = dtype_info.numpy_dtype
 
     struct_type: type | None = None
     elem_type: ElementType | None = None
     key_type: type | None = None
+    np_number_type: type | None = None
     if _is_struct_type(t):
         struct_type = t
 
@@ -223,6 +218,10 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             kind = "Struct"
         elif kind != "Struct":
             raise ValueError(f"Unexpected type kind for struct: {kind}")
+    elif is_numpy_number_type(t):
+        if (dtype_info := DtypeRegistry.get_by_dtype(t)) is not None:
+            kind = dtype_info.kind
+            np_number_type = dtype_info.numpy_dtype
     elif base_type is collections.abc.Sequence or base_type is list:
         args = typing.get_args(t)
         elem_type = args[0]
@@ -249,6 +248,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         if not dtype_args:
             raise ValueError("Invalid dtype specification for NDArray")
 
+        np_number_type = t
         numpy_dtype = dtype_args[0]
         dtype_info = DtypeRegistry.get_by_dtype(numpy_dtype)
         if dtype_info is None:
@@ -264,11 +264,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         elem_type = (args[0], args[1])
         kind = "KTable"
     elif kind is None:
-        dtype_info = DtypeRegistry.get_by_dtype(t)
-        if dtype_info is not None:
-            kind = dtype_info.kind
-            np_number_type = dtype_info.numpy_dtype
-        elif t is bytes:
+        if t is bytes:
             kind = "Bytes"
         elif t is str:
             kind = "Str"
