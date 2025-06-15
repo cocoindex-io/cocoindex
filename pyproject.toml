@@ -35,4 +35,3 @@ dev = ["ruff"]
 python_version = "3.11"
 strict = true
 files = "python/cocoindex"
-exclude = "python/cocoindex/tests"

@@ -34,7 +34,7 @@ class Tag:
 
 @dataclass
 class Basket:
-    items: list
+    items: list[str]
 
 
 @dataclass
@@ -86,7 +86,7 @@ def validate_full_roundtrip(
     `other_decoded_values` is a tuple of (value, type) pairs.
     If provided, also validate the value can be decoded to the other types.
     """
-    from cocoindex import _engine
+    from cocoindex import _engine  # type: ignore
 
     encoded_value = encode_engine_value(value)
     value_type = value_type or type(value)
@@ -107,19 +107,19 @@ def validate_full_roundtrip(
             np.testing.assert_array_equal(other_decoded_value, other_value)
 
 
-def test_encode_engine_value_basic_types():
+def test_encode_engine_value_basic_types() -> None:
     assert encode_engine_value(123) == 123
     assert encode_engine_value(3.14) == 3.14
     assert encode_engine_value("hello") == "hello"
     assert encode_engine_value(True) is True
 
 
-def test_encode_engine_value_uuid():
+def test_encode_engine_value_uuid() -> None:
     u = uuid.uuid4()
     assert encode_engine_value(u) == u.bytes
 
 
-def test_encode_engine_value_date_time_types():
+def test_encode_engine_value_date_time_types() -> None:
     d = datetime.date(2024, 1, 1)
     assert encode_engine_value(d) == d
     t = datetime.time(12, 30)
@@ -128,7 +128,7 @@ def test_encode_engine_value_date_time_types():
     assert encode_engine_value(dt) == dt
 
 
-def test_encode_engine_value_struct():
+def test_encode_engine_value_struct() -> None:
     order = Order(order_id="O123", name="mixed nuts", price=25.0)
     assert encode_engine_value(order) == ["O123", "mixed nuts", 25.0, "default_extra"]
 
@@ -141,7 +141,7 @@ def test_encode_engine_value_struct():
     ]
 
 
-def test_encode_engine_value_list_of_structs():
+def test_encode_engine_value_list_of_structs() -> None:
     orders = [Order("O1", "item1", 10.0), Order("O2", "item2", 20.0)]
     assert encode_engine_value(orders) == [
         ["O1", "item1", 10.0, "default_extra"],
@@ -158,12 +158,12 @@ def test_encode_engine_value_list_of_structs():
     ]
 
 
-def test_encode_engine_value_struct_with_list():
+def test_encode_engine_value_struct_with_list() -> None:
     basket = Basket(items=["apple", "banana"])
     assert encode_engine_value(basket) == [["apple", "banana"]]
 
 
-def test_encode_engine_value_nested_struct():
+def test_encode_engine_value_nested_struct() -> None:
     customer = Customer(name="Alice", order=Order("O1", "item1", 10.0))
     assert encode_engine_value(customer) == [
         "Alice",
@@ -181,12 +181,12 @@ def test_encode_engine_value_nested_struct():
     ]
 
 
-def test_encode_engine_value_empty_list():
+def test_encode_engine_value_empty_list() -> None:
     assert encode_engine_value([]) == []
     assert encode_engine_value([[]]) == [[]]
 
 
-def test_encode_engine_value_tuple():
+def test_encode_engine_value_tuple() -> None:
     assert encode_engine_value(()) == []
     assert encode_engine_value((1, 2, 3)) == [1, 2, 3]
     assert encode_engine_value(((1, 2), (3, 4))) == [[1, 2], [3, 4]]
@@ -194,11 +194,11 @@ def test_encode_engine_value_tuple():
     assert encode_engine_value(((),)) == [[]]
 
 
-def test_encode_engine_value_none():
+def test_encode_engine_value_none() -> None:
     assert encode_engine_value(None) is None
 
 
-def test_make_engine_value_decoder_basic_types() -> None:
+def test_roundtrip_basic_types() -> None:
     validate_full_roundtrip(42, int)
     validate_full_roundtrip(3.25, float, (3.25, Float64))
     validate_full_roundtrip(3.25, Float64, (3.25, float))
@@ -206,6 +206,11 @@ def test_make_engine_value_decoder_basic_types() -> None:
     validate_full_roundtrip("hello", str)
     validate_full_roundtrip(True, bool)
     validate_full_roundtrip(False, bool)
+    validate_full_roundtrip(datetime.date(2025, 1, 1), datetime.date)
+    validate_full_roundtrip(datetime.datetime.now(), cocoindex.LocalDateTime)
+    validate_full_roundtrip(
+        datetime.datetime.now(datetime.UTC), cocoindex.OffsetDateTime
+    )
 
 
 @pytest.mark.parametrize(
@@ -323,18 +328,18 @@ def test_make_engine_value_decoder_basic_types() -> None:
         ),
     ],
 )
-def test_struct_decoder_cases(data_type, engine_val, expected):
+def test_struct_decoder_cases(data_type: Any, engine_val: Any, expected: Any) -> None:
     decoder = build_engine_value_decoder(data_type)
     assert decoder(engine_val) == expected
 
 
-def test_make_engine_value_decoder_collections():
+def test_make_engine_value_decoder_list_of_struct() -> None:
     # List of structs (dataclass)
-    decoder = build_engine_value_decoder(list[Order])
     engine_val = [
         ["O1", "item1", 10.0, "default_extra"],
         ["O2", "item2", 20.0, "default_extra"],
     ]
+    decoder = build_engine_value_decoder(list[Order])
     assert decoder(engine_val) == [
         Order("O1", "item1", 10.0, "default_extra"),
         Order("O2", "item2", 20.0, "default_extra"),
@@ -347,13 +352,15 @@ def test_make_engine_value_decoder_collections():
         OrderNamedTuple("O2", "item2", 20.0, "default_extra"),
     ]
 
+
+def test_make_engine_value_decoder_struct_of_list() -> None:
     # Struct with list field
-    decoder = build_engine_value_decoder(Customer)
     engine_val = [
         "Alice",
         ["O1", "item1", 10.0, "default_extra"],
         [["vip"], ["premium"]],
     ]
+    decoder = build_engine_value_decoder(Customer)
     assert decoder(engine_val) == Customer(
         "Alice",
         Order("O1", "item1", 10.0, "default_extra"),
@@ -368,8 +375,9 @@ def test_make_engine_value_decoder_collections():
         [Tag("vip"), Tag("premium")],
     )
 
+
+def test_make_engine_value_decoder_struct_of_struct() -> None:
     # Struct with struct field
-    decoder = build_engine_value_decoder(NestedStruct)
     engine_val = [
         ["Alice", ["O1", "item1", 10.0, "default_extra"], [["vip"]]],
         [
@@ -378,6 +386,7 @@ def test_make_engine_value_decoder_collections():
         ],
         2,
     ]
+    decoder = build_engine_value_decoder(NestedStruct)
     assert decoder(engine_val) == NestedStruct(
         Customer("Alice", Order("O1", "item1", 10.0, "default_extra"), [Tag("vip")]),
         [
@@ -388,11 +397,13 @@ def test_make_engine_value_decoder_collections():
     )
 
 
-def make_engine_order(fields):
+def make_engine_order(fields: list[tuple[str, type]]) -> type:
     return make_dataclass("EngineOrder", fields)
 
 
-def make_python_order(fields, defaults=None):
+def make_python_order(
+    fields: list[tuple[str, type]], defaults: dict[str, Any] | None = None
+) -> type:
     if defaults is None:
         defaults = {}
     # Move all fields with defaults to the end (Python dataclass requirement)
@@ -466,8 +477,12 @@ def make_python_order(fields, defaults=None):
     ],
 )
 def test_field_position_cases(
-    engine_fields, python_fields, python_defaults, engine_val, expected_python_val
-):
+    engine_fields: list[tuple[str, type]],
+    python_fields: list[tuple[str, type]],
+    python_defaults: dict[str, Any],
+    engine_val: list[Any],
+    expected_python_val: tuple[Any, ...],
+) -> None:
     EngineOrder = make_engine_order(engine_fields)
     PythonOrder = make_python_order(python_fields, python_defaults)
     decoder = build_engine_value_decoder(EngineOrder, PythonOrder)
@@ -570,9 +585,9 @@ IntVectorType = cocoindex.Vector[np.int64, Literal[5]]
 
 
 def test_vector_as_vector() -> None:
-    value: IntVectorType = [1, 2, 3, 4, 5]
+    value = np.array([1, 2, 3, 4, 5], dtype=np.int64)
     encoded = encode_engine_value(value)
-    assert encoded == [1, 2, 3, 4, 5]
+    assert np.array_equal(encoded, value)
     decoded = build_engine_value_decoder(IntVectorType)(encoded)
     assert np.array_equal(decoded, value)
 
@@ -603,7 +618,7 @@ NDArrayFloat64Type = NDArray[np.float64]
 NDArrayInt64Type = NDArray[np.int64]
 
 
-def test_encode_engine_value_ndarray():
+def test_encode_engine_value_ndarray() -> None:
     """Test encoding NDArray vectors to lists for the Rust engine."""
     vec_f32: Float32VectorType = np.array([1.0, 2.0, 3.0], dtype=np.float32)
     assert np.array_equal(encode_engine_value(vec_f32), [1.0, 2.0, 3.0])
@@ -615,7 +630,7 @@ def test_encode_engine_value_ndarray():
     assert np.array_equal(encode_engine_value(vec_nd_f32), [1.0, 2.0, 3.0])
 
 
-def test_make_engine_value_decoder_ndarray():
+def test_make_engine_value_decoder_ndarray() -> None:
     """Test decoding engine lists to NDArray vectors."""
     decoder_f32 = build_engine_value_decoder(Float32VectorType)
     result_f32 = decoder_f32([1.0, 2.0, 3.0])
@@ -639,16 +654,16 @@ def test_make_engine_value_decoder_ndarray():
     assert np.array_equal(result_nd_f32, np.array([1.0, 2.0, 3.0], dtype=np.float32))
 
 
-def test_roundtrip_ndarray_vector():
+def test_roundtrip_ndarray_vector() -> None:
     """Test roundtrip encoding and decoding of NDArray vectors."""
-    value_f32: Float32VectorType = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    value_f32 = np.array([1.0, 2.0, 3.0], dtype=np.float32)
     encoded_f32 = encode_engine_value(value_f32)
     np.array_equal(encoded_f32, [1.0, 2.0, 3.0])
     decoded_f32 = build_engine_value_decoder(Float32VectorType)(encoded_f32)
     assert isinstance(decoded_f32, np.ndarray)
     assert decoded_f32.dtype == np.float32
     assert np.array_equal(decoded_f32, value_f32)
-    value_i64: Int64VectorType = np.array([1, 2, 3], dtype=np.int64)
+    value_i64 = np.array([1, 2, 3], dtype=np.int64)
     encoded_i64 = encode_engine_value(value_i64)
     assert np.array_equal(encoded_i64, [1, 2, 3])
     decoded_i64 = build_engine_value_decoder(Int64VectorType)(encoded_i64)
@@ -664,18 +679,18 @@ def test_roundtrip_ndarray_vector():
     assert np.array_equal(decoded_nd_f64, value_nd_f64)
 
 
-def test_ndarray_dimension_mismatch():
+def test_ndarray_dimension_mismatch() -> None:
     """Test dimension enforcement for Vector with specified dimension."""
-    value: Float32VectorType = np.array([1.0, 2.0], dtype=np.float32)
+    value = np.array([1.0, 2.0], dtype=np.float32)
     encoded = encode_engine_value(value)
     assert np.array_equal(encoded, [1.0, 2.0])
     with pytest.raises(ValueError, match="Vector dimension mismatch"):
         build_engine_value_decoder(Float32VectorType)(encoded)
 
 
-def test_list_vector_backward_compatibility():
+def test_list_vector_backward_compatibility() -> None:
     """Test that list-based vectors still work for backward compatibility."""
-    value: IntVectorType = [1, 2, 3, 4, 5]
+    value = [1, 2, 3, 4, 5]
     encoded = encode_engine_value(value)
     assert encoded == [1, 2, 3, 4, 5]
     decoded = build_engine_value_decoder(IntVectorType)(encoded)
@@ -689,7 +704,7 @@ def test_list_vector_backward_compatibility():
     assert np.array_equal(decoded, [1, 2, 3, 4, 5])
 
 
-def test_encode_complex_structure_with_ndarray():
+def test_encode_complex_structure_with_ndarray() -> None:
     """Test encoding a complex structure that includes an NDArray."""
 
     @dataclass
@@ -702,17 +717,13 @@ def test_encode_complex_structure_with_ndarray():
         name="test_np", data=np.array([1.0, 0.5], dtype=np.float32), value=100
     )
     encoded = encode_engine_value(original)
-    expected = [
-        "test_np",
-        [1.0, 0.5],
-        100,
-    ]
-    assert encoded[0] == expected[0]
-    assert np.array_equal(encoded[1], expected[1])
-    assert encoded[2] == expected[2]
+
+    assert encoded[0] == original.name
+    assert np.array_equal(encoded[1], original.data)
+    assert encoded[2] == original.value
 
 
-def test_decode_nullable_ndarray_none_or_value_input():
+def test_decode_nullable_ndarray_none_or_value_input() -> None:
     """Test decoding a nullable NDArray with None or value inputs."""
     src_type_dict = {
         "kind": "Vector",
@@ -736,7 +747,7 @@ def test_decode_nullable_ndarray_none_or_value_input():
     )
 
 
-def test_decode_vector_string():
+def test_decode_vector_string() -> None:
     """Test decoding a vector of strings works for Python native list type."""
     src_type_dict = {
         "kind": "Vector",
@@ -747,7 +758,7 @@ def test_decode_vector_string():
     assert decoder(["hello", "world"]) == ["hello", "world"]
 
 
-def test_decode_error_non_nullable_or_non_list_vector():
+def test_decode_error_non_nullable_or_non_list_vector() -> None:
     """Test decoding errors for non-nullable vectors or non-list inputs."""
     src_type_dict = {
         "kind": "Vector",
@@ -761,7 +772,7 @@ def test_decode_error_non_nullable_or_non_list_vector():
         decoder("not a list")
 
 
-def test_dump_vector_type_annotation_with_dim():
+def test_dump_vector_type_annotation_with_dim() -> None:
     """Test dumping a vector type annotation with a specified dimension."""
     expected_dump = {
         "type": {
@@ -773,7 +784,7 @@ def test_dump_vector_type_annotation_with_dim():
     assert dump_engine_object(Float32VectorType) == expected_dump
 
 
-def test_dump_vector_type_annotation_no_dim():
+def test_dump_vector_type_annotation_no_dim() -> None:
     """Test dumping a vector type annotation with no dimension."""
     expected_dump_no_dim = {
         "type": {

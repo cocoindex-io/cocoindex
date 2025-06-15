@@ -49,7 +49,7 @@ OffsetDateTime = Annotated[datetime.datetime, TypeKind("OffsetDateTime")]
 
 if TYPE_CHECKING:
     T_co = TypeVar("T_co", covariant=True)
-    Dim_co = TypeVar("Dim_co", bound=int, covariant=True)
+    Dim_co = TypeVar("Dim_co", bound=int | None, covariant=True, default=None)
 
     class Vector(Protocol, Generic[T_co, Dim_co]):
         """Vector[T, Dim] is a special typing alias for an NDArray[T] with optional dimension info"""
