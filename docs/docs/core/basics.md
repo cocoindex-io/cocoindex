@@ -9,7 +9,7 @@ An **index** is a collection of data stored in a way that is easy for retrieval.
 
 CocoIndex is an ETL framework for building indexes from specified data sources, a.k.a. **indexing**. It also offers utilities for users to retrieve data from the indexes.
 
-An **indexing flow** extracts data from specified data sources, upon specified transformations, and puts the transformed data into specified storage for later retrieval.
+An **indexing flow** extracts data from specified data sources, upon specified transformations, and puts the transformed data into specified target storage for later retrieval.
 
 ## Indexing flow elements
 
@@ -17,7 +17,7 @@ An indexing flow has two aspects: data and operations on data.
 
 ### Data
 
-An indexing flow involves source data and transformed data (either as an intermediate result or the final result to be put into storage). All data within the indexing flow has **schema** determined at flow definition time.
+An indexing flow involves source data and transformed data (either as an intermediate result or the final result to be put into targets). All data within the indexing flow has **schema** determined at flow definition time.
 
 Each piece of data has a **data type**, falling into one of the following categories:
 
@@ -36,8 +36,8 @@ An **operation** in an indexing flow defines a step in the flow. An operation is
 *   **Action**, which defines the behavior of the operation, e.g. *import*, *transform*, *for each*, *collect* and *export*.
     See [Flow Definition](flow_def) for more details for each action.
 
-*   Some actions (i.e. "import", "transform" and "export") require an **Operation Spec**, which describes the specific behavior of the operation, e.g. a source to import from, a function describing the transformation behavior, a target storage to export to (as an index).
-    *   Each operation spec has a **operation type**, e.g. `LocalFile` (data source), `SplitRecursively` (function), `SentenceTransformerEmbed` (function), `Postgres` (storage).
+*   Some actions (i.e. "import", "transform" and "export") require an **Operation Spec**, which describes the specific behavior of the operation, e.g. a source to import from, a function describing the transformation behavior, a target to export to (as an index).
+    *   Each operation spec has a **operation type**, e.g. `LocalFile` (data source), `SplitRecursively` (function), `SentenceTransformerEmbed` (function), `Postgres` (target).
     *   CocoIndex framework maintains a set of supported operation types. Users can also implement their own.
 
 "import" and "transform" operations produce output data, whose data type is determined based on the operation spec and data types of input data (for "transform" operation only).
@@ -62,11 +62,11 @@ This shows schema and example data for the indexing flow:
 
 ## Life cycle of an indexing flow
 
-An indexing flow, once set up, maintains a long-lived relationship between data source and data in target storage. This means:
+An indexing flow, once set up, maintains a long-lived relationship between data source and target. This means:
 
-1.  The target storage created by the flow remain available for querying at any time
+1.  The target created by the flow remain available for querying at any time
 
-2.  As source data changes (new data added, existing data updated or deleted), data in the target storage are updated to reflect those changes,
+2.  As source data changes (new data added, existing data updated or deleted), data in the target are updated to reflect those changes,
     on certain pace, according to the update mode:
 
     *   **One time update**: Once triggered, CocoIndex updates the target data to reflect the version of source data up to the current moment.

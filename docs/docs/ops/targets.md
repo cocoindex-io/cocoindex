@@ -1,17 +1,17 @@
 ---
-title: Storages
-description: CocoIndex Built-in Storages
+title: Targets
+description: CocoIndex Built-in Targets
 toc_max_heading_level: 4
 ---
 
-# CocoIndex Built-in Storages
+# CocoIndex Built-in Targets
 
-For each target storage, data are exported from a data collector, containing data of multiple entries, each with multiple fields.
-The way to map data from a data collector to a target storage depends on data model of the target storage.
+For each target, data are exported from a data collector, containing data of multiple entries, each with multiple fields.
+The way to map data from a data collector to a target depends on data model of the target.
 
 ## Entry-Oriented Targets
 
-Entry-Oriented Storage organizes data into independent entries, such as rows, key-value pairs, or documents.
+An entry-oriented target organizes data into independent entries, such as rows, key-value pairs, or documents.
 Each entry is self-contained and does not explicitly link to others.
 There is usually a straightforward mapping from data collector rows to entries.
 
@@ -168,7 +168,7 @@ graph TD
 
 If a node label needs to appear as source or target of a relationship, but not exported as a node, you need to [declare](../core/flow_def#target-declarations) the label with necessary configuration.
 
-The dataclass to describe the declaration is specific to each target storage (e.g. `cocoindex.storages.Neo4jDeclarations`),
+The dataclass to describe the declaration is specific to each target (e.g. `cocoindex.storages.Neo4jDeclarations`),
 while they share the following common fields:
 
 *   `nodes_label` (required): The label of the node.
