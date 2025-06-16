@@ -60,7 +60,7 @@ def gdrive_text_embedding_flow(
 
     doc_embeddings.export(
         "doc_embeddings",
-        cocoindex.storages.Postgres(),
+        cocoindex.targets.Postgres(),
         primary_key_fields=["filename", "location"],
         vector_indexes=[
             cocoindex.VectorIndexDef(
@@ -73,7 +73,7 @@ def gdrive_text_embedding_flow(
 
 def search(pool: ConnectionPool, query: str, top_k: int = 5):
     # Get the table name, for the export target in the gdrive_text_embedding_flow above.
-    table_name = cocoindex.utils.get_target_storage_default_name(
+    table_name = cocoindex.utils.get_target_default_name(
         gdrive_text_embedding_flow, "doc_embeddings"
     )
     # Evaluate the transform flow defined above with the input query, to get the embedding.
