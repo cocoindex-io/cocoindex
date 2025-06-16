@@ -247,8 +247,7 @@ def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
 )
 def setup(app_target: str, force: bool) -> None:
     """
-    Check and apply backend setup changes for flows, including the internal and target storage
-    (to export).
+    Check and apply backend setup changes for flows, including the internal storage and target (to export to).
 
     APP_TARGET: path/to/app.py or installed_module.
     """

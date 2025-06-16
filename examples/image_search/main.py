@@ -81,7 +81,7 @@ def image_object_embedding_flow(
 
     img_embeddings.export(
         "img_embeddings",
-        cocoindex.storages.Qdrant(collection_name=QDRANT_COLLECTION),
+        cocoindex.targets.Qdrant(collection_name=QDRANT_COLLECTION),
         primary_key_fields=["id"],
     )
 

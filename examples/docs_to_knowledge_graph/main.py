@@ -7,7 +7,7 @@ import cocoindex
 
 neo4j_conn_spec = cocoindex.add_auth_entry(
     "Neo4jConnection",
-    cocoindex.storages.Neo4jConnection(
+    cocoindex.targets.Neo4jConnection(
         uri="bolt://localhost:7687",
         user="neo4j",
         password="cocoindex",
@@ -15,7 +15,7 @@ neo4j_conn_spec = cocoindex.add_auth_entry(
 )
 kuzu_conn_spec = cocoindex.add_auth_entry(
     "KuzuConnection",
-    cocoindex.storages.KuzuConnection(
+    cocoindex.targets.KuzuConnection(
         api_server_url="http://localhost:8123",
     ),
 )
@@ -25,15 +25,15 @@ kuzu_conn_spec = cocoindex.add_auth_entry(
 # Please make sure only one branch is live and others are commented out.
 
 # Use Neo4j
-GraphDbSpec = cocoindex.storages.Neo4j
-GraphDbConnection = cocoindex.storages.Neo4jConnection
-GraphDbDeclaration = cocoindex.storages.Neo4jDeclaration
+GraphDbSpec = cocoindex.targets.Neo4j
+GraphDbConnection = cocoindex.targets.Neo4jConnection
+GraphDbDeclaration = cocoindex.targets.Neo4jDeclaration
 conn_spec = neo4j_conn_spec
 
 # Use Kuzu
-#  GraphDbSpec = cocoindex.storages.Kuzu
-#  GraphDbConnection = cocoindex.storages.KuzuConnection
-#  GraphDbDeclaration = cocoindex.storages.KuzuDeclaration
+#  GraphDbSpec = cocoindex.targets.Kuzu
+#  GraphDbConnection = cocoindex.targets.KuzuConnection
+#  GraphDbDeclaration = cocoindex.targets.KuzuDeclaration
 #  conn_spec = kuzu_conn_spec
 
 
@@ -134,7 +134,7 @@ def docs_to_kg_flow(
     document_node.export(
         "document_node",
         GraphDbSpec(
-            connection=conn_spec, mapping=cocoindex.storages.Nodes(label="Document")
+            connection=conn_spec, mapping=cocoindex.targets.Nodes(label="Document")
         ),
         primary_key_fields=["filename"],
     )
@@ -150,20 +150,20 @@ def docs_to_kg_flow(
         "entity_relationship",
         GraphDbSpec(
             connection=conn_spec,
-            mapping=cocoindex.storages.Relationships(
+            mapping=cocoindex.targets.Relationships(
                 rel_type="RELATIONSHIP",
-                source=cocoindex.storages.NodeFromFields(
+                source=cocoindex.targets.NodeFromFields(
                     label="Entity",
                     fields=[
-                        cocoindex.storages.TargetFieldMapping(
+                        cocoindex.targets.TargetFieldMapping(
                             source="subject", target="value"
                         ),
                     ],
                 ),
-                target=cocoindex.storages.NodeFromFields(
+                target=cocoindex.targets.NodeFromFields(
                     label="Entity",
                     fields=[
-                        cocoindex.storages.TargetFieldMapping(
+                        cocoindex.targets.TargetFieldMapping(
                             source="object", target="value"
                         ),
                     ],
@@ -176,16 +176,16 @@ def docs_to_kg_flow(
         "entity_mention",
         GraphDbSpec(
             connection=conn_spec,
-            mapping=cocoindex.storages.Relationships(
+            mapping=cocoindex.targets.Relationships(
                 rel_type="MENTION",
-                source=cocoindex.storages.NodeFromFields(
+                source=cocoindex.targets.NodeFromFields(
                     label="Document",
-                    fields=[cocoindex.storages.TargetFieldMapping("filename")],
+                    fields=[cocoindex.targets.TargetFieldMapping("filename")],
                 ),
-                target=cocoindex.storages.NodeFromFields(
+                target=cocoindex.targets.NodeFromFields(
                     label="Entity",
                     fields=[
-                        cocoindex.storages.TargetFieldMapping(
+                        cocoindex.targets.TargetFieldMapping(
                             source="entity", target="value"
                         )
                     ],

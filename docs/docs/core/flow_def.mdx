@@ -1,6 +1,6 @@
 ---
 title: Flow Definition
-description: Define a CocoIndex flow, by specifying source, transformations and storages, and connect input/output data of them.
+description: Define a CocoIndex flow, by specifying source, transformations and targets, and connect input/output data of them.
 ---
 
 import Tabs from '@theme/Tabs';
@@ -8,7 +8,7 @@ import TabItem from '@theme/TabItem';
 
 # CocoIndex Flow Definition
 
-In CocoIndex, to define an indexing flow, you provide a function to import source, transform data and put them into target storage (sinks).
+In CocoIndex, to define an indexing flow, you provide a function to import source, transform data and put them into targets.
 You connect input/output of these operations with fields of data scopes.
 
 ## Entry Point
@@ -246,14 +246,14 @@ and generates a `id` field with UUID and remains stable when `filename` and `sum
 
 ### Export
 
-The `export()` method exports the collected data to an external storage.
+The `export()` method exports the collected data to an external target.
 
-A *storage spec* needs to be provided for any export operation, to describe the storage and parameters related to the storage.
+A *target spec* needs to be provided for any export operation, to describe the target and parameters related to the target.
 
 Export must happen at the top level of a flow, i.e. not within any child scopes created by "for each row". It takes the following arguments:
 
 *   `name`: the name to identify the export target.
-*   `target_spec`: the storage spec as the export target.
+*   `target_spec`: the target spec as the export target.
 *   `setup_by_user` (optional):
      whether the export target is setup by user.
      By default, CocoIndex is managing the target setup (surfaced by the `cocoindex setup` CLI subcommand), e.g. create related tables/collections/etc. with compatible schema, and update them upon change.
@@ -270,7 +270,7 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
     demo_collector = data_scope.add_collector()
     ...
     demo_collector.export(
-        "demo_storage", DemoStorageSpec(...),
+        "demo_target", DemoTargetSpec(...),
         primary_key_fields=["field1"],
         vector_indexes=[cocoindex.VectorIndexDef("field2", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 ```
@@ -278,14 +278,14 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 </TabItem>
 </Tabs>
 
-The target storage is managed by CocoIndex, i.e. it'll be created by [CocoIndex CLI](/docs/core/cli) when you run `cocoindex setup`, and the data will be automatically updated (including stale data removal) when updating the index.
-The `name` for the same storage should remain stable across different runs.
-If it changes, CocoIndex will treat it as an old storage removed and a new one created, and perform setup changes and reindexing accordingly.
+The target is managed by CocoIndex, i.e. it'll be created by [CocoIndex CLI](/docs/core/cli) when you run `cocoindex setup`, and the data will be automatically updated (including stale data removal) when updating the index.
+The `name` for the same target should remain stable across different runs.
+If it changes, CocoIndex will treat it as an old target removed and a new one created, and perform setup changes and reindexing accordingly.
 
 ## Storage Indexes
 
-Many storage supports indexes, to boost efficiency in retrieving data.
-CocoIndex provides a common way to configure indexes for various storages.
+Many targets are storage systems supporting indexes, to boost efficiency in retrieving data.
+CocoIndex provides a common way to configure indexes for various targets.
 
 ### Primary Key
 
@@ -330,7 +330,7 @@ For example,
 ```python
 doc_embeddings.export(
     "doc_embeddings",
-    cocoindex.storages.Qdrant(
+    cocoindex.targets.Qdrant(
         collection_name=cocoindex.get_app_namespace(trailing_delimiter='__') + "doc_embeddings",
         ...
     ),
@@ -345,8 +345,8 @@ It will use `Staging__doc_embeddings` as the collection name if the current app 
 
 ### Target Declarations
 
-Most time a target storage is created by calling `export()` method on a collector, and this `export()` call comes with configurations needed for the target storage, e.g. options for storage indexes.
-Occasionally, you may need to specify some configurations for target storage out of the context of any specific data collector.
+Most time a target is created by calling `export()` method on a collector, and this `export()` call comes with configurations needed for the target, e.g. options for storage indexes.
+Occasionally, you may need to specify some configurations for the target out of the context of any specific data collector.
 
 For example, for graph database targets like `Neo4j` and `Kuzu`, you may have a data collector to export data to relationships, which will create nodes referenced by various relationships in turn.
 These nodes don't directly come from any specific data collector (consider relationships from different data collectors may share the same nodes).
@@ -359,7 +359,7 @@ To specify configurations for these nodes, you can *declare* spec for related no
 
 ```python
 flow_builder.declare(
-    cocoindex.storages.Neo4jDeclarations(...)
+    cocoindex.targets.Neo4jDeclarations(...)
 )
 ```
 
@@ -389,7 +389,7 @@ You can add an auth entry by `cocoindex.add_auth_entry()` function, which return
 ```python
 my_graph_conn = cocoindex.add_auth_entry(
     "my_graph_conn",
-    cocoindex.storages.Neo4jConnectionSpec(
+    cocoindex.targets.Neo4jConnectionSpec(
             uri="bolt://localhost:7687",
             user="neo4j",
             password="cocoindex",
@@ -403,7 +403,7 @@ Then reference it when building a spec that takes an auth entry:
     ```python
     demo_collector.export(
         "MyGraph",
-        cocoindex.storages.Neo4jRelationship(connection=my_graph_conn, ...)
+        cocoindex.targets.Neo4jRelationship(connection=my_graph_conn, ...)
     )
     ```
 
@@ -412,7 +412,7 @@ Then reference it when building a spec that takes an auth entry:
     ```python
     demo_collector.export(
         "MyGraph",
-        cocoindex.storages.Neo4jRelationship(connection=cocoindex.ref_auth_entry("my_graph_conn"), ...))
+        cocoindex.targets.Neo4jRelationship(connection=cocoindex.ref_auth_entry("my_graph_conn"), ...))
     ```
 
 </TabItem>

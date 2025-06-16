@@ -1,7 +1,7 @@
 ---
 title: Run a Flow
 toc_max_heading_level: 4
-description: Run a CocoIndex Flow, including build / update data in the target storage and evaluate the flow without changing the target storage.
+description: Run a CocoIndex Flow, including build / update data in the target and evaluate the flow without changing the target.
 ---
 
 import Tabs from '@theme/Tabs';
@@ -37,7 +37,7 @@ It creates a `demo_flow` object in `cocoindex.Flow` type.
 
 ## Build / update target data
 
-The major goal of a flow is to perform the transformations on source data and build / update data in the target storage (the index).
+The major goal of a flow is to perform the transformations on source data and build / update data in the target.
 This action has two modes:
 
 *   **One time update.**
@@ -53,7 +53,7 @@ This action has two modes:
 :::info
 
 For both modes, CocoIndex is performing *incremental processing*,
-i.e. we only perform computations and storage mutations on source data that are changed, or the flow has changed.
+i.e. we only perform computations and target mutations on source data that are changed, or the flow has changed.
 This is to achieve best efficiency.
 
 :::
@@ -63,7 +63,7 @@ This is to achieve best efficiency.
 
 #### CLI
 
-The `cocoindex update` subcommand creates/updates data in the target storage.
+The `cocoindex update` subcommand creates/updates data in the target.
 
 Once it's done, the target data is fresh up to the moment when the function is called.
 
@@ -76,7 +76,7 @@ cocoindex update main.py
 <Tabs>
 <TabItem value="python" label="Python">
 
-The `update()` async method creates/updates data in the target storage.
+The `update()` async method creates/updates data in the target.
 
 Once the function returns, the target data is fresh up to the moment when the function is called.
 
@@ -207,7 +207,7 @@ CocoIndex also provides asynchronous versions of APIs for blocking operations, i
 
 ## Evaluate the flow
 
-CocoIndex allows you to run the transformations defined by the flow without updating the target storage.
+CocoIndex allows you to run the transformations defined by the flow without updating the target.
 
 ### CLI
 

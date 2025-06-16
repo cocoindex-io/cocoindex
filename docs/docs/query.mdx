@@ -80,7 +80,7 @@ print(await text_to_embedding.eval_async("Hello, world!"))
 
 In your indexing flow, when you export data to a target, you can specify the target name (e.g. a database table name, a collection name, the node label in property graph databases, etc.) explicitly,
 or for some backends you can also omit it and let CocoIndex generate a default name for you.
-For the latter case, CocoIndex provides a utility function `cocoindex.utils.get_target_storage_default_name()` to get the default name.
+For the latter case, CocoIndex provides a utility function `cocoindex.utils.get_target_default_name()` to get the default name.
 It takes the following arguments:
 
 *   `flow` (type: `cocoindex.Flow`): The flow to get the default name for.
@@ -92,7 +92,7 @@ For example:
 <TabItem value="python" label="Python">
 
 ```python
-table_name = cocoindex.utils.get_target_storage_default_name(text_embedding_flow, "doc_embeddings")
+table_name = cocoindex.utils.get_target_default_name(text_embedding_flow, "doc_embeddings")
 query = f"SELECT filename, text FROM {table_name} ORDER BY embedding <=> %s DESC LIMIT 5"
 ...
 ```

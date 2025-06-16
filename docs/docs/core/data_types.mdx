@@ -13,7 +13,7 @@ This makes schema of data processed by CocoIndex clear, and easily determine the
 
 You don't need to spell out data types in CocoIndex, when you define the flow using existing operations (source, function, etc).
 These operations decide data types of fields produced by them based on the spec and input data types.
-All you need to do is to make sure the data passed to functions and storage targets are accepted by them.
+All you need to do is to make sure the data passed to functions and targets are accepted by them.
 
 When you define [custom functions](/docs/core/custom_function), you need to specify the data types of arguments and return values.
 
@@ -40,7 +40,7 @@ This is the list of all basic types supported by CocoIndex:
 | Vector[*T*, *Dim*?] | *T* can be a basic type or a numeric type. *Dim* is a positive integer and optional. | `cocoindex.Vector[T]` or `cocoindex.Vector[T, Dim]` | `numpy.typing.NDArray[T]` or `list[T]` |
 
 Values of all data types can be represented by values in Python's native types (as described under the Native Python Type column).
-However, the underlying execution engine and some storage system (like Postgres) has finer distinctions for some types, specifically:
+However, the underlying execution engine has finer distinctions for some types, specifically:
 
 *   *Float32* and *Float64* for `float`, with different precision.
 *   *LocalDateTime* and *OffsetDateTime* for `datetime.datetime`, with different timezone awareness.
@@ -50,7 +50,7 @@ However, the underlying execution engine and some storage system (like Postgres)
 
 The native Python type is always more permissive and can represent a superset of possible values.
 *   Only when you annotate the return type of a custom function, you should use the specific type,
-    so that CocoIndex will have information about the precise type to be used in the execution engine and storage system.
+    so that CocoIndex will have information about the precise type to be used in the execution engine and target.
 *   For all other purposes, e.g. to provide annotation for argument types of a custom function, or used internally in your custom function,
     you can choose whatever to use.
     The native Python type is usually simpler.

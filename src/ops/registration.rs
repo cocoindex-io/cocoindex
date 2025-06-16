@@ -1,6 +1,6 @@
 use super::{
     factory_bases::*, functions, registry::ExecutorFactoryRegistry, sdk::ExecutorFactory, sources,
-    storages,
+    targets,
 };
 use anyhow::Result;
 use std::sync::{LazyLock, RwLock, RwLockReadGuard};
@@ -16,11 +16,11 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
     functions::split_recursively::register(registry)?;
     functions::extract_by_llm::Factory.register(registry)?;
 
-    storages::postgres::Factory::default().register(registry)?;
-    storages::qdrant::register(registry)?;
-    storages::kuzu::register(registry, reqwest_client)?;
+    targets::postgres::Factory::default().register(registry)?;
+    targets::qdrant::register(registry)?;
+    targets::kuzu::register(registry, reqwest_client)?;
 
-    storages::neo4j::Factory::new().register(registry)?;
+    targets::neo4j::Factory::new().register(registry)?;
 
     Ok(())
 }

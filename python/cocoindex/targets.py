@@ -1,4 +1,4 @@
-"""All builtin storages."""
+"""All builtin targets."""
 
 from dataclasses import dataclass
 from typing import Sequence
@@ -9,8 +9,8 @@ from .auth_registry import AuthEntryReference
 from .setting import DatabaseConnectionSpec
 
 
-class Postgres(op.StorageSpec):
-    """Storage powered by Postgres and pgvector."""
+class Postgres(op.TargetSpec):
+    """Target powered by Postgres and pgvector."""
 
     database: AuthEntryReference[DatabaseConnectionSpec] | None = None
     table_name: str | None = None
@@ -25,8 +25,8 @@ class QdrantConnection:
 
 
 @dataclass
-class Qdrant(op.StorageSpec):
-    """Storage powered by Qdrant - https://qdrant.tech/."""
+class Qdrant(op.TargetSpec):
+    """Target powered by Qdrant - https://qdrant.tech/."""
 
     collection_name: str
     connection: AuthEntryReference[QdrantConnection] | None = None
@@ -52,7 +52,7 @@ class NodeFromFields:
 
 @dataclass
 class ReferencedNode:
-    """Storage spec for a graph node."""
+    """Target spec for a graph node."""
 
     label: str
     primary_key_fields: Sequence[str]
@@ -95,7 +95,7 @@ class Neo4jConnection:
     db: str | None = None
 
 
-class Neo4j(op.StorageSpec):
+class Neo4j(op.TargetSpec):
     """Graph storage powered by Neo4j."""
 
     connection: AuthEntryReference[Neo4jConnection]
@@ -119,7 +119,7 @@ class KuzuConnection:
     api_server_url: str
 
 
-class Kuzu(op.StorageSpec):
+class Kuzu(op.TargetSpec):
     """Graph storage powered by Kuzu."""
 
     connection: AuthEntryReference[KuzuConnection]
