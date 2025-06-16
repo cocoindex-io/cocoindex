@@ -123,15 +123,7 @@ fn basic_type_to_kuzu(basic_type: &BasicValueType) -> Result<String> {
             t.dimension
                 .map_or_else(|| "".to_string(), |d| d.to_string())
         ),
-        BasicValueType::Union(t) => format!(
-            "UNION({})",
-            t.types.iter()
-                .enumerate()
-                .map(|(i,typ)| Ok(format!("val{} {}", i, basic_type_to_kuzu(typ)?)))
-                .collect::<Result<Vec<_>>>()?
-                .join(", "),
-        ),
-        t @ (BasicValueType::Time | BasicValueType::Json) => {
+        t @ (BasicValueType::Union(_) | BasicValueType::Time | BasicValueType::Json) => {
             api_bail!("{t} is not supported in Kuzu")
         }
     })
@@ -387,12 +379,7 @@ fn append_basic_value(cypher: &mut CypherBuilder, basic_value: &BasicValue) -> R
             }
             write!(cypher.query_mut(), "]")?;
         }
-        BasicValue::UnionVariant { tag_id, value } => {
-            write!(cypher.query_mut(), "union_value(val{}:=", tag_id)?;
-            append_basic_value(cypher, value)?;
-            write!(cypher.query_mut(), ")")?;
-        }
-        v @ (BasicValue::Time(_) | BasicValue::Json(_)) => {
+        v @ (BasicValue::UnionVariant { .. } | BasicValue::Time(_) | BasicValue::Json(_)) => {
             bail!("value types are not supported in Kuzu: {}", v.kind());
         }
     }
