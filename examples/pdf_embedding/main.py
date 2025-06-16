@@ -99,7 +99,7 @@ def pdf_embedding_flow(
 
 def search(pool: ConnectionPool, query: str, top_k: int = 5):
     # Get the table name, for the export target in the pdf_embedding_flow above.
-    table_name = cocoindex.utils.get_target_storage_default_name(
+    table_name = cocoindex.utils.get_target_default_name(
         pdf_embedding_flow, "pdf_embeddings"
     )
     # Evaluate the transform flow defined above with the input query, to get the embedding.

@@ -327,7 +327,7 @@ class DataCollector:
     def export(
         self,
         name: str,
-        target_spec: op.StorageSpec,
+        target_spec: op.TargetSpec,
         /,
         *,
         primary_key_fields: Sequence[str],
@@ -340,7 +340,7 @@ class DataCollector:
 
         `vector_index` is for backward compatibility only. Please use `vector_indexes` instead.
         """
-        if not isinstance(target_spec, op.StorageSpec):
+        if not isinstance(target_spec, op.TargetSpec):
             raise ValueError(
                 "export() can only be called on a CocoIndex target storage"
             )

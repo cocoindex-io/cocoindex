@@ -214,7 +214,7 @@ from pgvector.psycopg import register_vector
 
 def search(pool: ConnectionPool, query: str, top_k: int = 5):
     # Get the table name, for the export target in the text_embedding_flow above.
-    table_name = cocoindex.utils.get_target_storage_default_name(text_embedding_flow, "doc_embeddings")
+    table_name = cocoindex.utils.get_target_default_name(text_embedding_flow, "doc_embeddings")
     # Evaluate the transform flow defined above with the input query, to get the embedding.
     query_vector = text_to_embedding.eval(query)
     # Run the query and get the results.
@@ -237,7 +237,7 @@ There're two CocoIndex-specific logic:
 1.  Get the table name from the export target in the `text_embedding_flow` above.
     Since the table name for the `Postgres` target is not explicitly specified in the `export()` call,
     CocoIndex uses a default name.
-    `cocoindex.utils.get_target_storage_default_name()` is a utility function to get the default table name for this case.
+    `cocoindex.utils.get_target_default_name()` is a utility function to get the default table name for this case.
 
 2.  Evaluate the transform flow defined above with the input query, to get the embedding.
     It's done by the `eval()` method of the transform flow `text_to_embedding`.

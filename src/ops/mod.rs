@@ -5,7 +5,7 @@ pub mod registry;
 mod factory_bases;
 mod functions;
 mod sources;
-mod storages;
+mod targets;
 
 mod registration;
 pub(crate) use registration::*;
