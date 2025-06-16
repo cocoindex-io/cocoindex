@@ -90,6 +90,15 @@ KEY_FIELD_NAME: str = "_key"
 ElementType = type | tuple[type, type] | Annotated[Any, TypeKind]
 
 
+def extract_ndarray_scalar_dtype(ndarray_type: Any) -> Any:
+    args = typing.get_args(ndarray_type)
+    _, dtype_spec = args
+    dtype_args = typing.get_args(dtype_spec)
+    if not dtype_args:
+        raise ValueError(f"Invalid dtype specification: {dtype_spec}")
+    return dtype_args[0]
+
+
 def is_numpy_number_type(t: type) -> bool:
     return isinstance(t, type) and issubclass(t, np.number)
 
@@ -222,6 +231,8 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         if (dtype_info := DtypeRegistry.get_by_dtype(t)) is not None:
             kind = dtype_info.kind
             np_number_type = dtype_info.numpy_dtype
+        else:
+            raise ValueError(f"Unsupported NumPy dtype: {t}")
     elif base_type is collections.abc.Sequence or base_type is list:
         args = typing.get_args(t)
         elem_type = args[0]
@@ -241,15 +252,8 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             raise ValueError(f"Unexpected type kind for list: {kind}")
     elif base_type is np.ndarray:
         kind = "Vector"
-        args = typing.get_args(t)
-        _, dtype_spec = args
-
-        dtype_args = typing.get_args(dtype_spec)
-        if not dtype_args:
-            raise ValueError("Invalid dtype specification for NDArray")
-
         np_number_type = t
-        numpy_dtype = dtype_args[0]
+        numpy_dtype = extract_ndarray_scalar_dtype(np_number_type)
         dtype_info = DtypeRegistry.get_by_dtype(numpy_dtype)
         if dtype_info is None:
             raise ValueError(

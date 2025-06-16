@@ -13,6 +13,7 @@ from typing import Any, Callable, get_origin, Mapping
 from .typing import (
     analyze_type_info,
     encode_enriched_type,
+    extract_ndarray_scalar_dtype,
     is_namedtuple_type,
     TABLE_TYPES,
     KEY_FIELD_NAME,
@@ -88,7 +89,7 @@ def make_engine_value_decoder(
             field_path, src_type["fields"], dst_type_info.struct_type
         )
 
-    if dst_type_info.np_number_type is not None:
+    if dst_type_info.np_number_type is not None and src_type_kind != "Vector":
         numpy_type = dst_type_info.np_number_type
 
         def decode_numpy_scalar(value: Any) -> Any | None:
@@ -143,34 +144,47 @@ def make_engine_value_decoder(
         return lambda value: uuid.UUID(bytes=value)
 
     if src_type_kind == "Vector":
-        elem_type_info = analyze_type_info(dst_type_info.elem_type)
-        dtype_info = DtypeRegistry.get_by_dtype(elem_type_info.np_number_type)
 
         def decode_vector(value: Any) -> Any | None:
+            field_path_str = "".join(field_path)
+            expected_dim = (
+                dst_type_info.vector_info.dim if dst_type_info.vector_info else None
+            )
+
             if value is None:
                 if dst_type_info.nullable:
                     return None
                 raise ValueError(
-                    f"Received null for non-nullable vector `{''.join(field_path)}`"
+                    f"Received null for non-nullable vector `{field_path_str}`"
                 )
-
             if not isinstance(value, (np.ndarray, list)):
                 raise TypeError(
-                    f"Expected NDArray or list for vector `{''.join(field_path)}`, got {type(value)}"
+                    f"Expected NDArray or list for vector `{field_path_str}`, got {type(value)}"
                 )
-            expected_dim = (
-                dst_type_info.vector_info.dim if dst_type_info.vector_info else None
-            )
             if expected_dim is not None and len(value) != expected_dim:
                 raise ValueError(
-                    f"Vector dimension mismatch for `{''.join(field_path)}`: "
+                    f"Vector dimension mismatch for `{field_path_str}`: "
                     f"expected {expected_dim}, got {len(value)}"
                 )
 
-            # Use NDArray for supported numeric dtypes, else return list
-            if dtype_info is not None:
-                return np.array(value, dtype=dtype_info.numpy_dtype)
-            return value
+            if dst_type_info.np_number_type is None:  # for Non-NDArray vector
+                elem_decoder = make_engine_value_decoder(
+                    field_path + ["[*]"],
+                    src_type["element_type"],
+                    dst_type_info.elem_type,
+                )
+                return [elem_decoder(v) for v in value]
+            else:  # for NDArray vector
+                scalar_dtype = extract_ndarray_scalar_dtype(
+                    dst_type_info.np_number_type
+                )
+                dtype_info = DtypeRegistry.get_by_dtype(scalar_dtype)
+                if dtype_info is None:
+                    raise ValueError(
+                        f"Unsupported dtype in NDArray: {scalar_dtype}. "
+                        f"Supported dtypes: {DtypeRegistry.supported_dtypes()}"
+                    )
+                return np.array(value, dtype=scalar_dtype)
 
         return decode_vector
 
