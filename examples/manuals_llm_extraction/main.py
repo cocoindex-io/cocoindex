@@ -131,6 +131,6 @@ def manual_extraction_flow(
 
     modules_index.export(
         "modules",
-        cocoindex.targets.Postgres(table_name="modules_info"),
+        cocoindex.storages.Postgres(table_name="modules_info"),
         primary_key_fields=["filename"],
     )

@@ -9,7 +9,7 @@ from jinja2 import Template
 
 neo4j_conn_spec = cocoindex.add_auth_entry(
     "Neo4jConnection",
-    cocoindex.targets.Neo4jConnection(
+    cocoindex.storages.Neo4jConnection(
         uri="bolt://localhost:7687",
         user="neo4j",
         password="cocoindex",
@@ -17,7 +17,7 @@ neo4j_conn_spec = cocoindex.add_auth_entry(
 )
 kuzu_conn_spec = cocoindex.add_auth_entry(
     "KuzuConnection",
-    cocoindex.targets.KuzuConnection(
+    cocoindex.storages.KuzuConnection(
         api_server_url="http://localhost:8123",
     ),
 )
@@ -27,15 +27,15 @@ kuzu_conn_spec = cocoindex.add_auth_entry(
 # Please make sure only one branch is live and others are commented out.
 
 # Use Neo4j
-GraphDbSpec = cocoindex.targets.Neo4j
-GraphDbConnection = cocoindex.targets.Neo4jConnection
-GraphDbDeclaration = cocoindex.targets.Neo4jDeclaration
+GraphDbSpec = cocoindex.storages.Neo4j
+GraphDbConnection = cocoindex.storages.Neo4jConnection
+GraphDbDeclaration = cocoindex.storages.Neo4jDeclaration
 conn_spec = neo4j_conn_spec
 
 # Use Kuzu
-#  GraphDbSpec = cocoindex.targets.Kuzu
-#  GraphDbConnection = cocoindex.targets.KuzuConnection
-#  GraphDbDeclaration = cocoindex.targets.KuzuDeclaration
+#  GraphDbSpec = cocoindex.storages.Kuzu
+#  GraphDbConnection = cocoindex.storages.KuzuConnection
+#  GraphDbDeclaration = cocoindex.storages.KuzuDeclaration
 #  conn_spec = kuzu_conn_spec
 
 
@@ -157,7 +157,7 @@ def store_product_flow(
     product_node.export(
         "product_node",
         GraphDbSpec(
-            connection=conn_spec, mapping=cocoindex.targets.Nodes(label="Product")
+            connection=conn_spec, mapping=cocoindex.storages.Nodes(label="Product")
         ),
         primary_key_fields=["id"],
     )
@@ -174,20 +174,20 @@ def store_product_flow(
         "product_taxonomy",
         GraphDbSpec(
             connection=conn_spec,
-            mapping=cocoindex.targets.Relationships(
+            mapping=cocoindex.storages.Relationships(
                 rel_type="PRODUCT_TAXONOMY",
-                source=cocoindex.targets.NodeFromFields(
+                source=cocoindex.storages.NodeFromFields(
                     label="Product",
                     fields=[
-                        cocoindex.targets.TargetFieldMapping(
+                        cocoindex.storages.TargetFieldMapping(
                             source="product_id", target="id"
                         ),
                     ],
                 ),
-                target=cocoindex.targets.NodeFromFields(
+                target=cocoindex.storages.NodeFromFields(
                     label="Taxonomy",
                     fields=[
-                        cocoindex.targets.TargetFieldMapping(
+                        cocoindex.storages.TargetFieldMapping(
                             source="taxonomy", target="value"
                         ),
                     ],
@@ -200,20 +200,20 @@ def store_product_flow(
         "product_complementary_taxonomy",
         GraphDbSpec(
             connection=conn_spec,
-            mapping=cocoindex.targets.Relationships(
+            mapping=cocoindex.storages.Relationships(
                 rel_type="PRODUCT_COMPLEMENTARY_TAXONOMY",
-                source=cocoindex.targets.NodeFromFields(
+                source=cocoindex.storages.NodeFromFields(
                     label="Product",
                     fields=[
-                        cocoindex.targets.TargetFieldMapping(
+                        cocoindex.storages.TargetFieldMapping(
                             source="product_id", target="id"
                         ),
                     ],
                 ),
-                target=cocoindex.targets.NodeFromFields(
+                target=cocoindex.storages.NodeFromFields(
                     label="Taxonomy",
                     fields=[
-                        cocoindex.targets.TargetFieldMapping(
+                        cocoindex.storages.TargetFieldMapping(
                             source="taxonomy", target="value"
                         ),
                     ],

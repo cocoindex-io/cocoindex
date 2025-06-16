@@ -56,7 +56,7 @@ def text_embedding_flow(
 
     doc_embeddings.export(
         "doc_embeddings",
-        cocoindex.targets.Qdrant(collection_name=QDRANT_COLLECTION),
+        cocoindex.storages.Qdrant(collection_name=QDRANT_COLLECTION),
         primary_key_fields=["id"],
     )
 
