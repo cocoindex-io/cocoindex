@@ -883,7 +883,9 @@ impl serde::Serialize for BasicValue {
             BasicValue::Uuid(v) => serializer.serialize_str(&v.to_string()),
             BasicValue::Date(v) => serializer.serialize_str(&v.to_string()),
             BasicValue::Time(v) => serializer.serialize_str(&v.to_string()),
-            BasicValue::LocalDateTime(v) => serializer.serialize_str(&v.to_string()),
+            BasicValue::LocalDateTime(v) => {
+                serializer.serialize_str(&v.format("%Y-%m-%dT%H:%M:%S%.6f").to_string())
+            }
             BasicValue::OffsetDateTime(v) => {
                 serializer.serialize_str(&v.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true))
             }

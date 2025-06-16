@@ -9,7 +9,6 @@ This module tests that:
 """
 
 import os
-import sys
 from unittest.mock import patch
 import pytest
 
@@ -21,7 +20,7 @@ from cocoindex.setting import Settings
 class TestOptionalDatabase:
     """Test suite for optional database functionality."""
 
-    def setup_method(self):
+    def setup_method(self) -> None:
         """Setup method called before each test."""
         # Stop any existing cocoindex instance
         try:
@@ -29,7 +28,7 @@ class TestOptionalDatabase:
         except:
             pass
 
-    def teardown_method(self):
+    def teardown_method(self) -> None:
         """Teardown method called after each test."""
         # Stop cocoindex instance after each test
         try:
@@ -37,7 +36,7 @@ class TestOptionalDatabase:
         except:
             pass
 
-    def test_init_without_database(self):
+    def test_init_without_database(self) -> None:
         """Test that cocoindex.init() works without database settings."""
         # Remove database environment variables
         with patch.dict(os.environ, {}, clear=False):
@@ -55,7 +54,7 @@ class TestOptionalDatabase:
             # If we get here without exception, the test passes
             assert True
 
-    def test_transform_flow_without_database(self):
+    def test_transform_flow_without_database(self) -> None:
         """Test that transform flows work without database."""
         # Remove database environment variables
         with patch.dict(os.environ, {}, clear=False):
@@ -93,7 +92,7 @@ class TestOptionalDatabase:
         not os.getenv("COCOINDEX_DATABASE_URL"),
         reason="Database URL not configured in environment",
     )
-    def test_init_with_database(self):
+    def test_init_with_database(self) -> None:
         """Test that cocoindex.init() works with database settings when available."""
         # This test only runs if database URL is configured
         settings = Settings.from_env()
@@ -109,7 +108,7 @@ class TestOptionalDatabase:
                 or "connection" in str(e).lower()
             )
 
-    def test_settings_from_env_without_database(self):
+    def test_settings_from_env_without_database(self) -> None:
         """Test that Settings.from_env() correctly handles missing database settings."""
         with patch.dict(os.environ, {}, clear=False):
             # Remove database env vars if they exist
@@ -124,7 +123,7 @@ class TestOptionalDatabase:
             assert settings.database is None
             assert settings.app_namespace == ""
 
-    def test_settings_from_env_with_database(self):
+    def test_settings_from_env_with_database(self) -> None:
         """Test that Settings.from_env() correctly handles database settings when provided."""
         test_url = "postgresql://test:test@localhost:5432/test"
         test_user = "testuser"
@@ -144,7 +143,7 @@ class TestOptionalDatabase:
             assert settings.database.user == test_user
             assert settings.database.password == test_password
 
-    def test_settings_from_env_with_partial_database_config(self):
+    def test_settings_from_env_with_partial_database_config(self) -> None:
         """Test Settings.from_env() with only database URL (no user/password)."""
         test_url = "postgresql://localhost:5432/test"
 
@@ -165,7 +164,7 @@ class TestOptionalDatabase:
             assert settings.database.user is None
             assert settings.database.password is None
 
-    def test_multiple_init_calls(self):
+    def test_multiple_init_calls(self) -> None:
         """Test that multiple init calls work correctly."""
         with patch.dict(os.environ, {}, clear=False):
             # Remove database env vars if they exist
@@ -186,7 +185,7 @@ class TestOptionalDatabase:
             # Should work without issues
             assert True
 
-    def test_app_namespace_setting(self):
+    def test_app_namespace_setting(self) -> None:
         """Test that app_namespace setting works correctly."""
         test_namespace = "test_app"
 
@@ -217,7 +216,7 @@ class TestOptionalDatabase:
 class TestDatabaseRequiredOperations:
     """Test suite for operations that require database."""
 
-    def setup_method(self):
+    def setup_method(self) -> None:
         """Setup method called before each test."""
         # Stop any existing cocoindex instance
         try:
@@ -225,7 +224,7 @@ class TestDatabaseRequiredOperations:
         except:
             pass
 
-    def teardown_method(self):
+    def teardown_method(self) -> None:
         """Teardown method called after each test."""
         # Stop cocoindex instance after each test
         try:
@@ -233,7 +232,7 @@ class TestDatabaseRequiredOperations:
         except:
             pass
 
-    def test_database_required_error_message(self):
+    def test_database_required_error_message(self) -> None:
         """Test that operations requiring database show proper error messages."""
         with patch.dict(os.environ, {}, clear=False):
             # Remove database env vars if they exist

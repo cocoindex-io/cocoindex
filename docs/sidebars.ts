@@ -33,7 +33,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'ops/sources',
         'ops/functions',
-        'ops/storages',
+        'ops/targets',
       ],
     },
     {

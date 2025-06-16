@@ -57,6 +57,10 @@ const config: Config = {
             from: '/core/initialization',
             to: '/core/settings',
           },
+          {
+            from: '/ops/storages',
+            to: '/ops/targets',
+          },
         ],
       },
     ],
