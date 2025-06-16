@@ -1,4 +1,4 @@
-"""All builtin storages."""
+"""All builtin targets."""
 
 from dataclasses import dataclass
 from typing import Sequence

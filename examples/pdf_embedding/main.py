@@ -86,7 +86,7 @@ def pdf_embedding_flow(
 
     pdf_embeddings.export(
         "pdf_embeddings",
-        cocoindex.storages.Postgres(),
+        cocoindex.targets.Postgres(),
         primary_key_fields=["id"],
         vector_indexes=[
             cocoindex.VectorIndexDef(

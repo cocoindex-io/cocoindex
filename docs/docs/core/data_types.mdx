@@ -50,7 +50,7 @@ However, the underlying execution engine has finer distinctions for some types, 
 
 The native Python type is always more permissive and can represent a superset of possible values.
 *   Only when you annotate the return type of a custom function, you should use the specific type,
-    so that CocoIndex will have information about the precise type to be used in the execution engine and storage system.
+    so that CocoIndex will have information about the precise type to be used in the execution engine and target.
 *   For all other purposes, e.g. to provide annotation for argument types of a custom function, or used internally in your custom function,
     you can choose whatever to use.
     The native Python type is usually simpler.

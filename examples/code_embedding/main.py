@@ -60,7 +60,7 @@ def code_embedding_flow(
 
     code_embeddings.export(
         "code_embeddings",
-        cocoindex.storages.Postgres(),
+        cocoindex.targets.Postgres(),
         primary_key_fields=["filename", "location"],
         vector_indexes=[
             cocoindex.VectorIndexDef(

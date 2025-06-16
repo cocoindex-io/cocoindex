@@ -87,7 +87,7 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
     # Export collected data to a vector index.
     doc_embeddings.export(
         "doc_embeddings",
-        cocoindex.storages.Postgres(),
+        cocoindex.targets.Postgres(),
         primary_key_fields=["filename", "location"],
         vector_indexes=[
             cocoindex.VectorIndexDef(

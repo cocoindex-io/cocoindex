@@ -9,7 +9,7 @@ An **index** is a collection of data stored in a way that is easy for retrieval.
 
 CocoIndex is an ETL framework for building indexes from specified data sources, a.k.a. **indexing**. It also offers utilities for users to retrieve data from the indexes.
 
-An **indexing flow** extracts data from specified data sources, upon specified transformations, and puts the transformed data into specified target storage for later retrieval.
+An **indexing flow** extracts data from specified data sources, upon specified transformations, and puts the transformed data into specified target for later retrieval.
 
 ## Indexing flow elements
 

@@ -60,7 +60,7 @@ def gdrive_text_embedding_flow(
 
     doc_embeddings.export(
         "doc_embeddings",
-        cocoindex.storages.Postgres(),
+        cocoindex.targets.Postgres(),
         primary_key_fields=["filename", "location"],
         vector_indexes=[
             cocoindex.VectorIndexDef(

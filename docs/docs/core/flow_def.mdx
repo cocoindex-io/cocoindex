@@ -330,7 +330,7 @@ For example,
 ```python
 doc_embeddings.export(
     "doc_embeddings",
-    cocoindex.storages.Qdrant(
+    cocoindex.targets.Qdrant(
         collection_name=cocoindex.get_app_namespace(trailing_delimiter='__') + "doc_embeddings",
         ...
     ),
@@ -359,7 +359,7 @@ To specify configurations for these nodes, you can *declare* spec for related no
 
 ```python
 flow_builder.declare(
-    cocoindex.storages.Neo4jDeclarations(...)
+    cocoindex.targets.Neo4jDeclarations(...)
 )
 ```
 
@@ -389,7 +389,7 @@ You can add an auth entry by `cocoindex.add_auth_entry()` function, which return
 ```python
 my_graph_conn = cocoindex.add_auth_entry(
     "my_graph_conn",
-    cocoindex.storages.Neo4jConnectionSpec(
+    cocoindex.targets.Neo4jConnectionSpec(
             uri="bolt://localhost:7687",
             user="neo4j",
             password="cocoindex",
@@ -403,7 +403,7 @@ Then reference it when building a spec that takes an auth entry:
     ```python
     demo_collector.export(
         "MyGraph",
-        cocoindex.storages.Neo4jRelationship(connection=my_graph_conn, ...)
+        cocoindex.targets.Neo4jRelationship(connection=my_graph_conn, ...)
     )
     ```
 
@@ -412,7 +412,7 @@ Then reference it when building a spec that takes an auth entry:
     ```python
     demo_collector.export(
         "MyGraph",
-        cocoindex.storages.Neo4jRelationship(connection=cocoindex.ref_auth_entry("my_graph_conn"), ...))
+        cocoindex.targets.Neo4jRelationship(connection=cocoindex.ref_auth_entry("my_graph_conn"), ...))
     ```
 
 </TabItem>

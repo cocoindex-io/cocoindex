@@ -113,7 +113,7 @@ Here's how CocoIndex data elements map to nodes in the graph:
 
 Note that the label used in different `Nodes`s should be unique.
 
-`cocoindex.storages.Nodes` is to describe mapping to nodes. It has the following fields:
+`cocoindex.targets.Nodes` is to describe mapping to nodes. It has the following fields:
 
 *   `label` (type: `str`): The label of the node.
 
@@ -133,9 +133,9 @@ We can export them to nodes under label `Document` like this:
 ```python
 document_collector.export(
     ...
-    cocoindex.storages.Neo4j(
+    cocoindex.targets.Neo4j(
         ...
-        mapping=cocoindex.storages.Nodes(label="Document"),
+        mapping=cocoindex.targets.Nodes(label="Document"),
     ),
     primary_key_fields=["filename"],
 )
@@ -168,7 +168,7 @@ graph TD
 
 If a node label needs to appear as source or target of a relationship, but not exported as a node, you need to [declare](../core/flow_def#target-declarations) the label with necessary configuration.
 
-The dataclass to describe the declaration is specific to each target (e.g. `cocoindex.storages.Neo4jDeclarations`),
+The dataclass to describe the declaration is specific to each target (e.g. `cocoindex.targets.Neo4jDeclarations`),
 while they share the following common fields:
 
 *   `nodes_label` (required): The label of the node.
@@ -181,7 +181,7 @@ Considering we want to extract relationships from `Document` to `Place` later (i
 
 ```python
 flow_builder.declare(
-    cocoindex.storages.Neo4jDeclarations(
+    cocoindex.targets.Neo4jDeclarations(
         connection = ...,
         nodes_label="Place",
         primary_key_fields=["name"],
@@ -201,12 +201,12 @@ Here's how CocoIndex data elements map to relationships in the graph:
 
 Note that the type used in different `Relationships`s should be unique.
 
-`cocoindex.storages.Relationships` is to describe mapping to relationships. It has the following fields:
+`cocoindex.targets.Relationships` is to describe mapping to relationships. It has the following fields:
 
 *   `rel_type` (type: `str`): The type of the relationship.
-*   `source`/`target` (type: `cocoindex.storages.NodeFromFields`): Specify how to extract source/target node information from specific fields in the collected row. It has the following fields:
+*   `source`/`target` (type: `cocoindex.targets.NodeFromFields`): Specify how to extract source/target node information from specific fields in the collected row. It has the following fields:
     *   `label` (type: `str`): The label of the node.
-    *   `fields` (type: `Sequence[cocoindex.storages.TargetFieldMapping]`): Specify field mappings from the collected rows to node properties, with the following fields:
+    *   `fields` (type: `Sequence[cocoindex.targets.TargetFieldMapping]`): Specify field mappings from the collected rows to node properties, with the following fields:
         *   `source` (type: `str`): The name of the field in the collected row.
         *   `target` (type: `str`, optional): The name of the field to use as the node field. If unspecified, will use the same as `source`.
 
@@ -238,19 +238,19 @@ We can export them to relationships under type `MENTION` like this:
 ```python
 doc_place_collector.export(
     ...
-    cocoindex.storages.Neo4j(
+    cocoindex.targets.Neo4j(
         ...
-        mapping=cocoindex.storages.Relationships(
+        mapping=cocoindex.targets.Relationships(
             rel_type="MENTION",
-            source=cocoindex.storages.NodeFromFields(
+            source=cocoindex.targets.NodeFromFields(
                 label="Document",
-                fields=[cocoindex.storages.TargetFieldMapping(source="doc_filename", target="filename")],
+                fields=[cocoindex.targets.TargetFieldMapping(source="doc_filename", target="filename")],
             ),
-            target=cocoindex.storages.NodeFromFields(
+            target=cocoindex.targets.NodeFromFields(
                 label="Place",
                 fields=[
-                    cocoindex.storages.TargetFieldMapping(source="place_name", target="name"),
-                    cocoindex.storages.TargetFieldMapping(source="place_embedding", target="embedding"),
+                    cocoindex.targets.TargetFieldMapping(source="place_name", target="name"),
+                    cocoindex.targets.TargetFieldMapping(source="place_embedding", target="embedding"),
                 ],
             ),
         ),
