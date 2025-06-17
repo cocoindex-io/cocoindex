@@ -38,7 +38,7 @@ Following the steps below to get cocoindex build on latest codebase locally - if
     ```bash
     python3 -m venv .venv
     ```
-    Activate the virtual environment, before any installings / buildings / runnings:
+    Activate the virtual environment, before any installing / building / running:
 
     ```bash
     . .venv/bin/activate
