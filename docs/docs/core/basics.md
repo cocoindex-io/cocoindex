@@ -50,7 +50,7 @@ For the example shown in the [Quickstart](../getting_started/quickstart) section
 
 This creates the following data for the indexing flow:
 
-*   The `Localfile` source creates a `documents` field at the top level, with `filename` (key) and `content` sub fields.
+*   The `LocalFile` source creates a `documents` field at the top level, with `filename` (key) and `content` sub fields.
 *   A "for each" action works on each document, with the following transformations:
     *   The `SplitRecursively` function splits content into chunks, adds a `chunks` field into the current scope (each document), with `location` (key) and `text` sub fields.
     *   A "collect" action works on each chunk, with the following transformations:

@@ -84,7 +84,7 @@ Notes:
 
 ### Function Executor
 
-A function executor defines behavior of a function. It's initantiated for each operation that uses this function.
+A function executor defines behavior of a function. It's instantiated for each operation that uses this function.
 
 The function executor is responsible for:
 
@@ -117,7 +117,7 @@ Notes:
 *   The `cocoindex.op.executor_class()` class decorator also takes optional parameters.
     See [Parameters for custom functions](#parameters-for-custom-functions) for details.
 
-*   A `spec` field must be present in the class, and must be annoated with the spec class name.
+*   A `spec` field must be present in the class, and must be annotated with the spec class name.
 *   The `prepare()` method is optional. It's executed once and only once before any `__call__` execution, to prepare the function execution.
 *   The `__call__()` method is required. It's executed for each specific rows of data.
     Types of arugments and the return value must be decorated, so that CocoIndex will have information about data types of the operation's output fields.
