@@ -1,22 +1,22 @@
-import typing
 import collections
 import dataclasses
 import datetime
-import types
 import inspect
+import types
+import typing
 import uuid
 from typing import (
-    Annotated,
-    NamedTuple,
-    Any,
-    KeysView,
-    TypeVar,
     TYPE_CHECKING,
-    overload,
+    Annotated,
+    Any,
     Generic,
     Literal,
+    NamedTuple,
     Protocol,
+    TypeVar,
+    overload,
 )
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -113,41 +113,40 @@ def _is_struct_type(t: ElementType | None) -> bool:
     )
 
 
-class DtypeInfo:
-    """Metadata for a NumPy dtype."""
-
-    def __init__(self, numpy_dtype: type, kind: str, python_type: type) -> None:
-        self.numpy_dtype = numpy_dtype
-        self.kind = kind
-        self.python_type = python_type
-        self.annotated_type = Annotated[python_type, TypeKind(kind)]
-
-
 class DtypeRegistry:
     """
     Registry for NumPy dtypes used in CocoIndex.
-    Provides mappings from NumPy dtypes to CocoIndex's type representation.
+    Maps NumPy dtypes to their CocoIndex type kind.
     """
 
-    _mappings: dict[type, DtypeInfo] = {
-        np.float32: DtypeInfo(np.float32, "Float32", float),
-        np.float64: DtypeInfo(np.float64, "Float64", float),
-        np.int64: DtypeInfo(np.int64, "Int64", int),
+    _DTYPE_TO_KIND: dict[type, str] = {
+        np.float32: "Float32",
+        np.float64: "Float64",
+        np.int64: "Int64",
     }
 
     @classmethod
-    def get_by_dtype(cls, dtype: Any) -> DtypeInfo | None:
-        """Get DtypeInfo by NumPy dtype."""
+    def get_by_dtype(cls, dtype: Any) -> tuple[type, str] | None:
+        """Get the NumPy dtype and its CocoIndex kind by dtype."""
         if dtype is Any:
             raise TypeError(
                 "NDArray for Vector must use a concrete numpy dtype, got `Any`."
             )
-        return cls._mappings.get(dtype)
+        kind = cls._DTYPE_TO_KIND.get(dtype)
+        return None if kind is None else (dtype, kind)
 
-    @staticmethod
-    def supported_dtypes() -> KeysView[type]:
-        """Get a list of supported NumPy dtypes."""
-        return DtypeRegistry._mappings.keys()
+    @classmethod
+    def validate_and_get_dtype_info(cls, dtype: Any) -> tuple[type, str]:
+        """
+        Validate that the given dtype is supported.
+        """
+        dtype_info = cls.get_by_dtype(dtype)
+        if dtype_info is None:
+            raise ValueError(
+                f"Unsupported NumPy dtype in NDArray: {dtype}. "
+                f"Supported dtypes: {cls._DTYPE_TO_KIND.keys()}"
+            )
+        return dtype_info
 
 
 @dataclasses.dataclass
@@ -228,11 +227,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         elif kind != "Struct":
             raise ValueError(f"Unexpected type kind for struct: {kind}")
     elif is_numpy_number_type(t):
-        if (dtype_info := DtypeRegistry.get_by_dtype(t)) is not None:
-            kind = dtype_info.kind
-            np_number_type = dtype_info.numpy_dtype
-        else:
-            raise ValueError(f"Unsupported NumPy dtype: {t}")
+        np_number_type, kind = DtypeRegistry.validate_and_get_dtype_info(t)
     elif base_type is collections.abc.Sequence or base_type is list:
         args = typing.get_args(t)
         elem_type = args[0]
@@ -253,14 +248,8 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     elif base_type is np.ndarray:
         kind = "Vector"
         np_number_type = t
-        numpy_dtype = extract_ndarray_scalar_dtype(np_number_type)
-        dtype_info = DtypeRegistry.get_by_dtype(numpy_dtype)
-        if dtype_info is None:
-            raise ValueError(
-                f"Unsupported numpy dtype for NDArray: {numpy_dtype}. "
-                f"Supported dtypes: {DtypeRegistry.supported_dtypes()}"
-            )
-        elem_type = dtype_info.annotated_type
+        elem_type = extract_ndarray_scalar_dtype(np_number_type)
+        _ = DtypeRegistry.validate_and_get_dtype_info(elem_type)
         vector_info = VectorInfo(dim=None) if vector_info is None else vector_info
 
     elif base_type is collections.abc.Mapping or base_type is dict:

@@ -6,18 +6,19 @@ import dataclasses
 import datetime
 import inspect
 import uuid
+from enum import Enum
+from typing import Any, Callable, Mapping, get_origin
+
 import numpy as np
 
-from enum import Enum
-from typing import Any, Callable, get_origin, Mapping
 from .typing import (
+    KEY_FIELD_NAME,
+    TABLE_TYPES,
+    DtypeRegistry,
     analyze_type_info,
     encode_enriched_type,
     extract_ndarray_scalar_dtype,
     is_namedtuple_type,
-    TABLE_TYPES,
-    KEY_FIELD_NAME,
-    DtypeRegistry,
 )
 
 
@@ -178,12 +179,7 @@ def make_engine_value_decoder(
                 scalar_dtype = extract_ndarray_scalar_dtype(
                     dst_type_info.np_number_type
                 )
-                dtype_info = DtypeRegistry.get_by_dtype(scalar_dtype)
-                if dtype_info is None:
-                    raise ValueError(
-                        f"Unsupported dtype in NDArray: {scalar_dtype}. "
-                        f"Supported dtypes: {DtypeRegistry.supported_dtypes()}"
-                    )
+                _ = DtypeRegistry.validate_and_get_dtype_info(scalar_dtype)
                 return np.array(value, dtype=scalar_dtype)
 
         return decode_vector

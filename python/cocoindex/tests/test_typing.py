@@ -10,8 +10,6 @@ from numpy.typing import NDArray
 
 from cocoindex.typing import (
     AnalyzedTypeInfo,
-    Float32,
-    Float64,
     TypeAttr,
     TypeKind,
     Vector,
@@ -37,7 +35,7 @@ def test_ndarray_float32_no_dim() -> None:
     result = analyze_type_info(typ)
     assert result.kind == "Vector"
     assert result.vector_info == VectorInfo(dim=None)
-    assert result.elem_type == Float32
+    assert result.elem_type == np.float32
     assert result.key_type is None
     assert result.struct_type is None
     assert result.nullable is False
@@ -51,7 +49,7 @@ def test_vector_float32_no_dim() -> None:
     result = analyze_type_info(typ)
     assert result.kind == "Vector"
     assert result.vector_info == VectorInfo(dim=None)
-    assert result.elem_type == Float32
+    assert result.elem_type == np.float32
     assert result.key_type is None
     assert result.struct_type is None
     assert result.nullable is False
@@ -65,7 +63,7 @@ def test_ndarray_float64_with_dim() -> None:
     result = analyze_type_info(typ)
     assert result.kind == "Vector"
     assert result.vector_info == VectorInfo(dim=128)
-    assert result.elem_type == Float64
+    assert result.elem_type == np.float64
     assert result.key_type is None
     assert result.struct_type is None
     assert result.nullable is False
@@ -79,7 +77,7 @@ def test_vector_float32_with_dim() -> None:
     result = analyze_type_info(typ)
     assert result.kind == "Vector"
     assert result.vector_info == VectorInfo(dim=384)
-    assert result.elem_type == Float32
+    assert result.elem_type == np.float32
     assert result.key_type is None
     assert result.struct_type is None
     assert result.nullable is False
@@ -93,7 +91,7 @@ def test_ndarray_int64_no_dim() -> None:
     result = analyze_type_info(typ)
     assert result.kind == "Vector"
     assert result.vector_info == VectorInfo(dim=None)
-    assert get_args(result.elem_type) == (int, TypeKind("Int64"))
+    assert result.elem_type == np.int64
     assert result.nullable is False
     assert result.np_number_type is not None
     assert get_origin(result.np_number_type) == np.ndarray
@@ -105,7 +103,7 @@ def test_nullable_ndarray() -> None:
     result = analyze_type_info(typ)
     assert result.kind == "Vector"
     assert result.vector_info == VectorInfo(dim=None)
-    assert result.elem_type == Float32
+    assert result.elem_type == np.float32
     assert result.key_type is None
     assert result.struct_type is None
     assert result.nullable is True
