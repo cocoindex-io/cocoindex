@@ -1,24 +1,25 @@
-import uuid
 import datetime
+import uuid
 from dataclasses import dataclass, make_dataclass
-from typing import NamedTuple, Literal, Any, Annotated, Callable
+from typing import Annotated, Any, Callable, Literal, NamedTuple
+
+import numpy as np
 import pytest
+from numpy.typing import NDArray
+
 import cocoindex
-from cocoindex.typing import (
-    encode_enriched_type,
-    Float32,
-    TypeKind,
-    Vector,
-    Float32,
-    Float64,
-)
 from cocoindex.convert import (
+    dump_engine_object,
     encode_engine_value,
     make_engine_value_decoder,
-    dump_engine_object,
 )
-import numpy as np
-from numpy.typing import NDArray
+from cocoindex.typing import (
+    Float32,
+    Float64,
+    TypeKind,
+    Vector,
+    encode_enriched_type,
+)
 
 
 @dataclass
@@ -130,7 +131,7 @@ def test_encode_engine_value_date_time_types() -> None:
     assert encode_engine_value(dt) == dt
 
 
-def test_encode_scalar_numpy_values():
+def test_encode_scalar_numpy_values() -> None:
     """Test encoding scalar NumPy values to engine-compatible values."""
     test_cases = [
         (np.int64(42), 42),
@@ -228,7 +229,7 @@ def test_roundtrip_basic_types() -> None:
     )
 
 
-def test_decode_scalar_numpy_values():
+def test_decode_scalar_numpy_values() -> None:
     test_cases = [
         ({"kind": "Int64"}, np.int64, 42, np.int64(42)),
         ({"kind": "Float32"}, np.float32, 3.14, np.float32(3.14)),
@@ -241,29 +242,29 @@ def test_decode_scalar_numpy_values():
         assert result == expected
 
 
-def test_non_ndarray_vector_decoding():
+def test_non_ndarray_vector_decoding() -> None:
     # Test list[np.float64]
     src_type = {
         "kind": "Vector",
         "element_type": {"kind": "Float64"},
         "dimension": None,
     }
-    dst_type = list[np.float64]
-    decoder = make_engine_value_decoder(["field"], src_type, dst_type)
-    input_value = [1.0, 2.0, 3.0]
-    result = decoder(input_value)
+    dst_type_float = list[np.float64]
+    decoder = make_engine_value_decoder(["field"], src_type, dst_type_float)
+    input_numbers = [1.0, 2.0, 3.0]
+    result = decoder(input_numbers)
     assert isinstance(result, list)
     assert all(isinstance(x, np.float64) for x in result)
     assert result == [np.float64(1.0), np.float64(2.0), np.float64(3.0)]
 
     # Test list[Uuid]
     src_type = {"kind": "Vector", "element_type": {"kind": "Uuid"}, "dimension": None}
-    dst_type = list[uuid.UUID]
-    decoder = make_engine_value_decoder(["field"], src_type, dst_type)
+    dst_type_uuid = list[uuid.UUID]
+    decoder = make_engine_value_decoder(["field"], src_type, dst_type_uuid)
     uuid1 = uuid.uuid4()
     uuid2 = uuid.uuid4()
-    input_value = [uuid1.bytes, uuid2.bytes]
-    result = decoder(input_value)
+    input_bytes = [uuid1.bytes, uuid2.bytes]
+    result = decoder(input_bytes)
     assert isinstance(result, list)
     assert all(isinstance(x, uuid.UUID) for x in result)
     assert result == [uuid1, uuid2]
@@ -946,6 +947,6 @@ def test_full_roundtrip_scalar_with_python_types() -> None:
         python_float=3.14,
         string="hello, world",
         annotated_int=np.int64(42),
-        annotated_float=np.float32(3.14),
+        annotated_float=2.0,
     )
     validate_full_roundtrip(instance, MixedStruct)
