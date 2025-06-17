@@ -64,8 +64,10 @@ impl LlmGenerationClient for Client {
             },
         ));
 
+        // Save output_format before it is moved.
+        let output_format = request.output_format.clone();
         // Create the chat completion request
-        let request = CreateChatCompletionRequest {
+        let openai_request = CreateChatCompletionRequest {
             model: self.model.clone(),
             messages,
             response_format: match request.output_format {
@@ -85,7 +87,7 @@ impl LlmGenerationClient for Client {
         };
 
         // Send request and get response
-        let response = self.client.chat().create(request).await?;
+        let response = self.client.chat().create(openai_request).await?;
 
         // Extract the response text from the first choice
         let text = response
@@ -95,7 +97,15 @@ impl LlmGenerationClient for Client {
             .and_then(|choice| choice.message.content)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
 
-        Ok(super::LlmGenerateResponse { text })
+        // If output_format is JsonSchema, try to parse as JSON
+        if let Some(super::OutputFormat::JsonSchema { .. }) = output_format {
+            match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(val) => Ok(super::LlmGenerateResponse::Json(val)),
+                Err(_) => Ok(super::LlmGenerateResponse::Text(text)),
+            }
+        } else {
+            Ok(super::LlmGenerateResponse::Text(text))
+        }
     }
 
     fn json_schema_options(&self) -> super::ToJsonSchemaOptions {

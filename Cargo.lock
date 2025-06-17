@@ -1070,7 +1070,6 @@ dependencies = [
  "indexmap 2.9.0",
  "indoc",
  "itertools 0.14.0",
- "json5",
  "log",
  "neo4rs",
  "numpy",
