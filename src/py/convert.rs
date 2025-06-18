@@ -357,12 +357,14 @@ mod tests {
                 .expect("Failed to convert Rust value to Python object");
 
             println!("Python object: {:?}", py_object);
-            let roundtripped_value =
-                value_from_py_object(value_type, &py_object)
-                    .expect("Failed to convert Python object back to Rust value");
+            let roundtripped_value = value_from_py_object(value_type, &py_object)
+                .expect("Failed to convert Python object back to Rust value");
 
             println!("Roundtripped value: {:?}", roundtripped_value);
-            assert_eq!(original_value, &roundtripped_value, "Value mismatch after roundtrip");
+            assert_eq!(
+                original_value, &roundtripped_value,
+                "Value mismatch after roundtrip"
+            );
         });
     }
 

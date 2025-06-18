@@ -532,8 +532,6 @@ impl setup::ResourceSetupStatus for SetupStatus {
             || !self.actions.indexes_to_delete.is_empty();
         self.actions.table_action.change_type(has_other_update)
     }
-
-
 }
 
 impl SetupStatus {

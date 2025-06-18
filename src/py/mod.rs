@@ -394,7 +394,11 @@ impl SetupStatus {
 fn sync_setup(py: Python<'_>) -> PyResult<SetupStatus> {
     let lib_context = get_lib_context().into_py_result()?;
     let flows = lib_context.flows.lock().unwrap();
-    let all_setup_states = lib_context.require_all_setup_states().into_py_result()?.read().unwrap();
+    let all_setup_states = lib_context
+        .require_all_setup_states()
+        .into_py_result()?
+        .read()
+        .unwrap();
     py.allow_threads(|| {
         get_runtime()
             .block_on(async {
@@ -408,7 +412,11 @@ fn sync_setup(py: Python<'_>) -> PyResult<SetupStatus> {
 #[pyfunction]
 fn drop_setup(py: Python<'_>, flow_names: Vec<String>) -> PyResult<SetupStatus> {
     let lib_context = get_lib_context().into_py_result()?;
-    let all_setup_states = lib_context.require_all_setup_states().into_py_result()?.read().unwrap();
+    let all_setup_states = lib_context
+        .require_all_setup_states()
+        .into_py_result()?
+        .read()
+        .unwrap();
     py.allow_threads(|| {
         get_runtime()
             .block_on(async {
@@ -422,7 +430,11 @@ fn drop_setup(py: Python<'_>, flow_names: Vec<String>) -> PyResult<SetupStatus> 
 #[pyfunction]
 fn flow_names_with_setup() -> PyResult<Vec<String>> {
     let lib_context = get_lib_context().into_py_result()?;
-    let all_setup_states = lib_context.require_all_setup_states().into_py_result()?.read().unwrap();
+    let all_setup_states = lib_context
+        .require_all_setup_states()
+        .into_py_result()?
+        .read()
+        .unwrap();
     let flow_names = all_setup_states.flows.keys().cloned().collect();
     Ok(flow_names)
 }

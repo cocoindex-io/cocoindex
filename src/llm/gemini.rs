@@ -3,7 +3,7 @@ use crate::llm::{
     LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, LlmSpec, OutputFormat,
     ToJsonSchemaOptions,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde_json::Value;
 use urlencoding::encode;

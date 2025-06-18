@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use futures::future::Ready;
 use sqlx::PgPool;
-use std::collections::{hash_map, HashMap};
+use std::collections::{HashMap, hash_map};
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use super::{

@@ -110,7 +110,9 @@ impl LibContext {
             .ok_or_else(|| anyhow!("Database is required for this operation. Please set COCOINDEX_DATABASE_URL environment variable and call cocoindex.init() with database settings."))
     }
 
-    pub fn require_all_setup_states(&self) -> Result<&RwLock<setup::AllSetupState<setup::ExistingMode>>> {
+    pub fn require_all_setup_states(
+        &self,
+    ) -> Result<&RwLock<setup::AllSetupState<setup::ExistingMode>>> {
         self.persistence_ctx
             .as_ref()
             .map(|ctx| &ctx.all_setup_states)
@@ -149,7 +151,7 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         // No database configured
         None
     };
-    
+
     Ok(LibContext {
         db_pools,
         persistence_ctx,

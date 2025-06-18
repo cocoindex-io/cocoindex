@@ -194,8 +194,6 @@ impl setup::ResourceSetupStatus for GraphElementDataSetupStatus {
     fn change_type(&self) -> SetupChangeType {
         self.actions.change_type(false)
     }
-
-
 }
 
 fn append_drop_table(

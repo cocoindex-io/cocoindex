@@ -2,11 +2,11 @@ use anyhow::bail;
 use base64::prelude::*;
 use blake2::digest::typenum;
 use blake2::{Blake2b, Digest};
+use serde::Deserialize;
 use serde::ser::{
     Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
     SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
-use serde::Deserialize;
 
 #[derive(Debug)]
 pub struct FingerprinterError {

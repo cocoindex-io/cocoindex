@@ -258,17 +258,14 @@ impl FlowBuilder {
     #[new]
     pub fn new(name: &str) -> PyResult<Self> {
         let lib_context = get_lib_context().into_py_result()?;
-        let existing_flow_ss = lib_context
-            .persistence_ctx
-            .as_ref()
-            .and_then(|ctx| {
-                ctx.all_setup_states
-                    .read()
-                    .unwrap()
-                    .flows
-                    .get(name)
-                    .cloned()
-            });
+        let existing_flow_ss = lib_context.persistence_ctx.as_ref().and_then(|ctx| {
+            ctx.all_setup_states
+                .read()
+                .unwrap()
+                .flows
+                .get(name)
+                .cloned()
+        });
         let root_op_scope = OpScope::new(
             spec::ROOT_SCOPE_NAME.to_string(),
             None,

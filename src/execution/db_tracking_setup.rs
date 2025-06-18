@@ -154,8 +154,6 @@ impl ResourceSetupStatus for TrackingTableSetupStatus {
             (None, None) => SetupChangeType::NoChange,
         }
     }
-
-
 }
 
 impl TrackingTableSetupStatus {
