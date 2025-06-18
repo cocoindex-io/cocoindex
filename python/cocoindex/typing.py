@@ -155,7 +155,7 @@ class AnalyzedTypeInfo:
 
     attrs: dict[str, Any] | None
     nullable: bool = False
-    union_variant_types: list[type] | None = None  # For Union
+    union_variant_types: typing.List[ElementType] | None = None  # For Union
 
 
 def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
@@ -194,7 +194,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
 
     struct_type: type | None = None
     elem_type: ElementType | None = None
-    union_variant_types: typing.List[ElementType] = None
+    union_variant_types: typing.List[ElementType] | None = None
     key_type: type | None = None
     np_number_type: type | None = None
     if _is_struct_type(t):
