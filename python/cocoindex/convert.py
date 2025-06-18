@@ -179,7 +179,7 @@ def make_engine_value_decoder(
                 scalar_dtype = extract_ndarray_scalar_dtype(
                     dst_type_info.np_number_type
                 )
-                _ = DtypeRegistry.validate_and_get_dtype_info(scalar_dtype)
+                _ = DtypeRegistry.validate_dtype_and_get_kind(scalar_dtype)
                 return np.array(value, dtype=scalar_dtype)
 
         return decode_vector

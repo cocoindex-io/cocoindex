@@ -67,7 +67,7 @@ else:
                 # No dimension provided, e.g., Vector[np.float32]
                 dtype = params
                 # Use NDArray for supported numeric dtypes, else list
-                if DtypeRegistry.get_by_dtype(dtype) is not None:
+                if dtype in DtypeRegistry._DTYPE_TO_KIND:
                     return Annotated[NDArray[dtype], VectorInfo(dim=None)]
                 return Annotated[list[dtype], VectorInfo(dim=None)]
             else:
@@ -79,7 +79,7 @@ else:
                     if typing.get_origin(dim_literal) is Literal
                     else None
                 )
-                if DtypeRegistry.get_by_dtype(dtype) is not None:
+                if dtype in DtypeRegistry._DTYPE_TO_KIND:
                     return Annotated[NDArray[dtype], VectorInfo(dim=dim_val)]
                 return Annotated[list[dtype], VectorInfo(dim=dim_val)]
 
@@ -119,34 +119,28 @@ class DtypeRegistry:
     Maps NumPy dtypes to their CocoIndex type kind.
     """
 
-    _DTYPE_TO_KIND: dict[type, str] = {
+    _DTYPE_TO_KIND: dict[ElementType, str] = {
         np.float32: "Float32",
         np.float64: "Float64",
         np.int64: "Int64",
     }
 
     @classmethod
-    def get_by_dtype(cls, dtype: Any) -> tuple[type, str] | None:
-        """Get the NumPy dtype and its CocoIndex kind by dtype."""
+    def validate_dtype_and_get_kind(cls, dtype: ElementType) -> str:
+        """
+        Validate that the given dtype is supported, and get its CocoIndex kind by dtype.
+        """
         if dtype is Any:
             raise TypeError(
                 "NDArray for Vector must use a concrete numpy dtype, got `Any`."
             )
         kind = cls._DTYPE_TO_KIND.get(dtype)
-        return None if kind is None else (dtype, kind)
-
-    @classmethod
-    def validate_and_get_dtype_info(cls, dtype: Any) -> tuple[type, str]:
-        """
-        Validate that the given dtype is supported.
-        """
-        dtype_info = cls.get_by_dtype(dtype)
-        if dtype_info is None:
+        if kind is None:
             raise ValueError(
                 f"Unsupported NumPy dtype in NDArray: {dtype}. "
                 f"Supported dtypes: {cls._DTYPE_TO_KIND.keys()}"
             )
-        return dtype_info
+        return kind
 
 
 @dataclasses.dataclass
@@ -227,7 +221,8 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         elif kind != "Struct":
             raise ValueError(f"Unexpected type kind for struct: {kind}")
     elif is_numpy_number_type(t):
-        np_number_type, kind = DtypeRegistry.validate_and_get_dtype_info(t)
+        np_number_type = t
+        kind = DtypeRegistry.validate_dtype_and_get_kind(t)
     elif base_type is collections.abc.Sequence or base_type is list:
         args = typing.get_args(t)
         elem_type = args[0]
@@ -249,7 +244,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         kind = "Vector"
         np_number_type = t
         elem_type = extract_ndarray_scalar_dtype(np_number_type)
-        _ = DtypeRegistry.validate_and_get_dtype_info(elem_type)
+        _ = DtypeRegistry.validate_dtype_and_get_kind(elem_type)
         vector_info = VectorInfo(dim=None) if vector_info is None else vector_info
 
     elif base_type is collections.abc.Mapping or base_type is dict:
