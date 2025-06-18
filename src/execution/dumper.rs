@@ -1,6 +1,6 @@
 use anyhow::Result;
-use futures::future::try_join_all;
 use futures::StreamExt;
+use futures::future::try_join_all;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use serde::ser::SerializeSeq;

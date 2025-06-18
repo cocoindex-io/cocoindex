@@ -348,8 +348,6 @@ impl ResourceSetupStatus for MetadataTableSetup {
             SetupChangeType::NoChange
         }
     }
-
-
 }
 
 impl MetadataTableSetup {

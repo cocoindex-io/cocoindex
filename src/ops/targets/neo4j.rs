@@ -853,8 +853,6 @@ impl ResourceSetupStatus for GraphElementDataSetupStatus {
     fn change_type(&self) -> SetupChangeType {
         self.change_type
     }
-
-
 }
 
 async fn clear_graph_element_data(

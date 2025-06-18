@@ -2,7 +2,7 @@ use crate::llm::{
     LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, LlmSpec, OutputFormat,
     ToJsonSchemaOptions,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use json5;
 use serde_json::Value;
@@ -115,8 +115,12 @@ impl LlmGenerationClient for Client {
                                 Ok(value) => {
                                     println!("[Anthropic] Used permissive JSON5 parser for output");
                                     serde_json::to_string(&value)?
-                                },
-                                Err(e2) => return Err(anyhow::anyhow!(format!("No structured tool output or text found in response, and permissive JSON5 parsing also failed: {e}; {e2}")))
+                                }
+                                Err(e2) => {
+                                    return Err(anyhow::anyhow!(format!(
+                                        "No structured tool output or text found in response, and permissive JSON5 parsing also failed: {e}; {e2}"
+                                    )));
+                                }
                             }
                         }
                     }
@@ -124,7 +128,7 @@ impl LlmGenerationClient for Client {
                 _ => {
                     return Err(anyhow::anyhow!(
                         "No structured tool output or text found in response"
-                    ))
+                    ));
                 }
             }
         };

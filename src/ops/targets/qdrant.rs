@@ -141,8 +141,6 @@ impl setup::ResourceSetupStatus for SetupStatus {
             (true, true) => setup::SetupChangeType::Update,
         }
     }
-
-
 }
 
 impl SetupStatus {

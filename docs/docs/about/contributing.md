@@ -26,36 +26,36 @@ Following the steps below to get cocoindex build on latest codebase locally - if
 -   🦀 [Install Rust](https://rust-lang.org/tools/install)
     
     If you don't have Rust installed, run
-    ```bash
+    ```sh
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
     ```
     Already have Rust? Make sure it's up to date 
-    ```bash 
+    ```sh 
     rustup update
     ```
 
--   (Recommended) Setup Python virtual environment:
-    ```bash
+-   Setup Python virtual environment:
+    ```sh
     python3 -m venv .venv
     ```
     Activate the virtual environment, before any installing / building / running:
 
-    ```bash
+    ```sh
     . .venv/bin/activate
     ```
 
--   Install maturin:
-    ```bash
-    pip install maturin
+-   Install required tools:
+    ```sh
+    pip install maturin mypy ruff
     ```
 
 -   Build the library. Run at the root of cocoindex directory:
-    ```bash
+    ```sh
     maturin develop
     ```
 
--   (Optional) Before running a specific example, set extra environment variables, for exposing extra traces, allowing dev UI, etc.
-    ```bash
+-   Before running a specific example, set extra environment variables, for exposing extra traces, allowing dev UI, etc.
+    ```sh
     . ./.env.lib_debug
     ```
 
@@ -67,7 +67,12 @@ To submit your code:
 1. Fork the [CocoIndex repository](https://github.com/cocoindex-io/cocoindex)
 2. [Create a new branch](https://docs.github.com/en/desktop/making-changes-in-a-branch/managing-branches-in-github-desktop) on your fork
 3. Make your changes
-4. [Open a Pull Request (PR)](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork) when your work is ready for review
+4. Make sure all tests and linting pass by running
+   ```sh
+   ./check.sh
+   ```
+
+5. [Open a Pull Request (PR)](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork) when your work is ready for review
 
 In your PR description, please include:
 - Description of the changes

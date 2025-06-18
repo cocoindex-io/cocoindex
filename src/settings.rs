@@ -33,7 +33,7 @@ mod tests {
         }"#;
 
         let settings: Settings = serde_json::from_str(json).unwrap();
-        
+
         assert!(settings.database.is_some());
         let db = settings.database.unwrap();
         assert_eq!(db.url, "postgresql://localhost:5432/test");
@@ -49,7 +49,7 @@ mod tests {
         }"#;
 
         let settings: Settings = serde_json::from_str(json).unwrap();
-        
+
         assert!(settings.database.is_none());
         assert_eq!(settings.app_namespace, "test_app");
     }
@@ -59,7 +59,7 @@ mod tests {
         let json = r#"{}"#;
 
         let settings: Settings = serde_json::from_str(json).unwrap();
-        
+
         assert!(settings.database.is_none());
         assert_eq!(settings.app_namespace, "");
     }
@@ -73,7 +73,7 @@ mod tests {
         }"#;
 
         let settings: Settings = serde_json::from_str(json).unwrap();
-        
+
         assert!(settings.database.is_some());
         let db = settings.database.unwrap();
         assert_eq!(db.url, "postgresql://localhost:5432/test");
@@ -91,7 +91,7 @@ mod tests {
         }"#;
 
         let db_spec: DatabaseConnectionSpec = serde_json::from_str(json).unwrap();
-        
+
         assert_eq!(db_spec.url, "postgresql://localhost:5432/test");
         assert_eq!(db_spec.user, Some("testuser".to_string()));
         assert_eq!(db_spec.password, Some("testpass".to_string()));

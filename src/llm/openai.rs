@@ -3,6 +3,7 @@ use crate::api_bail;
 use super::LlmGenerationClient;
 use anyhow::Result;
 use async_openai::{
+    Client as OpenAIClient,
     config::OpenAIConfig,
     types::{
         ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
@@ -10,7 +11,6 @@ use async_openai::{
         ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest, ResponseFormat,
         ResponseFormatJsonSchema,
     },
-    Client as OpenAIClient,
 };
 use async_trait::async_trait;
 
