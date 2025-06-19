@@ -9,6 +9,7 @@ class LlmApiType(Enum):
     OLLAMA = "Ollama"
     GEMINI = "Gemini"
     ANTHROPIC = "Anthropic"
+    LITELLM = "LiteLlm"
 
 
 @dataclass

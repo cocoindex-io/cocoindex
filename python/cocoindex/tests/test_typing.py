@@ -1,30 +1,21 @@
 import dataclasses
 import datetime
 import uuid
-from typing import (
-    Annotated,
-    List,
-    Dict,
-    Literal,
-    Any,
-    get_args,
-    NamedTuple,
-)
-from collections.abc import Sequence, Mapping
-import pytest
+from collections.abc import Mapping, Sequence
+from typing import Annotated, Any, Dict, List, Literal, NamedTuple, get_args, get_origin
+
 import numpy as np
+import pytest
 from numpy.typing import NDArray
 
 from cocoindex.typing import (
-    analyze_type_info,
+    AnalyzedTypeInfo,
+    TypeAttr,
+    TypeKind,
     Vector,
     VectorInfo,
-    TypeKind,
-    TypeAttr,
-    Float32,
-    Float64,
+    analyze_type_info,
     encode_enriched_type,
-    AnalyzedTypeInfo,
 )
 
 
@@ -42,61 +33,57 @@ class SimpleNamedTuple(NamedTuple):
 def test_ndarray_float32_no_dim() -> None:
     typ = NDArray[np.float32]
     result = analyze_type_info(typ)
-    assert result == AnalyzedTypeInfo(
-        kind="Vector",
-        vector_info=VectorInfo(dim=None),
-        elem_type=Float32,
-        key_type=None,
-        struct_type=None,
-        np_number_type=np.float32,
-        attrs=None,
-        nullable=False,
-    )
+    assert result.kind == "Vector"
+    assert result.vector_info == VectorInfo(dim=None)
+    assert result.elem_type == np.float32
+    assert result.key_type is None
+    assert result.struct_type is None
+    assert result.nullable is False
+    assert result.np_number_type is not None
+    assert get_origin(result.np_number_type) == np.ndarray
+    assert get_args(result.np_number_type)[1] == np.dtype[np.float32]
 
 
 def test_vector_float32_no_dim() -> None:
     typ = Vector[np.float32]
     result = analyze_type_info(typ)
-    assert result == AnalyzedTypeInfo(
-        kind="Vector",
-        vector_info=VectorInfo(dim=None),
-        elem_type=Float32,
-        key_type=None,
-        struct_type=None,
-        np_number_type=np.float32,
-        attrs=None,
-        nullable=False,
-    )
+    assert result.kind == "Vector"
+    assert result.vector_info == VectorInfo(dim=None)
+    assert result.elem_type == np.float32
+    assert result.key_type is None
+    assert result.struct_type is None
+    assert result.nullable is False
+    assert result.np_number_type is not None
+    assert get_origin(result.np_number_type) == np.ndarray
+    assert get_args(result.np_number_type)[1] == np.dtype[np.float32]
 
 
 def test_ndarray_float64_with_dim() -> None:
     typ = Annotated[NDArray[np.float64], VectorInfo(dim=128)]
     result = analyze_type_info(typ)
-    assert result == AnalyzedTypeInfo(
-        kind="Vector",
-        vector_info=VectorInfo(dim=128),
-        elem_type=Float64,
-        key_type=None,
-        struct_type=None,
-        np_number_type=np.float64,
-        attrs=None,
-        nullable=False,
-    )
+    assert result.kind == "Vector"
+    assert result.vector_info == VectorInfo(dim=128)
+    assert result.elem_type == np.float64
+    assert result.key_type is None
+    assert result.struct_type is None
+    assert result.nullable is False
+    assert result.np_number_type is not None
+    assert get_origin(result.np_number_type) == np.ndarray
+    assert get_args(result.np_number_type)[1] == np.dtype[np.float64]
 
 
 def test_vector_float32_with_dim() -> None:
     typ = Vector[np.float32, Literal[384]]
     result = analyze_type_info(typ)
-    assert result == AnalyzedTypeInfo(
-        kind="Vector",
-        vector_info=VectorInfo(dim=384),
-        elem_type=Float32,
-        key_type=None,
-        struct_type=None,
-        np_number_type=np.float32,
-        attrs=None,
-        nullable=False,
-    )
+    assert result.kind == "Vector"
+    assert result.vector_info == VectorInfo(dim=384)
+    assert result.elem_type == np.float32
+    assert result.key_type is None
+    assert result.struct_type is None
+    assert result.nullable is False
+    assert result.np_number_type is not None
+    assert get_origin(result.np_number_type) == np.ndarray
+    assert get_args(result.np_number_type)[1] == np.dtype[np.float32]
 
 
 def test_ndarray_int64_no_dim() -> None:
@@ -104,30 +91,49 @@ def test_ndarray_int64_no_dim() -> None:
     result = analyze_type_info(typ)
     assert result.kind == "Vector"
     assert result.vector_info == VectorInfo(dim=None)
-    assert get_args(result.elem_type) == (int, TypeKind("Int64"))
-    assert not result.nullable
+    assert result.elem_type == np.int64
+    assert result.nullable is False
+    assert result.np_number_type is not None
+    assert get_origin(result.np_number_type) == np.ndarray
+    assert get_args(result.np_number_type)[1] == np.dtype[np.int64]
 
 
 def test_nullable_ndarray() -> None:
     typ = NDArray[np.float32] | None
     result = analyze_type_info(typ)
-    assert result == AnalyzedTypeInfo(
-        kind="Vector",
-        vector_info=VectorInfo(dim=None),
-        elem_type=Float32,
-        key_type=None,
-        struct_type=None,
-        np_number_type=np.float32,
-        attrs=None,
-        nullable=True,
-    )
+    assert result.kind == "Vector"
+    assert result.vector_info == VectorInfo(dim=None)
+    assert result.elem_type == np.float32
+    assert result.key_type is None
+    assert result.struct_type is None
+    assert result.nullable is True
+    assert result.np_number_type is not None
+    assert get_origin(result.np_number_type) == np.ndarray
+    assert get_args(result.np_number_type)[1] == np.dtype[np.float32]
+
+
+def test_scalar_numpy_types() -> None:
+    for np_type, expected_kind in [
+        (np.int64, "Int64"),
+        (np.float32, "Float32"),
+        (np.float64, "Float64"),
+    ]:
+        type_info = analyze_type_info(np_type)
+        assert type_info.kind == expected_kind, (
+            f"Expected {expected_kind} for {np_type}, got {type_info.kind}"
+        )
+        assert type_info.np_number_type == np_type, (
+            f"Expected {np_type}, got {type_info.np_number_type}"
+        )
+        assert type_info.elem_type is None
+        assert type_info.vector_info is None
 
 
 def test_vector_str() -> None:
     typ = Vector[str]
     result = analyze_type_info(typ)
     assert result.kind == "Vector"
-    assert result.elem_type == str
+    assert result.elem_type is str
     assert result.vector_info == VectorInfo(dim=None)
 
 
@@ -143,7 +149,7 @@ def test_non_numpy_vector() -> None:
     typ = Vector[float, Literal[3]]
     result = analyze_type_info(typ)
     assert result.kind == "Vector"
-    assert result.elem_type == float
+    assert result.elem_type is float
     assert result.vector_info == VectorInfo(dim=3)
 
 
@@ -485,6 +491,19 @@ def test_encode_enriched_type_nullable() -> None:
     result = encode_enriched_type(typ)
     assert result["type"]["kind"] == "Str"
     assert result["nullable"] is True
+
+
+def test_encode_scalar_numpy_types_schema() -> None:
+    for np_type, expected_kind in [
+        (np.int64, "Int64"),
+        (np.float32, "Float32"),
+        (np.float64, "Float64"),
+    ]:
+        schema = encode_enriched_type(np_type)
+        assert schema["type"]["kind"] == expected_kind, (
+            f"Expected {expected_kind} for {np_type}, got {schema['type']['kind']}"
+        )
+        assert not schema.get("nullable", False)
 
 
 def test_invalid_struct_kind() -> None:

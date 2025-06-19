@@ -1,22 +1,25 @@
-import uuid
 import datetime
+import uuid
 from dataclasses import dataclass, make_dataclass
-from typing import NamedTuple, Literal, Any, Callable, Union
+from typing import Annotated, Any, Callable, Literal, NamedTuple
+
+import numpy as np
 import pytest
+from numpy.typing import NDArray
+
 import cocoindex
-from cocoindex.typing import (
-    encode_enriched_type,
-    Vector,
-    Float32,
-    Float64,
-)
 from cocoindex.convert import (
+    dump_engine_object,
     encode_engine_value,
     make_engine_value_decoder,
-    dump_engine_object,
 )
-import numpy as np
-from numpy.typing import NDArray
+from cocoindex.typing import (
+    Float32,
+    Float64,
+    TypeKind,
+    Vector,
+    encode_enriched_type,
+)
 
 
 @dataclass
@@ -128,6 +131,19 @@ def test_encode_engine_value_date_time_types() -> None:
     assert encode_engine_value(dt) == dt
 
 
+def test_encode_scalar_numpy_values() -> None:
+    """Test encoding scalar NumPy values to engine-compatible values."""
+    test_cases = [
+        (np.int64(42), 42),
+        (np.float32(3.14), pytest.approx(3.14)),
+        (np.float64(2.718), pytest.approx(2.718)),
+    ]
+    for np_value, expected in test_cases:
+        encoded = encode_engine_value(np_value)
+        assert encoded == expected
+        assert isinstance(encoded, (int, float))
+
+
 def test_encode_engine_value_struct() -> None:
     order = Order(order_id="O123", name="mixed nuts", price=25.0)
     assert encode_engine_value(order) == ["O123", "mixed nuts", 25.0, "default_extra"]
@@ -211,6 +227,47 @@ def test_roundtrip_basic_types() -> None:
     validate_full_roundtrip(
         datetime.datetime.now(datetime.UTC), cocoindex.OffsetDateTime
     )
+
+
+def test_decode_scalar_numpy_values() -> None:
+    test_cases = [
+        ({"kind": "Int64"}, np.int64, 42, np.int64(42)),
+        ({"kind": "Float32"}, np.float32, 3.14, np.float32(3.14)),
+        ({"kind": "Float64"}, np.float64, 2.718, np.float64(2.718)),
+    ]
+    for src_type, dst_type, input_value, expected in test_cases:
+        decoder = make_engine_value_decoder(["field"], src_type, dst_type)
+        result = decoder(input_value)
+        assert isinstance(result, dst_type)
+        assert result == expected
+
+
+def test_non_ndarray_vector_decoding() -> None:
+    # Test list[np.float64]
+    src_type = {
+        "kind": "Vector",
+        "element_type": {"kind": "Float64"},
+        "dimension": None,
+    }
+    dst_type_float = list[np.float64]
+    decoder = make_engine_value_decoder(["field"], src_type, dst_type_float)
+    input_numbers = [1.0, 2.0, 3.0]
+    result = decoder(input_numbers)
+    assert isinstance(result, list)
+    assert all(isinstance(x, np.float64) for x in result)
+    assert result == [np.float64(1.0), np.float64(2.0), np.float64(3.0)]
+
+    # Test list[Uuid]
+    src_type = {"kind": "Vector", "element_type": {"kind": "Uuid"}, "dimension": None}
+    dst_type_uuid = list[uuid.UUID]
+    decoder = make_engine_value_decoder(["field"], src_type, dst_type_uuid)
+    uuid1 = uuid.uuid4()
+    uuid2 = uuid.uuid4()
+    input_bytes = [uuid1.bytes, uuid2.bytes]
+    result = decoder(input_bytes)
+    assert isinstance(result, list)
+    assert all(isinstance(x, uuid.UUID) for x in result)
+    assert result == [uuid1, uuid2]
 
 
 @pytest.mark.parametrize(
@@ -607,12 +664,6 @@ Float64VectorTypeNoDim = Vector[np.float64]
 Float32VectorType = Vector[np.float32, Literal[3]]
 Float64VectorType = Vector[np.float64, Literal[3]]
 Int64VectorType = Vector[np.int64, Literal[3]]
-Int32VectorType = Vector[np.int32, Literal[3]]
-UInt8VectorType = Vector[np.uint8, Literal[3]]
-UInt16VectorType = Vector[np.uint16, Literal[3]]
-UInt32VectorType = Vector[np.uint32, Literal[3]]
-UInt64VectorType = Vector[np.uint64, Literal[3]]
-StrVectorType = Vector[str]
 NDArrayFloat32Type = NDArray[np.float32]
 NDArrayFloat64Type = NDArray[np.float64]
 NDArrayInt64Type = NDArray[np.int64]
@@ -809,19 +860,19 @@ def test_full_roundtrip_vector_numeric_types() -> None:
     value_i64: Vector[np.int64, Literal[3]] = np.array([1, 2, 3], dtype=np.int64)
     validate_full_roundtrip(value_i64, Vector[np.int64, Literal[3]])
     value_i32: Vector[np.int32, Literal[3]] = np.array([1, 2, 3], dtype=np.int32)
-    with pytest.raises(ValueError, match="type unsupported yet"):
+    with pytest.raises(ValueError, match="Unsupported NumPy dtype"):
         validate_full_roundtrip(value_i32, Vector[np.int32, Literal[3]])
     value_u8: Vector[np.uint8, Literal[3]] = np.array([1, 2, 3], dtype=np.uint8)
-    with pytest.raises(ValueError, match="type unsupported yet"):
+    with pytest.raises(ValueError, match="Unsupported NumPy dtype"):
         validate_full_roundtrip(value_u8, Vector[np.uint8, Literal[3]])
     value_u16: Vector[np.uint16, Literal[3]] = np.array([1, 2, 3], dtype=np.uint16)
-    with pytest.raises(ValueError, match="type unsupported yet"):
+    with pytest.raises(ValueError, match="Unsupported NumPy dtype"):
         validate_full_roundtrip(value_u16, Vector[np.uint16, Literal[3]])
     value_u32: Vector[np.uint32, Literal[3]] = np.array([1, 2, 3], dtype=np.uint32)
-    with pytest.raises(ValueError, match="type unsupported yet"):
+    with pytest.raises(ValueError, match="Unsupported NumPy dtype"):
         validate_full_roundtrip(value_u32, Vector[np.uint32, Literal[3]])
     value_u64: Vector[np.uint64, Literal[3]] = np.array([1, 2, 3], dtype=np.uint64)
-    with pytest.raises(ValueError, match="type unsupported yet"):
+    with pytest.raises(ValueError, match="Unsupported NumPy dtype"):
         validate_full_roundtrip(value_u64, Vector[np.uint64, Literal[3]])
 
 
@@ -850,7 +901,88 @@ def test_roundtrip_dimension_mismatch() -> None:
         validate_full_roundtrip(value_f32, Vector[np.float32, Literal[3]])
 
 
-def test_roundtrip_list_backward_compatibility() -> None:
-    """Test full roundtrip for list-based vectors for backward compatibility."""
-    value_list: list[int] = [1, 2, 3]
-    validate_full_roundtrip(value_list, list[int])
+def test_full_roundtrip_scalar_numeric_types() -> None:
+    """Test full roundtrip for scalar NumPy numeric types."""
+    # Test supported scalar types
+    validate_full_roundtrip(np.int64(42), np.int64)
+    validate_full_roundtrip(np.float32(3.14), np.float32)
+    validate_full_roundtrip(np.float64(2.718), np.float64)
+
+    # Test unsupported scalar types
+    for unsupported_type in [np.int32, np.uint8, np.uint16, np.uint32, np.uint64]:
+        with pytest.raises(ValueError, match="Unsupported NumPy dtype"):
+            validate_full_roundtrip(unsupported_type(1), unsupported_type)
+
+
+def test_full_roundtrip_nullable_scalar() -> None:
+    """Test full roundtrip for nullable scalar NumPy types."""
+    # Test with non-null values
+    validate_full_roundtrip(np.int64(42), np.int64 | None)
+    validate_full_roundtrip(np.float32(3.14), np.float32 | None)
+    validate_full_roundtrip(np.float64(2.718), np.float64 | None)
+
+    # Test with None
+    validate_full_roundtrip(None, np.int64 | None)
+    validate_full_roundtrip(None, np.float32 | None)
+    validate_full_roundtrip(None, np.float64 | None)
+
+
+def test_full_roundtrip_scalar_in_struct() -> None:
+    """Test full roundtrip for scalar NumPy types in a dataclass."""
+
+    @dataclass
+    class NumericStruct:
+        int_field: np.int64
+        float32_field: np.float32
+        float64_field: np.float64
+
+    instance = NumericStruct(
+        int_field=np.int64(42),
+        float32_field=np.float32(3.14),
+        float64_field=np.float64(2.718),
+    )
+    validate_full_roundtrip(instance, NumericStruct)
+
+
+def test_full_roundtrip_scalar_in_nested_struct() -> None:
+    """Test full roundtrip for scalar NumPy types in a nested struct."""
+
+    @dataclass
+    class InnerStruct:
+        value: np.float64
+
+    @dataclass
+    class OuterStruct:
+        inner: InnerStruct
+        count: np.int64
+
+    instance = OuterStruct(
+        inner=InnerStruct(value=np.float64(2.718)),
+        count=np.int64(1),
+    )
+    validate_full_roundtrip(instance, OuterStruct)
+
+
+def test_full_roundtrip_scalar_with_python_types() -> None:
+    """Test full roundtrip for structs mixing NumPy and Python scalar types."""
+
+    @dataclass
+    class MixedStruct:
+        numpy_int: np.int64
+        python_int: int
+        numpy_float: np.float64
+        python_float: float
+        string: str
+        annotated_int: Annotated[np.int64, TypeKind("int")]
+        annotated_float: Float32
+
+    instance = MixedStruct(
+        numpy_int=np.int64(42),
+        python_int=43,
+        numpy_float=np.float64(2.718),
+        python_float=3.14,
+        string="hello, world",
+        annotated_int=np.int64(42),
+        annotated_float=2.0,
+    )
+    validate_full_roundtrip(instance, MixedStruct)

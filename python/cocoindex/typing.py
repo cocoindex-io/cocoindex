@@ -1,22 +1,22 @@
-import typing
 import collections
 import dataclasses
 import datetime
-import types
 import inspect
+import types
+import typing
 import uuid
 from typing import (
-    Annotated,
-    NamedTuple,
-    Any,
-    KeysView,
-    TypeVar,
     TYPE_CHECKING,
-    overload,
+    Annotated,
+    Any,
     Generic,
     Literal,
+    NamedTuple,
     Protocol,
+    TypeVar,
+    overload,
 )
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -67,7 +67,7 @@ else:
                 # No dimension provided, e.g., Vector[np.float32]
                 dtype = params
                 # Use NDArray for supported numeric dtypes, else list
-                if DtypeRegistry.get_by_dtype(dtype) is not None:
+                if dtype in DtypeRegistry._DTYPE_TO_KIND:
                     return Annotated[NDArray[dtype], VectorInfo(dim=None)]
                 return Annotated[list[dtype], VectorInfo(dim=None)]
             else:
@@ -79,7 +79,7 @@ else:
                     if typing.get_origin(dim_literal) is Literal
                     else None
                 )
-                if DtypeRegistry.get_by_dtype(dtype) is not None:
+                if dtype in DtypeRegistry._DTYPE_TO_KIND:
                     return Annotated[NDArray[dtype], VectorInfo(dim=dim_val)]
                 return Annotated[list[dtype], VectorInfo(dim=dim_val)]
 
@@ -88,6 +88,19 @@ TABLE_TYPES: tuple[str, str] = ("KTable", "LTable")
 KEY_FIELD_NAME: str = "_key"
 
 ElementType = type | tuple[type, type] | Annotated[Any, TypeKind]
+
+
+def extract_ndarray_scalar_dtype(ndarray_type: Any) -> Any:
+    args = typing.get_args(ndarray_type)
+    _, dtype_spec = args
+    dtype_args = typing.get_args(dtype_spec)
+    if not dtype_args:
+        raise ValueError(f"Invalid dtype specification: {dtype_spec}")
+    return dtype_args[0]
+
+
+def is_numpy_number_type(t: type) -> bool:
+    return isinstance(t, type) and issubclass(t, np.number)
 
 
 def is_namedtuple_type(t: type) -> bool:
@@ -100,41 +113,34 @@ def _is_struct_type(t: ElementType | None) -> bool:
     )
 
 
-class DtypeInfo:
-    """Metadata for a NumPy dtype."""
-
-    def __init__(self, numpy_dtype: type, kind: str, python_type: type) -> None:
-        self.numpy_dtype = numpy_dtype
-        self.kind = kind
-        self.python_type = python_type
-        self.annotated_type = Annotated[python_type, TypeKind(kind)]
-
-
 class DtypeRegistry:
     """
     Registry for NumPy dtypes used in CocoIndex.
-    Provides mappings from NumPy dtypes to CocoIndex's type representation.
+    Maps NumPy dtypes to their CocoIndex type kind.
     """
 
-    _mappings: dict[type, DtypeInfo] = {
-        np.float32: DtypeInfo(np.float32, "Float32", float),
-        np.float64: DtypeInfo(np.float64, "Float64", float),
-        np.int64: DtypeInfo(np.int64, "Int64", int),
+    _DTYPE_TO_KIND: dict[ElementType, str] = {
+        np.float32: "Float32",
+        np.float64: "Float64",
+        np.int64: "Int64",
     }
 
     @classmethod
-    def get_by_dtype(cls, dtype: Any) -> DtypeInfo | None:
-        """Get DtypeInfo by NumPy dtype."""
+    def validate_dtype_and_get_kind(cls, dtype: ElementType) -> str:
+        """
+        Validate that the given dtype is supported, and get its CocoIndex kind by dtype.
+        """
         if dtype is Any:
             raise TypeError(
                 "NDArray for Vector must use a concrete numpy dtype, got `Any`."
             )
-        return cls._mappings.get(dtype)
-
-    @staticmethod
-    def supported_dtypes() -> KeysView[type]:
-        """Get a list of supported NumPy dtypes."""
-        return DtypeRegistry._mappings.keys()
+        kind = cls._DTYPE_TO_KIND.get(dtype)
+        if kind is None:
+            raise ValueError(
+                f"Unsupported NumPy dtype in NDArray: {dtype}. "
+                f"Supported dtypes: {cls._DTYPE_TO_KIND.keys()}"
+            )
+        return kind
 
 
 @dataclasses.dataclass
@@ -204,6 +210,9 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             kind = "Struct"
         elif kind != "Struct":
             raise ValueError(f"Unexpected type kind for struct: {kind}")
+    elif is_numpy_number_type(t):
+        np_number_type = t
+        kind = DtypeRegistry.validate_dtype_and_get_kind(t)
     elif base_type is collections.abc.Sequence or base_type is list:
         args = typing.get_args(t)
         elem_type = args[0]
@@ -223,21 +232,9 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             raise ValueError(f"Unexpected type kind for list: {kind}")
     elif base_type is np.ndarray:
         kind = "Vector"
-        args = typing.get_args(t)
-        _, dtype_spec = args
-
-        dtype_args = typing.get_args(dtype_spec)
-        if not dtype_args:
-            raise ValueError("Invalid dtype specification for NDArray")
-
-        np_number_type = dtype_args[0]
-        dtype_info = DtypeRegistry.get_by_dtype(np_number_type)
-        if dtype_info is None:
-            raise ValueError(
-                f"Unsupported numpy dtype for NDArray: {np_number_type}. "
-                f"Supported dtypes: {DtypeRegistry.supported_dtypes()}"
-            )
-        elem_type = dtype_info.annotated_type
+        np_number_type = t
+        elem_type = extract_ndarray_scalar_dtype(np_number_type)
+        _ = DtypeRegistry.validate_dtype_and_get_kind(elem_type)
         vector_info = VectorInfo(dim=None) if vector_info is None else vector_info
 
     elif base_type is collections.abc.Mapping or base_type is dict:
@@ -261,11 +258,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         kind = 'Union'
         union_variant_types = non_none_types
     elif kind is None:
-        dtype_info = DtypeRegistry.get_by_dtype(t)
-        if dtype_info is not None:
-            kind = dtype_info.kind
-            np_number_type = dtype_info.numpy_dtype
-        elif t is bytes:
+        if t is bytes:
             kind = "Bytes"
         elif t is str:
             kind = "Str"

@@ -20,6 +20,10 @@ pub struct Client {
 }
 
 impl Client {
+    pub(crate) fn from_parts(client: async_openai::Client<OpenAIConfig>, model: String) -> Self {
+        Self { client, model }
+    }
+
     pub async fn new(spec: super::LlmSpec) -> Result<Self> {
         if let Some(address) = spec.address {
             api_bail!("OpenAI doesn't support custom API address: {address}");

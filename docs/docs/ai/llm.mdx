@@ -121,3 +121,68 @@ cocoindex.LlmSpec(
 
 You can find the full list of models supported by Anthropic [here](https://docs.anthropic.com/en/docs/about-claude/models/all-models).
 
+### LiteLLM
+
+To use the LiteLLM API, you need to set the environment variable `LITELLM_API_KEY`.
+
+#### 1. Install LiteLLM Proxy
+
+```bash
+pip install 'litellm[proxy]'
+```
+
+#### 2. Create a `config.yml` for LiteLLM
+
+**Example for OpenAI:**
+```yaml
+model_list:
+  - model_name: "*"             
+    litellm_params:
+      model: openai/*           
+      api_key: os.environ/LITELLM_API_KEY
+```
+
+**Example for DeepSeek:**
+
+First, pull the DeepSeek model with Ollama:
+```bash
+ollama pull deepseek-r1
+```
+Then run it if it's not running:
+```bash
+ollama run deepseek-r1
+```
+
+Then, use this in your `config.yml`:
+```yaml
+model_list:
+  - model_name: "deepseek-r1"
+    litellm_params:
+      model: "ollama_chat/deepseek-r1"
+      api_base: "http://localhost:11434"
+```
+
+#### 3. Run LiteLLM Proxy
+
+```bash
+litellm --config config.yml
+```
+
+#### 4. A Spec for LiteLLM will look like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.LITELLM,
+    model="deepseek-r1", 
+    address="http://127.0.0.1:4000", # default url of LiteLLM
+)
+```
+
+</TabItem>
+</Tabs>
+
+You can find the full list of models supported by LiteLLM [here](https://docs.litellm.ai/docs/providers).
+
