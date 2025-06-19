@@ -1128,7 +1128,17 @@ impl Serialize for TypedValue<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match (self.t, self.v) {
             (_, Value::Null) => serializer.serialize_none(),
-            (ValueType::Basic(_), v) => v.serialize(serializer),
+            (ValueType::Basic(t), v) => {
+                match t {
+                    BasicValueType::Union(_) => match v {
+                        Value::Basic(BasicValue::UnionVariant { value, .. }) => {
+                            value.serialize(serializer)
+                        }
+                        _ => Err(serde::ser::Error::custom("Unmatched union type and value for `TypedValue`")),
+                    },
+                    _ => v.serialize(serializer),
+                }
+            }
             (ValueType::Struct(s), Value::Struct(field_values)) => TypedFieldsValue {
                 schema: &s.fields,
                 values_iter: field_values.fields.iter(),
