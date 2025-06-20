@@ -976,7 +976,10 @@ impl BasicValue {
                 };
 
                 if arr.len() != 2 {
-                    anyhow::bail!("Invalid union tuple: expect 2 values, received {}", arr.len());
+                    anyhow::bail!(
+                        "Invalid union tuple: expect 2 values, received {}",
+                        arr.len()
+                    );
                 }
 
                 let mut obj_iter = arr.into_iter();
@@ -990,7 +993,9 @@ impl BasicValue {
                 // Take second element
                 let value = obj_iter.next().unwrap();
 
-                let cur_type = typ.types.get(tag_id)
+                let cur_type = typ
+                    .types
+                    .get(tag_id)
                     .ok_or_else(|| anyhow::anyhow!("No type in `tag_id` \"{tag_id}\" found"))?;
 
                 BasicValue::UnionVariant {
@@ -1130,17 +1135,17 @@ impl Serialize for TypedValue<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match (self.t, self.v) {
             (_, Value::Null) => serializer.serialize_none(),
-            (ValueType::Basic(t), v) => {
-                match t {
-                    BasicValueType::Union(_) => match v {
-                        Value::Basic(BasicValue::UnionVariant { value, .. }) => {
-                            value.serialize(serializer)
-                        }
-                        _ => Err(serde::ser::Error::custom("Unmatched union type and value for `TypedValue`")),
-                    },
-                    _ => v.serialize(serializer),
-                }
-            }
+            (ValueType::Basic(t), v) => match t {
+                BasicValueType::Union(_) => match v {
+                    Value::Basic(BasicValue::UnionVariant { value, .. }) => {
+                        value.serialize(serializer)
+                    }
+                    _ => Err(serde::ser::Error::custom(
+                        "Unmatched union type and value for `TypedValue`",
+                    )),
+                },
+                _ => v.serialize(serializer),
+            },
             (ValueType::Struct(s), Value::Struct(field_values)) => TypedFieldsValue {
                 schema: &s.fields,
                 values_iter: field_values.fields.iter(),

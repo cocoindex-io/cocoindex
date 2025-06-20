@@ -56,9 +56,9 @@ pub trait LlmGenerationClient: Send + Sync {
 
 mod anthropic;
 mod gemini;
+mod litellm;
 mod ollama;
 mod openai;
-mod litellm;
 mod openrouter;
 
 pub async fn new_llm_generation_client(spec: LlmSpec) -> Result<Box<dyn LlmGenerationClient>> {
@@ -78,11 +78,8 @@ pub async fn new_llm_generation_client(spec: LlmSpec) -> Result<Box<dyn LlmGener
         LlmApiType::LiteLlm => {
             Box::new(litellm::Client::new_litellm(spec).await?) as Box<dyn LlmGenerationClient>
         }
-        LlmApiType::OpenRouter => {
-            Box::new(openrouter::Client::new_openrouter(spec).await?) as Box<dyn LlmGenerationClient>
-        }
-
-
+        LlmApiType::OpenRouter => Box::new(openrouter::Client::new_openrouter(spec).await?)
+            as Box<dyn LlmGenerationClient>,
     };
     Ok(client)
 }

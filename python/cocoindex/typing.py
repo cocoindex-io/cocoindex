@@ -243,7 +243,9 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         kind = "KTable"
     elif base_type is types.UnionType:
         possible_types = typing.get_args(t)
-        non_none_types = [arg for arg in possible_types if arg not in (None, types.NoneType)]
+        non_none_types = [
+            arg for arg in possible_types if arg not in (None, types.NoneType)
+        ]
 
         if len(non_none_types) == 0:
             return analyze_type_info(None)
@@ -255,7 +257,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             result.nullable = nullable
             return result
 
-        kind = 'Union'
+        kind = "Union"
         union_variant_types = non_none_types
     elif kind is None:
         if t is bytes:
@@ -345,11 +347,12 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         encoded_type["element_type"] = _encode_type(elem_type_info)
         encoded_type["dimension"] = type_info.vector_info.dim
 
-    elif type_info.kind == 'Union':
+    elif type_info.kind == "Union":
         if type_info.union_variant_types is None:
             raise ValueError("Union type must have a variant type list")
-        encoded_type['types'] = [
-            _encode_type(analyze_type_info(typ)) for typ in type_info.union_variant_types
+        encoded_type["types"] = [
+            _encode_type(analyze_type_info(typ))
+            for typ in type_info.union_variant_types
         ]
 
     elif type_info.kind in TABLE_TYPES:

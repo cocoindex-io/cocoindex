@@ -563,7 +563,7 @@ def test_roundtrip_union_with_active_uuid() -> None:
 
 def test_roundtrip_union_with_inactive_uuid() -> None:
     t = str | uuid.UUID | int
-    value = "5a9f8f6a-318f-4f1f-929d-566d7444a62d" # it's a string
+    value = "5a9f8f6a-318f-4f1f-929d-566d7444a62d"  # it's a string
     validate_full_roundtrip(value, t)
 
 

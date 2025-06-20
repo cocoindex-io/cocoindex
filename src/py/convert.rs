@@ -1,7 +1,7 @@
 use bytes::Bytes;
-use pyo3::exceptions::PyTypeError;
 use numpy::{PyArray1, PyArrayDyn, PyArrayMethods};
 use pyo3::IntoPyObjectExt;
+use pyo3::exceptions::PyTypeError;
 use pyo3::types::PyAny;
 use pyo3::types::{PyList, PyTuple};
 use pyo3::{exceptions::PyException, prelude::*};
@@ -181,7 +181,10 @@ fn basic_value_from_py_object<'py>(
             }
 
             valid_value.ok_or_else(|| {
-                PyErr::new::<PyTypeError, _>(format!("invalid union value: {}, available types: {:?}", v, s.types))
+                PyErr::new::<PyTypeError, _>(format!(
+                    "invalid union value: {}, available types: {:?}",
+                    v, s.types
+                ))
             })?
         }
     };
