@@ -175,7 +175,7 @@ litellm --config config.yml
 
 ```python
 cocoindex.LlmSpec(
-    api_type=cocoindex.LlmApiType.LITELLM,
+    api_type=cocoindex.LlmApiType.LITE_LLM,
     model="deepseek-r1", 
     address="http://127.0.0.1:4000", # default url of LiteLLM
 )
@@ -186,3 +186,24 @@ cocoindex.LlmSpec(
 
 You can find the full list of models supported by LiteLLM [here](https://docs.litellm.ai/docs/providers).
 
+### OpenRouter
+
+To use the OpenRouter API, you need to set the environment variable `OPENROUTER_API_KEY`.
+You can generate the API key from [here](https://openrouter.ai/settings/keys).
+
+A spec for OpenRouter looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.OPEN_ROUTER,
+    model="deepseek/deepseek-r1:free",
+)
+```
+
+</TabItem>
+</Tabs>
+
+You can find the full list of models supported by OpenRouter [here](https://openrouter.ai/models).
