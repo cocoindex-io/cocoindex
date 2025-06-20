@@ -970,7 +970,7 @@ impl BasicValue {
                 BasicValue::Vector(Arc::from(vec))
             }
             (v, BasicValueType::Union(typ)) => {
-                let arr: Vec<serde_json::Value> = match v {
+                let arr = match v {
                     serde_json::Value::Array(arr) => arr,
                     _ => anyhow::bail!("Invalid JSON value for union, expect array"),
                 };
