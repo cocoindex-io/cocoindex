@@ -970,14 +970,16 @@ impl BasicValue {
                 BasicValue::Vector(Arc::from(vec))
             }
             (v, BasicValueType::Union(typ)) => {
-                let obj: Vec<serde_json::Value> = serde_json::from_value(v) 
-                    .map_err(|_| anyhow::anyhow!("Invalid JSON value for union, expect array"))?;
+                let arr: Vec<serde_json::Value> = match v {
+                    serde_json::Value::Array(arr) => arr,
+                    _ => anyhow::bail!("Invalid JSON value for union, expect array"),
+                };
 
-                if obj.len() != 2 {
-                    anyhow::bail!("Invalid union tuple: expect 2 values, received {}", obj.len());
+                if arr.len() != 2 {
+                    anyhow::bail!("Invalid union tuple: expect 2 values, received {}", arr.len());
                 }
 
-                let mut obj_iter = obj.into_iter();
+                let mut obj_iter = arr.into_iter();
 
                 // Take first element
                 let tag_id = obj_iter
