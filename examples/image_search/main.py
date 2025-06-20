@@ -1,22 +1,19 @@
-from dotenv import load_dotenv
-
-import cocoindex
 import datetime
 import functools
 import io
 import os
-import torch
+from contextlib import asynccontextmanager
+from typing import Any, Literal
 
-from typing import Literal
+import cocoindex
+import torch
+from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from qdrant_client import QdrantClient
-from typing import Any
-
 from PIL import Image
+from qdrant_client import QdrantClient
 from transformers import CLIPModel, CLIPProcessor
-
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearch"
@@ -86,8 +83,22 @@ def image_object_embedding_flow(
     )
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    load_dotenv()
+    cocoindex.init()
+    app.state.qdrant_client = QdrantClient(url=QDRANT_URL, prefer_grpc=True)
+
+    # Start updater
+    app.state.live_updater = cocoindex.FlowLiveUpdater(image_object_embedding_flow)
+    app.state.live_updater.start()
+
+    yield
+
+
 # --- FastAPI app for web API ---
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -99,17 +110,7 @@ app.add_middleware(
 app.mount("/img", StaticFiles(directory="img"), name="img")
 
 
-# --- CocoIndex initialization on startup ---
-@app.on_event("startup")
-def startup_event() -> None:
-    load_dotenv()
-    cocoindex.init()
-    # Initialize Qdrant client
-    app.state.qdrant_client = QdrantClient(url=QDRANT_URL, prefer_grpc=True)
-    app.state.live_updater = cocoindex.FlowLiveUpdater(image_object_embedding_flow)
-    app.state.live_updater.start()
-
-
+# --- Search API ---
 @app.get("/search")
 def search(
     q: str = Query(..., description="Search query"),
@@ -125,8 +126,9 @@ def search(
         limit=limit,
     )
 
-    # Format results
-    out = []
-    for result in search_results:
-        out.append({"filename": result.payload["filename"], "score": result.score})
-    return {"results": out}
+    return {
+        "results": [
+            {"filename": result.payload["filename"], "score": result.score}
+            for result in search_results
+        ]
+    }

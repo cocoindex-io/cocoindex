@@ -9,6 +9,8 @@ dependencies = [
     "fastapi>=0.100.0",
     "torch>=2.0.0",
     "transformers>=4.29.0",
+    "qdrant-client>=1.14.2",
+    "uvicorn>=0.34.3",
 ]
 
 [tool.setuptools]
