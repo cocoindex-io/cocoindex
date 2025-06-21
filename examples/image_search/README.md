@@ -41,4 +41,3 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
   ```
 
 Go to `http://localhost:5174` to search.
-

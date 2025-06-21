@@ -52,7 +52,7 @@ Here's how CocoIndex data elements map to Qdrant elements during export:
 
 | CocoIndex Element | Qdrant Element |
 |-------------------|------------------|
-| an export target  | a unique collection |  
+| an export target  | a unique collection |
 | a collected row   | a point |
 | a field           | a named vector, if fits into Qdrant vector; or a field within payload otherwise |
 

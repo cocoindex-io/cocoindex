@@ -38,7 +38,7 @@ COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
     ```bash
     uvicorn main:fastapi_app --reload --host 0.0.0.0 --port 8000
     ```
- 
+
  ## Query the endpoint
 
     ```bash
@@ -54,7 +54,7 @@ In the `.env` file, use Docker Postgres URL
 COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@coco_db:5436/cocoindex
 ```
 
-Build the docker container via: 
+Build the docker container via:
 ```bash
 docker compose up --build
 ```

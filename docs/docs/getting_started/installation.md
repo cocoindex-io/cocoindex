@@ -1,5 +1,5 @@
 ---
-title: Installation 
+title: Installation
 description: Setup the CocoIndex environment in 0-3 min
 ---
 
@@ -17,7 +17,7 @@ pip install -U cocoindex
 
 ## 📦 Install Postgres
 
-You can skip this step if you already have a Postgres database with pgvector extension installed. 
+You can skip this step if you already have a Postgres database with pgvector extension installed.
 
 If you don't have a Postgres database:
 
@@ -31,4 +31,3 @@ docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoi
 ## 🎉 All set!
 
 You can now start using CocoIndex.
-

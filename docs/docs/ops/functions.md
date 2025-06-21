@@ -53,7 +53,7 @@ Input data:
     :::note
 
     We use the `language` field to determine how to split the input text, following these rules:
-    
+
     *   We'll match the input `language` field against the `language_name` or `aliases` of each custom language specification, and use the matched one. If value of `language` is null, it'll be treated as empty string when matching `language_name` or `aliases`.
     *   If no match is found, we'll match the `language` field against the builtin language configurations.
         For all supported builtin language names and aliases (extensions), see [the code](https://github.com/search?q=org%3Acocoindex-io+lang%3Arust++%22static+TREE_SITTER_LANGUAGE_BY_LANG%22&type=code).

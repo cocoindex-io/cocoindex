@@ -15,7 +15,7 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 1. We will ingest files from Google Drive folders.
 2. For each file, perform chunking (recursively split) and then embedding.
 3. We will save the embeddings and the metadata in Postgres with PGVector.
-   
+
 ### Query
 We will match against user-provided text by a SQL query, and reuse the embedding operation in the indexing flow.
 
@@ -55,7 +55,7 @@ Before running the example, you need to:
     ```
 
 - Run:
-        
+
     ```sh
     python main.py
     ```
@@ -64,8 +64,8 @@ During running, it will keep observing changes in the source folders and update 
 At the same time, it accepts queries from the terminal, and performs search on top of the up-to-date index.
 
 
-## CocoInsight 
-I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
+## CocoInsight
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```sh

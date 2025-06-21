@@ -59,7 +59,7 @@ You should see results like:
 ![Module Info Index](https://cocoindex.io/blogs/assets/images/module_info_index-ffaec6042ec3a18eaf94bed5b227a085.png)
 
 
-## CocoInsight 
+## CocoInsight
 CocoInsight is a tool to help you understand your data pipeline and data index. CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
 
 Run CocoInsight to understand your RAG data pipeline:

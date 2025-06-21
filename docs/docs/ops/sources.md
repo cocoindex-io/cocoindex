@@ -22,9 +22,9 @@ The spec takes the following fields:
     If not specified, no files will be excluded.
 
     :::info
-    
+
     `included_patterns` and `excluded_patterns` are using Unix-style glob syntax. See [globset syntax](https://docs.rs/globset/latest/globset/index.html#syntax) for the details.
-    
+
     :::
 
 ### Schema
@@ -131,9 +131,9 @@ The spec takes the following fields:
     If not specified, no files will be excluded.
 
     :::info
-    
+
     `included_patterns` and `excluded_patterns` are using Unix-style glob syntax. See [globset syntax](https://docs.rs/globset/latest/globset/index.html#syntax) for the details.
-    
+
     :::
 
 *   `sqs_queue_url` (type: `str`, optional): if provided, the source will receive change event notifications from Amazon S3 via this SQS queue.

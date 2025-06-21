@@ -18,17 +18,17 @@
   --ifm-color-primary-lighter: #8F8FE6;
   --ifm-color-primary-lightest: #ABABEF;
 
-  
+
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
   --my-color-text-black: #111827;
-  
+
   /* Additional colors */
   --ifm-navbar-background-color: var(--ifm-background-color);
   --ifm-background-color: #ffffff;
   --ifm-footer-background-color: #ffffff;
   --ifm-menu-color: #374151;
   --ifm-toc-link-color: #374151;
-  
+
   /* Theme colors for breadcrumbs */
   --theme-color-text-light: #6b7280;
   --theme-color-text-default: #111827;
@@ -44,17 +44,17 @@
   --ifm-color-primary-light: #ABABEF;
   --ifm-color-primary-lighter: #C4C4F5;
   --ifm-color-primary-lightest: #E1E1FF;
-  
+
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
   --my-color-text-black: #f9fafb;
-  
+
   /* Dark mode specific colors */
   --ifm-navbar-background-color: var(--ifm-background-color);
   --ifm-background-color: #111827;
   --ifm-footer-background-color: #111827;
   --ifm-menu-color: #f3f4f6;
   --ifm-toc-link-color: #f3f4f6;
-  
+
   /* Dark mode theme colors for breadcrumbs */
   --theme-color-text-light: #9ca3af;
   --theme-color-text-default: #f9fafb;
@@ -113,7 +113,7 @@
 
 .footer__title {
   font-family: 'Questrial', sans-serif;
-  font-size: 1rem; 
+  font-size: 1rem;
   font-weight: 600;
   margin-bottom: 1rem;
   color: var(--my-color-text-black);

@@ -71,7 +71,7 @@ An indexing flow, once set up, maintains a long-lived relationship between data 
 
     *   **One time update**: Once triggered, CocoIndex updates the target data to reflect the version of source data up to the current moment.
     *   **Live update**: CocoIndex continuously reacts to changes of source data and updates the target data accordingly, based on various **change capture mechanisms** for the source.
-    
+
     See more details in the [build / update target data](flow_methods#build--update-target-data) section.
 
 3.  CocoIndex intelligently reprocesses to propagate source changes to target by:

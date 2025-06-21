@@ -5,7 +5,7 @@ slug: /
 
 # Welcome to CocoIndex
 
-CocoIndex is an ultra-performant real-time data transformation framework for AI, with incremental processing. 
+CocoIndex is an ultra-performant real-time data transformation framework for AI, with incremental processing.
 
 As a data framework, CocoIndex takes it to the next level on data freshness. **Incremental processing** is one of the core values provided by CocoIndex.
 
@@ -17,10 +17,10 @@ CocoIndex follows the idea of [Dataflow programming](https://en.wikipedia.org/wi
 The gist of an example data transformation:
 ```python
 # import
-data['content'] = flow_builder.add_source(...) 
+data['content'] = flow_builder.add_source(...)
 
 # transform
-data['out'] = data['content'] 
+data['out'] = data['content']
     .transform(...)
     .transform(...)
 
@@ -33,4 +33,3 @@ collector.export(...)
 
 Get Started:
 - [Quick Start](https://cocoindex.io/docs/getting_started/quickstart)
-

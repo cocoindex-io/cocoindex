@@ -182,10 +182,10 @@ CocoIndex also provides asynchronous versions of APIs for blocking operations, i
     my_updater = cocoindex.FlowLiveUpdater(demo_flow)
     # Start the updater.
     await my_updater.start_async()
-    
+
     # Perform your own logic (e.g. a query loop).
     ...
-    
+
     # Print the update stats.
     print(my_updater.update_stats())
     # Abort the updater.

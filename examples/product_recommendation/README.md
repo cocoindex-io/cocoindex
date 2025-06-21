@@ -1,6 +1,6 @@
 # Build Real-Time Recommendation Engine with LLM and Graph Database
 
-We will build a real-time product recommendation engine with LLM and graph database. In particular, we will use LLM to understand the category (taxonomy) of a product. In addition, we will use LLM to enumerate the complementary products - users are likely to buy together with the current product (pencil and notebook). 
+We will build a real-time product recommendation engine with LLM and graph database. In particular, we will use LLM to understand the category (taxonomy) of a product. In addition, we will use LLM to enumerate the complementary products - users are likely to buy together with the current product (pencil and notebook).
 
 We will use Graph to explore the relationships between products that can be further used for product recommendations or labeling.
 
@@ -53,16 +53,14 @@ MATCH p=()-->() RETURN p
 
 ![Neo4j Browser Screenshot](img/neo4j.png)
 
-## CocoInsight 
-I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
+## CocoInsight
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```bash
 cocoindex server -ci main.py
 ```
 
-And then open the url https://cocoindex.io/cocoinsight. 
+And then open the url https://cocoindex.io/cocoinsight.
 
 ![CocoInsight Screenshot](img/cocoinsight.png)
-
-

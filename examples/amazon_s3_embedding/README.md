@@ -53,7 +53,7 @@ During running, it will keep observing changes in the Amazon S3 bucket and updat
 At the same time, it accepts queries from the terminal, and performs search on top of the up-to-date index.
 
 
-## CocoInsight 
+## CocoInsight
 CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
 
 Run CocoInsight to understand your RAG data pipeline:

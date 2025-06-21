@@ -136,9 +136,9 @@ pip install 'litellm[proxy]'
 **Example for OpenAI:**
 ```yaml
 model_list:
-  - model_name: "*"             
+  - model_name: "*"
     litellm_params:
-      model: openai/*           
+      model: openai/*
       api_key: os.environ/LITELLM_API_KEY
 ```
 
@@ -176,7 +176,7 @@ litellm --config config.yml
 ```python
 cocoindex.LlmSpec(
     api_type=cocoindex.LlmApiType.LITE_LLM,
-    model="deepseek-r1", 
+    model="deepseek-r1",
     address="http://127.0.0.1:4000", # default url of LiteLLM
 )
 ```

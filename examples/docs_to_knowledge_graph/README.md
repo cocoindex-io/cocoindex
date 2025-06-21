@@ -1,6 +1,6 @@
 # Build Real-Time Knowledge Graph For Documents with LLM
 
-We will process a list of documents and use LLM to extract relationships between the concepts in each document. 
+We will process a list of documents and use LLM to extract relationships between the concepts in each document.
 We will generate two kinds of relationships:
 
 1. Relationships between subjects and objects. E.g., "CocoIndex supports Incremental Processing"
@@ -58,16 +58,14 @@ MATCH p=()-->() RETURN p
 
 <img width="1366" alt="neo4j-for-coco-docs" src="https://github.com/user-attachments/assets/3c8b6329-6fee-4533-9480-571399b57e57" />
 
-## CocoInsight 
-I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. 
+## CocoInsight
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```bash
 cocoindex server -ci main.py
 ```
 
-And then open the url https://cocoindex.io/cocoinsight. 
+And then open the url https://cocoindex.io/cocoinsight.
 
 <img width="1430" alt="cocoinsight" src="https://github.com/user-attachments/assets/d5ada581-cceb-42bf-a949-132df674f3dd" />
-
-

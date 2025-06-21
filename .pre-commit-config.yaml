@@ -18,11 +18,11 @@ repos:
         # Checks for the existence of private keys.
       - id: end-of-file-fixer
         # Makes sure files end in a newline and only a newline.
-        exclude: ".*(data.*|extern.*|licenses.*|_static.*|\\.ya?ml)$"
+        exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
       - id: trailing-whitespace
         # Trims trailing whitespace.
-        exclude_types: [python]
-        exclude: ".*(data.*|extern.*|licenses.*|_static.*|\\.ya?ml)$"
+        exclude_types: [python]  # Covered by Ruff W291.
+        exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.0
@@ -68,3 +68,4 @@ repos:
           entry: cargo test
           language: system
           types: [rust]
+          pass_filenames: false

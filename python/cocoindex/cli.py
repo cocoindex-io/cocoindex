@@ -1,19 +1,19 @@
-import click
+import atexit
 import datetime
-import sys
 import importlib.util
 import os
-import atexit
+import sys
 import types
+from typing import Any
 
-from dotenv import load_dotenv, find_dotenv
+import click
+from dotenv import find_dotenv, load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from typing import Any
 
 from . import flow, lib, setting
-from .setup import sync_setup, drop_setup, flow_names_with_setup, apply_setup_changes
+from .setup import apply_setup_changes, drop_setup, flow_names_with_setup, sync_setup
 
 # Create ServerSettings lazily upon first call, as environment variables may be loaded from files, etc.
 COCOINDEX_HOST = "https://cocoindex.io"

@@ -32,10 +32,10 @@ Unlike a workflow orchestration framework where data is usually opaque, in CocoI
 
 ```python
 # import
-data['content'] = flow_builder.add_source(...) 
+data['content'] = flow_builder.add_source(...)
 
 # transform
-data['out'] = data['content'] 
+data['out'] = data['content']
     .transform(...)
     .transform(...)
 
@@ -56,17 +56,17 @@ As a data framework, CocoIndex takes it to the next level on data freshness. **I
 The frameworks takes care of
 - Change data capture.
 - Figure out what exactly needs to be updated, and only updating that without having to recompute everything.
-  
+
 This makes it fast to reflect any source updates to the target store. If you have concerns with surfacing stale data to AI agents and are spending lots of efforts working on infra piece to optimize the latency, the framework actually handles it for you.
 
 
 ## Quick Start:
-If you're new to CocoIndex, we recommend checking out 
+If you're new to CocoIndex, we recommend checking out
 - 📖 [Documentation](https://cocoindex.io/docs)
 - ⚡  [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart)
-- 🎬 [Quick Start Video Tutorial](https://youtu.be/gv5R8nOXsWU?si=9ioeKYkMEnYevTXT) 
+- 🎬 [Quick Start Video Tutorial](https://youtu.be/gv5R8nOXsWU?si=9ioeKYkMEnYevTXT)
 
-### Setup 
+### Setup
 
 1. Install CocoIndex Python library
 
@@ -136,8 +136,8 @@ It defines an index flow like this:
 | [Google Drive Text Embedding](examples/gdrive_text_embedding) | Index text documents from Google Drive |
 | [Docs to Knowledge Graph](examples/docs_to_knowledge_graph) | Extract relationships from Markdown documents and build a knowledge graph |
 | [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |
-| [FastAPI Server with Docker](examples/fastapi_server_docker) | Run the semantic search server in a Dockerized FastAPI setup | 
-| [Product Recommendation](examples/product_recommendation) | Build real-time product recommendations with LLM and graph database| 
+| [FastAPI Server with Docker](examples/fastapi_server_docker) | Run the semantic search server in a Dockerized FastAPI setup |
+| [Product Recommendation](examples/product_recommendation) | Build real-time product recommendations with LLM and graph database|
 | [Image Search with Vision API](examples/image_search) | Generates detailed captions for images using a vision model, embeds them, enables live-updating semantic search via FastAPI and served on a React frontend|
 
 More coming and stay tuned 👀!
@@ -159,7 +159,7 @@ Join our community here:
 - 📜 [Read our blog posts](https://cocoindex.io/blogs/)
 
 ## Support us:
-We are constantly improving, and more features and examples are coming soon. If you love this project, please drop us a star ⭐ at GitHub repo [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex) to stay tuned and help us grow. 
+We are constantly improving, and more features and examples are coming soon. If you love this project, please drop us a star ⭐ at GitHub repo [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex) to stay tuned and help us grow.
 
 ## License
 CocoIndex is Apache 2.0 licensed.

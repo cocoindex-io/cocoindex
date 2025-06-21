@@ -19,7 +19,7 @@ This guide will help you get up and running with CocoIndex in just a few minutes
 We'll need to install a bunch of dependencies for this project.
 
 1.  Install CocoIndex:
- 
+
     ```bash
     pip install -U cocoindex
     ```
@@ -149,7 +149,7 @@ documents: 3 added, 0 removed, 0 updated
 
 ## Step 4 (optional): Run queries against the index
 
-CocoIndex excels at transforming your data and storing it (a.k.a. indexing). 
+CocoIndex excels at transforming your data and storing it (a.k.a. indexing).
 The goal of transforming your data is usually to query against it.
 Once you already have your index built, you can directly access the transformed data in the target database.
 CocoIndex also provides utilities for you to do this more seamlessly.

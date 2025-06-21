@@ -24,19 +24,19 @@ async fn upgrade_tracking_table(
             "CREATE TABLE IF NOT EXISTS {table_name} (
                 source_id INTEGER NOT NULL,
                 source_key JSONB NOT NULL,
-            
+
                 -- Update in the precommit phase: after evaluation done, before really applying the changes to the target storage.
                 max_process_ordinal BIGINT NOT NULL,
                 staging_target_keys JSONB NOT NULL,
                 memoization_info JSONB,
-            
+
                 -- Update after applying the changes to the target storage.
                 processed_source_ordinal BIGINT,
                 process_logic_fingerprint BYTEA,
                 process_ordinal BIGINT,
                 process_time_micros BIGINT,
                 target_keys JSONB,
-            
+
                 PRIMARY KEY (source_id, source_key)
             );",
         );

@@ -51,7 +51,7 @@ Run:
 python main.py
 ```
 
-## CocoInsight 
+## CocoInsight
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```
