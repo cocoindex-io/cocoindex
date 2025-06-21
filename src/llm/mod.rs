@@ -19,9 +19,9 @@ pub enum LlmApiType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmSpec {
-    api_type: LlmApiType,
-    address: Option<String>,
-    model: String,
+    pub api_type: LlmApiType,
+    pub address: Option<String>,
+    pub model: String,
 }
 
 #[derive(Debug)]
@@ -34,6 +34,7 @@ pub enum OutputFormat<'a> {
 
 #[derive(Debug)]
 pub struct LlmGenerateRequest<'a> {
+    pub model: &'a str,
     pub system_prompt: Option<Cow<'a, str>>,
     pub user_prompt: Cow<'a, str>,
     pub output_format: Option<OutputFormat<'a>>,
@@ -45,7 +46,7 @@ pub struct LlmGenerateResponse {
 }
 
 #[async_trait]
-pub trait LlmGenerationClient: Send + Sync {
+pub trait LlmClient: Send + Sync {
     async fn generate<'req>(
         &self,
         request: LlmGenerateRequest<'req>,
@@ -61,25 +62,23 @@ mod ollama;
 mod openai;
 mod openrouter;
 
-pub async fn new_llm_generation_client(spec: LlmSpec) -> Result<Box<dyn LlmGenerationClient>> {
-    let client = match spec.api_type {
-        LlmApiType::Ollama => {
-            Box::new(ollama::Client::new(spec).await?) as Box<dyn LlmGenerationClient>
-        }
-        LlmApiType::OpenAi => {
-            Box::new(openai::Client::new(spec).await?) as Box<dyn LlmGenerationClient>
-        }
-        LlmApiType::Gemini => {
-            Box::new(gemini::Client::new(spec).await?) as Box<dyn LlmGenerationClient>
-        }
+pub async fn new_llm_generation_client(
+    api_type: LlmApiType,
+    address: Option<String>,
+) -> Result<Box<dyn LlmClient>> {
+    let client = match api_type {
+        LlmApiType::Ollama => Box::new(ollama::Client::new(address).await?) as Box<dyn LlmClient>,
+        LlmApiType::OpenAi => Box::new(openai::Client::new(address).await?) as Box<dyn LlmClient>,
+        LlmApiType::Gemini => Box::new(gemini::Client::new(address).await?) as Box<dyn LlmClient>,
         LlmApiType::Anthropic => {
-            Box::new(anthropic::Client::new(spec).await?) as Box<dyn LlmGenerationClient>
+            Box::new(anthropic::Client::new(address).await?) as Box<dyn LlmClient>
         }
         LlmApiType::LiteLlm => {
-            Box::new(litellm::Client::new_litellm(spec).await?) as Box<dyn LlmGenerationClient>
+            Box::new(litellm::Client::new_litellm(address).await?) as Box<dyn LlmClient>
         }
-        LlmApiType::OpenRouter => Box::new(openrouter::Client::new_openrouter(spec).await?)
-            as Box<dyn LlmGenerationClient>,
+        LlmApiType::OpenRouter => {
+            Box::new(openrouter::Client::new_openrouter(address).await?) as Box<dyn LlmClient>
+        }
     };
     Ok(client)
 }

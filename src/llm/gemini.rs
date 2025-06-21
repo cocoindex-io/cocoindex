@@ -1,7 +1,6 @@
 use crate::api_bail;
 use crate::llm::{
-    LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, LlmSpec, OutputFormat,
-    ToJsonSchemaOptions,
+    LlmClient, LlmGenerateRequest, LlmGenerateResponse, OutputFormat, ToJsonSchemaOptions,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -9,19 +8,20 @@ use serde_json::Value;
 use urlencoding::encode;
 
 pub struct Client {
-    model: String,
     api_key: String,
     client: reqwest::Client,
 }
 
 impl Client {
-    pub async fn new(spec: LlmSpec) -> Result<Self> {
+    pub async fn new(address: Option<String>) -> Result<Self> {
+        if address.is_some() {
+            api_bail!("Gemini doesn't support custom API address");
+        }
         let api_key = match std::env::var("GEMINI_API_KEY") {
             Ok(val) => val,
             Err(_) => api_bail!("GEMINI_API_KEY environment variable must be set"),
         };
         Ok(Self {
-            model: spec.model,
             api_key,
             client: reqwest::Client::new(),
         })
@@ -47,7 +47,7 @@ fn remove_additional_properties(value: &mut Value) {
 }
 
 #[async_trait]
-impl LlmGenerationClient for Client {
+impl LlmClient for Client {
     async fn generate<'req>(
         &self,
         request: LlmGenerateRequest<'req>,
@@ -79,7 +79,7 @@ impl LlmGenerationClient for Client {
         let api_key = &self.api_key;
         let url = format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            encode(&self.model),
+            encode(request.model),
             encode(api_key)
         );
 

@@ -1,6 +1,6 @@
 use crate::api_bail;
 
-use super::LlmGenerationClient;
+use super::LlmClient;
 use anyhow::Result;
 use async_openai::{
     Client as OpenAIClient,
@@ -16,16 +16,15 @@ use async_trait::async_trait;
 
 pub struct Client {
     client: async_openai::Client<OpenAIConfig>,
-    model: String,
 }
 
 impl Client {
-    pub(crate) fn from_parts(client: async_openai::Client<OpenAIConfig>, model: String) -> Self {
-        Self { client, model }
+    pub(crate) fn from_parts(client: async_openai::Client<OpenAIConfig>) -> Self {
+        Self { client }
     }
 
-    pub async fn new(spec: super::LlmSpec) -> Result<Self> {
-        if let Some(address) = spec.address {
+    pub async fn new(address: Option<String>) -> Result<Self> {
+        if let Some(address) = address {
             api_bail!("OpenAI doesn't support custom API address: {address}");
         }
         // Verify API key is set
@@ -35,13 +34,12 @@ impl Client {
         Ok(Self {
             // OpenAI client will use OPENAI_API_KEY env variable by default
             client: OpenAIClient::new(),
-            model: spec.model,
         })
     }
 }
 
 #[async_trait]
-impl LlmGenerationClient for Client {
+impl LlmClient for Client {
     async fn generate<'req>(
         &self,
         request: super::LlmGenerateRequest<'req>,
@@ -70,7 +68,7 @@ impl LlmGenerationClient for Client {
 
         // Create the chat completion request
         let request = CreateChatCompletionRequest {
-            model: self.model.clone(),
+            model: request.model.to_string(),
             messages,
             response_format: match request.output_format {
                 Some(super::OutputFormat::JsonSchema { name, schema }) => {

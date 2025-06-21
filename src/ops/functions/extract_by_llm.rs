@@ -1,8 +1,6 @@
 use crate::prelude::*;
 
-use crate::llm::{
-    LlmGenerateRequest, LlmGenerationClient, LlmSpec, OutputFormat, new_llm_generation_client,
-};
+use crate::llm::{LlmClient, LlmGenerateRequest, LlmSpec, OutputFormat, new_llm_generation_client};
 use crate::ops::sdk::*;
 use base::json_schema::build_json_schema;
 use schemars::schema::SchemaObject;
@@ -21,7 +19,8 @@ pub struct Args {
 
 struct Executor {
     args: Args,
-    client: Box<dyn LlmGenerationClient>,
+    client: Box<dyn LlmClient>,
+    model: String,
     output_json_schema: SchemaObject,
     system_prompt: String,
     value_extractor: base::json_schema::ValueExtractor,
@@ -50,11 +49,13 @@ Output only the JSON without any additional messages or explanations."
 
 impl Executor {
     async fn new(spec: Spec, args: Args) -> Result<Self> {
-        let client = new_llm_generation_client(spec.llm_spec).await?;
+        let client =
+            new_llm_generation_client(spec.llm_spec.api_type, spec.llm_spec.address).await?;
         let schema_output = build_json_schema(spec.output_type, client.json_schema_options())?;
         Ok(Self {
             args,
             client,
+            model: spec.llm_spec.model,
             output_json_schema: schema_output.schema,
             system_prompt: get_system_prompt(&spec.instruction, schema_output.extra_instructions),
             value_extractor: schema_output.value_extractor,
@@ -75,6 +76,7 @@ impl SimpleFunctionExecutor for Executor {
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
         let text = self.args.text.value(&input)?.as_str()?;
         let req = LlmGenerateRequest {
+            model: &self.model,
             system_prompt: Some(Cow::Borrowed(&self.system_prompt)),
             user_prompt: Cow::Borrowed(text),
             output_format: Some(OutputFormat::JsonSchema {
