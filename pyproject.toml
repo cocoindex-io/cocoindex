@@ -29,9 +29,10 @@ features = ["pyo3/extension-module"]
 
 [project.optional-dependencies]
 test = ["pytest"]
-dev = ["ruff"]
+dev = ["ruff", "pre-commit"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 files = "python/cocoindex"
+exclude = "(\\.venv|site-packages)"

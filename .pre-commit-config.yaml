@@ -1,0 +1,70 @@
+ci:
+  autofix_prs: false
+  autoupdate_schedule: 'monthly'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-case-conflict
+        # Check for files with names that would conflict on a case-insensitive
+        # filesystem like MacOS HFS+ or Windows FAT.
+      - id: check-merge-conflict
+        # Check for files that contain merge conflict strings.
+      - id: check-symlinks
+        # Checks for symlinks which do not point to anything.
+        exclude: ".*(.github.*)$"
+      - id: detect-private-key
+        # Checks for the existence of private keys.
+      - id: end-of-file-fixer
+        # Makes sure files end in a newline and only a newline.
+        exclude: ".*(data.*|extern.*|licenses.*|_static.*|\\.ya?ml)$"
+      - id: trailing-whitespace
+        # Trims trailing whitespace.
+        exclude_types: [python]
+        exclude: ".*(data.*|extern.*|licenses.*|_static.*|\\.ya?ml)$"
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.0
+    hooks:
+      - id: ruff-format
+        types: [python]
+        pass_filenames: true
+
+  - repo: local
+    hooks:
+        - id: pytest
+          name: pytest test
+          entry: pytest
+          language: system
+          types: [python]
+          pass_filenames: false
+          always_run: false
+          args: ["-v", "--strict-markers"]
+
+        - id: mypy-check
+          name: mypy type check
+          entry: mypy
+          language: system
+          types: [python]
+          pass_filenames: false
+
+        - id: maturin-develop
+          name: maturin develop
+          entry: maturin develop
+          language: system
+          types: [rust]
+          pass_filenames: false
+
+        - id: cargo-fmt
+          name: cargo fmt
+          entry: cargo fmt
+          language: system
+          types: [rust]
+          pass_filenames: false
+
+        - id: cargo-test
+          name: cargo test
+          entry: cargo test
+          language: system
+          types: [rust]
