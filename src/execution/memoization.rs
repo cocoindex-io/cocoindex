@@ -25,6 +25,9 @@ pub struct StoredMemoizationInfo {
 
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub uuids: HashMap<Fingerprint, Vec<uuid::Uuid>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<Fingerprint>,
 }
 
 pub type CacheEntryCell = Arc<tokio::sync::OnceCell<Result<value::Value, SharedError>>>;
@@ -79,6 +82,7 @@ pub struct EvaluationMemory {
     cache: Option<Mutex<HashMap<Fingerprint, CacheEntry>>>,
     uuids: Mutex<HashMap<Fingerprint, UuidEntry>>,
     evaluation_only: bool,
+    content_hash: Option<Fingerprint>,
 }
 
 impl EvaluationMemory {
@@ -120,6 +124,7 @@ impl EvaluationMemory {
                     .collect(),
             ),
             evaluation_only: options.evaluation_only,
+            content_hash: None,
         }
     }
 
@@ -156,7 +161,11 @@ impl EvaluationMemory {
             .into_iter()
             .filter_map(|(k, v)| v.into_stored().map(|uuids| (k, uuids)))
             .collect();
-        Ok(StoredMemoizationInfo { cache, uuids })
+        Ok(StoredMemoizationInfo {
+            cache,
+            uuids,
+            content_hash: self.content_hash,
+        })
     }
 
     pub fn get_cache_entry(
@@ -201,6 +210,10 @@ impl EvaluationMemory {
             }
         };
         Ok(Some(result))
+    }
+
+    pub fn set_content_hash(&mut self, content_hash: Fingerprint) {
+        self.content_hash = Some(content_hash);
     }
 
     pub fn next_uuid(&self, key: Fingerprint) -> Result<uuid::Uuid> {

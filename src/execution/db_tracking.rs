@@ -13,7 +13,6 @@ pub struct TrackedTargetKeyInfo {
     pub key: serde_json::Value,
     pub additional_key: serde_json::Value,
     pub process_ordinal: i64,
-    // None means deletion.
     pub fingerprint: Option<Fingerprint>,
 }
 
@@ -84,6 +83,8 @@ pub struct SourceTrackingInfoForProcessing {
 
     pub processed_source_ordinal: Option<i64>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
+    pub max_process_ordinal: Option<i64>,
+    pub process_ordinal: Option<i64>,
 }
 
 pub async fn read_source_tracking_info_for_processing(
@@ -93,7 +94,7 @@ pub async fn read_source_tracking_info_for_processing(
     pool: &PgPool,
 ) -> Result<Option<SourceTrackingInfoForProcessing>> {
     let query_str = format!(
-        "SELECT memoization_info, processed_source_ordinal, process_logic_fingerprint FROM {} WHERE source_id = $1 AND source_key = $2",
+        "SELECT memoization_info, processed_source_ordinal, process_logic_fingerprint, max_process_ordinal, process_ordinal FROM {} WHERE source_id = $1 AND source_key = $2",
         db_setup.table_name
     );
     let tracking_info = sqlx::query_as(&query_str)
@@ -304,4 +305,35 @@ pub async fn read_source_last_processed_info(
         .fetch_optional(pool)
         .await?;
     Ok(last_processed_info)
+}
+
+pub async fn update_source_tracking_ordinal_and_logic(
+    source_id: i32,
+    source_key_json: &serde_json::Value,
+    processed_source_ordinal: Option<i64>,
+    process_logic_fingerprint: &[u8],
+    process_ordinal: i64,
+    process_time_micros: i64,
+    db_setup: &TrackingTableSetupState,
+    db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
+) -> Result<()> {
+    let query_str = format!(
+        "UPDATE {} SET \
+         processed_source_ordinal = $3, \
+         process_logic_fingerprint = $4, \
+         process_ordinal = $5, \
+         process_time_micros = $6 \
+         WHERE source_id = $1 AND source_key = $2",
+        db_setup.table_name
+    );
+    sqlx::query(&query_str)
+        .bind(source_id) // $1
+        .bind(source_key_json) // $2
+        .bind(processed_source_ordinal) // $3
+        .bind(process_logic_fingerprint) // $4
+        .bind(process_ordinal) // $5
+        .bind(process_time_micros) // $6
+        .execute(db_executor)
+        .await?;
+    Ok(())
 }

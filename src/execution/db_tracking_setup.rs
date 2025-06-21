@@ -42,6 +42,7 @@ async fn upgrade_tracking_table(
         );
         sqlx::query(&query).execute(pool).await?;
     }
+
     Ok(())
 }
 
