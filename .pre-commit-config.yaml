@@ -30,18 +30,18 @@ repos:
       - id: ruff-format
         types: [python]
         pass_filenames: true
+  
+  - repo: https://github.com/christophmeissner/pytest-pre-commit
+    rev: 1.0.0
+    hooks:
+      - id: pytest
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: false
 
   - repo: local
     hooks:
-        - id: pytest
-          name: pytest test
-          entry: pytest
-          language: system
-          types: [python]
-          pass_filenames: false
-          always_run: false
-          args: ["-v", "--strict-markers"]
-
         - id: mypy-check
           name: mypy type check
           entry: mypy
