@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 from pgvector.psycopg import register_vector
+from typing import Any
 import cocoindex
 import os
 from numpy.typing import NDArray
@@ -15,6 +16,13 @@ def text_to_embedding(
     Embed the text using a SentenceTransformer model.
     This is a shared logic between indexing and querying, so extract it as a function.
     """
+    # You can also switch to remote embedding model:
+    #   return text.transform(
+    #       cocoindex.functions.EmbedText(
+    #           api_type=cocoindex.llm.LlmApiType.OPENAI,
+    #           model="text-embedding-3-small",
+    #       )
+    #   )
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
             model="sentence-transformers/all-MiniLM-L6-v2"

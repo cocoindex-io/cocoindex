@@ -1,5 +1,5 @@
 use crate::llm::{
-    LlmClient, LlmGenerateRequest, LlmGenerateResponse, OutputFormat, ToJsonSchemaOptions,
+    LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat, ToJsonSchemaOptions,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -31,7 +31,7 @@ impl Client {
 }
 
 #[async_trait]
-impl LlmClient for Client {
+impl LlmGenerationClient for Client {
     async fn generate<'req>(
         &self,
         request: LlmGenerateRequest<'req>,

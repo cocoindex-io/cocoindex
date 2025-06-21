@@ -1,4 +1,4 @@
-use super::LlmClient;
+use super::LlmGenerationClient;
 use anyhow::Result;
 use async_trait::async_trait;
 use schemars::schema::SchemaObject;
@@ -45,7 +45,7 @@ impl Client {
 }
 
 #[async_trait]
-impl LlmClient for Client {
+impl LlmGenerationClient for Client {
     async fn generate<'req>(
         &self,
         request: super::LlmGenerateRequest<'req>,

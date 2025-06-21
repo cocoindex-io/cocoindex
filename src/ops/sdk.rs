@@ -12,6 +12,7 @@ pub use crate::base::value::*;
 
 // Disambiguate the ExportTargetBuildOutput type.
 pub use super::factory_bases::TypedExportDataCollectionBuildOutput;
+pub use super::registry::ExecutorFactoryRegistry;
 /// Defined for all types convertible to ValueType, to ease creation for ValueType in various operation factories.
 pub trait TypeCore {
     fn into_type(self) -> ValueType;

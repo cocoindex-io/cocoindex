@@ -1,6 +1,8 @@
 use crate::prelude::*;
 
-use crate::llm::{LlmClient, LlmGenerateRequest, LlmSpec, OutputFormat, new_llm_generation_client};
+use crate::llm::{
+    LlmGenerateRequest, LlmGenerationClient, LlmSpec, OutputFormat, new_llm_generation_client,
+};
 use crate::ops::sdk::*;
 use base::json_schema::build_json_schema;
 use schemars::schema::SchemaObject;
@@ -19,7 +21,7 @@ pub struct Args {
 
 struct Executor {
     args: Args,
-    client: Box<dyn LlmClient>,
+    client: Box<dyn LlmGenerationClient>,
     model: String,
     output_json_schema: SchemaObject,
     system_prompt: String,

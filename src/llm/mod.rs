@@ -1,13 +1,10 @@
-use std::borrow::Cow;
-
-use anyhow::Result;
-use async_trait::async_trait;
-use schemars::schema::SchemaObject;
-use serde::{Deserialize, Serialize};
+use crate::prelude::*;
 
 use crate::base::json_schema::ToJsonSchemaOptions;
+use schemars::schema::SchemaObject;
+use std::borrow::Cow;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum LlmApiType {
     Ollama,
     OpenAi,
@@ -46,13 +43,35 @@ pub struct LlmGenerateResponse {
 }
 
 #[async_trait]
-pub trait LlmClient: Send + Sync {
+pub trait LlmGenerationClient: Send + Sync {
     async fn generate<'req>(
         &self,
         request: LlmGenerateRequest<'req>,
     ) -> Result<LlmGenerateResponse>;
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions;
+}
+
+#[derive(Debug)]
+pub struct LlmEmbeddingRequest<'a> {
+    pub model: &'a str,
+    pub text: Cow<'a, str>,
+    pub output_dimension: u32,
+    pub task_type: Option<Cow<'a, str>>,
+}
+
+pub struct LlmEmbeddingResponse {
+    pub embedding: Vec<f32>,
+}
+
+#[async_trait]
+pub trait LlmEmbeddingClient: Send + Sync {
+    async fn embed_text<'req>(
+        &self,
+        request: LlmEmbeddingRequest<'req>,
+    ) -> Result<LlmEmbeddingResponse>;
+
+    fn get_default_embedding_dimension(&self, model: &str) -> Option<u32>;
 }
 
 mod anthropic;
@@ -65,20 +84,41 @@ mod openrouter;
 pub async fn new_llm_generation_client(
     api_type: LlmApiType,
     address: Option<String>,
-) -> Result<Box<dyn LlmClient>> {
+) -> Result<Box<dyn LlmGenerationClient>> {
     let client = match api_type {
-        LlmApiType::Ollama => Box::new(ollama::Client::new(address).await?) as Box<dyn LlmClient>,
-        LlmApiType::OpenAi => Box::new(openai::Client::new(address).await?) as Box<dyn LlmClient>,
-        LlmApiType::Gemini => Box::new(gemini::Client::new(address).await?) as Box<dyn LlmClient>,
+        LlmApiType::Ollama => {
+            Box::new(ollama::Client::new(address).await?) as Box<dyn LlmGenerationClient>
+        }
+        LlmApiType::OpenAi => {
+            Box::new(openai::Client::new(address)?) as Box<dyn LlmGenerationClient>
+        }
+        LlmApiType::Gemini => {
+            Box::new(gemini::Client::new(address)?) as Box<dyn LlmGenerationClient>
+        }
         LlmApiType::Anthropic => {
-            Box::new(anthropic::Client::new(address).await?) as Box<dyn LlmClient>
+            Box::new(anthropic::Client::new(address).await?) as Box<dyn LlmGenerationClient>
         }
         LlmApiType::LiteLlm => {
-            Box::new(litellm::Client::new_litellm(address).await?) as Box<dyn LlmClient>
+            Box::new(litellm::Client::new_litellm(address).await?) as Box<dyn LlmGenerationClient>
         }
-        LlmApiType::OpenRouter => {
-            Box::new(openrouter::Client::new_openrouter(address).await?) as Box<dyn LlmClient>
+        LlmApiType::OpenRouter => Box::new(openrouter::Client::new_openrouter(address).await?)
+            as Box<dyn LlmGenerationClient>,
+    };
+    Ok(client)
+}
+
+pub fn new_llm_embedding_client(
+    api_type: LlmApiType,
+    address: Option<String>,
+) -> Result<Box<dyn LlmEmbeddingClient>> {
+    let client = match api_type {
+        LlmApiType::Gemini => {
+            Box::new(gemini::Client::new(address)?) as Box<dyn LlmEmbeddingClient>
         }
+        LlmApiType::OpenAi => {
+            Box::new(openai::Client::new(address)?) as Box<dyn LlmEmbeddingClient>
+        }
+        _ => api_bail!("Embedding is not supported for API type {:?}", api_type),
     };
     Ok(client)
 }

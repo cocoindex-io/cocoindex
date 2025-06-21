@@ -1,9 +1,10 @@
-use crate::api_bail;
+use crate::prelude::*;
+
 use crate::llm::{
-    LlmClient, LlmGenerateRequest, LlmGenerateResponse, OutputFormat, ToJsonSchemaOptions,
+    LlmEmbeddingClient, LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
+    ToJsonSchemaOptions,
 };
-use anyhow::{Context, Result, bail};
-use async_trait::async_trait;
+use phf::phf_map;
 use serde_json::Value;
 use urlencoding::encode;
 
@@ -13,7 +14,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn new(address: Option<String>) -> Result<Self> {
+    pub fn new(address: Option<String>) -> Result<Self> {
         if address.is_some() {
             api_bail!("Gemini doesn't support custom API address");
         }
@@ -46,8 +47,19 @@ fn remove_additional_properties(value: &mut Value) {
     }
 }
 
+impl Client {
+    fn get_api_url(&self, model: &str, api_name: &str) -> String {
+        format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:{}?key={}",
+            encode(model),
+            api_name,
+            encode(&self.api_key)
+        )
+    }
+}
+
 #[async_trait]
-impl LlmClient for Client {
+impl LlmGenerationClient for Client {
     async fn generate<'req>(
         &self,
         request: LlmGenerateRequest<'req>,
@@ -76,13 +88,7 @@ impl LlmClient for Client {
             });
         }
 
-        let api_key = &self.api_key;
-        let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-            encode(request.model),
-            encode(api_key)
-        );
-
+        let url = self.get_api_url(request.model, "generateContent");
         let resp = self
             .client
             .post(&url)
@@ -90,7 +96,13 @@ impl LlmClient for Client {
             .send()
             .await
             .context("HTTP error")?;
-
+        if !resp.status().is_success() {
+            bail!(
+                "Gemini API error: {:?}\n{}\n",
+                resp.status(),
+                resp.text().await?
+            );
+        }
         let resp_json: Value = resp.json().await.context("Invalid JSON")?;
 
         if let Some(error) = resp_json.get("error") {
@@ -112,5 +124,59 @@ impl LlmClient for Client {
             extract_descriptions: false,
             top_level_must_be_object: true,
         }
+    }
+}
+
+static DEFAULT_EMBEDDING_DIMENSIONS: phf::Map<&str, u32> = phf_map! {
+    "gemini-embedding-exp-03-07" => 3072,
+    "text-embedding-004" => 768,
+    "embedding-001" => 768,
+};
+
+#[derive(Deserialize)]
+struct ContentEmbedding {
+    values: Vec<f32>,
+}
+#[derive(Deserialize)]
+struct EmbedContentResponse {
+    embedding: ContentEmbedding,
+}
+
+#[async_trait]
+impl LlmEmbeddingClient for Client {
+    async fn embed_text<'req>(
+        &self,
+        request: super::LlmEmbeddingRequest<'req>,
+    ) -> Result<super::LlmEmbeddingResponse> {
+        let url = self.get_api_url(request.model, "embedContent");
+        let mut payload = serde_json::json!({
+            "model": request.model,
+            "content": { "parts": [{ "text": request.text }] },
+        });
+        if let Some(task_type) = request.task_type {
+            payload["taskType"] = serde_json::Value::String(task_type.into());
+        }
+        let resp = self
+            .client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .context("HTTP error")?;
+        if !resp.status().is_success() {
+            bail!(
+                "Gemini API error: {:?}\n{}\n",
+                resp.status(),
+                resp.text().await?
+            );
+        }
+        let embedding_resp: EmbedContentResponse = resp.json().await.context("Invalid JSON")?;
+        Ok(super::LlmEmbeddingResponse {
+            embedding: embedding_resp.embedding.values,
+        })
+    }
+
+    fn get_default_embedding_dimension(&self, model: &str) -> Option<u32> {
+        DEFAULT_EMBEDDING_DIMENSIONS.get(model).copied()
     }
 }

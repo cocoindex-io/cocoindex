@@ -32,6 +32,16 @@ class SplitRecursively(op.FunctionSpec):
     custom_languages: list[CustomLanguageSpec] = dataclasses.field(default_factory=list)
 
 
+class EmbedText(op.FunctionSpec):
+    """Embed a text into a vector space."""
+
+    api_type: llm.LlmApiType
+    model: str
+    address: str | None = None
+    output_dimension: int | None = None
+    task_type: str | None = None
+
+
 class ExtractByLlm(op.FunctionSpec):
     """Extract information from a text using a LLM."""
 
