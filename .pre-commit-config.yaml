@@ -24,36 +24,13 @@ repos:
         exclude_types: [python]  # Covered by Ruff W291.
         exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.0
-    hooks:
-      - id: ruff-format
-        types: [python]
-        pass_filenames: true
-  
-  - repo: https://github.com/christophmeissner/pytest-pre-commit
-    rev: 1.0.0
-    hooks:
-      - id: pytest
-        language: system
-        types: [python]
-        pass_filenames: false
-        always_run: false
-
   - repo: local
     hooks:
-        - id: mypy-check
-          name: mypy type check
-          entry: mypy
-          language: system
-          types: [python]
-          pass_filenames: false
-
         - id: maturin-develop
           name: maturin develop
           entry: maturin develop
           language: system
-          types: [rust]
+          files: ^(python/|src/|Cargo\.toml|pyproject\.toml)
           pass_filenames: false
 
         - id: cargo-fmt
@@ -69,3 +46,26 @@ repos:
           language: system
           types: [rust]
           pass_filenames: false
+
+        - id: mypy-check
+          name: mypy type check
+          entry: mypy
+          language: system
+          types: [python]
+          pass_filenames: false
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.0
+    hooks:
+      - id: ruff-format
+        types: [python]
+        pass_filenames: true
+  
+  - repo: https://github.com/christophmeissner/pytest-pre-commit
+    rev: 1.0.0
+    hooks:
+      - id: pytest
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: false
