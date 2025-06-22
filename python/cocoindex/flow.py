@@ -185,7 +185,7 @@ class DataSlice(Generic[T]):
 
     def transform(
         self, fn_spec: op.FunctionSpec, *args: Any, **kwargs: Any
-    ) -> DataSlice[T]:
+    ) -> DataSlice[Any]:
         """
         Apply a function to the data slice.
         """
