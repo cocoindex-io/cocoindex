@@ -76,6 +76,13 @@ impl LlmGenerationClient for Client {
             .send()
             .await
             .context("HTTP error")?;
+        if !resp.status().is_success() {
+            bail!(
+                "Anthropic API error: {:?}\n{}\n",
+                resp.status(),
+                resp.text().await?
+            );
+        }
         let mut resp_json: Value = resp.json().await.context("Invalid JSON")?;
         if let Some(error) = resp_json.get("error") {
             bail!("Anthropic API error: {:?}", error);

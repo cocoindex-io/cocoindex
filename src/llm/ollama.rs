@@ -1,8 +1,7 @@
+use crate::prelude::*;
+
 use super::LlmGenerationClient;
-use anyhow::Result;
-use async_trait::async_trait;
 use schemars::schema::SchemaObject;
-use serde::{Deserialize, Serialize};
 
 pub struct Client {
     generate_url: String,
@@ -67,8 +66,14 @@ impl LlmGenerationClient for Client {
             .json(&req)
             .send()
             .await?;
-        let body = res.text().await?;
-        let json: OllamaResponse = serde_json::from_str(&body)?;
+        if !res.status().is_success() {
+            bail!(
+                "Ollama API error: {:?}\n{}\n",
+                res.status(),
+                res.text().await?
+            );
+        }
+        let json: OllamaResponse = res.json().await?;
         Ok(super::LlmGenerateResponse {
             text: json.response,
         })
