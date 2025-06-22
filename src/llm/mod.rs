@@ -56,7 +56,7 @@ pub trait LlmGenerationClient: Send + Sync {
 pub struct LlmEmbeddingRequest<'a> {
     pub model: &'a str,
     pub text: Cow<'a, str>,
-    pub output_dimension: u32,
+    pub output_dimension: Option<u32>,
     pub task_type: Option<Cow<'a, str>>,
 }
 

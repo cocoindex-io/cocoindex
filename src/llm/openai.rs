@@ -129,7 +129,7 @@ impl LlmEmbeddingClient for Client {
             .create(CreateEmbeddingRequest {
                 model: request.model.to_string(),
                 input: EmbeddingInput::String(request.text.to_string()),
-                dimensions: Some(request.output_dimension),
+                dimensions: request.output_dimension,
                 ..Default::default()
             })
             .await?;

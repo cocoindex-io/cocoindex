@@ -14,7 +14,6 @@ struct Spec {
 
 struct Args {
     client: Box<dyn LlmEmbeddingClient>,
-    output_dimension: u32,
     text: ResolvedOpArg,
 }
 
@@ -38,7 +37,7 @@ impl SimpleFunctionExecutor for Executor {
         let req = LlmEmbeddingRequest {
             model: &self.spec.model,
             text: Cow::Borrowed(text),
-            output_dimension: self.args.output_dimension,
+            output_dimension: self.spec.output_dimension,
             task_type: self
                 .spec
                 .task_type
@@ -80,14 +79,7 @@ impl SimpleFunctionFactoryBase for Factory {
             dimension: Some(output_dimension as usize),
             element_type: Box::new(BasicValueType::Float32),
         }));
-        Ok((
-            Args {
-                client,
-                text,
-                output_dimension,
-            },
-            output_schema,
-        ))
+        Ok((Args { client, text }, output_schema))
     }
 
     async fn build_executor(
