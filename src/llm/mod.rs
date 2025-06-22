@@ -12,6 +12,7 @@ pub enum LlmApiType {
     Anthropic,
     LiteLlm,
     OpenRouter,
+    Voyage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +81,7 @@ mod litellm;
 mod ollama;
 mod openai;
 mod openrouter;
+mod voyage;
 
 pub async fn new_llm_generation_client(
     api_type: LlmApiType,
@@ -103,6 +105,9 @@ pub async fn new_llm_generation_client(
         }
         LlmApiType::OpenRouter => Box::new(openrouter::Client::new_openrouter(address).await?)
             as Box<dyn LlmGenerationClient>,
+        LlmApiType::Voyage => {
+            api_bail!("Voyage is not supported for generation")
+        }
     };
     Ok(client)
 }
@@ -118,7 +123,15 @@ pub fn new_llm_embedding_client(
         LlmApiType::OpenAi => {
             Box::new(openai::Client::new(address)?) as Box<dyn LlmEmbeddingClient>
         }
-        _ => api_bail!("Embedding is not supported for API type {:?}", api_type),
+        LlmApiType::Voyage => {
+            Box::new(voyage::Client::new(address)?) as Box<dyn LlmEmbeddingClient>
+        }
+        LlmApiType::Ollama
+        | LlmApiType::OpenRouter
+        | LlmApiType::LiteLlm
+        | LlmApiType::Anthropic => {
+            api_bail!("Embedding is not supported for API type {:?}", api_type)
+        }
     };
     Ok(client)
 }

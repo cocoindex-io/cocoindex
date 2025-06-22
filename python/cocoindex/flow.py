@@ -92,6 +92,7 @@ def _spec_kind(spec: Any) -> str:
 
 
 T = TypeVar("T")
+S = TypeVar("S")
 
 
 class _DataSliceState:
@@ -216,7 +217,7 @@ class DataSlice(Generic[T]):
             ),
         )
 
-    def call(self, func: Callable[[DataSlice[T]], T], *args: Any, **kwargs: Any) -> T:
+    def call(self, func: Callable[..., S], *args: Any, **kwargs: Any) -> S:
         """
         Call a function with the data slice.
         """

@@ -8,6 +8,12 @@ use phf::phf_map;
 use serde_json::Value;
 use urlencoding::encode;
 
+static DEFAULT_EMBEDDING_DIMENSIONS: phf::Map<&str, u32> = phf_map! {
+    "gemini-embedding-exp-03-07" => 3072,
+    "text-embedding-004" => 768,
+    "embedding-001" => 768,
+};
+
 pub struct Client {
     api_key: String,
     client: reqwest::Client,
@@ -126,12 +132,6 @@ impl LlmGenerationClient for Client {
         }
     }
 }
-
-static DEFAULT_EMBEDDING_DIMENSIONS: phf::Map<&str, u32> = phf_map! {
-    "gemini-embedding-exp-03-07" => 3072,
-    "text-embedding-004" => 768,
-    "embedding-001" => 768,
-};
 
 #[derive(Deserialize)]
 struct ContentEmbedding {

@@ -11,6 +11,7 @@ class LlmApiType(Enum):
     ANTHROPIC = "Anthropic"
     LITE_LLM = "LiteLlm"
     OPEN_ROUTER = "OpenRouter"
+    VOYAGE = "Voyage"
 
 
 @dataclass

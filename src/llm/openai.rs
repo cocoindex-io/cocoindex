@@ -15,6 +15,12 @@ use async_openai::{
 use async_trait::async_trait;
 use phf::phf_map;
 
+static DEFAULT_EMBEDDING_DIMENSIONS: phf::Map<&str, u32> = phf_map! {
+    "text-embedding-3-small" => 1536,
+    "text-embedding-3-large" => 3072,
+    "text-embedding-ada-002" => 1536,
+};
+
 pub struct Client {
     client: async_openai::Client<OpenAIConfig>,
 }
@@ -110,12 +116,6 @@ impl LlmGenerationClient for Client {
         }
     }
 }
-
-static DEFAULT_EMBEDDING_DIMENSIONS: phf::Map<&str, u32> = phf_map! {
-    "text-embedding-3-small" => 1536,
-    "text-embedding-3-large" => 3072,
-    "text-embedding-ada-002" => 1536,
-};
 
 #[async_trait]
 impl LlmEmbeddingClient for Client {

@@ -1,7 +1,11 @@
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
+from pgvector.psycopg import register_vector
+from typing import Any
 import cocoindex
 import os
+from numpy.typing import NDArray
+import numpy as np
 
 
 @cocoindex.op.function()
@@ -13,10 +17,17 @@ def extract_extension(filename: str) -> str:
 @cocoindex.transform_flow()
 def code_to_embedding(
     text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[list[float]]:
+) -> cocoindex.DataSlice[NDArray[np.float32]]:
     """
     Embed the text using a SentenceTransformer model.
     """
+    # You can also switch to Voyage embedding model:
+    #    return text.transform(
+    #        cocoindex.functions.EmbedText(
+    #            api_type=cocoindex.llm.LlmApiType.VOYAGE,
+    #            model="voyage-code-3",
+    #        )
+    #    )
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
             model="sentence-transformers/all-MiniLM-L6-v2"
@@ -71,7 +82,7 @@ def code_embedding_flow(
     )
 
 
-def search(pool: ConnectionPool, query: str, top_k: int = 5):
+def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, Any]]:
     # Get the table name, for the export target in the code_embedding_flow above.
     table_name = cocoindex.utils.get_target_default_name(
         code_embedding_flow, "code_embeddings"
@@ -80,10 +91,11 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
     query_vector = code_to_embedding.eval(query)
     # Run the query and get the results.
     with pool.connection() as conn:
+        register_vector(conn)
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT filename, code, embedding <=> %s::vector AS distance
+                SELECT filename, code, embedding <=> %s AS distance
                 FROM {table_name} ORDER BY distance LIMIT %s
             """,
                 (query_vector, top_k),
@@ -94,7 +106,7 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
             ]
 
 
-def _main():
+def _main() -> None:
     # Make sure the flow is built and up-to-date.
     stats = code_embedding_flow.update()
     print("Updated index: ", stats)
