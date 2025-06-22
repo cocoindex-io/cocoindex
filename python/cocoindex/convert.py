@@ -14,6 +14,7 @@ import numpy as np
 from .typing import (
     KEY_FIELD_NAME,
     TABLE_TYPES,
+    AnalyzedTypeInfo,
     DtypeRegistry,
     analyze_type_info,
     encode_enriched_type,
@@ -46,6 +47,19 @@ def encode_engine_value(value: Any) -> Any:
     return value
 
 
+_CONVERTIBLE_KINDS = {
+    ("Float32", "Float64"),
+    ("LocalDateTime", "OffsetDateTime"),
+}
+
+
+def _is_type_kind_convertible_to(src_type_kind: str, dst_type_kind: str) -> bool:
+    return (
+        src_type_kind == dst_type_kind
+        or (src_type_kind, dst_type_kind) in _CONVERTIBLE_KINDS
+    )
+
+
 def make_engine_value_decoder(
     field_path: list[str],
     src_type: dict[str, Any],
@@ -65,11 +79,23 @@ def make_engine_value_decoder(
 
     src_type_kind = src_type["kind"]
 
+    dst_type_info: AnalyzedTypeInfo | None = None
     if (
-        dst_annotation is None
-        or dst_annotation is inspect.Parameter.empty
-        or dst_annotation is Any
+        dst_annotation is not None
+        and dst_annotation is not inspect.Parameter.empty
+        and dst_annotation is not Any
     ):
+        dst_type_info = analyze_type_info(dst_annotation)
+        if not _is_type_kind_convertible_to(src_type_kind, dst_type_info.kind):
+            raise ValueError(
+                f"Type mismatch for `{''.join(field_path)}`: "
+                f"passed in {src_type_kind}, declared {dst_annotation} ({dst_type_info.kind})"
+            )
+
+    if src_type_kind == "Uuid":
+        return lambda value: uuid.UUID(bytes=value)
+
+    if dst_type_info is None:
         if src_type_kind == "Struct" or src_type_kind in TABLE_TYPES:
             raise ValueError(
                 f"Missing type annotation for `{''.join(field_path)}`."
@@ -77,32 +103,66 @@ def make_engine_value_decoder(
             )
         return lambda value: value
 
-    dst_type_info = analyze_type_info(dst_annotation)
+    if dst_type_info.kind in ("Float32", "Float64", "Int64"):
+        dst_core_type = dst_type_info.core_type
 
-    if src_type_kind != dst_type_info.kind:
-        raise ValueError(
-            f"Type mismatch for `{''.join(field_path)}`: "
-            f"passed in {src_type_kind}, declared {dst_annotation} ({dst_type_info.kind})"
-        )
-
-    if dst_type_info.struct_type is not None:
-        return _make_engine_struct_value_decoder(
-            field_path, src_type["fields"], dst_type_info.struct_type
-        )
-
-    if dst_type_info.np_number_type is not None and src_type_kind != "Vector":
-        numpy_type = dst_type_info.np_number_type
-
-        def decode_numpy_scalar(value: Any) -> Any | None:
+        def decode_scalar(value: Any) -> Any | None:
             if value is None:
                 if dst_type_info.nullable:
                     return None
                 raise ValueError(
                     f"Received null for non-nullable scalar `{''.join(field_path)}`"
                 )
-            return numpy_type(value)
+            return dst_core_type(value)
 
-        return decode_numpy_scalar
+        return decode_scalar
+
+    if src_type_kind == "Vector":
+        field_path_str = "".join(field_path)
+        expected_dim = (
+            dst_type_info.vector_info.dim if dst_type_info.vector_info else None
+        )
+
+        elem_decoder = None
+        scalar_dtype = None
+        if dst_type_info.np_number_type is None:  # for Non-NDArray vector
+            elem_decoder = make_engine_value_decoder(
+                field_path + ["[*]"],
+                src_type["element_type"],
+                dst_type_info.elem_type,
+            )
+        else:  # for NDArray vector
+            scalar_dtype = extract_ndarray_scalar_dtype(dst_type_info.np_number_type)
+            _ = DtypeRegistry.validate_dtype_and_get_kind(scalar_dtype)
+
+        def decode_vector(value: Any) -> Any | None:
+            if value is None:
+                if dst_type_info.nullable:
+                    return None
+                raise ValueError(
+                    f"Received null for non-nullable vector `{field_path_str}`"
+                )
+            if not isinstance(value, (np.ndarray, list)):
+                raise TypeError(
+                    f"Expected NDArray or list for vector `{field_path_str}`, got {type(value)}"
+                )
+            if expected_dim is not None and len(value) != expected_dim:
+                raise ValueError(
+                    f"Vector dimension mismatch for `{field_path_str}`: "
+                    f"expected {expected_dim}, got {len(value)}"
+                )
+
+            if elem_decoder is not None:  # for Non-NDArray vector
+                return [elem_decoder(v) for v in value]
+            else:  # for NDArray vector
+                return np.array(value, dtype=scalar_dtype)
+
+        return decode_vector
+
+    if dst_type_info.struct_type is not None:
+        return _make_engine_struct_value_decoder(
+            field_path, src_type["fields"], dst_type_info.struct_type
+        )
 
     if src_type_kind in TABLE_TYPES:
         field_path.append("[*]")
@@ -140,49 +200,6 @@ def make_engine_value_decoder(
 
         field_path.pop()
         return decode
-
-    if src_type_kind == "Uuid":
-        return lambda value: uuid.UUID(bytes=value)
-
-    if src_type_kind == "Vector":
-
-        def decode_vector(value: Any) -> Any | None:
-            field_path_str = "".join(field_path)
-            expected_dim = (
-                dst_type_info.vector_info.dim if dst_type_info.vector_info else None
-            )
-
-            if value is None:
-                if dst_type_info.nullable:
-                    return None
-                raise ValueError(
-                    f"Received null for non-nullable vector `{field_path_str}`"
-                )
-            if not isinstance(value, (np.ndarray, list)):
-                raise TypeError(
-                    f"Expected NDArray or list for vector `{field_path_str}`, got {type(value)}"
-                )
-            if expected_dim is not None and len(value) != expected_dim:
-                raise ValueError(
-                    f"Vector dimension mismatch for `{field_path_str}`: "
-                    f"expected {expected_dim}, got {len(value)}"
-                )
-
-            if dst_type_info.np_number_type is None:  # for Non-NDArray vector
-                elem_decoder = make_engine_value_decoder(
-                    field_path + ["[*]"],
-                    src_type["element_type"],
-                    dst_type_info.elem_type,
-                )
-                return [elem_decoder(v) for v in value]
-            else:  # for NDArray vector
-                scalar_dtype = extract_ndarray_scalar_dtype(
-                    dst_type_info.np_number_type
-                )
-                _ = DtypeRegistry.validate_dtype_and_get_kind(scalar_dtype)
-                return np.array(value, dtype=scalar_dtype)
-
-        return decode_vector
 
     if src_type_kind == "Union":
         return lambda value: value[1]

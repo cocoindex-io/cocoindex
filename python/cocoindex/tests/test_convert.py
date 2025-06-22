@@ -91,23 +91,26 @@ def validate_full_roundtrip(
     """
     from cocoindex import _engine  # type: ignore
 
+    def eq(a: Any, b: Any) -> bool:
+        if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+            return np.array_equal(a, b)
+        return type(a) == type(b) and not not (a == b)
+
     encoded_value = encode_engine_value(value)
     value_type = value_type or type(value)
     encoded_output_type = encode_enriched_type(value_type)["type"]
     value_from_engine = _engine.testutil.seder_roundtrip(
         encoded_value, encoded_output_type
     )
-    decoded_value = build_engine_value_decoder(value_type, value_type)(
-        value_from_engine
-    )
-    np.testing.assert_array_equal(decoded_value, value)
+    decoder = make_engine_value_decoder([], encoded_output_type, value_type)
+    decoded_value = decoder(value_from_engine)
+    assert eq(decoded_value, value)
 
     if other_decoded_values is not None:
         for other_value, other_type in other_decoded_values:
-            other_decoded_value = build_engine_value_decoder(other_type, other_type)(
-                value_from_engine
-            )
-            np.testing.assert_array_equal(other_decoded_value, other_value)
+            decoder = make_engine_value_decoder([], encoded_output_type, other_type)
+            other_decoded_value = decoder(value_from_engine)
+            assert eq(other_decoded_value, other_value)
 
 
 def test_encode_engine_value_basic_types() -> None:
@@ -215,18 +218,37 @@ def test_encode_engine_value_none() -> None:
 
 
 def test_roundtrip_basic_types() -> None:
-    validate_full_roundtrip(42, int)
+    validate_full_roundtrip(42, int, (42, None))
     validate_full_roundtrip(3.25, float, (3.25, Float64))
-    validate_full_roundtrip(3.25, Float64, (3.25, float))
-    validate_full_roundtrip(3.25, Float32)
-    validate_full_roundtrip("hello", str)
-    validate_full_roundtrip(True, bool)
-    validate_full_roundtrip(False, bool)
-    validate_full_roundtrip(datetime.date(2025, 1, 1), datetime.date)
-    validate_full_roundtrip(datetime.datetime.now(), cocoindex.LocalDateTime)
     validate_full_roundtrip(
-        datetime.datetime.now(datetime.UTC), cocoindex.OffsetDateTime
+        3.25, Float64, (3.25, float), (np.float64(3.25), np.float64)
     )
+    validate_full_roundtrip(
+        3.25, Float32, (3.25, float), (np.float32(3.25), np.float32)
+    )
+    validate_full_roundtrip("hello", str, ("hello", None))
+    validate_full_roundtrip(True, bool, (True, None))
+    validate_full_roundtrip(False, bool, (False, None))
+    validate_full_roundtrip(
+        datetime.date(2025, 1, 1), datetime.date, (datetime.date(2025, 1, 1), None)
+    )
+
+    validate_full_roundtrip(
+        datetime.datetime(2025, 1, 2, 3, 4, 5, 123456),
+        cocoindex.LocalDateTime,
+        (datetime.datetime(2025, 1, 2, 3, 4, 5, 123456), datetime.datetime),
+    )
+    validate_full_roundtrip(
+        datetime.datetime(2025, 1, 2, 3, 4, 5, 123456, datetime.UTC),
+        cocoindex.OffsetDateTime,
+        (
+            datetime.datetime(2025, 1, 2, 3, 4, 5, 123456, datetime.UTC),
+            datetime.datetime,
+        ),
+    )
+
+    uuid_value = uuid.uuid4()
+    validate_full_roundtrip(uuid_value, uuid.UUID, (uuid_value, None))
 
 
 def test_decode_scalar_numpy_values() -> None:
@@ -849,37 +871,72 @@ def test_dump_vector_type_annotation_no_dim() -> None:
 
 def test_full_roundtrip_vector_numeric_types() -> None:
     """Test full roundtrip for numeric vector types using NDArray."""
-    value_f32: Vector[np.float32, Literal[3]] = np.array(
-        [1.0, 2.0, 3.0], dtype=np.float32
+    value_f32 = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    validate_full_roundtrip(
+        value_f32,
+        Vector[np.float32, Literal[3]],
+        ([np.float32(1.0), np.float32(2.0), np.float32(3.0)], list[np.float32]),
+        ([1.0, 2.0, 3.0], list[cocoindex.Float32]),
+        ([1.0, 2.0, 3.0], list[float]),
     )
-    validate_full_roundtrip(value_f32, Vector[np.float32, Literal[3]])
-    value_f64: Vector[np.float64, Literal[3]] = np.array(
-        [1.0, 2.0, 3.0], dtype=np.float64
+    validate_full_roundtrip(
+        value_f32,
+        np.typing.NDArray[np.float32],
+        ([np.float32(1.0), np.float32(2.0), np.float32(3.0)], list[np.float32]),
+        ([1.0, 2.0, 3.0], list[cocoindex.Float32]),
+        ([1.0, 2.0, 3.0], list[float]),
     )
-    validate_full_roundtrip(value_f64, Vector[np.float64, Literal[3]])
-    value_i64: Vector[np.int64, Literal[3]] = np.array([1, 2, 3], dtype=np.int64)
-    validate_full_roundtrip(value_i64, Vector[np.int64, Literal[3]])
-    value_i32: Vector[np.int32, Literal[3]] = np.array([1, 2, 3], dtype=np.int32)
+    validate_full_roundtrip(
+        value_f32.tolist(),
+        list[np.float32],
+        (value_f32, Vector[np.float32, Literal[3]]),
+        ([1.0, 2.0, 3.0], list[cocoindex.Float32]),
+        ([1.0, 2.0, 3.0], list[float]),
+    )
+
+    value_f64 = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    validate_full_roundtrip(
+        value_f64,
+        Vector[np.float64, Literal[3]],
+        ([np.float64(1.0), np.float64(2.0), np.float64(3.0)], list[np.float64]),
+        ([1.0, 2.0, 3.0], list[cocoindex.Float64]),
+        ([1.0, 2.0, 3.0], list[float]),
+    )
+
+    value_i64 = np.array([1, 2, 3], dtype=np.int64)
+    validate_full_roundtrip(
+        value_i64,
+        Vector[np.int64, Literal[3]],
+        ([np.int64(1), np.int64(2), np.int64(3)], list[np.int64]),
+        ([1, 2, 3], list[int]),
+    )
+
+    value_i32 = np.array([1, 2, 3], dtype=np.int32)
     with pytest.raises(ValueError, match="Unsupported NumPy dtype"):
         validate_full_roundtrip(value_i32, Vector[np.int32, Literal[3]])
-    value_u8: Vector[np.uint8, Literal[3]] = np.array([1, 2, 3], dtype=np.uint8)
+    value_u8 = np.array([1, 2, 3], dtype=np.uint8)
     with pytest.raises(ValueError, match="Unsupported NumPy dtype"):
         validate_full_roundtrip(value_u8, Vector[np.uint8, Literal[3]])
-    value_u16: Vector[np.uint16, Literal[3]] = np.array([1, 2, 3], dtype=np.uint16)
+    value_u16 = np.array([1, 2, 3], dtype=np.uint16)
     with pytest.raises(ValueError, match="Unsupported NumPy dtype"):
         validate_full_roundtrip(value_u16, Vector[np.uint16, Literal[3]])
-    value_u32: Vector[np.uint32, Literal[3]] = np.array([1, 2, 3], dtype=np.uint32)
+    value_u32 = np.array([1, 2, 3], dtype=np.uint32)
     with pytest.raises(ValueError, match="Unsupported NumPy dtype"):
         validate_full_roundtrip(value_u32, Vector[np.uint32, Literal[3]])
-    value_u64: Vector[np.uint64, Literal[3]] = np.array([1, 2, 3], dtype=np.uint64)
+    value_u64 = np.array([1, 2, 3], dtype=np.uint64)
     with pytest.raises(ValueError, match="Unsupported NumPy dtype"):
         validate_full_roundtrip(value_u64, Vector[np.uint64, Literal[3]])
 
 
 def test_roundtrip_vector_no_dimension() -> None:
     """Test full roundtrip for vector types without dimension annotation."""
-    value_f64: Vector[np.float64] = np.array([1.0, 2.0, 3.0], dtype=np.float64)
-    validate_full_roundtrip(value_f64, Vector[np.float64])
+    value_f64 = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    validate_full_roundtrip(
+        value_f64,
+        Vector[np.float64],
+        ([1.0, 2.0, 3.0], list[float]),
+        (np.array([1.0, 2.0, 3.0], dtype=np.float64), np.typing.NDArray[np.float64]),
+    )
 
 
 def test_roundtrip_string_vector() -> None:
@@ -904,9 +961,9 @@ def test_roundtrip_dimension_mismatch() -> None:
 def test_full_roundtrip_scalar_numeric_types() -> None:
     """Test full roundtrip for scalar NumPy numeric types."""
     # Test supported scalar types
-    validate_full_roundtrip(np.int64(42), np.int64)
-    validate_full_roundtrip(np.float32(3.14), np.float32)
-    validate_full_roundtrip(np.float64(2.718), np.float64)
+    validate_full_roundtrip(np.int64(42), np.int64, (42, int))
+    validate_full_roundtrip(np.float32(3.25), np.float32, (3.25, cocoindex.Float32))
+    validate_full_roundtrip(np.float64(3.25), np.float64, (3.25, cocoindex.Float64))
 
     # Test unsupported scalar types
     for unsupported_type in [np.int32, np.uint8, np.uint16, np.uint32, np.uint64]:

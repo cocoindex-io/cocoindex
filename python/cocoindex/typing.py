@@ -150,6 +150,7 @@ class AnalyzedTypeInfo:
     """
 
     kind: str
+    core_type: Any
     vector_info: VectorInfo | None  # For Vector
     elem_type: ElementType | None  # For Vector and Table
 
@@ -285,6 +286,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
 
     return AnalyzedTypeInfo(
         kind=kind,
+        core_type=t,
         vector_info=vector_info,
         elem_type=elem_type,
         union_variant_types=union_variant_types,
