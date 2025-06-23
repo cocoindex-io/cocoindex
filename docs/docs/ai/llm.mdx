@@ -233,34 +233,34 @@ pip install 'litellm[proxy]'
 
 #### 2. Create a `config.yml` for LiteLLM
 
-**Example for OpenAI:**
-```yaml
-model_list:
-  - model_name: "*"
-    litellm_params:
-      model: openai/*
-      api_key: os.environ/LITELLM_API_KEY
-```
-
 **Example for DeepSeek:**
 
-First, pull the DeepSeek model with Ollama:
-```bash
-ollama pull deepseek-r1
-```
-Then run it if it's not running:
-```bash
-ollama run deepseek-r1
-```
+Use this in your `config.yml`:
 
-Then, use this in your `config.yml`:
 ```yaml
 model_list:
-  - model_name: "deepseek-r1"
+  - model_name: deepseek-chat
     litellm_params:
-      model: "ollama_chat/deepseek-r1"
-      api_base: "http://localhost:11434"
+        model: deepseek/deepseek-chat
+        api_key: os.environ/DEEPSEEK_API_KEY
 ```
+
+You need to set the environment variable `DEEPSEEK_API_KEY` to your DeepSeek API key.
+
+**Example for Groq:**
+
+Use this in your `config.yml`:
+
+```yaml
+model_list:
+  - model_name: groq-llama-3.3-70b-versatile
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: "os.environ/GROQ_API_KEY"
+```
+
+You need to set the environment variable `GROQ_API_KEY` to your Groq API key.
+
 
 #### 3. Run LiteLLM Proxy
 
@@ -276,7 +276,7 @@ litellm --config config.yml
 ```python
 cocoindex.LlmSpec(
     api_type=cocoindex.LlmApiType.LITE_LLM,
-    model="deepseek-r1",
+    model="deepseek-chat",
     address="http://127.0.0.1:4000", # default url of LiteLLM
 )
 ```
