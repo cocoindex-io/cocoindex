@@ -69,11 +69,29 @@ def image_object_embedding_flow(
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
-        img["embedding"] = img["content"].transform(embed_image)
+        caption_ds = img["content"].transform(
+            cocoindex.functions.ExtractByLlm(
+                llm_spec=cocoindex.llm.LlmSpec(
+                    api_type=cocoindex.LlmApiType.GEMINI,
+                    model="gemini-1.5-flash",
+                ),
+                instruction=(
+                    "Describe this image in one detailed, natural language sentence. "
+                    "Always explicitly name every visible animal species, object, and the main scene. "
+                    "Be specific about the type, color, and any distinguishing features. "
+                    "Avoid generic words like 'animal' or 'creature'—always use the most precise name (e.g., 'elephant', 'cat', 'lion', 'zebra'). "
+                    "If an animal is present, mention its species and what it is doing. "
+                    "For example: 'A large grey elephant standing in a grassy savanna, with trees in the background.'"
+                ),
+                output_type=str,
+            )
+        )
+        embedding_ds = img["content"].transform(embed_image)
         img_embeddings.collect(
             id=cocoindex.GeneratedField.UUID,
             filename=img["filename"],
-            embedding=img["embedding"],
+            caption=caption_ds,
+            embedding=embedding_ds,
         )
 
     img_embeddings.export(
