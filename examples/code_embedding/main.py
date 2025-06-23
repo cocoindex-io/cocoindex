@@ -24,7 +24,7 @@ def code_to_embedding(
     # You can also switch to Voyage embedding model:
     #    return text.transform(
     #        cocoindex.functions.EmbedText(
-    #            api_type=cocoindex.llm.LlmApiType.VOYAGE,
+    #            api_type=cocoindex.LlmApiType.VOYAGE,
     #            model="voyage-code-3",
     #        )
     #    )

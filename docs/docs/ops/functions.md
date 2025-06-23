@@ -105,3 +105,32 @@ Input data:
 *   `text` (type: `str`, required): The text to extract information from.
 
 Return type: As specified by the `output_type` field in the spec. The extracted information from the input text.
+
+## EmbedText
+
+`EmbedText` embeds a text into a vector space using various LLM APIs that support text embedding.
+
+The spec takes the following fields:
+
+*   `api_type` (type: [`cocoindex.LlmApiType`](/docs/ai/llm#llm-api-types), required): The type of LLM API to use for embedding.
+*   `model` (type: `str`, required): The name of the embedding model to use.
+*   `address` (type: `str`, optional): The address of the LLM API. If not specified, uses the default address for the API type.
+*   `output_dimension` (type: `int`, optional): The expected dimension of the output embedding vector. If not specified, use the default dimension of the model.
+
+    For most API types, the function internally keeps a registry for the default output dimension of known model.
+    You need to explicitly specify the `output_dimension` if you want to use a new model that is not in the registry yet.
+
+*   `task_type` (type: `str`, optional): The task type for embedding, used by some embedding models to optimize the embedding for specific use cases.
+
+:::note Supported APIs for Text Embedding
+
+Not all LLM APIs support text embedding. See the [LLM API Types table](/docs/ai/llm#llm-api-types) for which APIs support text embedding functionality.
+
+:::
+
+Input data:
+
+*   `text` (type: `str`, required): The text to embed.
+
+Return type: `vector[float32; N]`, where `N` is the dimension of the embedding vector determined by the model.
+

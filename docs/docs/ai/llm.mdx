@@ -6,20 +6,62 @@ description: LLMs integrated with CocoIndex for various built-in functions
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-CocoIndex provides builtin functions (e.g. [`ExtractByLlm`](/docs/ops/functions#extractbyllm)) that process data using LLM.
-You usually need to provide a `LlmSpec`, to configure the LLM integration you want to use and LLM models, etc.
+CocoIndex provides builtin functions integrating with various LLM APIs, for various inference tasks:
+*   [Text Generation](#text-generation): use LLM to generate text.
+*   [Text Embedding](#text-embedding): embed text into a vector space.
 
+## LLM API Types
 
-## LLM Spec
+We support integrating with LLM with different types of APIs.
+Each LLM API type is specified by a `cocoindex.LlmApiType` enum.
 
-The `cocoindex.LlmSpec` data class is used to configure the LLM integration you want to use and LLM models, etc.
+We support the following types of LLM APIs:
+
+| API Name | `LlmApiType` enum | Text Generation | Text Embedding |
+|----------|---------------------|--------------------|--------------------|
+| [OpenAI](#openai) | `LlmApiType.OPENAI` | ✅ | ✅ |
+| [Ollama](#ollama) | `LlmApiType.OLLAMA` | ✅ | ❌ |
+| [Google Gemini](#google-gemini) | `LlmApiType.GEMINI` | ✅ | ✅ |
+| [Anthropic](#anthropic) | `LlmApiType.ANTHROPIC` | ✅ | ❌ |
+| [Voyage](#voyage) | `LlmApiType.VOYAGE` | ❌ | ✅ |
+| [LiteLLM](#litellm) | `LlmApiType.LITE_LLM` | ✅ | ❌ |
+| [OpenRouter](#openrouter) | `LlmApiType.OPEN_ROUTER` | ✅ | ❌ |
+
+## LLM Tasks
+
+### Text Generation
+
+Generation is used as a building block for certain CocoIndex functions that process data using LLM generation.
+
+We have one builtin functions using LLM generation for now:
+
+*  [`ExtractByLlm`](/docs/ops/functions#extractbyllm): it extracts information from input text.
+
+#### LLM Spec
+
+When calling a CocoIndex function that uses LLM generation, you need to provide a `cocoindex.LlmSpec` dataclass, to configure the LLM you want to use in these functions.
 It has the following fields:
 
-*   `api_type`: The type of integrated LLM API to use, e.g. `cocoindex.LlmApiType.OPENAI` or `cocoindex.LlmApiType.OLLAMA`.
+*   `api_type` (type: [`cocoindex.LlmApiType`](/docs/ai/llm#llm-api-types), required): The type of integrated LLM API to use, e.g. `cocoindex.LlmApiType.OPENAI` or `cocoindex.LlmApiType.OLLAMA`.
     See supported LLM APIs in the [LLM API integrations](#llm-api-integrations) section below.
-*   `model`: The name of the LLM model to use.
-*   `address` (optional): The address of the LLM API.
+*   `model` (type: `str`, required): The name of the LLM model to use.
+*   `address` (type: `str`, optional): The address of the LLM API.
 
+
+### Text Embedding
+
+Embedding means converting text into a vector space, usually for similarity matching.
+
+We provide a builtin function [`EmbedText`](/docs/ops/functions#embedtext) that converts a given text into a vector space. 
+The spec takes the following fields:
+
+*   `api_type` (type: `cocoindex.LlmApiType`, required)
+*   `model` (type: `str`, required)
+*   `address` (type: `str`, optional)
+*   `output_dimension` (type: `int`, optional)
+*   `task_type` (type: `str`, optional)
+
+See documentation for [`EmbedText`](/docs/ops/functions#embedtext) for more details about these fields.
 
 ## LLM API Integrations
 
@@ -30,7 +72,11 @@ CocoIndex integrates with various LLM APIs for these functions.
 To use the OpenAI LLM API, you need to set the environment variable `OPENAI_API_KEY`.
 You can generate the API key from [OpenAI Dashboard](https://platform.openai.com/api-keys).
 
-A spec for OpenAI looks like this:
+Currently we don't support custom address for OpenAI API.
+
+You can find the full list of models supported by OpenAI [here](https://platform.openai.com/docs/models).
+
+For text generation, a spec for OpenAI looks like this:
 
 <Tabs>
 <TabItem value="python" label="Python" default>
@@ -42,9 +88,20 @@ cocoindex.LlmSpec(
 )
 ```
 
-Currently we don't support custom address for OpenAI API.
+</TabItem>
+</Tabs>
 
-You can find the full list of models supported by OpenAI [here](https://platform.openai.com/docs/models).
+For text embedding, a spec for OpenAI looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.OPENAI,
+    model="text-embedding-3-small",
+)
+```
 
 </TabItem>
 </Tabs>
@@ -82,7 +139,9 @@ cocoindex.LlmSpec(
 To use the Gemini LLM API, you need to set the environment variable `GEMINI_API_KEY`.
 You can generate the API key from [Google AI Studio](https://aistudio.google.com/apikey).
 
-A spec for Gemini looks like this:
+You can find the full list of models supported by Gemini [here](https://ai.google.dev/gemini-api/docs/models).
+
+For text generation, a spec looks like this:
 
 <Tabs>
 <TabItem value="python" label="Python" default>
@@ -97,14 +156,32 @@ cocoindex.LlmSpec(
 </TabItem>
 </Tabs>
 
-You can find the full list of models supported by Gemini [here](https://ai.google.dev/gemini-api/docs/models).
+For text embedding, a spec looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.GEMINI,
+    model="text-embedding-004",
+    task_type="SEMANTICS_SIMILARITY",
+)
+```
+
+All supported embedding models can be found [here](https://ai.google.dev/gemini-api/docs/embeddings#embeddings-models).
+Gemini supports task type (optional), which can be found [here](https://ai.google.dev/gemini-api/docs/embeddings#supported-task-types).
+
+
+</TabItem>
+</Tabs>
 
 ### Anthropic
 
 To use the Anthropic LLM API, you need to set the environment variable `ANTHROPIC_API_KEY`.
 You can generate the API key from [Anthropic API](https://console.anthropic.com/settings/keys).
 
-A spec for Anthropic looks like this:
+A text generation spec for Anthropic looks like this:
 
 <Tabs>
 <TabItem value="python" label="Python" default>
@@ -120,6 +197,29 @@ cocoindex.LlmSpec(
 </Tabs>
 
 You can find the full list of models supported by Anthropic [here](https://docs.anthropic.com/en/docs/about-claude/models/all-models).
+
+### Voyage
+
+To use the Voyage LLM API, you need to set the environment variable `VOYAGE_API_KEY`.
+You can generate the API key from [Voyage dashboard](https://dashboard.voyageai.com/organization/api-keys).
+
+A text embedding spec for Voyage looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.VOYAGE,
+    model="voyage-code-3",
+    task_type="document",
+)
+```
+
+</TabItem>
+</Tabs>
+
+Voyage API supports `document` and `query` as task types (optional, a.k.a. `input_type` in Voyage API, see [Voyage API documentation](https://docs.voyageai.com/reference/embeddings-api) for details).
 
 ### LiteLLM
 

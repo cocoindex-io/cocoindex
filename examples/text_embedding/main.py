@@ -19,7 +19,7 @@ def text_to_embedding(
     # You can also switch to remote embedding model:
     #   return text.transform(
     #       cocoindex.functions.EmbedText(
-    #           api_type=cocoindex.llm.LlmApiType.OPENAI,
+    #           api_type=cocoindex.LlmApiType.OPENAI,
     #           model="text-embedding-3-small",
     #       )
     #   )
