@@ -1,9 +1,8 @@
-use crate::prelude::*;
-
 use crate::llm::{
     LlmGenerateRequest, LlmGenerationClient, LlmSpec, OutputFormat, new_llm_generation_client,
 };
 use crate::ops::sdk::*;
+use crate::prelude::*;
 use base::json_schema::build_json_schema;
 use schemars::schema::SchemaObject;
 use std::borrow::Cow;
@@ -16,7 +15,8 @@ pub struct Spec {
 }
 
 pub struct Args {
-    text: ResolvedOpArg,
+    text: Option<ResolvedOpArg>,
+    image: Option<ResolvedOpArg>,
 }
 
 struct Executor {
@@ -76,11 +76,30 @@ impl SimpleFunctionExecutor for Executor {
     }
 
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
-        let text = self.args.text.value(&input)?.as_str()?;
+        let image_bytes: Option<Cow<'_, [u8]>> = self
+            .args
+            .image
+            .as_ref()
+            .map(|arg| arg.value(&input)?.as_bytes())
+            .transpose()?
+            .map(|bytes| Cow::Borrowed(bytes.as_ref()));
+        let text = self
+            .args
+            .text
+            .as_ref()
+            .map(|arg| arg.value(&input)?.as_str())
+            .transpose()?;
+
+        if text.is_none() && image_bytes.is_none() {
+            api_bail!("At least one of `text` or `image` must be provided");
+        }
+
+        let user_prompt = text.map_or("", |v| v);
         let req = LlmGenerateRequest {
             model: &self.model,
             system_prompt: Some(Cow::Borrowed(&self.system_prompt)),
-            user_prompt: Cow::Borrowed(text),
+            user_prompt: Cow::Borrowed(user_prompt),
+            image: image_bytes,
             output_format: Some(OutputFormat::JsonSchema {
                 name: Cow::Borrowed("ExtractedData"),
                 schema: Cow::Borrowed(&self.output_json_schema),
@@ -110,14 +129,39 @@ impl SimpleFunctionFactoryBase for Factory {
         args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
     ) -> Result<(Args, EnrichedValueType)> {
-        Ok((
-            Args {
-                text: args_resolver
-                    .next_arg("text")?
-                    .expect_type(&ValueType::Basic(BasicValueType::Str))?,
-            },
-            spec.output_type.clone(),
-        ))
+        let mut text: Option<ResolvedOpArg> = None;
+        let mut image: Option<ResolvedOpArg> = None;
+
+        // Handle the first positional argument
+        if let Some(arg) = args_resolver.next_optional_arg("")? {
+            match arg.typ.typ {
+                ValueType::Basic(BasicValueType::Str) => text = Some(arg),
+                ValueType::Basic(BasicValueType::Bytes) => image = Some(arg),
+                _ => api_bail!(
+                    "Positional argument must be of type 'Str' or 'Bytes', got {}",
+                    arg.typ.typ
+                ),
+            }
+        }
+
+        // Named arguments
+        for (name, slot, expected_type) in [
+            ("text", &mut text, BasicValueType::Str),
+            ("image", &mut image, BasicValueType::Bytes),
+        ] {
+            if let Some(arg) = args_resolver.next_optional_arg(name)? {
+                if slot.is_some() {
+                    api_bail!("'{}' argument provided multiple times", name);
+                }
+                *slot = Some(arg.expect_type(&ValueType::Basic(expected_type))?);
+            }
+        }
+
+        if text.is_none() && image.is_none() {
+            api_bail!("At least one of 'text' or 'image' must be provided");
+        }
+
+        Ok((Args { text, image }, spec.output_type.clone()))
     }
 
     async fn build_executor(

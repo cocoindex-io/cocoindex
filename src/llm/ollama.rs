@@ -1,6 +1,7 @@
 use crate::prelude::*;
 
 use super::LlmGenerationClient;
+use base64::Engine;
 use schemars::schema::SchemaObject;
 
 pub struct Client {
@@ -18,6 +19,7 @@ enum OllamaFormat<'a> {
 struct OllamaRequest<'a> {
     pub model: &'a str,
     pub prompt: &'a str,
+    pub images: Option<Vec<String>>,
     pub format: Option<OllamaFormat<'a>>,
     pub system: Option<&'a str>,
     pub stream: Option<bool>,
@@ -49,9 +51,18 @@ impl LlmGenerationClient for Client {
         &self,
         request: super::LlmGenerateRequest<'req>,
     ) -> Result<super::LlmGenerateResponse> {
+        let ollama_images = if let Some(image_bytes) = &request.image {
+            let base64_image =
+                base64::engine::general_purpose::STANDARD.encode(image_bytes.as_ref());
+            Some(vec![base64_image])
+        } else {
+            None
+        };
+
         let req = OllamaRequest {
             model: request.model,
             prompt: request.user_prompt.as_ref(),
+            images: ollama_images,
             format: request.output_format.as_ref().map(
                 |super::OutputFormat::JsonSchema { schema, .. }| {
                     OllamaFormat::JsonSchema(schema.as_ref())

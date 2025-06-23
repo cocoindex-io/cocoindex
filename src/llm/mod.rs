@@ -36,6 +36,7 @@ pub struct LlmGenerateRequest<'a> {
     pub model: &'a str,
     pub system_prompt: Option<Cow<'a, str>>,
     pub user_prompt: Cow<'a, str>,
+    pub image: Option<Cow<'a, [u8]>>,
     pub output_format: Option<OutputFormat<'a>>,
 }
 
