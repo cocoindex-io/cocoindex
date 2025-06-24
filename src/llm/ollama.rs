@@ -1,8 +1,8 @@
 use crate::prelude::*;
 
 use super::LlmGenerationClient;
-use base64::Engine;
 use schemars::schema::SchemaObject;
+use serde_with::{base64::Base64, serde_as};
 
 pub struct Client {
     generate_url: String,
@@ -15,11 +15,13 @@ enum OllamaFormat<'a> {
     JsonSchema(&'a SchemaObject),
 }
 
+#[serde_as]
 #[derive(Debug, Serialize)]
 struct OllamaRequest<'a> {
     pub model: &'a str,
     pub prompt: &'a str,
-    pub images: Option<Vec<String>>,
+    #[serde_as(as = "Option<Vec<Base64>>")]
+    pub images: Option<Vec<&'a [u8]>>,
     pub format: Option<OllamaFormat<'a>>,
     pub system: Option<&'a str>,
     pub stream: Option<bool>,
@@ -51,18 +53,10 @@ impl LlmGenerationClient for Client {
         &self,
         request: super::LlmGenerateRequest<'req>,
     ) -> Result<super::LlmGenerateResponse> {
-        let ollama_images = if let Some(image_bytes) = &request.image {
-            let base64_image =
-                base64::engine::general_purpose::STANDARD.encode(image_bytes.as_ref());
-            Some(vec![base64_image])
-        } else {
-            None
-        };
-
         let req = OllamaRequest {
             model: request.model,
             prompt: request.user_prompt.as_ref(),
-            images: ollama_images,
+            images: request.image.as_deref().map(|img| vec![img.as_ref()]),
             format: request.output_format.as_ref().map(
                 |super::OutputFormat::JsonSchema { schema, .. }| {
                     OllamaFormat::JsonSchema(schema.as_ref())
