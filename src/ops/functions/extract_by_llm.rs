@@ -129,14 +129,16 @@ impl SimpleFunctionFactoryBase for Factory {
         args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
     ) -> Result<(Args, EnrichedValueType)> {
-        let mut text: Option<ResolvedOpArg> = None;
-        let mut image: Option<ResolvedOpArg> = None;
+        let mut args = Args {
+            text: None,
+            image: None,
+        };
 
-        // Handle the first positional argument
+        // Handle positional argument
         if let Some(arg) = args_resolver.next_optional_arg("")? {
             match arg.typ.typ {
-                ValueType::Basic(BasicValueType::Str) => text = Some(arg),
-                ValueType::Basic(BasicValueType::Bytes) => image = Some(arg),
+                ValueType::Basic(BasicValueType::Str) => args.text = Some(arg),
+                ValueType::Basic(BasicValueType::Bytes) => args.image = Some(arg),
                 _ => api_bail!(
                     "Positional argument must be of type 'Str' or 'Bytes', got {}",
                     arg.typ.typ
@@ -144,24 +146,11 @@ impl SimpleFunctionFactoryBase for Factory {
             }
         }
 
-        // Named arguments
-        for (name, slot, expected_type) in [
-            ("text", &mut text, BasicValueType::Str),
-            ("image", &mut image, BasicValueType::Bytes),
-        ] {
-            if let Some(arg) = args_resolver.next_optional_arg(name)? {
-                if slot.is_some() {
-                    api_bail!("'{}' argument provided multiple times", name);
-                }
-                *slot = Some(arg.expect_type(&ValueType::Basic(expected_type))?);
-            }
-        }
-
-        if text.is_none() && image.is_none() {
+        if args.text.is_none() && args.image.is_none() {
             api_bail!("At least one of 'text' or 'image' must be provided");
         }
 
-        Ok((Args { text, image }, spec.output_type.clone()))
+        Ok((args, spec.output_type.clone()))
     }
 
     async fn build_executor(

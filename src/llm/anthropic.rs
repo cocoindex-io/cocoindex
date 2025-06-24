@@ -1,5 +1,6 @@
 use crate::llm::{
-    LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat, ToJsonSchemaOptions,
+    LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
+    ToJsonSchemaOptions, detect_mime_type,
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -43,11 +44,12 @@ impl LlmGenerationClient for Client {
         if let Some(image_bytes) = &request.image {
             let base64_image =
                 base64::engine::general_purpose::STANDARD.encode(image_bytes.as_ref());
+            let mime_type = detect_mime_type(image_bytes.as_ref())?;
             user_content_parts.push(serde_json::json!({
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": "image/jpeg", // Assuming JPEG
+                    "media_type": mime_type,
                     "data": base64_image,
                 }
             }));

@@ -1,8 +1,11 @@
 use crate::prelude::*;
 
 use crate::base::json_schema::ToJsonSchemaOptions;
+use infer::Infer;
 use schemars::schema::SchemaObject;
 use std::borrow::Cow;
+
+static INFER: OnceLock<Infer> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum LlmApiType {
@@ -141,4 +144,12 @@ pub fn new_llm_embedding_client(
         }
     };
     Ok(client)
+}
+
+pub fn detect_mime_type(bytes: &[u8]) -> Result<&'static str> {
+    let infer = INFER.get_or_init(Infer::new);
+    match infer.get(bytes) {
+        Some(info) if info.mime_type().starts_with("image/") => Ok(info.mime_type()),
+        _ => bail!("Unknown or unsupported image format"),
+    }
 }

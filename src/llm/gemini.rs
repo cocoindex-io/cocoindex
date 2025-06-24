@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use crate::llm::{
     LlmEmbeddingClient, LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
-    ToJsonSchemaOptions,
+    ToJsonSchemaOptions, detect_mime_type,
 };
 use base64::Engine;
 use phf::phf_map;
@@ -80,9 +80,10 @@ impl LlmGenerationClient for Client {
         if let Some(image_bytes) = &request.image {
             let base64_image =
                 base64::engine::general_purpose::STANDARD.encode(image_bytes.as_ref());
+            let mime_type = detect_mime_type(image_bytes.as_ref())?;
             user_parts.push(serde_json::json!({
                 "inlineData": {
-                    "mimeType": "image/jpeg", // Assuming JPEG
+                    "mimeType": mime_type,
                     "data": base64_image
                 }
             }));
