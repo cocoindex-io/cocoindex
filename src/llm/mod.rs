@@ -5,7 +5,7 @@ use infer::Infer;
 use schemars::schema::SchemaObject;
 use std::borrow::Cow;
 
-static INFER: OnceLock<Infer> = OnceLock::new();
+static INFER: LazyLock<Infer> = LazyLock::new(Infer::new);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum LlmApiType {
@@ -146,8 +146,8 @@ pub fn new_llm_embedding_client(
     Ok(client)
 }
 
-pub fn detect_mime_type(bytes: &[u8]) -> Result<&'static str> {
-    let infer = INFER.get_or_init(Infer::new);
+pub fn detect_image_mime_type(bytes: &[u8]) -> Result<&'static str> {
+    let infer = &*INFER;
     match infer.get(bytes) {
         Some(info) if info.mime_type().starts_with("image/") => Ok(info.mime_type()),
         _ => bail!("Unknown or unsupported image format"),
