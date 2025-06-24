@@ -128,7 +128,7 @@ def _load_user_app(app_target: str) -> types.ModuleType:
     default=None,
     show_default=False,
 )
-def cli(env_file: str | None) -> None:
+def cli(env_file: str | None = None) -> None:
     """
     CLI for Cocoindex.
     """
