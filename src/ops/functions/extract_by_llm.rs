@@ -30,10 +30,11 @@ struct Executor {
 
 fn get_system_prompt(instructions: &Option<String>, extra_instructions: Option<String>) -> String {
     let mut message =
-        "You are a helpful assistant that extracts structured information from text. \
-Your task is to analyze the input text and output valid JSON that matches the specified schema. \
-Be precise and only include information that is explicitly stated in the text. \
-Output only the JSON without any additional messages or explanations."
+        "You are a helpful assistant that processes user-provided inputs (text, images, or both) to produce structured outputs. \
+Your task is to follow the provided instructions to generate or extract information and output valid JSON matching the specified schema. \
+Base your response solely on the content of the input. \
+For generative tasks, respond accurately and relevantly based on what is provided. \
+Unless explicitly instructed otherwise, output only the JSON—do not include explanations, descriptions, or formatting outside the JSON."
             .to_string();
 
     if let Some(custom_instructions) = instructions {
