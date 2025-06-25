@@ -288,7 +288,7 @@ impl StorageFactoryBase for Factory {
         "Qdrant"
     }
 
-    fn build(
+    async fn build(
         self: Arc<Self>,
         data_collections: Vec<TypedExportDataCollectionSpec<Self>>,
         _declarations: Vec<()>,

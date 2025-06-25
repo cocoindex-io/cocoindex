@@ -933,7 +933,7 @@ impl StorageFactoryBase for Factory {
         "Neo4j"
     }
 
-    fn build(
+    async fn build(
         self: Arc<Self>,
         data_collections: Vec<TypedExportDataCollectionSpec<Self>>,
         declarations: Vec<Declaration>,

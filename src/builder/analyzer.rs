@@ -1,3 +1,4 @@
+use crate::ops::get_executor_factory;
 use crate::prelude::*;
 
 use super::plan::*;
@@ -10,7 +11,7 @@ use crate::setup::{
 use crate::utils::fingerprint::Fingerprinter;
 use crate::{
     base::{schema::*, spec::*},
-    ops::{interface::*, registry::*},
+    ops::interface::*,
 };
 use futures::future::{BoxFuture, try_join3};
 use futures::{FutureExt, future::try_join_all};
@@ -363,9 +364,8 @@ impl DataScopeBuilder {
     }
 }
 
-pub(super) struct AnalyzerContext<'a> {
-    pub registry: &'a ExecutorFactoryRegistry,
-    pub flow_ctx: &'a Arc<FlowInstanceContext>,
+pub(super) struct AnalyzerContext {
+    pub flow_ctx: Arc<FlowInstanceContext>,
 }
 
 #[derive(Debug, Default)]
@@ -661,28 +661,29 @@ struct ExportDataFieldsInfo {
     value_stable: bool,
 }
 
-impl AnalyzerContext<'_> {
-    pub(super) fn analyze_import_op(
+impl AnalyzerContext {
+    pub(super) async fn analyze_import_op(
         &self,
         op_scope: &Arc<OpScope>,
         import_op: NamedSpec<ImportOpSpec>,
         metadata: Option<&mut FlowSetupMetadata>,
         existing_source_states: Option<&Vec<&SourceSetupState>>,
     ) -> Result<impl Future<Output = Result<AnalyzedImportOp>> + Send + use<>> {
-        let factory = self.registry.get(&import_op.spec.source.kind);
-        let source_factory = match factory {
-            Some(ExecutorFactory::Source(source_executor)) => source_executor.clone(),
+        let source_factory = match get_executor_factory(&import_op.spec.source.kind)? {
+            ExecutorFactory::Source(source_executor) => source_executor,
             _ => {
                 return Err(anyhow::anyhow!(
-                    "Source executor not found for kind: {}",
+                    "`{}` is not a source op",
                     import_op.spec.source.kind
                 ));
             }
         };
-        let (output_type, executor) = source_factory.build(
-            serde_json::Value::Object(import_op.spec.source.spec),
-            self.flow_ctx.clone(),
-        )?;
+        let (output_type, executor) = source_factory
+            .build(
+                serde_json::Value::Object(import_op.spec.source.spec),
+                self.flow_ctx.clone(),
+            )
+            .await?;
 
         let key_schema_no_attrs = output_type
             .typ
@@ -746,7 +747,7 @@ impl AnalyzerContext<'_> {
         Ok(result_fut)
     }
 
-    pub(super) fn analyze_reactive_op(
+    pub(super) async fn analyze_reactive_op(
         &self,
         op_scope: &Arc<OpScope>,
         reactive_op: &NamedSpec<ReactiveOpSpec>,
@@ -762,18 +763,15 @@ impl AnalyzerContext<'_> {
                     })?;
                 let spec = serde_json::Value::Object(op.op.spec.clone());
 
-                let factory = self.registry.get(&op.op.kind);
-                match factory {
-                    Some(ExecutorFactory::SimpleFunction(fn_executor)) => {
+                match get_executor_factory(&op.op.kind)? {
+                    ExecutorFactory::SimpleFunction(fn_executor) => {
                         let input_value_mappings = input_field_schemas
                             .iter()
                             .map(|field| field.analyzed_value.clone())
                             .collect();
-                        let (output_enriched_type, executor) = fn_executor.clone().build(
-                            spec,
-                            input_field_schemas,
-                            self.flow_ctx.clone(),
-                        )?;
+                        let (output_enriched_type, executor) = fn_executor
+                            .build(spec, input_field_schemas, self.flow_ctx.clone())
+                            .await?;
                         let logic_fingerprinter = Fingerprinter::default()
                             .with(&op.op)?
                             .with(&output_enriched_type.without_attrs())?;
@@ -813,12 +811,7 @@ impl AnalyzerContext<'_> {
                         }
                         .boxed()
                     }
-                    _ => {
-                        return Err(anyhow::anyhow!(
-                            "Transform op kind not found: {}",
-                            op.op.kind
-                        ));
-                    }
+                    _ => api_bail!("`{}` is not a function op", op.op.kind),
                 }
             }
 
@@ -828,8 +821,10 @@ impl AnalyzerContext<'_> {
                     &foreach_op.field_path,
                 )?;
                 let analyzed_op_scope_fut = {
-                    let analyzed_op_scope_fut =
-                        self.analyze_op_scope(&sub_op_scope, &foreach_op.op_scope.ops)?;
+                    let analyzed_op_scope_fut = self
+                        .analyze_op_scope(&sub_op_scope, &foreach_op.op_scope.ops)
+                        .boxed_local()
+                        .await?;
                     let sub_op_scope_schema =
                         sub_op_scope.states.lock().unwrap().build_op_scope_schema();
                     op_scope.states.lock().unwrap().sub_scopes.insert(
@@ -958,7 +953,7 @@ impl AnalyzerContext<'_> {
         Ok(target_id)
     }
 
-    fn analyze_export_op_group(
+    async fn analyze_export_op_group(
         &self,
         target_kind: String,
         op_scope: &Arc<OpScope>,
@@ -1045,7 +1040,8 @@ impl AnalyzerContext<'_> {
         let (data_collections_output, declarations_output) = export_op_group
             .target_factory
             .clone()
-            .build(collection_specs, declarations, self.flow_ctx.clone())?;
+            .build(collection_specs, declarations, self.flow_ctx.clone())
+            .await?;
         let analyzed_export_ops = export_op_group
             .op_idx
             .iter()
@@ -1100,15 +1096,15 @@ impl AnalyzerContext<'_> {
         Ok(analyzed_export_ops)
     }
 
-    fn analyze_op_scope(
+    async fn analyze_op_scope(
         &self,
         op_scope: &Arc<OpScope>,
         reactive_ops: &[NamedSpec<ReactiveOpSpec>],
     ) -> Result<impl Future<Output = Result<AnalyzedOpScope>> + Send + use<>> {
-        let op_futs = reactive_ops
-            .iter()
-            .map(|reactive_op| self.analyze_reactive_op(op_scope, reactive_op))
-            .collect::<Result<Vec<_>>>()?;
+        let mut op_futs = Vec::with_capacity(reactive_ops.len());
+        for reactive_op in reactive_ops.iter() {
+            op_futs.push(self.analyze_reactive_op(op_scope, reactive_op).await?);
+        }
         let collector_len = op_scope.states.lock().unwrap().collectors.len();
         let result_fut = async move {
             Ok(AnalyzedOpScope {
@@ -1140,11 +1136,10 @@ fn build_flow_schema(root_op_scope: &OpScope) -> Result<FlowSchema> {
     })
 }
 
-pub fn analyze_flow(
+pub async fn analyze_flow(
     flow_inst: &FlowInstanceSpec,
-    flow_ctx: &Arc<FlowInstanceContext>,
+    flow_ctx: Arc<FlowInstanceContext>,
     existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
-    registry: &ExecutorFactoryRegistry,
 ) -> Result<(
     FlowSchema,
     impl Future<Output = Result<ExecutionPlan>> + Send + use<>,
@@ -1207,23 +1202,26 @@ pub fn analyze_flow(
         targets: IndexMap::new(),
     };
 
-    let analyzer_ctx = AnalyzerContext { registry, flow_ctx };
+    let analyzer_ctx = AnalyzerContext { flow_ctx };
     let root_data_scope = Arc::new(Mutex::new(DataScopeBuilder::new()));
     let root_op_scope = OpScope::new(ROOT_SCOPE_NAME.to_string(), None, root_data_scope);
-    let import_ops_futs = flow_inst
-        .import_ops
-        .iter()
-        .map(|import_op| {
-            let existing_source_states = source_states_by_name.get(import_op.name.as_str());
-            analyzer_ctx.analyze_import_op(
-                &root_op_scope,
-                import_op.clone(),
-                Some(&mut setup_state.metadata),
-                existing_source_states,
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let op_scope_fut = analyzer_ctx.analyze_op_scope(&root_op_scope, &flow_inst.reactive_ops)?;
+    let mut import_ops_futs = Vec::with_capacity(flow_inst.import_ops.len());
+    for import_op in flow_inst.import_ops.iter() {
+        let existing_source_states = source_states_by_name.get(import_op.name.as_str());
+        import_ops_futs.push(
+            analyzer_ctx
+                .analyze_import_op(
+                    &root_op_scope,
+                    import_op.clone(),
+                    Some(&mut setup_state.metadata),
+                    existing_source_states,
+                )
+                .await?,
+        );
+    }
+    let op_scope_fut = analyzer_ctx
+        .analyze_op_scope(&root_op_scope, &flow_inst.reactive_ops)
+        .await?;
 
     #[derive(Default)]
     struct TargetOpGroup {
@@ -1249,25 +1247,27 @@ pub fn analyze_flow(
     let mut export_ops_futs = vec![];
     let mut analyzed_target_op_groups = vec![];
     for (target_kind, op_ids) in target_op_group.into_iter() {
-        let export_factory = match registry.get(&target_kind) {
-            Some(ExecutorFactory::ExportTarget(export_executor)) => export_executor,
-            _ => {
-                bail!("Export target kind not found: {target_kind}");
-            }
+        let target_factory = match get_executor_factory(&target_kind)? {
+            ExecutorFactory::ExportTarget(export_executor) => export_executor,
+            _ => api_bail!("`{}` is not a export target op", target_kind),
         };
         let analyzed_target_op_group = AnalyzedExportTargetOpGroup {
-            target_factory: export_factory.clone(),
+            target_factory,
             op_idx: op_ids.export_op_ids,
         };
-        export_ops_futs.extend(analyzer_ctx.analyze_export_op_group(
-            target_kind,
-            &root_op_scope,
-            flow_inst,
-            &analyzed_target_op_group,
-            op_ids.declarations,
-            &mut setup_state,
-            &target_states_by_name_type,
-        )?);
+        export_ops_futs.extend(
+            analyzer_ctx
+                .analyze_export_op_group(
+                    target_kind,
+                    &root_op_scope,
+                    flow_inst,
+                    &analyzed_target_op_group,
+                    op_ids.declarations,
+                    &mut setup_state,
+                    &target_states_by_name_type,
+                )
+                .await?,
+        );
         analyzed_target_op_groups.push(analyzed_target_op_group);
     }
 
@@ -1299,20 +1299,16 @@ pub fn analyze_flow(
     Ok((flow_schema, plan_fut, setup_state))
 }
 
-pub fn analyze_transient_flow<'a>(
+pub async fn analyze_transient_flow<'a>(
     flow_inst: &TransientFlowSpec,
-    flow_ctx: &'_ Arc<FlowInstanceContext>,
+    flow_ctx: Arc<FlowInstanceContext>,
 ) -> Result<(
     EnrichedValueType,
     FlowSchema,
     impl Future<Output = Result<TransientExecutionPlan>> + Send + 'a,
 )> {
     let mut root_data_scope = DataScopeBuilder::new();
-    let registry = crate::ops::executor_factory_registry();
-    let analyzer_ctx = AnalyzerContext {
-        registry: &registry,
-        flow_ctx,
-    };
+    let analyzer_ctx = AnalyzerContext { flow_ctx };
     let mut input_fields = vec![];
     for field in flow_inst.input_fields.iter() {
         let analyzed_field = root_data_scope.add_field(field.name.clone(), &field.value_type)?;
@@ -1323,7 +1319,9 @@ pub fn analyze_transient_flow<'a>(
         None,
         Arc::new(Mutex::new(root_data_scope)),
     );
-    let op_scope_fut = analyzer_ctx.analyze_op_scope(&root_op_scope, &flow_inst.reactive_ops)?;
+    let op_scope_fut = analyzer_ctx
+        .analyze_op_scope(&root_op_scope, &flow_inst.reactive_ops)
+        .await?;
     let (output_value, output_type) =
         analyze_value_mapping(&flow_inst.output_value, &root_op_scope)?;
     let data_schema = build_flow_schema(&root_op_scope)?;

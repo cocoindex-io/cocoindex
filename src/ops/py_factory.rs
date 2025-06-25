@@ -124,8 +124,9 @@ pub(crate) struct PyFunctionFactory {
     pub py_function_factory: Py<PyAny>,
 }
 
+#[async_trait]
 impl SimpleFunctionFactory for PyFunctionFactory {
-    fn build(
+    async fn build(
         self: Arc<Self>,
         spec: serde_json::Value,
         input_schema: Vec<schema::OpArgSchema>,

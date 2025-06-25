@@ -149,8 +149,9 @@ pub trait SourceExecutor: Send + Sync {
     }
 }
 
+#[async_trait]
 pub trait SourceFactory {
-    fn build(
+    async fn build(
         self: Arc<Self>,
         spec: serde_json::Value,
         context: Arc<FlowInstanceContext>,
@@ -176,8 +177,9 @@ pub trait SimpleFunctionExecutor: Send + Sync {
     }
 }
 
+#[async_trait]
 pub trait SimpleFunctionFactory {
-    fn build(
+    async fn build(
         self: Arc<Self>,
         spec: serde_json::Value,
         input_schema: Vec<OpArgSchema>,
@@ -253,7 +255,7 @@ pub struct ExportDataCollectionSpec {
 
 #[async_trait]
 pub trait ExportTargetFactory: Send + Sync {
-    fn build(
+    async fn build(
         self: Arc<Self>,
         data_collections: Vec<ExportDataCollectionSpec>,
         declarations: Vec<serde_json::Value>,

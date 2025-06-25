@@ -133,7 +133,7 @@ impl SourceFactoryBase for Factory {
         "LocalFile"
     }
 
-    fn get_output_schema(
+    async fn get_output_schema(
         &self,
         spec: &Spec,
         _context: &FlowInstanceContext,

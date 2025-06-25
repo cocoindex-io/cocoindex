@@ -60,10 +60,10 @@ impl SimpleFunctionFactoryBase for Factory {
         "EmbedText"
     }
 
-    fn resolve_schema(
-        &self,
-        spec: &Spec,
-        args_resolver: &mut OpArgsResolver<'_>,
+    async fn resolve_schema<'a>(
+        &'a self,
+        spec: &'a Spec,
+        args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
     ) -> Result<(Self::ResolvedArgs, EnrichedValueType)> {
         let text = args_resolver.next_arg("text")?;

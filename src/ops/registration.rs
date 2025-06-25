@@ -3,7 +3,7 @@ use super::{
     targets,
 };
 use anyhow::Result;
-use std::sync::{LazyLock, RwLock, RwLockReadGuard};
+use std::sync::{LazyLock, RwLock};
 
 fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
     let reqwest_client = reqwest::Client::new();
@@ -32,8 +32,14 @@ static EXECUTOR_FACTORY_REGISTRY: LazyLock<RwLock<ExecutorFactoryRegistry>> = La
     RwLock::new(registry)
 });
 
-pub fn executor_factory_registry() -> RwLockReadGuard<'static, ExecutorFactoryRegistry> {
-    EXECUTOR_FACTORY_REGISTRY.read().unwrap()
+pub fn get_optional_executor_factory(kind: &str) -> Option<ExecutorFactory> {
+    let registry = EXECUTOR_FACTORY_REGISTRY.read().unwrap();
+    registry.get(kind).cloned()
+}
+
+pub fn get_executor_factory(kind: &str) -> Result<ExecutorFactory> {
+    get_optional_executor_factory(kind)
+        .ok_or_else(|| anyhow::anyhow!("Executor factory not found for op kind: {}", kind))
 }
 
 pub fn register_factory(name: String, factory: ExecutorFactory) -> Result<()> {

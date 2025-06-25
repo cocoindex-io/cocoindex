@@ -2,7 +2,6 @@ use crate::{ops::interface::FlowInstanceContext, prelude::*};
 
 use super::{analyzer, plan};
 use crate::{
-    ops::registry::ExecutorFactoryRegistry,
     service::error::{SharedError, SharedResultExt, shared_ok},
     setup::{self, ObjectSetupStatus},
 };
@@ -21,14 +20,9 @@ impl AnalyzedFlow {
         flow_instance: crate::base::spec::FlowInstanceSpec,
         flow_instance_ctx: Arc<FlowInstanceContext>,
         existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
-        registry: &ExecutorFactoryRegistry,
     ) -> Result<Self> {
-        let (data_schema, execution_plan_fut, desired_state) = analyzer::analyze_flow(
-            &flow_instance,
-            &flow_instance_ctx,
-            existing_flow_ss,
-            registry,
-        )?;
+        let (data_schema, execution_plan_fut, desired_state) =
+            analyzer::analyze_flow(&flow_instance, flow_instance_ctx, existing_flow_ss).await?;
         let setup_status =
             setup::check_flow_setup_status(Some(&desired_state), existing_flow_ss).await?;
         let execution_plan = if setup_status.is_up_to_date() {
@@ -79,7 +73,7 @@ impl AnalyzedTransientFlow {
     ) -> Result<Self> {
         let ctx = analyzer::build_flow_instance_context(&transient_flow.name, py_exec_ctx);
         let (output_type, data_schema, execution_plan_fut) =
-            analyzer::analyze_transient_flow(&transient_flow, &ctx)?;
+            analyzer::analyze_transient_flow(&transient_flow, ctx).await?;
         Ok(Self {
             transient_flow_instance: transient_flow,
             data_schema,

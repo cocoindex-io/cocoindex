@@ -74,10 +74,10 @@ impl SimpleFunctionFactoryBase for Factory {
         "ParseJson"
     }
 
-    fn resolve_schema(
-        &self,
-        _spec: &EmptySpec,
-        args_resolver: &mut OpArgsResolver<'_>,
+    async fn resolve_schema<'a>(
+        &'a self,
+        _spec: &'a EmptySpec,
+        args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
     ) -> Result<(Args, EnrichedValueType)> {
         let args = Args {

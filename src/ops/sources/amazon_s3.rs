@@ -294,7 +294,7 @@ impl SourceFactoryBase for Factory {
         "AmazonS3"
     }
 
-    fn get_output_schema(
+    async fn get_output_schema(
         &self,
         spec: &Spec,
         _context: &FlowInstanceContext,

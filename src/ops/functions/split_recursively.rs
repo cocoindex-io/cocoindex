@@ -877,10 +877,10 @@ impl SimpleFunctionFactoryBase for Factory {
         "SplitRecursively"
     }
 
-    fn resolve_schema(
-        &self,
-        _spec: &Spec,
-        args_resolver: &mut OpArgsResolver<'_>,
+    async fn resolve_schema<'a>(
+        &'a self,
+        _spec: &'a Spec,
+        args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
     ) -> Result<(Args, EnrichedValueType)> {
         let args = Args {

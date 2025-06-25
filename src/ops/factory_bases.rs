@@ -172,7 +172,7 @@ pub trait SourceFactoryBase: SourceFactory + Send + Sync + 'static {
 
     fn name(&self) -> &str;
 
-    fn get_output_schema(
+    async fn get_output_schema(
         &self,
         spec: &Self::Spec,
         context: &FlowInstanceContext,
@@ -195,8 +195,9 @@ pub trait SourceFactoryBase: SourceFactory + Send + Sync + 'static {
     }
 }
 
+#[async_trait]
 impl<T: SourceFactoryBase> SourceFactory for T {
-    fn build(
+    async fn build(
         self: Arc<Self>,
         spec: serde_json::Value,
         context: Arc<FlowInstanceContext>,
@@ -205,7 +206,7 @@ impl<T: SourceFactoryBase> SourceFactory for T {
         BoxFuture<'static, Result<Box<dyn SourceExecutor>>>,
     )> {
         let spec: T::Spec = serde_json::from_value(spec)?;
-        let output_schema = self.get_output_schema(&spec, &context)?;
+        let output_schema = self.get_output_schema(&spec, &context).await?;
         let executor = self.build_executor(spec, context);
         Ok((output_schema, executor))
     }
@@ -220,7 +221,7 @@ pub trait SimpleFunctionFactoryBase: SimpleFunctionFactory + Send + Sync + 'stat
 
     fn name(&self) -> &str;
 
-    fn resolve_schema<'a>(
+    async fn resolve_schema<'a>(
         &'a self,
         spec: &'a Self::Spec,
         args_resolver: &mut OpArgsResolver<'a>,
@@ -245,8 +246,9 @@ pub trait SimpleFunctionFactoryBase: SimpleFunctionFactory + Send + Sync + 'stat
     }
 }
 
+#[async_trait]
 impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
-    fn build(
+    async fn build(
         self: Arc<Self>,
         spec: serde_json::Value,
         input_schema: Vec<OpArgSchema>,
@@ -257,8 +259,9 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
     )> {
         let spec: T::Spec = serde_json::from_value(spec)?;
         let mut args_resolver = OpArgsResolver::new(&input_schema)?;
-        let (resolved_input_schema, output_schema) =
-            self.resolve_schema(&spec, &mut args_resolver, &context)?;
+        let (resolved_input_schema, output_schema) = self
+            .resolve_schema(&spec, &mut args_resolver, &context)
+            .await?;
         args_resolver.done()?;
         let executor = self.build_executor(spec, resolved_input_schema, context);
         Ok((output_schema, executor))
@@ -294,7 +297,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
 
     fn name(&self) -> &str;
 
-    fn build(
+    async fn build(
         self: Arc<Self>,
         data_collections: Vec<TypedExportDataCollectionSpec<Self>>,
         declarations: Vec<Self::DeclarationSpec>,
@@ -361,7 +364,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
 
 #[async_trait]
 impl<T: StorageFactoryBase> ExportTargetFactory for T {
-    fn build(
+    async fn build(
         self: Arc<Self>,
         data_collections: Vec<interface::ExportDataCollectionSpec>,
         declarations: Vec<serde_json::Value>,
@@ -389,7 +392,8 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
                 .map(|d| anyhow::Ok(serde_json::from_value(d)?))
                 .collect::<Result<Vec<_>>>()?,
             context,
-        )?;
+        )
+        .await?;
 
         let data_coll_output = data_coll_output
             .into_iter()

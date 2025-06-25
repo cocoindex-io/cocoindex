@@ -435,7 +435,7 @@ impl SourceFactoryBase for Factory {
         "GoogleDrive"
     }
 
-    fn get_output_schema(
+    async fn get_output_schema(
         &self,
         spec: &Spec,
         _context: &FlowInstanceContext,

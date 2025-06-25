@@ -1,4 +1,8 @@
-use crate::{lib_context::get_auth_registry, ops::interface::ExportTargetFactory, prelude::*};
+use crate::{
+    lib_context::get_auth_registry,
+    ops::{get_optional_executor_factory, interface::ExportTargetFactory},
+    prelude::*,
+};
 
 use sqlx::PgPool;
 use std::{
@@ -13,10 +17,7 @@ use super::{
     StateChange, TargetSetupState, db_metadata,
 };
 use crate::execution::db_tracking_setup;
-use crate::{
-    lib_context::FlowContext,
-    ops::{executor_factory_registry, interface::ExecutorFactory},
-};
+use crate::{lib_context::FlowContext, ops::interface::ExecutorFactory};
 
 enum MetadataRecordType {
     FlowVersion,
@@ -78,9 +79,8 @@ fn from_metadata_record<S: DeserializeOwned + Debug + Clone>(
 fn get_export_target_factory(
     target_type: &str,
 ) -> Option<Arc<dyn ExportTargetFactory + Send + Sync>> {
-    let registry = executor_factory_registry();
-    match registry.get(&target_type) {
-        Some(ExecutorFactory::ExportTarget(factory)) => Some(factory.clone()),
+    match get_optional_executor_factory(target_type) {
+        Some(ExecutorFactory::ExportTarget(factory)) => Some(factory),
         _ => None,
     }
 }

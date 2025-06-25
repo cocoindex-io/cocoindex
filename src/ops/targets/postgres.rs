@@ -621,7 +621,7 @@ impl StorageFactoryBase for Factory {
         "Postgres"
     }
 
-    fn build(
+    async fn build(
         self: Arc<Self>,
         data_collections: Vec<TypedExportDataCollectionSpec<Self>>,
         _declarations: Vec<()>,

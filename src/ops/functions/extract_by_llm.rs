@@ -104,10 +104,10 @@ impl SimpleFunctionFactoryBase for Factory {
         "ExtractByLlm"
     }
 
-    fn resolve_schema(
-        &self,
-        spec: &Spec,
-        args_resolver: &mut OpArgsResolver<'_>,
+    async fn resolve_schema<'a>(
+        &'a self,
+        spec: &'a Spec,
+        args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
     ) -> Result<(Args, EnrichedValueType)> {
         Ok((
