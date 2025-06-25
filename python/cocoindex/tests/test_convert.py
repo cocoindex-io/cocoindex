@@ -122,7 +122,7 @@ def test_encode_engine_value_basic_types() -> None:
 
 def test_encode_engine_value_uuid() -> None:
     u = uuid.uuid4()
-    assert encode_engine_value(u) == u.bytes
+    assert encode_engine_value(u) == u
 
 
 def test_encode_engine_value_date_time_types() -> None:
@@ -285,8 +285,8 @@ def test_non_ndarray_vector_decoding() -> None:
     decoder = make_engine_value_decoder(["field"], src_type, dst_type_uuid)
     uuid1 = uuid.uuid4()
     uuid2 = uuid.uuid4()
-    input_bytes = [uuid1.bytes, uuid2.bytes]
-    result = decoder(input_bytes)
+    input_uuids = [uuid1, uuid2]
+    result = decoder(input_uuids)
     assert isinstance(result, list)
     assert all(isinstance(x, uuid.UUID) for x in result)
     assert result == [uuid1, uuid2]
@@ -579,7 +579,7 @@ def test_roundtrip_union_simple() -> None:
 
 def test_roundtrip_union_with_active_uuid() -> None:
     t = str | uuid.UUID | int
-    value = uuid.uuid4().bytes
+    value = uuid.uuid4()
     validate_full_roundtrip(value, t)
 
 

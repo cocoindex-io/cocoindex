@@ -43,7 +43,7 @@ def encode_engine_value(value: Any) -> Any:
             [encode_engine_value(k)] + encode_engine_value(v) for k, v in value.items()
         ]
     if isinstance(value, uuid.UUID):
-        return value.bytes
+        return value
     return value
 
 
@@ -93,7 +93,7 @@ def make_engine_value_decoder(
             )
 
     if src_type_kind == "Uuid":
-        return lambda value: uuid.UUID(bytes=value)
+        return lambda value: value
 
     if dst_type_info is None:
         if src_type_kind == "Struct" or src_type_kind in TABLE_TYPES:

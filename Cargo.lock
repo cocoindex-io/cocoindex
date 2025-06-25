@@ -3293,6 +3293,7 @@ dependencies = [
  "pyo3-ffi",
  "pyo3-macros",
  "unindent",
+ "uuid",
 ]
 
 [[package]]
