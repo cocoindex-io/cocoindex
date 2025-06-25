@@ -3,6 +3,7 @@ use crate::{prelude::*, py::Pythonized};
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::{collections::btree_map, ops::Deref};
+use tokio::task::LocalSet;
 
 use super::analyzer::{
     AnalyzerContext, CollectorBuilder, DataScopeBuilder, OpScope, build_flow_instance_context,
@@ -622,14 +623,17 @@ impl FlowBuilder {
         };
         let py_ctx = crate::py::PythonExecutionContext::new(py, py_event_loop);
 
-        future_into_py(py, async move {
-            let analyzed_flow = tokio::task::spawn_local(
+        let analyzed_flow = get_runtime().spawn_blocking(|| {
+            let local_set = LocalSet::new();
+            local_set.block_on(
+                get_runtime(),
                 super::AnalyzedTransientFlow::from_transient_flow(spec, Some(py_ctx)),
             )
-            .await
-            .into_py_result()?
-            .into_py_result()?;
-            Ok(py::TransientFlow(Arc::new(analyzed_flow)))
+        });
+        future_into_py(py, async move {
+            Ok(py::TransientFlow(Arc::new(
+                analyzed_flow.await.into_py_result()?.into_py_result()?,
+            )))
         })
     }
 

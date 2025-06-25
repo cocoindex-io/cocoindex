@@ -133,4 +133,3 @@ Input data:
 *   `text` (type: `str`, required): The text to embed.
 
 Return type: `vector[float32; N]`, where `N` is the dimension of the embedding vector determined by the model.
-
