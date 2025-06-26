@@ -14,6 +14,7 @@ dependencies = [
     "click>=8.1.8",
     "rich>=14.0.0",
     "python-dotenv>=1.1.0",
+    "watchfiles>=1.1.0",
 ]
 license = "Apache-2.0"
 urls = { Homepage = "https://cocoindex.io/" }
