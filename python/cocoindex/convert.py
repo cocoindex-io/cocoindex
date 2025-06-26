@@ -42,8 +42,6 @@ def encode_engine_value(value: Any) -> Any:
         return [
             [encode_engine_value(k)] + encode_engine_value(v) for k, v in value.items()
         ]
-    if isinstance(value, uuid.UUID):
-        return value
     return value
 
 
@@ -91,9 +89,6 @@ def make_engine_value_decoder(
                 f"Type mismatch for `{''.join(field_path)}`: "
                 f"passed in {src_type_kind}, declared {dst_annotation} ({dst_type_info.kind})"
             )
-
-    if src_type_kind == "Uuid":
-        return lambda value: value
 
     if dst_type_info is None:
         if src_type_kind == "Struct" or src_type_kind in TABLE_TYPES:
