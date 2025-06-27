@@ -1,4 +1,3 @@
-import asyncio
 import atexit
 import datetime
 import importlib.util
@@ -18,7 +17,6 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import flow, lib, setting
-from .runtime import execution_context
 from .setup import apply_setup_changes, drop_setup, flow_names_with_setup, sync_setup
 
 # Create ServerSettings lazily upon first call, as environment variables may be loaded from files, etc.
@@ -521,6 +519,15 @@ def server(
     APP_TARGET: path/to/app.py or installed_module.
     """
     app_ref = _get_app_ref_from_specifier(app_target)
+    args = (
+        app_ref,
+        address,
+        cors_origin,
+        cors_cocoindex,
+        cors_local,
+        live_update,
+        quiet,
+    )
 
     if reload:
         watch_paths = {os.getcwd()}
@@ -537,15 +544,7 @@ def server(
         watchfiles.run_process(
             *watch_paths,
             target=_reloadable_server_target,
-            args=(
-                app_ref,
-                address,
-                cors_origin,
-                cors_cocoindex,
-                cors_local,
-                live_update,
-                quiet,
-            ),
+            args=args,
             watch_filter=watchfiles.PythonFilter(),
             callback=lambda changes: click.secho(
                 f"\nDetected changes in {len(changes)} file(s), reloading server...\n",
@@ -553,15 +552,7 @@ def server(
             ),
         )
     else:
-        _run_server(
-            app_ref,
-            address=address,
-            cors_origin=cors_origin,
-            cors_cocoindex=cors_cocoindex,
-            cors_local=cors_local,
-            live_update=live_update,
-            quiet=quiet,
-        )
+        _run_server(*args)
 
 
 def _reloadable_server_target(*args: Any, **kwargs: Any) -> None:
@@ -611,12 +602,9 @@ def _run_server(
     def handle_signal(signum: int, frame: FrameType | None) -> None:
         shutdown_event.set()
 
-    async def _wait_for_shutdown_signal() -> None:
-        await asyncio.to_thread(shutdown_event.wait)
-
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
-    execution_context.run(_wait_for_shutdown_signal())
+    shutdown_event.wait()
 
 
 def _flow_name(name: str | None) -> str:
