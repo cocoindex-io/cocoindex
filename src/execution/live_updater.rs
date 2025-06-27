@@ -1,10 +1,9 @@
-use std::time::Instant;
-
 use crate::prelude::*;
 
 use super::stats;
 use futures::future::try_join_all;
 use sqlx::PgPool;
+use std::time::Instant;
 use tokio::{task::JoinSet, time::MissedTickBehavior};
 
 pub struct FlowLiveUpdater {
@@ -68,8 +67,9 @@ async fn update_source(
     pool: PgPool,
     options: FlowLiveUpdaterOptions,
 ) -> Result<()> {
-    let source_context = flow_ctx
-        .get_source_indexing_context(source_idx, &pool)
+    let execution_ctx = flow_ctx.execution_ctx.read().await;
+    let source_context = execution_ctx
+        .get_source_indexing_context(&flow_ctx.flow, source_idx, &pool)
         .await?;
 
     let import_op = &plan.import_ops[source_idx];

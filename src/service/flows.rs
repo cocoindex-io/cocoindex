@@ -177,6 +177,7 @@ impl<'a> SourceRowKeyContextHolder<'a> {
             import_op: &self.plan.import_ops[self.import_op_idx],
             schema: self.schema,
             key: &self.key,
+            import_op_idx: self.import_op_idx,
         }
     }
 }
@@ -188,8 +189,10 @@ pub async fn evaluate_data(
 ) -> Result<Json<EvaluateDataResponse>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let source_row_key_ctx = SourceRowKeyContextHolder::create(&flow_ctx, query).await?;
+    let execution_ctx = flow_ctx.execution_ctx.read().await;
     let evaluate_output = row_indexer::evaluate_source_entry_with_memory(
         &source_row_key_ctx.as_context(),
+        &execution_ctx.setup_execution_context,
         memoization::EvaluationMemoryOptions {
             enable_cache: true,
             evaluation_only: true,
@@ -235,8 +238,11 @@ pub async fn get_row_indexing_status(
 ) -> Result<Json<indexing_status::SourceRowIndexingStatus>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let source_row_key_ctx = SourceRowKeyContextHolder::create(&flow_ctx, query).await?;
+
+    let execution_ctx = flow_ctx.execution_ctx.read().await;
     let indexing_status = indexing_status::get_source_row_indexing_status(
         &source_row_key_ctx.as_context(),
+        &execution_ctx.setup_execution_context,
         lib_context.require_builtin_db_pool()?,
     )
     .await?;

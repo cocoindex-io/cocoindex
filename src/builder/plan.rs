@@ -1,6 +1,5 @@
 use crate::prelude::*;
 
-use crate::execution::db_tracking_setup;
 use crate::ops::interface::*;
 use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 
@@ -53,7 +52,6 @@ pub struct AnalyzedOpOutput {
 
 pub struct AnalyzedImportOp {
     pub name: String,
-    pub source_id: i32,
     pub executor: Box<dyn SourceExecutor>,
     pub output: AnalyzedOpOutput,
     pub primary_key_type: schema::ValueType,
@@ -99,7 +97,6 @@ pub enum AnalyzedPrimaryKeyDef {
 
 pub struct AnalyzedExportOp {
     pub name: String,
-    pub target_id: i32,
     pub input: AnalyzedLocalCollectorReference,
     pub export_target_factory: Arc<dyn ExportTargetFactory + Send + Sync>,
     pub export_context: Arc<dyn Any + Send + Sync>,
@@ -129,7 +126,6 @@ pub struct AnalyzedOpScope {
 }
 
 pub struct ExecutionPlan {
-    pub tracking_table_setup: db_tracking_setup::TrackingTableSetupState,
     pub logic_fingerprint: Fingerprint,
 
     pub import_ops: Vec<AnalyzedImportOp>,

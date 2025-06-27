@@ -37,6 +37,7 @@ pub struct SourceIndexingContext {
     flow: Arc<builder::AnalyzedFlow>,
     source_idx: usize,
     state: Mutex<SourceIndexingState>,
+    setup_execution_ctx: Arc<exec_ctx::FlowSetupExecutionContext>,
 }
 
 pub const NO_ACK: Option<fn() -> Ready<Result<()>>> = None;
@@ -45,34 +46,40 @@ impl SourceIndexingContext {
     pub async fn load(
         flow: Arc<builder::AnalyzedFlow>,
         source_idx: usize,
+        setup_execution_ctx: Arc<exec_ctx::FlowSetupExecutionContext>,
         pool: &PgPool,
     ) -> Result<Self> {
         let plan = flow.get_execution_plan().await?;
         let import_op = &plan.import_ops[source_idx];
         let mut list_state = db_tracking::ListTrackedSourceKeyMetadataState::new();
         let mut rows = HashMap::new();
-        let mut key_metadata_stream =
-            list_state.list(import_op.source_id, &plan.tracking_table_setup, pool);
         let scan_generation = 0;
-        while let Some(key_metadata) = key_metadata_stream.next().await {
-            let key_metadata = key_metadata?;
-            let source_key = value::Value::<value::ScopeValue>::from_json(
-                key_metadata.source_key,
-                &import_op.primary_key_type,
-            )?
-            .into_key()?;
-            rows.insert(
-                source_key,
-                SourceRowIndexingState {
-                    source_version: SourceVersion::from_stored(
-                        key_metadata.processed_source_ordinal,
-                        &key_metadata.process_logic_fingerprint,
-                        plan.logic_fingerprint,
-                    ),
-                    processing_sem: Arc::new(Semaphore::new(1)),
-                    touched_generation: scan_generation,
-                },
+        {
+            let mut key_metadata_stream = list_state.list(
+                setup_execution_ctx.import_ops[source_idx].source_id,
+                &setup_execution_ctx.setup_state.tracking_table,
+                pool,
             );
+            while let Some(key_metadata) = key_metadata_stream.next().await {
+                let key_metadata = key_metadata?;
+                let source_key = value::Value::<value::ScopeValue>::from_json(
+                    key_metadata.source_key,
+                    &import_op.primary_key_type,
+                )?
+                .into_key()?;
+                rows.insert(
+                    source_key,
+                    SourceRowIndexingState {
+                        source_version: SourceVersion::from_stored(
+                            key_metadata.processed_source_ordinal,
+                            &key_metadata.process_logic_fingerprint,
+                            plan.logic_fingerprint,
+                        ),
+                        processing_sem: Arc::new(Semaphore::new(1)),
+                        touched_generation: scan_generation,
+                    },
+                );
+            }
         }
         Ok(Self {
             flow,
@@ -81,6 +88,7 @@ impl SourceIndexingContext {
                 rows,
                 scan_generation,
             }),
+            setup_execution_ctx,
         })
     }
 
@@ -135,7 +143,9 @@ impl SourceIndexingContext {
                     import_op,
                     schema,
                     key: &key,
+                    import_op_idx: self.source_idx,
                 },
+                &self.setup_execution_ctx,
                 source_data.value,
                 &source_version,
                 &pool,

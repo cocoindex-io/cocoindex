@@ -184,6 +184,7 @@ async fn precommit_source_tracking_info(
     process_timestamp: &chrono::DateTime<chrono::Utc>,
     db_setup: &db_tracking_setup::TrackingTableSetupState,
     export_ops: &[AnalyzedExportOp],
+    export_ops_exec_ctx: &[exec_ctx::ExportOpExecutionContext],
     update_stats: &stats::UpdateStats,
     pool: &PgPool,
 ) -> Result<SkippedOr<PrecommitOutput>> {
@@ -213,9 +214,11 @@ async fn precommit_source_tracking_info(
     let existing_process_ordinal = tracking_info.as_ref().and_then(|info| info.process_ordinal);
 
     let mut tracking_info_for_targets = HashMap::<i32, TrackingInfoForTarget>::new();
-    for export_op in export_ops.iter() {
+    for (export_op, export_op_exec_ctx) in
+        std::iter::zip(export_ops.iter(), export_ops_exec_ctx.iter())
+    {
         tracking_info_for_targets
-            .entry(export_op.target_id)
+            .entry(export_op_exec_ctx.target_id)
             .or_default()
             .export_op = Some(export_op);
     }
@@ -256,9 +259,11 @@ async fn precommit_source_tracking_info(
 
     let mut new_target_keys_info = db_tracking::TrackedTargetKeyForSource::default();
     if let Some(data) = &data {
-        for export_op in export_ops.iter() {
+        for (export_op, export_op_exec_ctx) in
+            std::iter::zip(export_ops.iter(), export_ops_exec_ctx.iter())
+        {
             let target_info = tracking_info_for_targets
-                .entry(export_op.target_id)
+                .entry(export_op_exec_ctx.target_id)
                 .or_default();
             let mut keys_info = Vec::new();
             let collected_values =
@@ -338,7 +343,7 @@ async fn precommit_source_tracking_info(
                     keys_info.push(tracked_target_key);
                 }
             }
-            new_target_keys_info.push((export_op.target_id, keys_info));
+            new_target_keys_info.push((export_op_exec_ctx.target_id, keys_info));
         }
     }
 
@@ -496,12 +501,14 @@ async fn commit_source_tracking_info(
 }
 
 async fn try_content_hash_optimization(
+    source_id: i32,
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
     source_key_json: &serde_json::Value,
     source_version: &SourceVersion,
     current_hash: &crate::utils::fingerprint::Fingerprint,
     tracking_info: &db_tracking::SourceTrackingInfoForProcessing,
     existing_version: &Option<SourceVersion>,
+    db_setup: &db_tracking_setup::TrackingTableSetupState,
     update_stats: &stats::UpdateStats,
     pool: &PgPool,
 ) -> Result<Option<SkippedOr<()>>> {
@@ -535,9 +542,9 @@ async fn try_content_hash_optimization(
     let mut txn = pool.begin().await?;
 
     let current_tracking_info = db_tracking::read_source_tracking_info_for_precommit(
-        src_eval_ctx.import_op.source_id,
+        source_id,
         source_key_json,
-        &src_eval_ctx.plan.tracking_table_setup,
+        db_setup,
         &mut *txn,
     )
     .await?;
@@ -563,10 +570,10 @@ async fn try_content_hash_optimization(
 
     // Safe to apply optimization - just update tracking table
     db_tracking::update_source_tracking_ordinal(
-        src_eval_ctx.import_op.source_id,
+        source_id,
         source_key_json,
         source_version.ordinal.0,
-        &src_eval_ctx.plan.tracking_table_setup,
+        db_setup,
         &mut *txn,
     )
     .await?;
@@ -578,15 +585,17 @@ async fn try_content_hash_optimization(
 
 pub async fn evaluate_source_entry_with_memory(
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
+    setup_execution_ctx: &exec_ctx::FlowSetupExecutionContext,
     options: EvaluationMemoryOptions,
     pool: &PgPool,
 ) -> Result<Option<EvaluateSourceEntryOutput>> {
     let stored_info = if options.enable_cache || !options.evaluation_only {
         let source_key_json = serde_json::to_value(src_eval_ctx.key)?;
+        let source_id = setup_execution_ctx.import_ops[src_eval_ctx.import_op_idx].source_id;
         let existing_tracking_info = read_source_tracking_info_for_processing(
-            src_eval_ctx.import_op.source_id,
+            source_id,
             &source_key_json,
-            &src_eval_ctx.plan.tracking_table_setup,
+            &setup_execution_ctx.setup_state.tracking_table,
             pool,
         )
         .await?;
@@ -621,6 +630,7 @@ pub async fn evaluate_source_entry_with_memory(
 
 pub async fn update_source_row(
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
+    setup_execution_ctx: &exec_ctx::FlowSetupExecutionContext,
     source_value: interface::SourceValue,
     source_version: &SourceVersion,
     pool: &PgPool,
@@ -628,12 +638,13 @@ pub async fn update_source_row(
 ) -> Result<SkippedOr<()>> {
     let source_key_json = serde_json::to_value(src_eval_ctx.key)?;
     let process_time = chrono::Utc::now();
+    let source_id = setup_execution_ctx.import_ops[src_eval_ctx.import_op_idx].source_id;
 
     // Phase 1: Check existing tracking info and apply optimizations
     let existing_tracking_info = read_source_tracking_info_for_processing(
-        src_eval_ctx.import_op.source_id,
+        source_id,
         &source_key_json,
-        &src_eval_ctx.plan.tracking_table_setup,
+        &setup_execution_ctx.setup_state.tracking_table,
         pool,
     )
     .await?;
@@ -669,12 +680,14 @@ pub async fn update_source_row(
         (&current_content_hash, &existing_tracking_info)
     {
         if let Some(optimization_result) = try_content_hash_optimization(
+            source_id,
             src_eval_ctx,
             &source_key_json,
             source_version,
             current_hash,
             existing_tracking_info,
             &existing_version,
+            &setup_execution_ctx.setup_state.tracking_table,
             update_stats,
             pool,
         )
@@ -713,7 +726,7 @@ pub async fn update_source_row(
 
     // Phase 2 (precommit): Update with the memoization info and stage target keys.
     let precommit_output = precommit_source_tracking_info(
-        src_eval_ctx.import_op.source_id,
+        source_id,
         &source_key_json,
         source_version,
         src_eval_ctx.plan.logic_fingerprint,
@@ -722,8 +735,9 @@ pub async fn update_source_row(
             memoization_info: &stored_mem_info,
         }),
         &process_time,
-        &src_eval_ctx.plan.tracking_table_setup,
+        &setup_execution_ctx.setup_state.tracking_table,
         &src_eval_ctx.plan.export_ops,
+        &setup_execution_ctx.export_ops,
         update_stats,
         pool,
     )
@@ -746,7 +760,7 @@ pub async fn update_source_row(
                 .filter_map(|export_op_idx| {
                     let export_op = &src_eval_ctx.plan.export_ops[*export_op_idx];
                     target_mutations
-                        .remove(&export_op.target_id)
+                        .remove(&setup_execution_ctx.export_ops[*export_op_idx].target_id)
                         .filter(|m| !m.is_empty())
                         .map(|mutation| interface::ExportTargetMutationWithContext {
                             mutation,
@@ -766,13 +780,13 @@ pub async fn update_source_row(
 
     // Phase 4: Update the tracking record.
     commit_source_tracking_info(
-        src_eval_ctx.import_op.source_id,
+        source_id,
         &source_key_json,
         source_version,
         &src_eval_ctx.plan.logic_fingerprint.0,
         precommit_output.metadata,
         &process_time,
-        &src_eval_ctx.plan.tracking_table_setup,
+        &setup_execution_ctx.setup_state.tracking_table,
         pool,
     )
     .await?;

@@ -363,12 +363,17 @@ pub async fn sync_setup(
     flows: &BTreeMap<String, Arc<FlowContext>>,
     all_setup_state: &AllSetupState<ExistingMode>,
 ) -> Result<AllSetupStatus> {
-    let mut flow_setup_statuss = BTreeMap::new();
+    let mut flow_setup_status = BTreeMap::new();
     for (flow_name, flow_context) in flows {
         let existing_state = all_setup_state.flows.get(flow_name);
-        flow_setup_statuss.insert(
+        let execution_ctx = flow_context.execution_ctx.read().await;
+        flow_setup_status.insert(
             flow_name.clone(),
-            check_flow_setup_status(Some(&flow_context.flow.desired_state), existing_state).await?,
+            check_flow_setup_status(
+                Some(&execution_ctx.setup_execution_context.setup_state),
+                existing_state,
+            )
+            .await?,
         );
     }
     Ok(AllSetupStatus {
@@ -376,7 +381,7 @@ pub async fn sync_setup(
             metadata_table_missing: !all_setup_state.has_metadata_table,
         }
         .into_setup_info(),
-        flows: flow_setup_statuss,
+        flows: flow_setup_status,
     })
 }
 

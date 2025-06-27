@@ -4,42 +4,83 @@ use crate::builder::AnalyzedFlow;
 use crate::execution::source_indexer::SourceIndexingContext;
 use crate::service::error::ApiError;
 use crate::settings;
-use crate::setup;
 use axum::http::StatusCode;
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
-use std::collections::BTreeMap;
 use tokio::runtime::Runtime;
 
-pub struct FlowContext {
-    pub flow: Arc<AnalyzedFlow>,
-    pub source_indexing_contexts: Vec<tokio::sync::OnceCell<Arc<SourceIndexingContext>>>,
+pub struct ExecutionContext {
+    pub setup_execution_context: Arc<exec_ctx::FlowSetupExecutionContext>,
+    pub flow_setup_status: setup::FlowSetupStatus,
+    source_indexing_contexts: Vec<tokio::sync::OnceCell<Arc<SourceIndexingContext>>>,
 }
 
-impl FlowContext {
-    pub fn new(flow: Arc<AnalyzedFlow>) -> Self {
+impl ExecutionContext {
+    async fn new(
+        analyzed_flow: &AnalyzedFlow,
+        existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
+    ) -> Result<Self> {
+        let setup_execution_context = Arc::new(exec_ctx::build_flow_setup_execution_context(
+            &analyzed_flow.flow_instance,
+            &analyzed_flow.data_schema,
+            &analyzed_flow.setup_state,
+            existing_flow_ss,
+        )?);
+
+        let flow_setup_status = setup::check_flow_setup_status(
+            Some(&setup_execution_context.setup_state),
+            existing_flow_ss,
+        )
+        .await?;
+
         let mut source_indexing_contexts = Vec::new();
-        source_indexing_contexts.resize_with(flow.flow_instance.import_ops.len(), || {
+        source_indexing_contexts.resize_with(analyzed_flow.flow_instance.import_ops.len(), || {
             tokio::sync::OnceCell::new()
         });
-        Self {
-            flow,
-            source_indexing_contexts,
-        }
-    }
 
+        Ok(Self {
+            setup_execution_context,
+            flow_setup_status,
+            source_indexing_contexts,
+        })
+    }
     pub async fn get_source_indexing_context(
         &self,
+        flow: &Arc<AnalyzedFlow>,
         source_idx: usize,
         pool: &PgPool,
     ) -> Result<&Arc<SourceIndexingContext>> {
-        self.source_indexing_contexts[source_idx]
+        Ok(self.source_indexing_contexts[source_idx]
             .get_or_try_init(|| async move {
-                Ok(Arc::new(
-                    SourceIndexingContext::load(self.flow.clone(), source_idx, pool).await?,
+                anyhow::Ok(Arc::new(
+                    SourceIndexingContext::load(
+                        flow.clone(),
+                        source_idx,
+                        self.setup_execution_context.clone(),
+                        pool,
+                    )
+                    .await?,
                 ))
             })
-            .await
+            .await?)
+    }
+}
+pub struct FlowContext {
+    pub flow: Arc<AnalyzedFlow>,
+    pub execution_ctx: tokio::sync::RwLock<ExecutionContext>,
+}
+
+impl FlowContext {
+    pub async fn new(
+        flow: Arc<AnalyzedFlow>,
+        existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
+    ) -> Result<Self> {
+        let execution_ctx =
+            tokio::sync::RwLock::new(ExecutionContext::new(&flow, existing_flow_ss).await?);
+        Ok(Self {
+            flow,
+            execution_ctx,
+        })
     }
 }
 

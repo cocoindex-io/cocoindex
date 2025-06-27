@@ -24,13 +24,14 @@ pub struct SourceRowIndexingStatus {
 
 pub async fn get_source_row_indexing_status(
     src_eval_ctx: &evaluator::SourceRowEvaluationContext<'_>,
+    setup_execution_ctx: &exec_ctx::FlowSetupExecutionContext,
     pool: &sqlx::PgPool,
 ) -> Result<SourceRowIndexingStatus> {
     let source_key_json = serde_json::to_value(src_eval_ctx.key)?;
     let last_processed_fut = db_tracking::read_source_last_processed_info(
-        src_eval_ctx.import_op.source_id,
+        setup_execution_ctx.import_ops[src_eval_ctx.import_op_idx].source_id,
         &source_key_json,
-        &src_eval_ctx.plan.tracking_table_setup,
+        &setup_execution_ctx.setup_state.tracking_table,
         pool,
     );
     let current_fut = src_eval_ctx.import_op.executor.get_value(

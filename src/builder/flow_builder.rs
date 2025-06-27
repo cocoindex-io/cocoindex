@@ -331,12 +331,9 @@ impl FlowBuilder {
         };
         let analyzed = py
             .allow_threads(|| {
-                get_runtime().block_on(analyzer_ctx.analyze_import_op(
-                    &self.root_op_scope,
-                    import_op.clone(),
-                    None,
-                    None,
-                ))
+                get_runtime().block_on(
+                    analyzer_ctx.analyze_import_op(&self.root_op_scope, import_op.clone()),
+                )
             })
             .into_py_result()?;
         std::mem::drop(analyzed);
@@ -576,13 +573,16 @@ impl FlowBuilder {
             &self.flow_instance_name,
             Some(crate::py::PythonExecutionContext::new(py, py_event_loop)),
         );
-        let analyzed_flow = py
+        let flow_ctx = py
             .allow_threads(|| {
-                get_runtime().block_on(super::AnalyzedFlow::from_flow_instance(
-                    spec,
-                    flow_instance_ctx,
-                    self.existing_flow_ss.as_ref(),
-                ))
+                get_runtime().block_on(async move {
+                    let analyzed_flow =
+                        super::AnalyzedFlow::from_flow_instance(spec, flow_instance_ctx).await?;
+                    let execution_ctx =
+                        FlowContext::new(Arc::new(analyzed_flow), self.existing_flow_ss.as_ref())
+                            .await?;
+                    anyhow::Ok(execution_ctx)
+                })
             })
             .into_py_result()?;
         let mut flow_ctxs = self.lib_context.flows.lock().unwrap();
@@ -594,7 +594,7 @@ impl FlowBuilder {
                 )));
             }
             btree_map::Entry::Vacant(entry) => {
-                let flow_ctx = Arc::new(FlowContext::new(Arc::new(analyzed_flow)));
+                let flow_ctx = Arc::new(flow_ctx);
                 entry.insert(flow_ctx.clone());
                 flow_ctx
             }
