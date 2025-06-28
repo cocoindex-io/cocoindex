@@ -26,7 +26,19 @@ permissions:
   contents: read
 
 jobs:
-  format-check:
+  rust-format-check:
+    name: Check Rust formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check Rust formatting
+        run: |
+          cargo fmt --check
+
+  python-format-check:
     name: Check Python formatting
     runs-on: ubuntu-latest
     steps:
