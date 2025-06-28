@@ -22,11 +22,22 @@ Return type: `Json`
 It tries to split at higher-level boundaries. If each chunk is still too large, it tries at the next level of boundaries.
 For example, for a Markdown file, it identifies boundaries in this order: level-1 sections, level-2 sections, level-3 sections, paragraphs, sentences, etc.
 
+The spec takes the following fields:
+
+*   `custom_languages` (`list[CustomLanguageSpec]`, optional): This allows you to customize the way to chunking specific languages using regular expressions. Each `CustomLanguageSpec` is a dict with the following fields:
+    *   `language_name` (`str`): Name of the language.
+    *   `aliases` (`list[str]`, optional): A list of aliases for the language.
+        It's an error if any language name or alias is duplicated.
+
+    *   `separators_regex` (`list[str]`): A list of regex patterns to split the text.
+        Higher-level boundaries should come first, and lower-level should be listed later. e.g. `[r"\n# ", r"\n## ", r"\n\n", r"\. "]`.
+        See [regex Syntax](https://docs.rs/regex/latest/regex/#syntax) for supported regular expression syntax.
+
 Input data:
 
-*   `text` (type: `str`, required): The text to split.
-*   `chunk_size` (type: `int`, required): The maximum size of each chunk, in bytes.
-*   `min_chunk_size` (type: `int`, optional): The minimum size of each chunk, in bytes. If not provided, default to `chunk_size / 2`.
+*   `text` (*Str*): The text to split.
+*   `chunk_size` (*Int64*): The maximum size of each chunk, in bytes.
+*   `min_chunk_size` (*Int64*, optional): The minimum size of each chunk, in bytes. If not provided, default to `chunk_size / 2`.
 
     :::note
 
@@ -37,34 +48,30 @@ Input data:
 
     :::
 
-*   `chunk_overlap` (type: `int`, optional): The maximum overlap size between adjacent chunks, in bytes.
-*   `language` (type: `str`, optional): The language of the document.
+*   `chunk_overlap` (*Int64*, optional): The maximum overlap size between adjacent chunks, in bytes.
+*   `language` (*Str*, optional): The language of the document.
     Can be a language name (e.g. `Python`, `Javascript`, `Markdown`) or a file extension (e.g. `.py`, `.js`, `.md`).
 
-*   `custom_languages` (type: `list[CustomLanguageSpec]`, optional): This allows you to customize the way to chunking specific languages using regular expressions. Each `CustomLanguageSpec` is a dict with the following fields:
-    *   `language_name` (type: `str`, required): Name of the language.
-    *   `aliases` (type: `list[str]`, optional): A list of aliases for the language.
-        It's an error if any language name or alias is duplicated.
-
-    *   `separators_regex` (type: `list[str]`, required): A list of regex patterns to split the text.
-        Higher-level boundaries should come first, and lower-level should be listed later. e.g. `[r"\n# ", r"\n## ", r"\n\n", r"\. "]`.
-        See [regex Syntax](https://docs.rs/regex/latest/regex/#syntax) for supported regular expression syntax.
 
     :::note
 
     We use the `language` field to determine how to split the input text, following these rules:
 
-    *   We'll match the input `language` field against the `language_name` or `aliases` of each custom language specification, and use the matched one. If value of `language` is null, it'll be treated as empty string when matching `language_name` or `aliases`.
+    *   We'll match the input `language` field against the `language_name` or `aliases` of each element of `custom_languages`, and use the matched one. If value of `language` is null, it'll be treated as empty string when matching `language_name` or `aliases`.
     *   If no match is found, we'll match the `language` field against the builtin language configurations.
         For all supported builtin language names and aliases (extensions), see [the code](https://github.com/search?q=org%3Acocoindex-io+lang%3Arust++%22static+TREE_SITTER_LANGUAGE_BY_LANG%22&type=code).
     *   If no match is found, the input will be treated as plain text.
 
     :::
 
-Return type: [KTable](/docs/core/data_types#ktable), each row represents a chunk, with the following sub fields:
+Return type: [*KTable*](/docs/core/data_types#ktable), each row represents a chunk, with the following sub fields:
 
-*   `location` (type: `range`): The location of the chunk.
-*   `text` (type: `str`): The text of the chunk.
+*   `location` (*Range*): The location of the chunk.
+*   `text` (*Str*): The text of the chunk.
+*   `start` / `end` (*Struct*): Details about the start position (inclusive) and end position (exclusive) of the chunk. They have the following sub fields:
+    *   `offset` (*Int64*): The byte offset of the position.
+    *   `line` (*Int64*): The line number of the position. Starting from 1.
+    *   `column` (*Int64*): The column number of the position. Starting from 1.
 
 ## SentenceTransformerEmbed
 
