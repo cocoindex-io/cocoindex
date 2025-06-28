@@ -11,10 +11,10 @@ description: CocoIndex Built-in Functions
 
 The spec takes the following fields:
 
-*   `text` (type: `str`, required): The source text to parse.
-*   `language` (type: `str`, optional): The language of the source text.  Only `json` is supported now.  Default to `json`.
+*   `text` (`str`): The source text to parse.
+*   `language` (`str`, optional): The language of the source text.  Only `json` is supported now.  Default to `json`.
 
-Return type: `Json`
+Return: *Json*
 
 ## SplitRecursively
 
@@ -64,7 +64,7 @@ Input data:
 
     :::
 
-Return type: [*KTable*](/docs/core/data_types#ktable), each row represents a chunk, with the following sub fields:
+Return: [*KTable*](/docs/core/data_types#ktable), each row represents a chunk, with the following sub fields:
 
 *   `location` (*Range*): The location of the chunk.
 *   `text` (*Str*): The text of the chunk.
@@ -79,22 +79,22 @@ Return type: [*KTable*](/docs/core/data_types#ktable), each row represents a chu
 
 The spec takes the following fields:
 
-*   `model` (type: `str`, required): The name of the SentenceTransformer model to use.
-*   `args` (type: `dict[str, Any]`, optional): Additional arguments to pass to the SentenceTransformer constructor. e.g. `{"trust_remote_code": True}`
+*   `model` (`str`): The name of the SentenceTransformer model to use.
+*   `args` (`dict[str, Any]`, optional): Additional arguments to pass to the SentenceTransformer constructor. e.g. `{"trust_remote_code": True}`
 
 Input data:
 
-*   `text` (type: `str`, required): The text to embed.
+*   `text` (*Str*): The text to embed.
 
-Return type: `vector[float32; N]`, where `N` is determined by the model
+Return: *Vector[Float32, N]*, where *N* is determined by the model
 
 ## ExtractByLlm
 
 `ExtractByLlm` extracts structured information from a text using specified LLM. The spec takes the following fields:
 
-*   `llm_spec` (type: `cocoindex.LlmSpec`, required): The specification of the LLM to use. See [LLM Spec](/docs/ai/llm#llm-spec) for more details.
-*   `output_type` (type: `type`, required): The type of the output. e.g. a dataclass type name. See [Data Types](/docs/core/data_types) for all supported data types. The LLM will output values that match the schema of the type.
-*   `instruction` (type: `str`, optional): Additional instruction for the LLM.
+*   `llm_spec` (`cocoindex.LlmSpec`): The specification of the LLM to use. See [LLM Spec](/docs/ai/llm#llm-spec) for more details.
+*   `output_type` (`type`): The type of the output. e.g. a dataclass type name. See [Data Types](/docs/core/data_types) for all supported data types. The LLM will output values that match the schema of the type.
+*   `instruction` (`str`, optional): Additional instruction for the LLM.
 
 :::tip Clear type definitions
 
@@ -109,9 +109,9 @@ To improve the quality of the extracted information, giving clear definitions fo
 
 Input data:
 
-*   `text` (type: `str`, required): The text to extract information from.
+*   `text` (*Str*): The text to extract information from.
 
-Return type: As specified by the `output_type` field in the spec. The extracted information from the input text.
+Return: As specified by the `output_type` field in the spec. The extracted information from the input text.
 
 ## EmbedText
 
@@ -119,15 +119,15 @@ Return type: As specified by the `output_type` field in the spec. The extracted 
 
 The spec takes the following fields:
 
-*   `api_type` (type: [`cocoindex.LlmApiType`](/docs/ai/llm#llm-api-types), required): The type of LLM API to use for embedding.
-*   `model` (type: `str`, required): The name of the embedding model to use.
-*   `address` (type: `str`, optional): The address of the LLM API. If not specified, uses the default address for the API type.
-*   `output_dimension` (type: `int`, optional): The expected dimension of the output embedding vector. If not specified, use the default dimension of the model.
+*   `api_type` ([`cocoindex.LlmApiType`](/docs/ai/llm#llm-api-types)): The type of LLM API to use for embedding.
+*   `model` (`str`): The name of the embedding model to use.
+*   `address` (`str`, optional): The address of the LLM API. If not specified, uses the default address for the API type.
+*   `output_dimension` (`int`, optional): The expected dimension of the output embedding vector. If not specified, use the default dimension of the model.
 
     For most API types, the function internally keeps a registry for the default output dimension of known model.
     You need to explicitly specify the `output_dimension` if you want to use a new model that is not in the registry yet.
 
-*   `task_type` (type: `str`, optional): The task type for embedding, used by some embedding models to optimize the embedding for specific use cases.
+*   `task_type` (`str`, optional): The task type for embedding, used by some embedding models to optimize the embedding for specific use cases.
 
 :::note Supported APIs for Text Embedding
 
@@ -137,6 +137,6 @@ Not all LLM APIs support text embedding. See the [LLM API Types table](/docs/ai/
 
 Input data:
 
-*   `text` (type: `str`, required): The text to embed.
+*   `text` (*Str*, required): The text to embed.
 
-Return type: `vector[float32; N]`, where `N` is the dimension of the embedding vector determined by the model.
+Return: *Vector[Float32, N]*, where *N* is the dimension of the embedding vector determined by the model.
