@@ -464,6 +464,42 @@ impl<'s> AtomChunksCollector<'s> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OutputPosition {
+    char_offset: usize,
+    line: u32,
+    column: u32,
+}
+
+impl OutputPosition {
+    fn into_output(self) -> value::Value {
+        value::Value::Struct(fields_value!(
+            self.char_offset as i64,
+            self.line as i64,
+            self.column as i64
+        ))
+    }
+}
+struct Position {
+    byte_offset: usize,
+    output: Option<OutputPosition>,
+}
+
+impl Position {
+    fn new(byte_offset: usize) -> Self {
+        Self {
+            byte_offset,
+            output: None,
+        }
+    }
+}
+
+struct ChunkOutput<'s> {
+    start_pos: Position,
+    end_pos: Position,
+    text: &'s str,
+}
+
 struct RecursiveChunker<'s> {
     full_text: &'s str,
     chunk_size: usize,
@@ -551,7 +587,7 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
         }
     }
 
-    fn merge_atom_chunks(&self, atom_chunks: Vec<AtomChunk>) -> Vec<(RangeValue, &'s str)> {
+    fn merge_atom_chunks(&self, atom_chunks: Vec<AtomChunk>) -> Vec<ChunkOutput<'s>> {
         struct AtomRoutingPlan {
             start_idx: usize,     // index of `atom_chunks` for the start chunk
             prev_plan_idx: usize, // index of `plans` for the previous plan
@@ -687,15 +723,18 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
             let plan = &plans[plan_idx];
             let start_chunk = &atom_chunks[plan.start_idx];
             let end_chunk = &atom_chunks[plan_idx - 1];
-            let range = RangeValue::new(start_chunk.range.start, end_chunk.range.end);
-            output.push((range, &self.full_text[range.start..range.end]));
+            output.push(ChunkOutput {
+                start_pos: Position::new(start_chunk.range.start),
+                end_pos: Position::new(end_chunk.range.end),
+                text: &self.full_text[start_chunk.range.start..end_chunk.range.end],
+            });
             plan_idx = plan.prev_plan_idx;
         }
         output.reverse();
         output
     }
 
-    fn split_root_chunk(&self, kind: ChunkKind<'t>) -> Result<Vec<(RangeValue, &'s str)>> {
+    fn split_root_chunk(&self, kind: ChunkKind<'t>) -> Result<Vec<ChunkOutput<'s>>> {
         let mut atom_collector = AtomChunksCollector {
             full_text: self.full_text,
             min_level: 0,
@@ -769,34 +808,52 @@ impl Executor {
     }
 }
 
-fn translate_bytes_to_chars<'a>(text: &str, offsets: impl Iterator<Item = &'a mut usize>) {
-    let mut offsets = offsets.collect::<Vec<_>>();
-    offsets.sort_by_key(|o| **o);
+fn set_output_positions<'a>(text: &str, positions: impl Iterator<Item = &'a mut Position>) {
+    let mut positions = positions.collect::<Vec<_>>();
+    positions.sort_by_key(|o| o.byte_offset);
 
-    let mut offsets_iter = offsets.iter_mut();
-    let mut next_offset = if let Some(offset) = offsets_iter.next() {
-        offset
-    } else {
+    let mut positions_iter = positions.iter_mut();
+    let Some(mut next_position) = positions_iter.next() else {
         return;
     };
 
-    let mut char_idx = 0;
-    for (bytes_idx, _) in text.char_indices() {
-        while **next_offset == bytes_idx {
-            **next_offset = char_idx;
-            next_offset = if let Some(offset) = offsets_iter.next() {
-                offset
+    let mut char_offset = 0;
+    let mut line = 1;
+    let mut column = 1;
+    for (byte_offset, ch) in text.char_indices() {
+        while next_position.byte_offset == byte_offset {
+            next_position.output = Some(OutputPosition {
+                char_offset,
+                line,
+                column,
+            });
+            if let Some(position) = positions_iter.next() {
+                next_position = position;
             } else {
                 return;
             }
         }
-        char_idx += 1;
+        char_offset += 1;
+        if ch == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
     }
 
     // Offsets after the last char.
-    **next_offset = char_idx;
-    for offset in offsets_iter {
-        **offset = char_idx;
+    loop {
+        next_position.output = Some(OutputPosition {
+            char_offset,
+            line,
+            column,
+        });
+        if let Some(position) = positions_iter.next() {
+            next_position = position;
+        } else {
+            return;
+        }
     }
 }
 
@@ -850,16 +907,31 @@ impl SimpleFunctionExecutor for Executor {
             })?
         };
 
-        translate_bytes_to_chars(
+        set_output_positions(
             full_text,
-            output.iter_mut().flat_map(|(range, _)| {
-                std::iter::once(&mut range.start).chain(std::iter::once(&mut range.end))
+            output.iter_mut().flat_map(|chunk_output| {
+                std::iter::once(&mut chunk_output.start_pos)
+                    .chain(std::iter::once(&mut chunk_output.end_pos))
             }),
         );
 
         let table = output
             .into_iter()
-            .map(|(range, text)| (range.into(), fields_value!(Arc::<str>::from(text)).into()))
+            .map(|chunk_output| {
+                (
+                    RangeValue::new(
+                        chunk_output.start_pos.byte_offset,
+                        chunk_output.end_pos.byte_offset,
+                    )
+                    .into(),
+                    fields_value!(
+                        Arc::<str>::from(chunk_output.text),
+                        chunk_output.start_pos.output.unwrap().into_output(),
+                        chunk_output.end_pos.output.unwrap().into_output()
+                    )
+                    .into(),
+                )
+            })
             .collect();
 
         Ok(Value::KTable(table))
@@ -901,6 +973,15 @@ impl SimpleFunctionFactoryBase for Factory {
                 .expect_type(&ValueType::Basic(BasicValueType::Str))?,
         };
 
+        let pos_struct = schema::ValueType::Struct(schema::StructSchema {
+            fields: Arc::new(vec![
+                schema::FieldSchema::new("offset", make_output_type(BasicValueType::Int64)),
+                schema::FieldSchema::new("line", make_output_type(BasicValueType::Int64)),
+                schema::FieldSchema::new("column", make_output_type(BasicValueType::Int64)),
+            ]),
+            description: None,
+        });
+
         let mut struct_schema = StructSchema::default();
         let mut schema_builder = StructSchemaBuilder::new(&mut struct_schema);
         schema_builder.add_field(FieldSchema::new(
@@ -910,6 +991,22 @@ impl SimpleFunctionFactoryBase for Factory {
         schema_builder.add_field(FieldSchema::new(
             "text",
             make_output_type(BasicValueType::Str),
+        ));
+        schema_builder.add_field(FieldSchema::new(
+            "start",
+            schema::EnrichedValueType {
+                typ: pos_struct.clone(),
+                nullable: false,
+                attrs: Default::default(),
+            },
+        ));
+        schema_builder.add_field(FieldSchema::new(
+            "end",
+            schema::EnrichedValueType {
+                typ: pos_struct,
+                nullable: false,
+                attrs: Default::default(),
+            },
         ));
         let output_schema = make_output_type(TableSchema::new(TableKind::KTable, struct_schema))
             .with_attr(
@@ -940,15 +1037,17 @@ mod tests {
     // Helper function to assert chunk text and its consistency with the range within the original text.
     fn assert_chunk_text_consistency(
         full_text: &str, // Added full text
-        actual_chunk: &(RangeValue, &str),
+        actual_chunk: &ChunkOutput<'_>,
         expected_text: &str,
         context: &str,
     ) {
         // Extract text using the chunk's range from the original full text.
-        let extracted_text = actual_chunk.0.extract_str(full_text);
+        let extracted_text = full_text
+            .get(actual_chunk.start_pos.byte_offset..actual_chunk.end_pos.byte_offset)
+            .unwrap();
         // Assert that the expected text matches the text provided in the chunk.
         assert_eq!(
-            actual_chunk.1, expected_text,
+            actual_chunk.text, expected_text,
             "Provided chunk text mismatch - {}",
             context
         );
@@ -978,13 +1077,13 @@ mod tests {
     #[test]
     fn test_translate_bytes_to_chars_simple() {
         let text = "abc😄def";
-        let mut start1 = 0;
-        let mut end1 = 3;
-        let mut start2 = 3;
-        let mut end2 = 7;
-        let mut start3 = 7;
-        let mut end3 = 10;
-        let mut end_full = text.len();
+        let mut start1 = Position::new(0);
+        let mut end1 = Position::new(3);
+        let mut start2 = Position::new(3);
+        let mut end2 = Position::new(7);
+        let mut start3 = Position::new(7);
+        let mut end3 = Position::new(10);
+        let mut end_full = Position::new(text.len());
 
         let offsets = vec![
             &mut start1,
@@ -996,15 +1095,56 @@ mod tests {
             &mut end_full,
         ];
 
-        translate_bytes_to_chars(text, offsets.into_iter());
+        set_output_positions(text, offsets.into_iter());
 
-        assert_eq!(start1, 0);
-        assert_eq!(end1, 3);
-        assert_eq!(start2, 3);
-        assert_eq!(end2, 4);
-        assert_eq!(start3, 4);
-        assert_eq!(end3, 7);
-        assert_eq!(end_full, 7);
+        assert_eq!(
+            start1.output,
+            Some(OutputPosition {
+                char_offset: 0,
+                line: 1,
+                column: 1,
+            })
+        );
+        assert_eq!(
+            end1.output,
+            Some(OutputPosition {
+                char_offset: 3,
+                line: 1,
+                column: 4,
+            })
+        );
+        assert_eq!(
+            start2.output,
+            Some(OutputPosition {
+                char_offset: 3,
+                line: 1,
+                column: 4,
+            })
+        );
+        assert_eq!(
+            end2.output,
+            Some(OutputPosition {
+                char_offset: 4,
+                line: 1,
+                column: 5,
+            })
+        );
+        assert_eq!(
+            end3.output,
+            Some(OutputPosition {
+                char_offset: 7,
+                line: 1,
+                column: 8,
+            })
+        );
+        assert_eq!(
+            end_full.output,
+            Some(OutputPosition {
+                char_offset: 7,
+                line: 1,
+                column: 8,
+            })
+        );
     }
 
     #[test]
@@ -1039,7 +1179,7 @@ mod tests {
         // Expect multiple chunks, likely split by spaces due to chunk_size.
         assert!(chunks2.len() > 1);
         assert_chunk_text_consistency(text2, &chunks2[0], "A very very long", "Test 2, Chunk 0");
-        assert!(chunks2[0].1.len() <= 20);
+        assert!(chunks2[0].text.len() <= 20);
     }
     #[test]
     fn test_basic_split_with_overlap() {
@@ -1057,10 +1197,7 @@ mod tests {
         assert!(chunks.len() > 1);
 
         if chunks.len() >= 2 {
-            let _chunk1_text = chunks[0].1;
-            let _chunk2_text = chunks[1].1;
-
-            assert!(chunks[0].1.len() <= 25);
+            assert!(chunks[0].text.len() <= 25);
         }
     }
     #[test]
