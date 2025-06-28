@@ -194,17 +194,17 @@ impl ExportContext {
     ) -> Result<Self> {
         let key_fields = key_fields_schema
             .iter()
-            .map(|f| f.name.as_str())
+            .map(|f| format!("\"{}\"", f.name))
             .collect::<Vec<_>>()
             .join(", ");
         let value_fields = value_fields_schema
             .iter()
-            .map(|f| f.name.as_str())
+            .map(|f| format!("\"{}\"", f.name))
             .collect::<Vec<_>>()
             .join(", ");
         let set_value_fields = value_fields_schema
             .iter()
-            .map(|f| format!("{} = EXCLUDED.{}", f.name, f.name))
+            .map(|f| format!("\"{}\" = EXCLUDED.\"{}\"", f.name, f.name))
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -288,7 +288,9 @@ impl ExportContext {
                 if i > 0 {
                     query_builder.push(" AND ");
                 }
+                query_builder.push("\"");
                 query_builder.push(schema.name.as_str());
+                query_builder.push("\"");
                 query_builder.push("=");
                 bind_key_field(&mut query_builder, value)?;
             }
@@ -547,14 +549,16 @@ impl SetupStatus {
                 .await?;
         }
         for index_name in self.actions.indexes_to_delete.iter() {
-            let sql = format!("DROP INDEX IF EXISTS {}", index_name);
+            let sql = format!("DROP INDEX IF EXISTS {index_name}");
             sqlx::query(&sql).execute(db_pool).await?;
         }
         if let Some(table_upsertion) = &self.actions.table_action.table_upsertion {
             match table_upsertion {
                 TableUpsertionAction::Create { keys, values } => {
-                    let mut fields = (keys.iter().map(|(k, v)| format!("{k} {v} NOT NULL")))
-                        .chain(values.iter().map(|(k, v)| format!("{k} {v}")));
+                    let mut fields = (keys
+                        .iter()
+                        .map(|(name, typ)| format!("\"{name}\" {typ} NOT NULL")))
+                    .chain(values.iter().map(|(name, typ)| format!("\"{name}\" {typ}")));
                     let sql = format!(
                         "CREATE TABLE IF NOT EXISTS {table_name} ({}, PRIMARY KEY ({}))",
                         fields.join(", "),
@@ -568,13 +572,13 @@ impl SetupStatus {
                 } => {
                     for column_name in columns_to_delete.iter() {
                         let sql = format!(
-                            "ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}",
+                            "ALTER TABLE {table_name} DROP COLUMN IF EXISTS \"{column_name}\"",
                         );
                         sqlx::query(&sql).execute(db_pool).await?;
                     }
                     for (column_name, column_type) in columns_to_upsert.iter() {
                         let sql = format!(
-                            "ALTER TABLE {table_name} DROP COLUMN IF EXISTS {column_name}, ADD COLUMN {column_name} {column_type}"
+                            "ALTER TABLE {table_name} DROP COLUMN IF EXISTS \"{column_name}\", ADD COLUMN \"{column_name}\" {column_type}"
                         );
                         sqlx::query(&sql).execute(db_pool).await?;
                     }
