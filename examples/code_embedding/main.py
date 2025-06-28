@@ -68,6 +68,7 @@ def code_embedding_flow(
                 code=chunk["text"],
                 embedding=chunk["embedding"],
                 start=chunk["start"],
+                end=chunk["end"],
             )
 
     code_embeddings.export(
@@ -96,13 +97,19 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT filename, code, embedding <=> %s AS distance
+                SELECT filename, code, embedding <=> %s AS distance, start, "end"
                 FROM {table_name} ORDER BY distance LIMIT %s
             """,
                 (query_vector, top_k),
             )
             return [
-                {"filename": row[0], "code": row[1], "score": 1.0 - row[2]}
+                {
+                    "filename": row[0],
+                    "code": row[1],
+                    "score": 1.0 - row[2],
+                    "start": row[3],
+                    "end": row[4],
+                }
                 for row in cur.fetchall()
             ]
 
@@ -123,7 +130,9 @@ def _main() -> None:
         results = search(pool, query)
         print("\nSearch results:")
         for result in results:
-            print(f"[{result['score']:.3f}] {result['filename']}")
+            print(
+                f"[{result['score']:.3f}] {result['filename']} (L{result['start']['line']}-L{result['end']['line']})"
+            )
             print(f"    {result['code']}")
             print("---")
         print()
