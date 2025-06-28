@@ -60,16 +60,16 @@ impl SharedAckFn {
 }
 
 async fn update_source(
-    flow_ctx: Arc<FlowContext>,
+    flow: Arc<builder::AnalyzedFlow>,
     plan: Arc<plan::ExecutionPlan>,
+    execution_ctx: Arc<tokio::sync::OwnedRwLockReadGuard<crate::lib_context::ExecutionContext>>,
     source_update_stats: Arc<stats::UpdateStats>,
     source_idx: usize,
     pool: PgPool,
     options: FlowLiveUpdaterOptions,
 ) -> Result<()> {
-    let execution_ctx = flow_ctx.execution_ctx.read().await;
     let source_context = execution_ctx
-        .get_source_indexing_context(&flow_ctx.flow, source_idx, &pool)
+        .get_source_indexing_context(&flow, source_idx, &pool)
         .await?;
 
     let import_op = &plan.import_ops[source_idx];
@@ -97,15 +97,9 @@ async fn update_source(
             delta
         };
         if options.print_stats {
-            println!(
-                "{}.{}: {}",
-                flow_ctx.flow.flow_instance.name, import_op.name, delta
-            );
+            println!("{}.{}: {}", flow.flow_instance.name, import_op.name, delta);
         } else {
-            trace!(
-                "{}.{}: {}",
-                flow_ctx.flow.flow_instance.name, import_op.name, delta
-            );
+            trace!("{}.{}: {}", flow.flow_instance.name, import_op.name, delta);
         }
     };
 
@@ -219,14 +213,16 @@ impl FlowLiveUpdater {
         options: FlowLiveUpdaterOptions,
     ) -> Result<Self> {
         let plan = flow_ctx.flow.get_execution_plan().await?;
+        let execution_ctx = Arc::new(flow_ctx.use_owned_execution_ctx().await?);
 
         let mut tasks = JoinSet::new();
         let sources_update_stats = (0..plan.import_ops.len())
             .map(|source_idx| {
                 let source_update_stats = Arc::new(stats::UpdateStats::default());
                 tasks.spawn(update_source(
-                    flow_ctx.clone(),
+                    flow_ctx.flow.clone(),
                     plan.clone(),
+                    execution_ctx.clone(),
                     source_update_stats.clone(),
                     source_idx,
                     pool.clone(),

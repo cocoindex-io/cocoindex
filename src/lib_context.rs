@@ -4,6 +4,7 @@ use crate::builder::AnalyzedFlow;
 use crate::execution::source_indexer::SourceIndexingContext;
 use crate::service::error::ApiError;
 use crate::settings;
+use crate::setup::ObjectSetupStatus;
 use axum::http::StatusCode;
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
@@ -67,7 +68,7 @@ impl ExecutionContext {
 }
 pub struct FlowContext {
     pub flow: Arc<AnalyzedFlow>,
-    pub execution_ctx: tokio::sync::RwLock<ExecutionContext>,
+    execution_ctx: Arc<tokio::sync::RwLock<ExecutionContext>>,
 }
 
 impl FlowContext {
@@ -75,12 +76,43 @@ impl FlowContext {
         flow: Arc<AnalyzedFlow>,
         existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
     ) -> Result<Self> {
-        let execution_ctx =
-            tokio::sync::RwLock::new(ExecutionContext::new(&flow, existing_flow_ss).await?);
+        let execution_ctx = Arc::new(tokio::sync::RwLock::new(
+            ExecutionContext::new(&flow, existing_flow_ss).await?,
+        ));
         Ok(Self {
             flow,
             execution_ctx,
         })
+    }
+
+    pub async fn use_execution_ctx(
+        &self,
+    ) -> Result<tokio::sync::RwLockReadGuard<ExecutionContext>> {
+        let execution_ctx = self.execution_ctx.read().await;
+        if !execution_ctx.flow_setup_status.is_up_to_date() {
+            api_bail!(
+                "Flow setup is not up-to-date. Please run `cocoindex setup` to update the setup."
+            );
+        }
+        Ok(execution_ctx)
+    }
+
+    pub async fn use_owned_execution_ctx(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<ExecutionContext>> {
+        let execution_ctx = self.execution_ctx.clone().read_owned().await;
+        if !execution_ctx.flow_setup_status.is_up_to_date() {
+            api_bail!(
+                "Flow setup is not up-to-date. Please run `cocoindex setup` to update the setup."
+            );
+        }
+        Ok(execution_ctx)
+    }
+
+    pub async fn get_execution_ctx_for_setup(
+        &self,
+    ) -> tokio::sync::RwLockReadGuard<ExecutionContext> {
+        self.execution_ctx.read().await
     }
 }
 

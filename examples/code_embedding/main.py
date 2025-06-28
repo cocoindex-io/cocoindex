@@ -67,6 +67,7 @@ def code_embedding_flow(
                 location=chunk["location"],
                 code=chunk["text"],
                 embedding=chunk["embedding"],
+                start=chunk["start"],
             )
 
     code_embeddings.export(

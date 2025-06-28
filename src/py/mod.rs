@@ -202,7 +202,7 @@ impl Flow {
                 .block_on(async {
                     let exec_plan = self.0.flow.get_execution_plan().await?;
                     let lib_context = get_lib_context()?;
-                    let execution_ctx = self.0.execution_ctx.read().await;
+                    let execution_ctx = self.0.use_execution_ctx().await?;
                     execution::dumper::evaluate_and_dump(
                         &exec_plan,
                         &execution_ctx.setup_execution_context,

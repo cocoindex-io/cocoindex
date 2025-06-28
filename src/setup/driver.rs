@@ -366,7 +366,7 @@ pub async fn sync_setup(
     let mut flow_setup_status = BTreeMap::new();
     for (flow_name, flow_context) in flows {
         let existing_state = all_setup_state.flows.get(flow_name);
-        let execution_ctx = flow_context.execution_ctx.read().await;
+        let execution_ctx = flow_context.get_execution_ctx_for_setup().await;
         flow_setup_status.insert(
             flow_name.clone(),
             check_flow_setup_status(

@@ -189,7 +189,7 @@ pub async fn evaluate_data(
 ) -> Result<Json<EvaluateDataResponse>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let source_row_key_ctx = SourceRowKeyContextHolder::create(&flow_ctx, query).await?;
-    let execution_ctx = flow_ctx.execution_ctx.read().await;
+    let execution_ctx = flow_ctx.use_execution_ctx().await?;
     let evaluate_output = row_indexer::evaluate_source_entry_with_memory(
         &source_row_key_ctx.as_context(),
         &execution_ctx.setup_execution_context,
@@ -239,7 +239,7 @@ pub async fn get_row_indexing_status(
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let source_row_key_ctx = SourceRowKeyContextHolder::create(&flow_ctx, query).await?;
 
-    let execution_ctx = flow_ctx.execution_ctx.read().await;
+    let execution_ctx = flow_ctx.use_execution_ctx().await?;
     let indexing_status = indexing_status::get_source_row_indexing_status(
         &source_row_key_ctx.as_context(),
         &execution_ctx.setup_execution_context,
