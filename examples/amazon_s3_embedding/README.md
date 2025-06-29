@@ -36,6 +36,17 @@ Install dependencies:
 ```sh
 pip install -e .
 ```
+**Note**: This example uses 'SentenceTransformerEmbed' which requires the sentence-transformers library. If you encounter import errors, install it with:
+
+```sh
+pip install 'cocoindex[sentence-transformers]'
+```
+
+Or install the dependency directly:
+
+```sh
+pip install sentence-transformers
+```
 
 Setup:
 
