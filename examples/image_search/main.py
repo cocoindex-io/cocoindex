@@ -69,11 +69,36 @@ def image_object_embedding_flow(
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
-        img["embedding"] = img["content"].transform(embed_image)
+        caption_ds = img["content"].transform(
+            cocoindex.functions.ExtractByLlm(
+                llm_spec=cocoindex.llm.LlmSpec(
+                    api_type=cocoindex.LlmApiType.OLLAMA,
+                    model="llama3.1",
+                ),
+                # Replace by this spec below, to use OpenAI API model instead of ollama
+                #   llm_spec=cocoindex.LlmSpec(
+                #       api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
+                # Replace by this spec below, to use Gemini API model
+                #   llm_spec=cocoindex.LlmSpec(
+                #       api_type=cocoindex.LlmApiType.GEMINI, model="gemini-2.0-flash"),
+                # Replace by this spec below, to use Anthropic API model
+                #   llm_spec=cocoindex.LlmSpec(
+                #       api_type=cocoindex.LlmApiType.ANTHROPIC, model="claude-3-5-sonnet-latest"),
+                instruction=(
+                    "Describe the image in one detailed sentence. "
+                    "Name all visible animal species, objects, and the main scene. "
+                    "Be specific about type, color, and notable features. "
+                    "Mention what each animal is doing."
+                ),
+                output_type=str,
+            )
+        )
+        embedding_ds = img["content"].transform(embed_image)
         img_embeddings.collect(
             id=cocoindex.GeneratedField.UUID,
             filename=img["filename"],
-            embedding=img["embedding"],
+            caption=caption_ds,
+            embedding=embedding_ds,
         )
 
     img_embeddings.export(
