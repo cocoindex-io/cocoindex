@@ -1,13 +1,3 @@
-"""
-This example uses SentenceTransformerEmbed which requires the optional sentence-transformers dependency.
-
-Install with:
-    pip install 'cocoindex[sentence-transformers]'
-
-Or install the dependency directly:
-    pip install sentence-transformers
-"""
-
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 import cocoindex

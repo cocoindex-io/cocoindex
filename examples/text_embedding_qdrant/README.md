@@ -36,17 +36,6 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
    ```bash
    pip install -e .
    ```
-   **Note**: This example uses SentenceTransformerEmbed which requires the sentence-transformers library. If you encounter import errors, install it with:
-
-  ```bash
-  pip install 'cocoindex[sentence-transformers]'
-  ```
-
-  Or install the dependency directly:
-
-  ```bash
-  pip install sentence-transformers
-  ```
 
 
 - Setup:

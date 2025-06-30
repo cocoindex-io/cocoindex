@@ -77,6 +77,15 @@ Return: [*KTable*](/docs/core/data_types#ktable), each row represents a chunk, w
 
 `SentenceTransformerEmbed` embeds a text into a vector space using the [SentenceTransformer](https://huggingface.co/sentence-transformers) library.
 
+:::note Optional Dependency Required
+
+This function requires the 'sentence-transformers' library, which is an optional dependency. Install CocoIndex with:
+
+```bash
+pip install 'cocoindex[sentence-transformers]'
+```
+:::
+
 The spec takes the following fields:
 
 *   `model` (`str`): The name of the SentenceTransformer model to use.

@@ -20,11 +20,6 @@ COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
     ```bash
     pip install -e .
     ```
-    **Note**: This example uses SentenceTransformerEmbed which requires the sentence-transformers library. The dependency is automatically included when you install from requirements.txt, but if you encounter import errors, you can install it directly:
-
-    ```bash
-    pip install sentence-transformers
-    ```
 
 - Setup:
 
@@ -63,11 +58,6 @@ Build the docker container via:
 ```bash
 docker compose up --build
 ```
-**Note**: The Docker build automatically includes all required dependencies, including sentence-transformers for embedding functionality.
-
-The Docker section note is optional since Docker handles dependencies automatically, but it's good to mention that the sentence-transformers dependency is included in the build.
-
-The main change is in the local installation section where users might run into dependency issues if they're not using the full requirements.txt file.
 
 Test the endpoint:
 ```bash
