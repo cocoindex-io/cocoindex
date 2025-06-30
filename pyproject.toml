@@ -14,7 +14,7 @@ dependencies = [
     "rich>=14.0.0",
     "python-dotenv>=1.1.0",
     "watchfiles>=1.1.0",
-    "numpy>=2.3.1",
+    "numpy>=1.23.2",
 ]
 license = "Apache-2.0"
 urls = { Homepage = "https://cocoindex.io/" }
