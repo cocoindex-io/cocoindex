@@ -1,20 +1,17 @@
 """All builtin functions."""
 
-from typing import Annotated, Any, TYPE_CHECKING, Literal
+import dataclasses
+from typing import Annotated, Any, Literal
+
 import numpy as np
 from numpy.typing import NDArray
-import dataclasses
 
-from .typing import Float32, Vector, TypeAttr
-from . import op, llm
-
-# Libraries that are heavy to import. Lazily import them later.
-if TYPE_CHECKING:
-    import sentence_transformers
+from . import llm, op
+from .typing import TypeAttr, Vector
 
 # Check if sentence_transformers is available
 try:
-    import sentence_transformers
+    import sentence_transformers  # type: ignore
 
     _SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError:
