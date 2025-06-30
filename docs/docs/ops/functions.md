@@ -82,7 +82,7 @@ Return: [*KTable*](/docs/core/data_types#ktable), each row represents a chunk, w
 This function requires the 'sentence-transformers' library, which is an optional dependency. Install CocoIndex with:
 
 ```bash
-pip install 'cocoindex[sentence-transformers]'
+pip install 'cocoindex[embeddings]'
 ```
 :::
 

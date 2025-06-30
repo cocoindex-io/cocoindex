@@ -69,7 +69,7 @@ class SentenceTransformerEmbed(op.FunctionSpec):
 
     Note:
         This function requires the optional sentence-transformers dependency.
-        Install it with: pip install 'cocoindex[sentence-transformers]'
+        Install it with: pip install 'cocoindex[embeddings]'
     """
 
     model: str
@@ -88,7 +88,7 @@ class SentenceTransformerEmbedExecutor:
             raise ImportError(
                 "sentence_transformers is required for SentenceTransformerEmbed function. "
                 "Install it with one of these commands:\n"
-                "  pip install 'cocoindex[sentence-transformers]'\n"
+                "  pip install 'cocoindex[embeddings]'\n"
                 "  pip install sentence-transformers"
             )
 
