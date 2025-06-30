@@ -37,6 +37,7 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
    pip install -e .
    ```
 
+
 - Setup:
 
    ```bash
