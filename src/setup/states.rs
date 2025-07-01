@@ -424,7 +424,7 @@ impl std::fmt::Display for FormattedFlowSetupStatus<'_> {
             ObjectSetupStatusCode(flow_ssc)
                 .to_string()
                 .color(AnsiColors::Cyan),
-            format!("Flow: {}", self.0)
+            self.0
         )?;
 
         let mut f = indented(f).with_str(INDENT);
