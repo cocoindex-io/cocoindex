@@ -8,7 +8,7 @@ use crate::ops::py_factory::PyOpArgSchema;
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
 use crate::server::{self, ServerSettings};
 use crate::settings::Settings;
-use crate::setup;
+use crate::setup::{self};
 use pyo3::IntoPyObjectExt;
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -337,6 +337,22 @@ impl Flow {
         process_fields(&schema.schema.fields, "", &mut result);
         result
     }
+
+    pub fn make_setup_action(&self) -> SetupChangeBundle {
+        let bundle = setup::SetupChangeBundle {
+            action: setup::FlowSetupChangeAction::Setup,
+            flow_names: vec![self.name().to_string()],
+        };
+        SetupChangeBundle(Arc::new(bundle))
+    }
+
+    pub fn make_drop_action(&self) -> SetupChangeBundle {
+        let bundle = setup::SetupChangeBundle {
+            action: setup::FlowSetupChangeAction::Drop,
+            flow_names: vec![self.name().to_string()],
+        };
+        SetupChangeBundle(Arc::new(bundle))
+    }
 }
 
 #[pyclass]
@@ -375,88 +391,75 @@ impl TransientFlow {
 }
 
 #[pyclass]
-pub struct SetupStatus(setup::AllSetupStatus);
+pub struct SetupChangeBundle(Arc<setup::SetupChangeBundle>);
 
 #[pymethods]
-impl SetupStatus {
-    pub fn __str__(&self) -> String {
-        format!("{}", &self.0)
+impl SetupChangeBundle {
+    pub fn describe_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let lib_context = get_lib_context().into_py_result()?;
+        let bundle = self.0.clone();
+        future_into_py(py, async move {
+            bundle.describe(&lib_context).await.into_py_result()
+        })
     }
 
-    pub fn __repr__(&self) -> String {
-        self.__str__()
-    }
+    pub fn apply_async<'py>(
+        &self,
+        py: Python<'py>,
+        write_to_stdout: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let lib_context = get_lib_context().into_py_result()?;
+        let bundle = self.0.clone();
 
-    pub fn is_up_to_date(&self) -> bool {
-        self.0.is_up_to_date()
-    }
-}
-
-#[pyfunction]
-fn sync_setup(py: Python<'_>) -> PyResult<SetupStatus> {
-    let lib_context = get_lib_context().into_py_result()?;
-    let flows = lib_context.flows.lock().unwrap();
-    let all_setup_states = lib_context
-        .require_all_setup_states()
-        .into_py_result()?
-        .read()
-        .unwrap();
-    py.allow_threads(|| {
-        get_runtime()
-            .block_on(async {
-                let setup_status = setup::sync_setup(&flows, &all_setup_states).await?;
-                anyhow::Ok(SetupStatus(setup_status))
-            })
-            .into_py_result()
-    })
-}
-
-#[pyfunction]
-fn drop_setup(py: Python<'_>, flow_names: Vec<String>) -> PyResult<SetupStatus> {
-    let lib_context = get_lib_context().into_py_result()?;
-    let all_setup_states = lib_context
-        .require_all_setup_states()
-        .into_py_result()?
-        .read()
-        .unwrap();
-    py.allow_threads(|| {
-        get_runtime()
-            .block_on(async {
-                let setup_status = setup::drop_setup(flow_names, &all_setup_states).await?;
-                anyhow::Ok(SetupStatus(setup_status))
-            })
-            .into_py_result()
-    })
-}
-
-#[pyfunction]
-fn flow_names_with_setup() -> PyResult<Vec<String>> {
-    let lib_context = get_lib_context().into_py_result()?;
-    let all_setup_states = lib_context
-        .require_all_setup_states()
-        .into_py_result()?
-        .read()
-        .unwrap();
-    let flow_names = all_setup_states.flows.keys().cloned().collect();
-    Ok(flow_names)
-}
-
-#[pyfunction]
-fn apply_setup_changes(py: Python<'_>, setup_status: &SetupStatus) -> PyResult<()> {
-    py.allow_threads(|| {
-        get_runtime()
-            .block_on(async {
-                let lib_context = get_lib_context()?;
-                setup::apply_changes(
-                    &mut std::io::stdout(),
-                    &setup_status.0,
-                    lib_context.require_builtin_db_pool()?,
+        future_into_py(py, async move {
+            let mut stdout = None;
+            let mut sink = None;
+            bundle
+                .apply(
+                    &lib_context,
+                    if write_to_stdout {
+                        stdout.insert(std::io::stdout())
+                    } else {
+                        sink.insert(std::io::sink())
+                    },
                 )
                 .await
-            })
-            .into_py_result()?;
-        Ok(())
+                .into_py_result()
+        })
+    }
+}
+
+#[pyfunction]
+fn flow_names_with_setup_async(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+    future_into_py(py, async move {
+        let lib_context = get_lib_context().into_py_result()?;
+        let setup_ctx = lib_context
+            .require_persistence_ctx()
+            .into_py_result()?
+            .setup_ctx
+            .read()
+            .await;
+        let flow_names: Vec<String> = setup_ctx.all_setup_states.flows.keys().cloned().collect();
+        PyResult::Ok(flow_names)
     })
+}
+
+#[pyfunction]
+fn make_setup_bundle(flow_names: Vec<String>) -> PyResult<SetupChangeBundle> {
+    let bundle = setup::SetupChangeBundle {
+        action: setup::FlowSetupChangeAction::Setup,
+        flow_names,
+    };
+    Ok(SetupChangeBundle(Arc::new(bundle)))
+}
+
+#[pyfunction]
+fn make_drop_bundle(flow_names: Vec<String>) -> PyResult<SetupChangeBundle> {
+    let bundle = setup::SetupChangeBundle {
+        action: setup::FlowSetupChangeAction::Drop,
+        flow_names,
+    };
+    Ok(SetupChangeBundle(Arc::new(bundle)))
 }
 
 #[pyfunction]
@@ -487,10 +490,9 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(start_server, m)?)?;
     m.add_function(wrap_pyfunction!(stop, m)?)?;
     m.add_function(wrap_pyfunction!(register_function_factory, m)?)?;
-    m.add_function(wrap_pyfunction!(sync_setup, m)?)?;
-    m.add_function(wrap_pyfunction!(drop_setup, m)?)?;
-    m.add_function(wrap_pyfunction!(apply_setup_changes, m)?)?;
-    m.add_function(wrap_pyfunction!(flow_names_with_setup, m)?)?;
+    m.add_function(wrap_pyfunction!(flow_names_with_setup_async, m)?)?;
+    m.add_function(wrap_pyfunction!(make_setup_bundle, m)?)?;
+    m.add_function(wrap_pyfunction!(make_drop_bundle, m)?)?;
     m.add_function(wrap_pyfunction!(add_auth_entry, m)?)?;
 
     m.add_class::<builder::flow_builder::FlowBuilder>()?;
@@ -501,7 +503,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<FlowLiveUpdater>()?;
     m.add_class::<TransientFlow>()?;
     m.add_class::<IndexUpdateInfo>()?;
-    m.add_class::<SetupStatus>()?;
+    m.add_class::<SetupChangeBundle>()?;
     m.add_class::<PyOpArgSchema>()?;
     m.add_class::<RenderedSpec>()?;
     m.add_class::<RenderedSpecLine>()?;

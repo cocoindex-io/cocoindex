@@ -62,7 +62,7 @@ impl SharedAckFn {
 async fn update_source(
     flow: Arc<builder::AnalyzedFlow>,
     plan: Arc<plan::ExecutionPlan>,
-    execution_ctx: Arc<tokio::sync::OwnedRwLockReadGuard<crate::lib_context::ExecutionContext>>,
+    execution_ctx: Arc<tokio::sync::OwnedRwLockReadGuard<crate::lib_context::FlowExecutionContext>>,
     source_update_stats: Arc<stats::UpdateStats>,
     source_idx: usize,
     pool: PgPool,

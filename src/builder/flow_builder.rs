@@ -16,7 +16,6 @@ use crate::{
     lib_context::LibContext,
     ops::interface::FlowInstanceContext,
     py::IntoPyResult,
-    setup,
 };
 use crate::{lib_context::FlowContext, py};
 
@@ -237,7 +236,6 @@ impl std::fmt::Display for DataCollector {
 pub struct FlowBuilder {
     lib_context: Arc<LibContext>,
     flow_inst_context: Arc<FlowInstanceContext>,
-    existing_flow_ss: Option<setup::FlowSetupState<setup::ExistingMode>>,
 
     root_op_scope: Arc<OpScope>,
     flow_instance_name: String,
@@ -259,14 +257,6 @@ impl FlowBuilder {
     #[new]
     pub fn new(name: &str) -> PyResult<Self> {
         let lib_context = get_lib_context().into_py_result()?;
-        let existing_flow_ss = lib_context.persistence_ctx.as_ref().and_then(|ctx| {
-            ctx.all_setup_states
-                .read()
-                .unwrap()
-                .flows
-                .get(name)
-                .cloned()
-        });
         let root_op_scope = OpScope::new(
             spec::ROOT_SCOPE_NAME.to_string(),
             None,
@@ -276,7 +266,6 @@ impl FlowBuilder {
         let result = Self {
             lib_context,
             flow_inst_context,
-            existing_flow_ss,
             root_op_scope,
             flow_instance_name: name.to_string(),
 
@@ -578,9 +567,18 @@ impl FlowBuilder {
                 get_runtime().block_on(async move {
                     let analyzed_flow =
                         super::AnalyzedFlow::from_flow_instance(spec, flow_instance_ctx).await?;
-                    let execution_ctx =
-                        FlowContext::new(Arc::new(analyzed_flow), self.existing_flow_ss.as_ref())
-                            .await?;
+                    let persistence_ctx = self.lib_context.require_persistence_ctx()?;
+                    let execution_ctx = {
+                        let flow_setup_ctx = persistence_ctx.setup_ctx.read().await;
+                        FlowContext::new(
+                            Arc::new(analyzed_flow),
+                            flow_setup_ctx
+                                .all_setup_states
+                                .flows
+                                .get(&self.flow_instance_name),
+                        )
+                        .await?
+                    };
                     anyhow::Ok(execution_ctx)
                 })
             })

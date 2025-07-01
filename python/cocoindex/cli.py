@@ -17,7 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import flow, lib, setting
-from .setup import apply_setup_changes, drop_setup, flow_names_with_setup, sync_setup
+from .setup import make_setup_bundle, make_drop_bundle, flow_names_with_setup
 
 # Create ServerSettings lazily upon first call, as environment variables may be loaded from files, etc.
 COCOINDEX_HOST = "https://cocoindex.io"
@@ -146,7 +146,7 @@ def cli(env_file: str | None = None) -> None:
 
     if load_dotenv(dotenv_path=dotenv_path):
         loaded_env_path = os.path.abspath(dotenv_path)
-        click.echo(f"Loaded environment variables from: {loaded_env_path}", err=True)
+        click.echo(f"Loaded environment variables from: {loaded_env_path}\n", err=True)
 
     try:
         _initialize_cocoindex_in_process()
@@ -262,9 +262,10 @@ def setup(app_target: str, force: bool) -> None:
     app_ref = _get_app_ref_from_specifier(app_target)
     _load_user_app(app_ref)
 
-    setup_status = sync_setup()
-    click.echo(setup_status)
-    if setup_status.is_up_to_date():
+    setup_bundle = make_setup_bundle(flow.flow_names())
+    description, is_up_to_date = setup_bundle.describe()
+    click.echo(description)
+    if is_up_to_date:
         click.echo("No changes need to be pushed.")
         return
     if not force and not click.confirm(
@@ -273,7 +274,7 @@ def setup(app_target: str, force: bool) -> None:
         show_default=False,
     ):
         return
-    apply_setup_changes(setup_status)
+    setup_bundle.apply(write_to_stdout=True)
 
 
 @cli.command("drop")
@@ -348,9 +349,10 @@ def drop(
         click.echo("No flows identified for the drop operation.")
         return
 
-    setup_status = drop_setup(flow_names)
-    click.echo(setup_status)
-    if setup_status.is_up_to_date():
+    setup_bundle = make_drop_bundle(flow_names)
+    description, is_up_to_date = setup_bundle.describe()
+    click.echo(description)
+    if is_up_to_date:
         click.echo("No flows need to be dropped.")
         return
     if not force and not click.confirm(
@@ -360,7 +362,7 @@ def drop(
     ):
         click.echo("Drop operation aborted by user.")
         return
-    apply_setup_changes(setup_status)
+    setup_bundle.apply(write_to_stdout=True)
 
 
 @cli.command()

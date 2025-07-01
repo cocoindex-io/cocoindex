@@ -43,10 +43,35 @@ impl StateMode for DesiredMode {
 pub struct CombinedState<T> {
     pub current: Option<T>,
     pub staging: Vec<StateChange<T>>,
+    /// Legacy state keys that no longer identical to the latest serialized form (usually caused by code change).
+    /// They will be deleted when the next change is applied.
     pub legacy_state_key: Option<serde_json::Value>,
 }
 
 impl<T> CombinedState<T> {
+    pub fn from_desired(desired: T) -> Self {
+        Self {
+            current: Some(desired),
+            staging: vec![],
+            legacy_state_key: None,
+        }
+    }
+
+    pub fn from_change(prev: Option<CombinedState<T>>, change: Option<Option<&T>>) -> Self
+    where
+        T: Clone,
+    {
+        Self {
+            current: match change {
+                Some(Some(state)) => Some(state.clone()),
+                Some(None) => None,
+                None => prev.and_then(|v| v.current),
+            },
+            staging: vec![],
+            legacy_state_key: None,
+        }
+    }
+
     pub fn possible_versions(&self) -> impl Iterator<Item = &T> {
         self.current
             .iter()
@@ -196,12 +221,12 @@ impl PartialEq for FlowSetupState<DesiredMode> {
 }
 
 #[derive(Debug, Clone)]
-pub struct AllSetupState<Mode: StateMode> {
+pub struct AllSetupStates<Mode: StateMode> {
     pub has_metadata_table: bool,
     pub flows: BTreeMap<String, FlowSetupState<Mode>>,
 }
 
-impl<Mode: StateMode> Default for AllSetupState<Mode> {
+impl<Mode: StateMode> Default for AllSetupStates<Mode> {
     fn default() -> Self {
         Self {
             has_metadata_table: false,
@@ -341,16 +366,22 @@ impl ObjectSetupStatus for FlowSetupStatus {
 }
 
 #[derive(Debug)]
-pub struct AllSetupStatus {
+pub struct GlobalSetupStatus {
     pub metadata_table: ResourceSetupInfo<(), (), db_metadata::MetadataTableSetup>,
-
-    pub flows: BTreeMap<String, FlowSetupStatus>,
 }
 
-impl AllSetupStatus {
+impl GlobalSetupStatus {
+    pub fn from_setup_states(setup_states: &AllSetupStates<ExistingMode>) -> Self {
+        Self {
+            metadata_table: db_metadata::MetadataTableSetup {
+                metadata_table_missing: !setup_states.has_metadata_table,
+            }
+            .into_setup_info(),
+        }
+    }
+
     pub fn is_up_to_date(&self) -> bool {
         self.metadata_table.is_up_to_date()
-            && self.flows.iter().all(|(_, flow)| flow.is_up_to_date())
     }
 }
 
@@ -375,7 +406,13 @@ impl<Status: ObjectSetupStatus> std::fmt::Display for ObjectSetupStatusCode<'_, 
     }
 }
 
-pub struct FormattedFlowSetupStatus<'a>(&'a str, &'a FlowSetupStatus);
+impl std::fmt::Display for GlobalSetupStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{}", self.metadata_table)
+    }
+}
+
+pub struct FormattedFlowSetupStatus<'a>(pub &'a str, pub &'a FlowSetupStatus);
 
 impl std::fmt::Display for FormattedFlowSetupStatus<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -383,7 +420,7 @@ impl std::fmt::Display for FormattedFlowSetupStatus<'_> {
 
         write!(
             f,
-            "{} {}\n",
+            "{} Flow: {}\n",
             ObjectSetupStatusCode(flow_ssc)
                 .to_string()
                 .color(AnsiColors::Cyan),
@@ -401,16 +438,6 @@ impl std::fmt::Display for FormattedFlowSetupStatus<'_> {
             writeln!(f, "[  UNKNOWN  ] {resource}")?;
         }
 
-        Ok(())
-    }
-}
-
-impl std::fmt::Display for AllSetupStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{}", self.metadata_table)?;
-        for (flow_name, flow_status) in &self.flows {
-            writeln!(f, "{}", FormattedFlowSetupStatus(flow_name, flow_status))?;
-        }
         Ok(())
     }
 }
