@@ -411,7 +411,7 @@ impl CollectorSchema {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OpScopeSchema {
-    /// Output schema for transform ops.
+    /// Output schema for ops with output.
     pub op_output_types: HashMap<FieldName, EnrichedValueType>,
 
     /// Child op scope for foreach ops.

@@ -1,5 +1,5 @@
 use crate::{
-    lib_context::get_auth_registry,
+    lib_context::{FlowExecutionContext, LibSetupContext, get_auth_registry},
     ops::{get_optional_executor_factory, interface::ExportTargetFactory},
     prelude::*,
 };
@@ -10,14 +10,15 @@ use std::{
     str::FromStr,
 };
 
-use super::{AllSetupState, AllSetupStatus};
+use super::{AllSetupStates, GlobalSetupStatus};
 use super::{
     CombinedState, DesiredMode, ExistingMode, FlowSetupState, FlowSetupStatus, ObjectSetupStatus,
     ObjectStatus, ResourceIdentifier, ResourceSetupInfo, ResourceSetupStatus, SetupChangeType,
     StateChange, TargetSetupState, db_metadata,
 };
 use crate::execution::db_tracking_setup;
-use crate::{lib_context::FlowContext, ops::interface::ExecutorFactory};
+use crate::ops::interface::ExecutorFactory;
+use std::fmt::Write;
 
 enum MetadataRecordType {
     FlowVersion,
@@ -85,13 +86,13 @@ fn get_export_target_factory(
     }
 }
 
-pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupState<ExistingMode>> {
+pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupStates<ExistingMode>> {
     let setup_metadata_records = db_metadata::read_setup_metadata(pool).await?;
 
     let setup_metadata_records = if let Some(records) = setup_metadata_records {
         records
     } else {
-        return Ok(AllSetupState::default());
+        return Ok(AllSetupStates::default());
     };
 
     // Group setup metadata records by flow name
@@ -151,7 +152,7 @@ pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupState<Exi
         })
         .collect::<Result<_>>()?;
 
-    Ok(AllSetupState {
+    Ok(AllSetupStates {
         has_metadata_table: true,
         flows,
     })
@@ -178,12 +179,12 @@ where
     }
 }
 
-fn to_object_status<A, B>(existing: Option<A>, desired: Option<B>) -> Result<ObjectStatus> {
-    Ok(match (&existing, &desired) {
+fn to_object_status<A, B>(existing: Option<A>, desired: Option<B>) -> Option<ObjectStatus> {
+    Some(match (&existing, &desired) {
         (Some(_), None) => ObjectStatus::Deleted,
         (None, Some(_)) => ObjectStatus::New,
         (Some(_), Some(_)) => ObjectStatus::Existing,
-        (None, None) => bail!("Unexpected object status"),
+        (None, None) => return None,
     })
 }
 
@@ -350,58 +351,12 @@ pub async fn check_flow_setup_status(
         });
     }
     Ok(FlowSetupStatus {
-        status: to_object_status(existing_state, desired_state)?,
+        status: to_object_status(existing_state, desired_state),
         seen_flow_metadata_version: existing_state.and_then(|s| s.seen_flow_metadata_version),
         metadata_change,
         tracking_table: tracking_table_change.map(|c| c.into_setup_info()),
         target_resources,
         unknown_resources,
-    })
-}
-
-pub async fn sync_setup(
-    flows: &BTreeMap<String, Arc<FlowContext>>,
-    all_setup_state: &AllSetupState<ExistingMode>,
-) -> Result<AllSetupStatus> {
-    let mut flow_setup_statuss = BTreeMap::new();
-    for (flow_name, flow_context) in flows {
-        let existing_state = all_setup_state.flows.get(flow_name);
-        flow_setup_statuss.insert(
-            flow_name.clone(),
-            check_flow_setup_status(Some(&flow_context.flow.desired_state), existing_state).await?,
-        );
-    }
-    Ok(AllSetupStatus {
-        metadata_table: db_metadata::MetadataTableSetup {
-            metadata_table_missing: !all_setup_state.has_metadata_table,
-        }
-        .into_setup_info(),
-        flows: flow_setup_statuss,
-    })
-}
-
-pub async fn drop_setup(
-    flow_names: impl IntoIterator<Item = String>,
-    all_setup_state: &AllSetupState<ExistingMode>,
-) -> Result<AllSetupStatus> {
-    if !all_setup_state.has_metadata_table {
-        api_bail!("CocoIndex metadata table is missing.");
-    }
-    let mut flow_setup_statuss = BTreeMap::new();
-    for flow_name in flow_names.into_iter() {
-        if let Some(existing_state) = all_setup_state.flows.get(&flow_name) {
-            flow_setup_statuss.insert(
-                flow_name,
-                check_flow_setup_status(None, Some(existing_state)).await?,
-            );
-        }
-    }
-    Ok(AllSetupStatus {
-        metadata_table: db_metadata::MetadataTableSetup {
-            metadata_table_missing: false,
-        }
-        .into_setup_info(),
-        flows: flow_setup_statuss,
     })
 }
 
@@ -418,7 +373,7 @@ async fn maybe_update_resource_setup<
     ChangeApplierResultFut: Future<Output = Result<()>>,
 >(
     resource_kind: &str,
-    write: &mut impl std::io::Write,
+    write: &mut (dyn std::io::Write + Send),
     resources: impl Iterator<Item = &'a ResourceSetupInfo<K, S, C>>,
     apply_change: impl FnOnce(Vec<ResourceSetupChangeItem<'a, K, C>>) -> ChangeApplierResultFut,
 ) -> Result<()> {
@@ -445,10 +400,185 @@ async fn maybe_update_resource_setup<
     Ok(())
 }
 
-pub async fn apply_changes(
-    write: &mut impl std::io::Write,
-    setup_status: &AllSetupStatus,
+async fn apply_changes_for_flow(
+    write: &mut (dyn std::io::Write + Send),
+    flow_name: &str,
+    flow_status: &FlowSetupStatus,
+    existing_setup_state: &mut Option<setup::FlowSetupState<setup::ExistingMode>>,
     pool: &PgPool,
+) -> Result<()> {
+    let Some(status) = flow_status.status else {
+        return Ok(());
+    };
+    let verb = match status {
+        ObjectStatus::New => "Creating",
+        ObjectStatus::Deleted => "Deleting",
+        ObjectStatus::Existing => "Updating resources for ",
+        _ => bail!("invalid flow status"),
+    };
+    write!(write, "\n{verb} flow {flow_name}:\n")?;
+
+    let mut update_info =
+        HashMap::<db_metadata::ResourceTypeKey, db_metadata::StateUpdateInfo>::new();
+
+    if let Some(metadata_change) = &flow_status.metadata_change {
+        update_info.insert(
+            db_metadata::ResourceTypeKey::new(
+                MetadataRecordType::FlowMetadata.to_string(),
+                serde_json::Value::Null,
+            ),
+            db_metadata::StateUpdateInfo::new(metadata_change.desired_state(), None)?,
+        );
+    }
+    if let Some(tracking_table) = &flow_status.tracking_table {
+        if tracking_table
+            .setup_status
+            .as_ref()
+            .map(|c| c.change_type() != SetupChangeType::NoChange)
+            .unwrap_or_default()
+        {
+            update_info.insert(
+                db_metadata::ResourceTypeKey::new(
+                    MetadataRecordType::TrackingTable.to_string(),
+                    serde_json::Value::Null,
+                ),
+                db_metadata::StateUpdateInfo::new(tracking_table.state.as_ref(), None)?,
+            );
+        }
+    }
+
+    for target_resource in &flow_status.target_resources {
+        update_info.insert(
+            db_metadata::ResourceTypeKey::new(
+                MetadataRecordType::Target(target_resource.key.target_kind.clone()).to_string(),
+                target_resource.key.key.clone(),
+            ),
+            db_metadata::StateUpdateInfo::new(
+                target_resource.state.as_ref(),
+                target_resource.legacy_key.as_ref().map(|k| {
+                    db_metadata::ResourceTypeKey::new(
+                        MetadataRecordType::Target(k.target_kind.clone()).to_string(),
+                        k.key.clone(),
+                    )
+                }),
+            )?,
+        );
+    }
+
+    let new_version_id = db_metadata::stage_changes_for_flow(
+        flow_name,
+        flow_status.seen_flow_metadata_version,
+        &update_info,
+        pool,
+    )
+    .await?;
+
+    if let Some(tracking_table) = &flow_status.tracking_table {
+        maybe_update_resource_setup(
+            "tracking table",
+            write,
+            std::iter::once(tracking_table),
+            |setup_status| setup_status[0].setup_status.apply_change(),
+        )
+        .await?;
+    }
+
+    let mut setup_status_by_target_kind = IndexMap::<&str, Vec<_>>::new();
+    for target_resource in &flow_status.target_resources {
+        setup_status_by_target_kind
+            .entry(target_resource.key.target_kind.as_str())
+            .or_default()
+            .push(target_resource);
+    }
+    for (target_kind, resources) in setup_status_by_target_kind.into_iter() {
+        maybe_update_resource_setup(
+            target_kind,
+            write,
+            resources.into_iter(),
+            |setup_status| async move {
+                let factory = get_export_target_factory(target_kind).ok_or_else(|| {
+                    anyhow::anyhow!("No factory found for target kind: {}", target_kind)
+                })?;
+                factory
+                    .apply_setup_changes(
+                        setup_status
+                            .into_iter()
+                            .map(|s| interface::ResourceSetupChangeItem {
+                                key: &s.key.key,
+                                setup_status: s.setup_status.as_ref(),
+                            })
+                            .collect(),
+                        get_auth_registry(),
+                    )
+                    .await?;
+                Ok(())
+            },
+        )
+        .await?;
+    }
+
+    let is_deletion = status == ObjectStatus::Deleted;
+    db_metadata::commit_changes_for_flow(
+        flow_name,
+        new_version_id,
+        &update_info,
+        is_deletion,
+        pool,
+    )
+    .await?;
+    if is_deletion {
+        *existing_setup_state = None;
+    } else {
+        let (existing_metadata, existing_tracking_table, existing_targets) =
+            match std::mem::take(existing_setup_state) {
+                Some(s) => (Some(s.metadata), Some(s.tracking_table), s.targets),
+                None => Default::default(),
+            };
+        let metadata = CombinedState::from_change(
+            existing_metadata,
+            flow_status
+                .metadata_change
+                .as_ref()
+                .map(|v| v.desired_state()),
+        );
+        let tracking_table = CombinedState::from_change(
+            existing_tracking_table,
+            flow_status.tracking_table.as_ref().map(|c| {
+                c.setup_status
+                    .as_ref()
+                    .and_then(|c| c.desired_state.as_ref())
+            }),
+        );
+        let mut targets = existing_targets;
+        for target_resource in &flow_status.target_resources {
+            match &target_resource.state {
+                Some(state) => {
+                    targets.insert(
+                        target_resource.key.clone(),
+                        CombinedState::from_desired(state.clone()),
+                    );
+                }
+                None => {
+                    targets.shift_remove(&target_resource.key);
+                }
+            }
+        }
+        *existing_setup_state = Some(setup::FlowSetupState {
+            metadata,
+            tracking_table,
+            seen_flow_metadata_version: Some(new_version_id),
+            targets,
+        });
+    }
+
+    writeln!(write, "Done for flow {}", flow_name)?;
+    Ok(())
+}
+
+async fn apply_global_changes(
+    write: &mut (dyn std::io::Write + Send),
+    setup_status: &GlobalSetupStatus,
+    all_setup_states: &mut AllSetupStates<ExistingMode>,
 ) -> Result<()> {
     maybe_update_resource_setup(
         "metadata table",
@@ -458,127 +588,157 @@ pub async fn apply_changes(
     )
     .await?;
 
-    for (flow_name, flow_status) in &setup_status.flows {
-        if flow_status.is_up_to_date() {
-            continue;
-        }
-        let verb = match flow_status.status {
-            ObjectStatus::New => "Creating",
-            ObjectStatus::Deleted => "Deleting",
-            ObjectStatus::Existing => "Updating resources for ",
-            _ => bail!("invalid flow status"),
+    if setup_status
+        .metadata_table
+        .setup_status
+        .as_ref()
+        .map_or(false, |c| c.change_type() == SetupChangeType::Create)
+    {
+        all_setup_states.has_metadata_table = true;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlowSetupChangeAction {
+    Setup,
+    Drop,
+}
+pub struct SetupChangeBundle {
+    pub action: FlowSetupChangeAction,
+    pub flow_names: Vec<String>,
+}
+
+impl SetupChangeBundle {
+    async fn get_flow_setup_status<'a>(
+        setup_ctx: &LibSetupContext,
+        flow_name: &str,
+        flow_exec_ctx: &'a FlowExecutionContext,
+        action: &FlowSetupChangeAction,
+        buffer: &'a mut Option<FlowSetupStatus>,
+    ) -> Result<&'a FlowSetupStatus> {
+        let result = match action {
+            FlowSetupChangeAction::Setup => &flow_exec_ctx.setup_status,
+            FlowSetupChangeAction::Drop => {
+                let existing_state = setup_ctx.all_setup_states.flows.get(flow_name);
+                buffer.insert(check_flow_setup_status(None, existing_state).await?)
+            }
         };
-        write!(write, "\n{verb} flow {flow_name}:\n")?;
+        Ok(result)
+    }
 
-        let mut update_info =
-            HashMap::<db_metadata::ResourceTypeKey, db_metadata::StateUpdateInfo>::new();
+    pub async fn describe(&self, lib_context: &LibContext) -> Result<(String, bool)> {
+        let mut text = String::new();
+        let mut is_up_to_date = true;
 
-        if let Some(metadata_change) = &flow_status.metadata_change {
-            update_info.insert(
-                db_metadata::ResourceTypeKey::new(
-                    MetadataRecordType::FlowMetadata.to_string(),
-                    serde_json::Value::Null,
-                ),
-                db_metadata::StateUpdateInfo::new(metadata_change.desired_state(), None)?,
-            );
+        let setup_ctx = lib_context
+            .require_persistence_ctx()?
+            .setup_ctx
+            .read()
+            .await;
+        let setup_ctx = &*setup_ctx;
+
+        if self.action == FlowSetupChangeAction::Setup {
+            is_up_to_date = is_up_to_date && setup_ctx.global_setup_status.is_up_to_date();
+            write!(&mut text, "{}", setup_ctx.global_setup_status)?;
         }
-        if let Some(tracking_table) = &flow_status.tracking_table {
-            if tracking_table
-                .setup_status
-                .as_ref()
-                .map(|c| c.change_type() != SetupChangeType::NoChange)
-                .unwrap_or_default()
-            {
-                update_info.insert(
-                    db_metadata::ResourceTypeKey::new(
-                        MetadataRecordType::TrackingTable.to_string(),
-                        serde_json::Value::Null,
-                    ),
-                    db_metadata::StateUpdateInfo::new(tracking_table.state.as_ref(), None)?,
-                );
+
+        for flow_name in &self.flow_names {
+            let flow_ctx = {
+                let flows = lib_context.flows.lock().unwrap();
+                flows
+                    .get(flow_name)
+                    .ok_or_else(|| anyhow::anyhow!("Flow instance not found: {flow_name}"))?
+                    .clone()
+            };
+            let flow_exec_ctx = flow_ctx.get_execution_ctx_for_setup().read().await;
+
+            let mut setup_status_buffer = None;
+            let setup_status = Self::get_flow_setup_status(
+                setup_ctx,
+                flow_name,
+                &flow_exec_ctx,
+                &self.action,
+                &mut setup_status_buffer,
+            )
+            .await?;
+
+            is_up_to_date = is_up_to_date && setup_status.is_up_to_date();
+            write!(
+                &mut text,
+                "{}",
+                setup::FormattedFlowSetupStatus(flow_name, setup_status)
+            )?;
+        }
+        Ok((text, is_up_to_date))
+    }
+
+    pub async fn apply(
+        &self,
+        lib_context: &LibContext,
+        write: &mut (dyn std::io::Write + Send),
+    ) -> Result<()> {
+        let persistence_ctx = lib_context.require_persistence_ctx()?;
+        let mut setup_ctx = persistence_ctx.setup_ctx.write().await;
+        let setup_ctx = &mut *setup_ctx;
+
+        if self.action == FlowSetupChangeAction::Setup
+            && !setup_ctx.global_setup_status.is_up_to_date()
+        {
+            apply_global_changes(
+                write,
+                &setup_ctx.global_setup_status,
+                &mut setup_ctx.all_setup_states,
+            )
+            .await?;
+            setup_ctx.global_setup_status =
+                GlobalSetupStatus::from_setup_states(&setup_ctx.all_setup_states);
+        }
+
+        for flow_name in &self.flow_names {
+            let flow_ctx = {
+                let flows = lib_context.flows.lock().unwrap();
+                flows
+                    .get(flow_name)
+                    .ok_or_else(|| anyhow::anyhow!("Flow instance not found: {flow_name}"))?
+                    .clone()
+            };
+            let mut flow_exec_ctx = flow_ctx.get_execution_ctx_for_setup().write().await;
+
+            let mut setup_status_buffer = None;
+            let setup_status = Self::get_flow_setup_status(
+                setup_ctx,
+                flow_name,
+                &flow_exec_ctx,
+                &self.action,
+                &mut setup_status_buffer,
+            )
+            .await?;
+            if setup_status.is_up_to_date() {
+                continue;
+            }
+
+            let mut flow_states = setup_ctx.all_setup_states.flows.remove(flow_name);
+            apply_changes_for_flow(
+                write,
+                flow_name,
+                setup_status,
+                &mut flow_states,
+                &persistence_ctx.builtin_db_pool,
+            )
+            .await?;
+
+            flow_exec_ctx
+                .update_setup_state(&flow_ctx.flow, flow_states.as_ref())
+                .await?;
+            if let Some(flow_states) = flow_states {
+                setup_ctx
+                    .all_setup_states
+                    .flows
+                    .insert(flow_name.to_string(), flow_states);
             }
         }
-        for target_resource in &flow_status.target_resources {
-            update_info.insert(
-                db_metadata::ResourceTypeKey::new(
-                    MetadataRecordType::Target(target_resource.key.target_kind.clone()).to_string(),
-                    target_resource.key.key.clone(),
-                ),
-                db_metadata::StateUpdateInfo::new(
-                    target_resource.state.as_ref(),
-                    target_resource.legacy_key.as_ref().map(|k| {
-                        db_metadata::ResourceTypeKey::new(
-                            MetadataRecordType::Target(k.target_kind.clone()).to_string(),
-                            k.key.clone(),
-                        )
-                    }),
-                )?,
-            );
-        }
-
-        let new_version_id = db_metadata::stage_changes_for_flow(
-            flow_name,
-            flow_status.seen_flow_metadata_version,
-            &update_info,
-            pool,
-        )
-        .await?;
-
-        if let Some(tracking_table) = &flow_status.tracking_table {
-            maybe_update_resource_setup(
-                "tracking table",
-                write,
-                std::iter::once(tracking_table),
-                |setup_status| setup_status[0].setup_status.apply_change(),
-            )
-            .await?;
-        }
-
-        let mut setup_status_by_target_kind = IndexMap::<&str, Vec<_>>::new();
-        for target_resource in &flow_status.target_resources {
-            setup_status_by_target_kind
-                .entry(target_resource.key.target_kind.as_str())
-                .or_default()
-                .push(target_resource);
-        }
-        for (target_kind, resources) in setup_status_by_target_kind.into_iter() {
-            maybe_update_resource_setup(
-                target_kind,
-                write,
-                resources.into_iter(),
-                |setup_status| async move {
-                    let factory = get_export_target_factory(target_kind).ok_or_else(|| {
-                        anyhow::anyhow!("No factory found for target kind: {}", target_kind)
-                    })?;
-                    factory
-                        .apply_setup_changes(
-                            setup_status
-                                .into_iter()
-                                .map(|s| interface::ResourceSetupChangeItem {
-                                    key: &s.key.key,
-                                    setup_status: s.setup_status.as_ref(),
-                                })
-                                .collect(),
-                            get_auth_registry(),
-                        )
-                        .await?;
-                    Ok(())
-                },
-            )
-            .await?;
-        }
-
-        let is_deletion = flow_status.status == ObjectStatus::Deleted;
-        db_metadata::commit_changes_for_flow(
-            flow_name,
-            new_version_id,
-            update_info,
-            is_deletion,
-            pool,
-        )
-        .await?;
-
-        writeln!(write, "Done for flow {}", flow_name)?;
+        Ok(())
     }
-    Ok(())
 }

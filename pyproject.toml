@@ -10,10 +10,11 @@ authors = [{ name = "CocoIndex", email = "cocoindex.io@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "sentence-transformers>=3.3.1",
     "click>=8.1.8",
     "rich>=14.0.0",
     "python-dotenv>=1.1.0",
+    "watchfiles>=1.1.0",
+    "numpy>=1.23.2",
 ]
 license = "Apache-2.0"
 urls = { Homepage = "https://cocoindex.io/" }
@@ -30,9 +31,11 @@ features = ["pyo3/extension-module"]
 [project.optional-dependencies]
 test = ["pytest"]
 dev = ["ruff", "pre-commit"]
+embeddings = ["sentence-transformers>=3.3.1"]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 files = "python/cocoindex"
 exclude = "(\\.venv|site-packages)"
+disable_error_code = ["unused-ignore"]

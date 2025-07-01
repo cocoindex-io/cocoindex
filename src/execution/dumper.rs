@@ -1,13 +1,9 @@
-use anyhow::Result;
-use futures::StreamExt;
-use futures::future::try_join_all;
-use indexmap::IndexMap;
+use crate::prelude::*;
+
+use futures::{StreamExt, future::try_join_all};
 use itertools::Itertools;
 use serde::ser::SerializeSeq;
-use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use yaml_rust2::YamlEmitter;
 
@@ -62,6 +58,7 @@ struct SourceOutputData<'a> {
 
 struct Dumper<'a> {
     plan: &'a ExecutionPlan,
+    setup_execution_ctx: &'a exec_ctx::FlowSetupExecutionContext,
     schema: &'a schema::FlowSchema,
     pool: &'a PgPool,
     options: EvaluateAndDumpOptions,
@@ -70,6 +67,7 @@ struct Dumper<'a> {
 impl<'a> Dumper<'a> {
     async fn evaluate_source_entry<'b>(
         &'a self,
+        import_op_idx: usize,
         import_op: &'a AnalyzedImportOp,
         key: &value::KeyValue,
         collected_values_buffer: &'b mut Vec<Vec<value::FieldValues>>,
@@ -83,7 +81,9 @@ impl<'a> Dumper<'a> {
                 import_op,
                 schema: self.schema,
                 key,
+                import_op_idx,
             },
+            self.setup_execution_ctx,
             EvaluationMemoryOptions {
                 enable_cache: self.options.use_cache,
                 evaluation_only: true,
@@ -131,13 +131,14 @@ impl<'a> Dumper<'a> {
 
     async fn evaluate_and_dump_source_entry(
         &self,
+        import_op_idx: usize,
         import_op: &AnalyzedImportOp,
         key: value::KeyValue,
         file_path: PathBuf,
     ) -> Result<()> {
         let mut collected_values_buffer = Vec::new();
         let (exports, error) = match self
-            .evaluate_source_entry(import_op, &key, &mut collected_values_buffer)
+            .evaluate_source_entry(import_op_idx, import_op, &key, &mut collected_values_buffer)
             .await
         {
             Ok(exports) => (exports, None),
@@ -167,7 +168,11 @@ impl<'a> Dumper<'a> {
         Ok(())
     }
 
-    async fn evaluate_and_dump_for_source(&self, import_op: &AnalyzedImportOp) -> Result<()> {
+    async fn evaluate_and_dump_for_source(
+        &self,
+        import_op_idx: usize,
+        import_op: &AnalyzedImportOp,
+    ) -> Result<()> {
         let mut keys_by_filename_prefix: IndexMap<String, Vec<value::KeyValue>> = IndexMap::new();
 
         let mut rows_stream = import_op.executor.list(&SourceExecutorListOptions {
@@ -205,7 +210,12 @@ impl<'a> Dumper<'a> {
                         let file_name =
                             format!("{}@{}{}.yaml", import_op.name, filename_prefix, extra_id);
                         let file_path = output_dir.join(Path::new(&file_name));
-                        self.evaluate_and_dump_source_entry(import_op, key, file_path)
+                        self.evaluate_and_dump_source_entry(
+                            import_op_idx,
+                            import_op,
+                            key,
+                            file_path,
+                        )
                     })
                 });
         try_join_all(evaluate_futs).await?;
@@ -217,7 +227,8 @@ impl<'a> Dumper<'a> {
             self.plan
                 .import_ops
                 .iter()
-                .map(|import_op| self.evaluate_and_dump_for_source(import_op)),
+                .enumerate()
+                .map(|(idx, import_op)| self.evaluate_and_dump_for_source(idx, import_op)),
         )
         .await?;
         Ok(())
@@ -226,6 +237,7 @@ impl<'a> Dumper<'a> {
 
 pub async fn evaluate_and_dump(
     plan: &ExecutionPlan,
+    setup_execution_ctx: &exec_ctx::FlowSetupExecutionContext,
     schema: &schema::FlowSchema,
     options: EvaluateAndDumpOptions,
     pool: &PgPool,
@@ -241,6 +253,7 @@ pub async fn evaluate_and_dump(
 
     let dumper = Dumper {
         plan,
+        setup_execution_ctx,
         schema,
         pool,
         options,

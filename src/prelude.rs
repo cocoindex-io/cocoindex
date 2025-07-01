@@ -19,7 +19,7 @@ pub(crate) use std::hash::Hash;
 pub(crate) use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock, Weak};
 
 pub(crate) use crate::base::{self, schema, spec, value};
-pub(crate) use crate::builder::{self, plan};
+pub(crate) use crate::builder::{self, exec_ctx, plan};
 pub(crate) use crate::execution;
 pub(crate) use crate::lib_context::{FlowContext, LibContext, get_lib_context, get_runtime};
 pub(crate) use crate::ops::interface;

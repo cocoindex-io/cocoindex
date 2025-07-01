@@ -1,7 +1,6 @@
-use std::sync::{Mutex, OnceLock};
-use std::{borrow::Cow, collections::BTreeMap};
+use crate::prelude::*;
 
-use anyhow::{Context, Ok, Result, bail};
+use anyhow::{Context, Ok};
 use futures::future::try_join_all;
 
 use crate::builder::{AnalyzedTransientFlow, plan::*};
@@ -451,6 +450,7 @@ pub struct SourceRowEvaluationContext<'a> {
     pub import_op: &'a AnalyzedImportOp,
     pub schema: &'a schema::FlowSchema,
     pub key: &'a value::KeyValue,
+    pub import_op_idx: usize,
 }
 
 #[derive(Debug)]

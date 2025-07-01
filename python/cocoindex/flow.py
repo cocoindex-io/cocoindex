@@ -34,6 +34,7 @@ from . import setting
 from .convert import dump_engine_object, encode_engine_value, make_engine_value_decoder
 from .op import FunctionSpec
 from .runtime import execution_context
+from .setup import make_drop_bundle, make_setup_bundle
 from .typing import encode_enriched_type
 
 
@@ -688,6 +689,34 @@ class Flow:
         """
         return await asyncio.to_thread(self.internal_flow)
 
+    def setup(self, report_to_stdout: bool = False) -> None:
+        """
+        Setup the flow.
+        """
+        execution_context.run(self.setup_async(report_to_stdout=report_to_stdout))
+
+    async def setup_async(self, report_to_stdout: bool = False) -> None:
+        """
+        Setup the flow. The async version.
+        """
+        await make_setup_bundle(flow_full_names=[self.full_name]).apply_async(
+            report_to_stdout=report_to_stdout
+        )
+
+    def drop(self, report_to_stdout: bool = False) -> None:
+        """
+        Drop the flow.
+        """
+        execution_context.run(self.drop_async(report_to_stdout=report_to_stdout))
+
+    async def drop_async(self, report_to_stdout: bool = False) -> None:
+        """
+        Drop the flow. The async version.
+        """
+        await make_drop_bundle(flow_full_names=[self.full_name]).apply_async(
+            report_to_stdout=report_to_stdout
+        )
+
 
 def _create_lazy_flow(
     name: str | None, fl_def: Callable[[FlowBuilder, DataScope], None]
@@ -697,7 +726,7 @@ def _create_lazy_flow(
     The flow will be built the first time when it's really needed.
     """
     flow_name = _flow_name_builder.build_name(name, prefix="_flow_")
-    flow_full_name = get_full_flow_name(flow_name)
+    flow_full_name = get_flow_full_name(flow_name)
 
     def _create_engine_flow() -> _engine.Flow:
         flow_builder_state = _FlowBuilderState(flow_full_name)
@@ -716,7 +745,7 @@ _flows_lock = Lock()
 _flows: dict[str, Flow] = {}
 
 
-def get_full_flow_name(name: str) -> str:
+def get_flow_full_name(name: str) -> str:
     """
     Get the full name of a flow.
     """
@@ -751,6 +780,14 @@ def flow_names() -> list[str]:
     """
     with _flows_lock:
         return list(_flows.keys())
+
+
+def flow_full_names() -> list[str]:
+    """
+    Get the full names of all flows.
+    """
+    with _flows_lock:
+        return [fl.full_name for fl in _flows.values()]
 
 
 def flows() -> dict[str, Flow]:

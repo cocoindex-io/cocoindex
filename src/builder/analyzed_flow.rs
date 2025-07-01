@@ -1,60 +1,42 @@
 use crate::{ops::interface::FlowInstanceContext, prelude::*};
 
 use super::{analyzer, plan};
-use crate::{
-    service::error::{SharedError, SharedResultExt, shared_ok},
-    setup::{self, ObjectSetupStatus},
-};
+use crate::service::error::{SharedError, SharedResultExt, shared_ok};
 
 pub struct AnalyzedFlow {
     pub flow_instance: spec::FlowInstanceSpec,
     pub data_schema: schema::FlowSchema,
-    pub desired_state: setup::FlowSetupState<setup::DesiredMode>,
+    pub setup_state: exec_ctx::AnalyzedSetupState,
+
     /// It's None if the flow is not up to date
-    pub execution_plan:
-        Option<Shared<BoxFuture<'static, Result<Arc<plan::ExecutionPlan>, SharedError>>>>,
+    pub execution_plan: Shared<BoxFuture<'static, Result<Arc<plan::ExecutionPlan>, SharedError>>>,
 }
 
 impl AnalyzedFlow {
     pub async fn from_flow_instance(
         flow_instance: crate::base::spec::FlowInstanceSpec,
         flow_instance_ctx: Arc<FlowInstanceContext>,
-        existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
     ) -> Result<Self> {
-        let (data_schema, execution_plan_fut, desired_state) =
-            analyzer::analyze_flow(&flow_instance, flow_instance_ctx, existing_flow_ss).await?;
-        let setup_status =
-            setup::check_flow_setup_status(Some(&desired_state), existing_flow_ss).await?;
-        let execution_plan = if setup_status.is_up_to_date() {
-            Some(
-                async move {
-                    shared_ok(Arc::new(
-                        execution_plan_fut.await.map_err(SharedError::new)?,
-                    ))
-                }
-                .boxed()
-                .shared(),
-            )
-        } else {
-            None
-        };
+        let (data_schema, setup_state, execution_plan_fut) =
+            analyzer::analyze_flow(&flow_instance, flow_instance_ctx).await?;
+        let execution_plan = async move {
+            shared_ok(Arc::new(
+                execution_plan_fut.await.map_err(SharedError::new)?,
+            ))
+        }
+        .boxed()
+        .shared();
         let result = Self {
             flow_instance,
             data_schema,
-            desired_state,
+            setup_state,
             execution_plan,
         };
         Ok(result)
     }
 
     pub async fn get_execution_plan(&self) -> Result<Arc<plan::ExecutionPlan>> {
-        let execution_plan = self
-            .execution_plan
-            .as_ref()
-            .ok_or_else(|| api_error!("Flow setup is not up to date. Please run `cocoindex setup` to update the setup."))?
-            .clone()
-            .await
-            .std_result()?;
+        let execution_plan = self.execution_plan.clone().await.std_result()?;
         Ok(execution_plan)
     }
 }

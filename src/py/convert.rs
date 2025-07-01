@@ -136,9 +136,7 @@ fn basic_value_from_py_object<'py>(
         schema::BasicValueType::Float32 => value::BasicValue::Float32(v.extract::<f32>()?),
         schema::BasicValueType::Float64 => value::BasicValue::Float64(v.extract::<f64>()?),
         schema::BasicValueType::Range => value::BasicValue::Range(depythonize(v)?),
-        schema::BasicValueType::Uuid => {
-            value::BasicValue::Uuid(v.extract::<uuid::Uuid>()?)
-        }
+        schema::BasicValueType::Uuid => value::BasicValue::Uuid(v.extract::<uuid::Uuid>()?),
         schema::BasicValueType::Date => value::BasicValue::Date(v.extract::<chrono::NaiveDate>()?),
         schema::BasicValueType::Time => value::BasicValue::Time(v.extract::<chrono::NaiveTime>()?),
         schema::BasicValueType::LocalDateTime => {

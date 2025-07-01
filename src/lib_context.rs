@@ -4,42 +4,147 @@ use crate::builder::AnalyzedFlow;
 use crate::execution::source_indexer::SourceIndexingContext;
 use crate::service::error::ApiError;
 use crate::settings;
-use crate::setup;
+use crate::setup::ObjectSetupStatus;
 use axum::http::StatusCode;
 use sqlx::PgPool;
 use sqlx::postgres::PgConnectOptions;
-use std::collections::BTreeMap;
 use tokio::runtime::Runtime;
 
-pub struct FlowContext {
-    pub flow: Arc<AnalyzedFlow>,
-    pub source_indexing_contexts: Vec<tokio::sync::OnceCell<Arc<SourceIndexingContext>>>,
+pub struct FlowExecutionContext {
+    pub setup_execution_context: Arc<exec_ctx::FlowSetupExecutionContext>,
+    pub setup_status: setup::FlowSetupStatus,
+    source_indexing_contexts: Vec<tokio::sync::OnceCell<Arc<SourceIndexingContext>>>,
 }
 
-impl FlowContext {
-    pub fn new(flow: Arc<AnalyzedFlow>) -> Self {
+async fn build_setup_context(
+    analyzed_flow: &AnalyzedFlow,
+    existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
+) -> Result<(
+    Arc<exec_ctx::FlowSetupExecutionContext>,
+    setup::FlowSetupStatus,
+)> {
+    let setup_execution_context = Arc::new(exec_ctx::build_flow_setup_execution_context(
+        &analyzed_flow.flow_instance,
+        &analyzed_flow.data_schema,
+        &analyzed_flow.setup_state,
+        existing_flow_ss,
+    )?);
+
+    let setup_status = setup::check_flow_setup_status(
+        Some(&setup_execution_context.setup_state),
+        existing_flow_ss,
+    )
+    .await?;
+
+    Ok((setup_execution_context, setup_status))
+}
+
+impl FlowExecutionContext {
+    async fn new(
+        analyzed_flow: &AnalyzedFlow,
+        existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
+    ) -> Result<Self> {
+        let (setup_execution_context, setup_status) =
+            build_setup_context(analyzed_flow, existing_flow_ss).await?;
+
         let mut source_indexing_contexts = Vec::new();
-        source_indexing_contexts.resize_with(flow.flow_instance.import_ops.len(), || {
+        source_indexing_contexts.resize_with(analyzed_flow.flow_instance.import_ops.len(), || {
             tokio::sync::OnceCell::new()
         });
-        Self {
-            flow,
+
+        Ok(Self {
+            setup_execution_context,
+            setup_status,
             source_indexing_contexts,
-        }
+        })
+    }
+
+    pub async fn update_setup_state(
+        &mut self,
+        analyzed_flow: &AnalyzedFlow,
+        existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
+    ) -> Result<()> {
+        let (setup_execution_context, setup_status) =
+            build_setup_context(analyzed_flow, existing_flow_ss).await?;
+
+        self.setup_execution_context = setup_execution_context;
+        self.setup_status = setup_status;
+        Ok(())
     }
 
     pub async fn get_source_indexing_context(
         &self,
+        flow: &Arc<AnalyzedFlow>,
         source_idx: usize,
         pool: &PgPool,
     ) -> Result<&Arc<SourceIndexingContext>> {
-        self.source_indexing_contexts[source_idx]
+        Ok(self.source_indexing_contexts[source_idx]
             .get_or_try_init(|| async move {
-                Ok(Arc::new(
-                    SourceIndexingContext::load(self.flow.clone(), source_idx, pool).await?,
+                anyhow::Ok(Arc::new(
+                    SourceIndexingContext::load(
+                        flow.clone(),
+                        source_idx,
+                        self.setup_execution_context.clone(),
+                        pool,
+                    )
+                    .await?,
                 ))
             })
-            .await
+            .await?)
+    }
+}
+
+pub struct FlowContext {
+    pub flow: Arc<AnalyzedFlow>,
+    execution_ctx: Arc<tokio::sync::RwLock<FlowExecutionContext>>,
+}
+
+impl FlowContext {
+    pub fn flow_name(&self) -> &str {
+        &self.flow.flow_instance.name
+    }
+
+    pub async fn new(
+        flow: Arc<AnalyzedFlow>,
+        existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
+    ) -> Result<Self> {
+        let execution_ctx = Arc::new(tokio::sync::RwLock::new(
+            FlowExecutionContext::new(&flow, existing_flow_ss).await?,
+        ));
+        Ok(Self {
+            flow,
+            execution_ctx,
+        })
+    }
+
+    pub async fn use_execution_ctx(
+        &self,
+    ) -> Result<tokio::sync::RwLockReadGuard<FlowExecutionContext>> {
+        let execution_ctx = self.execution_ctx.read().await;
+        if !execution_ctx.setup_status.is_up_to_date() {
+            api_bail!(
+                "Setup for flow `{}` is not up-to-date. Please run `cocoindex setup` to update the setup.",
+                self.flow_name()
+            );
+        }
+        Ok(execution_ctx)
+    }
+
+    pub async fn use_owned_execution_ctx(
+        &self,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<FlowExecutionContext>> {
+        let execution_ctx = self.execution_ctx.clone().read_owned().await;
+        if !execution_ctx.setup_status.is_up_to_date() {
+            api_bail!(
+                "Setup for flow `{}` is not up-to-date. Please run `cocoindex setup` to update the setup.",
+                self.flow_name()
+            );
+        }
+        Ok(execution_ctx)
+    }
+
+    pub fn get_execution_ctx_for_setup(&self) -> &tokio::sync::RwLock<FlowExecutionContext> {
+        &self.execution_ctx
     }
 }
 
@@ -77,9 +182,13 @@ impl DbPools {
     }
 }
 
+pub struct LibSetupContext {
+    pub all_setup_states: setup::AllSetupStates<setup::ExistingMode>,
+    pub global_setup_status: setup::GlobalSetupStatus,
+}
 pub struct PersistenceContext {
     pub builtin_db_pool: PgPool,
-    pub all_setup_states: RwLock<setup::AllSetupState<setup::ExistingMode>>,
+    pub setup_ctx: tokio::sync::RwLock<LibSetupContext>,
 }
 
 pub struct LibContext {
@@ -103,20 +212,14 @@ impl LibContext {
         Ok(flow_ctx)
     }
 
-    pub fn require_builtin_db_pool(&self) -> Result<&PgPool> {
+    pub fn require_persistence_ctx(&self) -> Result<&PersistenceContext> {
         self.persistence_ctx
             .as_ref()
-            .map(|ctx| &ctx.builtin_db_pool)
             .ok_or_else(|| anyhow!("Database is required for this operation. Please set COCOINDEX_DATABASE_URL environment variable and call cocoindex.init() with database settings."))
     }
 
-    pub fn require_all_setup_states(
-        &self,
-    ) -> Result<&RwLock<setup::AllSetupState<setup::ExistingMode>>> {
-        self.persistence_ctx
-            .as_ref()
-            .map(|ctx| &ctx.all_setup_states)
-            .ok_or_else(|| anyhow!("Database is required for this operation. Please set COCOINDEX_DATABASE_URL environment variable and call cocoindex.init() with database settings."))
+    pub fn require_builtin_db_pool(&self) -> Result<&PgPool> {
+        Ok(&self.require_persistence_ctx()?.builtin_db_pool)
     }
 }
 
@@ -145,7 +248,10 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         })?;
         Some(PersistenceContext {
             builtin_db_pool: pool,
-            all_setup_states: RwLock::new(all_setup_states),
+            setup_ctx: tokio::sync::RwLock::new(LibSetupContext {
+                global_setup_status: setup::GlobalSetupStatus::from_setup_states(&all_setup_states),
+                all_setup_states,
+            }),
         })
     } else {
         // No database configured
@@ -212,7 +318,6 @@ mod tests {
         let lib_context = create_lib_context(settings).unwrap();
         assert!(lib_context.persistence_ctx.is_none());
         assert!(lib_context.require_builtin_db_pool().is_err());
-        assert!(lib_context.require_all_setup_states().is_err());
     }
 
     #[test]

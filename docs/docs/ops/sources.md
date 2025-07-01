@@ -13,11 +13,11 @@ The `LocalFile` source imports files from a local file system.
 ### Spec
 
 The spec takes the following fields:
-*   `path` (type: `str`, required): full path of the root directory to import files from
-*   `binary` (type: `bool`, optional): whether reading files as binary (instead of text)
-*   `included_patterns` (type: `list[str]`, optional): a list of glob patterns to include files, e.g. `["*.txt", "docs/**/*.md"]`.
+*   `path` (`str`): full path of the root directory to import files from
+*   `binary` (`bool`, optional): whether reading files as binary (instead of text)
+*   `included_patterns` (`list[str]`, optional): a list of glob patterns to include files, e.g. `["*.txt", "docs/**/*.md"]`.
     If not specified, all files will be included.
-*   `excluded_patterns` (type: `list[str]`, optional): a list of glob patterns to exclude files, e.g. `["tmp", "**/node_modules"]`.
+*   `excluded_patterns` (`list[str]`, optional): a list of glob patterns to exclude files, e.g. `["tmp", "**/node_modules"]`.
     Any file or directory matching these patterns will be excluded even if they match `included_patterns`.
     If not specified, no files will be excluded.
 
@@ -29,9 +29,9 @@ The spec takes the following fields:
 
 ### Schema
 
-The output is a [KTable](/docs/core/data_types#ktable) with the following sub fields:
-*   `filename` (key, type: `str`): the filename of the file, including the path, relative to the root directory, e.g. `"dir1/file1.md"`
-*   `content` (type: `str` if `binary` is `False`, otherwise `bytes`): the content of the file
+The output is a [*KTable*](/docs/core/data_types#ktable) with the following sub fields:
+*   `filename` (*Str*, key): the filename of the file, including the path, relative to the root directory, e.g. `"dir1/file1.md"`
+*   `content` (*Str* if `binary` is `False`, *Bytes* otherwise): the content of the file
 
 ## AmazonS3
 
@@ -121,12 +121,12 @@ AWS's [Guide of Configuring a Bucket for Notifications](https://docs.aws.amazon.
 ### Spec
 
 The spec takes the following fields:
-*   `bucket_name` (type: `str`, required): Amazon S3 bucket name.
-*   `prefix` (type: `str`, optional): if provided, only files with path starting with this prefix will be imported.
-*   `binary` (type: `bool`, optional): whether reading files as binary (instead of text).
-*   `included_patterns` (type: `list[str]`, optional): a list of glob patterns to include files, e.g. `["*.txt", "docs/**/*.md"]`.
+*   `bucket_name` (`str`): Amazon S3 bucket name.
+*   `prefix` (`str`, optional): if provided, only files with path starting with this prefix will be imported.
+*   `binary` (`bool`, optional): whether reading files as binary (instead of text).
+*   `included_patterns` (`list[str]`, optional): a list of glob patterns to include files, e.g. `["*.txt", "docs/**/*.md"]`.
     If not specified, all files will be included.
-*   `excluded_patterns` (type: `list[str]`, optional): a list of glob patterns to exclude files, e.g. `["*.tmp", "**/*.log"]`.
+*   `excluded_patterns` (`list[str]`, optional): a list of glob patterns to exclude files, e.g. `["*.tmp", "**/*.log"]`.
     Any file or directory matching these patterns will be excluded even if they match `included_patterns`.
     If not specified, no files will be excluded.
 
@@ -136,7 +136,7 @@ The spec takes the following fields:
 
     :::
 
-*   `sqs_queue_url` (type: `str`, optional): if provided, the source will receive change event notifications from Amazon S3 via this SQS queue.
+*   `sqs_queue_url` (`str`, optional): if provided, the source will receive change event notifications from Amazon S3 via this SQS queue.
 
     :::info
 
@@ -147,9 +147,9 @@ The spec takes the following fields:
 
 ### Schema
 
-The output is a [KTable](/docs/core/data_types#ktable) with the following sub fields:
-*   `filename` (key, type: `str`): the filename of the file, including the path, relative to the root directory, e.g. `"dir1/file1.md"`.
-*   `content` (type: `str` if `binary` is `False`, otherwise `bytes`): the content of the file.
+The output is a [*KTable*](/docs/core/data_types#ktable) with the following sub fields:
+*   `filename` (*Str*, key): the filename of the file, including the path, relative to the root directory, e.g. `"dir1/file1.md"`.
+*   `content` (*Str* if `binary` is `False`, otherwise *Bytes*): the content of the file.
 
 
 ## GoogleDrive
@@ -176,10 +176,10 @@ To access files in Google Drive, the `GoogleDrive` source will need to authentic
 
 The spec takes the following fields:
 
-*   `service_account_credential_path` (type: `str`, required): full path to the service account credential file in JSON format.
-*   `root_folder_ids` (type: `list[str]`, required): a list of Google Drive folder IDs to import files from.
-*   `binary` (type: `bool`, optional): whether reading files as binary (instead of text).
-*   `recent_changes_poll_interval` (type: `datetime.timedelta`, optional): when set, this source provides a change capture mechanism by polling Google Drive for recent modified files periodically.
+*   `service_account_credential_path` (`str`): full path to the service account credential file in JSON format.
+*   `root_folder_ids` (`list[str]`): a list of Google Drive folder IDs to import files from.
+*   `binary` (`bool`, optional): whether reading files as binary (instead of text).
+*   `recent_changes_poll_interval` (`datetime.timedelta`, optional): when set, this source provides a change capture mechanism by polling Google Drive for recent modified files periodically.
 
     :::info
 
@@ -198,9 +198,9 @@ The spec takes the following fields:
 
 ### Schema
 
-The output is a [KTable](/docs/core/data_types#ktable) with the following sub fields:
+The output is a [*KTable*](/docs/core/data_types#ktable) with the following sub fields:
 
-*   `file_id` (key, type: `str`): the ID of the file in Google Drive.
-*   `filename` (type: `str`): the filename of the file, without the path, e.g. `"file1.md"`
-*   `mime_type` (type: `str`): the MIME type of the file.
-*   `content` (type: `str` if `binary` is `False`, otherwise `bytes`): the content of the file.
+*   `file_id` (*Str*, key): the ID of the file in Google Drive.
+*   `filename` (*Str*): the filename of the file, without the path, e.g. `"file1.md"`
+*   `mime_type` (*Str*): the MIME type of the file.
+*   `content` (*Str* if `binary` is `False`, otherwise *Bytes*): the content of the file.

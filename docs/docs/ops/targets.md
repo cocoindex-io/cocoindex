@@ -36,11 +36,11 @@ It should be a unique table, meaning that no other export target should export t
 
 The spec takes the following fields:
 
-*   `database` (type: [auth reference](../core/flow_def#auth-registry) to `DatabaseConnectionSpec`, optional): The connection to the Postgres database.
+*   `database` ([auth reference](../core/flow_def#auth-registry) to `DatabaseConnectionSpec`, optional): The connection to the Postgres database.
     See [DatabaseConnectionSpec](../core/settings#databaseconnectionspec) for its specific fields.
     If not provided, will use the same database as the [internal storage](/docs/core/basics#internal-storage).
 
-*   `table_name` (type: `str`, optional): The name of the table to store to. If unspecified, will use the table name `[${AppNamespace}__]${FlowName}__${TargetName}`, e.g. `DemoFlow__doc_embeddings` or `Staging__DemoFlow__doc_embeddings`.
+*   `table_name` (`str`, optional): The name of the table to store to. If unspecified, will use the table name `[${AppNamespace}__]${FlowName}__${TargetName}`, e.g. `DemoFlow__doc_embeddings` or `Staging__DemoFlow__doc_embeddings`.
 
 ### Qdrant
 
@@ -56,19 +56,19 @@ Here's how CocoIndex data elements map to Qdrant elements during export:
 | a collected row   | a point |
 | a field           | a named vector, if fits into Qdrant vector; or a field within payload otherwise |
 
-A vector with `Float32`, `Float64` or `Int64` type, and with fixed dimension, fits into Qdrant vector.
+*Vector[Float32, N]*, *Vector[Float64, N]* and *Vector[Int64, N]* types fit into Qdrant vector.
 
 #### Spec
 
 The spec takes the following fields:
 
-*   `connection` (type: [auth reference](../core/flow_def#auth-registry) to `QdrantConnection`, optional): The connection to the Qdrant instance. `QdrantConnection` has the following fields:
-    *   `grpc_url` (type: `str`): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance, e.g. `http://localhost:6334/`.
-    *   `api_key` (type: `str`, optional). API key to authenticate requests with.
+*   `connection` ([auth reference](../core/flow_def#auth-registry) to `QdrantConnection`, optional): The connection to the Qdrant instance. `QdrantConnection` has the following fields:
+    *   `grpc_url` (`str`): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance, e.g. `http://localhost:6334/`.
+    *   `api_key` (`str`, optional). API key to authenticate requests with.
 
     If `connection` is not provided, will use local Qdrant instance at `http://localhost:6334/` by default.
 
-*   `collection_name` (type: `str`, required): The name of the collection to export the data to.
+*   `collection_name` (`str`, required): The name of the collection to export the data to.
 
 You can find an end-to-end example [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_qdrant).
 
@@ -115,7 +115,7 @@ Note that the label used in different `Nodes`s should be unique.
 
 `cocoindex.targets.Nodes` is to describe mapping to nodes. It has the following fields:
 
-*   `label` (type: `str`): The label of the node.
+*   `label` (`str`): The label of the node.
 
 For example, consider we have collected the following rows:
 
@@ -203,12 +203,12 @@ Note that the type used in different `Relationships`s should be unique.
 
 `cocoindex.targets.Relationships` is to describe mapping to relationships. It has the following fields:
 
-*   `rel_type` (type: `str`): The type of the relationship.
-*   `source`/`target` (type: `cocoindex.targets.NodeFromFields`): Specify how to extract source/target node information from specific fields in the collected row. It has the following fields:
-    *   `label` (type: `str`): The label of the node.
-    *   `fields` (type: `Sequence[cocoindex.targets.TargetFieldMapping]`): Specify field mappings from the collected rows to node properties, with the following fields:
-        *   `source` (type: `str`): The name of the field in the collected row.
-        *   `target` (type: `str`, optional): The name of the field to use as the node field. If unspecified, will use the same as `source`.
+*   `rel_type` (`str`): The type of the relationship.
+*   `source`/`target` (`cocoindex.targets.NodeFromFields`): Specify how to extract source/target node information from specific fields in the collected row. It has the following fields:
+    *   `label` (`str`): The label of the node.
+    *   `fields` (`Sequence[cocoindex.targets.TargetFieldMapping]`): Specify field mappings from the collected rows to node properties, with the following fields:
+        *   `source` (`str`): The name of the field in the collected row.
+        *   `target` (`str`, optional): The name of the field to use as the node field. If unspecified, will use the same as `source`.
 
         :::note Map necessary fields for nodes of relationships
 
@@ -390,16 +390,16 @@ You can find end-to-end examples fitting into any of supported property graphs i
 
 The `Neo4j` target spec takes the following fields:
 
-*   `connection` (type: [auth reference](../core/flow_def#auth-registry) to `Neo4jConnectionSpec`): The connection to the Neo4j database. `Neo4jConnectionSpec` has the following fields:
-    *   `url` (type: `str`): The URI of the Neo4j database to use as the internal storage, e.g. `bolt://localhost:7687`.
-    *   `user` (type: `str`): Username for the Neo4j database.
-    *   `password` (type: `str`): Password for the Neo4j database.
-    *   `db` (type: `str`, optional): The name of the Neo4j database to use as the internal storage, e.g. `neo4j`.
-*   `mapping` (type: `Nodes | Relationships`): The mapping from collected row to nodes or relationships of the graph. For either [nodes to export](#nodes-to-export) or [relationships to export](#relationships-to-export).
+*   `connection` ([auth reference](../core/flow_def#auth-registry) to `Neo4jConnectionSpec`): The connection to the Neo4j database. `Neo4jConnectionSpec` has the following fields:
+    *   `url` (`str`): The URI of the Neo4j database to use as the internal storage, e.g. `bolt://localhost:7687`.
+    *   `user` (`str`): Username for the Neo4j database.
+    *   `password` (`str`): Password for the Neo4j database.
+    *   `db` (`str`, optional): The name of the Neo4j database to use as the internal storage, e.g. `neo4j`.
+*   `mapping` (`Nodes | Relationships`): The mapping from collected row to nodes or relationships of the graph. For either [nodes to export](#nodes-to-export) or [relationships to export](#relationships-to-export).
 
 Neo4j also provides a declaration spec `Neo4jDeclaration`, to configure indexing options for nodes only referenced by relationships. It has the following fields:
 
-*   `connection` (type: auth reference to `Neo4jConnectionSpec`)
+*   `connection` (auth reference to `Neo4jConnectionSpec`)
 *   Fields for [nodes to declare](#declare-extra-node-labels), including
     *   `nodes_label` (required)
     *   `primary_key_fields` (required)
@@ -433,13 +433,13 @@ CocoIndex supports talking to Kuzu through its [API server](https://github.com/k
 
 The `Kuzu` target spec takes the following fields:
 
-*   `connection` (type: [auth reference](../core/flow_def#auth-registry) to `KuzuConnectionSpec`): The connection to the Kuzu database. `KuzuConnectionSpec` has the following fields:
-    *   `api_server_url` (type: `str`): The URL of the Kuzu API server, e.g. `http://localhost:8123`.
-*   `mapping` (type: `Nodes | Relationships`): The mapping from collected row to nodes or relationships of the graph. For either [nodes to export](#nodes-to-export) or [relationships to export](#relationships-to-export).
+*   `connection` ([auth reference](../core/flow_def#auth-registry) to `KuzuConnectionSpec`): The connection to the Kuzu database. `KuzuConnectionSpec` has the following fields:
+    *   `api_server_url` (`str`): The URL of the Kuzu API server, e.g. `http://localhost:8123`.
+*   `mapping` (`Nodes | Relationships`): The mapping from collected row to nodes or relationships of the graph. For either [nodes to export](#nodes-to-export) or [relationships to export](#relationships-to-export).
 
 Kuzu also provides a declaration spec `KuzuDeclaration`, to configure indexing options for nodes only referenced by relationships. It has the following fields:
 
-*   `connection` (type: auth reference to `KuzuConnectionSpec`)
+*   `connection` (auth reference to `KuzuConnectionSpec`)
 *   Fields for [nodes to declare](#declare-extra-node-labels), including
     *   `nodes_label` (required)
     *   `primary_key_fields` (required)

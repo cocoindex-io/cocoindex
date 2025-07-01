@@ -139,7 +139,7 @@ async fn upsert_staging_changes(
 async fn upsert_state(
     flow_name: &str,
     type_id: &ResourceTypeKey,
-    state: serde_json::Value,
+    state: &serde_json::Value,
     action: WriteAction,
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<()> {
@@ -220,7 +220,7 @@ pub async fn stage_changes_for_flow(
     upsert_state(
         flow_name,
         &VERSION_RESOURCE_TYPE_ID,
-        serde_json::Value::Number(new_metadata_version.into()),
+        &serde_json::Value::Number(new_metadata_version.into()),
         if latest_metadata_version.is_some() {
             WriteAction::Update
         } else {
@@ -276,7 +276,7 @@ pub async fn stage_changes_for_flow(
 pub async fn commit_changes_for_flow(
     flow_name: &str,
     curr_metadata_version: u64,
-    state_updates: HashMap<ResourceTypeKey, StateUpdateInfo>,
+    state_updates: &HashMap<ResourceTypeKey, StateUpdateInfo>,
     delete_version: bool,
     pool: &PgPool,
 ) -> Result<()> {
@@ -289,12 +289,12 @@ pub async fn commit_changes_for_flow(
             StatusCode::CONFLICT,
         ))?;
     }
-    for (type_id, update_info) in state_updates {
-        match update_info.desired_state {
+    for (type_id, update_info) in state_updates.iter() {
+        match &update_info.desired_state {
             Some(desired_state) => {
                 upsert_state(
                     flow_name,
-                    &type_id,
+                    type_id,
                     desired_state,
                     WriteAction::Update,
                     &mut *txn,
@@ -302,7 +302,7 @@ pub async fn commit_changes_for_flow(
                 .await?;
             }
             None => {
-                delete_state(flow_name, &type_id, &mut *txn).await?;
+                delete_state(flow_name, type_id, &mut *txn).await?;
             }
         }
     }
