@@ -1,29 +1,25 @@
 """All builtin functions."""
 
 import dataclasses
-from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar
+from typing import Annotated, Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
 
 from . import llm, op
-from .flow import DataSlice
 from .typing import TypeAttr, Vector
 
-# Libraries that are heavy to import. Lazily import them later.
-if TYPE_CHECKING:
-    import sentence_transformers
+# Check if sentence_transformers is available
+try:
+    import sentence_transformers  # type: ignore
 
-T = TypeVar("T")
+    _SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    _SENTENCE_TRANSFORMERS_AVAILABLE = False
 
 
 class ParseJson(op.FunctionSpec):
     """Parse a text into a JSON object."""
-
-    def __call__(
-        self, *, text: DataSlice[T], language: str | None = "json"
-    ) -> DataSlice[T]:
-        return super().__call__(text=text, language=language)
 
 
 @dataclasses.dataclass
@@ -39,23 +35,6 @@ class SplitRecursively(op.FunctionSpec):
     """Split a document (in string) recursively."""
 
     custom_languages: list[CustomLanguageSpec] = dataclasses.field(default_factory=list)
-
-    def __call__(
-        self,
-        *,
-        text: DataSlice[T],
-        chunk_size: int,
-        min_chunk_size: int | None = None,
-        chunk_overlap: int | None = None,
-        language: DataSlice[T] | None = None,
-    ) -> DataSlice[T]:
-        return super().__call__(
-            text=text,
-            chunk_size=chunk_size,
-            language=language,
-            min_chunk_size=min_chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
 
 
 class EmbedText(op.FunctionSpec):
@@ -75,11 +54,6 @@ class ExtractByLlm(op.FunctionSpec):
     output_type: type
     instruction: str | None = None
 
-    def __call__(
-        self, *, text: DataSlice[T] | None = None, image: DataSlice[T] | None = None
-    ) -> DataSlice[T]:
-        return super().__call__(text=text, image=image)
-
 
 class SentenceTransformerEmbed(op.FunctionSpec):
     """
@@ -89,6 +63,10 @@ class SentenceTransformerEmbed(op.FunctionSpec):
 
         model: The name of the SentenceTransformer model to use.
         args: Additional arguments to pass to the SentenceTransformer constructor. e.g. {"trust_remote_code": True}
+
+    Note:
+        This function requires the optional sentence-transformers dependency.
+        Install it with: pip install 'cocoindex[embeddings]'
     """
 
     model: str
@@ -103,6 +81,14 @@ class SentenceTransformerEmbedExecutor:
     _model: "sentence_transformers.SentenceTransformer"
 
     def analyze(self, text: Any) -> type:
+        if not _SENTENCE_TRANSFORMERS_AVAILABLE:
+            raise ImportError(
+                "sentence_transformers is required for SentenceTransformerEmbed function. "
+                "Install it with one of these commands:\n"
+                "  pip install 'cocoindex[embeddings]'\n"
+                "  pip install sentence-transformers"
+            )
+
         import sentence_transformers  # pylint: disable=import-outside-toplevel
 
         args = self.spec.args or {}

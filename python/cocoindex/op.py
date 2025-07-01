@@ -9,8 +9,7 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Protocol, dataclass_transform
 
 from . import _engine  # type: ignore
-from .convert import dump_engine_object, encode_engine_value, make_engine_value_decoder
-from .flow import DataSlice, _create_data_slice, _spec_kind, _to_snake_case
+from .convert import encode_engine_value, make_engine_value_decoder
 from .typing import encode_enriched_type, resolve_forward_ref
 
 
@@ -49,51 +48,7 @@ class SourceSpec(metaclass=SpecMeta, category=OpCategory.SOURCE):  # pylint: dis
 
 
 class FunctionSpec(metaclass=SpecMeta, category=OpCategory.FUNCTION):  # pylint: disable=too-few-public-methods
-    """A function spec. Can be instantiated and called like a function: spec(args...).
-    For non-chain-style calls, use spec(args...) with at least one DataSlice argument.
-    For chain-style calls, use data_slice.transform(spec, args...).
-    """
-
-    def __call__(self, *args: Any, **kwargs: Any) -> DataSlice[Any]:
-        """Execute the function, returning a DataSlice."""
-
-        data_slice_args = [arg for arg in args if isinstance(arg, DataSlice)]
-        data_slice_kwargs = {
-            k: v for k, v in kwargs.items() if isinstance(v, DataSlice)
-        }
-        if not data_slice_args and not data_slice_kwargs:
-            raise ValueError(
-                "At least one DataSlice argument is required to provide flow context"
-            )
-
-        first_data_slice = (
-            data_slice_args[0]
-            if data_slice_args
-            else list(data_slice_kwargs.values())[0]
-        )
-        flow_builder_state = first_data_slice._state.flow_builder_state
-
-        transform_args: list[tuple[Any, str | None]] = [
-            (flow_builder_state.get_data_slice(v), None) for v in args if v is not None
-        ]
-        transform_args += [
-            (flow_builder_state.get_data_slice(v), k)
-            for k, v in kwargs.items()
-            if v is not None
-        ]
-
-        return _create_data_slice(
-            flow_builder_state,
-            lambda target_scope, name: flow_builder_state.engine_flow_builder.transform(
-                _spec_kind(self),
-                dump_engine_object(self),
-                transform_args,
-                target_scope,
-                flow_builder_state.field_name_builder.build_name(
-                    name, prefix=_to_snake_case(_spec_kind(self)) + "_"
-                ),
-            ),
-        )
+    """A function spec. All its subclass can be instantiated similar to a dataclass, i.e. ClassName(field1=value1, field2=value2, ...)"""
 
 
 class TargetSpec(metaclass=SpecMeta, category=OpCategory.TARGET):  # pylint: disable=too-few-public-methods
@@ -355,7 +310,8 @@ def function(**args: Any) -> Callable[[Callable[..., Any]], FunctionSpec]:
                 return fn(*args, **kwargs)
 
         class _Spec(FunctionSpec):
-            pass
+            def __call__(self, *args: Any, **kwargs: Any) -> Any:
+                return fn(*args, **kwargs)
 
         _Spec.__name__ = op_name
         _Spec.__doc__ = fn.__doc__
