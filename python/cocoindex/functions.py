@@ -11,7 +11,7 @@ from .typing import TypeAttr, Vector
 
 # Check if sentence_transformers is available
 try:
-    import sentence_transformers  # type: ignore
+    import sentence_transformers
 
     _SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError:
