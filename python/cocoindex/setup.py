@@ -25,17 +25,17 @@ class SetupChangeBundle:
     def __repr__(self) -> str:
         return self.__str__()
 
-    def apply(self, write_to_stdout: bool = False) -> None:
+    def apply(self, report_to_stdout: bool = False) -> None:
         """
         Apply the setup changes.
         """
-        execution_context.run(self.apply_async(write_to_stdout=write_to_stdout))
+        execution_context.run(self.apply_async(report_to_stdout=report_to_stdout))
 
-    async def apply_async(self, write_to_stdout: bool = False) -> None:
+    async def apply_async(self, report_to_stdout: bool = False) -> None:
         """
         Apply the setup changes. Async version of `apply`.
         """
-        await self._engine_bundle.apply_async(write_to_stdout=write_to_stdout)
+        await self._engine_bundle.apply_async(report_to_stdout=report_to_stdout)
 
     def describe(self) -> tuple[str, bool]:
         """
@@ -50,34 +50,34 @@ class SetupChangeBundle:
         return await self._engine_bundle.describe_async()  # type: ignore
 
 
-def make_setup_bundle(flow_names: list[str]) -> SetupChangeBundle:
+def make_setup_bundle(*, flow_full_names: list[str]) -> SetupChangeBundle:
     """
     Make a bundle to setup flows with the given names.
     """
     flow.ensure_all_flows_built()
-    return SetupChangeBundle(_engine.make_setup_bundle(flow_names))
+    return SetupChangeBundle(_engine.make_setup_bundle(flow_full_names))
 
 
-def make_drop_bundle(flow_names: list[str]) -> SetupChangeBundle:
+def make_drop_bundle(*, flow_full_names: list[str]) -> SetupChangeBundle:
     """
     Make a bundle to drop flows with the given names.
     """
     flow.ensure_all_flows_built()
-    return SetupChangeBundle(_engine.make_drop_bundle(flow_names))
+    return SetupChangeBundle(_engine.make_drop_bundle(flow_full_names))
 
 
-def setup_all_flows(write_to_stdout: bool = False) -> None:
+def setup_all_flows(report_to_stdout: bool = False) -> None:
     """
     Setup all flows registered in the current process.
     """
-    make_setup_bundle(flow.flow_names()).apply(write_to_stdout=write_to_stdout)
+    make_setup_bundle(flow.flow_names()).apply(report_to_stdout=report_to_stdout)
 
 
-def drop_all_flows(write_to_stdout: bool = False) -> None:
+def drop_all_flows(report_to_stdout: bool = False) -> None:
     """
     Drop all flows registered in the current process.
     """
-    make_drop_bundle(flow.flow_names()).apply(write_to_stdout=write_to_stdout)
+    make_drop_bundle(flow.flow_names()).apply(report_to_stdout=report_to_stdout)
 
 
 def flow_names_with_setup() -> list[str]:

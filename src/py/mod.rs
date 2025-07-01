@@ -406,7 +406,7 @@ impl SetupChangeBundle {
     pub fn apply_async<'py>(
         &self,
         py: Python<'py>,
-        write_to_stdout: bool,
+        report_to_stdout: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let lib_context = get_lib_context().into_py_result()?;
         let bundle = self.0.clone();
@@ -417,7 +417,7 @@ impl SetupChangeBundle {
             bundle
                 .apply(
                     &lib_context,
-                    if write_to_stdout {
+                    if report_to_stdout {
                         stdout.insert(std::io::stdout())
                     } else {
                         sink.insert(std::io::sink())

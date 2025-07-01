@@ -179,12 +179,12 @@ where
     }
 }
 
-fn to_object_status<A, B>(existing: Option<A>, desired: Option<B>) -> Result<ObjectStatus> {
-    Ok(match (&existing, &desired) {
+fn to_object_status<A, B>(existing: Option<A>, desired: Option<B>) -> Option<ObjectStatus> {
+    Some(match (&existing, &desired) {
         (Some(_), None) => ObjectStatus::Deleted,
         (None, Some(_)) => ObjectStatus::New,
         (Some(_), Some(_)) => ObjectStatus::Existing,
-        (None, None) => bail!("Unexpected object status"),
+        (None, None) => return None,
     })
 }
 
@@ -351,7 +351,7 @@ pub async fn check_flow_setup_status(
         });
     }
     Ok(FlowSetupStatus {
-        status: to_object_status(existing_state, desired_state)?,
+        status: to_object_status(existing_state, desired_state),
         seen_flow_metadata_version: existing_state.and_then(|s| s.seen_flow_metadata_version),
         metadata_change,
         tracking_table: tracking_table_change.map(|c| c.into_setup_info()),
@@ -407,7 +407,10 @@ async fn apply_changes_for_flow(
     existing_setup_state: &mut Option<setup::FlowSetupState<setup::ExistingMode>>,
     pool: &PgPool,
 ) -> Result<()> {
-    let verb = match flow_status.status {
+    let Some(status) = flow_status.status else {
+        return Ok(());
+    };
+    let verb = match status {
         ObjectStatus::New => "Creating",
         ObjectStatus::Deleted => "Deleting",
         ObjectStatus::Existing => "Updating resources for ",
@@ -514,7 +517,7 @@ async fn apply_changes_for_flow(
         .await?;
     }
 
-    let is_deletion = flow_status.status == ObjectStatus::Deleted;
+    let is_deletion = status == ObjectStatus::Deleted;
     db_metadata::commit_changes_for_flow(
         flow_name,
         new_version_id,

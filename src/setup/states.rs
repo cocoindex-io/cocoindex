@@ -328,13 +328,13 @@ pub enum ObjectStatus {
 }
 
 pub trait ObjectSetupStatus {
-    fn status(&self) -> ObjectStatus;
+    fn status(&self) -> Option<ObjectStatus>;
     fn is_up_to_date(&self) -> bool;
 }
 
 #[derive(Debug)]
 pub struct FlowSetupStatus {
-    pub status: ObjectStatus,
+    pub status: Option<ObjectStatus>,
     pub seen_flow_metadata_version: Option<u64>,
 
     pub metadata_change: Option<StateChange<FlowSetupMetadata>>,
@@ -348,7 +348,7 @@ pub struct FlowSetupStatus {
 }
 
 impl ObjectSetupStatus for FlowSetupStatus {
-    fn status(&self) -> ObjectStatus {
+    fn status(&self) -> Option<ObjectStatus> {
         self.status
     }
 
@@ -388,10 +388,13 @@ impl GlobalSetupStatus {
 pub struct ObjectSetupStatusCode<'a, Status: ObjectSetupStatus>(&'a Status);
 impl<Status: ObjectSetupStatus> std::fmt::Display for ObjectSetupStatusCode<'_, Status> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Some(status) = self.0.status() else {
+            return Ok(());
+        };
         write!(
             f,
             "[ {:^9} ]",
-            match self.0.status() {
+            match status {
                 ObjectStatus::New => "TO CREATE",
                 ObjectStatus::Existing =>
                     if self.0.is_up_to_date() {
@@ -417,6 +420,9 @@ pub struct FormattedFlowSetupStatus<'a>(pub &'a str, pub &'a FlowSetupStatus);
 impl std::fmt::Display for FormattedFlowSetupStatus<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let flow_ssc = self.1;
+        if flow_ssc.status.is_none() {
+            return Ok(());
+        }
 
         write!(
             f,
