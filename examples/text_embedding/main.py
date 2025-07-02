@@ -6,6 +6,7 @@ import cocoindex
 import os
 from numpy.typing import NDArray
 import numpy as np
+from datetime import timedelta
 
 
 @cocoindex.transform_flow()
@@ -38,7 +39,8 @@ def text_embedding_flow(
     Define an example flow that embeds text into a vector database.
     """
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="markdown_files")
+        cocoindex.sources.LocalFile(path="markdown_files"),
+        refresh_interval=timedelta(seconds=5),
     )
 
     doc_embeddings = data_scope.add_collector()
