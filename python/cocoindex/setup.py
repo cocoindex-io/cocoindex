@@ -2,7 +2,6 @@
 This module provides APIs to manage the setup of flows.
 """
 
-from . import flow
 from . import setting
 from . import _engine  # type: ignore
 from .runtime import execution_context
@@ -49,39 +48,28 @@ class SetupChangeBundle:
         """
         return await self._engine_bundle.describe_async()  # type: ignore
 
+    def describe_and_apply(self, report_to_stdout: bool = False) -> None:
+        """
+        Describe the setup changes and apply them if `report_to_stdout` is True.
+        Silently apply setup changes otherwise.
+        """
+        execution_context.run(
+            self.describe_and_apply_async(report_to_stdout=report_to_stdout)
+        )
 
-def make_setup_bundle(*, flow_full_names: list[str]) -> SetupChangeBundle:
-    """
-    Make a bundle to setup flows with the given names.
-    """
-    flow.ensure_all_flows_built()
-    return SetupChangeBundle(_engine.make_setup_bundle(flow_full_names))
-
-
-def make_drop_bundle(*, flow_full_names: list[str]) -> SetupChangeBundle:
-    """
-    Make a bundle to drop flows with the given names.
-    """
-    flow.ensure_all_flows_built()
-    return SetupChangeBundle(_engine.make_drop_bundle(flow_full_names))
-
-
-def setup_all_flows(report_to_stdout: bool = False) -> None:
-    """
-    Setup all flows registered in the current process.
-    """
-    make_setup_bundle(flow_full_names=flow.flow_full_names()).apply(
-        report_to_stdout=report_to_stdout
-    )
-
-
-def drop_all_flows(report_to_stdout: bool = False) -> None:
-    """
-    Drop all flows registered in the current process.
-    """
-    make_drop_bundle(flow_full_names=flow.flow_full_names()).apply(
-        report_to_stdout=report_to_stdout
-    )
+    async def describe_and_apply_async(self, *, report_to_stdout: bool = False) -> None:
+        """
+        Describe the setup changes and apply them if `report_to_stdout` is True.
+        Silently apply setup changes otherwise. Async version of `describe_and_apply`.
+        """
+        if report_to_stdout:
+            desc, is_up_to_date = await self.describe_async()
+            print("Setup status:\n")
+            print(desc)
+            if is_up_to_date:
+                print("No setup changes to apply.")
+                return
+        await self.apply_async(report_to_stdout=report_to_stdout)
 
 
 def flow_names_with_setup() -> list[str]:

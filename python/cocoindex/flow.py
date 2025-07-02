@@ -9,7 +9,6 @@ import re
 import inspect
 import datetime
 import functools
-
 from typing import (
     Any,
     Callable,
@@ -20,6 +19,7 @@ from typing import (
     get_origin,
     NamedTuple,
     cast,
+    Iterable,
 )
 from threading import Lock
 from enum import Enum
@@ -34,7 +34,7 @@ from . import setting
 from .convert import dump_engine_object, encode_engine_value, make_engine_value_decoder
 from .typing import encode_enriched_type
 from .runtime import execution_context
-from .setup import make_setup_bundle, make_drop_bundle
+from .setup import SetupChangeBundle
 
 
 class _NameBuilder:
@@ -668,7 +668,7 @@ class Flow:
         """
         Setup the flow. The async version.
         """
-        await make_setup_bundle(flow_full_names=[self.full_name]).apply_async(
+        await make_setup_bundle([self]).describe_and_apply_async(
             report_to_stdout=report_to_stdout
         )
 
@@ -682,7 +682,7 @@ class Flow:
         """
         Drop the flow. The async version.
         """
-        await make_drop_bundle(flow_full_names=[self.full_name]).apply_async(
+        await make_drop_bundle([self]).describe_and_apply_async(
             report_to_stdout=report_to_stdout
         )
 
@@ -749,14 +749,6 @@ def flow_names() -> list[str]:
     """
     with _flows_lock:
         return list(_flows.keys())
-
-
-def flow_full_names() -> list[str]:
-    """
-    Get the full names of all flows.
-    """
-    with _flows_lock:
-        return [fl.full_name for fl in _flows.values()]
 
 
 def flows() -> dict[str, Flow]:
@@ -1004,3 +996,43 @@ def transform_flow() -> Callable[[Callable[..., DataSlice[T]]], TransformFlow[T]
         return _transform_flow
 
     return _transform_flow_wrapper
+
+
+def make_setup_bundle(flow_iter: Iterable[Flow]) -> SetupChangeBundle:
+    """
+    Make a bundle to setup flows with the given names.
+    """
+    full_names = []
+    for fl in flow_iter:
+        fl.internal_flow()
+        full_names.append(fl.full_name)
+    return SetupChangeBundle(_engine.make_setup_bundle(full_names))
+
+
+def make_drop_bundle(flow_iter: Iterable[Flow]) -> SetupChangeBundle:
+    """
+    Make a bundle to drop flows with the given names.
+    """
+    full_names = []
+    for fl in flow_iter:
+        fl.internal_flow()
+        full_names.append(fl.full_name)
+    return SetupChangeBundle(_engine.make_drop_bundle(full_names))
+
+
+def setup_all_flows(report_to_stdout: bool = False) -> None:
+    """
+    Setup all flows registered in the current process.
+    """
+    with _flows_lock:
+        flow_list = list(_flows.values())
+    make_setup_bundle(flow_list).describe_and_apply(report_to_stdout=report_to_stdout)
+
+
+def drop_all_flows(report_to_stdout: bool = False) -> None:
+    """
+    Drop all flows registered in the current process.
+    """
+    with _flows_lock:
+        flow_list = list(_flows.values())
+    make_drop_bundle(flow_list).describe_and_apply(report_to_stdout=report_to_stdout)
