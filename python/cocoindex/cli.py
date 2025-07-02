@@ -7,7 +7,7 @@ import sys
 import threading
 import types
 from types import FrameType
-from typing import Any
+from typing import Any, Iterable
 
 import click
 import watchfiles
@@ -17,7 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import flow, lib, setting
-from .setup import make_setup_bundle, make_drop_bundle, flow_names_with_setup
+from .setup import flow_names_with_setup
 
 # Create ServerSettings lazily upon first call, as environment variables may be loaded from files, etc.
 COCOINDEX_HOST = "https://cocoindex.io"
@@ -244,15 +244,15 @@ def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
 
 
 def _setup_flows(
+    flow_iter: Iterable[flow.Flow],
     *,
-    flow_full_names: list[str],
     force: bool,
     quiet: bool = False,
     always_show_setup: bool = False,
 ) -> None:
-    setup_bundle = make_setup_bundle(flow_full_names=flow_full_names)
+    setup_bundle = flow.make_setup_bundle(flow_iter)
     description, is_up_to_date = setup_bundle.describe()
-    if always_show_setup or not (quiet and (force or is_up_to_date)):
+    if always_show_setup or not is_up_to_date:
         click.echo(description)
     if is_up_to_date:
         if not quiet:
@@ -285,9 +285,7 @@ def setup(app_target: str, force: bool) -> None:
     """
     app_ref = _get_app_ref_from_specifier(app_target)
     _load_user_app(app_ref)
-    _setup_flows(
-        flow_full_names=flow.flow_full_names(), force=force, always_show_setup=True
-    )
+    _setup_flows(flow.flows().values(), force=force, always_show_setup=True)
 
 
 @cli.command("drop")
@@ -311,7 +309,6 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
     2. Drop specific named flows: `cocoindex drop <APP_TARGET> [FLOW_NAME...]`
     """
     app_ref = None
-    flow_names: list[str] = []
 
     if not app_target:
         raise click.UsageError(
@@ -321,44 +318,39 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
 
     app_ref = _get_app_ref_from_specifier(app_target)
     _load_user_app(app_ref)
+
+    flows: Iterable[flow.Flow]
     if flow_name:
-        flow_names = list(flow_name)
-        click.echo(
-            f"Preparing to drop specified flows: {', '.join(flow_names)} (in '{app_ref}').",
-            err=True,
-        )
+        flows = []
+        for name in flow_name:
+            try:
+                flows.append(flow.flow_by_name(name))
+            except KeyError:
+                click.echo(
+                    f"Warning: Failed to get flow `{name}`. Ignored.",
+                    err=True,
+                )
     else:
-        flow_names = flow.flow_names()
-        if not flow_names:
-            click.echo(f"No flows found defined in '{app_ref}' to drop.")
-            return
-        click.echo(
-            f"Preparing to drop all flows defined in '{app_ref}': {', '.join(flow_names)}.",
-            err=True,
-        )
+        flows = flow.flows().values()
 
-    flow_full_names = []
-    for name in flow_names:
-        try:
-            flow_full_names.append(flow.flow_by_name(name).full_name)
-        except KeyError:
-            click.echo(
-                f"Warning: Failed to get flow `{name}`. Ignored.",
-                err=True,
-            )
+    flow_full_names = ", ".join(fl.full_name for fl in flows)
+    click.echo(
+        f"Preparing to drop specified flows: {flow_full_names} (in '{app_ref}').",
+        err=True,
+    )
 
-    if not flow_full_names:
+    if not flows:
         click.echo("No flows identified for the drop operation.")
         return
 
-    setup_bundle = make_drop_bundle(flow_full_names=flow_full_names)
+    setup_bundle = flow.make_drop_bundle(flows)
     description, is_up_to_date = setup_bundle.describe()
     click.echo(description)
     if is_up_to_date:
         click.echo("No flows need to be dropped.")
         return
     if not force and not click.confirm(
-        f"\nThis will apply changes to drop setup for: {', '.join(flow_full_names)}. Continue? [yes/N]",
+        f"\nThis will apply changes to drop setup for: {flow_full_names}. Continue? [yes/N]",
         default=False,
         show_default=False,
     ):
@@ -420,7 +412,7 @@ def update(
     if flow_name is None:
         if setup:
             _setup_flows(
-                flow_full_names=flow.flow_full_names(),
+                flow.flows().values(),
                 force=force,
                 quiet=quiet,
             )
@@ -428,11 +420,7 @@ def update(
     else:
         fl = flow.flow_by_name(flow_name)
         if setup:
-            _setup_flows(
-                flow_full_names=[fl.full_name],
-                force=force,
-                quiet=quiet,
-            )
+            _setup_flows((fl,), force=force, quiet=quiet)
         with flow.FlowLiveUpdater(fl, options) as updater:
             updater.wait()
             return updater.update_stats()
@@ -524,6 +512,21 @@ def evaluate(
     help="Continuously watch changes from data sources and apply to the target index.",
 )
 @click.option(
+    "--setup",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Automatically setup backends for the flow if it's not setup yet.",
+)
+@click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Force setup without confirmation prompts.",
+)
+@click.option(
     "-q",
     "--quiet",
     is_flag=True,
@@ -543,6 +546,8 @@ def server(
     app_target: str,
     address: str | None,
     live_update: bool,
+    setup: bool,  # pylint: disable=redefined-outer-name
+    force: bool,
     quiet: bool,
     cors_origin: str | None,
     cors_cocoindex: bool,
@@ -564,6 +569,8 @@ def server(
         cors_cocoindex,
         cors_local,
         live_update,
+        setup,
+        force,
         quiet,
     )
 
@@ -606,6 +613,8 @@ def _run_server(
     cors_cocoindex: bool = False,
     cors_local: int | None = None,
     live_update: bool = False,
+    run_setup: bool = False,
+    force: bool = False,
     quiet: bool = False,
 ) -> None:
     """Helper function to run the server with specified settings."""
@@ -624,14 +633,21 @@ def _run_server(
     if address is not None:
         server_settings.address = address
 
-    lib.start_server(server_settings)
-
     if COCOINDEX_HOST in cors_origins:
         click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
+
+    if run_setup:
+        _setup_flows(
+            flow.flows().values(),
+            force=force,
+            quiet=quiet,
+        )
 
     if live_update:
         options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
         flow.update_all_flows(options)
+
+    lib.start_server(server_settings)
 
     click.secho("Press Ctrl+C to stop the server.", fg="yellow")
 

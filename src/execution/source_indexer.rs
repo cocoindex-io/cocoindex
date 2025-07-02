@@ -278,10 +278,13 @@ impl SourceIndexingContext {
         let deleted_key_versions = {
             let mut deleted_key_versions = Vec::new();
             let mut state = self.state.lock().unwrap();
-            for (key, row_state) in state.rows.iter_mut() {
+            for (key, row_state) in state.rows.iter() {
                 if row_state.touched_generation < scan_generation {
                     deleted_key_versions.push((key.clone(), row_state.source_version.ordinal));
                 }
+            }
+            for (key, _) in deleted_key_versions.iter() {
+                state.rows.remove(key);
             }
             deleted_key_versions
         };

@@ -84,9 +84,11 @@ def image_object_embedding_flow(
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> None:
     load_dotenv()
     cocoindex.init()
+    image_object_embedding_flow.setup(report_to_stdout=True)
+
     app.state.qdrant_client = QdrantClient(url=QDRANT_URL, prefer_grpc=True)
 
     # Start updater

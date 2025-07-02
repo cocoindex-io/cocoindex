@@ -5,25 +5,27 @@ Flow is the main interface for building and running flows.
 from __future__ import annotations
 
 import asyncio
-import re
-import inspect
 import datetime
 import functools
+import inspect
+import re
 
+from dataclasses import dataclass
+from enum import Enum
+from threading import Lock
 from typing import (
     Any,
     Callable,
+    Generic,
+    NamedTuple,
     Sequence,
     TypeVar,
-    Generic,
+    cast,
     get_args,
     get_origin,
-    NamedTuple,
-    cast,
+    Iterable,
 )
-from threading import Lock
-from enum import Enum
-from dataclasses import dataclass
+
 from rich.text import Text
 from rich.tree import Tree
 
@@ -32,9 +34,10 @@ from . import index
 from . import op
 from . import setting
 from .convert import dump_engine_object, encode_engine_value, make_engine_value_decoder
-from .typing import encode_enriched_type
+from .op import FunctionSpec
 from .runtime import execution_context
-from .setup import make_setup_bundle, make_drop_bundle
+from .setup import SetupChangeBundle
+from .typing import encode_enriched_type
 
 
 class _NameBuilder:
@@ -90,6 +93,30 @@ def _create_data_slice(
 
 def _spec_kind(spec: Any) -> str:
     return cast(str, spec.__class__.__name__)
+
+
+def _transform_helper(
+    flow_builder_state: _FlowBuilderState,
+    fn_spec: FunctionSpec,
+    transform_args: list[tuple[Any, str | None]],
+    name: str | None = None,
+) -> DataSlice[Any]:
+    if not isinstance(fn_spec, FunctionSpec):
+        raise ValueError("transform() can only be called on a CocoIndex function")
+
+    return _create_data_slice(
+        flow_builder_state,
+        lambda target_scope, name: flow_builder_state.engine_flow_builder.transform(
+            _spec_kind(fn_spec),
+            dump_engine_object(fn_spec),
+            transform_args,
+            target_scope,
+            flow_builder_state.field_name_builder.build_name(
+                name, prefix=_to_snake_case(_spec_kind(fn_spec)) + "_"
+            ),
+        ),
+        name,
+    )
 
 
 T = TypeVar("T")
@@ -191,31 +218,19 @@ class DataSlice(Generic[T]):
         """
         Apply a function to the data slice.
         """
-        if not isinstance(fn_spec, op.FunctionSpec):
-            raise ValueError("transform() can only be called on a CocoIndex function")
-
-        transform_args: list[tuple[Any, str | None]]
-        transform_args = [(self._state.engine_data_slice, None)]
+        transform_args: list[tuple[Any, str | None]] = [
+            (self._state.engine_data_slice, None)
+        ]
         transform_args += [
             (self._state.flow_builder_state.get_data_slice(v), None) for v in args
         ]
         transform_args += [
             (self._state.flow_builder_state.get_data_slice(v), k)
-            for (k, v) in kwargs.items()
+            for k, v in kwargs.items()
         ]
 
-        flow_builder_state = self._state.flow_builder_state
-        return _create_data_slice(
-            flow_builder_state,
-            lambda target_scope, name: flow_builder_state.engine_flow_builder.transform(
-                _spec_kind(fn_spec),
-                dump_engine_object(fn_spec),
-                transform_args,
-                target_scope,
-                flow_builder_state.field_name_builder.build_name(
-                    name, prefix=_to_snake_case(_spec_kind(fn_spec)) + "_"
-                ),
-            ),
+        return _transform_helper(
+            self._state.flow_builder_state, fn_spec, transform_args
         )
 
     def call(self, func: Callable[..., S], *args: Any, **kwargs: Any) -> S:
@@ -446,6 +461,24 @@ class FlowBuilder:
             name,
         )
 
+    def transform(
+        self, fn_spec: FunctionSpec, *args: Any, **kwargs: Any
+    ) -> DataSlice[Any]:
+        """
+        Apply a function to inputs, returning a DataSlice.
+        """
+        transform_args: list[tuple[Any, str | None]] = [
+            (self._state.get_data_slice(v), None) for v in args
+        ]
+        transform_args += [
+            (self._state.get_data_slice(v), k) for k, v in kwargs.items()
+        ]
+
+        if not transform_args:
+            raise ValueError("At least one input is required for transformation")
+
+        return _transform_helper(self._state, fn_spec, transform_args)
+
     def declare(self, spec: op.DeclarationSpec) -> None:
         """
         Add a declaration to the flow.
@@ -668,7 +701,7 @@ class Flow:
         """
         Setup the flow. The async version.
         """
-        await make_setup_bundle(flow_full_names=[self.full_name]).apply_async(
+        await make_setup_bundle([self]).describe_and_apply_async(
             report_to_stdout=report_to_stdout
         )
 
@@ -682,7 +715,7 @@ class Flow:
         """
         Drop the flow. The async version.
         """
-        await make_drop_bundle(flow_full_names=[self.full_name]).apply_async(
+        await make_drop_bundle([self]).describe_and_apply_async(
             report_to_stdout=report_to_stdout
         )
 
@@ -749,14 +782,6 @@ def flow_names() -> list[str]:
     """
     with _flows_lock:
         return list(_flows.keys())
-
-
-def flow_full_names() -> list[str]:
-    """
-    Get the full names of all flows.
-    """
-    with _flows_lock:
-        return [fl.full_name for fl in _flows.values()]
 
 
 def flows() -> dict[str, Flow]:
@@ -1004,3 +1029,43 @@ def transform_flow() -> Callable[[Callable[..., DataSlice[T]]], TransformFlow[T]
         return _transform_flow
 
     return _transform_flow_wrapper
+
+
+def make_setup_bundle(flow_iter: Iterable[Flow]) -> SetupChangeBundle:
+    """
+    Make a bundle to setup flows with the given names.
+    """
+    full_names = []
+    for fl in flow_iter:
+        fl.internal_flow()
+        full_names.append(fl.full_name)
+    return SetupChangeBundle(_engine.make_setup_bundle(full_names))
+
+
+def make_drop_bundle(flow_iter: Iterable[Flow]) -> SetupChangeBundle:
+    """
+    Make a bundle to drop flows with the given names.
+    """
+    full_names = []
+    for fl in flow_iter:
+        fl.internal_flow()
+        full_names.append(fl.full_name)
+    return SetupChangeBundle(_engine.make_drop_bundle(full_names))
+
+
+def setup_all_flows(report_to_stdout: bool = False) -> None:
+    """
+    Setup all flows registered in the current process.
+    """
+    with _flows_lock:
+        flow_list = list(_flows.values())
+    make_setup_bundle(flow_list).describe_and_apply(report_to_stdout=report_to_stdout)
+
+
+def drop_all_flows(report_to_stdout: bool = False) -> None:
+    """
+    Drop all flows registered in the current process.
+    """
+    with _flows_lock:
+        flow_list = list(_flows.values())
+    make_drop_bundle(flow_list).describe_and_apply(report_to_stdout=report_to_stdout)

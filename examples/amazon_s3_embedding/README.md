@@ -37,12 +37,6 @@ Install dependencies:
 pip install -e .
 ```
 
-Setup:
-
-```sh
-cocoindex setup main.py
-```
-
 Run:
 
 ```sh

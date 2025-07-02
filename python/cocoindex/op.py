@@ -5,13 +5,12 @@ Facilities for defining cocoindex operations.
 import asyncio
 import dataclasses
 import inspect
-
-from typing import Protocol, Any, Callable, Awaitable, dataclass_transform
 from enum import Enum
+from typing import Any, Awaitable, Callable, Protocol, dataclass_transform
 
-from .typing import encode_enriched_type, resolve_forward_ref
-from .convert import encode_engine_value, make_engine_value_decoder
 from . import _engine  # type: ignore
+from .convert import encode_engine_value, make_engine_value_decoder
+from .typing import encode_enriched_type, resolve_forward_ref
 
 
 class OpCategory(Enum):
