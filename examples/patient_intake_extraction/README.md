@@ -25,8 +25,7 @@ pip install -U cocoindex
 ```bash
  pip install 'markitdown[all]'
  ```
-
-- Create a .env file from .env.example, and fill OPENAI_API_KEY.
+- Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
 
 ## Run
 
