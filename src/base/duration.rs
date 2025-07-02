@@ -1,3 +1,5 @@
+use std::f64;
+
 use anyhow::{Result, anyhow, bail};
 use chrono::Duration;
 
@@ -7,13 +9,19 @@ fn parse_components(
     s: &str,
     allowed_units: &[char],
     original_input: &str,
-) -> Result<Vec<(i64, char)>> {
+) -> Result<Vec<(f64, char)>> {
     let mut result = Vec::new();
     let mut iter = s.chars().peekable();
     while iter.peek().is_some() {
         let mut num_str = String::new();
+        let mut has_decimal = false;
+
+        // Parse digits and optional decimal point
         while let Some(&c) = iter.peek() {
-            if c.is_digit(10) {
+            if c.is_digit(10) || (c == '.' && !has_decimal) {
+                if c == '.' {
+                    has_decimal = true;
+                }
                 num_str.push(iter.next().unwrap());
             } else {
                 break;
@@ -23,7 +31,7 @@ fn parse_components(
             bail!("Expected number in: {}", original_input);
         }
         let num = num_str
-            .parse()
+            .parse::<f64>()
             .map_err(|_| anyhow!("Invalid number '{}' in: {}", num_str, original_input))?;
         if let Some(&unit) = iter.peek() {
             if allowed_units.contains(&unit) {
@@ -84,25 +92,37 @@ fn parse_iso8601_duration(s: &str, original_input: &str) -> Result<Duration> {
     }
 
     // Accumulate date duration
-    let date_duration =
-        date_components
-            .iter()
-            .fold(Duration::zero(), |acc, &(num, unit)| match unit {
-                'Y' => acc + Duration::days(num * 365),
-                'M' => acc + Duration::days(num * 30),
-                'W' => acc + Duration::days(num * 7),
-                'D' => acc + Duration::days(num),
+    let date_duration = date_components
+        .iter()
+        .fold(Duration::zero(), |acc, &(num, unit)| {
+            let days = match unit {
+                'Y' => num * 365.0,
+                'M' => num * 30.0,
+                'W' => num * 7.0,
+                'D' => num,
                 _ => unreachable!("Invalid date unit should be caught by prior validation"),
-            });
+            };
+            let microseconds = (days * 86_400_000_000.0) as i64;
+            acc + Duration::microseconds(microseconds)
+        });
 
     // Accumulate time duration
     let time_duration =
         time_components
             .iter()
             .fold(Duration::zero(), |acc, &(num, unit)| match unit {
-                'H' => acc + Duration::hours(num),
-                'M' => acc + Duration::minutes(num),
-                'S' => acc + Duration::seconds(num),
+                'H' => {
+                    let nanoseconds = (num * 3_600_000_000_000.0).round() as i64;
+                    acc + Duration::nanoseconds(nanoseconds)
+                }
+                'M' => {
+                    let nanoseconds = (num * 60_000_000_000.0).round() as i64;
+                    acc + Duration::nanoseconds(nanoseconds)
+                }
+                'S' => {
+                    let nanoseconds = (num.fract() * 1_000_000_000.0).round() as i64;
+                    acc + Duration::seconds(num as i64) + Duration::nanoseconds(nanoseconds)
+                }
                 _ => unreachable!("Invalid time unit should be caught by prior validation"),
             });
 
@@ -240,15 +260,6 @@ mod tests {
     }
 
     #[test]
-    fn test_iso_invalid_number_parse() {
-        check_err_contains(
-            parse_duration("PT99999999999999999999H"),
-            "Invalid number '99999999999999999999' in: PT99999999999999999999H",
-            "\"PT99999999999999999999H\"",
-        );
-    }
-
-    #[test]
     fn test_iso_invalid_unit() {
         check_err_contains(parse_duration("P1X"), "Invalid unit 'X' in: P1X", "\"P1X\"");
         check_err_contains(
@@ -282,20 +293,21 @@ mod tests {
     }
 
     #[test]
-    fn test_iso_trailing_number_without_unit_after_p() {
+    fn test_iso_invalid_fractional_format() {
         check_err_contains(
-            parse_duration("P1"),
-            "Missing unit after number '1' in: P1",
-            "\"P1\"",
+            parse_duration("PT1..5S"),
+            "Invalid unit '.' in: PT1..5S",
+            "\"PT1..5S\"",
         );
-    }
-
-    #[test]
-    fn test_iso_fractional_seconds_fail() {
         check_err_contains(
-            parse_duration("PT1.5S"),
-            "Invalid unit '.' in: PT1.5S",
-            "\"PT1.5S\"",
+            parse_duration("PT1.5.5S"),
+            "Invalid unit '.' in: PT1.5.5S",
+            "\"PT1.5.5S\"",
+        );
+        check_err_contains(
+            parse_duration("P1..5D"),
+            "Invalid unit '.' in: P1..5D",
+            "\"P1..5D\"",
         );
     }
 
@@ -416,6 +428,95 @@ mod tests {
     #[test]
     fn test_iso_zero_duration_pt0h0m0s() {
         check_ok(parse_duration("PT0H0M0S"), Duration::zero(), "\"PT0H0M0S\"");
+    }
+
+    #[test]
+    fn test_iso_fractional_seconds() {
+        check_ok(
+            parse_duration("PT1.5S"),
+            Duration::seconds(1) + Duration::milliseconds(500),
+            "\"PT1.5S\"",
+        );
+        check_ok(
+            parse_duration("PT441010.456123S"),
+            Duration::seconds(441010) + Duration::microseconds(456123),
+            "\"PT441010.456123S\"",
+        );
+        check_ok(
+            parse_duration("PT0.000001S"),
+            Duration::microseconds(1),
+            "\"PT0.000001S\"",
+        );
+    }
+
+    #[test]
+    fn test_iso_fractional_date_units() {
+        check_ok(
+            parse_duration("P1.5D"),
+            Duration::microseconds((1.5 * 86_400_000_000.0) as i64),
+            "\"P1.5D\"",
+        );
+        check_ok(
+            parse_duration("P1.25Y"),
+            Duration::microseconds((1.25 * 365.0 * 86_400_000_000.0) as i64),
+            "\"P1.25Y\"",
+        );
+        check_ok(
+            parse_duration("P2.75M"),
+            Duration::microseconds((2.75 * 30.0 * 86_400_000_000.0) as i64),
+            "\"P2.75M\"",
+        );
+        check_ok(
+            parse_duration("P0.5W"),
+            Duration::microseconds((0.5 * 7.0 * 86_400_000_000.0) as i64),
+            "\"P0.5W\"",
+        );
+    }
+
+    #[test]
+    fn test_iso_negative_fractional_date_units() {
+        check_ok(
+            parse_duration("-P1.5D"),
+            -Duration::microseconds((1.5 * 86_400_000_000.0) as i64),
+            "\"-P1.5D\"",
+        );
+        check_ok(
+            parse_duration("-P0.25Y"),
+            -Duration::microseconds((0.25 * 365.0 * 86_400_000_000.0) as i64),
+            "\"-P0.25Y\"",
+        );
+    }
+
+    #[test]
+    fn test_iso_combined_fractional_units() {
+        check_ok(
+            parse_duration("P1.5DT2.5H3.5M4.5S"),
+            Duration::microseconds((1.5 * 86_400_000_000.0) as i64)
+                + Duration::microseconds((2.5 * 3_600_000_000.0) as i64)
+                + Duration::microseconds((3.5 * 60_000_000.0) as i64)
+                + Duration::seconds(4)
+                + Duration::milliseconds(500),
+            "\"1.5DT2.5H3.5M4.5S\"",
+        );
+    }
+
+    #[test]
+    fn test_iso_multiple_fractional_time_units() {
+        check_ok(
+            parse_duration("PT1.5S2.5S"),
+            Duration::seconds(1 + 2) + Duration::milliseconds(500) + Duration::milliseconds(500),
+            "\"PT1.5S2.5S\"",
+        );
+        check_ok(
+            parse_duration("PT1.1H2.2M3.3S"),
+            Duration::hours(1)
+                + Duration::seconds((0.1 * 3600.0) as i64)
+                + Duration::minutes(2)
+                + Duration::seconds((0.2 * 60.0) as i64)
+                + Duration::seconds(3)
+                + Duration::milliseconds(300),
+            "\"PT1.1H2.2M3.3S\"",
+        );
     }
 
     // Human-readable Tests
