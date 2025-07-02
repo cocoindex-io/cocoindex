@@ -26,10 +26,7 @@ pip install -U cocoindex
  pip install 'markitdown[all]'
  ```
 
--  Make sure you have specify the database URL by environment variable:
-```
-export COCOINDEX_DATABASE_URL="postgresql://cocoindex:cocoindex@localhost:5432/cocoindex"
-```
+- Create a .env file from .env.example, and fill OPENAI_API_KEY.
 
 ## Run
 
