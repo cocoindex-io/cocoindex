@@ -512,6 +512,21 @@ def evaluate(
     help="Continuously watch changes from data sources and apply to the target index.",
 )
 @click.option(
+    "--setup",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Automatically setup backends for the flow if it's not setup yet.",
+)
+@click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Force setup without confirmation prompts.",
+)
+@click.option(
     "-q",
     "--quiet",
     is_flag=True,
@@ -531,6 +546,8 @@ def server(
     app_target: str,
     address: str | None,
     live_update: bool,
+    setup: bool,  # pylint: disable=redefined-outer-name
+    force: bool,
     quiet: bool,
     cors_origin: str | None,
     cors_cocoindex: bool,
@@ -552,6 +569,8 @@ def server(
         cors_cocoindex,
         cors_local,
         live_update,
+        setup,
+        force,
         quiet,
     )
 
@@ -594,6 +613,8 @@ def _run_server(
     cors_cocoindex: bool = False,
     cors_local: int | None = None,
     live_update: bool = False,
+    run_setup: bool = False,
+    force: bool = False,
     quiet: bool = False,
 ) -> None:
     """Helper function to run the server with specified settings."""
@@ -612,14 +633,21 @@ def _run_server(
     if address is not None:
         server_settings.address = address
 
-    lib.start_server(server_settings)
-
     if COCOINDEX_HOST in cors_origins:
         click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
+
+    if run_setup:
+        _setup_flows(
+            flow.flows().values(),
+            force=force,
+            quiet=quiet,
+        )
 
     if live_update:
         options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
         flow.update_all_flows(options)
+
+    lib.start_server(server_settings)
 
     click.secho("Press Ctrl+C to stop the server.", fg="yellow")
 
