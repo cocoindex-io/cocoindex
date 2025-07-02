@@ -29,7 +29,6 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 - Run Backend
   ```
-  cocoindex setup main.py
   uvicorn main:app --reload --host 0.0.0.0 --port 8000
   ```
 

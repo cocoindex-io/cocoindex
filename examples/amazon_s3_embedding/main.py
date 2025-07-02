@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 import cocoindex
 import os
+from typing import Any
 
 
 @cocoindex.transform_flow()
@@ -22,7 +23,7 @@ def text_to_embedding(
 @cocoindex.flow_def(name="AmazonS3TextEmbedding")
 def amazon_s3_text_embedding_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-):
+) -> None:
     """
     Define an example flow that embeds text from Amazon S3 into a vector database.
     """
@@ -72,7 +73,7 @@ def amazon_s3_text_embedding_flow(
     )
 
 
-def search(pool: ConnectionPool, query: str, top_k: int = 5):
+def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, Any]]:
     # Get the table name, for the export target in the amazon_s3_text_embedding_flow above.
     table_name = cocoindex.utils.get_target_default_name(
         amazon_s3_text_embedding_flow, "doc_embeddings"
@@ -95,9 +96,11 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
             ]
 
 
-def _main():
+def _main() -> None:
     # Initialize the database connection pool.
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
+
+    amazon_s3_text_embedding_flow.setup()
     with cocoindex.FlowLiveUpdater(amazon_s3_text_embedding_flow):
         # Run queries in a loop to demonstrate the query capabilities.
         while True:
