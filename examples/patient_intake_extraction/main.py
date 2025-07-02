@@ -3,7 +3,6 @@ import tempfile
 import dataclasses
 import os
 
-from dotenv import load_dotenv
 from markitdown import MarkItDown
 from openai import OpenAI
 
@@ -105,14 +104,8 @@ def patient_intake_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_sco
     """
     Define a flow that extracts patient information from intake forms.
     """
-    credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
-    root_folder_ids = os.environ["GOOGLE_DRIVE_ROOT_FOLDER_IDS"].split(",")
-    
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.GoogleDrive(
-            service_account_credential_path=credential_path,
-            root_folder_ids=root_folder_ids,
-            binary=True))
+        cocoindex.sources.LocalFile(path="data/patient_forms", binary=True))
 
     patients_index = data_scope.add_collector()
 
@@ -135,11 +128,3 @@ def patient_intake_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_sco
         cocoindex.storages.Postgres(table_name="patients_info"),
         primary_key_fields=["filename"],
     )
-
-@cocoindex.main_fn()
-def _run():
-    pass
-
-if __name__ == "__main__":
-    load_dotenv(override=True)
-    _run()
