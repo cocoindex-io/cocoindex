@@ -1,10 +1,17 @@
+# Extract structured data from patient intake forms with LLM
+[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+
+
+This repo shows how to use OpenAI API to extract structured data from patient intake forms with different formats, like PDF, Docx, etc. from Google Drive. 
+
+We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
+
 ![Structured Data From Patient Intake Forms](https://github.com/user-attachments/assets/1f6afb69-d26d-4a08-8774-13982d6aec1e)
 
-This repo shows how to use OpenAI API to extract structured data from patient intake forms with different formats, like PDF, Docx, etc. from Google Drive.
 
-❤️ Please give [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a star ⭐ to support us. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
-
-
+## Tutorials
+- Step by step tutorial - Check out the [blog](https://cocoindex.io/blogs/patient-intake-form-extraction-with-llm).
+- Video tutorial - [Youtube](https://youtu.be/_mjlwVtnBn0?si=cpH-4kkOAYm2HhK6).
 
 ## Prerequisite
 - [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
