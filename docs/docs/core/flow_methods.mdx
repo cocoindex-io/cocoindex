@@ -34,6 +34,71 @@ It creates a `demo_flow` object in `cocoindex.Flow` type.
 </TabItem>
 </Tabs>
 
+## Setup / drop flow
+
+For a flow, its persistent backends need to be ready before it can run, including:
+
+*   [Internal storage](/docs/core/basics#internal-storage) for CocoIndex.
+*   Backend entities for targets exported by the flow, e.g. a table (in relational databases), a collection (in some vector databases), etc.
+
+The desired state of the backends for a flow is derived based on the flow definition itself.
+CocoIndex supports two types of actions to manage the persistent backends automatically:
+
+*   *Setup* a flow, which will change the backends owned by the flow to a state to the desired state, e.g. create new tables for new flow, drop an existing table if the corresponding target is gone, add new column to a target table if a new field is collected, etc. It's no-op if the backend states are already in the desired state.
+
+*   *Drop* a flow, which will drop all backends owned by the flow. It's no-op if there's no existing backends owned by the flow (e.g. never setup or already dropped).
+
+### CLI
+
+`cocoindex setup` subcommand will setup all flows.
+`cocoindex update` and `cocoindex server` also provide a `--setup` option to setup the flow if needed before performing the main action of updating or starting the server.
+
+`cocoindex drop` subcommand will drop all flows.
+
+### Library API
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+`Flow` provides the following APIs to setup / drop individual flows:
+
+*   `setup(report_to_stdout: bool = False)`: Setup the flow.
+*   `drop(report_to_stdout: bool = False)`: Drop the flow.
+
+For example:
+
+```python
+demo_flow.setup(report_to_stdout=True)
+demo_flow.drop(report_to_stdout=True)
+```
+
+We also provide the following asynchronous versions of the APIs:
+
+*   `setup_async(report_to_stdout: bool = False)`: Setup the flow asynchronously.
+*   `drop_async(report_to_stdout: bool = False)`: Drop the flow asynchronously.
+
+For example:
+
+```python
+await demo_flow.setup_async(report_to_stdout=True)
+await demo_flow.drop_async(report_to_stdout=True)
+```
+
+
+Besides, CocoIndex also provides APIs to setup / drop all flows at once:
+
+*   `setup_all_flows(report_to_stdout: bool = False)`: Setup all flows.
+*   `drop_all_flows(report_to_stdout: bool = False)`: Drop all flows.
+
+For example:
+
+```python
+cocoindex.setup_all_flows(report_to_stdout=True)
+cocoindex.drop_all_flows(report_to_stdout=True)
+```
+
+</TabItem>
+</Tabs>
 
 ## Build / update target data
 
@@ -71,17 +136,30 @@ Once it's done, the target data is fresh up to the moment when the function is c
 cocoindex update main.py
 ```
 
+With a `--setup` option, it will also setup the flow first if needed.
+
+```sh
+cocoindex update --setup main.py
+```
+
 #### Library API
 
 <Tabs>
 <TabItem value="python" label="Python">
 
-The `update()` async method creates/updates data in the target.
+The `Flow.update()` method creates/updates data in the target.
 
 Once the function returns, the target data is fresh up to the moment when the function is called.
 
 ```python
 stats = demo_flow.update()
+print(stats)
+```
+
+`update_async()` is the asynchronous version of `update()`.
+
+```python
+stats = await demo_flow.update_async()
 print(stats)
 ```
 
@@ -110,6 +188,12 @@ cocoindex update main.py -L
 
 If there's at least one data source with change capture mechanism enabled, it will keep running until the aborted (e.g. by `Ctrl-C`).
 Otherwise, it falls back to the same behavior as one time update, and will finish after a one-time update is done.
+
+With a `--setup` option, it will also setup the flow first if needed.
+
+```sh
+cocoindex update main.py -L --setup
+```
 
 #### Library API
 

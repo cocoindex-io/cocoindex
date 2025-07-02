@@ -121,27 +121,16 @@ Specify the database URL by environment variable:
 export COCOINDEX_DATABASE_URL="postgresql://cocoindex:cocoindex@localhost:5432/cocoindex"
 ```
 
-### Step 3.1: Setup the index pipeline
-
-We need to setup the index:
-
-```bash
-cocoindex setup quickstart.py
-```
-
-Enter `yes` and it will automatically create a few tables in the database.
-
-Now we have tables needed by this CocoIndex flow.
-
-### Step 3.2: Build the index
-
 Now we're ready to build the index:
 
 ```bash
-cocoindex update quickstart.py
+cocoindex update --setup quickstart.py
 ```
 
-It will run for a few seconds and output the following statistics:
+If you run it the first time for this flow, CocoIndex will automatically create its persistent backends (tables in the database).
+CocoIndex will ask you to confirm the action, enter `yes` to proceed.
+
+CocoIndex will run for a few seconds and populate the target table with data as declared by the flow. It will output the following statistics:
 
 ```
 documents: 3 added, 0 removed, 0 updated
