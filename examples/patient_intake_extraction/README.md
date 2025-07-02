@@ -25,8 +25,7 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
    ```bash
    pip install 'markitdown[all]'
    ```
-
-4. Create a .env file from .env.example, and fill OPENAI_API_KEY.
+4. Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
 
 ## Run
 
