@@ -24,6 +24,10 @@ impl Counter {
     pub fn into_inner(self) -> i64 {
         self.0.into_inner()
     }
+
+    pub fn merge(&self, delta: &Self) {
+        self.0.fetch_add(delta.get(), Relaxed);
+    }
 }
 
 impl AddAssign for Counter {
@@ -74,13 +78,21 @@ impl UpdateStats {
         }
     }
 
-    pub fn is_zero(&self) -> bool {
-        self.num_no_change.get() == 0
-            && self.num_insertions.get() == 0
-            && self.num_deletions.get() == 0
-            && self.num_updates.get() == 0
-            && self.num_reprocesses.get() == 0
-            && self.num_errors.get() == 0
+    pub fn merge(&self, delta: &Self) {
+        self.num_no_change.merge(&delta.num_no_change);
+        self.num_insertions.merge(&delta.num_insertions);
+        self.num_deletions.merge(&delta.num_deletions);
+        self.num_updates.merge(&delta.num_updates);
+        self.num_reprocesses.merge(&delta.num_reprocesses);
+        self.num_errors.merge(&delta.num_errors);
+    }
+
+    pub fn has_any_change(&self) -> bool {
+        self.num_insertions.get() > 0
+            || self.num_deletions.get() > 0
+            || self.num_updates.get() > 0
+            || self.num_reprocesses.get() > 0
+            || self.num_errors.get() > 0
     }
 }
 
