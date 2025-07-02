@@ -14,18 +14,19 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 - Video tutorial - [Youtube](https://youtu.be/_mjlwVtnBn0?si=cpH-4kkOAYm2HhK6).
 
 ## Prerequisite
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+1. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
 
-- Install CocoIndex
-```bash
-pip install -U cocoindex
-```
+2. Install CocoIndex
+   ```bash
+   pip install -U cocoindex
+   ```
 
-- Install MarkItDown
-```bash
- pip install 'markitdown[all]'
- ```
-- Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
+3. Install MarkItDown
+   ```bash
+   pip install 'markitdown[all]'
+   ```
+
+4. Create a .env file from .env.example, and fill OPENAI_API_KEY.
 
 ## Run
 
