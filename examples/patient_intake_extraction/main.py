@@ -8,11 +8,13 @@ from openai import OpenAI
 
 import cocoindex
 
+
 @dataclasses.dataclass
 class Contact:
     name: str
     phone: str
     relationship: str
+
 
 @dataclasses.dataclass
 class Address:
@@ -21,11 +23,13 @@ class Address:
     state: str
     zip_code: str
 
+
 @dataclasses.dataclass
 class Pharmacy:
     name: str
     phone: str
     address: Address
+
 
 @dataclasses.dataclass
 class Insurance:
@@ -35,24 +39,29 @@ class Insurance:
     policyholder_name: str
     relationship_to_patient: str
 
+
 @dataclasses.dataclass
 class Condition:
     name: str
     diagnosed: bool
+
 
 @dataclasses.dataclass
 class Medication:
     name: str
     dosage: str
 
+
 @dataclasses.dataclass
 class Allergy:
     name: str
+
 
 @dataclasses.dataclass
 class Surgery:
     name: str
     date: str
+
 
 @dataclasses.dataclass
 class Patient:
@@ -80,6 +89,7 @@ class Patient:
 class ToMarkdown(cocoindex.op.FunctionSpec):
     """Convert a document to markdown."""
 
+
 @cocoindex.op.executor_class(gpu=True, cache=True, behavior_version=1)
 class ToMarkdownExecutor:
     """Executor for ToMarkdown."""
@@ -99,25 +109,33 @@ class ToMarkdownExecutor:
             text = self._converter.convert(temp_file.name).text_content
             return text
 
+
 @cocoindex.flow_def(name="PatientIntakeExtraction")
-def patient_intake_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+def patient_intake_extraction_flow(
+    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
+):
     """
     Define a flow that extracts patient information from intake forms.
     """
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="data/patient_forms", binary=True))
+        cocoindex.sources.LocalFile(path="data/patient_forms", binary=True)
+    )
 
     patients_index = data_scope.add_collector()
 
     with data_scope["documents"].row() as doc:
-
-        doc["markdown"] = doc["content"].transform(ToMarkdown(), filename = doc["filename"])
+        doc["markdown"] = doc["content"].transform(
+            ToMarkdown(), filename=doc["filename"]
+        )
         doc["patient_info"] = doc["markdown"].transform(
             cocoindex.functions.ExtractByLlm(
                 llm_spec=cocoindex.LlmSpec(
-                    api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
+                    api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"
+                ),
                 output_type=Patient,
-                instruction="Please extract patient information from the intake form."))
+                instruction="Please extract patient information from the intake form.",
+            )
+        )
         patients_index.collect(
             filename=doc["filename"],
             patient_info=doc["patient_info"],
