@@ -38,6 +38,7 @@ This is the list of all basic types supported by CocoIndex:
 | TimeDelta | A duration of time | `datetime.timedelta` | `datetime.timedelta` |
 | Json | | `cocoindex.Json` | Any data convertible to JSON by `json` package | 
 | Vector[*T*, *Dim*?] | *T* can be a basic type or a numeric type. *Dim* is a positive integer and optional. | `cocoindex.Vector[T]` or `cocoindex.Vector[T, Dim]` | `numpy.typing.NDArray[T]` or `list[T]` |
+| Union[*T1*, *T2*, ...] | *T1*, *T2*, ... are any basic types | `T1 | T2 | ...` | `T1 | T2 | ...` |
 
 Values of all data types can be represented by values in Python's native types (as described under the Native Python Type column).
 However, the underlying execution engine has finer distinctions for some types, specifically:
