@@ -104,7 +104,9 @@ def validate_full_roundtrip(
     )
     decoder = make_engine_value_decoder([], encoded_output_type, value_type)
     decoded_value = decoder(value_from_engine)
-    assert eq(decoded_value, value)
+    assert eq(
+        decoded_value, value
+    ), f"{decoded_value} != {value}; {encoded_value}; {value_type}; {encoded_output_type}"
 
     if other_decoded_values is not None:
         for other_value, other_type in other_decoded_values:
@@ -611,6 +613,18 @@ def test_roundtrip_union_timedelta() -> None:
     t = str | uuid.UUID | float | int | datetime.timedelta
     value = datetime.timedelta(hours=39, minutes=10, seconds=1)
     validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_vector_of_union() -> None:
+    t = list[str | int]
+    value = ["a", 1]
+    validate_full_roundtrip(value, t)
+
+
+def test_roundtrip_union_with_vector() -> None:
+    t = NDArray[np.float32] | str
+    value = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    validate_full_roundtrip(value, t, ([1.0, 2.0, 3.0], list[float] | str))
 
 
 def test_roundtrip_ltable() -> None:

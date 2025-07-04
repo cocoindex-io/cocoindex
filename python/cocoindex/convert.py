@@ -5,7 +5,6 @@ Utilities to convert between Python and engine values.
 import dataclasses
 import datetime
 import inspect
-import uuid
 from enum import Enum
 from typing import Any, Callable, Mapping, get_origin
 
@@ -14,7 +13,6 @@ import numpy as np
 from .typing import (
     KEY_FIELD_NAME,
     TABLE_TYPES,
-    AnalyzedTypeInfo,
     DtypeRegistry,
     analyze_type_info,
     encode_enriched_type,
@@ -74,29 +72,57 @@ def make_engine_value_decoder(
     Returns:
         A decoder from an engine value to a Python value.
     """
-
     src_type_kind = src_type["kind"]
 
-    dst_type_info: AnalyzedTypeInfo | None = None
-    if (
-        dst_annotation is not None
-        and dst_annotation is not inspect.Parameter.empty
-        and dst_annotation is not Any
-    ):
-        dst_type_info = analyze_type_info(dst_annotation)
-        if not _is_type_kind_convertible_to(src_type_kind, dst_type_info.kind):
-            raise ValueError(
-                f"Type mismatch for `{''.join(field_path)}`: "
-                f"passed in {src_type_kind}, declared {dst_annotation} ({dst_type_info.kind})"
-            )
-
-    if dst_type_info is None:
+    dst_is_any = (
+        dst_annotation is None
+        or dst_annotation is inspect.Parameter.empty
+        or dst_annotation is Any
+    )
+    if dst_is_any:
+        if src_type_kind == "Union":
+            return lambda value: value[1]
         if src_type_kind == "Struct" or src_type_kind in TABLE_TYPES:
             raise ValueError(
                 f"Missing type annotation for `{''.join(field_path)}`."
                 f"It's required for {src_type_kind} type."
             )
         return lambda value: value
+
+    dst_type_info = analyze_type_info(dst_annotation)
+
+    if src_type_kind == "Union":
+        dst_type_variants = (
+            dst_type_info.union_variant_types
+            if dst_type_info.union_variant_types is not None
+            else [dst_annotation]
+        )
+        src_type_variants = src_type["types"]
+        decoders = []
+        for i, src_type_variant in enumerate(src_type_variants):
+            src_field_path = field_path + [f"[{i}]"]
+            decoder = None
+            for dst_type_variant in dst_type_variants:
+                try:
+                    decoder = make_engine_value_decoder(
+                        src_field_path, src_type_variant, dst_type_variant
+                    )
+                    break
+                except ValueError:
+                    pass
+            if decoder is None:
+                raise ValueError(
+                    f"Type mismatch for `{''.join(field_path)}`: "
+                    f"cannot find matched target type for source type variant {src_type_variant}"
+                )
+            decoders.append(decoder)
+        return lambda value: decoders[value[0]](value[1])
+
+    if not _is_type_kind_convertible_to(src_type_kind, dst_type_info.kind):
+        raise ValueError(
+            f"Type mismatch for `{''.join(field_path)}`: "
+            f"passed in {src_type_kind}, declared {dst_annotation} ({dst_type_info.kind})"
+        )
 
     if dst_type_info.kind in ("Float32", "Float64", "Int64"):
         dst_core_type = dst_type_info.core_type
@@ -195,9 +221,6 @@ def make_engine_value_decoder(
 
         field_path.pop()
         return decode
-
-    if src_type_kind == "Union":
-        return lambda value: value[1]
 
     return lambda value: value
 
