@@ -69,18 +69,17 @@ def image_object_embedding_flow(
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
-        caption_ds = img["content"].transform(
+        img["caption"] = flow_builder.transform(
             cocoindex.functions.ExtractByLlm(
-                llm_spec=cocoindex.llm.LlmSpec(
-                    api_type=cocoindex.LlmApiType.OLLAMA,
-                    model="llama3.1",
+                llm_spec=cocoindex.LlmSpec(
+                    api_type=cocoindex.LlmApiType.GEMINI, model="gemini-2.0-flash"
                 ),
-                # Replace by this spec below, to use OpenAI API model instead of ollama
+                # Replace by this spec below, to use OpenAI API model instead of gemini
                 #   llm_spec=cocoindex.LlmSpec(
                 #       api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
-                # Replace by this spec below, to use Gemini API model
-                #   llm_spec=cocoindex.LlmSpec(
-                #       api_type=cocoindex.LlmApiType.GEMINI, model="gemini-2.0-flash"),
+                # Replace by this spec below, to use Ollama API model
+                #   llm_spec=cocoindex.llm.LlmSpec(
+                #       api_type=cocoindex.LlmApiType.OLLAMA, model="llama3.1"),
                 # Replace by this spec below, to use Anthropic API model
                 #   llm_spec=cocoindex.LlmSpec(
                 #       api_type=cocoindex.LlmApiType.ANTHROPIC, model="claude-3-5-sonnet-latest"),
@@ -91,14 +90,15 @@ def image_object_embedding_flow(
                     "Mention what each animal is doing."
                 ),
                 output_type=str,
-            )
+            ),
+            image=img["content"],
         )
-        embedding_ds = img["content"].transform(embed_image)
+        img["embedding"] = img["content"].transform(embed_image)
         img_embeddings.collect(
             id=cocoindex.GeneratedField.UUID,
             filename=img["filename"],
-            caption=caption_ds,
-            embedding=embedding_ds,
+            caption=img["caption"],
+            embedding=img["embedding"],
         )
 
     img_embeddings.export(

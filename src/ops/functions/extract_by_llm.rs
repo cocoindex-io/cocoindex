@@ -130,28 +130,17 @@ impl SimpleFunctionFactoryBase for Factory {
         args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
     ) -> Result<(Args, EnrichedValueType)> {
-        let mut args = Args {
-            text: None,
-            image: None,
-        };
-
-        // Handle positional argument
-        if let Some(arg) = args_resolver.next_optional_arg("")? {
-            match arg.typ.typ {
-                ValueType::Basic(BasicValueType::Str) => args.text = Some(arg),
-                ValueType::Basic(BasicValueType::Bytes) => args.image = Some(arg),
-                _ => api_bail!(
-                    "Positional argument must be of type 'Str' or 'Bytes', got {}",
-                    arg.typ.typ
-                ),
-            }
-        }
-
-        if args.text.is_none() && args.image.is_none() {
-            api_bail!("At least one of 'text' or 'image' must be provided");
-        }
-
-        Ok((args, spec.output_type.clone()))
+        Ok((
+            Args {
+                text: args_resolver
+                    .next_optional_arg("text")?
+                    .expect_type(&ValueType::Basic(BasicValueType::Str))?,
+                image: args_resolver
+                    .next_optional_arg("image")?
+                    .expect_type(&ValueType::Basic(BasicValueType::Bytes))?,
+            },
+            spec.output_type.clone(),
+        ))
     }
 
     async fn build_executor(
