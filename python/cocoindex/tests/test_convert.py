@@ -104,9 +104,7 @@ def validate_full_roundtrip(
     )
     decoder = make_engine_value_decoder([], encoded_output_type, value_type)
     decoded_value = decoder(value_from_engine)
-    assert eq(decoded_value, value), (
-        f"{decoded_value} != {value}; {encoded_value}; {value_type}; {encoded_output_type}"
-    )
+    assert eq(decoded_value, value), f"{decoded_value} != {value}"
 
     if other_decoded_values is not None:
         for other_value, other_type in other_decoded_values:
