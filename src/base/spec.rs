@@ -254,6 +254,11 @@ impl SpecFormatter for OpSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExecutionOptions {
+    pub max_inflight_count: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SourceRefreshOptions {
     pub refresh_interval: Option<std::time::Duration>,
 }
@@ -274,6 +279,9 @@ pub struct ImportOpSpec {
 
     #[serde(default)]
     pub refresh_options: SourceRefreshOptions,
+
+    #[serde(default)]
+    pub execution_options: ExecutionOptions,
 }
 
 impl SpecFormatter for ImportOpSpec {
