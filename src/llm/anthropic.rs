@@ -4,7 +4,7 @@ use crate::llm::{
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use base64::Engine;
+use base64::prelude::*;
 use json5;
 use serde_json::Value;
 
@@ -42,8 +42,7 @@ impl LlmGenerationClient for Client {
 
         // Add image part if present
         if let Some(image_bytes) = &request.image {
-            let base64_image =
-                base64::engine::general_purpose::STANDARD.encode(image_bytes.as_ref());
+            let base64_image = BASE64_STANDARD.encode(image_bytes.as_ref());
             let mime_type = detect_image_mime_type(image_bytes.as_ref())?;
             user_content_parts.push(serde_json::json!({
                 "type": "image",
