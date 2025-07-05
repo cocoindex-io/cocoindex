@@ -12,7 +12,7 @@ from .flow import flow_def
 from .flow import EvaluateAndDumpOptions, GeneratedField
 from .flow import FlowLiveUpdater, FlowLiveUpdaterOptions
 from .flow import update_all_flows_async, setup_all_flows, drop_all_flows
-from .lib import init, start_server, stop, main_fn
+from .lib import init, start_server, stop
 from .llm import LlmSpec, LlmApiType
 from .index import VectorSimilarityMetric, VectorIndexDef, IndexOptions
 from .setting import DatabaseConnectionSpec, Settings, ServerSettings
@@ -59,7 +59,6 @@ __all__ = [
     "init",
     "start_server",
     "stop",
-    "main_fn",
     # LLM
     "LlmSpec",
     "LlmApiType",
