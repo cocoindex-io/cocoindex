@@ -1,8 +1,11 @@
 use crate::prelude::*;
 
 use crate::base::json_schema::ToJsonSchemaOptions;
+use infer::Infer;
 use schemars::schema::SchemaObject;
 use std::borrow::Cow;
+
+static INFER: LazyLock<Infer> = LazyLock::new(Infer::new);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum LlmApiType {
@@ -36,6 +39,7 @@ pub struct LlmGenerateRequest<'a> {
     pub model: &'a str,
     pub system_prompt: Option<Cow<'a, str>>,
     pub user_prompt: Cow<'a, str>,
+    pub image: Option<Cow<'a, [u8]>>,
     pub output_format: Option<OutputFormat<'a>>,
 }
 
@@ -140,4 +144,12 @@ pub fn new_llm_embedding_client(
         }
     };
     Ok(client)
+}
+
+pub fn detect_image_mime_type(bytes: &[u8]) -> Result<&'static str> {
+    let infer = &*INFER;
+    match infer.get(bytes) {
+        Some(info) if info.mime_type().starts_with("image/") => Ok(info.mime_type()),
+        _ => bail!("Unknown or unsupported image format"),
+    }
 }

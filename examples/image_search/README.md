@@ -13,6 +13,7 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 - CLIP ViT-L/14 - Embeddings Model for images and query
 - Qdrant for Vector Storage
 - FastApi for backend
+- Ollama (Optional) for generating image captions using `gemma3`.
 
 ## Setup
 - Make sure Postgres and Qdrant are running
@@ -21,7 +22,15 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
   export COCOINDEX_DATABASE_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
   ```
 
-## Run
+## (Optional) Run Ollama
+
+- This enables automatic image captioning
+```
+ollama pull gemma3
+ollama serve
+```
+
+## Run the App
 - Install dependencies:
   ```
   pip install -e .

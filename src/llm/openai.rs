@@ -1,18 +1,21 @@
 use crate::api_bail;
 
-use super::{LlmEmbeddingClient, LlmGenerationClient};
+use super::{LlmEmbeddingClient, LlmGenerationClient, detect_image_mime_type};
 use anyhow::Result;
 use async_openai::{
     Client as OpenAIClient,
     config::OpenAIConfig,
     types::{
-        ChatCompletionRequestMessage, ChatCompletionRequestSystemMessage,
+        ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartImage,
+        ChatCompletionRequestMessageContentPartText, ChatCompletionRequestSystemMessage,
         ChatCompletionRequestSystemMessageContent, ChatCompletionRequestUserMessage,
-        ChatCompletionRequestUserMessageContent, CreateChatCompletionRequest,
-        CreateEmbeddingRequest, EmbeddingInput, ResponseFormat, ResponseFormatJsonSchema,
+        ChatCompletionRequestUserMessageContent, ChatCompletionRequestUserMessageContentPart,
+        CreateChatCompletionRequest, CreateEmbeddingRequest, EmbeddingInput, ImageDetail,
+        ResponseFormat, ResponseFormatJsonSchema,
     },
 };
 use async_trait::async_trait;
+use base64::prelude::*;
 use phf::phf_map;
 
 static DEFAULT_EMBEDDING_DIMENSIONS: phf::Map<&str, u32> = phf_map! {
@@ -64,11 +67,32 @@ impl LlmGenerationClient for Client {
         }
 
         // Add user message
+        let user_message_content = match request.image {
+            Some(img_bytes) => {
+                let base64_image = BASE64_STANDARD.encode(img_bytes.as_ref());
+                let mime_type = detect_image_mime_type(img_bytes.as_ref())?;
+                let image_url = format!("data:{};base64,{}", mime_type, base64_image);
+                ChatCompletionRequestUserMessageContent::Array(vec![
+                    ChatCompletionRequestUserMessageContentPart::Text(
+                        ChatCompletionRequestMessageContentPartText {
+                            text: request.user_prompt.into_owned(),
+                        },
+                    ),
+                    ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                        ChatCompletionRequestMessageContentPartImage {
+                            image_url: async_openai::types::ImageUrl {
+                                url: image_url,
+                                detail: Some(ImageDetail::Auto),
+                            },
+                        },
+                    ),
+                ])
+            }
+            None => ChatCompletionRequestUserMessageContent::Text(request.user_prompt.into_owned()),
+        };
         messages.push(ChatCompletionRequestMessage::User(
             ChatCompletionRequestUserMessage {
-                content: ChatCompletionRequestUserMessageContent::Text(
-                    request.user_prompt.into_owned(),
-                ),
+                content: user_message_content,
                 ..Default::default()
             },
         ));

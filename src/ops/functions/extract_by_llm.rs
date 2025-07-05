@@ -1,9 +1,8 @@
-use crate::prelude::*;
-
 use crate::llm::{
     LlmGenerateRequest, LlmGenerationClient, LlmSpec, OutputFormat, new_llm_generation_client,
 };
 use crate::ops::sdk::*;
+use crate::prelude::*;
 use base::json_schema::build_json_schema;
 use schemars::schema::SchemaObject;
 use std::borrow::Cow;
@@ -16,7 +15,8 @@ pub struct Spec {
 }
 
 pub struct Args {
-    text: ResolvedOpArg,
+    text: Option<ResolvedOpArg>,
+    image: Option<ResolvedOpArg>,
 }
 
 struct Executor {
@@ -30,10 +30,11 @@ struct Executor {
 
 fn get_system_prompt(instructions: &Option<String>, extra_instructions: Option<String>) -> String {
     let mut message =
-        "You are a helpful assistant that extracts structured information from text. \
-Your task is to analyze the input text and output valid JSON that matches the specified schema. \
-Be precise and only include information that is explicitly stated in the text. \
-Output only the JSON without any additional messages or explanations."
+        "You are a helpful assistant that processes user-provided inputs (text, images, or both) to produce structured outputs. \
+Your task is to follow the provided instructions to generate or extract information and output valid JSON matching the specified schema. \
+Base your response solely on the content of the input. \
+For generative tasks, respond accurately and relevantly based on what is provided. \
+Unless explicitly instructed otherwise, output only the JSON. DO NOT include explanations, descriptions, or formatting outside the JSON."
             .to_string();
 
     if let Some(custom_instructions) = instructions {
@@ -76,11 +77,30 @@ impl SimpleFunctionExecutor for Executor {
     }
 
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
-        let text = self.args.text.value(&input)?.as_str()?;
+        let image_bytes: Option<Cow<'_, [u8]>> = self
+            .args
+            .image
+            .as_ref()
+            .map(|arg| arg.value(&input)?.as_bytes())
+            .transpose()?
+            .map(|bytes| Cow::Borrowed(bytes.as_ref()));
+        let text = self
+            .args
+            .text
+            .as_ref()
+            .map(|arg| arg.value(&input)?.as_str())
+            .transpose()?;
+
+        if text.is_none() && image_bytes.is_none() {
+            api_bail!("At least one of `text` or `image` must be provided");
+        }
+
+        let user_prompt = text.map_or("", |v| v);
         let req = LlmGenerateRequest {
             model: &self.model,
             system_prompt: Some(Cow::Borrowed(&self.system_prompt)),
-            user_prompt: Cow::Borrowed(text),
+            user_prompt: Cow::Borrowed(user_prompt),
+            image: image_bytes,
             output_format: Some(OutputFormat::JsonSchema {
                 name: Cow::Borrowed("ExtractedData"),
                 schema: Cow::Borrowed(&self.output_json_schema),
@@ -110,14 +130,20 @@ impl SimpleFunctionFactoryBase for Factory {
         args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
     ) -> Result<(Args, EnrichedValueType)> {
-        Ok((
-            Args {
-                text: args_resolver
-                    .next_arg("text")?
-                    .expect_type(&ValueType::Basic(BasicValueType::Str))?,
-            },
-            spec.output_type.clone(),
-        ))
+        let args = Args {
+            text: args_resolver
+                .next_optional_arg("text")?
+                .expect_type(&ValueType::Basic(BasicValueType::Str))?,
+            image: args_resolver
+                .next_optional_arg("image")?
+                .expect_type(&ValueType::Basic(BasicValueType::Bytes))?,
+        };
+
+        if args.text.is_none() && args.image.is_none() {
+            api_bail!("At least one of 'text' or 'image' must be provided");
+        }
+
+        Ok((args, spec.output_type.clone()))
     }
 
     async fn build_executor(

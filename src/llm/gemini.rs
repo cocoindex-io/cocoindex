@@ -2,8 +2,9 @@ use crate::prelude::*;
 
 use crate::llm::{
     LlmEmbeddingClient, LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
-    ToJsonSchemaOptions,
+    ToJsonSchemaOptions, detect_image_mime_type,
 };
+use base64::prelude::*;
 use phf::phf_map;
 use serde_json::Value;
 use urlencoding::encode;
@@ -70,10 +71,27 @@ impl LlmGenerationClient for Client {
         &self,
         request: LlmGenerateRequest<'req>,
     ) -> Result<LlmGenerateResponse> {
-        // Compose the prompt/messages
+        let mut user_parts: Vec<serde_json::Value> = Vec::new();
+
+        // Add text part first
+        user_parts.push(serde_json::json!({ "text": request.user_prompt }));
+
+        // Add image part if present
+        if let Some(image_bytes) = &request.image {
+            let base64_image = BASE64_STANDARD.encode(image_bytes.as_ref());
+            let mime_type = detect_image_mime_type(image_bytes.as_ref())?;
+            user_parts.push(serde_json::json!({
+                "inlineData": {
+                    "mimeType": mime_type,
+                    "data": base64_image
+                }
+            }));
+        }
+
+        // Compose the contents
         let contents = vec![serde_json::json!({
             "role": "user",
-            "parts": [{ "text": request.user_prompt }]
+            "parts": user_parts
         })];
 
         // Prepare payload
