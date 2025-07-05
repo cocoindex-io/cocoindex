@@ -320,6 +320,7 @@ impl FlowBuilder {
             },
         };
         let analyzer_ctx = AnalyzerContext {
+            lib_ctx: self.lib_context.clone(),
             flow_ctx: self.flow_inst_context.clone(),
         };
         let analyzed = py
@@ -417,6 +418,7 @@ impl FlowBuilder {
         };
 
         let analyzer_ctx = AnalyzerContext {
+            lib_ctx: self.lib_context.clone(),
             flow_ctx: self.flow_inst_context.clone(),
         };
         let analyzed = py
@@ -464,6 +466,7 @@ impl FlowBuilder {
         };
 
         let analyzer_ctx = AnalyzerContext {
+            lib_ctx: self.lib_context.clone(),
             flow_ctx: self.flow_inst_context.clone(),
         };
         let analyzed = py

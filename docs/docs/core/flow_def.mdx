@@ -151,6 +151,13 @@ If nothing changed during the last refresh cycle, only list operations will be p
 
 :::
 
+#### Concurrency control
+
+You can pass the following arguments to `add_source()` to control the concurrency of the source operation:
+
+*   `max_inflight_count`: the maximum number of concurrent inflight requests for the source operation.
+
+The default value can be specified by [`DefaultExecutionOptions`](/docs/core/settings#defaultexecutionoptions) or corresponding [environment variable](/docs/core/settings#list-of-environment-variables).
 
 ### Transform
 

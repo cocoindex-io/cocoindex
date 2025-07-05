@@ -361,6 +361,7 @@ impl DataScopeBuilder {
 }
 
 pub(super) struct AnalyzerContext {
+    pub lib_ctx: Arc<LibContext>,
     pub flow_ctx: Arc<FlowInstanceContext>,
 }
 
@@ -687,6 +688,13 @@ impl AnalyzerContext {
             .typ
             .clone();
         let output = op_scope.add_op_output(import_op.name, output_type)?;
+
+        let max_inflight_count =
+            (import_op.spec.execution_options.max_inflight_count).or_else(|| {
+                self.lib_ctx
+                    .default_execution_options
+                    .source_max_inflight_count
+            });
         let result_fut = async move {
             trace!("Start building executor for source op `{}`", op_name);
             let executor = executor.await?;
@@ -697,9 +705,7 @@ impl AnalyzerContext {
                 primary_key_type,
                 name: op_name,
                 refresh_options: import_op.spec.refresh_options,
-                concurrency_controller: utils::ConcurrencyController::new(
-                    import_op.spec.execution_options.max_inflight_count,
-                ),
+                concurrency_controller: utils::ConcurrencyController::new(max_inflight_count),
             })
         };
         Ok(result_fut)
@@ -1013,7 +1019,10 @@ pub async fn analyze_flow(
     AnalyzedSetupState,
     impl Future<Output = Result<ExecutionPlan>> + Send + use<>,
 )> {
-    let analyzer_ctx = AnalyzerContext { flow_ctx };
+    let analyzer_ctx = AnalyzerContext {
+        lib_ctx: get_lib_context()?,
+        flow_ctx,
+    };
     let root_data_scope = Arc::new(Mutex::new(DataScopeBuilder::new()));
     let root_op_scope = OpScope::new(ROOT_SCOPE_NAME.to_string(), None, root_data_scope);
     let mut import_ops_futs = Vec::with_capacity(flow_inst.import_ops.len());
@@ -1125,7 +1134,10 @@ pub async fn analyze_transient_flow<'a>(
     impl Future<Output = Result<TransientExecutionPlan>> + Send + 'a,
 )> {
     let mut root_data_scope = DataScopeBuilder::new();
-    let analyzer_ctx = AnalyzerContext { flow_ctx };
+    let analyzer_ctx = AnalyzerContext {
+        lib_ctx: get_lib_context()?,
+        flow_ctx,
+    };
     let mut input_fields = vec![];
     for field in flow_inst.input_fields.iter() {
         let analyzed_field = root_data_scope.add_field(field.name.clone(), &field.value_type)?;

@@ -7,13 +7,20 @@ pub struct DatabaseConnectionSpec {
     pub password: Option<String>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Default)]
+pub struct DefaultExecutionOptions {
+    pub source_max_inflight_count: Option<u32>,
+}
+
+#[derive(Deserialize, Debug, Default)]
 pub struct Settings {
     #[serde(default)]
     pub database: Option<DatabaseConnectionSpec>,
     #[serde(default)]
     #[allow(dead_code)] // Used via serialization/deserialization to Python
     pub app_namespace: String,
+    #[serde(default)]
+    pub default_execution_options: DefaultExecutionOptions,
 }
 
 #[cfg(test)]

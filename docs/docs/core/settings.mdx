@@ -60,6 +60,7 @@ You have two ways to launch CocoIndex:
 
 *   `app_namespace` (type: `str`, required): The namespace of the application.
 *   `database` (type: `DatabaseConnectionSpec`, required): The connection to the Postgres database.
+*   `default_execution_options` (type: `DefaultExecutionOptions`, optional): The default execution options for the flow.
 
 ### App Namespace
 
@@ -104,13 +105,20 @@ If you use the Postgres database hosted by [Supabase](https://supabase.com/), pl
 
 :::
 
+### DefaultExecutionOptions
+
+`DefaultExecutionOptions` is used to configure the default execution options for the flow. It has the following fields:
+
+*   `source_max_inflight_count` (type: `int`, optional): The maximum number of concurrent inflight requests for source operations.  This only provides an default value, and can be overridden by the `max_inflight_count` argument passed to `FlowBuilder.add_source()` on per-source basis.
+
 ## List of Environment Variables
 
 This is the list of environment variables, each of which has a corresponding field in `Settings`:
 
 | environment variable | corresponding field in `Settings` | required? |
 |---------------------|-------------------|----------|
+| `COCOINDEX_APP_NAMESPACE` | `app_namespace` | No |
 | `COCOINDEX_DATABASE_URL` | `database.url` | Yes |
 | `COCOINDEX_DATABASE_USER` | `database.user` | No |
 | `COCOINDEX_DATABASE_PASSWORD` | `database.password` | No |
-| `COCOINDEX_APP_NAMESPACE` | `app_namespace` | No |
+| `COCOINDEX_SOURCE_MAX_INFLIGHT_COUNT` | `default_execution_options.source_max_inflight_count` | No |

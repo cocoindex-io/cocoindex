@@ -195,6 +195,8 @@ pub struct LibContext {
     pub db_pools: DbPools,
     pub persistence_ctx: Option<PersistenceContext>,
     pub flows: Mutex<BTreeMap<String, Arc<FlowContext>>>,
+
+    pub default_execution_options: settings::DefaultExecutionOptions,
 }
 
 impl LibContext {
@@ -262,6 +264,7 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         db_pools,
         persistence_ctx,
         flows: Mutex::new(BTreeMap::new()),
+        default_execution_options: settings.default_execution_options,
     })
 }
 
@@ -297,25 +300,8 @@ mod tests {
     }
 
     #[test]
-    fn test_settings_structure_without_database() {
-        let settings = settings::Settings {
-            database: None,
-            app_namespace: "test".to_string(),
-        };
-
-        // Test that we can create the basic structure
-        assert!(settings.database.is_none());
-        assert_eq!(settings.app_namespace, "test");
-    }
-
-    #[test]
     fn test_lib_context_without_database() {
-        let settings = settings::Settings {
-            database: None,
-            app_namespace: "test".to_string(),
-        };
-
-        let lib_context = create_lib_context(settings).unwrap();
+        let lib_context = create_lib_context(settings::Settings::default()).unwrap();
         assert!(lib_context.persistence_ctx.is_none());
         assert!(lib_context.require_builtin_db_pool().is_err());
     }
@@ -329,7 +315,7 @@ mod tests {
                 user: None,
                 password: None,
             }),
-            app_namespace: "test".to_string(),
+            ..Default::default()
         };
 
         // This would fail at runtime due to invalid connection, but we're testing the structure
