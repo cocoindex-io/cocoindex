@@ -34,7 +34,7 @@ fn get_system_prompt(instructions: &Option<String>, extra_instructions: Option<S
 Your task is to follow the provided instructions to generate or extract information and output valid JSON matching the specified schema. \
 Base your response solely on the content of the input. \
 For generative tasks, respond accurately and relevantly based on what is provided. \
-Unless explicitly instructed otherwise, output only the JSON—do not include explanations, descriptions, or formatting outside the JSON."
+Unless explicitly instructed otherwise, output only the JSON. DO NOT include explanations, descriptions, or formatting outside the JSON."
             .to_string();
 
     if let Some(custom_instructions) = instructions {
@@ -130,17 +130,20 @@ impl SimpleFunctionFactoryBase for Factory {
         args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
     ) -> Result<(Args, EnrichedValueType)> {
-        Ok((
-            Args {
-                text: args_resolver
-                    .next_optional_arg("text")?
-                    .expect_type(&ValueType::Basic(BasicValueType::Str))?,
-                image: args_resolver
-                    .next_optional_arg("image")?
-                    .expect_type(&ValueType::Basic(BasicValueType::Bytes))?,
-            },
-            spec.output_type.clone(),
-        ))
+        let args = Args {
+            text: args_resolver
+                .next_optional_arg("text")?
+                .expect_type(&ValueType::Basic(BasicValueType::Str))?,
+            image: args_resolver
+                .next_optional_arg("image")?
+                .expect_type(&ValueType::Basic(BasicValueType::Bytes))?,
+        };
+
+        if args.text.is_none() && args.image.is_none() {
+            api_bail!("At least one of 'text' or 'image' must be provided");
+        }
+
+        Ok((args, spec.output_type.clone()))
     }
 
     async fn build_executor(

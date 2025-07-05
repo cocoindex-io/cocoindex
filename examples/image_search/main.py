@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 import cocoindex
+import requests
 import torch
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query
@@ -17,8 +18,19 @@ from transformers import CLIPModel, CLIPProcessor
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearch"
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
+OLLAMA_MODEL = "gemma3"
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
 CLIP_MODEL_DIMENSION = 768
+
+
+def ollama_has_model(model) -> bool:
+    try:
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=1)
+        r.raise_for_status()
+        return any(m.get("name") == model for m in r.json().get("models", []))
+    except Exception:
+        return False
 
 
 @functools.cache
@@ -69,37 +81,49 @@ def image_object_embedding_flow(
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
-        img["caption"] = flow_builder.transform(
-            cocoindex.functions.ExtractByLlm(
-                llm_spec=cocoindex.LlmSpec(
-                    api_type=cocoindex.LlmApiType.GEMINI, model="gemini-2.0-flash"
+        has_gemma3 = ollama_has_model(OLLAMA_MODEL)
+        if has_gemma3:
+            img["caption"] = flow_builder.transform(
+                cocoindex.functions.ExtractByLlm(
+                    llm_spec=cocoindex.llm.LlmSpec(
+                        api_type=cocoindex.LlmApiType.OLLAMA, model=OLLAMA_MODEL
+                    ),
+                    # Replace by this spec below, to use OpenAI API model instead of ollama
+                    #   llm_spec=cocoindex.LlmSpec(
+                    #       api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
+                    # Replace by this spec below, to use Gemini API model
+                    #   llm_spec=cocoindex.LlmSpec(
+                    #       api_type=cocoindex.LlmApiType.GEMINI, model="gemini-2.0-flash"),
+                    # Replace by this spec below, to use Anthropic API model
+                    #   llm_spec=cocoindex.LlmSpec(
+                    #       api_type=cocoindex.LlmApiType.ANTHROPIC, model="claude-3-5-sonnet-latest"),
+                    instruction=(
+                        "Describe the image in one detailed sentence. "
+                        "Name all visible animal species, objects, and the main scene. "
+                        "Be specific about type, color, and notable features. "
+                        "Mention what each animal is doing."
+                    ),
+                    output_type=str,
                 ),
-                # Replace by this spec below, to use OpenAI API model instead of gemini
-                #   llm_spec=cocoindex.LlmSpec(
-                #       api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
-                # Replace by this spec below, to use Ollama API model
-                #   llm_spec=cocoindex.llm.LlmSpec(
-                #       api_type=cocoindex.LlmApiType.OLLAMA, model="llama3.1"),
-                # Replace by this spec below, to use Anthropic API model
-                #   llm_spec=cocoindex.LlmSpec(
-                #       api_type=cocoindex.LlmApiType.ANTHROPIC, model="claude-3-5-sonnet-latest"),
-                instruction=(
-                    "Describe the image in one detailed sentence. "
-                    "Name all visible animal species, objects, and the main scene. "
-                    "Be specific about type, color, and notable features. "
-                    "Mention what each animal is doing."
-                ),
-                output_type=str,
-            ),
-            image=img["content"],
-        )
+                image=img["content"],
+            )
         img["embedding"] = img["content"].transform(embed_image)
-        img_embeddings.collect(
-            id=cocoindex.GeneratedField.UUID,
-            filename=img["filename"],
-            caption=img["caption"],
-            embedding=img["embedding"],
-        )
+
+        collect_fields = {
+            "id": cocoindex.GeneratedField.UUID,
+            "filename": img["filename"],
+            "embedding": img["embedding"],
+        }
+
+        if has_gemma3:
+            print(
+                f"Ollama model '{OLLAMA_MODEL}' is available — captions will be extracted."
+            )
+            collect_fields["caption"] = img["caption"]
+        else:
+            print(f"Ollama model '{OLLAMA_MODEL}' not found — skipping captioning.")
+
+        img_embeddings.collect(**collect_fields)
 
     img_embeddings.export(
         "img_embeddings",
@@ -151,11 +175,18 @@ def search(
         collection_name=QDRANT_COLLECTION,
         query_vector=("embedding", query_embedding),
         limit=limit,
+        with_payload=True,
     )
 
     return {
         "results": [
-            {"filename": result.payload["filename"], "score": result.score}
+            {
+                "filename": result.payload["filename"],
+                "score": result.score,
+                "caption": result.payload.get(
+                    "caption"
+                ),  # Include caption if available
+            }
             for result in search_results
         ]
     }
