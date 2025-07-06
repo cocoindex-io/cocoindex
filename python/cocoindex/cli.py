@@ -408,6 +408,12 @@ def update(
     app_ref, flow_name = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
 
+    if live:
+        click.secho(
+            "NOTE: Flow code changes will NOT be reflected in the server until you restart it.",
+            fg="red",
+        )
+
     options = flow.FlowLiveUpdaterOptions(live_mode=live, print_stats=not quiet)
     if flow_name is None:
         if setup:
@@ -597,6 +603,10 @@ def server(
             ),
         )
     else:
+        click.secho(
+            "NOTE: Flow code changes will NOT be reflected in the server until you restart it. Use --reload to enable auto-reload.",
+            fg="red",
+        )
         _run_server(*args)
 
 
@@ -633,9 +643,6 @@ def _run_server(
     if address is not None:
         server_settings.address = address
 
-    if COCOINDEX_HOST in cors_origins:
-        click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
-
     if run_setup:
         _setup_flows(
             flow.flows().values(),
@@ -648,6 +655,9 @@ def _run_server(
         flow.update_all_flows(options)
 
     lib.start_server(server_settings)
+
+    if COCOINDEX_HOST in cors_origins:
+        click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
 
     click.secho("Press Ctrl+C to stop the server.", fg="yellow")
 
