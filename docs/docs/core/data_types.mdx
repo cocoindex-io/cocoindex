@@ -1,6 +1,7 @@
 ---
 title: Data Types
 description: Data Types in CocoIndex
+toc_max_heading_level: 4
 ---
 
 # Data Types in CocoIndex
@@ -11,56 +12,97 @@ This makes schema of data processed by CocoIndex clear, and easily determine the
 
 ## Data Types
 
-You don't need to spell out data types in CocoIndex, when you define the flow using existing operations (source, function, etc).
-These operations decide data types of fields produced by them based on the spec and input data types.
-All you need to do is to make sure the data passed to functions and targets are accepted by them.
+As an engine written in Rust, designed to be used in different languages and data are always serializable, CocoIndex defines a type system independent of any specific programming language.
 
-When you define [custom functions](/docs/core/custom_function), you need to specify the data types of arguments and return values.
+CocoIndex automatically infers data types of the output created by CocoIndex sources and functions.
+You don't need to spell out any data type explicitly when you define the flow.
+All you need to do is to make sure the data passed to functions and targets are compatible with them.
+
+Each type in CocoIndex type system is mapped to one or multiple types in Python.
+When you define a [custom function](/docs/core/custom_function), you need to annotate the data types of arguments and return values.
+
+*   For return values, type annotation is required. Because this provides the ground truth to define the type of the output of the custom function.
+*   For arguments, type annotation is only used to enable the conversion from data values already existing in CocoIndex engine to Python value.
+    Type annotation is optional for basic types. When not specified, CocoIndex will use the *default Python type* for the argument.
+    Type annotation is required for arguments of struct types and table types.
 
 ### Basic Types
 
-This is the list of all basic types supported by CocoIndex:
+#### Primitive Types
 
-| Type | Description | Specific Python Type | Native Python Type |
-|------|-------------|---------------|-------------------------|
-| Bytes | | `bytes` | `bytes` |
-| Str | | `str` | `str` |
-| Bool | | `bool` | `bool` |
-| Int64 | | `int` | `int` |
-| Float32 | | `cocoindex.Float32` |`float` | 
-| Float64 | |  `cocoindex.Float64` |`float` |
-| Range | | `cocoindex.Range`  | `tuple[int, int]` |
-| Uuid | | `uuid.UUId` | `uuid.UUID` |
-| Date | | `datetime.date` | `datetime.date` |
-| Time | | `datetime.time` | `datetime.time` |
-| LocalDatetime | Date and time without timezone | `cocoindex.LocalDateTime` | `datetime.datetime` |
-| OffsetDatetime | Date and time with a timezone offset | `cocoindex.OffsetDateTime` | `datetime.datetime` |
-| TimeDelta | A duration of time | `datetime.timedelta` | `datetime.timedelta` |
-| Json | | `cocoindex.Json` | Any data convertible to JSON by `json` package | 
-| Vector[*T*, *Dim*?] | *T* can be a basic type or a numeric type. *Dim* is a positive integer and optional. | `cocoindex.Vector[T]` or `cocoindex.Vector[T, Dim]` | `numpy.typing.NDArray[T]` or `list[T]` |
-| Union[*T1*, *T2*, ...] | *T1*, *T2*, ... are any basic types | `T1 | T2 | ...` | `T1 | T2 | ...` |
+Primitive types are basic types that are not composed of other types.
+This is the list of all primitive types supported by CocoIndex:
 
-Values of all data types can be represented by values in Python's native types (as described under the Native Python Type column).
-However, the underlying execution engine has finer distinctions for some types, specifically:
+| CocoIndex Type | Python Types | Convertible to | Explanation |
+|------|-------------|--------------|----------------|
+| *Bytes* | `bytes` | | |
+| *Str* | `str` | | |
+| *Bool* | `bool` | | |
+| *Int64* | `cocoindex.Int64`, `int`, `numpy.int64` | | |
+| *Float32* | `cocoindex.Float32`, `numpy.float32` | *Float64* | |
+| *Float64* |  `cocoindex.Float64`, `float`, `numpy.float64` | | |
+| *Range* | `cocoindex.Range` | | |
+| *Uuid* | `uuid.UUId` | | |
+| *Date* | `datetime.date` | | |
+| *Time* | `datetime.time` | | |
+| *LocalDatetime* | `cocoindex.LocalDateTime` | *OffsetDatetime* | without timezone |
+| *OffsetDatetime* | `cocoindex.OffsetDateTime`, `datetime.datetime` | | with timezone |
+| *TimeDelta* | `datetime.timedelta` | | |
 
-*   *Float32* and *Float64* for `float`, with different precision.
-*   *LocalDateTime* and *OffsetDateTime* for `datetime.datetime`, with different timezone awareness.
-*   *Range* and *Json* provide a clear tag for the type, to clearly distinguish the type in CocoIndex.
-*   *Vector* holds elements of type *T*. If *T* is numeric (e.g., `np.float32` or `np.float64`), it's represented as `NDArray[T]`; otherwise, as `list[T]`.
-*   *Vector* also has optional dimension information.
+Notes:
 
-The native Python type is always more permissive and can represent a superset of possible values.
-*   Only when you annotate the return type of a custom function, you should use the specific type,
-    so that CocoIndex will have information about the precise type to be used in the execution engine and target.
-*   For all other purposes, e.g. to provide annotation for argument types of a custom function, or used internally in your custom function,
-    you can choose whatever to use.
-    The native Python type is usually simpler.
+*   For some CocoIndex types, we support multiple Python types. You can annotate with any of these Python types.
+    The first one is the *default Python type*, which means CocoIndex will create a value with this type when you don't annotate the type in function arguments.
+
+*   All Python types starting with `cocoindex.` are type aliases exported by CocoIndex. They're annotated types based on certain Python types:
+
+    *   `cocoindex.Int64`: `int`
+    *   `cocoindex.Float64`: `float`
+    *   `cocoindex.Float32`: `float`
+    *   `cocoindex.Range`: `tuple[int, int]`, i.e. a start offset (inclusive) and an end offset (exclusive)
+    *   `cocoindex.OffsetDateTime`: `datetime.datetime`
+    *   `cocoindex.LocalDateTime`: `datetime.datetime`
+
+    These aliases provide a non-ambiguous way to represent a specific type in CocoIndex, given their base Python types can represent a superset of possible values.
+
+*   When we say a CocoIndex type is *convertible to* another type, it means Python types for the second type can be also used to bind to a value of the first type.
+    For example, *Float32* is convertible to *Float64*, so you can bind a value of *Float32* to a Python value of `float` or `np.float64` types.
+    For *LocalDatetime*, when you use `cocoindex.OffsetDateTime` or `datetime.datetime` as the annotation to bind its value, the timezone will be set to UTC.
+
+
+#### Json Type
+
+*Json* type can hold any data convertible to JSON by `json` package.
+In Python, it's represented by `cocoindex.Json`.
+It's useful to hold data without fixed schema known at flow definition time.
+
+
+#### Vector Types
+
+A vector type is a collection of elements of the same basic type.
+Optionally, it can have a fixed dimension. Noted as *Vector[Type]* or *Vector[Type, Dim]*, e.g. *Vector[Float32]* or *Vector[Float32, 384]*.
+
+It supports the following Python types:
+
+*   `cocoindex.Vector[T]` or `cocoindex.Vector[T, typing.Literal[Dim]]`, e.g. `cocoindex.Vector[cocoindex.Float32]` or `cocoindex.Vector[cocoindex.Float32, 384]`
+    *   The underlying Python type is `numpy.typing.NDArray[T]` where `T` is a numpy numeric type (`numpy.int64`, `numpy.float32` or `numpy.float64`), or `list[T]` otherwise
+*   `numpy.typing.NDArray[T]` where `T` is a numpy numeric type
+*   `list[T]`
+
+
+#### Union Types
+
+A union type is a type that can represent values in one of multiple basic types.
+Noted as *Type1* | *Type2* | ..., e.g. *Int64* | *Float32* | *Float64*.
+
+The Python type is `T1 | T2 | ...`, e.g. `cocoindex.Int64 | cocoindex.Float32 | cocoindex.Float64`, `int | float` (equivalent to `cocoindex.Int64 | cocoindex.Float64`)
+
 
 ### Struct Types
 
-A Struct has a bunch of fields, each with a name and a type.
+A *Struct* has a bunch of fields, each with a name and a type.
 
-In Python, a Struct type is represented by either a [dataclass](https://docs.python.org/3/library/dataclasses.html)
+In Python, a *Struct* type is represented by either a [dataclass](https://docs.python.org/3/library/dataclasses.html)
 or a [NamedTuple](https://docs.python.org/3/library/typing.html#typing.NamedTuple), with all fields annotated with a specific type.
 Both options define a structured type with named fields, but they differ slightly:
 
@@ -93,22 +135,22 @@ Choose `dataclass` for mutable objects or when you need additional methods, and 
 
 ### Table Types
 
-A Table type models a collection of rows, each with multiple columns.
+A *Table* type models a collection of rows, each with multiple columns.
 Each column of a table has a specific type.
 
-We have two specific types of Table types: KTable and LTable.
+We have two specific types of *Table* types: *KTable* and *LTable*.
 
 #### KTable
 
-KTable is a Table type whose first column serves as the key.
-The row order of a KTable is not preserved.
+*KTable* is a *Table* type whose first column serves as the key.
+The row order of a *KTable* is not preserved.
 Type of the first column (key column) must be a [key type](#key-types).
 
-In Python, a KTable type is represented by `dict[K, V]`. 
-The `V` should be a struct type, either a `dataclass` or `NamedTuple`, representing the value fields of each row.
-For example, you can use `dict[str, Person]` or `dict[str, PersonTuple]` to represent a KTable, with 4 columns: key (Str), `first_name` (Str), `last_name` (Str), `dob` (Date).
+In Python, a *KTable* type is represented by `dict[K, V]`. 
+The `V` should be a *Struct* type, either a `dataclass` or `NamedTuple`, representing the value fields of each row.
+For example, you can use `dict[str, Person]` or `dict[str, PersonTuple]` to represent a *KTable*, with 4 columns: key (*Str*), `first_name` (*Str*), `last_name` (*Str*), `dob` (*Date*).
 
-Note that if you want to use a struct as the key, you need to ensure the struct is immutable. For `dataclass`, annotate it with `@dataclass(frozen=True)`. For `NamedTuple`, immutability is built-in.
+Note that if you want to use a *Struct* as the key, you need to ensure its value in Python is immutable. For `dataclass`, annotate it with `@dataclass(frozen=True)`. For `NamedTuple`, immutability is built-in. For example:
 For example:
 
 ```python
@@ -127,20 +169,20 @@ Then you can use `dict[PersonKey, Person]` or `dict[PersonKeyTuple, PersonTuple]
 
 #### LTable
 
-LTable is a Table type whose row order is preserved. LTable has no key column.
+*LTable* is a *Table* type whose row order is preserved. *LTable* has no key column.
 
-In Python, a LTable type is represented by `list[R]`, where `R` is a dataclass representing a row.
-For example, you can use `list[Person]` to represent a LTable with 3 columns: `first_name` (Str), `last_name` (Str), `dob` (Date).
+In Python, a *LTable* type is represented by `list[R]`, where `R` is a dataclass representing a row.
+For example, you can use `list[Person]` to represent a *LTable* with 3 columns: `first_name` (*Str*), `last_name` (*Str*), `dob` (*Date*).
 
 ## Key Types
 
 Currently, the following types are key types
 
-- Bytes
-- Str
-- Bool
-- Int64
-- Range
-- Uuid
-- Date
-- Struct with all fields being key types (using `@dataclass(frozen=True)` or `NamedTuple`)
+- *Bytes*
+- *Str*
+- *Bool*
+- *Int64*
+- *Range*
+- *Uuid*
+- *Date*
+- *Struct* with all fields being key types (using `@dataclass(frozen=True)` or `NamedTuple`)

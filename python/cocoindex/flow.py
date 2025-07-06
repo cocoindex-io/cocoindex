@@ -416,6 +416,11 @@ class _SourceRefreshOptions:
     refresh_interval: datetime.timedelta | None = None
 
 
+@dataclass
+class _ExecutionOptions:
+    max_inflight_count: int | None = None
+
+
 class FlowBuilder:
     """
     A flow builder is used to build a flow.
@@ -439,6 +444,7 @@ class FlowBuilder:
         *,
         name: str | None = None,
         refresh_interval: datetime.timedelta | None = None,
+        max_inflight_count: int | None = None,
     ) -> DataSlice[T]:
         """
         Import a source to the flow.
@@ -454,8 +460,11 @@ class FlowBuilder:
                 self._state.field_name_builder.build_name(
                     name, prefix=_to_snake_case(_spec_kind(spec)) + "_"
                 ),
-                dump_engine_object(
+                refresh_options=dump_engine_object(
                     _SourceRefreshOptions(refresh_interval=refresh_interval)
+                ),
+                execution_options=dump_engine_object(
+                    _ExecutionOptions(max_inflight_count=max_inflight_count)
                 ),
             ),
             name,

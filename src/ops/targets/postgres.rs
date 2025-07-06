@@ -197,8 +197,7 @@ impl ExportContext {
             .map(|f| format!("\"{}\"", f.name))
             .collect::<Vec<_>>()
             .join(", ");
-        let value_fields = value_fields_schema
-            .iter()
+        let all_fields = (key_fields_schema.iter().chain(value_fields_schema.iter()))
             .map(|f| format!("\"{}\"", f.name))
             .collect::<Vec<_>>()
             .join(", ");
@@ -211,15 +210,15 @@ impl ExportContext {
         Ok(Self {
             db_ref,
             db_pool,
+            upsert_sql_prefix: format!("INSERT INTO {table_name} ({all_fields}) VALUES "),
+            upsert_sql_suffix: if value_fields_schema.is_empty() {
+                format!(" ON CONFLICT ({key_fields}) DO NOTHING;")
+            } else {
+                format!(" ON CONFLICT ({key_fields}) DO UPDATE SET {set_value_fields};")
+            },
+            delete_sql_prefix: format!("DELETE FROM {table_name} WHERE "),
             key_fields_schema,
             value_fields_schema,
-            upsert_sql_prefix: format!(
-                "INSERT INTO {table_name} ({key_fields}, {value_fields}) VALUES "
-            ),
-            upsert_sql_suffix: format!(
-                " ON CONFLICT ({key_fields}) DO UPDATE SET {set_value_fields};"
-            ),
-            delete_sql_prefix: format!("DELETE FROM {table_name} WHERE "),
         })
     }
 }

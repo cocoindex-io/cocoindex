@@ -697,6 +697,9 @@ impl AnalyzerContext {
                 primary_key_type,
                 name: op_name,
                 refresh_options: import_op.spec.refresh_options,
+                concurrency_controller: utils::ConcurrencyController::new(
+                    import_op.spec.execution_options.max_inflight_count,
+                ),
             })
         };
         Ok(result_fut)

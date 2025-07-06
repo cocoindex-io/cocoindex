@@ -1,3 +1,5 @@
+use crate::prelude::*;
+
 use bytes::Bytes;
 use numpy::{PyArray1, PyArrayDyn, PyArrayMethods};
 use pyo3::IntoPyObjectExt;
@@ -6,14 +8,10 @@ use pyo3::types::PyAny;
 use pyo3::types::{PyList, PyTuple};
 use pyo3::{exceptions::PyException, prelude::*};
 use pythonize::{depythonize, pythonize};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::collections::BTreeMap;
 use std::ops::Deref;
-use std::sync::Arc;
 
 use super::IntoPyResult;
-use crate::base::{schema, value};
 
 #[derive(Debug)]
 pub struct Pythonized<T>(pub T);
@@ -143,7 +141,23 @@ fn basic_value_from_py_object<'py>(
             value::BasicValue::LocalDateTime(v.extract::<chrono::NaiveDateTime>()?)
         }
         schema::BasicValueType::OffsetDateTime => {
-            value::BasicValue::OffsetDateTime(v.extract::<chrono::DateTime<chrono::FixedOffset>>()?)
+            if v.getattr_opt("tzinfo")?
+                .ok_or_else(|| {
+                    PyErr::new::<PyTypeError, _>(format!(
+                        "expecting a datetime.datetime value, got {}",
+                        v.get_type()
+                    ))
+                })?
+                .is_none()
+            {
+                value::BasicValue::OffsetDateTime(
+                    v.extract::<chrono::NaiveDateTime>()?.and_utc().into(),
+                )
+            } else {
+                value::BasicValue::OffsetDateTime(
+                    v.extract::<chrono::DateTime<chrono::FixedOffset>>()?,
+                )
+            }
         }
         schema::BasicValueType::TimeDelta => {
             value::BasicValue::TimeDelta(v.extract::<chrono::TimeDelta>()?)

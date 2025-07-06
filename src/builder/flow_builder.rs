@@ -288,7 +288,7 @@ impl FlowBuilder {
         OpScopeRef(self.root_op_scope.clone())
     }
 
-    #[pyo3(signature = (kind, op_spec, target_scope, name, refresh_options=None))]
+    #[pyo3(signature = (kind, op_spec, target_scope, name, refresh_options=None, execution_options=None))]
     pub fn add_source(
         &mut self,
         py: Python<'_>,
@@ -297,6 +297,7 @@ impl FlowBuilder {
         target_scope: Option<OpScopeRef>,
         name: String,
         refresh_options: Option<py::Pythonized<spec::SourceRefreshOptions>>,
+        execution_options: Option<py::Pythonized<spec::ExecutionOptions>>,
     ) -> PyResult<DataSlice> {
         if let Some(target_scope) = target_scope {
             if *target_scope != self.root_op_scope {
@@ -313,6 +314,9 @@ impl FlowBuilder {
                     spec: op_spec.into_inner(),
                 },
                 refresh_options: refresh_options.map(|o| o.into_inner()).unwrap_or_default(),
+                execution_options: execution_options
+                    .map(|o| o.into_inner())
+                    .unwrap_or_default(),
             },
         };
         let analyzer_ctx = AnalyzerContext {

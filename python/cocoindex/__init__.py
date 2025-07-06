@@ -12,12 +12,21 @@ from .flow import flow_def
 from .flow import EvaluateAndDumpOptions, GeneratedField
 from .flow import FlowLiveUpdater, FlowLiveUpdaterOptions
 from .flow import update_all_flows_async, setup_all_flows, drop_all_flows
-from .lib import init, start_server, stop, main_fn
+from .lib import init, start_server, stop
 from .llm import LlmSpec, LlmApiType
 from .index import VectorSimilarityMetric, VectorIndexDef, IndexOptions
 from .setting import DatabaseConnectionSpec, Settings, ServerSettings
 from .setting import get_app_namespace
-from .typing import Float32, Float64, LocalDateTime, OffsetDateTime, Range, Vector, Json
+from .typing import (
+    Int64,
+    Float32,
+    Float64,
+    LocalDateTime,
+    OffsetDateTime,
+    Range,
+    Vector,
+    Json,
+)
 
 __all__ = [
     # Submodules
@@ -50,7 +59,6 @@ __all__ = [
     "init",
     "start_server",
     "stop",
-    "main_fn",
     # LLM
     "LlmSpec",
     "LlmApiType",
@@ -64,6 +72,7 @@ __all__ = [
     "ServerSettings",
     "get_app_namespace",
     # Typing
+    "Int64",
     "Float32",
     "Float64",
     "LocalDateTime",

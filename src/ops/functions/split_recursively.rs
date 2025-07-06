@@ -918,16 +918,14 @@ impl SimpleFunctionExecutor for Executor {
         let table = output
             .into_iter()
             .map(|chunk_output| {
+                let output_start = chunk_output.start_pos.output.unwrap();
+                let output_end = chunk_output.end_pos.output.unwrap();
                 (
-                    RangeValue::new(
-                        chunk_output.start_pos.byte_offset,
-                        chunk_output.end_pos.byte_offset,
-                    )
-                    .into(),
+                    RangeValue::new(output_start.char_offset, output_end.char_offset).into(),
                     fields_value!(
                         Arc::<str>::from(chunk_output.text),
-                        chunk_output.start_pos.output.unwrap().into_output(),
-                        chunk_output.end_pos.output.unwrap().into_output()
+                        output_start.into_output(),
+                        output_end.into_output()
                     )
                     .into(),
                 )

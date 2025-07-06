@@ -282,6 +282,7 @@ impl SourceIndexingContext {
             state.scan_generation
         };
         while let Some(row) = rows_stream.next().await {
+            let _ = import_op.concurrency_controller.acquire().await?;
             for row in row? {
                 self.process_source_key_if_newer(
                     row.key,

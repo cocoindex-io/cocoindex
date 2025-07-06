@@ -40,6 +40,7 @@ class TypeAttr:
 
 Annotation = TypeKind | TypeAttr | VectorInfo
 
+Int64 = Annotated[int, TypeKind("Int64")]
 Float32 = Annotated[float, TypeKind("Float32")]
 Float64 = Annotated[float, TypeKind("Float64")]
 Range = Annotated[tuple[int, int], TypeKind("Range")]

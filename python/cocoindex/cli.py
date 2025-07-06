@@ -1,4 +1,5 @@
 import atexit
+import asyncio
 import datetime
 import importlib.util
 import os
@@ -18,6 +19,7 @@ from rich.table import Table
 
 from . import flow, lib, setting
 from .setup import flow_names_with_setup
+from .runtime import execution_context
 
 # Create ServerSettings lazily upon first call, as environment variables may be loaded from files, etc.
 COCOINDEX_HOST = "https://cocoindex.io"
@@ -267,6 +269,21 @@ def _setup_flows(
     setup_bundle.apply(report_to_stdout=not quiet)
 
 
+def _show_no_live_update_hint() -> None:
+    click.secho(
+        "NOTE: No change capture mechanism exists. See https://cocoindex.io/docs/core/flow_methods#live-update for more details.\n",
+        fg="yellow",
+    )
+
+
+async def _update_all_flows_with_hint_async(
+    options: flow.FlowLiveUpdaterOptions,
+) -> None:
+    await flow.update_all_flows_async(options)
+    if options.live_mode:
+        _show_no_live_update_hint()
+
+
 @cli.command()
 @click.argument("app_target", type=str)
 @click.option(
@@ -398,7 +415,7 @@ def update(
     setup: bool,  # pylint: disable=redefined-outer-name
     force: bool,
     quiet: bool,
-) -> Any:
+) -> None:
     """
     Update the index to reflect the latest data from data sources.
 
@@ -408,6 +425,12 @@ def update(
     app_ref, flow_name = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
 
+    if live:
+        click.secho(
+            "NOTE: Flow code changes will NOT be reflected until you restart to load the new code.\n",
+            fg="yellow",
+        )
+
     options = flow.FlowLiveUpdaterOptions(live_mode=live, print_stats=not quiet)
     if flow_name is None:
         if setup:
@@ -416,14 +439,15 @@ def update(
                 force=force,
                 quiet=quiet,
             )
-        return flow.update_all_flows(options)
+        execution_context.run(_update_all_flows_with_hint_async(options))
     else:
         fl = flow.flow_by_name(flow_name)
         if setup:
             _setup_flows((fl,), force=force, quiet=quiet)
         with flow.FlowLiveUpdater(fl, options) as updater:
             updater.wait()
-            return updater.update_stats()
+            if options.live_mode:
+                _show_no_live_update_hint()
 
 
 @cli.command()
@@ -597,6 +621,10 @@ def server(
             ),
         )
     else:
+        click.secho(
+            "NOTE: Flow code changes will NOT be reflected until you restart to load the new code. Use --reload to enable auto-reload.\n",
+            fg="yellow",
+        )
         _run_server(*args)
 
 
@@ -633,9 +661,6 @@ def _run_server(
     if address is not None:
         server_settings.address = address
 
-    if COCOINDEX_HOST in cors_origins:
-        click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
-
     if run_setup:
         _setup_flows(
             flow.flows().values(),
@@ -643,13 +668,18 @@ def _run_server(
             quiet=quiet,
         )
 
-    if live_update:
-        options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
-        flow.update_all_flows(options)
-
     lib.start_server(server_settings)
 
+    if COCOINDEX_HOST in cors_origins:
+        click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
+
     click.secho("Press Ctrl+C to stop the server.", fg="yellow")
+
+    if live_update:
+        options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
+        asyncio.run_coroutine_threadsafe(
+            _update_all_flows_with_hint_async(options), execution_context.event_loop
+        )
 
     shutdown_event = threading.Event()
 

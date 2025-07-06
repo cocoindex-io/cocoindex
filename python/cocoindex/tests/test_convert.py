@@ -78,16 +78,15 @@ def build_engine_value_decoder(
     return make_engine_value_decoder([], engine_type, python_type or engine_type_in_py)
 
 
-def validate_full_roundtrip(
+def validate_full_roundtrip_to(
     value: Any,
-    value_type: Any = None,
-    *other_decoded_values: tuple[Any, Any],
+    value_type: Any,
+    *decoded_values: tuple[Any, Any],
 ) -> None:
     """
-    Validate the given value doesn't change after encoding, sending to engine (using output_type), receiving back and decoding (using input_type).
+    Validate the given value becomes specific values after encoding, sending to engine (using output_type), receiving back and decoding (using input_type).
 
-    `other_decoded_values` is a tuple of (value, type) pairs.
-    If provided, also validate the value can be decoded to the other types.
+    `decoded_values` is a tuple of (value, type) pairs.
     """
     from cocoindex import _engine  # type: ignore
 
@@ -102,15 +101,27 @@ def validate_full_roundtrip(
     value_from_engine = _engine.testutil.seder_roundtrip(
         encoded_value, encoded_output_type
     )
-    decoder = make_engine_value_decoder([], encoded_output_type, value_type)
-    decoded_value = decoder(value_from_engine)
-    assert eq(decoded_value, value), f"{decoded_value} != {value}"
 
-    if other_decoded_values is not None:
-        for other_value, other_type in other_decoded_values:
-            decoder = make_engine_value_decoder([], encoded_output_type, other_type)
-            other_decoded_value = decoder(value_from_engine)
-            assert eq(other_decoded_value, other_value)
+    for other_value, other_type in decoded_values:
+        decoder = make_engine_value_decoder([], encoded_output_type, other_type)
+        other_decoded_value = decoder(value_from_engine)
+        assert eq(other_decoded_value, other_value)
+
+
+def validate_full_roundtrip(
+    value: Any,
+    value_type: Any,
+    *other_decoded_values: tuple[Any, Any],
+) -> None:
+    """
+    Validate the given value doesn't change after encoding, sending to engine (using output_type), receiving back and decoding (using input_type).
+
+    `other_decoded_values` is a tuple of (value, type) pairs.
+    If provided, also validate the value can be decoded to the other types.
+    """
+    validate_full_roundtrip_to(
+        value, value_type, (value, value_type), *other_decoded_values
+    )
 
 
 def test_encode_engine_value_basic_types() -> None:
@@ -223,14 +234,28 @@ def test_roundtrip_basic_types() -> None:
     validate_full_roundtrip("hello", str, ("hello", None))
     validate_full_roundtrip(True, bool, (True, None))
     validate_full_roundtrip(False, bool, (False, None))
-    validate_full_roundtrip(42, int, (42, None))
+    validate_full_roundtrip(
+        42, cocoindex.Int64, (42, int), (np.int64(42), np.int64), (42, None)
+    )
+    validate_full_roundtrip(42, int, (42, cocoindex.Int64))
+    validate_full_roundtrip(np.int64(42), np.int64, (42, cocoindex.Int64))
+
+    validate_full_roundtrip(
+        3.25, Float64, (3.25, float), (np.float64(3.25), np.float64), (3.25, None)
+    )
     validate_full_roundtrip(3.25, float, (3.25, Float64))
+    validate_full_roundtrip(np.float64(3.25), np.float64, (3.25, Float64))
+
     validate_full_roundtrip(
-        3.25, Float64, (3.25, float), (np.float64(3.25), np.float64)
+        3.25,
+        Float32,
+        (3.25, float),
+        (np.float32(3.25), np.float32),
+        (np.float64(3.25), np.float64),
+        (3.25, Float64),
+        (3.25, None),
     )
-    validate_full_roundtrip(
-        3.25, Float32, (3.25, float), (np.float32(3.25), np.float32)
-    )
+    validate_full_roundtrip(np.float32(3.25), np.float32, (3.25, Float32))
 
 
 def test_roundtrip_uuid() -> None:
@@ -240,11 +265,11 @@ def test_roundtrip_uuid() -> None:
 
 def test_roundtrip_range() -> None:
     r1 = (0, 100)
-    validate_full_roundtrip(r1, cocoindex.Range)
+    validate_full_roundtrip(r1, cocoindex.Range, (r1, None))
     r2 = (50, 50)
-    validate_full_roundtrip(r2, cocoindex.Range)
+    validate_full_roundtrip(r2, cocoindex.Range, (r2, None))
     r3 = (0, 1_000_000_000)
-    validate_full_roundtrip(r3, cocoindex.Range)
+    validate_full_roundtrip(r3, cocoindex.Range, (r3, None))
 
 
 def test_roundtrip_time() -> None:
@@ -264,12 +289,35 @@ def test_roundtrip_time() -> None:
         cocoindex.LocalDateTime,
         (datetime.datetime(2025, 1, 2, 3, 4, 5, 123456), datetime.datetime),
     )
+
+    tz = datetime.timezone(datetime.timedelta(hours=5))
     validate_full_roundtrip(
-        datetime.datetime(2025, 1, 2, 3, 4, 5, 123456, datetime.UTC),
+        datetime.datetime(2025, 1, 2, 3, 4, 5, 123456, tz),
+        cocoindex.OffsetDateTime,
+        (
+            datetime.datetime(2025, 1, 2, 3, 4, 5, 123456, tz),
+            datetime.datetime,
+        ),
+    )
+    validate_full_roundtrip(
+        datetime.datetime(2025, 1, 2, 3, 4, 5, 123456, tz),
+        datetime.datetime,
+        (datetime.datetime(2025, 1, 2, 3, 4, 5, 123456, tz), cocoindex.OffsetDateTime),
+    )
+    validate_full_roundtrip_to(
+        datetime.datetime(2025, 1, 2, 3, 4, 5, 123456),
         cocoindex.OffsetDateTime,
         (
             datetime.datetime(2025, 1, 2, 3, 4, 5, 123456, datetime.UTC),
             datetime.datetime,
+        ),
+    )
+    validate_full_roundtrip_to(
+        datetime.datetime(2025, 1, 2, 3, 4, 5, 123456),
+        datetime.datetime,
+        (
+            datetime.datetime(2025, 1, 2, 3, 4, 5, 123456, datetime.UTC),
+            cocoindex.OffsetDateTime,
         ),
     )
 
