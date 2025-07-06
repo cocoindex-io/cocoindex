@@ -242,7 +242,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         args = typing.get_args(t)
         elem_type = (args[0], args[1])
         kind = "KTable"
-    elif base_type is types.UnionType:
+    elif base_type in (types.UnionType, typing.Union):
         possible_types = typing.get_args(t)
         non_none_types = [
             arg for arg in possible_types if arg not in (None, types.NoneType)
