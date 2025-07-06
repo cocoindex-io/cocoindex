@@ -13,8 +13,6 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 ## Steps
 ### Indexing Flow
 
-<img width="662" alt="PDF indexing flow" src="https://github.com/user-attachments/assets/5e132dd9-7120-4b28-bc57-88d6b5583ef4" />
-
 1. We will ingest a list of papers in PDF.
 2. For each file, we:
    - Extract the first page of the paper.
