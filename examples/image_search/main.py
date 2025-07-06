@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 import cocoindex
-import requests
 import torch
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query
@@ -22,15 +21,6 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
 OLLAMA_MODEL = "gemma3"
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
 CLIP_MODEL_DIMENSION = 768
-
-
-def ollama_has_model(model) -> bool:
-    try:
-        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=1)
-        r.raise_for_status()
-        return any(m.get("name") == model for m in r.json().get("models", []))
-    except Exception:
-        return False
 
 
 @functools.cache
@@ -81,8 +71,8 @@ def image_object_embedding_flow(
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
-        has_gemma3 = ollama_has_model(OLLAMA_MODEL)
-        if has_gemma3:
+        has_ollama_model = os.getenv("OLLAMA_MODEL") == OLLAMA_MODEL
+        if has_ollama_model:
             img["caption"] = flow_builder.transform(
                 cocoindex.functions.ExtractByLlm(
                     llm_spec=cocoindex.llm.LlmSpec(
@@ -115,7 +105,7 @@ def image_object_embedding_flow(
             "embedding": img["embedding"],
         }
 
-        if has_gemma3:
+        if has_ollama_model:
             print(
                 f"Ollama model '{OLLAMA_MODEL}' is available — captions will be extracted."
             )

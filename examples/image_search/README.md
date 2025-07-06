@@ -28,6 +28,7 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 ```
 ollama pull gemma3
 ollama serve
+export OLLAMA_MODEL="gemma3"  # Optional, for caption generation
 ```
 
 ## Run the App
