@@ -139,6 +139,7 @@ It defines an index flow like this:
 | [FastAPI Server with Docker](examples/fastapi_server_docker) | Run the semantic search server in a Dockerized FastAPI setup |
 | [Product Recommendation](examples/product_recommendation) | Build real-time product recommendations with LLM and graph database|
 | [Image Search with Vision API](examples/image_search) | Generates detailed captions for images using a vision model, embeds them, enables live-updating semantic search via FastAPI and served on a React frontend|
+| [Paper Metadata](examples/paper_metadata) | Index papers in PDF files, and build metadata tables for each paper |
 
 More coming and stay tuned 👀!
 
