@@ -287,10 +287,10 @@ def test_roundtrip_timedelta() -> None:
 
 def test_roundtrip_json() -> None:
     simple_dict = {"key": "value", "number": 123, "bool": True, "float": 1.23}
-    validate_full_roundtrip(simple_dict, cocoindex.Json, (simple_dict, dict))
+    validate_full_roundtrip(simple_dict, cocoindex.Json)
 
     simple_list = [1, "string", False, None, 4.56]
-    validate_full_roundtrip(simple_list, cocoindex.Json, (simple_list, list))
+    validate_full_roundtrip(simple_list, cocoindex.Json)
 
     nested_structure = {
         "name": "Test Json",
@@ -301,10 +301,10 @@ def test_roundtrip_json() -> None:
         ],
         "metadata": None,
     }
-    validate_full_roundtrip(nested_structure, cocoindex.Json, (nested_structure, dict))
+    validate_full_roundtrip(nested_structure, cocoindex.Json)
 
-    validate_full_roundtrip({}, cocoindex.Json, ({}, dict))
-    validate_full_roundtrip([], cocoindex.Json, ([], list))
+    validate_full_roundtrip({}, cocoindex.Json)
+    validate_full_roundtrip([], cocoindex.Json)
 
 
 def test_decode_scalar_numpy_values() -> None:

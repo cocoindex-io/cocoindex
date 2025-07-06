@@ -18,6 +18,7 @@ from .typing import (
     encode_enriched_type,
     extract_ndarray_scalar_dtype,
     is_namedtuple_type,
+    is_struct_type,
 )
 
 
@@ -37,9 +38,19 @@ def encode_engine_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [encode_engine_value(v) for v in value]
     if isinstance(value, dict):
-        return [
-            [encode_engine_value(k)] + encode_engine_value(v) for k, v in value.items()
-        ]
+        if not value:
+            return {}
+
+        first_val = next(iter(value.values()))
+        if is_struct_type(type(first_val)):  # KTable
+            return [
+                [encode_engine_value(k)] + encode_engine_value(v)
+                for k, v in value.items()
+            ]
+        else:  # JSON
+            return {
+                encode_engine_value(k): encode_engine_value(v) for k, v in value.items()
+            }
     return value
 
 

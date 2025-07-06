@@ -107,7 +107,7 @@ def is_namedtuple_type(t: type) -> bool:
     return isinstance(t, type) and issubclass(t, tuple) and hasattr(t, "_fields")
 
 
-def _is_struct_type(t: ElementType | None) -> bool:
+def is_struct_type(t: ElementType | None) -> bool:
     return isinstance(t, type) and (
         dataclasses.is_dataclass(t) or is_namedtuple_type(t)
     )
@@ -204,7 +204,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     union_variant_types: typing.List[ElementType] | None = None
     key_type: type | None = None
     np_number_type: type | None = None
-    if _is_struct_type(t):
+    if is_struct_type(t):
         struct_type = t
 
         if kind is None:
@@ -219,7 +219,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         elem_type = args[0]
 
         if kind is None:
-            if _is_struct_type(elem_type):
+            if is_struct_type(elem_type):
                 kind = "LTable"
                 if vector_info is not None:
                     raise ValueError(
