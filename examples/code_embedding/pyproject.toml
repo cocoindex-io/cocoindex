@@ -3,7 +3,7 @@ name = "code-embedding"
 version = "0.1.0"
 description = "Simple example for cocoindex: build embedding index based on source code."
 requires-python = ">=3.11"
-dependencies = ["cocoindex[embeddings]>=0.1.56", "python-dotenv>=1.0.1"]
+dependencies = ["cocoindex[embeddings]>=0.1.63", "python-dotenv>=1.0.1"]
 
 [tool.setuptools]
 packages = []
