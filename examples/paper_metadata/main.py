@@ -136,6 +136,7 @@ def paper_metadata_flow(
             title=doc["metadata"]["title"],
             authors=doc["metadata"]["authors"],
             abstract=doc["metadata"]["abstract"],
+            num_pages=doc["basic_info"]["num_pages"],
         )
         metadata_embeddings.collect(
             id=cocoindex.GeneratedField.UUID,
