@@ -360,6 +360,24 @@ impl KeyValue {
             _ => 1,
         }
     }
+
+    pub fn estimated_detached_byte_size(&self) -> usize {
+        match self {
+            KeyValue::Bytes(v) => v.len(),
+            KeyValue::Str(v) => v.len(),
+            KeyValue::Struct(v) => {
+                v.iter()
+                    .map(KeyValue::estimated_detached_byte_size)
+                    .sum::<usize>()
+                    + v.len() * std::mem::size_of::<KeyValue>()
+            }
+            KeyValue::Bool(_)
+            | KeyValue::Int64(_)
+            | KeyValue::Range(_)
+            | KeyValue::Uuid(_)
+            | KeyValue::Date(_) => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -546,6 +564,57 @@ impl BasicValue {
             BasicValue::Json(_) => "json",
             BasicValue::Vector(_) => "vector",
             BasicValue::UnionVariant { .. } => "union",
+        }
+    }
+
+    /// Returns the estimated byte size of the value, for detached data (i.e. allocated on heap).
+    pub fn estimated_detached_byte_size(&self) -> usize {
+        fn json_estimated_detached_byte_size(val: &serde_json::Value) -> usize {
+            match val {
+                serde_json::Value::String(s) => s.len(),
+                serde_json::Value::Array(arr) => {
+                    arr.iter()
+                        .map(json_estimated_detached_byte_size)
+                        .sum::<usize>()
+                        + arr.len() * std::mem::size_of::<serde_json::Value>()
+                }
+                serde_json::Value::Object(map) => map
+                    .iter()
+                    .map(|(k, v)| {
+                        std::mem::size_of::<serde_json::map::Entry>()
+                            + k.len()
+                            + json_estimated_detached_byte_size(v)
+                    })
+                    .sum(),
+                serde_json::Value::Null
+                | serde_json::Value::Bool(_)
+                | serde_json::Value::Number(_) => 0,
+            }
+        }
+        match self {
+            BasicValue::Bytes(v) => v.len(),
+            BasicValue::Str(v) => v.len(),
+            BasicValue::Json(v) => json_estimated_detached_byte_size(v),
+            BasicValue::Vector(v) => {
+                v.iter()
+                    .map(BasicValue::estimated_detached_byte_size)
+                    .sum::<usize>()
+                    + v.len() * std::mem::size_of::<BasicValue>()
+            }
+            BasicValue::UnionVariant { value, .. } => {
+                value.estimated_detached_byte_size() + std::mem::size_of::<BasicValue>()
+            }
+            BasicValue::Bool(_)
+            | BasicValue::Int64(_)
+            | BasicValue::Float32(_)
+            | BasicValue::Float64(_)
+            | BasicValue::Range(_)
+            | BasicValue::Uuid(_)
+            | BasicValue::Date(_)
+            | BasicValue::Time(_)
+            | BasicValue::LocalDateTime(_)
+            | BasicValue::OffsetDateTime(_)
+            | BasicValue::TimeDelta(_) => 0,
         }
     }
 }
@@ -786,6 +855,31 @@ impl<VS> Value<VS> {
     }
 }
 
+impl Value<ScopeValue> {
+    pub fn estimated_byte_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + match self {
+                Value::Null => 0,
+                Value::Basic(v) => v.estimated_detached_byte_size(),
+                Value::Struct(v) => v.estimated_detached_byte_size(),
+                (Value::UTable(v) | Value::LTable(v)) => {
+                    v.iter()
+                        .map(|v| v.estimated_detached_byte_size())
+                        .sum::<usize>()
+                        + v.len() * std::mem::size_of::<ScopeValue>()
+                }
+                Value::KTable(v) => {
+                    v.iter()
+                        .map(|(k, v)| {
+                            k.estimated_detached_byte_size() + v.estimated_detached_byte_size()
+                        })
+                        .sum::<usize>()
+                        + v.len() * std::mem::size_of::<(String, ScopeValue)>()
+                }
+            }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct FieldValues<VS = ScopeValue> {
     pub fields: Vec<Value<VS>>,
@@ -857,6 +951,16 @@ where
             serde_json::Value::Object(v) => Self::from_json_object(v, fields_schema.iter()),
             _ => api_bail!("invalid value type"),
         }
+    }
+}
+
+impl FieldValues<ScopeValue> {
+    pub fn estimated_detached_byte_size(&self) -> usize {
+        self.fields
+            .iter()
+            .map(Value::estimated_byte_size)
+            .sum::<usize>()
+            + self.fields.len() * std::mem::size_of::<Value<ScopeValue>>()
     }
 }
 
@@ -1209,5 +1313,226 @@ pub mod test_util {
         let json_value = serde_json::to_value(value)?;
         let roundtrip_value = Value::from_json(json_value, typ)?;
         Ok(roundtrip_value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn test_estimated_byte_size_null() {
+        let value = Value::<ScopeValue>::Null;
+        let size = value.estimated_byte_size();
+        assert_eq!(size, std::mem::size_of::<Value<ScopeValue>>());
+    }
+
+    #[test]
+    fn test_estimated_byte_size_basic_primitive() {
+        // Test primitives that should have 0 detached byte size
+        let value = Value::<ScopeValue>::Basic(BasicValue::Bool(true));
+        let size = value.estimated_byte_size();
+        assert_eq!(size, std::mem::size_of::<Value<ScopeValue>>());
+
+        let value = Value::<ScopeValue>::Basic(BasicValue::Int64(42));
+        let size = value.estimated_byte_size();
+        assert_eq!(size, std::mem::size_of::<Value<ScopeValue>>());
+
+        let value = Value::<ScopeValue>::Basic(BasicValue::Float64(3.14));
+        let size = value.estimated_byte_size();
+        assert_eq!(size, std::mem::size_of::<Value<ScopeValue>>());
+    }
+
+    #[test]
+    fn test_estimated_byte_size_basic_string() {
+        let test_str = "hello world";
+        let value = Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from(test_str)));
+        let size = value.estimated_byte_size();
+
+        let expected_size = std::mem::size_of::<Value<ScopeValue>>() + test_str.len();
+        assert_eq!(size, expected_size);
+    }
+
+    #[test]
+    fn test_estimated_byte_size_basic_bytes() {
+        let test_bytes = b"hello world";
+        let value = Value::<ScopeValue>::Basic(BasicValue::Bytes(Bytes::from(test_bytes.to_vec())));
+        let size = value.estimated_byte_size();
+
+        let expected_size = std::mem::size_of::<Value<ScopeValue>>() + test_bytes.len();
+        assert_eq!(size, expected_size);
+    }
+
+    #[test]
+    fn test_estimated_byte_size_basic_json() {
+        let json_val = serde_json::json!({"key": "value", "number": 42});
+        let value = Value::<ScopeValue>::Basic(BasicValue::Json(Arc::from(json_val)));
+        let size = value.estimated_byte_size();
+
+        // Should include the size of the JSON structure
+        // The exact size depends on the internal JSON representation
+        assert!(size > std::mem::size_of::<Value<ScopeValue>>());
+    }
+
+    #[test]
+    fn test_estimated_byte_size_basic_vector() {
+        let vec_elements = vec![
+            BasicValue::Str(Arc::from("hello")),
+            BasicValue::Str(Arc::from("world")),
+            BasicValue::Int64(42),
+        ];
+        let value = Value::<ScopeValue>::Basic(BasicValue::Vector(Arc::from(vec_elements)));
+        let size = value.estimated_byte_size();
+
+        // Should include the size of the vector elements
+        let expected_min_size = std::mem::size_of::<Value<ScopeValue>>()
+            + "hello".len()
+            + "world".len()
+            + 3 * std::mem::size_of::<BasicValue>();
+        assert!(size >= expected_min_size);
+    }
+
+    #[test]
+    fn test_estimated_byte_size_struct() {
+        let fields = vec![
+            Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from("test"))),
+            Value::<ScopeValue>::Basic(BasicValue::Int64(123)),
+        ];
+        let field_values = FieldValues { fields };
+        let value = Value::<ScopeValue>::Struct(field_values);
+        let size = value.estimated_byte_size();
+
+        let expected_min_size = std::mem::size_of::<Value<ScopeValue>>()
+            + "test".len()
+            + 2 * std::mem::size_of::<Value<ScopeValue>>();
+        assert!(size >= expected_min_size);
+    }
+
+    #[test]
+    fn test_estimated_byte_size_utable() {
+        let scope_values = vec![
+            ScopeValue(FieldValues {
+                fields: vec![Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from(
+                    "item1",
+                )))],
+            }),
+            ScopeValue(FieldValues {
+                fields: vec![Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from(
+                    "item2",
+                )))],
+            }),
+        ];
+        let value = Value::<ScopeValue>::UTable(scope_values);
+        let size = value.estimated_byte_size();
+
+        let expected_min_size = std::mem::size_of::<Value<ScopeValue>>()
+            + "item1".len()
+            + "item2".len()
+            + 2 * std::mem::size_of::<ScopeValue>();
+        assert!(size >= expected_min_size);
+    }
+
+    #[test]
+    fn test_estimated_byte_size_ltable() {
+        let scope_values = vec![
+            ScopeValue(FieldValues {
+                fields: vec![Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from(
+                    "list1",
+                )))],
+            }),
+            ScopeValue(FieldValues {
+                fields: vec![Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from(
+                    "list2",
+                )))],
+            }),
+        ];
+        let value = Value::<ScopeValue>::LTable(scope_values);
+        let size = value.estimated_byte_size();
+
+        let expected_min_size = std::mem::size_of::<Value<ScopeValue>>()
+            + "list1".len()
+            + "list2".len()
+            + 2 * std::mem::size_of::<ScopeValue>();
+        assert!(size >= expected_min_size);
+    }
+
+    #[test]
+    fn test_estimated_byte_size_ktable() {
+        let mut map = BTreeMap::new();
+        map.insert(
+            KeyValue::Str(Arc::from("key1")),
+            ScopeValue(FieldValues {
+                fields: vec![Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from(
+                    "value1",
+                )))],
+            }),
+        );
+        map.insert(
+            KeyValue::Str(Arc::from("key2")),
+            ScopeValue(FieldValues {
+                fields: vec![Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from(
+                    "value2",
+                )))],
+            }),
+        );
+        let value = Value::<ScopeValue>::KTable(map);
+        let size = value.estimated_byte_size();
+
+        let expected_min_size = std::mem::size_of::<Value<ScopeValue>>()
+            + "key1".len()
+            + "key2".len()
+            + "value1".len()
+            + "value2".len()
+            + 2 * std::mem::size_of::<(String, ScopeValue)>();
+        assert!(size >= expected_min_size);
+    }
+
+    #[test]
+    fn test_estimated_byte_size_nested_struct() {
+        let inner_struct = Value::<ScopeValue>::Struct(FieldValues {
+            fields: vec![
+                Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from("inner"))),
+                Value::<ScopeValue>::Basic(BasicValue::Int64(456)),
+            ],
+        });
+
+        let outer_struct = Value::<ScopeValue>::Struct(FieldValues {
+            fields: vec![
+                Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from("outer"))),
+                inner_struct,
+            ],
+        });
+
+        let size = outer_struct.estimated_byte_size();
+
+        let expected_min_size = std::mem::size_of::<Value<ScopeValue>>()
+            + "outer".len()
+            + "inner".len()
+            + 4 * std::mem::size_of::<Value<ScopeValue>>();
+        assert!(size >= expected_min_size);
+    }
+
+    #[test]
+    fn test_estimated_byte_size_empty_collections() {
+        // Empty UTable
+        let value = Value::<ScopeValue>::UTable(vec![]);
+        let size = value.estimated_byte_size();
+        assert_eq!(size, std::mem::size_of::<Value<ScopeValue>>());
+
+        // Empty LTable
+        let value = Value::<ScopeValue>::LTable(vec![]);
+        let size = value.estimated_byte_size();
+        assert_eq!(size, std::mem::size_of::<Value<ScopeValue>>());
+
+        // Empty KTable
+        let value = Value::<ScopeValue>::KTable(BTreeMap::new());
+        let size = value.estimated_byte_size();
+        assert_eq!(size, std::mem::size_of::<Value<ScopeValue>>());
+
+        // Empty Struct
+        let value = Value::<ScopeValue>::Struct(FieldValues { fields: vec![] });
+        let size = value.estimated_byte_size();
+        assert_eq!(size, std::mem::size_of::<Value<ScopeValue>>());
     }
 }
