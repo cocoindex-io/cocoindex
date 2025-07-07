@@ -47,10 +47,6 @@ def encode_engine_value(value: Any) -> Any:
                 [encode_engine_value(k)] + encode_engine_value(v)
                 for k, v in value.items()
             ]
-        else:  # JSON
-            return {
-                encode_engine_value(k): encode_engine_value(v) for k, v in value.items()
-            }
     return value
 
 
