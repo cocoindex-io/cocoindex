@@ -9,7 +9,7 @@ pub struct DatabaseConnectionSpec {
 
 #[derive(Deserialize, Debug, Default)]
 pub struct DefaultExecutionOptions {
-    pub source_max_inflight_count: Option<u32>,
+    pub source_max_inflight_rows: Option<u32>,
 }
 
 #[derive(Deserialize, Debug, Default)]

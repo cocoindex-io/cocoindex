@@ -689,11 +689,11 @@ impl AnalyzerContext {
             .clone();
         let output = op_scope.add_op_output(import_op.name, output_type)?;
 
-        let max_inflight_count =
-            (import_op.spec.execution_options.max_inflight_count).or_else(|| {
+        let max_inflight_rows =
+            (import_op.spec.execution_options.max_inflight_rows).or_else(|| {
                 self.lib_ctx
                     .default_execution_options
-                    .source_max_inflight_count
+                    .source_max_inflight_rows
             });
         let result_fut = async move {
             trace!("Start building executor for source op `{}`", op_name);
@@ -705,7 +705,7 @@ impl AnalyzerContext {
                 primary_key_type,
                 name: op_name,
                 refresh_options: import_op.spec.refresh_options,
-                concurrency_controller: utils::ConcurrencyController::new(max_inflight_count),
+                concurrency_controller: utils::ConcurrencyController::new(max_inflight_rows),
             })
         };
         Ok(result_fut)

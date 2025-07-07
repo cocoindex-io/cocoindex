@@ -48,7 +48,7 @@ class DefaultExecutionOptions:
     """Default execution options."""
 
     # The maximum number of concurrent inflight requests.
-    source_max_inflight_count: int | None = 256
+    source_max_inflight_rows: int | None = 256
 
 
 def _load_field(
@@ -99,8 +99,8 @@ class Settings:
         exec_kwargs: dict[str, Any] = dict()
         _load_field(
             exec_kwargs,
-            "source_max_inflight_count",
-            "COCOINDEX_SOURCE_MAX_INFLIGHT_COUNT",
+            "source_max_inflight_rows",
+            "COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS",
             parse=int,
         )
         default_execution_options = DefaultExecutionOptions(**exec_kwargs)
