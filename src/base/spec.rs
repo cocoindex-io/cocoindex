@@ -255,7 +255,8 @@ impl SpecFormatter for OpSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExecutionOptions {
-    pub max_inflight_rows: Option<u32>,
+    pub max_inflight_rows: Option<usize>,
+    pub max_inflight_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

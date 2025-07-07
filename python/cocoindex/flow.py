@@ -419,6 +419,7 @@ class _SourceRefreshOptions:
 @dataclass
 class _ExecutionOptions:
     max_inflight_rows: int | None = None
+    max_inflight_bytes: int | None = None
 
 
 class FlowBuilder:
@@ -445,6 +446,7 @@ class FlowBuilder:
         name: str | None = None,
         refresh_interval: datetime.timedelta | None = None,
         max_inflight_rows: int | None = None,
+        max_inflight_bytes: int | None = None,
     ) -> DataSlice[T]:
         """
         Import a source to the flow.
@@ -464,7 +466,10 @@ class FlowBuilder:
                     _SourceRefreshOptions(refresh_interval=refresh_interval)
                 ),
                 execution_options=dump_engine_object(
-                    _ExecutionOptions(max_inflight_rows=max_inflight_rows)
+                    _ExecutionOptions(
+                        max_inflight_rows=max_inflight_rows,
+                        max_inflight_bytes=max_inflight_bytes,
+                    )
                 ),
             ),
             name,

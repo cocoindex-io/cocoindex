@@ -361,7 +361,7 @@ impl KeyValue {
         }
     }
 
-    pub fn estimated_detached_byte_size(&self) -> usize {
+    fn estimated_detached_byte_size(&self) -> usize {
         match self {
             KeyValue::Bytes(v) => v.len(),
             KeyValue::Str(v) => v.len(),
@@ -568,7 +568,7 @@ impl BasicValue {
     }
 
     /// Returns the estimated byte size of the value, for detached data (i.e. allocated on heap).
-    pub fn estimated_detached_byte_size(&self) -> usize {
+    fn estimated_detached_byte_size(&self) -> usize {
         fn json_estimated_detached_byte_size(val: &serde_json::Value) -> usize {
             match val {
                 serde_json::Value::String(s) => s.len(),
@@ -862,7 +862,7 @@ impl Value<ScopeValue> {
                 Value::Null => 0,
                 Value::Basic(v) => v.estimated_detached_byte_size(),
                 Value::Struct(v) => v.estimated_detached_byte_size(),
-                (Value::UTable(v) | Value::LTable(v)) => {
+                Value::UTable(v) | Value::LTable(v) => {
                     v.iter()
                         .map(|v| v.estimated_detached_byte_size())
                         .sum::<usize>()
@@ -955,12 +955,16 @@ where
 }
 
 impl FieldValues<ScopeValue> {
-    pub fn estimated_detached_byte_size(&self) -> usize {
+    fn estimated_detached_byte_size(&self) -> usize {
         self.fields
             .iter()
             .map(Value::estimated_byte_size)
             .sum::<usize>()
             + self.fields.len() * std::mem::size_of::<Value<ScopeValue>>()
+    }
+
+    pub fn estimated_byte_size(&self) -> usize {
+        self.estimated_detached_byte_size() + std::mem::size_of::<Self>()
     }
 }
 

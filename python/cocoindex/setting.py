@@ -49,6 +49,7 @@ class DefaultExecutionOptions:
 
     # The maximum number of concurrent inflight requests.
     source_max_inflight_rows: int | None = 256
+    source_max_inflight_bytes: int | None = 1024 * 1024 * 1024
 
 
 def _load_field(
@@ -101,6 +102,12 @@ class Settings:
             exec_kwargs,
             "source_max_inflight_rows",
             "COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS",
+            parse=int,
+        )
+        _load_field(
+            exec_kwargs,
+            "source_max_inflight_bytes",
+            "COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES",
             parse=int,
         )
         default_execution_options = DefaultExecutionOptions(**exec_kwargs)

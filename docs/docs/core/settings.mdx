@@ -109,7 +109,10 @@ If you use the Postgres database hosted by [Supabase](https://supabase.com/), pl
 
 `DefaultExecutionOptions` is used to configure the default execution options for the flow. It has the following fields:
 
-*   `source_max_inflight_rows` (type: `int`, optional): The maximum number of concurrent inflight requests for source operations.  This only provides an default value, and can be overridden by the `max_inflight_rows` argument passed to `FlowBuilder.add_source()` on per-source basis.
+*   `source_max_inflight_rows` (type: `int`, optional): The maximum number of concurrent inflight requests for source operations.
+*   `source_max_inflight_bytes` (type: `int`, optional): The maximum number of concurrent inflight bytes for source operations.
+
+The options only provide a default value, and can be overridden by arguments passed to `FlowBuilder.add_source()` on per-source basis ([details](/docs/build/flow_def#concurrency-control)).
 
 ## List of Environment Variables
 
@@ -122,3 +125,4 @@ This is the list of environment variables, each of which has a corresponding fie
 | `COCOINDEX_DATABASE_USER` | `database.user` | No |
 | `COCOINDEX_DATABASE_PASSWORD` | `database.password` | No |
 | `COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS` | `default_execution_options.source_max_inflight_rows` | No |
+| `COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES` | `default_execution_options.source_max_inflight_bytes` | No |

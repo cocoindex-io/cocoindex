@@ -128,10 +128,15 @@ async fn update_source(
                             });
                             for change in change_msg.changes {
                                 let ack_fn = ack_fn.clone();
+                                let concur_permit = import_op
+                                    .concurrency_controller
+                                    .acquire(concur_control::BYTES_UNKNOWN_YET)
+                                    .await?;
                                 tokio::spawn(source_context.clone().process_source_key(
                                     change.key,
                                     change.data,
                                     change_stream_stats.clone(),
+                                    concur_permit,
                                     ack_fn.map(|ack_fn| {
                                         move || async move { SharedAckFn::ack(&ack_fn).await }
                                     }),

@@ -695,6 +695,12 @@ impl AnalyzerContext {
                     .default_execution_options
                     .source_max_inflight_rows
             });
+        let max_inflight_bytes =
+            (import_op.spec.execution_options.max_inflight_bytes).or_else(|| {
+                self.lib_ctx
+                    .default_execution_options
+                    .source_max_inflight_bytes
+            });
         let result_fut = async move {
             trace!("Start building executor for source op `{}`", op_name);
             let executor = executor.await?;
@@ -705,7 +711,10 @@ impl AnalyzerContext {
                 primary_key_type,
                 name: op_name,
                 refresh_options: import_op.spec.refresh_options,
-                concurrency_controller: utils::ConcurrencyController::new(max_inflight_rows),
+                concurrency_controller: concur_control::ConcurrencyController::new(
+                    max_inflight_rows,
+                    max_inflight_bytes,
+                ),
             })
         };
         Ok(result_fut)

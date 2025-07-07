@@ -100,6 +100,7 @@ impl SourceIndexingContext {
         key: value::KeyValue,
         source_data: Option<interface::SourceData>,
         update_stats: Arc<stats::UpdateStats>,
+        _concur_permit: concur_control::ConcurrencyControllerPermit,
         ack_fn: Option<AckFn>,
         pool: PgPool,
     ) {
@@ -160,66 +161,76 @@ impl SourceIndexingContext {
                 }
             };
 
-            let permit = processing_sem.acquire().await?;
-            let result = row_indexer::update_source_row(
-                &SourceRowEvaluationContext {
-                    plan: &plan,
-                    import_op,
-                    schema,
-                    key: &key,
-                    import_op_idx: self.source_idx,
-                },
-                &self.setup_execution_ctx,
-                source_data.value,
-                &source_version,
-                &pool,
-                &update_stats,
-            )
-            .await?;
-            let target_source_version = if let SkippedOr::Skipped(existing_source_version) = result
             {
-                Some(existing_source_version)
-            } else if source_version.kind == row_indexer::SourceVersionKind::NonExistence {
-                Some(source_version)
-            } else {
-                None
-            };
-            if let Some(target_source_version) = target_source_version {
-                let mut state = self.state.lock().unwrap();
-                let scan_generation = state.scan_generation;
-                let entry = state.rows.entry(key.clone());
-                match entry {
-                    hash_map::Entry::Occupied(mut entry) => {
-                        if !entry
-                            .get()
-                            .source_version
-                            .should_skip(&target_source_version, None)
-                        {
-                            if target_source_version.kind
-                                == row_indexer::SourceVersionKind::NonExistence
+                let _processing_permit = processing_sem.acquire().await?;
+                let _concur_permit = match &source_data.value {
+                    interface::SourceValue::Existence(value) => {
+                        import_op
+                            .concurrency_controller
+                            .acquire_bytes_with_reservation(|| value.estimated_byte_size())
+                            .await?
+                    }
+                    interface::SourceValue::NonExistence => None,
+                };
+                let result = row_indexer::update_source_row(
+                    &SourceRowEvaluationContext {
+                        plan: &plan,
+                        import_op,
+                        schema,
+                        key: &key,
+                        import_op_idx: self.source_idx,
+                    },
+                    &self.setup_execution_ctx,
+                    source_data.value,
+                    &source_version,
+                    &pool,
+                    &update_stats,
+                )
+                .await?;
+                let target_source_version =
+                    if let SkippedOr::Skipped(existing_source_version) = result {
+                        Some(existing_source_version)
+                    } else if source_version.kind == row_indexer::SourceVersionKind::NonExistence {
+                        Some(source_version)
+                    } else {
+                        None
+                    };
+                if let Some(target_source_version) = target_source_version {
+                    let mut state = self.state.lock().unwrap();
+                    let scan_generation = state.scan_generation;
+                    let entry = state.rows.entry(key.clone());
+                    match entry {
+                        hash_map::Entry::Occupied(mut entry) => {
+                            if !entry
+                                .get()
+                                .source_version
+                                .should_skip(&target_source_version, None)
                             {
-                                entry.remove();
-                            } else {
-                                let mut_entry = entry.get_mut();
-                                mut_entry.source_version = target_source_version;
-                                mut_entry.touched_generation = scan_generation;
+                                if target_source_version.kind
+                                    == row_indexer::SourceVersionKind::NonExistence
+                                {
+                                    entry.remove();
+                                } else {
+                                    let mut_entry = entry.get_mut();
+                                    mut_entry.source_version = target_source_version;
+                                    mut_entry.touched_generation = scan_generation;
+                                }
                             }
                         }
-                    }
-                    hash_map::Entry::Vacant(entry) => {
-                        if target_source_version.kind
-                            != row_indexer::SourceVersionKind::NonExistence
-                        {
-                            entry.insert(SourceRowIndexingState {
-                                source_version: target_source_version,
-                                touched_generation: scan_generation,
-                                ..Default::default()
-                            });
+                        hash_map::Entry::Vacant(entry) => {
+                            if target_source_version.kind
+                                != row_indexer::SourceVersionKind::NonExistence
+                            {
+                                entry.insert(SourceRowIndexingState {
+                                    source_version: target_source_version,
+                                    touched_generation: scan_generation,
+                                    ..Default::default()
+                                });
+                            }
                         }
                     }
                 }
             }
-            drop(permit);
             if let Some(ack_fn) = ack_fn {
                 ack_fn().await?;
             }
@@ -243,6 +254,7 @@ impl SourceIndexingContext {
         key: value::KeyValue,
         source_version: SourceVersion,
         update_stats: &Arc<stats::UpdateStats>,
+        concur_permit: concur_control::ConcurrencyControllerPermit,
         pool: &PgPool,
     ) -> Option<impl Future<Output = ()> + Send + 'static> {
         {
@@ -257,10 +269,14 @@ impl SourceIndexingContext {
                 return None;
             }
         }
-        Some(
-            self.clone()
-                .process_source_key(key, None, update_stats.clone(), NO_ACK, pool.clone()),
-        )
+        Some(self.clone().process_source_key(
+            key,
+            None,
+            update_stats.clone(),
+            concur_permit,
+            NO_ACK,
+            pool.clone(),
+        ))
     }
 
     pub async fn update(
@@ -282,8 +298,11 @@ impl SourceIndexingContext {
             state.scan_generation
         };
         while let Some(row) = rows_stream.next().await {
-            let _ = import_op.concurrency_controller.acquire().await?;
             for row in row? {
+                let concur_permit = import_op
+                    .concurrency_controller
+                    .acquire(concur_control::BYTES_UNKNOWN_YET)
+                    .await?;
                 self.process_source_key_if_newer(
                     row.key,
                     SourceVersion::from_current_with_ordinal(
@@ -291,6 +310,7 @@ impl SourceIndexingContext {
                             .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
                     ),
                     update_stats,
+                    concur_permit,
                     pool,
                 )
                 .map(|fut| join_set.spawn(fut));
@@ -322,10 +342,12 @@ impl SourceIndexingContext {
                     value: interface::SourceValue::NonExistence,
                     ordinal: source_ordinal,
                 });
+            let concur_permit = import_op.concurrency_controller.acquire(Some(|| 0)).await?;
             join_set.spawn(self.clone().process_source_key(
                 key,
                 source_data,
                 update_stats.clone(),
+                concur_permit,
                 NO_ACK,
                 pool.clone(),
             ));
