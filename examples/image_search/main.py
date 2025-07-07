@@ -15,10 +15,9 @@ from PIL import Image
 from qdrant_client import QdrantClient
 from transformers import CLIPModel, CLIPProcessor
 
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearch"
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
-OLLAMA_MODEL = "gemma3"
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
 CLIP_MODEL_DIMENSION = 768
 
@@ -71,22 +70,14 @@ def image_object_embedding_flow(
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
-        has_ollama_model = os.getenv("OLLAMA_MODEL") == OLLAMA_MODEL
-        if has_ollama_model:
+        ollama_model_name = os.getenv("OLLAMA_MODEL")
+        if ollama_model_name is not None:
+            # If an Ollama model is specified, generate an image caption
             img["caption"] = flow_builder.transform(
                 cocoindex.functions.ExtractByLlm(
                     llm_spec=cocoindex.llm.LlmSpec(
-                        api_type=cocoindex.LlmApiType.OLLAMA, model=OLLAMA_MODEL
+                        api_type=cocoindex.LlmApiType.OLLAMA, model=ollama_model_name
                     ),
-                    # Replace by this spec below, to use OpenAI API model instead of ollama
-                    #   llm_spec=cocoindex.LlmSpec(
-                    #       api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
-                    # Replace by this spec below, to use Gemini API model
-                    #   llm_spec=cocoindex.LlmSpec(
-                    #       api_type=cocoindex.LlmApiType.GEMINI, model="gemini-2.0-flash"),
-                    # Replace by this spec below, to use Anthropic API model
-                    #   llm_spec=cocoindex.LlmSpec(
-                    #       api_type=cocoindex.LlmApiType.ANTHROPIC, model="claude-3-5-sonnet-latest"),
                     instruction=(
                         "Describe the image in one detailed sentence. "
                         "Name all visible animal species, objects, and the main scene. "
@@ -105,13 +96,11 @@ def image_object_embedding_flow(
             "embedding": img["embedding"],
         }
 
-        if has_ollama_model:
-            print(
-                f"Ollama model '{OLLAMA_MODEL}' is available — captions will be extracted."
-            )
+        if ollama_model_name is not None:
+            print(f"Using Ollama model '{ollama_model_name}' for captioning.")
             collect_fields["caption"] = img["caption"]
         else:
-            print(f"Ollama model '{OLLAMA_MODEL}' not found — skipping captioning.")
+            print(f"No Ollama model '{ollama_model_name}' found — skipping captioning.")
 
         img_embeddings.collect(**collect_fields)
 
