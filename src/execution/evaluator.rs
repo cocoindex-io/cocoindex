@@ -464,6 +464,11 @@ pub async fn evaluate_source_entry(
     source_value: value::FieldValues,
     memory: &EvaluationMemory,
 ) -> Result<EvaluateSourceEntryOutput> {
+    let _permit = src_eval_ctx
+        .import_op
+        .concurrency_controller
+        .acquire_bytes_with_reservation(|| source_value.estimated_byte_size())
+        .await?;
     let root_schema = &src_eval_ctx.schema.schema;
     let root_scope_value = ScopeValueBuilder::new(root_schema.fields.len());
     let root_scope_entry = ScopeEntry::new(

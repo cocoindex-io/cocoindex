@@ -136,6 +136,10 @@ impl<'a> Dumper<'a> {
         key: value::KeyValue,
         file_path: PathBuf,
     ) -> Result<()> {
+        let _permit = import_op
+            .concurrency_controller
+            .acquire(concur_control::BYTES_UNKNOWN_YET)
+            .await?;
         let mut collected_values_buffer = Vec::new();
         let (exports, error) = match self
             .evaluate_source_entry(import_op_idx, import_op, &key, &mut collected_values_buffer)

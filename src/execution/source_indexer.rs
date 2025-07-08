@@ -163,15 +163,6 @@ impl SourceIndexingContext {
 
             {
                 let _processing_permit = processing_sem.acquire().await?;
-                let _concur_permit = match &source_data.value {
-                    interface::SourceValue::Existence(value) => {
-                        import_op
-                            .concurrency_controller
-                            .acquire_bytes_with_reservation(|| value.estimated_byte_size())
-                            .await?
-                    }
-                    interface::SourceValue::NonExistence => None,
-                };
                 let result = row_indexer::update_source_row(
                     &SourceRowEvaluationContext {
                         plan: &plan,
