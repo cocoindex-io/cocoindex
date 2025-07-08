@@ -158,6 +158,16 @@ You can pass the following arguments to `add_source()` to control the concurrenc
 *   `max_inflight_rows`: the maximum number of concurrent inflight requests for the source operation.
 *   `max_inflight_bytes`: the maximum number of concurrent inflight bytes for the source operation.
 
+For example:
+
+```py
+@cocoindex.flow_def(name="DemoFlow")
+def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+    data_scope["documents"] = flow_builder.add_source(
+        DemoSourceSpec(...), max_inflight_rows=10, max_inflight_bytes=100*1024*1024)
+    ......
+```
+
 The default value can be specified by [`DefaultExecutionOptions`](/docs/core/settings#defaultexecutionoptions) or corresponding [environment variable](/docs/core/settings#list-of-environment-variables).
 
 ### Transform
@@ -210,7 +220,18 @@ You can pass the following arguments to `row()` to control the concurrency of th
 
 *   `max_inflight_rows`: the maximum number of concurrent inflight requests for the for-each operation.
 *   `max_inflight_bytes`: the maximum number of concurrent inflight bytes for the for-each operation.
+    We only take the number of bytes from this row before this for-each operation into account.
 
+For example:
+
+```python
+@cocoindex.flow_def(name="DemoFlow")
+def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+  ...
+  with data_scope["table1"].row(max_inflight_rows=10, max_inflight_bytes=10*1024*1024) as table1_row:
+    # Children operations
+    table1_row["field2"] = table1_row["field1"].transform(DemoFunctionSpec(...))
+```
 
 ### Get a sub field
 
