@@ -156,24 +156,6 @@ impl DataSlice {
             data_type: field_schema.value_type.clone().into(),
         }))
     }
-
-    pub fn table_row_scope(&self) -> PyResult<OpScopeRef> {
-        let field_path = match self.value.as_ref() {
-            spec::ValueMapping::Field(v) => &v.field_path,
-            _ => return Err(PyException::new_err("expect field path")),
-        };
-        let num_parent_layers = self.scope.ancestors().count();
-        let scope_name = format!(
-            "{}_{}",
-            field_path.last().map_or("", |s| s.as_str()),
-            num_parent_layers
-        );
-        let (_, sub_op_scope) = self
-            .scope
-            .new_foreach_op_scope(scope_name, field_path)
-            .into_py_result()?;
-        Ok(OpScopeRef(sub_op_scope))
-    }
 }
 
 impl DataSlice {
@@ -383,6 +365,48 @@ impl FlowBuilder {
         Ok(())
     }
 
+    #[pyo3(signature = (data_slice, execution_options=None))]
+    pub fn for_each(
+        &mut self,
+        data_slice: DataSlice,
+        execution_options: Option<py::Pythonized<spec::ExecutionOptions>>,
+    ) -> PyResult<OpScopeRef> {
+        let parent_scope = &data_slice.scope;
+        let field_path = match data_slice.value.as_ref() {
+            spec::ValueMapping::Field(v) => &v.field_path,
+            _ => return Err(PyException::new_err("expect field path")),
+        };
+        let num_parent_layers = parent_scope.ancestors().count();
+        let scope_name = format!(
+            "{}_{}",
+            field_path.last().map_or("", |s| s.as_str()),
+            num_parent_layers
+        );
+        let (_, child_op_scope) = parent_scope
+            .new_foreach_op_scope(scope_name.clone(), field_path)
+            .into_py_result()?;
+
+        let reactive_op = spec::NamedSpec {
+            name: format!(".for_each.{}", self.next_generated_op_id),
+            spec: spec::ReactiveOpSpec::ForEach(spec::ForEachOpSpec {
+                field_path: field_path.clone(),
+                op_scope: spec::ReactiveOpScope {
+                    name: scope_name,
+                    ops: vec![],
+                },
+                execution_options: execution_options
+                    .map(|o| o.into_inner())
+                    .unwrap_or_default(),
+            }),
+        };
+        self.next_generated_op_id += 1;
+        self.get_mut_reactive_ops(parent_scope)
+            .into_py_result()?
+            .push(reactive_op);
+
+        Ok(OpScopeRef(child_op_scope))
+    }
+
     #[pyo3(signature = (kind, op_spec, args, target_scope, name))]
     pub fn transform(
         &mut self,
@@ -428,7 +452,9 @@ impl FlowBuilder {
             .into_py_result()?;
         std::mem::drop(analyzed);
 
-        self.get_mut_reactive_ops(op_scope).push(reactive_op);
+        self.get_mut_reactive_ops(op_scope)
+            .into_py_result()?
+            .push(reactive_op);
 
         let result = Self::last_field_to_data_slice(op_scope).into_py_result()?;
         Ok(result)
@@ -476,7 +502,9 @@ impl FlowBuilder {
             .into_py_result()?;
         std::mem::drop(analyzed);
 
-        self.get_mut_reactive_ops(common_scope).push(reactive_op);
+        self.get_mut_reactive_ops(common_scope)
+            .into_py_result()?
+            .push(reactive_op);
 
         let collector_schema = CollectorSchema::from_fields(
             fields
@@ -741,27 +769,19 @@ impl FlowBuilder {
     fn get_mut_reactive_ops<'a>(
         &'a mut self,
         op_scope: &OpScope,
-    ) -> &'a mut Vec<spec::NamedSpec<spec::ReactiveOpSpec>> {
-        Self::get_mut_reactive_ops_internal(
-            op_scope,
-            &mut self.reactive_ops,
-            &mut self.next_generated_op_id,
-        )
+    ) -> Result<&'a mut Vec<spec::NamedSpec<spec::ReactiveOpSpec>>> {
+        Self::get_mut_reactive_ops_internal(op_scope, &mut self.reactive_ops)
     }
 
     fn get_mut_reactive_ops_internal<'a>(
         op_scope: &OpScope,
         root_reactive_ops: &'a mut Vec<spec::NamedSpec<spec::ReactiveOpSpec>>,
-        next_generated_op_id: &mut usize,
-    ) -> &'a mut Vec<spec::NamedSpec<spec::ReactiveOpSpec>> {
-        match &op_scope.parent {
+    ) -> Result<&'a mut Vec<spec::NamedSpec<spec::ReactiveOpSpec>>> {
+        let result = match &op_scope.parent {
             None => root_reactive_ops,
             Some((parent_op_scope, field_path)) => {
-                let parent_reactive_ops = Self::get_mut_reactive_ops_internal(
-                    parent_op_scope,
-                    root_reactive_ops,
-                    next_generated_op_id,
-                );
+                let parent_reactive_ops =
+                    Self::get_mut_reactive_ops_internal(parent_op_scope, root_reactive_ops)?;
                 // Reuse the last foreach if matched, otherwise create a new one.
                 match parent_reactive_ops.last() {
                     Some(spec::NamedSpec {
@@ -771,17 +791,7 @@ impl FlowBuilder {
                         && foreach_spec.op_scope.name == op_scope.name => {}
 
                     _ => {
-                        parent_reactive_ops.push(spec::NamedSpec {
-                            name: format!(".foreach.{}", next_generated_op_id),
-                            spec: spec::ReactiveOpSpec::ForEach(spec::ForEachOpSpec {
-                                field_path: field_path.clone(),
-                                op_scope: spec::ReactiveOpScope {
-                                    name: op_scope.name.clone(),
-                                    ops: vec![],
-                                },
-                            }),
-                        });
-                        *next_generated_op_id += 1;
+                        api_bail!("already out of op scope `{}`", op_scope.name);
                     }
                 }
                 match &mut parent_reactive_ops.last_mut().unwrap().spec {
@@ -789,6 +799,7 @@ impl FlowBuilder {
                     _ => unreachable!(),
                 }
             }
-        }
+        };
+        Ok(result)
     }
 }

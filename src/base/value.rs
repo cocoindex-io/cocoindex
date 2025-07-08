@@ -14,6 +14,14 @@ use serde::{
 };
 use std::{collections::BTreeMap, ops::Deref, sync::Arc};
 
+pub trait EstimatedByteSize: Sized {
+    fn estimated_detached_byte_size(&self) -> usize;
+
+    fn estimated_byte_size(&self) -> usize {
+        self.estimated_detached_byte_size() + std::mem::size_of::<Self>()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RangeValue {
     pub start: usize,
@@ -855,7 +863,7 @@ impl<VS> Value<VS> {
     }
 }
 
-impl Value<ScopeValue> {
+impl<VS: EstimatedByteSize> Value<VS> {
     pub fn estimated_byte_size(&self) -> usize {
         std::mem::size_of::<Self>()
             + match self {
@@ -883,6 +891,16 @@ impl Value<ScopeValue> {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct FieldValues<VS = ScopeValue> {
     pub fields: Vec<Value<VS>>,
+}
+
+impl<VS: EstimatedByteSize> EstimatedByteSize for FieldValues<VS> {
+    fn estimated_detached_byte_size(&self) -> usize {
+        self.fields
+            .iter()
+            .map(Value::<VS>::estimated_byte_size)
+            .sum::<usize>()
+            + self.fields.len() * std::mem::size_of::<Value<VS>>()
+    }
 }
 
 impl serde::Serialize for FieldValues {
@@ -954,22 +972,14 @@ where
     }
 }
 
-impl FieldValues<ScopeValue> {
-    fn estimated_detached_byte_size(&self) -> usize {
-        self.fields
-            .iter()
-            .map(Value::estimated_byte_size)
-            .sum::<usize>()
-            + self.fields.len() * std::mem::size_of::<Value<ScopeValue>>()
-    }
-
-    pub fn estimated_byte_size(&self) -> usize {
-        self.estimated_detached_byte_size() + std::mem::size_of::<Self>()
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScopeValue(pub FieldValues);
+
+impl EstimatedByteSize for ScopeValue {
+    fn estimated_detached_byte_size(&self) -> usize {
+        self.0.estimated_detached_byte_size()
+    }
+}
 
 impl Deref for ScopeValue {
     type Target = FieldValues;

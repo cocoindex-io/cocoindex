@@ -204,6 +204,14 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 </TabItem>
 </Tabs>
 
+#### Concurrency control
+
+You can pass the following arguments to `row()` to control the concurrency of the for-each operation:
+
+*   `max_inflight_rows`: the maximum number of concurrent inflight requests for the for-each operation.
+*   `max_inflight_bytes`: the maximum number of concurrent inflight bytes for the for-each operation.
+
+
 ### Get a sub field
 
 If the data slice has `Struct` type, you can obtain a data slice on a specific sub field of it, similar to getting a field of a data scope.

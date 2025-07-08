@@ -807,6 +807,8 @@ impl AnalyzerContext {
                     analyzed_op_scope_fut
                 };
                 let op_name = reactive_op.name.clone();
+
+                let exec_options = foreach_op.execution_options.clone();
                 async move {
                     Ok(AnalyzedReactiveOp::ForEach(AnalyzedForEachOp {
                         local_field_ref,
@@ -814,6 +816,10 @@ impl AnalyzerContext {
                             .await
                             .with_context(|| format!("Analyzing foreach op: {op_name}"))?,
                         name: op_name,
+                        concurrency_controller: concur_control::ConcurrencyController::new(
+                            exec_options.max_inflight_rows,
+                            exec_options.max_inflight_bytes,
+                        ),
                     }))
                 }
                 .boxed()

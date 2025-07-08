@@ -198,18 +198,42 @@ class DataSlice(Generic[T]):
             raise KeyError(field_name)
         return DataSlice(_DataSliceState(self._state.flow_builder_state, field_slice))
 
-    def row(self) -> DataScope:
+    def row(
+        self,
+        /,
+        *,
+        max_inflight_rows: int | None = None,
+        max_inflight_bytes: int | None = None,
+    ) -> DataScope:
         """
         Return a scope representing each row of the table.
         """
-        row_scope = self._state.engine_data_slice.table_row_scope()
+        row_scope = self._state.flow_builder_state.engine_flow_builder.for_each(
+            self._state.engine_data_slice,
+            execution_options=dump_engine_object(
+                _ExecutionOptions(
+                    max_inflight_rows=max_inflight_rows,
+                    max_inflight_bytes=max_inflight_bytes,
+                ),
+            ),
+        )
         return DataScope(self._state.flow_builder_state, row_scope)
 
-    def for_each(self, f: Callable[[DataScope], None]) -> None:
+    def for_each(
+        self,
+        f: Callable[[DataScope], None],
+        /,
+        *,
+        max_inflight_rows: int | None = None,
+        max_inflight_bytes: int | None = None,
+    ) -> None:
         """
         Apply a function to each row of the collection.
         """
-        with self.row() as scope:
+        with self.row(
+            max_inflight_rows=max_inflight_rows,
+            max_inflight_bytes=max_inflight_bytes,
+        ) as scope:
             f(scope)
 
     def transform(

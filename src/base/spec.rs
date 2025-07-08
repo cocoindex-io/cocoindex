@@ -255,7 +255,10 @@ impl SpecFormatter for OpSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExecutionOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_inflight_rows: Option<usize>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_inflight_bytes: Option<usize>,
 }
 
@@ -327,6 +330,9 @@ pub struct ForEachOpSpec {
     /// Mapping that provides a table to apply reactive operations to.
     pub field_path: FieldPath,
     pub op_scope: ReactiveOpScope,
+
+    #[serde(default)]
+    pub execution_options: ExecutionOptions,
 }
 
 impl ForEachOpSpec {
