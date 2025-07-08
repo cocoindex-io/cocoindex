@@ -70,21 +70,6 @@ def pdf_to_markdown(content: bytes) -> str:
         return text
 
 
-@cocoindex.transform_flow()
-def text_to_embedding(
-    text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[list[float]]:
-    """
-    Embed the text using a SentenceTransformer model.
-    This is a shared logic between indexing and querying, so extract it as a function.
-    """
-    return text.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"
-        )
-    )
-
-
 @cocoindex.flow_def(name="PaperMetadata")
 def paper_metadata_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
@@ -115,7 +100,11 @@ def paper_metadata_flow(
                 instruction="Please extract the metadata from the first page of the paper.",
             )
         )
-        doc["title_embedding"] = text_to_embedding(doc["metadata"]["title"])
+        doc["title_embedding"] = doc["metadata"]["title"].transform(
+            cocoindex.functions.SentenceTransformerEmbed(
+                model="sentence-transformers/all-MiniLM-L6-v2"
+            )
+        )
         doc["abstract_chunks"] = doc["metadata"]["abstract"].transform(
             cocoindex.functions.SplitRecursively(
                 custom_languages=[
@@ -152,7 +141,11 @@ def paper_metadata_flow(
             )
 
         with doc["abstract_chunks"].row() as chunk:
-            chunk["embedding"] = text_to_embedding(chunk["text"])
+            chunk["embedding"] = chunk["text"].transform(
+                cocoindex.functions.SentenceTransformerEmbed(
+                    model="sentence-transformers/all-MiniLM-L6-v2"
+                )
+            )
             metadata_embeddings.collect(
                 id=cocoindex.GeneratedField.UUID,
                 filename=doc["filename"],
