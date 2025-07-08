@@ -83,10 +83,11 @@ def paper_metadata_flow(
     )
 
     paper_metadata = data_scope.add_collector()
-    metadata_embeddings = data_scope.add_collector()
     author_papers = data_scope.add_collector()
+    metadata_embeddings = data_scope.add_collector()
 
     with data_scope["documents"].row() as doc:
+        # Extract metadata
         doc["basic_info"] = doc["content"].transform(extract_basic_info)
         doc["first_page_md"] = doc["basic_info"]["first_page"].transform(
             pdf_to_markdown
@@ -100,6 +101,24 @@ def paper_metadata_flow(
                 instruction="Please extract the metadata from the first page of the paper.",
             )
         )
+
+        # Collect metadata
+        paper_metadata.collect(
+            filename=doc["filename"],
+            title=doc["metadata"]["title"],
+            authors=doc["metadata"]["authors"],
+            abstract=doc["metadata"]["abstract"],
+            num_pages=doc["basic_info"]["num_pages"],
+        )
+
+        # Collect author to filename mapping
+        with doc["metadata"]["authors"].row() as author:
+            author_papers.collect(
+                author_name=author["name"],
+                filename=doc["filename"],
+            )
+
+        # Embed title and abstract, and collect embeddings
         doc["title_embedding"] = doc["metadata"]["title"].transform(
             cocoindex.functions.SentenceTransformerEmbed(
                 model="sentence-transformers/all-MiniLM-L6-v2"
@@ -119,14 +138,6 @@ def paper_metadata_flow(
             min_chunk_size=200,
             chunk_overlap=150,
         )
-
-        paper_metadata.collect(
-            filename=doc["filename"],
-            title=doc["metadata"]["title"],
-            authors=doc["metadata"]["authors"],
-            abstract=doc["metadata"]["abstract"],
-            num_pages=doc["basic_info"]["num_pages"],
-        )
         metadata_embeddings.collect(
             id=cocoindex.GeneratedField.UUID,
             filename=doc["filename"],
@@ -134,12 +145,6 @@ def paper_metadata_flow(
             text=doc["metadata"]["title"],
             embedding=doc["title_embedding"],
         )
-        with doc["metadata"]["authors"].row() as author:
-            author_papers.collect(
-                author_name=author["name"],
-                filename=doc["filename"],
-            )
-
         with doc["abstract_chunks"].row() as chunk:
             chunk["embedding"] = chunk["text"].transform(
                 cocoindex.functions.SentenceTransformerEmbed(
@@ -159,6 +164,11 @@ def paper_metadata_flow(
         cocoindex.targets.Postgres(),
         primary_key_fields=["filename"],
     )
+    author_papers.export(
+        "author_papers",
+        cocoindex.targets.Postgres(),
+        primary_key_fields=["author_name", "filename"],
+    )
     metadata_embeddings.export(
         "metadata_embeddings",
         cocoindex.targets.Postgres(),
@@ -169,9 +179,4 @@ def paper_metadata_flow(
                 metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
             )
         ],
-    )
-    author_papers.export(
-        "author_papers",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["author_name", "filename"],
     )
