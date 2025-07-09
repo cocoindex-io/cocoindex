@@ -66,12 +66,11 @@ impl LlmGenerationClient for Client {
             stream: Some(false),
         };
         let res = retryable::run(
-            || async {
+            || {
                 self.reqwest_client
                     .post(self.generate_url.as_str())
                     .json(&req)
                     .send()
-                    .await
             },
             &retryable::HEAVY_LOADED_OPTIONS,
         )

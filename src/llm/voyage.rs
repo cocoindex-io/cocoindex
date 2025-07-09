@@ -76,13 +76,12 @@ impl LlmEmbeddingClient for Client {
         }
 
         let resp = retryable::run(
-            || async {
+            || {
                 self.client
                     .post(url)
                     .header("Authorization", format!("Bearer {}", self.api_key))
                     .json(&payload)
                     .send()
-                    .await
             },
             &retryable::HEAVY_LOADED_OPTIONS,
         )

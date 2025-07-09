@@ -114,7 +114,7 @@ impl LlmGenerationClient for Client {
 
         let url = self.get_api_url(request.model, "generateContent");
         let resp = retryable::run(
-            || async { self.client.post(&url).json(&payload).send().await },
+            || self.client.post(&url).json(&payload).send(),
             &retryable::HEAVY_LOADED_OPTIONS,
         )
         .await?;
@@ -173,7 +173,7 @@ impl LlmEmbeddingClient for Client {
             payload["taskType"] = serde_json::Value::String(task_type.into());
         }
         let resp = retryable::run(
-            || async { self.client.post(&url).json(&payload).send().await },
+            || self.client.post(&url).json(&payload).send(),
             &retryable::HEAVY_LOADED_OPTIONS,
         )
         .await?;
