@@ -28,6 +28,12 @@ impl IsRetryable for Error {
     }
 }
 
+impl IsRetryable for reqwest::Error {
+    fn is_retryable(&self) -> bool {
+        self.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS)
+    }
+}
+
 impl Error {
     pub fn always_retryable(error: anyhow::Error) -> Self {
         Self {
@@ -77,12 +83,18 @@ pub struct RetryOptions {
 impl Default for RetryOptions {
     fn default() -> Self {
         Self {
-            max_retries: Some(5),
+            max_retries: Some(10),
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(10),
         }
     }
 }
+
+pub static HEAVY_LOADED_OPTIONS: RetryOptions = RetryOptions {
+    max_retries: Some(10),
+    initial_backoff: Duration::from_millis(1),
+    max_backoff: Duration::from_secs(60),
+};
 
 pub async fn run<
     Ok,

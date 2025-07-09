@@ -1,14 +1,12 @@
+use crate::prelude::*;
+use base64::prelude::*;
+
 use crate::llm::{
     LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
     ToJsonSchemaOptions, detect_image_mime_type,
 };
-use anyhow::{Context, Result, bail};
-use async_trait::async_trait;
-use base64::prelude::*;
+use anyhow::Context;
 use json5;
-use serde_json::Value;
-
-use crate::api_bail;
 use urlencoding::encode;
 
 pub struct Client {
@@ -91,23 +89,20 @@ impl LlmGenerationClient for Client {
 
         let encoded_api_key = encode(&self.api_key);
 
-        let resp = self
-            .client
-            .post(url)
-            .header("x-api-key", encoded_api_key.as_ref())
-            .header("anthropic-version", "2023-06-01")
-            .json(&payload)
-            .send()
-            .await
-            .context("HTTP error")?;
-        if !resp.status().is_success() {
-            bail!(
-                "Anthropic API error: {:?}\n{}\n",
-                resp.status(),
-                resp.text().await?
-            );
-        }
-        let mut resp_json: Value = resp.json().await.context("Invalid JSON")?;
+        let resp = retryable::run(
+            || async {
+                self.client
+                    .post(url)
+                    .header("x-api-key", encoded_api_key.as_ref())
+                    .header("anthropic-version", "2023-06-01")
+                    .json(&payload)
+                    .send()
+                    .await
+            },
+            &retryable::HEAVY_LOADED_OPTIONS,
+        )
+        .await?;
+        let mut resp_json: serde_json::Value = resp.json().await.context("Invalid JSON")?;
         if let Some(error) = resp_json.get("error") {
             bail!("Anthropic API error: {:?}", error);
         }
@@ -117,11 +112,11 @@ impl LlmGenerationClient for Client {
 
         let resp_content = &resp_json["content"];
         let tool_name = "report_result";
-        let mut extracted_json: Option<Value> = None;
+        let mut extracted_json: Option<serde_json::Value> = None;
         if let Some(array) = resp_content.as_array() {
             for item in array {
-                if item.get("type") == Some(&Value::String("tool_use".to_string()))
-                    && item.get("name") == Some(&Value::String(tool_name.to_string()))
+                if item.get("type") == Some(&serde_json::Value::String("tool_use".to_string()))
+                    && item.get("name") == Some(&serde_json::Value::String(tool_name.to_string()))
                 {
                     if let Some(input) = item.get("input") {
                         extracted_json = Some(input.clone());
@@ -136,7 +131,7 @@ impl LlmGenerationClient for Client {
         } else {
             // Fallback: try text if no tool output found
             match &mut resp_json["content"][0]["text"] {
-                Value::String(s) => {
+                serde_json::Value::String(s) => {
                     // Try strict JSON parsing first
                     match serde_json::from_str::<serde_json::Value>(s) {
                         Ok(_) => std::mem::take(s),

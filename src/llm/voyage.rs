@@ -75,14 +75,18 @@ impl LlmEmbeddingClient for Client {
             payload["input_type"] = serde_json::Value::String(task_type.into());
         }
 
-        let resp = self
-            .client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&payload)
-            .send()
-            .await
-            .context("HTTP error")?;
+        let resp = retryable::run(
+            || async {
+                self.client
+                    .post(url)
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .json(&payload)
+                    .send()
+                    .await
+            },
+            &retryable::HEAVY_LOADED_OPTIONS,
+        )
+        .await?;
 
         if !resp.status().is_success() {
             bail!(

@@ -65,12 +65,17 @@ impl LlmGenerationClient for Client {
             system: request.system_prompt.as_ref().map(|s| s.as_ref()),
             stream: Some(false),
         };
-        let res = self
-            .reqwest_client
-            .post(self.generate_url.as_str())
-            .json(&req)
-            .send()
-            .await?;
+        let res = retryable::run(
+            || async {
+                self.reqwest_client
+                    .post(self.generate_url.as_str())
+                    .json(&req)
+                    .send()
+                    .await
+            },
+            &retryable::HEAVY_LOADED_OPTIONS,
+        )
+        .await?;
         if !res.status().is_success() {
             bail!(
                 "Ollama API error: {:?}\n{}\n",

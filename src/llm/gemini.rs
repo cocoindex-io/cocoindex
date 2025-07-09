@@ -113,13 +113,11 @@ impl LlmGenerationClient for Client {
         }
 
         let url = self.get_api_url(request.model, "generateContent");
-        let resp = self
-            .client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await
-            .context("HTTP error")?;
+        let resp = retryable::run(
+            || async { self.client.post(&url).json(&payload).send().await },
+            &retryable::HEAVY_LOADED_OPTIONS,
+        )
+        .await?;
         if !resp.status().is_success() {
             bail!(
                 "Gemini API error: {:?}\n{}\n",
@@ -174,13 +172,11 @@ impl LlmEmbeddingClient for Client {
         if let Some(task_type) = request.task_type {
             payload["taskType"] = serde_json::Value::String(task_type.into());
         }
-        let resp = self
-            .client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await
-            .context("HTTP error")?;
+        let resp = retryable::run(
+            || async { self.client.post(&url).json(&payload).send().await },
+            &retryable::HEAVY_LOADED_OPTIONS,
+        )
+        .await?;
         if !resp.status().is_success() {
             bail!(
                 "Gemini API error: {:?}\n{}\n",
