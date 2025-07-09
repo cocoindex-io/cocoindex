@@ -95,3 +95,74 @@ impl SimpleFunctionFactoryBase for Factory {
 pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
     Factory.register(registry)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ops::functions::test_utils::{build_arg_schema, test_flow_function};
+    use serde_json::json;
+
+    #[tokio::test]
+    #[ignore = "This test requires OpenAI API key or a configured local LLM and may make network calls."]
+    async fn test_embed_text_with_util() {
+        let context = Arc::new(FlowInstanceContext {
+            flow_instance_name: "test_embed_text_flow".to_string(),
+            auth_registry: Arc::new(AuthRegistry::default()),
+            py_exec_ctx: None,
+        });
+
+        // Using OpenAI as an example.
+        let spec_json = json!({
+            "api_type": "OpenAi",
+            "model": "text-embedding-ada-002",
+        });
+
+        let factory = Arc::new(Factory);
+        let text_content = "CocoIndex is a performant data transformation framework for AI.";
+
+        let input_args_values = vec![text_content.to_string().into()];
+
+        let input_arg_schemas = vec![build_arg_schema(
+            "text",
+            text_content.to_string().into(),
+            BasicValueType::Str,
+        )];
+
+        let result = test_flow_function(
+            factory,
+            spec_json,
+            input_arg_schemas,
+            input_args_values,
+            context,
+        )
+        .await;
+
+        if result.is_err() {
+            eprintln!(
+                "test_embed_text: test_flow_function returned error (potentially expected for evaluate): {:?}",
+                result.as_ref().err()
+            );
+        }
+
+        assert!(
+            result.is_ok(),
+            "test_flow_function failed. NOTE: This test may require network access/API keys for OpenAI. Error: {:?}",
+            result.err()
+        );
+
+        let value = result.unwrap();
+
+        match value {
+            Value::Basic(BasicValue::Vector(arc_vec)) => {
+                assert_eq!(arc_vec.len(), 1536, "Embedding vector dimension mismatch");
+                for item in arc_vec.iter() {
+                    match item {
+                        BasicValue::Float32(_) => {}
+                        _ => panic!("Embedding vector element is not Float32: {:?}", item),
+                    }
+                }
+            }
+            _ => panic!("Expected Value::Basic(BasicValue::Vector), got {:?}", value),
+        }
+    }
+}

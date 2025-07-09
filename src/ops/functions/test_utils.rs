@@ -1,15 +1,14 @@
 use crate::builder::plan::AnalyzedValueMapping;
 use crate::ops::sdk::{
-    EnrichedValueType, FlowInstanceContext, OpArgSchema, OpArgsResolver, SimpleFunctionExecutor,
-    SimpleFunctionFactoryBase, Value,
+    BasicValueType, EnrichedValueType, FlowInstanceContext, OpArgSchema, OpArgsResolver,
+    SimpleFunctionExecutor, SimpleFunctionFactoryBase, Value, make_output_type,
 };
 use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
-// This function provides a helper to create OpArgSchema for literal values.
-pub fn new_literal_op_arg_schema(
+fn new_literal_op_arg_schema(
     name: Option<&str>,
     value: Value,
     value_type: EnrichedValueType,
@@ -21,6 +20,11 @@ pub fn new_literal_op_arg_schema(
         value_type,
         analyzed_value: AnalyzedValueMapping::Constant { value },
     }
+}
+
+// This function provides a helper to create OpArgSchema for literal values.
+pub fn build_arg_schema(name: &str, value: Value, value_type: BasicValueType) -> OpArgSchema {
+    new_literal_op_arg_schema(Some(name), value, make_output_type(value_type))
 }
 
 // This function tests a flow function by providing a spec, input argument schemas, and values.
