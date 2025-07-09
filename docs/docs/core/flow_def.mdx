@@ -40,7 +40,7 @@ def demo_flow_def(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.Dat
     ...
 
 # Add the flow definition to the flow registry.
-demo_flow = cocoindex.flow.add_flow_def("DemoFlow", demo_flow_def)
+demo_flow = cocoindex.add_flow_def("DemoFlow", demo_flow_def)
 ```
 
 In both cases, `demo_flow` will be an object with `cocoindex.Flow` class type.
