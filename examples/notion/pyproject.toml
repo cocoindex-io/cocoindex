@@ -1,0 +1,9 @@
+[project]
+name = "notion-text-embedding"
+version = "0.1.0"
+description = "Simple example for cocoindex: build embedding index based on Notion databases and pages."
+requires-python = ">=3.11"
+dependencies = ["cocoindex[embeddings]>=0.1.63", "python-dotenv>=1.0.1"]
+
+[tool.setuptools]
+packages = []
