@@ -92,7 +92,7 @@ impl Default for RetryOptions {
 
 pub static HEAVY_LOADED_OPTIONS: RetryOptions = RetryOptions {
     max_retries: Some(10),
-    initial_backoff: Duration::from_millis(1),
+    initial_backoff: Duration::from_secs(1),
     max_backoff: Duration::from_secs(60),
 };
 
