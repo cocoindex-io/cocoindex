@@ -214,6 +214,11 @@ impl LibContext {
         Ok(flow_ctx)
     }
 
+    pub fn remove_flow_context(&self, flow_name: &str) {
+        let mut flows = self.flows.lock().unwrap();
+        flows.remove(flow_name);
+    }
+
     pub fn require_persistence_ctx(&self) -> Result<&PersistenceContext> {
         self.persistence_ctx
             .as_ref()
@@ -268,7 +273,7 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
     })
 }
 
-static LIB_CONTEXT: RwLock<Option<Arc<LibContext>>> = RwLock::new(None);
+pub static LIB_CONTEXT: RwLock<Option<Arc<LibContext>>> = RwLock::new(None);
 
 pub(crate) fn init_lib_context(settings: settings::Settings) -> Result<()> {
     let mut lib_context_locked = LIB_CONTEXT.write().unwrap();

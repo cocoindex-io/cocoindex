@@ -463,6 +463,14 @@ fn make_drop_bundle(flow_names: Vec<String>) -> PyResult<SetupChangeBundle> {
 }
 
 #[pyfunction]
+fn remove_flow_context(flow_name: String) {
+    let lib_context_locked = crate::lib_context::LIB_CONTEXT.read().unwrap();
+    if let Some(lib_context) = lib_context_locked.as_ref() {
+        lib_context.remove_flow_context(&flow_name)
+    }
+}
+
+#[pyfunction]
 fn add_auth_entry(key: String, value: Pythonized<serde_json::Value>) -> PyResult<()> {
     get_auth_registry()
         .add(key, value.into_inner())
@@ -493,6 +501,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(flow_names_with_setup_async, m)?)?;
     m.add_function(wrap_pyfunction!(make_setup_bundle, m)?)?;
     m.add_function(wrap_pyfunction!(make_drop_bundle, m)?)?;
+    m.add_function(wrap_pyfunction!(remove_flow_context, m)?)?;
     m.add_function(wrap_pyfunction!(add_auth_entry, m)?)?;
 
     m.add_class::<builder::flow_builder::FlowBuilder>()?;

@@ -624,7 +624,7 @@ class Flow:
 
     _name: str
     _full_name: str
-    _lazy_engine_flow: Callable[[], _engine.Flow]
+    _lazy_engine_flow: Callable[[], _engine.Flow] | None
 
     def __init__(
         self, name: str, full_name: str, engine_flow_creator: Callable[[], _engine.Flow]
@@ -664,18 +664,18 @@ class Flow:
         return tree
 
     def _get_spec(self, verbose: bool = False) -> _engine.RenderedSpec:
-        return self._lazy_engine_flow().get_spec(
+        return self.internal_flow().get_spec(
             output_mode="verbose" if verbose else "concise"
         )
 
     def _get_schema(self) -> list[tuple[str, str, str]]:
-        return cast(list[tuple[str, str, str]], self._lazy_engine_flow().get_schema())
+        return cast(list[tuple[str, str, str]], self.internal_flow().get_schema())
 
     def __str__(self) -> str:
         return str(self._get_spec())
 
     def __repr__(self) -> str:
-        return repr(self._lazy_engine_flow())
+        return repr(self.internal_flow())
 
     @property
     def name(self) -> str:
@@ -715,12 +715,14 @@ class Flow:
         """
         Evaluate the flow and dump flow outputs to files.
         """
-        return self._lazy_engine_flow().evaluate_and_dump(dump_engine_object(options))
+        return self.internal_flow().evaluate_and_dump(dump_engine_object(options))
 
     def internal_flow(self) -> _engine.Flow:
         """
         Get the engine flow.
         """
+        if self._lazy_engine_flow is None:
+            raise RuntimeError(f"Flow {self.full_name} is already removed")
         return self._lazy_engine_flow()
 
     async def internal_flow_async(self) -> _engine.Flow:
@@ -731,13 +733,13 @@ class Flow:
 
     def setup(self, report_to_stdout: bool = False) -> None:
         """
-        Setup the flow.
+        Setup persistent backends of the flow.
         """
         execution_context.run(self.setup_async(report_to_stdout=report_to_stdout))
 
     async def setup_async(self, report_to_stdout: bool = False) -> None:
         """
-        Setup the flow. The async version.
+        Setup persistent backends of the flow. The async version.
         """
         await make_setup_bundle([self]).describe_and_apply_async(
             report_to_stdout=report_to_stdout
@@ -745,13 +747,18 @@ class Flow:
 
     def drop(self, report_to_stdout: bool = False) -> None:
         """
-        Drop the flow.
+        Drop persistent backends of the flow.
+
+        The current instance is still valid after it's called.
+        For example, you can still call `setup()` after it, to setup the persistent backends again.
+
+        Call `cocoindex.remove_flow()` if you want to remove the flow from the current process.
         """
         execution_context.run(self.drop_async(report_to_stdout=report_to_stdout))
 
     async def drop_async(self, report_to_stdout: bool = False) -> None:
         """
-        Drop the flow. The async version.
+        Drop persistent backends of the flow. The async version.
         """
         await make_drop_bundle([self]).describe_and_apply_async(
             report_to_stdout=report_to_stdout
@@ -803,6 +810,19 @@ def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) ->
             raise KeyError(f"Flow with name {name} already exists")
         fl = _flows[name] = _create_lazy_flow(name, fl_def)
     return fl
+
+
+def remove_flow(fl: Flow) -> None:
+    """
+    Remove a flow from the current process to free up resources.
+    After it's called, methods of the flow should no longer be called.
+
+    This will NOT touch the persistent backends of the flow.
+    """
+    _engine.remove_flow_context(fl.full_name)
+    fl._lazy_engine_flow = None  # pylint: disable=protected-access
+    with _flows_lock:
+        del _flows[fl.name]
 
 
 def flow_def(
