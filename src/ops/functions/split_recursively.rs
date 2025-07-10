@@ -1032,7 +1032,6 @@ pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
 mod tests {
     use super::*;
     use crate::ops::functions::test_utils::{build_arg_schema, test_flow_function};
-    use serde_json::json;
 
     // Helper function to assert chunk text and its consistency with the range within the original text.
     fn assert_chunk_text_consistency(
@@ -1075,14 +1074,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_split_recursively_with_util() {
-        let context = Arc::new(FlowInstanceContext {
-            flow_instance_name: "test_parse_recursively_flow".to_string(),
-            auth_registry: Arc::new(AuthRegistry::default()),
-            py_exec_ctx: None,
-        });
-
-        let spec_json = json!({});
+    async fn test_split_recursively() {
+        let spec = Spec {
+            custom_languages: vec![],
+        };
         let factory = Arc::new(Factory);
         let text_content = "Linea 1.\nLinea 2.\n\nLinea 3.";
 
@@ -1102,14 +1097,7 @@ mod tests {
             build_arg_schema("language", Value::Null, BasicValueType::Str),
         ];
 
-        let result = test_flow_function(
-            factory,
-            spec_json,
-            input_arg_schemas,
-            input_args_values,
-            context,
-        )
-        .await;
+        let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
 
         assert!(
             result.is_ok(),
@@ -1250,6 +1238,7 @@ mod tests {
         assert_chunk_text_consistency(text2, &chunks2[0], "A very very long", "Test 2, Chunk 0");
         assert!(chunks2[0].text.len() <= 20);
     }
+
     #[test]
     fn test_basic_split_with_overlap() {
         let text = "This is a test text that is a bit longer to see how the overlap works.";
@@ -1269,6 +1258,7 @@ mod tests {
             assert!(chunks[0].text.len() <= 25);
         }
     }
+
     #[test]
     fn test_split_trims_whitespace() {
         let text = "  \n First chunk. \n\n  Second chunk with spaces at the end.   \n";

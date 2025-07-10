@@ -1,11 +1,10 @@
 use crate::builder::plan::AnalyzedValueMapping;
 use crate::ops::sdk::{
-    BasicValueType, EnrichedValueType, FlowInstanceContext, OpArgSchema, OpArgsResolver,
-    SimpleFunctionExecutor, SimpleFunctionFactoryBase, Value, make_output_type,
+    AuthRegistry, BasicValueType, EnrichedValueType, FlowInstanceContext, OpArgSchema,
+    OpArgsResolver, SimpleFunctionExecutor, SimpleFunctionFactoryBase, Value, make_output_type,
 };
 use anyhow::Result;
 use serde::de::DeserializeOwned;
-use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
 fn new_literal_op_arg_schema(
@@ -30,18 +29,20 @@ pub fn build_arg_schema(name: &str, value: Value, value_type: BasicValueType) ->
 // This function tests a flow function by providing a spec, input argument schemas, and values.
 pub async fn test_flow_function<S, R, F>(
     factory: Arc<F>,
-    spec_json: JsonValue,
+    spec: S,
     input_arg_schemas: Vec<OpArgSchema>,
     input_arg_values: Vec<Value>,
-    context: Arc<FlowInstanceContext>,
 ) -> Result<Value>
 where
     S: DeserializeOwned + Send + Sync + 'static,
     R: Send + Sync + 'static,
     F: SimpleFunctionFactoryBase<Spec = S, ResolvedArgs = R> + ?Sized,
 {
-    // 1. Deserialize Spec
-    let spec: S = serde_json::from_value(spec_json)?;
+    let context = Arc::new(FlowInstanceContext {
+        flow_instance_name: "test_flow_function".to_string(),
+        auth_registry: Arc::new(AuthRegistry::default()),
+        py_exec_ctx: None,
+    });
 
     // 2. Resolve Schema & Args
     // The caller of test_flow_function will be responsible for creating these schemas.

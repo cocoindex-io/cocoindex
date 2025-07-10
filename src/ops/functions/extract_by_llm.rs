@@ -160,17 +160,10 @@ impl SimpleFunctionFactoryBase for Factory {
 mod tests {
     use super::*;
     use crate::ops::functions::test_utils::{build_arg_schema, test_flow_function};
-    use serde_json::json;
 
     #[tokio::test]
     #[ignore = "This test requires an OpenAI API key or a configured local LLM and may make network calls."]
-    async fn test_extract_by_llm_with_util() {
-        let context = Arc::new(FlowInstanceContext {
-            flow_instance_name: "test_extract_by_llm_flow".to_string(),
-            auth_registry: Arc::new(AuthRegistry::default()),
-            py_exec_ctx: None,
-        });
-
+    async fn test_extract_by_llm() {
         // Define the expected output structure
         let target_output_schema = StructSchema {
             fields: Arc::new(vec![
@@ -193,20 +186,15 @@ mod tests {
         };
 
         // Spec using OpenAI as an example.
-        let spec_json = json!({
-            "llm_spec": {
-                "api_type": "OpenAi",
-                "model": "gpt-4o",
-                "address": null,
-                "api_key_auth": null,
-                "max_tokens": 100,
-                "temperature": 0.0,
-                "top_p": null,
-                "params": {}
+        let spec = Spec {
+            llm_spec: LlmSpec {
+                api_type: crate::llm::LlmApiType::OpenAi,
+                model: "gpt-4o".to_string(),
+                address: None,
             },
-            "output_type": output_type_spec,
-            "instruction": "Extract the name and value from the text. The name is a string, the value is an integer."
-        });
+            output_type: output_type_spec,
+            instruction: Some("Extract the name and value from the text. The name is a string, the value is an integer.".to_string()),
+        };
 
         let factory = Arc::new(Factory);
         let text_content = "The item is called 'CocoIndex Test' and its value is 42.";
@@ -219,14 +207,7 @@ mod tests {
             BasicValueType::Str,
         )];
 
-        let result = test_flow_function(
-            factory,
-            spec_json,
-            input_arg_schemas,
-            input_args_values,
-            context,
-        )
-        .await;
+        let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
 
         if result.is_err() {
             eprintln!(

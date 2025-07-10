@@ -100,22 +100,18 @@ pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
 mod tests {
     use super::*;
     use crate::ops::functions::test_utils::{build_arg_schema, test_flow_function};
-    use serde_json::json;
 
     #[tokio::test]
     #[ignore = "This test requires OpenAI API key or a configured local LLM and may make network calls."]
-    async fn test_embed_text_with_util() {
-        let context = Arc::new(FlowInstanceContext {
-            flow_instance_name: "test_embed_text_flow".to_string(),
-            auth_registry: Arc::new(AuthRegistry::default()),
-            py_exec_ctx: None,
-        });
-
+    async fn test_embed_text() {
         // Using OpenAI as an example.
-        let spec_json = json!({
-            "api_type": "OpenAi",
-            "model": "text-embedding-ada-002",
-        });
+        let spec = Spec {
+            api_type: LlmApiType::OpenAi,
+            model: "text-embedding-ada-002".to_string(),
+            address: None,
+            output_dimension: None,
+            task_type: None,
+        };
 
         let factory = Arc::new(Factory);
         let text_content = "CocoIndex is a performant data transformation framework for AI.";
@@ -128,14 +124,7 @@ mod tests {
             BasicValueType::Str,
         )];
 
-        let result = test_flow_function(
-            factory,
-            spec_json,
-            input_arg_schemas,
-            input_args_values,
-            context,
-        )
-        .await;
+        let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
 
         if result.is_err() {
             eprintln!(

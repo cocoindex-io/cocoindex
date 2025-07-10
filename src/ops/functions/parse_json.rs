@@ -110,14 +110,8 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn test_parse_json_util() {
-        let context = Arc::new(FlowInstanceContext {
-            flow_instance_name: "test_parse_json_flow".to_string(),
-            auth_registry: Arc::new(AuthRegistry::default()),
-            py_exec_ctx: None,
-        });
-
-        let spec_json = json!({});
+    async fn test_parse_json() {
+        let spec = EmptySpec {};
 
         let factory = Arc::new(Factory);
         let json_string_content = r#"{"city": "Magdeburg"}"#;
@@ -134,14 +128,7 @@ mod tests {
             build_arg_schema("language", lang_value, BasicValueType::Str),
         ];
 
-        let result = test_flow_function(
-            factory,
-            spec_json,
-            input_arg_schemas,
-            input_args_values,
-            context,
-        )
-        .await;
+        let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
 
         assert!(
             result.is_ok(),
