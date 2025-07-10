@@ -100,6 +100,14 @@ cocoindex.drop_all_flows(report_to_stdout=True)
 </TabItem>
 </Tabs>
 
+:::note
+
+After dropping the flow, the in-memory `cocoindex.Flow` instance is still valid, and you can call setup methods on it again.
+
+If you want to remove the flow from the current process, you can call `cocoindex.remove_flow(demo_flow)` to do so (see [related doc](/docs/core/flow_def#entry-point)).
+
+:::
+
 ## Build / update target data
 
 The major goal of a flow is to perform the transformations on source data and build / update data in the target.

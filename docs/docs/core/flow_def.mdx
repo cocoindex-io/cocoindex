@@ -46,6 +46,22 @@ demo_flow = cocoindex.add_flow_def("DemoFlow", demo_flow_def)
 In both cases, `demo_flow` will be an object with `cocoindex.Flow` class type.
 See [Flow Running](/docs/core/flow_methods) for more details on it.
 
+Sometimes you no longer want to keep states of the flow in memory. We provide a `cocoindex.remove_flow()` method for this purpose:
+
+```python
+cocoindex.remove_flow(demo_flow)
+```
+
+After it's called, `demo_flow` becomes an invalid object, and you should not call any methods of it.
+
+:::note
+
+This only removes states of the flow from the current process, and it won't affect the persistent states.
+
+If you w
+
+:::
+
 </TabItem>
 </Tabs>
 
