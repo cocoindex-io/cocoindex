@@ -120,12 +120,8 @@ mod tests {
         let input_args_values = vec![json_string_content.to_string().into(), lang_value.clone()];
 
         let input_arg_schemas = vec![
-            build_arg_schema(
-                "text",
-                json_string_content.to_string().into(),
-                BasicValueType::Str,
-            ),
-            build_arg_schema("language", lang_value, BasicValueType::Str),
+            build_arg_schema("text", BasicValueType::Str),
+            build_arg_schema("language", BasicValueType::Str),
         ];
 
         let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;

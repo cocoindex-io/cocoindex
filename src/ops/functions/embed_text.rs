@@ -104,7 +104,6 @@ mod tests {
     #[tokio::test]
     #[ignore = "This test requires OpenAI API key or a configured local LLM and may make network calls."]
     async fn test_embed_text() {
-        // Using OpenAI as an example.
         let spec = Spec {
             api_type: LlmApiType::OpenAi,
             model: "text-embedding-ada-002".to_string(),
@@ -118,11 +117,7 @@ mod tests {
 
         let input_args_values = vec![text_content.to_string().into()];
 
-        let input_arg_schemas = vec![build_arg_schema(
-            "text",
-            text_content.to_string().into(),
-            BasicValueType::Str,
-        )];
+        let input_arg_schemas = vec![build_arg_schema("text", BasicValueType::Str)];
 
         let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
 

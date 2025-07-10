@@ -185,7 +185,6 @@ mod tests {
             attrs: Arc::new(BTreeMap::new()),
         };
 
-        // Spec using OpenAI as an example.
         let spec = Spec {
             llm_spec: LlmSpec {
                 api_type: crate::llm::LlmApiType::OpenAi,
@@ -201,17 +200,13 @@ mod tests {
 
         let input_args_values = vec![text_content.to_string().into()];
 
-        let input_arg_schemas = vec![build_arg_schema(
-            "text",
-            text_content.to_string().into(),
-            BasicValueType::Str,
-        )];
+        let input_arg_schemas = vec![build_arg_schema("text", BasicValueType::Str)];
 
         let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
 
         if result.is_err() {
             eprintln!(
-                "test_extract_by_llm_with_util: test_flow_function returned error (potentially expected for evaluate): {:?}",
+                "test_extract_by_llm: test_flow_function returned error (potentially expected for evaluate): {:?}",
                 result.as_ref().err()
             );
         }

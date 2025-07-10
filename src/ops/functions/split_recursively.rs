@@ -1090,11 +1090,11 @@ mod tests {
         ];
 
         let input_arg_schemas = vec![
-            build_arg_schema("text", text_content.to_string().into(), BasicValueType::Str),
-            build_arg_schema("chunk_size", (15i64).into(), BasicValueType::Int64),
-            build_arg_schema("min_chunk_size", (5i64).into(), BasicValueType::Int64),
-            build_arg_schema("chunk_overlap", (0i64).into(), BasicValueType::Int64),
-            build_arg_schema("language", Value::Null, BasicValueType::Str),
+            build_arg_schema("text", BasicValueType::Str),
+            build_arg_schema("chunk_size", BasicValueType::Int64),
+            build_arg_schema("min_chunk_size", BasicValueType::Int64),
+            build_arg_schema("chunk_overlap", BasicValueType::Int64),
+            build_arg_schema("language", BasicValueType::Str),
         ];
 
         let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
