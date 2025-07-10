@@ -1,4 +1,7 @@
-use crate::prelude::*;
+use crate::{
+    prelude::*,
+    service::error::{SharedError, SharedResult, SharedResultExt},
+};
 
 use futures::future::Ready;
 use sqlx::PgPool;
@@ -33,9 +36,12 @@ struct SourceIndexingState {
     rows: HashMap<value::KeyValue, SourceRowIndexingState>,
     scan_generation: usize,
 }
+
 pub struct SourceIndexingContext {
     flow: Arc<builder::AnalyzedFlow>,
     source_idx: usize,
+    pending_update: Mutex<Option<Shared<BoxFuture<'static, SharedResult<()>>>>>,
+    update_sem: Semaphore,
     state: Mutex<SourceIndexingState>,
     setup_execution_ctx: Arc<exec_ctx::FlowSetupExecutionContext>,
 }
@@ -88,6 +94,8 @@ impl SourceIndexingContext {
                 rows,
                 scan_generation,
             }),
+            pending_update: Mutex::new(None),
+            update_sem: Semaphore::new(1),
             setup_execution_ctx,
         })
     }
@@ -269,8 +277,46 @@ impl SourceIndexingContext {
             pool.clone(),
         ))
     }
-
     pub async fn update(
+        self: &Arc<Self>,
+        pool: &PgPool,
+        update_stats: &Arc<stats::UpdateStats>,
+    ) -> Result<()> {
+        let pending_update_fut = {
+            let mut pending_update = self.pending_update.lock().unwrap();
+            if let Some(pending_update_fut) = &*pending_update {
+                pending_update_fut.clone()
+            } else {
+                let slf = self.clone();
+                let pool = pool.clone();
+                let update_stats = update_stats.clone();
+                let task = tokio::spawn(async move {
+                    {
+                        let _permit = slf.update_sem.acquire().await?;
+                        {
+                            let mut pending_update = slf.pending_update.lock().unwrap();
+                            *pending_update = None;
+                        }
+                        slf.update_once(&pool, &update_stats).await?;
+                    }
+                    anyhow::Ok(())
+                });
+                let pending_update_fut = async move {
+                    task.await
+                        .map_err(SharedError::from)?
+                        .map_err(SharedError::new)
+                }
+                .boxed()
+                .shared();
+                *pending_update = Some(pending_update_fut.clone());
+                pending_update_fut
+            }
+        };
+        pending_update_fut.await.std_result()?;
+        Ok(())
+    }
+
+    async fn update_once(
         self: &Arc<Self>,
         pool: &PgPool,
         update_stats: &Arc<stats::UpdateStats>,

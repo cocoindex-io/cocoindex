@@ -117,6 +117,8 @@ pub fn shared_ok<T>(value: T) -> Result<T, SharedError> {
     Ok(value)
 }
 
+pub type SharedResult<T> = Result<T, SharedError>;
+
 pub struct SharedErrorWrapper(SharedError);
 
 impl Display for SharedErrorWrapper {

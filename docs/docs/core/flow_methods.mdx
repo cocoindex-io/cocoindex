@@ -157,7 +157,6 @@ cocoindex update --setup main.py
 
 The `Flow.update()` method creates/updates data in the target.
 
-Once the function returns, the target data is fresh up to the moment when the function is called.
 
 ```python
 stats = demo_flow.update()
@@ -170,6 +169,16 @@ print(stats)
 stats = await demo_flow.update_async()
 print(stats)
 ```
+
+Once the function finishes, the target data is fresh up to the moment when the function is called.
+
+:::info
+
+`update()` and `update_async()` can be called simultaneously, even if a previous call is not finished yet.
+It's quite cheap to do so, as CocoIndex will automatically combine multiple calls into a single update, as long as we hold the guarantee that the target data is fresh up to the moment when the last call is initiated.
+
+:::
+
 
 </TabItem>
 </Tabs>
