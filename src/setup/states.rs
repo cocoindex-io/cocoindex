@@ -292,10 +292,10 @@ impl<K, S, C: ResourceSetupStatus> std::fmt::Display for ResourceSetupInfo<K, S,
             Some(SetupChangeType::Invalid) => "INVALID",
             None => "USER MANAGED",
         };
-        let status_str = format!("[ {:^9} ]", status_code);
+        let status_str = format!("[ {status_code:^9} ]");
         let status_full = status_str.color(AnsiColors::Cyan);
         let desc_colored = &self.description;
-        writeln!(f, "{} {}", status_full, desc_colored)?;
+        writeln!(f, "{status_full} {desc_colored}")?;
         if let Some(setup_status) = &self.setup_status {
             let changes = setup_status.describe_changes();
             if !changes.is_empty() {
@@ -424,9 +424,9 @@ impl std::fmt::Display for FormattedFlowSetupStatus<'_> {
             return Ok(());
         }
 
-        write!(
+        writeln!(
             f,
-            "{} Flow: {}\n",
+            "{} Flow: {}",
             ObjectSetupStatusCode(flow_ssc)
                 .to_string()
                 .color(AnsiColors::Cyan),
@@ -435,10 +435,10 @@ impl std::fmt::Display for FormattedFlowSetupStatus<'_> {
 
         let mut f = indented(f).with_str(INDENT);
         if let Some(tracking_table) = &flow_ssc.tracking_table {
-            write!(f, "{}", tracking_table)?;
+            write!(f, "{tracking_table}")?;
         }
         for target_resource in &flow_ssc.target_resources {
-            write!(f, "{}", target_resource)?;
+            write!(f, "{target_resource}")?;
         }
         for resource in &flow_ssc.unknown_resources {
             writeln!(f, "[  UNKNOWN  ] {resource}")?;

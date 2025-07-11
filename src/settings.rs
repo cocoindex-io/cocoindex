@@ -27,7 +27,6 @@ pub struct Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json;
 
     #[test]
     fn test_settings_deserialize_with_database() {

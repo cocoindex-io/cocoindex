@@ -26,7 +26,7 @@ pub fn extract_primary_key(
 ) -> Result<KeyValue> {
     match primary_key_def {
         AnalyzedPrimaryKeyDef::Fields(fields) => {
-            KeyValue::from_values(fields.iter().map(|field| &record.fields[*field as usize]))
+            KeyValue::from_values(fields.iter().map(|field| &record.fields[*field]))
         }
     }
 }
@@ -175,6 +175,7 @@ struct PrecommitOutput {
     target_mutations: HashMap<i32, ExportTargetMutation>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn precommit_source_tracking_info(
     source_id: i32,
     source_key_json: &serde_json::Value,
@@ -413,6 +414,7 @@ async fn precommit_source_tracking_info(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn commit_source_tracking_info(
     source_id: i32,
     source_key_json: &serde_json::Value,
@@ -500,6 +502,7 @@ async fn commit_source_tracking_info(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn try_content_hash_optimization(
     source_id: i32,
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
@@ -513,17 +516,17 @@ async fn try_content_hash_optimization(
     pool: &PgPool,
 ) -> Result<Option<SkippedOr<()>>> {
     // Check if we can use content hash optimization
-    if !existing_version
+    if existing_version
         .as_ref()
-        .map_or(false, |v| v.kind == SourceVersionKind::CurrentLogic)
+        .is_none_or(|v| v.kind != SourceVersionKind::CurrentLogic)
     {
         return Ok(None);
     }
 
-    if !tracking_info
+    if tracking_info
         .max_process_ordinal
         .zip(tracking_info.process_ordinal)
-        .map_or(false, |(max_ord, proc_ord)| max_ord == proc_ord)
+        .is_none_or(|(max_ord, proc_ord)| max_ord != proc_ord)
     {
         return Ok(None);
     }

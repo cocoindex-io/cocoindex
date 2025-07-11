@@ -78,7 +78,7 @@ impl FlowExecutionContext {
         source_idx: usize,
         pool: &PgPool,
     ) -> Result<&Arc<SourceIndexingContext>> {
-        Ok(self.source_indexing_contexts[source_idx]
+        self.source_indexing_contexts[source_idx]
             .get_or_try_init(|| async move {
                 anyhow::Ok(Arc::new(
                     SourceIndexingContext::load(
@@ -90,7 +90,7 @@ impl FlowExecutionContext {
                     .await?,
                 ))
             })
-            .await?)
+            .await
     }
 }
 
@@ -151,9 +151,12 @@ impl FlowContext {
 static TOKIO_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| Runtime::new().unwrap());
 static AUTH_REGISTRY: LazyLock<Arc<AuthRegistry>> = LazyLock::new(|| Arc::new(AuthRegistry::new()));
 
+type PoolKey = (String, Option<String>);
+type PoolValue = Arc<tokio::sync::OnceCell<PgPool>>;
+
 #[derive(Default)]
 pub struct DbPools {
-    pub pools: Mutex<HashMap<(String, Option<String>), Arc<tokio::sync::OnceCell<PgPool>>>>,
+    pub pools: Mutex<HashMap<PoolKey, PoolValue>>,
 }
 
 impl DbPools {

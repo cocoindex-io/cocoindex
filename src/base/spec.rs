@@ -67,7 +67,7 @@ pub struct OpArgName(pub Option<String>);
 impl fmt::Display for OpArgName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(arg_name) = &self.0 {
-            write!(f, "${}", arg_name)
+            write!(f, "${arg_name}")
         } else {
             write!(f, "?")
         }
@@ -113,7 +113,7 @@ impl fmt::Display for FieldMapping {
             if scope.is_empty() {
                 "".to_string()
             } else {
-                format!("{}.", scope)
+                format!("{scope}.")
             },
             self.field_path
         )
@@ -129,7 +129,7 @@ pub struct ConstantMapping {
 impl fmt::Display for ConstantMapping {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = serde_json::to_string(&self.value).unwrap_or("#serde_error".to_string());
-        write!(f, "{}", value)
+        write!(f, "{value}")
     }
 }
 
@@ -152,7 +152,7 @@ impl fmt::Display for StructMapping {
             .map(|field| field.name.clone())
             .collect::<Vec<_>>()
             .join(",");
-        write!(f, "{}", fields)
+        write!(f, "{fields}")
     }
 }
 
@@ -280,9 +280,9 @@ impl fmt::Display for SourceRefreshOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let refresh = self
             .refresh_interval
-            .map(|d| format!("{:?}", d))
+            .map(|d| format!("{d:?}"))
             .unwrap_or("none".to_string());
-        write!(f, "{}", refresh)
+        write!(f, "{refresh}")
     }
 }
 
@@ -327,8 +327,8 @@ impl SpecFormatter for TransformOpSpec {
             .join(",");
         let op_str = self.op.format(mode);
         match mode {
-            OutputMode::Concise => format!("op={}, inputs={}", op_str, inputs),
-            OutputMode::Verbose => format!("op={}, inputs=[{}]", op_str, inputs),
+            OutputMode::Concise => format!("op={op_str}, inputs={inputs}"),
+            OutputMode::Verbose => format!("op={op_str}, inputs=[{inputs}]"),
         }
     }
 }
@@ -453,7 +453,7 @@ impl fmt::Display for IndexOptions {
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        write!(f, "keys={}, indexes={}", primary_keys, vector_indexes)
+        write!(f, "keys={primary_keys}, indexes={vector_indexes}")
     }
 }
 
@@ -494,7 +494,7 @@ impl SpecFormatter for ReactiveOpSpec {
         match self {
             ReactiveOpSpec::Transform(t) => format!("Transform: {}", t.format(mode)),
             ReactiveOpSpec::ForEach(fe) => match mode {
-                OutputMode::Concise => format!("{}", fe.get_label()),
+                OutputMode::Concise => fe.get_label().to_string(),
                 OutputMode::Verbose => format!("ForEach: {}", fe.format(mode)),
             },
             ReactiveOpSpec::Collect(c) => format!("Collect: {}", c.format(mode)),

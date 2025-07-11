@@ -138,7 +138,7 @@ impl SourceExecutor for Executor {
             .send()
             .await;
         let obj = match resp {
-            Err(e) if e.as_service_error().map_or(false, |e| e.is_no_such_key()) => {
+            Err(e) if e.as_service_error().is_some_and(|e| e.is_no_such_key()) => {
                 return Ok(PartialSourceRowData {
                     value: Some(SourceValue::NonExistence),
                     ordinal: Some(Ordinal::unavailable()),
@@ -174,7 +174,7 @@ impl SourceExecutor for Executor {
         };
         let stream = stream! {
             loop {
-                 match self.poll_sqs(&sqs_context).await {
+                 match self.poll_sqs(sqs_context).await {
                     Ok(messages) => {
                         for message in messages {
                             yield Ok(message);
@@ -251,7 +251,7 @@ impl Executor {
                     if !self
                         .prefix
                         .as_ref()
-                        .map_or(true, |prefix| s3.object.key.starts_with(prefix))
+                        .is_none_or(|prefix| s3.object.key.starts_with(prefix))
                     {
                         continue;
                     }

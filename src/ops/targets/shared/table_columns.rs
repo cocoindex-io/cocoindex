@@ -57,9 +57,9 @@ impl<T: Eq + Serialize + DeserializeOwned> TableMainSetupAction<T> {
             desired_state.map(|desired| desired.into());
         let possible_existing_cols: Vec<Cow<'_, TableColumnsSchema<T>>> = existing
             .possible_versions()
-            .map(|v| Into::<Cow<'_, TableColumnsSchema<T>>>::into(v))
+            .map(Into::<Cow<'_, TableColumnsSchema<T>>>::into)
             .collect();
-        let drop_existing = desired_cols.as_ref().map_or(true, |desired| {
+        let drop_existing = desired_cols.as_ref().is_none_or(|desired| {
             existing_invalidated
                 || possible_existing_cols
                     .iter()

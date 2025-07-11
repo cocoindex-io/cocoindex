@@ -33,7 +33,7 @@ impl Display for MetadataRecordType {
             MetadataRecordType::FlowVersion => f.write_str(db_metadata::FLOW_VERSION_RESOURCE_TYPE),
             MetadataRecordType::FlowMetadata => write!(f, "FlowMetadata"),
             MetadataRecordType::TrackingTable => write!(f, "TrackingTable"),
-            MetadataRecordType::Target(target_id) => write!(f, "Target:{}", target_id),
+            MetadataRecordType::Target(target_id) => write!(f, "Target:{target_id}"),
         }
     }
 }
@@ -228,7 +228,7 @@ fn group_resource_states<'a>(
                 .existing
                 .legacy_state_key
                 .as_ref()
-                .map_or(false, |v| v != legacy_state_key)
+                .is_some_and(|v| v != legacy_state_key)
             {
                 warn!(
                     "inconsistent legacy key: {:?}, {:?}",
@@ -387,7 +387,7 @@ async fn maybe_update_resource_setup<
                 });
                 writeln!(write, "{}:", resource.description)?;
                 for change in setup_status.describe_changes() {
-                    writeln!(write, "  - {}", change)?;
+                    writeln!(write, "  - {change}")?;
                 }
             }
         }
@@ -571,7 +571,7 @@ async fn apply_changes_for_flow(
         });
     }
 
-    writeln!(write, "Done for flow {}", flow_name)?;
+    writeln!(write, "Done for flow {flow_name}")?;
     Ok(())
 }
 
@@ -592,7 +592,7 @@ async fn apply_global_changes(
         .metadata_table
         .setup_status
         .as_ref()
-        .map_or(false, |c| c.change_type() == SetupChangeType::Create)
+        .is_some_and(|c| c.change_type() == SetupChangeType::Create)
     {
         all_setup_states.has_metadata_table = true;
     }

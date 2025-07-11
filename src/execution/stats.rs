@@ -106,7 +106,7 @@ impl std::fmt::Display for UpdateStats {
 
         let num_skipped = self.num_no_change.get();
         if num_skipped > 0 {
-            messages.push(format!("{} source rows NO CHANGE", num_skipped));
+            messages.push(format!("{num_skipped} source rows NO CHANGE"));
         }
 
         let num_insertions = self.num_insertions.get();
@@ -150,7 +150,7 @@ pub struct IndexUpdateInfo {
 impl std::fmt::Display for IndexUpdateInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for source in self.sources.iter() {
-            writeln!(f, "{}", source)?;
+            writeln!(f, "{source}")?;
         }
         Ok(())
     }

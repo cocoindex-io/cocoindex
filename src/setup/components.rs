@@ -87,7 +87,7 @@ impl<D: SetupOperator> SetupStatus<D> {
                 let is_up_to_date = existing_component_states.always_exists()
                     && existing_component_states.possible_versions().all(|v| {
                         v.get(&key)
-                            .map_or(false, |s| desc.is_up_to_date(s, &desired_comp_state))
+                            .is_some_and(|s| desc.is_up_to_date(s, &desired_comp_state))
                     });
                 if !is_up_to_date {
                     let already_exists = existing_component_states

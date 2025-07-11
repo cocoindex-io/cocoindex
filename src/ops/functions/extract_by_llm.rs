@@ -245,7 +245,7 @@ mod tests {
                     }
                 }
             }
-            _ => panic!("Expected Value::Struct, got {:?}", value),
+            _ => panic!("Expected Value::Struct, got {value:?}"),
         }
     }
 }

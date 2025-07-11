@@ -136,6 +136,7 @@ pub async fn read_source_tracking_info_for_precommit(
     Ok(precommit_tracking_info)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn precommit_source_tracking_info(
     source_id: i32,
     source_key_json: &serde_json::Value,
@@ -191,6 +192,7 @@ pub async fn read_source_tracking_info_for_commit(
     Ok(commit_tracking_info)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn commit_source_tracking_info(
     source_id: i32,
     source_key_json: &serde_json::Value,

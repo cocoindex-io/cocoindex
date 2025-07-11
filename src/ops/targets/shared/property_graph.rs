@@ -441,10 +441,7 @@ pub fn analyze_graph_mappings<'a, AuthEntry: 'a>(
                                 .collect(),
                         )?;
 
-                    if !(0..input_fields_idx.key.len())
-                        .into_iter()
-                        .eq(input_fields_idx.key.into_iter())
-                    {
+                    if !(0..input_fields_idx.key.len()).eq(input_fields_idx.key.into_iter()) {
                         return Err(invariance_violation());
                     }
                     DataCollectionProcessedInfo {

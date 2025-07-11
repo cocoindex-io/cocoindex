@@ -695,9 +695,9 @@ impl AnalyzerContext {
             .get_concur_control_options();
         let global_concurrency_controller = self.lib_ctx.global_concurrency_controller.clone();
         let result_fut = async move {
-            trace!("Start building executor for source op `{}`", op_name);
+            trace!("Start building executor for source op `{op_name}`");
             let executor = executor.await?;
-            trace!("Finished building executor for source op `{}`", op_name);
+            trace!("Finished building executor for source op `{op_name}`");
             Ok(AnalyzedImportOp {
                 executor,
                 output,
@@ -840,6 +840,7 @@ impl AnalyzerContext {
         Ok(result_fut)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn analyze_export_op_group(
         &self,
         target_kind: &str,
@@ -847,7 +848,7 @@ impl AnalyzerContext {
         flow_inst: &FlowInstanceSpec,
         export_op_group: &AnalyzedExportTargetOpGroup,
         declarations: Vec<serde_json::Value>,
-        targets_analyzed_ss: &mut Vec<Option<exec_ctx::AnalyzedTargetSetupState>>,
+        targets_analyzed_ss: &mut [Option<exec_ctx::AnalyzedTargetSetupState>],
         declarations_analyzed_ss: &mut Vec<exec_ctx::AnalyzedTargetSetupState>,
     ) -> Result<Vec<impl Future<Output = Result<AnalyzedExportOp>> + Send + use<>>> {
         let mut collection_specs = Vec::<interface::ExportDataCollectionSpec>::new();
@@ -875,7 +876,7 @@ impl AnalyzerContext {
 
                         let key_fields_schema = pk_fields_idx
                             .iter()
-                            .map(|idx| collector_schema.fields[*idx as usize].clone())
+                            .map(|idx| collector_schema.fields[*idx].clone())
                             .collect::<Vec<_>>();
                         let primary_key_type = if pk_fields_idx.len() == 1 {
                             key_fields_schema[0].value_type.typ.clone()

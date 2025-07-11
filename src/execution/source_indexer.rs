@@ -339,7 +339,7 @@ impl SourceIndexingContext {
         while let Some(result) = join_set.join_next().await {
             if let Err(e) = result {
                 if !e.is_cancelled() {
-                    error!("{:?}", e);
+                    error!("{e:?}");
                 }
             }
         }
@@ -375,7 +375,7 @@ impl SourceIndexingContext {
         while let Some(result) = join_set.join_next().await {
             if let Err(e) = result {
                 if !e.is_cancelled() {
-                    error!("{:?}", e);
+                    error!("{e:?}");
                 }
             }
         }

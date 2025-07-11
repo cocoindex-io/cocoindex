@@ -437,7 +437,7 @@ impl StorageFactoryBase for Factory {
             key.collection_name,
             key.connection
                 .as_ref()
-                .map_or_else(|| "".to_string(), |auth_entry| format!(" @ {}", auth_entry))
+                .map_or_else(|| "".to_string(), |auth_entry| format!(" @ {auth_entry}"))
         ))
     }
 

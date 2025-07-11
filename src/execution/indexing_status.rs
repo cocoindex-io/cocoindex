@@ -35,7 +35,7 @@ pub async fn get_source_row_indexing_status(
         pool,
     );
     let current_fut = src_eval_ctx.import_op.executor.get_value(
-        &src_eval_ctx.key,
+        src_eval_ctx.key,
         &interface::SourceExecutorGetOptions {
             include_value: false,
             include_ordinal: true,
@@ -47,10 +47,9 @@ pub async fn get_source_row_indexing_status(
         source_ordinal: interface::Ordinal(l.processed_source_ordinal),
         processing_time: l
             .process_time_micros
-            .map(chrono::DateTime::<chrono::Utc>::from_timestamp_micros)
-            .flatten(),
+            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_micros),
         is_logic_current: Some(src_eval_ctx.plan.logic_fingerprint.0.as_slice())
-            == l.process_logic_fingerprint.as_ref().map(|b| b.as_slice()),
+            == l.process_logic_fingerprint.as_deref(),
     });
     let current = SourceRowInfo {
         ordinal: current

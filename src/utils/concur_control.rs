@@ -28,8 +28,8 @@ impl WeightedSemaphore {
         self.sem.clone().acquire_owned().await
     }
 
-    async fn acquire<'a>(
-        &'a self,
+    async fn acquire(
+        &self,
         weight: usize,
         reserved: bool,
     ) -> Result<Option<OwnedSemaphorePermit>, AcquireError> {
@@ -71,9 +71,7 @@ impl ConcurrencyController {
             inflight_count_sem: exec_options
                 .max_inflight_rows
                 .map(|max| Arc::new(Semaphore::new(max))),
-            inflight_bytes_sem: exec_options
-                .max_inflight_bytes
-                .map(|max| WeightedSemaphore::new(max)),
+            inflight_bytes_sem: exec_options.max_inflight_bytes.map(WeightedSemaphore::new),
         }
     }
 
@@ -104,8 +102,8 @@ impl ConcurrencyController {
         })
     }
 
-    pub async fn acquire_bytes_with_reservation<'a>(
-        &'a self,
+    pub async fn acquire_bytes_with_reservation(
+        &self,
         bytes_fn: impl FnOnce() -> usize,
     ) -> Result<Option<OwnedSemaphorePermit>, AcquireError> {
         if let Some(sem) = &self.inflight_bytes_sem {
@@ -158,8 +156,8 @@ impl CombinedConcurrencyController {
         })
     }
 
-    pub async fn acquire_bytes_with_reservation<'a>(
-        &'a self,
+    pub async fn acquire_bytes_with_reservation(
+        &self,
         bytes_fn: impl FnOnce() -> usize,
     ) -> Result<(Option<OwnedSemaphorePermit>, Option<OwnedSemaphorePermit>), AcquireError> {
         let num_bytes = bytes_fn();

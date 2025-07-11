@@ -142,11 +142,11 @@ mod tests {
                 for item in arc_vec.iter() {
                     match item {
                         BasicValue::Float32(_) => {}
-                        _ => panic!("Embedding vector element is not Float32: {:?}", item),
+                        _ => panic!("Embedding vector element is not Float32: {item:?}"),
                     }
                 }
             }
-            _ => panic!("Expected Value::Basic(BasicValue::Vector), got {:?}", value),
+            _ => panic!("Expected Value::Basic(BasicValue::Vector), got {value:?}"),
         }
     }
 }
