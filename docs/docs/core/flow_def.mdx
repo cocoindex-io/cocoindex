@@ -370,7 +370,8 @@ These options can be passed in to the following APIs:
 
 *   [`FlowBuilder.add_source()`](#import-from-source): The options above control the processing concurrency of multiple rows from a source. New rows will not be loaded in memory if it'll be over the limit.
 
-    The default value can be specified by [`GlobalExecutionOptions`](/docs/core/settings#defaultexecutionoptions) or corresponding [environment variables](/docs/core/settings#list-of-environment-variables).
+    Besides, global limits on overall processing concurrency of all sources from all flows can be specified by [`GlobalExecutionOptions`](/docs/core/settings#globalexecutionoptions) or corresponding [environment variables](/docs/core/settings#list-of-environment-variables).
+    If both global and per-source limits are specified, both need to be satisfied to admit additional source rows.
 
 *   [`DataSlice.row()`](#for-each-row):  The options above provides a finer-grained control, to limit the processing concurrency of multiple rows within a table at any level.
 

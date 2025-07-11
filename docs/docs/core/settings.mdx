@@ -60,7 +60,7 @@ You have two ways to launch CocoIndex:
 
 *   `app_namespace` (type: `str`, required): The namespace of the application.
 *   `database` (type: `DatabaseConnectionSpec`, required): The connection to the Postgres database.
-*   `global_execution_options` (type: `GlobalExecutionOptions`, optional): The default execution options for the flow.
+*   `global_execution_options` (type: `GlobalExecutionOptions`, optional): The global execution options shared by all  flows.
 
 ### App Namespace
 
@@ -107,12 +107,13 @@ If you use the Postgres database hosted by [Supabase](https://supabase.com/), pl
 
 ### GlobalExecutionOptions
 
-`GlobalExecutionOptions` is used to configure the default execution options for the flow. It has the following fields:
+`GlobalExecutionOptions` is used to configure the global execution options shared by all flows. It has the following fields:
 
-*   `source_max_inflight_rows` (type: `int`, optional): The maximum number of concurrent inflight requests for source operations.
-*   `source_max_inflight_bytes` (type: `int`, optional): The maximum number of concurrent inflight bytes for source operations.
+*   `source_max_inflight_rows` (type: `int`, optional): The maximum number of concurrent inflight requests for all source operations.
+*   `source_max_inflight_bytes` (type: `int`, optional): The maximum number of concurrent inflight bytes for all source operations.
 
-The options provide default values, and can be overridden by arguments passed to `FlowBuilder.add_source()` on per-source basis ([details](/docs/core/flow_def#control-processing-concurrency)).
+See also [flow definition docs](/docs/core/flow_def#control-processing-concurrency) to control processing concurrency on per-source basis.
+If both global and per-source limits are specified, both need to be satisfied to admit additional source rows.
 
 ## List of Environment Variables
 
