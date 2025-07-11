@@ -34,7 +34,7 @@ CocoIndex make it super easy to transform data with AI workloads, and keep sourc
 </br>
 
 <p align="center">
-    <img src="https://cocoindex.io/images/venn-features.png" alt="CocoIndex Features" width='500'>
+    <img src="https://cocoindex.io/images/venn-features.png" alt="CocoIndex Features" width='480'>
 </p>
 
 </br>
@@ -72,18 +72,15 @@ Native builtins for different source, targets and transformations. Standardize i
 </p>
 
 ## Data Freshness
-As a data framework, CocoIndex takes it to the next level on data freshness. **Incremental processing** is one of the core values provided by CocoIndex.
+CocoIndex keep source data and target in sync effortlessly.
 
 <p align="center">
     <img src="https://github.com/user-attachments/assets/f4eb29b3-84ee-4fa0-a1e2-80eedeeabde6" alt="Incremental Processing" width="700">
 </p>
 
-The frameworks takes care of
-- Change data capture.
-- Figure out what exactly needs to be updated, and only updating that without having to recompute everything.
-
-This makes it fast to reflect any source updates to the target store. If you have concerns with surfacing stale data to AI agents and are spending lots of efforts working on infra piece to optimize the latency, the framework actually handles it for you.
-
+It has out-of-box support for incremental indexing:
+- minimal recomputation on source or logic change.
+- (re-)processing necessary portions; reuse cache when possible
 
 ## Quick Start:
 If you're new to CocoIndex, we recommend checking out
@@ -146,8 +143,9 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 
 It defines an index flow like this:
 
-<img width="363" alt="Data Flow" src="https://github.com/user-attachments/assets/2ea7be6d-3d94-42b1-b2bd-22515577e463" />
-
+<p align="center">
+    <img width="400" alt="Data Flow" src="https://github.com/user-attachments/assets/2ea7be6d-3d94-42b1-b2bd-22515577e463" />
+</p>
 
 ## 🚀 Examples and demo
 
