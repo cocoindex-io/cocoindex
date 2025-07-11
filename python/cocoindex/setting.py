@@ -45,11 +45,11 @@ class DatabaseConnectionSpec:
 
 @dataclass
 class GlobalExecutionOptions:
-    """Default execution options."""
+    """Global execution options."""
 
-    # The maximum number of concurrent inflight requests.
-    source_max_inflight_rows: int | None = 256
-    source_max_inflight_bytes: int | None = 1024 * 1024 * 1024
+    # The maximum number of concurrent inflight requests, shared among all sources from all flows.
+    source_max_inflight_rows: int | None = None
+    source_max_inflight_bytes: int | None = None
 
 
 def _load_field(
