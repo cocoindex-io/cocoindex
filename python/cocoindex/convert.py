@@ -89,7 +89,9 @@ def make_engine_value_decoder(
     if dst_is_any:
         if src_type_kind == "Union":
             return lambda value: value[1]
-        if src_type_kind == "Struct" or src_type_kind in TABLE_TYPES:
+        if src_type_kind == "Struct":
+            return _make_engine_struct_to_dict_decoder(field_path, src_type["fields"])
+        if src_type_kind in TABLE_TYPES:
             raise ValueError(
                 f"Missing type annotation for `{''.join(field_path)}`."
                 f"It's required for {src_type_kind} type."
@@ -97,6 +99,18 @@ def make_engine_value_decoder(
         return lambda value: value
 
     dst_type_info = analyze_type_info(dst_annotation)
+
+    # Handle struct -> dict binding for explicit dict annotations
+    if (
+        src_type_kind == "Struct"
+        and dst_type_info.kind == "KTable"
+        and dst_type_info.elem_type
+        and isinstance(dst_type_info.elem_type, tuple)
+        and len(dst_type_info.elem_type) == 2
+        and dst_type_info.elem_type[0] is str
+        and dst_type_info.elem_type[1] is Any
+    ):
+        return _make_engine_struct_to_dict_decoder(field_path, src_type["fields"])
 
     if src_type_kind == "Union":
         dst_type_variants = (
@@ -292,6 +306,34 @@ def _make_engine_struct_value_decoder(
     return lambda values: dst_struct_type(
         *(decoder(values) for decoder in field_value_decoder)
     )
+
+
+def _make_engine_struct_to_dict_decoder(
+    field_path: list[str],
+    src_fields: list[dict[str, Any]],
+) -> Callable[[list[Any]], dict[str, Any]]:
+    """Make a decoder from engine field values to a Python dict."""
+
+    field_decoders = []
+    for i, field_schema in enumerate(src_fields):
+        field_name = field_schema["name"]
+        field_path.append(f".{field_name}")
+        field_decoder = make_engine_value_decoder(
+            field_path,
+            field_schema["type"],
+            Any,  # Use Any for recursive decoding
+        )
+        field_path.pop()
+        field_decoders.append((field_name, field_decoder))
+
+    def decode_to_dict(values: list[Any]) -> dict[str, Any]:
+        result = {}
+        for i, (field_name, field_decoder) in enumerate(field_decoders):
+            if i < len(values):
+                result[field_name] = field_decoder(values[i])
+        return result
+
+    return decode_to_dict
 
 
 def dump_engine_object(v: Any) -> Any:

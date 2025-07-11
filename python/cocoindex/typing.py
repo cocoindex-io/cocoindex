@@ -241,7 +241,10 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
 
     elif base_type is collections.abc.Mapping or base_type is dict:
         args = typing.get_args(t)
-        elem_type = (args[0], args[1])
+        if len(args) == 0:  # Handle untyped dict
+            elem_type = (str, Any)
+        else:
+            elem_type = (args[0], args[1])
         kind = "KTable"
     elif base_type in (types.UnionType, typing.Union):
         possible_types = typing.get_args(t)
@@ -282,6 +285,9 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             kind = "OffsetDateTime"
         elif t is datetime.timedelta:
             kind = "TimeDelta"
+        elif t is dict:
+            elem_type = (str, Any)
+            kind = "KTable"
         else:
             raise ValueError(f"type unsupported yet: {t}")
 
