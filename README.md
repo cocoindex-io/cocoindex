@@ -2,7 +2,7 @@
     <img src="https://cocoindex.io/images/github.svg" alt="CocoIndex">
 </p>
 
-<h2 align="center">Extract, Transform, Index Data. Easy and Fresh. 🌴</h2>
+<h1 align="center">Data transformation for AI</h1>
 
 <div align="center">
 
@@ -17,18 +17,32 @@
 [![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
 </div>
 
-**CocoIndex** is an ultra performant data transformation framework, with its core engine written in Rust. The problem it tries to solve is to make it easy to prepare fresh data for AI - either creating embedding, building knowledge graphs, or performing other data transformations - and take real-time data pipelines beyond traditional SQL.
+Ultra performant data transformation framework for AI, with core engine written in Rust. Support incremental processing and data lineage out-of-box.  Exceptional developer velocity. Production-ready at day 0.
+
+⭐ Drop a star to help us grow!
+
+</br>
 
 <p align="center">
-    <img src="https://cocoindex.io/images/cocoindex-features.png" alt="CocoIndex Features" width="500">
+    <img src="https://cocoindex.io/images/transformation.svg" alt="CocoIndex Transformation">
 </p>
 
-The philosophy is to have the framework handle the source updates, and having developers only worry about defining a series of data transformation, inspired by spreadsheet.
+</br>
 
-## Dataflow programming
-Unlike a workflow orchestration framework where data is usually opaque, in CocoIndex, data and data operations are first class citizens. CocoIndex follows the idea of [Dataflow](https://en.wikipedia.org/wiki/Dataflow_programming) programming model. Each transformation creates a new field solely based on input fields, without hidden states and value mutation. All data before/after each transformation is observable, with lineage out of the box.
+CocoIndex make it super easy to transform data with AI workloads, and keep source data and target in sync effortlessly.  
 
-**Particularly**, users don't explicitly mutate data by creating, updating and deleting. Rather, they define something like - for a set of source data, this is the transformation or formula. The framework takes care of the data operations such as when to create, update, or delete.
+</br>
+
+<p align="center">
+    <img src="https://cocoindex.io/images/venn-features.png" alt="CocoIndex Features" width='500'>
+</p>
+
+</br>
+
+Either creating embedding, building knowledge graphs, or any data transformations - beyond traditional SQL. 
+
+## Exceptional velocity
+Just declare transformation with data flow with ~100 lines of python
 
 ```python
 # import
@@ -45,6 +59,17 @@ collector.collect(...)
 # export to db, vector db, graph db ...
 collector.export(...)
 ```
+
+CocoIndex follows the idea of [Dataflow](https://en.wikipedia.org/wiki/Dataflow_programming) programming model. Each transformation creates a new field solely based on input fields, without hidden states and value mutation. All data before/after each transformation is observable, with lineage out of the box.
+
+**Particularly**, developers don't explicitly mutate data by creating, updating and deleting. They just need to define transformation/formula for a set of source data.
+
+## Build like LEGO
+Native builtins for different source, targets and transformations. Standardize interface, make it 1-line code switch between different components. 
+
+<p align="center">
+    <img src="https://cocoindex.io/images/components.svg" alt="CocoIndex Features">
+</p>
 
 ## Data Freshness
 As a data framework, CocoIndex takes it to the next level on data freshness. **Incremental processing** is one of the core values provided by CocoIndex.
@@ -77,7 +102,7 @@ pip install -U cocoindex
 2. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. CocoIndex uses it for incremental processing.
 
 
-### Define data flow
+## Define data flow
 
 Follow [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart) to define your first indexing flow. An example flow looks like:
 
