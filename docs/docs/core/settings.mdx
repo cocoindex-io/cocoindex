@@ -60,7 +60,7 @@ You have two ways to launch CocoIndex:
 
 *   `app_namespace` (type: `str`, required): The namespace of the application.
 *   `database` (type: `DatabaseConnectionSpec`, required): The connection to the Postgres database.
-*   `default_execution_options` (type: `DefaultExecutionOptions`, optional): The default execution options for the flow.
+*   `global_execution_options` (type: `GlobalExecutionOptions`, optional): The default execution options for the flow.
 
 ### App Namespace
 
@@ -105,9 +105,9 @@ If you use the Postgres database hosted by [Supabase](https://supabase.com/), pl
 
 :::
 
-### DefaultExecutionOptions
+### GlobalExecutionOptions
 
-`DefaultExecutionOptions` is used to configure the default execution options for the flow. It has the following fields:
+`GlobalExecutionOptions` is used to configure the default execution options for the flow. It has the following fields:
 
 *   `source_max_inflight_rows` (type: `int`, optional): The maximum number of concurrent inflight requests for source operations.
 *   `source_max_inflight_bytes` (type: `int`, optional): The maximum number of concurrent inflight bytes for source operations.
@@ -124,5 +124,5 @@ This is the list of environment variables, each of which has a corresponding fie
 | `COCOINDEX_DATABASE_URL` | `database.url` | Yes |
 | `COCOINDEX_DATABASE_USER` | `database.user` | No |
 | `COCOINDEX_DATABASE_PASSWORD` | `database.password` | No |
-| `COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS` | `default_execution_options.source_max_inflight_rows` | No |
-| `COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES` | `default_execution_options.source_max_inflight_bytes` | No |
+| `COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS` | `global_execution_options.source_max_inflight_rows` | No |
+| `COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES` | `global_execution_options.source_max_inflight_bytes` | No |

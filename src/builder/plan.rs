@@ -57,7 +57,7 @@ pub struct AnalyzedImportOp {
     pub primary_key_type: schema::ValueType,
     pub refresh_options: spec::SourceRefreshOptions,
 
-    pub concurrency_controller: concur_control::ConcurrencyController,
+    pub concurrency_controller: concur_control::CombinedConcurrencyController,
 }
 
 pub struct AnalyzedFunctionExecInfo {

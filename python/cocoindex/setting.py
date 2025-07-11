@@ -44,7 +44,7 @@ class DatabaseConnectionSpec:
 
 
 @dataclass
-class DefaultExecutionOptions:
+class GlobalExecutionOptions:
     """Default execution options."""
 
     # The maximum number of concurrent inflight requests.
@@ -81,7 +81,7 @@ class Settings:
 
     database: DatabaseConnectionSpec | None = None
     app_namespace: str = ""
-    default_execution_options: DefaultExecutionOptions | None = None
+    global_execution_options: GlobalExecutionOptions | None = None
 
     @classmethod
     def from_env(cls) -> Self:
@@ -110,14 +110,14 @@ class Settings:
             "COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES",
             parse=int,
         )
-        default_execution_options = DefaultExecutionOptions(**exec_kwargs)
+        global_execution_options = GlobalExecutionOptions(**exec_kwargs)
 
         app_namespace = os.getenv("COCOINDEX_APP_NAMESPACE", "")
 
         return cls(
             database=database,
             app_namespace=app_namespace,
-            default_execution_options=default_execution_options,
+            global_execution_options=global_execution_options,
         )
 
 

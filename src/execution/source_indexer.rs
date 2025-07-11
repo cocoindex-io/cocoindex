@@ -108,7 +108,7 @@ impl SourceIndexingContext {
         key: value::KeyValue,
         source_data: Option<interface::SourceData>,
         update_stats: Arc<stats::UpdateStats>,
-        _concur_permit: concur_control::ConcurrencyControllerPermit,
+        _concur_permit: concur_control::CombinedConcurrencyControllerPermit,
         ack_fn: Option<AckFn>,
         pool: PgPool,
     ) {
@@ -247,36 +247,6 @@ impl SourceIndexingContext {
         }
     }
 
-    // Expected to be called during scan, which has no value.
-    fn process_source_key_if_newer(
-        self: &Arc<Self>,
-        key: value::KeyValue,
-        source_version: SourceVersion,
-        update_stats: &Arc<stats::UpdateStats>,
-        concur_permit: concur_control::ConcurrencyControllerPermit,
-        pool: &PgPool,
-    ) -> Option<impl Future<Output = ()> + Send + 'static> {
-        {
-            let mut state = self.state.lock().unwrap();
-            let scan_generation = state.scan_generation;
-            let row_state = state.rows.entry(key.clone()).or_default();
-            row_state.touched_generation = scan_generation;
-            if row_state
-                .source_version
-                .should_skip(&source_version, Some(update_stats.as_ref()))
-            {
-                return None;
-            }
-        }
-        Some(self.clone().process_source_key(
-            key,
-            None,
-            update_stats.clone(),
-            concur_permit,
-            NO_ACK,
-            pool.clone(),
-        ))
-    }
     pub async fn update(
         self: &Arc<Self>,
         pool: &PgPool,
@@ -336,21 +306,34 @@ impl SourceIndexingContext {
         };
         while let Some(row) = rows_stream.next().await {
             for row in row? {
+                let source_version = SourceVersion::from_current_with_ordinal(
+                    row.ordinal
+                        .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
+                );
+                {
+                    let mut state = self.state.lock().unwrap();
+                    let scan_generation = state.scan_generation;
+                    let row_state = state.rows.entry(row.key.clone()).or_default();
+                    row_state.touched_generation = scan_generation;
+                    if row_state
+                        .source_version
+                        .should_skip(&source_version, Some(update_stats.as_ref()))
+                    {
+                        continue;
+                    }
+                }
                 let concur_permit = import_op
                     .concurrency_controller
                     .acquire(concur_control::BYTES_UNKNOWN_YET)
                     .await?;
-                self.process_source_key_if_newer(
+                join_set.spawn(self.clone().process_source_key(
                     row.key,
-                    SourceVersion::from_current_with_ordinal(
-                        row.ordinal
-                            .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
-                    ),
-                    update_stats,
+                    None,
+                    update_stats.clone(),
                     concur_permit,
-                    pool,
-                )
-                .map(|fut| join_set.spawn(fut));
+                    NO_ACK,
+                    pool.clone(),
+                ));
             }
         }
         while let Some(result) = join_set.join_next().await {

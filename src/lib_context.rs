@@ -196,7 +196,7 @@ pub struct LibContext {
     pub persistence_ctx: Option<PersistenceContext>,
     pub flows: Mutex<BTreeMap<String, Arc<FlowContext>>>,
 
-    pub default_execution_options: settings::DefaultExecutionOptions,
+    pub global_concurrency_controller: Arc<concur_control::ConcurrencyController>,
 }
 
 impl LibContext {
@@ -269,7 +269,12 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         db_pools,
         persistence_ctx,
         flows: Mutex::new(BTreeMap::new()),
-        default_execution_options: settings.default_execution_options,
+        global_concurrency_controller: Arc::new(concur_control::ConcurrencyController::new(
+            &concur_control::Options {
+                max_inflight_rows: settings.global_execution_options.source_max_inflight_rows,
+                max_inflight_bytes: settings.global_execution_options.source_max_inflight_bytes,
+            },
+        )),
     })
 }
 

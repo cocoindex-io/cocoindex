@@ -689,18 +689,11 @@ impl AnalyzerContext {
             .clone();
         let output = op_scope.add_op_output(import_op.name, output_type)?;
 
-        let max_inflight_rows =
-            (import_op.spec.execution_options.max_inflight_rows).or_else(|| {
-                self.lib_ctx
-                    .default_execution_options
-                    .source_max_inflight_rows
-            });
-        let max_inflight_bytes =
-            (import_op.spec.execution_options.max_inflight_bytes).or_else(|| {
-                self.lib_ctx
-                    .default_execution_options
-                    .source_max_inflight_bytes
-            });
+        let concur_control_options = import_op
+            .spec
+            .execution_options
+            .get_concur_control_options();
+        let global_concurrency_controller = self.lib_ctx.global_concurrency_controller.clone();
         let result_fut = async move {
             trace!("Start building executor for source op `{}`", op_name);
             let executor = executor.await?;
@@ -711,9 +704,9 @@ impl AnalyzerContext {
                 primary_key_type,
                 name: op_name,
                 refresh_options: import_op.spec.refresh_options,
-                concurrency_controller: concur_control::ConcurrencyController::new(
-                    max_inflight_rows,
-                    max_inflight_bytes,
+                concurrency_controller: concur_control::CombinedConcurrencyController::new(
+                    &concur_control_options,
+                    global_concurrency_controller,
                 ),
             })
         };
@@ -808,7 +801,8 @@ impl AnalyzerContext {
                 };
                 let op_name = reactive_op.name.clone();
 
-                let exec_options = foreach_op.execution_options.clone();
+                let concur_control_options =
+                    foreach_op.execution_options.get_concur_control_options();
                 async move {
                     Ok(AnalyzedReactiveOp::ForEach(AnalyzedForEachOp {
                         local_field_ref,
@@ -817,8 +811,7 @@ impl AnalyzerContext {
                             .with_context(|| format!("Analyzing foreach op: {op_name}"))?,
                         name: op_name,
                         concurrency_controller: concur_control::ConcurrencyController::new(
-                            exec_options.max_inflight_rows,
-                            exec_options.max_inflight_bytes,
+                            &concur_control_options,
                         ),
                     }))
                 }

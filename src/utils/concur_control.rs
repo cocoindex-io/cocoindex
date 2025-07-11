@@ -48,6 +48,11 @@ impl WeightedSemaphore {
     }
 }
 
+pub struct Options {
+    pub max_inflight_rows: Option<usize>,
+    pub max_inflight_bytes: Option<usize>,
+}
+
 pub struct ConcurrencyControllerPermit {
     _inflight_count_permit: Option<OwnedSemaphorePermit>,
     _inflight_bytes_permit: Option<OwnedSemaphorePermit>,
@@ -61,10 +66,14 @@ pub struct ConcurrencyController {
 pub static BYTES_UNKNOWN_YET: Option<fn() -> usize> = None;
 
 impl ConcurrencyController {
-    pub fn new(max_inflight_count: Option<usize>, max_inflight_bytes: Option<usize>) -> Self {
+    pub fn new(exec_options: &Options) -> Self {
         Self {
-            inflight_count_sem: max_inflight_count.map(|max| Arc::new(Semaphore::new(max))),
-            inflight_bytes_sem: max_inflight_bytes.map(|max| WeightedSemaphore::new(max)),
+            inflight_count_sem: exec_options
+                .max_inflight_rows
+                .map(|max| Arc::new(Semaphore::new(max))),
+            inflight_bytes_sem: exec_options
+                .max_inflight_bytes
+                .map(|max| WeightedSemaphore::new(max)),
         }
     }
 
@@ -82,8 +91,7 @@ impl ConcurrencyController {
         };
         let inflight_bytes_permit = if let Some(sem) = &self.inflight_bytes_sem {
             if let Some(bytes_fn) = bytes_fn {
-                let n = bytes_fn();
-                sem.acquire(n, false).await?
+                sem.acquire(bytes_fn(), false).await?
             } else {
                 Some(sem.acquire_reservation().await?)
             }
@@ -105,5 +113,64 @@ impl ConcurrencyController {
         } else {
             Ok(None)
         }
+    }
+}
+
+pub struct CombinedConcurrencyControllerPermit {
+    _permit: ConcurrencyControllerPermit,
+    _global_permit: ConcurrencyControllerPermit,
+}
+
+pub struct CombinedConcurrencyController {
+    controller: ConcurrencyController,
+    global_controller: Arc<ConcurrencyController>,
+    needs_num_bytes: bool,
+}
+
+impl CombinedConcurrencyController {
+    pub fn new(exec_options: &Options, global_controller: Arc<ConcurrencyController>) -> Self {
+        Self {
+            controller: ConcurrencyController::new(exec_options),
+            needs_num_bytes: exec_options.max_inflight_bytes.is_some()
+                || global_controller.inflight_bytes_sem.is_some(),
+            global_controller,
+        }
+    }
+
+    pub async fn acquire(
+        &self,
+        bytes_fn: Option<impl FnOnce() -> usize>,
+    ) -> Result<CombinedConcurrencyControllerPermit, AcquireError> {
+        let num_bytes_fn = if let Some(bytes_fn) = bytes_fn
+            && self.needs_num_bytes
+        {
+            let num_bytes = bytes_fn();
+            Some(move || num_bytes)
+        } else {
+            None
+        };
+
+        let permit = self.controller.acquire(num_bytes_fn).await?;
+        let global_permit = self.global_controller.acquire(num_bytes_fn).await?;
+        Ok(CombinedConcurrencyControllerPermit {
+            _permit: permit,
+            _global_permit: global_permit,
+        })
+    }
+
+    pub async fn acquire_bytes_with_reservation<'a>(
+        &'a self,
+        bytes_fn: impl FnOnce() -> usize,
+    ) -> Result<(Option<OwnedSemaphorePermit>, Option<OwnedSemaphorePermit>), AcquireError> {
+        let num_bytes = bytes_fn();
+        let permit = self
+            .controller
+            .acquire_bytes_with_reservation(move || num_bytes)
+            .await?;
+        let global_permit = self
+            .global_controller
+            .acquire_bytes_with_reservation(move || num_bytes)
+            .await?;
+        Ok((permit, global_permit))
     }
 }

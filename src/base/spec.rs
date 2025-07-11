@@ -262,6 +262,15 @@ pub struct ExecutionOptions {
     pub max_inflight_bytes: Option<usize>,
 }
 
+impl ExecutionOptions {
+    pub fn get_concur_control_options(&self) -> concur_control::Options {
+        concur_control::Options {
+            max_inflight_rows: self.max_inflight_rows,
+            max_inflight_bytes: self.max_inflight_bytes,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SourceRefreshOptions {
     pub refresh_interval: Option<std::time::Duration>,
