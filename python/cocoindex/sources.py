@@ -43,3 +43,14 @@ class AmazonS3(op.SourceSpec):
     included_patterns: list[str] | None = None
     excluded_patterns: list[str] | None = None
     sqs_queue_url: str | None = None
+
+
+class Notion(op.SourceSpec):
+    """Import data from Notion databases and pages."""
+
+    _op_category = op.OpCategory.SOURCE
+
+    token: str
+    source_type: str  # "database" or "page"
+    database_ids: list[str] | None = None
+    page_ids: list[str] | None = None
