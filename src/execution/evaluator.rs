@@ -528,7 +528,7 @@ pub async fn evaluate_source_entry(
     root_scope_entry.define_field_w_builder(
         &src_eval_ctx.import_op.output,
         value::Value::KTable(BTreeMap::from([(src_eval_ctx.key.clone(), scope_value)])),
-    );
+    )?;
 
     evaluate_op_scope(
         &src_eval_ctx.plan.op_scope,
