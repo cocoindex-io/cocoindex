@@ -46,7 +46,7 @@ Following the steps below to get cocoindex build on latest codebase locally - if
 
 -   Install required tools:
     ```sh
-    pip install maturin mypy pre-commit
+    pip install maturin mypy pre-commit pytest pytest-asyncio
     ```
 
 -   Build the library. Run at the root of cocoindex directory:
