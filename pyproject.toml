@@ -29,8 +29,14 @@ module-name = "cocoindex._engine"
 features = ["pyo3/extension-module"]
 
 [project.optional-dependencies]
-test = ["pytest"]
-dev = ["ruff", "pre-commit"]
+test = [
+    "pytest",
+    "pytest-asyncio",
+]
+dev = [
+    "ruff",
+    "pre-commit",
+]
 embeddings = ["sentence-transformers>=3.3.1"]
 
 [tool.mypy]
