@@ -43,7 +43,7 @@ jobs:
         - name: Install Python toolchains
           run: |
             source .venv/bin/activate
-            pip install maturin pytest mypy
+            pip install maturin mypy pytest pytest-asyncio
         - name: Python build
           run: |
             source .venv/bin/activate
