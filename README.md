@@ -29,7 +29,7 @@ Ultra performant data transformation framework for AI, with core engine written 
 
 </br>
 
-CocoIndex makes it super easy to transform data with AI workloads, and keep source data and target in sync effortlessly.  
+CocoIndex makes it super easy to transform data with AI workloads, and keep source data and target in sync effortlessly.
 
 </br>
 
@@ -39,7 +39,7 @@ CocoIndex makes it super easy to transform data with AI workloads, and keep sour
 
 </br>
 
-Either creating embedding, building knowledge graphs, or any data transformations - beyond traditional SQL. 
+Either creating embedding, building knowledge graphs, or any data transformations - beyond traditional SQL.
 
 ## Exceptional velocity
 Just declare transformation in dataflow with ~100 lines of python
@@ -65,7 +65,7 @@ CocoIndex follows the idea of [Dataflow](https://en.wikipedia.org/wiki/Dataflow_
 **Particularly**, developers don't explicitly mutate data by creating, updating and deleting. They just need to define transformation/formula for a set of source data.
 
 ## Build like LEGO
-Native builtins for different source, targets and transformations. Standardize interface, make it 1-line code switch between different components. 
+Native builtins for different source, targets and transformations. Standardize interface, make it 1-line code switch between different components.
 
 <p align="center">
     <img src="https://cocoindex.io/images/components.svg" alt="CocoIndex Features">
