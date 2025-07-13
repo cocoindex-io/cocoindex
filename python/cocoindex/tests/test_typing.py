@@ -539,5 +539,8 @@ def test_invalid_list_kind() -> None:
 
 def test_unsupported_type() -> None:
     typ = set
-    with pytest.raises(ValueError, match="type unsupported yet: <class 'set'>"):
+    with pytest.raises(
+        ValueError,
+        match="Unsupported as a specific type annotation for CocoIndex data type.*: <class 'set'>",
+    ):
         analyze_type_info(typ)

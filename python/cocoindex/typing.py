@@ -169,7 +169,7 @@ class AnalyzedTypeInfo:
 def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     """
     Analyze a Python type annotation and extract CocoIndex-specific type information.
-    Only concrete CocoIndex type annotations are supported. Raises ValueError for Any, empty, or untyped dict types.
+    Type annotations for specific CocoIndex types are expected. Raises ValueError for Any, empty, or untyped dict types.
     """
     if isinstance(t, tuple) and len(t) == 2:
         kt, vt = t
@@ -240,11 +240,12 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         _ = DtypeRegistry.validate_dtype_and_get_kind(elem_type)
         vector_info = VectorInfo(dim=None) if vector_info is None else vector_info
 
-    elif base_type is collections.abc.Mapping or base_type is dict:
+    elif base_type is collections.abc.Mapping or base_type is dict or t is dict:
         args = typing.get_args(t)
         if len(args) == 0:  # Handle untyped dict
             raise ValueError(
-                "Untyped dict is not supported; please provide a concrete type, e.g., dict[str, Any]."
+                "Untyped dict is not accepted as a specific type annotation; please provide a concrete type, "
+                "e.g. a dataclass or namedtuple for Struct types, a dict[str, T] for KTable types."
             )
         else:
             elem_type = (args[0], args[1])
@@ -288,12 +289,10 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             kind = "OffsetDateTime"
         elif t is datetime.timedelta:
             kind = "TimeDelta"
-        elif t is dict:
-            raise ValueError(
-                "Untyped dict is not supported; please provide a concrete type, e.g., dict[str, Any]."
-            )
         else:
-            raise ValueError(f"type unsupported yet: {t}")
+            raise ValueError(
+                f"Unsupported as a specific type annotation for CocoIndex data type (https://cocoindex.io/docs/core/data_types): {t}"
+            )
 
     return AnalyzedTypeInfo(
         kind=kind,
