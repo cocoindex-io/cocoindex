@@ -6,15 +6,23 @@ use crate::llm::{
 };
 use base64::prelude::*;
 use google_cloud_aiplatform_v1 as vertexai;
-use phf::phf_map;
 use serde_json::Value;
 use urlencoding::encode;
 
-static DEFAULT_EMBEDDING_DIMENSIONS: phf::Map<&str, u32> = phf_map! {
-    "gemini-embedding-exp-03-07" => 3072,
-    "text-embedding-004" => 768,
-    "embedding-001" => 768,
-};
+fn get_embedding_dimension(model: &str) -> Option<u32> {
+    let model = model.to_ascii_lowercase();
+    if model.starts_with("gemini-embedding-") {
+        Some(3072)
+    } else if model.starts_with("text-embedding-") {
+        Some(768)
+    } else if model.starts_with("embedding-") {
+        Some(768)
+    } else if model.starts_with("text-multilingual-embedding-") {
+        Some(768)
+    } else {
+        None
+    }
+}
 
 pub struct AiStudioClient {
     api_key: String,
@@ -192,7 +200,7 @@ impl LlmEmbeddingClient for AiStudioClient {
     }
 
     fn get_default_embedding_dimension(&self, model: &str) -> Option<u32> {
-        DEFAULT_EMBEDDING_DIMENSIONS.get(model).copied()
+        get_embedding_dimension(model)
     }
 }
 
@@ -202,11 +210,29 @@ pub struct VertexAiClient {
 }
 
 impl VertexAiClient {
-    pub async fn new(config: super::VertexAiConfig) -> Result<Self> {
+    pub async fn new(
+        address: Option<String>,
+        api_config: Option<super::LlmApiConfig>,
+    ) -> Result<Self> {
+        if address.is_some() {
+            api_bail!("VertexAi API address is not supported for VertexAi API type");
+        }
+        let Some(super::LlmApiConfig::VertexAi(config)) = api_config else {
+            api_bail!("VertexAi API config is required for VertexAi API type");
+        };
         let client = vertexai::client::PredictionService::builder()
             .build()
             .await?;
         Ok(Self { client, config })
+    }
+
+    fn get_model_path(&self, model: &str) -> String {
+        format!(
+            "projects/{}/locations/{}/publishers/google/models/{}",
+            self.config.project,
+            self.config.region.as_deref().unwrap_or("global"),
+            model
+        )
     }
 }
 
@@ -254,20 +280,10 @@ impl LlmGenerationClient for VertexAiClient {
             );
         }
 
-        // projects/{project_id}/locations/global/publishers/google/models/{MODEL}
-
-        let model = format!(
-            "projects/{}/locations/{}/publishers/google/models/{}",
-            self.config.project,
-            self.config.region.as_deref().unwrap_or("global"),
-            request.model
-        );
-
-        // Build the request
         let mut req = self
             .client
             .generate_content()
-            .set_model(model)
+            .set_model(self.get_model_path(request.model))
             .set_contents(contents);
         if let Some(sys) = system_instruction {
             req = req.set_system_instruction(sys);
@@ -299,5 +315,56 @@ impl LlmGenerationClient for VertexAiClient {
             extract_descriptions: false,
             top_level_must_be_object: true,
         }
+    }
+}
+
+#[async_trait]
+impl LlmEmbeddingClient for VertexAiClient {
+    async fn embed_text<'req>(
+        &self,
+        request: super::LlmEmbeddingRequest<'req>,
+    ) -> Result<super::LlmEmbeddingResponse> {
+        // Create the instances for the request
+        let mut instance = serde_json::json!({
+            "content": request.text
+        });
+        // Add task type if specified
+        if let Some(task_type) = &request.task_type {
+            instance["task_type"] = serde_json::Value::String(task_type.to_string());
+        }
+
+        let instances = vec![instance];
+
+        // Prepare the request parameters
+        let mut parameters = serde_json::json!({});
+        if let Some(output_dimension) = request.output_dimension {
+            parameters["outputDimensionality"] = serde_json::Value::Number(output_dimension.into());
+        }
+
+        // Build the prediction request using the raw predict builder
+        let response = self
+            .client
+            .predict()
+            .set_endpoint(self.get_model_path(request.model))
+            .set_instances(instances)
+            .set_parameters(parameters)
+            .send()
+            .await?;
+
+        // Extract the embedding from the response
+        let embeddings = response
+            .predictions
+            .into_iter()
+            .next()
+            .and_then(|mut e| e.get_mut("embeddings").map(|v| v.take()))
+            .ok_or_else(|| anyhow::anyhow!("No embeddings in response"))?;
+        let embedding: ContentEmbedding = serde_json::from_value(embeddings)?;
+        Ok(super::LlmEmbeddingResponse {
+            embedding: embedding.values,
+        })
+    }
+
+    fn get_default_embedding_dimension(&self, model: &str) -> Option<u32> {
+        get_embedding_dimension(model)
     }
 }

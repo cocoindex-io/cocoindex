@@ -119,16 +119,8 @@ pub async fn new_llm_generation_client(
         LlmApiType::Gemini => {
             Box::new(gemini::AiStudioClient::new(address)?) as Box<dyn LlmGenerationClient>
         }
-        LlmApiType::VertexAi => {
-            if address.is_some() {
-                api_bail!("VertexAi API address is not supported for VertexAi API type");
-            }
-            let Some(LlmApiConfig::VertexAi(config)) = api_config else {
-                api_bail!("VertexAi API config is required for VertexAi API type");
-            };
-            let config = config.clone();
-            Box::new(gemini::VertexAiClient::new(config).await?) as Box<dyn LlmGenerationClient>
-        }
+        LlmApiType::VertexAi => Box::new(gemini::VertexAiClient::new(address, api_config).await?)
+            as Box<dyn LlmGenerationClient>,
         LlmApiType::Anthropic => {
             Box::new(anthropic::Client::new(address).await?) as Box<dyn LlmGenerationClient>
         }
@@ -147,9 +139,10 @@ pub async fn new_llm_generation_client(
     Ok(client)
 }
 
-pub fn new_llm_embedding_client(
+pub async fn new_llm_embedding_client(
     api_type: LlmApiType,
     address: Option<String>,
+    api_config: Option<LlmApiConfig>,
 ) -> Result<Box<dyn LlmEmbeddingClient>> {
     let client = match api_type {
         LlmApiType::Gemini => {
@@ -161,12 +154,13 @@ pub fn new_llm_embedding_client(
         LlmApiType::Voyage => {
             Box::new(voyage::Client::new(address)?) as Box<dyn LlmEmbeddingClient>
         }
+        LlmApiType::VertexAi => Box::new(gemini::VertexAiClient::new(address, api_config).await?)
+            as Box<dyn LlmEmbeddingClient>,
         LlmApiType::Ollama
         | LlmApiType::OpenRouter
         | LlmApiType::LiteLlm
         | LlmApiType::Vllm
-        | LlmApiType::Anthropic
-        | LlmApiType::VertexAi => {
+        | LlmApiType::Anthropic => {
             api_bail!("Embedding is not supported for API type {:?}", api_type)
         }
     };

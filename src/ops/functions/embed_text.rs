@@ -1,5 +1,5 @@
 use crate::{
-    llm::{LlmApiType, LlmEmbeddingClient, LlmEmbeddingRequest, new_llm_embedding_client},
+    llm::{LlmApiConfig, LlmApiType, LlmEmbeddingClient, LlmEmbeddingRequest, new_llm_embedding_client},
     ops::sdk::*,
 };
 
@@ -8,6 +8,7 @@ struct Spec {
     api_type: LlmApiType,
     model: String,
     address: Option<String>,
+    api_config: Option<LlmApiConfig>,
     output_dimension: Option<u32>,
     task_type: Option<String>,
 }
@@ -67,7 +68,7 @@ impl SimpleFunctionFactoryBase for Factory {
         _context: &FlowInstanceContext,
     ) -> Result<(Self::ResolvedArgs, EnrichedValueType)> {
         let text = args_resolver.next_arg("text")?;
-        let client = new_llm_embedding_client(spec.api_type, spec.address.clone())?;
+        let client = new_llm_embedding_client(spec.api_type, spec.address.clone(), spec.api_config.clone()).await?;
         let output_dimension = match spec.output_dimension {
             Some(output_dimension) => output_dimension,
             None => {
@@ -108,6 +109,7 @@ mod tests {
             api_type: LlmApiType::OpenAi,
             model: "text-embedding-ada-002".to_string(),
             address: None,
+            api_config: None,
             output_dimension: None,
             task_type: None,
         };
