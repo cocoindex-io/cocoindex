@@ -15,8 +15,7 @@ def text_to_embedding(
 ) -> cocoindex.DataSlice[NDArray[np.float32]]:
     """
     Embed the text using a SentenceTransformer model.
-    This is a shared logic between indexing and querying, so extract it as a function.
-    """
+    This is a shared logic between indexing and querying, so extract it as a function."""
     # You can also switch to remote embedding model:
     #   return text.transform(
     #       cocoindex.functions.EmbedText(
