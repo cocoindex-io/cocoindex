@@ -20,3 +20,4 @@ dist/
 examples/**/eval_*
 
 /.vscode
+/*.session.sql
