@@ -8,11 +8,22 @@ class LlmApiType(Enum):
     OPENAI = "OpenAi"
     OLLAMA = "Ollama"
     GEMINI = "Gemini"
+    VERTEX_AI = "VertexAi"
     ANTHROPIC = "Anthropic"
     LITE_LLM = "LiteLlm"
     OPEN_ROUTER = "OpenRouter"
     VOYAGE = "Voyage"
     VLLM = "Vllm"
+
+
+@dataclass
+class VertexAiConfig:
+    """A specification for a Vertex AI LLM."""
+
+    kind = "VertexAi"
+
+    project: str
+    location: str | None = None
 
 
 @dataclass
@@ -22,3 +33,4 @@ class LlmSpec:
     api_type: LlmApiType
     model: str
     address: str | None = None
+    api_config: VertexAiConfig | None = None

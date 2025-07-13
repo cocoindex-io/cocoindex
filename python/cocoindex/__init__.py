@@ -33,6 +33,7 @@ __all__ = [
     # Submodules
     "_engine",
     "functions",
+    "llm",
     "sources",
     "targets",
     "storages",

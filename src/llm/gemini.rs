@@ -5,6 +5,7 @@ use crate::llm::{
     ToJsonSchemaOptions, detect_image_mime_type,
 };
 use base64::prelude::*;
+use google_cloud_aiplatform_v1 as vertexai;
 use phf::phf_map;
 use serde_json::Value;
 use urlencoding::encode;
@@ -15,12 +16,12 @@ static DEFAULT_EMBEDDING_DIMENSIONS: phf::Map<&str, u32> = phf_map! {
     "embedding-001" => 768,
 };
 
-pub struct Client {
+pub struct AiStudioClient {
     api_key: String,
     client: reqwest::Client,
 }
 
-impl Client {
+impl AiStudioClient {
     pub fn new(address: Option<String>) -> Result<Self> {
         if address.is_some() {
             api_bail!("Gemini doesn't support custom API address");
@@ -54,7 +55,7 @@ fn remove_additional_properties(value: &mut Value) {
     }
 }
 
-impl Client {
+impl AiStudioClient {
     fn get_api_url(&self, model: &str, api_name: &str) -> String {
         format!(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:{}?key={}",
@@ -66,7 +67,7 @@ impl Client {
 }
 
 #[async_trait]
-impl LlmGenerationClient for Client {
+impl LlmGenerationClient for AiStudioClient {
     async fn generate<'req>(
         &self,
         request: LlmGenerateRequest<'req>,
@@ -159,7 +160,7 @@ struct EmbedContentResponse {
 }
 
 #[async_trait]
-impl LlmEmbeddingClient for Client {
+impl LlmEmbeddingClient for AiStudioClient {
     async fn embed_text<'req>(
         &self,
         request: super::LlmEmbeddingRequest<'req>,
@@ -192,5 +193,111 @@ impl LlmEmbeddingClient for Client {
 
     fn get_default_embedding_dimension(&self, model: &str) -> Option<u32> {
         DEFAULT_EMBEDDING_DIMENSIONS.get(model).copied()
+    }
+}
+
+pub struct VertexAiClient {
+    client: vertexai::client::PredictionService,
+    config: super::VertexAiConfig,
+}
+
+impl VertexAiClient {
+    pub async fn new(config: super::VertexAiConfig) -> Result<Self> {
+        let client = vertexai::client::PredictionService::builder()
+            .build()
+            .await?;
+        Ok(Self { client, config })
+    }
+}
+
+#[async_trait]
+impl LlmGenerationClient for VertexAiClient {
+    async fn generate<'req>(
+        &self,
+        request: super::LlmGenerateRequest<'req>,
+    ) -> Result<super::LlmGenerateResponse> {
+        use vertexai::model::{Blob, Content, GenerationConfig, Part, Schema, part::Data};
+
+        // Compose parts
+        let mut parts = Vec::new();
+        // Add text part
+        parts.push(Part::new().set_text(request.user_prompt.to_string()));
+        // Add image part if present
+        if let Some(image_bytes) = request.image {
+            let mime_type = detect_image_mime_type(image_bytes.as_ref())?;
+            parts.push(
+                Part::new().set_inline_data(
+                    Blob::new()
+                        .set_data(image_bytes.into_owned())
+                        .set_mime_type(mime_type.to_string()),
+                ),
+            );
+        }
+        // Compose content
+        let mut contents = Vec::new();
+        contents.push(Content::new().set_role("user".to_string()).set_parts(parts));
+        // Compose system instruction if present
+        let system_instruction = request.system_prompt.as_ref().map(|sys| {
+            Content::new()
+                .set_role("system".to_string())
+                .set_parts(vec![Part::new().set_text(sys.to_string())])
+        });
+
+        // Compose generation config
+        let mut generation_config = None;
+        if let Some(OutputFormat::JsonSchema { schema, .. }) = &request.output_format {
+            let schema_json = serde_json::to_value(schema)?;
+            generation_config = Some(
+                GenerationConfig::new()
+                    .set_response_mime_type("application/json".to_string())
+                    .set_response_schema(serde_json::from_value::<Schema>(schema_json)?),
+            );
+        }
+
+        // projects/{project_id}/locations/global/publishers/google/models/{MODEL}
+
+        let model = format!(
+            "projects/{}/locations/{}/publishers/google/models/{}",
+            self.config.project,
+            self.config.location.as_deref().unwrap_or("global"),
+            request.model
+        );
+
+        // Build the request
+        let mut req = self
+            .client
+            .generate_content()
+            .set_model(model)
+            .set_contents(contents);
+        if let Some(sys) = system_instruction {
+            req = req.set_system_instruction(sys);
+        }
+        if let Some(config) = generation_config {
+            req = req.set_generation_config(config);
+        }
+
+        // Call the API
+        let resp = req.send().await?;
+        // Extract text from response
+        let Some(Data::Text(text)) = resp
+            .candidates
+            .into_iter()
+            .next()
+            .and_then(|c| c.content)
+            .and_then(|content| content.parts.into_iter().next())
+            .and_then(|part| part.data)
+        else {
+            bail!("No text in response");
+        };
+        Ok(super::LlmGenerateResponse { text })
+    }
+
+    fn json_schema_options(&self) -> ToJsonSchemaOptions {
+        ToJsonSchemaOptions {
+            fields_always_required: false,
+            supports_format: false,
+            extract_descriptions: false,
+            top_level_must_be_object: true,
+        }
     }
 }

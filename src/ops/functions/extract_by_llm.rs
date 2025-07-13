@@ -52,8 +52,12 @@ Unless explicitly instructed otherwise, output only the JSON. DO NOT include exp
 
 impl Executor {
     async fn new(spec: Spec, args: Args) -> Result<Self> {
-        let client =
-            new_llm_generation_client(spec.llm_spec.api_type, spec.llm_spec.address).await?;
+        let client = new_llm_generation_client(
+            spec.llm_spec.api_type,
+            spec.llm_spec.address,
+            spec.llm_spec.api_config,
+        )
+        .await?;
         let schema_output = build_json_schema(spec.output_type, client.json_schema_options())?;
         Ok(Self {
             args,
@@ -190,6 +194,7 @@ mod tests {
                 api_type: crate::llm::LlmApiType::OpenAi,
                 model: "gpt-4o".to_string(),
                 address: None,
+                api_config: None,
             },
             output_type: output_type_spec,
             instruction: Some("Extract the name and value from the text. The name is a string, the value is an integer.".to_string()),
