@@ -1,5 +1,7 @@
 use crate::{
-    llm::{LlmApiConfig, LlmApiType, LlmEmbeddingClient, LlmEmbeddingRequest, new_llm_embedding_client},
+    llm::{
+        LlmApiConfig, LlmApiType, LlmEmbeddingClient, LlmEmbeddingRequest, new_llm_embedding_client,
+    },
     ops::sdk::*,
 };
 
@@ -68,7 +70,9 @@ impl SimpleFunctionFactoryBase for Factory {
         _context: &FlowInstanceContext,
     ) -> Result<(Self::ResolvedArgs, EnrichedValueType)> {
         let text = args_resolver.next_arg("text")?;
-        let client = new_llm_embedding_client(spec.api_type, spec.address.clone(), spec.api_config.clone()).await?;
+        let client =
+            new_llm_embedding_client(spec.api_type, spec.address.clone(), spec.api_config.clone())
+                .await?;
         let output_dimension = match spec.output_dimension {
             Some(output_dimension) => output_dimension,
             None => {
