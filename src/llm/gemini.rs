@@ -259,7 +259,7 @@ impl LlmGenerationClient for VertexAiClient {
         let model = format!(
             "projects/{}/locations/{}/publishers/google/models/{}",
             self.config.project,
-            self.config.location.as_deref().unwrap_or("global"),
+            self.config.region.as_deref().unwrap_or("global"),
             request.model
         );
 

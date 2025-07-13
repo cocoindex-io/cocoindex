@@ -23,7 +23,7 @@ pub enum LlmApiType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VertexAiConfig {
     pub project: String,
-    pub location: Option<String>,
+    pub region: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

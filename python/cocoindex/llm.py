@@ -23,7 +23,7 @@ class VertexAiConfig:
     kind = "VertexAi"
 
     project: str
-    location: str | None = None
+    region: str | None = None
 
 
 @dataclass
