@@ -9,14 +9,6 @@ from numpy.typing import NDArray
 from . import llm, op
 from .typing import TypeAttr, Vector
 
-# Check if sentence_transformers is available
-try:
-    import sentence_transformers  # type: ignore
-
-    _SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    _SENTENCE_TRANSFORMERS_AVAILABLE = False
-
 
 class ParseJson(op.FunctionSpec):
     """Parse a text into a JSON object."""
@@ -79,18 +71,19 @@ class SentenceTransformerEmbedExecutor:
     """Executor for SentenceTransformerEmbed."""
 
     spec: SentenceTransformerEmbed
-    _model: "sentence_transformers.SentenceTransformer"
+    _model: Any | None = None
 
     def analyze(self, text: Any) -> type:
-        if not _SENTENCE_TRANSFORMERS_AVAILABLE:
+        try:
+            # Only import sentence_transformers locally when it's needed, as its import is very slow.
+            import sentence_transformers  # pylint: disable=import-outside-toplevel
+        except ImportError as e:
             raise ImportError(
                 "sentence_transformers is required for SentenceTransformerEmbed function. "
                 "Install it with one of these commands:\n"
                 "  pip install 'cocoindex[embeddings]'\n"
                 "  pip install sentence-transformers"
-            )
-
-        import sentence_transformers  # pylint: disable=import-outside-toplevel
+            ) from e
 
         args = self.spec.args or {}
         self._model = sentence_transformers.SentenceTransformer(self.spec.model, **args)
@@ -102,5 +95,6 @@ class SentenceTransformerEmbedExecutor:
         return result
 
     def __call__(self, text: str) -> NDArray[np.float32]:
+        assert self._model is not None
         result: NDArray[np.float32] = self._model.encode(text, convert_to_numpy=True)
         return result
