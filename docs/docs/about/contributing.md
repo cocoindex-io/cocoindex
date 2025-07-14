@@ -46,12 +46,12 @@ Following the steps below to get cocoindex build on latest codebase locally - if
 
 -   Install required tools:
     ```sh
-    pip install maturin mypy pre-commit
+    pip install maturin
     ```
 
 -   Build the library. Run at the root of cocoindex directory:
     ```sh
-    maturin develop
+    maturin develop -E all,dev
     ```
 
 -   Install and enable pre-commit hooks. This ensures all checks run automatically before each commit:
