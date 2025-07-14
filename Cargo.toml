@@ -118,9 +118,19 @@ time = { version = "0.3", features = ["macros", "serde"] }
 numpy = "0.25.0"
 infer = "0.19.0"
 serde_with = { version = "3.13.0", features = ["base64"] }
-google-cloud-aiplatform-v1 = "0.4.0"
+google-cloud-aiplatform-v1 = { version = "0.4.0", default-features = false, features = [
+    "prediction-service",
+] }
 
+azure_identity = { version = "0.21.0", default-features = false, features = [
+    "enable_reqwest_rustls",
+] }
 azure_core = "0.21.0"
-azure_storage = "0.21.0"
-azure_storage_blobs = "0.21.0"
-azure_identity = "0.21.0"
+azure_storage = { version = "0.21.0", default-features = false, features = [
+    "enable_reqwest_rustls",
+    "hmac_rust",
+] }
+azure_storage_blobs = { version = "0.21.0", default-features = false, features = [
+    "enable_reqwest_rustls",
+    "hmac_rust",
+] }
