@@ -248,9 +248,7 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
 
         pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).unwrap();
 
-        rustls::crypto::aws_lc_rs::default_provider()
-            .install_default()
-            .unwrap();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     });
 
     let db_pools = DbPools::default();
