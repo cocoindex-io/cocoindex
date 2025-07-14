@@ -1,6 +1,8 @@
 use crate::fields_value;
 use async_stream::try_stream;
-use azure_storage::prelude::*;
+use azure_core::prelude::NextMarker;
+use azure_identity::{DefaultAzureCredential, TokenCredentialOptions};
+use azure_storage::StorageCredentials;
 use azure_storage_blobs::prelude::*;
 use futures::StreamExt;
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -17,12 +19,6 @@ pub struct Spec {
     binary: bool,
     included_patterns: Option<Vec<String>>,
     excluded_patterns: Option<Vec<String>>,
-    /// Account key for authentication. If not provided, will use anonymous access.
-    account_key: Option<String>,
-    /// SAS token for authentication. Takes precedence over account_key.
-    sas_token: Option<String>,
-    /// Connection string for authentication. Takes precedence over other auth methods.
-    connection_string: Option<String>,
 }
 
 struct Executor {
@@ -60,7 +56,7 @@ impl SourceExecutor for Executor {
         _options: &'a SourceExecutorListOptions,
     ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>> {
         try_stream! {
-            let mut continuation_token: Option<String> = None;
+            let mut continuation_token: Option<NextMarker> = None;
             loop {
                 let mut list_builder = self.client
                     .container_client(&self.container_name)
@@ -70,41 +66,39 @@ impl SourceExecutor for Executor {
                     list_builder = list_builder.prefix(p.clone());
                 }
 
-                if let Some(ref token) = continuation_token {
-                    list_builder = list_builder.marker(token.as_str());
+                if let Some(token) = continuation_token.take() {
+                    list_builder = list_builder.marker(token);
                 }
 
                 let mut page_stream = list_builder.into_stream();
+                let Some(page_result) = page_stream.next().await else {
+                    break;
+                };
 
-                if let Some(page_result) = page_stream.next().await {
-                    let page = page_result?;
-                    let mut batch = Vec::new();
+                let page = page_result?;
+                let mut batch = Vec::new();
 
-                    for blob in page.blobs.blobs() {
-                        let key = &blob.name;
+                for blob in page.blobs.blobs() {
+                    let key = &blob.name;
 
-                        // Only include files (not directories)
-                        if key.ends_with('/') { continue; }
+                    // Only include files (not directories)
+                    if key.ends_with('/') { continue; }
 
-                        if self.is_file_included(key) {
-                            let ordinal = Some(datetime_to_ordinal(&blob.properties.last_modified));
-                            batch.push(PartialSourceRowMetadata {
-                                key: KeyValue::Str(key.clone().into()),
-                                ordinal,
-                            });
-                        }
+                    if self.is_file_included(key) {
+                        let ordinal = Some(datetime_to_ordinal(&blob.properties.last_modified));
+                        batch.push(PartialSourceRowMetadata {
+                            key: KeyValue::Str(key.clone().into()),
+                            ordinal,
+                        });
                     }
+                }
 
-                    if !batch.is_empty() {
-                        yield batch;
-                    }
+                if !batch.is_empty() {
+                    yield batch;
+                }
 
-                    if let Some(next_marker) = page.next_marker {
-                        continuation_token = Some(format!("{:?}", next_marker));
-                    } else {
-                        break;
-                    }
-                } else {
+                continuation_token = page.next_marker;
+                if continuation_token.is_none() {
                     break;
                 }
             }
@@ -134,8 +128,8 @@ impl SourceExecutor for Executor {
         let result = stream.next().await;
 
         let blob_response = match result {
-            Some(Ok(response)) => response,
-            Some(Err(_)) | None => {
+            Some(response) => response?,
+            None => {
                 return Ok(PartialSourceRowData {
                     value: Some(SourceValue::NonExistence),
                     ordinal: Some(Ordinal::unavailable()),
@@ -217,34 +211,13 @@ impl SourceFactoryBase for Factory {
         spec: Spec,
         _context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SourceExecutor>> {
-        let account_name = spec.account_name.clone();
-        let storage_credentials = if let Some(connection_string) = spec.connection_string {
-            // Parse connection string to extract account key
-            // Format: "DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey=mykey;EndpointSuffix=core.windows.net"
-            let mut account_key_from_conn_str = None;
-            for part in connection_string.split(';') {
-                if let Some(key) = part.strip_prefix("AccountKey=") {
-                    account_key_from_conn_str = Some(key.to_string());
-                    break;
-                }
-            }
-            if let Some(key) = account_key_from_conn_str {
-                StorageCredentials::access_key(&account_name, key)
-            } else {
-                return Err(anyhow::anyhow!(
-                    "Invalid connection string: missing AccountKey"
-                ));
-            }
-        } else if let Some(sas_token) = spec.sas_token {
-            StorageCredentials::sas_token(sas_token)?
-        } else if let Some(account_key) = spec.account_key {
-            StorageCredentials::access_key(&account_name, account_key)
-        } else {
-            StorageCredentials::anonymous()
-        };
-
-        let client = BlobServiceClient::new(&account_name, storage_credentials);
-
+        let default_credential = Arc::new(DefaultAzureCredential::create(
+            TokenCredentialOptions::default(),
+        )?);
+        let client = BlobServiceClient::new(
+            &spec.account_name,
+            StorageCredentials::token_credential(default_credential),
+        );
         Ok(Box::new(Executor {
             client,
             container_name: spec.container_name,

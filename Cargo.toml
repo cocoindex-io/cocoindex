@@ -114,11 +114,13 @@ json5 = "0.4.1"
 aws-config = "1.6.2"
 aws-sdk-s3 = "1.85.0"
 aws-sdk-sqs = "1.67.0"
-azure_core = "0.21.0"
-azure_storage = "0.21.0"
-azure_storage_blobs = "0.21.0"
 time = { version = "0.3", features = ["macros", "serde"] }
 numpy = "0.25.0"
 infer = "0.19.0"
 serde_with = { version = "3.13.0", features = ["base64"] }
 google-cloud-aiplatform-v1 = "0.4.0"
+
+azure_core = "0.21.0"
+azure_storage = "0.21.0"
+azure_storage_blobs = "0.21.0"
+azure_identity = "0.21.0"

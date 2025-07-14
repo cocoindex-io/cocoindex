@@ -31,11 +31,6 @@ def azure_blob_text_embedding_flow(
     container_name = os.environ["AZURE_BLOB_CONTAINER_NAME"]
     prefix = os.environ.get("AZURE_BLOB_PREFIX", None)
 
-    # Authentication options (in priority order)
-    connection_string = os.environ.get("AZURE_BLOB_CONNECTION_STRING", None)
-    account_key = os.environ.get("AZURE_BLOB_ACCOUNT_KEY", None)
-    sas_token = os.environ.get("AZURE_BLOB_SAS_TOKEN", None)
-
     data_scope["documents"] = flow_builder.add_source(
         cocoindex.sources.AzureBlob(
             account_name=account_name,
@@ -43,9 +38,6 @@ def azure_blob_text_embedding_flow(
             prefix=prefix,
             included_patterns=["*.md", "*.mdx", "*.txt", "*.docx"],
             binary=False,
-            connection_string=connection_string,
-            account_key=account_key,
-            sas_token=sas_token,
         )
     )
 

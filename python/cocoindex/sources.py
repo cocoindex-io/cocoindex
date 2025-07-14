@@ -46,13 +46,8 @@ class AmazonS3(op.SourceSpec):
 
 
 class AzureBlob(op.SourceSpec):
-    """Import data from an Azure Blob Storage container. Supports optional prefix and file filtering by glob patterns.
-
-    Authentication options (in priority order):
-    1. connection_string - Full connection string with credentials
-    2. sas_token - Shared Access Signature token
-    3. account_key - Storage account access key
-    4. None - Anonymous access (for public containers)
+    """
+    Import data from an Azure Blob Storage container. Supports optional prefix and file filtering by glob patterns.
     """
 
     _op_category = op.OpCategory.SOURCE
@@ -63,6 +58,3 @@ class AzureBlob(op.SourceSpec):
     binary: bool = False
     included_patterns: list[str] | None = None
     excluded_patterns: list[str] | None = None
-    account_key: str | None = None
-    sas_token: str | None = None
-    connection_string: str | None = None
