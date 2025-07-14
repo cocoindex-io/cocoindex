@@ -156,6 +156,7 @@ It defines an index flow like this:
 | [PDF Embedding](examples/pdf_embedding) | Parse PDF and index text embeddings for semantic search |
 | [Manuals LLM Extraction](examples/manuals_llm_extraction) | Extract structured information from a manual using LLM |
 | [Amazon S3 Embedding](examples/amazon_s3_embedding) | Index text documents from Amazon S3 |
+| [Azure Blob Storage Embedding](examples/azure_blob_embedding) | Index text documents from Azure Blob Storage |
 | [Google Drive Text Embedding](examples/gdrive_text_embedding) | Index text documents from Google Drive |
 | [Docs to Knowledge Graph](examples/docs_to_knowledge_graph) | Extract relationships from Markdown documents and build a knowledge graph |
 | [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |
