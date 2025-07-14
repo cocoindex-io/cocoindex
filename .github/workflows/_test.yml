@@ -47,7 +47,7 @@ jobs:
         - name: Python build
           run: |
             source .venv/bin/activate
-            maturin develop
+            maturin develop -E all
         - name: Python type check (mypy)
           run: |
             source .venv/bin/activate

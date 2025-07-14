@@ -32,6 +32,7 @@ features = ["pyo3/extension-module"]
 test = ["pytest"]
 dev = ["ruff", "pre-commit"]
 embeddings = ["sentence-transformers>=3.3.1"]
+all = ["cocoindex[embeddings]"]
 
 [tool.mypy]
 python_version = "3.11"

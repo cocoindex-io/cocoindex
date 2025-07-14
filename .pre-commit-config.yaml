@@ -28,7 +28,7 @@ repos:
     hooks:
         - id: maturin-develop
           name: maturin develop
-          entry: maturin develop
+          entry: maturin develop -E all
           language: system
           files: ^(python/|src/|Cargo\.toml|pyproject\.toml)
           pass_filenames: false
