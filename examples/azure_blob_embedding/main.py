@@ -101,20 +101,22 @@ def _main() -> None:
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
 
     azure_blob_text_embedding_flow.setup()
-    with cocoindex.FlowLiveUpdater(azure_blob_text_embedding_flow):
-        # Run queries in a loop to demonstrate the query capabilities.
-        while True:
-            query = input("Enter search query (or Enter to quit): ")
-            if query == "":
-                break
-            # Run the query function with the database connection pool and the query.
-            results = search(pool, query)
-            print("\nSearch results:")
-            for result in results:
-                print(f"[{result['score']:.3f}] {result['filename']}")
-                print(f"    {result['text']}")
-                print("---")
-            print()
+    update_stats = azure_blob_text_embedding_flow.update()
+    print(update_stats)
+
+    # Run queries in a loop to demonstrate the query capabilities.
+    while True:
+        query = input("Enter search query (or Enter to quit): ")
+        if query == "":
+            break
+        # Run the query function with the database connection pool and the query.
+        results = search(pool, query)
+        print("\nSearch results:")
+        for result in results:
+            print(f"[{result['score']:.3f}] {result['filename']}")
+            print(f"    {result['text']}")
+            print("---")
+        print()
 
 
 if __name__ == "__main__":
