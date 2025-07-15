@@ -36,17 +36,19 @@ def simple_transform(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[str]
 
 
 @cocoindex.op.function()
-def extract_child_values(parent: Parent) -> list[int]:
-    """Extract values from each child in the Parent's children list."""
-    return [child.value for child in parent.children]
+def extract_value(child: int) -> int:
+    """Extracts the value from a Child object."""
+    return child
 
 
 @cocoindex.transform_flow()
 def for_each_transform(
     data: cocoindex.DataSlice[Parent],
-) -> cocoindex.DataSlice[list[int]]:
+) -> cocoindex.DataSlice[Parent]:
     """Transform flow that processes child rows to extract values."""
-    return data.transform(extract_child_values)
+    with data["children"].row() as child:
+        child["new_field"] = child["value"].transform(extract_value)
+    return data
 
 
 def test_simple_transform_flow() -> None:
@@ -71,12 +73,12 @@ def test_for_each_transform_flow() -> None:
     """Test the complex transform flow with child rows."""
     input_data = Parent(children=[Child(1), Child(2), Child(3)])
     result = for_each_transform.eval(input_data)
-    expected = [1, 2, 3]
+    expected = Parent(children=[Child(1), Child(2), Child(3)])
     assert result == expected, f"Expected {expected}, got {result}"
 
     input_data = Parent(children=[])
     result = for_each_transform.eval(input_data)
-    assert result == [], f"Expected [], got {result}"
+    assert result == Parent(children=[]), f"Expected [], got {result}"
 
 
 @pytest.mark.asyncio
@@ -84,5 +86,5 @@ async def test_for_each_transform_flow_async() -> None:
     """Test the complex transform flow asynchronously."""
     input_data = Parent(children=[Child(4), Child(5)])
     result = await for_each_transform.eval_async(input_data)
-    expected = [4, 5]
+    expected = Parent(children=[Child(4), Child(5)])
     assert result == expected, f"Expected {expected}, got {result}"
