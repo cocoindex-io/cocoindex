@@ -287,11 +287,11 @@ pub trait ExportTargetFactory: Send + Sync {
 
     fn describe_resource(&self, key: &serde_json::Value) -> Result<String>;
 
-    fn extract_additional_key<'ctx>(
+    fn extract_additional_key(
         &self,
         key: &KeyValue,
         value: &FieldValues,
-        export_context: &'ctx (dyn Any + Send + Sync),
+        export_context: &(dyn Any + Send + Sync),
     ) -> Result<serde_json::Value>;
 
     async fn apply_mutation(

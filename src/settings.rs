@@ -8,7 +8,7 @@ pub struct DatabaseConnectionSpec {
 }
 
 #[derive(Deserialize, Debug, Default)]
-pub struct DefaultExecutionOptions {
+pub struct GlobalExecutionOptions {
     pub source_max_inflight_rows: Option<usize>,
     pub source_max_inflight_bytes: Option<usize>,
 }
@@ -21,13 +21,12 @@ pub struct Settings {
     #[allow(dead_code)] // Used via serialization/deserialization to Python
     pub app_namespace: String,
     #[serde(default)]
-    pub default_execution_options: DefaultExecutionOptions,
+    pub global_execution_options: GlobalExecutionOptions,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json;
 
     #[test]
     fn test_settings_deserialize_with_database() {

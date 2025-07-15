@@ -89,12 +89,25 @@ def make_engine_value_decoder(
     if dst_is_any:
         if src_type_kind == "Union":
             return lambda value: value[1]
-        if src_type_kind == "Struct" or src_type_kind in TABLE_TYPES:
+        if src_type_kind == "Struct":
+            return _make_engine_struct_to_dict_decoder(field_path, src_type["fields"])
+        if src_type_kind in TABLE_TYPES:
             raise ValueError(
                 f"Missing type annotation for `{''.join(field_path)}`."
                 f"It's required for {src_type_kind} type."
             )
         return lambda value: value
+
+    # Handle struct -> dict binding for explicit dict annotations
+    is_dict_annotation = False
+    if dst_annotation is dict:
+        is_dict_annotation = True
+    elif getattr(dst_annotation, "__origin__", None) is dict:
+        args = getattr(dst_annotation, "__args__", ())
+        if args == (str, Any):
+            is_dict_annotation = True
+    if is_dict_annotation and src_type_kind == "Struct":
+        return _make_engine_struct_to_dict_decoder(field_path, src_type["fields"])
 
     dst_type_info = analyze_type_info(dst_annotation)
 
@@ -292,6 +305,39 @@ def _make_engine_struct_value_decoder(
     return lambda values: dst_struct_type(
         *(decoder(values) for decoder in field_value_decoder)
     )
+
+
+def _make_engine_struct_to_dict_decoder(
+    field_path: list[str],
+    src_fields: list[dict[str, Any]],
+) -> Callable[[list[Any] | None], dict[str, Any] | None]:
+    """Make a decoder from engine field values to a Python dict."""
+
+    field_decoders = []
+    for i, field_schema in enumerate(src_fields):
+        field_name = field_schema["name"]
+        field_path.append(f".{field_name}")
+        field_decoder = make_engine_value_decoder(
+            field_path,
+            field_schema["type"],
+            Any,  # Use Any for recursive decoding
+        )
+        field_path.pop()
+        field_decoders.append((field_name, field_decoder))
+
+    def decode_to_dict(values: list[Any] | None) -> dict[str, Any] | None:
+        if values is None:
+            return None
+        if len(field_decoders) != len(values):
+            raise ValueError(
+                f"Field count mismatch: expected {len(field_decoders)}, got {len(values)}"
+            )
+        return {
+            field_name: field_decoder(value)
+            for value, (field_name, field_decoder) in zip(values, field_decoders)
+        }
+
+    return decode_to_dict
 
 
 def dump_engine_object(v: Any) -> Any:

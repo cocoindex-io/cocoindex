@@ -6,7 +6,6 @@ use crate::llm::{
     ToJsonSchemaOptions, detect_image_mime_type,
 };
 use anyhow::Context;
-use json5;
 use urlencoding::encode;
 
 pub struct Client {

@@ -18,7 +18,7 @@ fn parse_components(
 
         // Parse digits and optional decimal point
         while let Some(&c) = iter.peek() {
-            if c.is_digit(10) || (c == '.' && !has_decimal) {
+            if c.is_ascii_digit() || (c == '.' && !has_decimal) {
                 if c == '.' {
                     has_decimal = true;
                 }
@@ -53,8 +53,8 @@ fn parse_components(
 
 /// Parses an ISO 8601 duration string into a `chrono::Duration`.
 fn parse_iso8601_duration(s: &str, original_input: &str) -> Result<Duration> {
-    let (is_negative, s_after_sign) = if s.starts_with('-') {
-        (true, &s[1..])
+    let (is_negative, s_after_sign) = if let Some(stripped) = s.strip_prefix('-') {
+        (true, stripped)
     } else {
         (false, s)
     };
@@ -193,28 +193,21 @@ mod tests {
 
     fn check_ok(res: Result<Duration>, expected: Duration, input_str: &str) {
         match res {
-            Ok(duration) => assert_eq!(duration, expected, "Input: '{}'", input_str),
-            Err(e) => panic!(
-                "Input: '{}', expected Ok({:?}), but got Err: {}",
-                input_str, expected, e
-            ),
+            Ok(duration) => assert_eq!(duration, expected, "Input: '{input_str}'"),
+            Err(e) => panic!("Input: '{input_str}', expected Ok({expected:?}), but got Err: {e}"),
         }
     }
 
     fn check_err_contains(res: Result<Duration>, expected_substring: &str, input_str: &str) {
         match res {
             Ok(d) => panic!(
-                "Input: '{}', expected error containing '{}', but got Ok({:?})",
-                input_str, expected_substring, d
+                "Input: '{input_str}', expected error containing '{expected_substring}', but got Ok({d:?})"
             ),
             Err(e) => {
                 let err_msg = e.to_string();
                 assert!(
                     err_msg.contains(expected_substring),
-                    "Input: '{}', error message '{}' does not contain expected substring '{}'",
-                    input_str,
-                    err_msg,
-                    expected_substring
+                    "Input: '{input_str}', error message '{err_msg}' does not contain expected substring '{expected_substring}'"
                 );
             }
         }

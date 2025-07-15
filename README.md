@@ -2,7 +2,7 @@
     <img src="https://cocoindex.io/images/github.svg" alt="CocoIndex">
 </p>
 
-<h2 align="center">Extract, Transform, Index Data. Easy and Fresh. 🌴</h2>
+<h1 align="center">Data transformation for AI</h1>
 
 <div align="center">
 
@@ -17,18 +17,32 @@
 [![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
 </div>
 
-**CocoIndex** is an ultra performant data transformation framework, with its core engine written in Rust. The problem it tries to solve is to make it easy to prepare fresh data for AI - either creating embedding, building knowledge graphs, or performing other data transformations - and take real-time data pipelines beyond traditional SQL.
+Ultra performant data transformation framework for AI, with core engine written in Rust. Support incremental processing and data lineage out-of-box.  Exceptional developer velocity. Production-ready at day 0.
+
+⭐ Drop a star to help us grow!
+
+</br>
 
 <p align="center">
-    <img src="https://cocoindex.io/images/cocoindex-features.png" alt="CocoIndex Features" width="500">
+    <img src="https://cocoindex.io/images/transformation.svg" alt="CocoIndex Transformation">
 </p>
 
-The philosophy is to have the framework handle the source updates, and having developers only worry about defining a series of data transformation, inspired by spreadsheet.
+</br>
 
-## Dataflow programming
-Unlike a workflow orchestration framework where data is usually opaque, in CocoIndex, data and data operations are first class citizens. CocoIndex follows the idea of [Dataflow](https://en.wikipedia.org/wiki/Dataflow_programming) programming model. Each transformation creates a new field solely based on input fields, without hidden states and value mutation. All data before/after each transformation is observable, with lineage out of the box.
+CocoIndex makes it super easy to transform data with AI workloads, and keep source data and target in sync effortlessly.
 
-**Particularly**, users don't explicitly mutate data by creating, updating and deleting. Rather, they define something like - for a set of source data, this is the transformation or formula. The framework takes care of the data operations such as when to create, update, or delete.
+</br>
+
+<p align="center">
+    <img src="https://cocoindex.io/images/venn-features.png" alt="CocoIndex Features" width='480'>
+</p>
+
+</br>
+
+Either creating embedding, building knowledge graphs, or any data transformations - beyond traditional SQL.
+
+## Exceptional velocity
+Just declare transformation in dataflow with ~100 lines of python
 
 ```python
 # import
@@ -46,19 +60,27 @@ collector.collect(...)
 collector.export(...)
 ```
 
+CocoIndex follows the idea of [Dataflow](https://en.wikipedia.org/wiki/Dataflow_programming) programming model. Each transformation creates a new field solely based on input fields, without hidden states and value mutation. All data before/after each transformation is observable, with lineage out of the box.
+
+**Particularly**, developers don't explicitly mutate data by creating, updating and deleting. They just need to define transformation/formula for a set of source data.
+
+## Build like LEGO
+Native builtins for different source, targets and transformations. Standardize interface, make it 1-line code switch between different components.
+
+<p align="center">
+    <img src="https://cocoindex.io/images/components.svg" alt="CocoIndex Features">
+</p>
+
 ## Data Freshness
-As a data framework, CocoIndex takes it to the next level on data freshness. **Incremental processing** is one of the core values provided by CocoIndex.
+CocoIndex keep source data and target in sync effortlessly.
 
 <p align="center">
     <img src="https://github.com/user-attachments/assets/f4eb29b3-84ee-4fa0-a1e2-80eedeeabde6" alt="Incremental Processing" width="700">
 </p>
 
-The frameworks takes care of
-- Change data capture.
-- Figure out what exactly needs to be updated, and only updating that without having to recompute everything.
-
-This makes it fast to reflect any source updates to the target store. If you have concerns with surfacing stale data to AI agents and are spending lots of efforts working on infra piece to optimize the latency, the framework actually handles it for you.
-
+It has out-of-box support for incremental indexing:
+- minimal recomputation on source or logic change.
+- (re-)processing necessary portions; reuse cache when possible
 
 ## Quick Start:
 If you're new to CocoIndex, we recommend checking out
@@ -77,7 +99,7 @@ pip install -U cocoindex
 2. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. CocoIndex uses it for incremental processing.
 
 
-### Define data flow
+## Define data flow
 
 Follow [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart) to define your first indexing flow. An example flow looks like:
 
@@ -121,8 +143,9 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 
 It defines an index flow like this:
 
-<img width="363" alt="Data Flow" src="https://github.com/user-attachments/assets/2ea7be6d-3d94-42b1-b2bd-22515577e463" />
-
+<p align="center">
+    <img width="400" alt="Data Flow" src="https://github.com/user-attachments/assets/2ea7be6d-3d94-42b1-b2bd-22515577e463" />
+</p>
 
 ## 🚀 Examples and demo
 
@@ -133,6 +156,7 @@ It defines an index flow like this:
 | [PDF Embedding](examples/pdf_embedding) | Parse PDF and index text embeddings for semantic search |
 | [Manuals LLM Extraction](examples/manuals_llm_extraction) | Extract structured information from a manual using LLM |
 | [Amazon S3 Embedding](examples/amazon_s3_embedding) | Index text documents from Amazon S3 |
+| [Azure Blob Storage Embedding](examples/azure_blob_embedding) | Index text documents from Azure Blob Storage |
 | [Google Drive Text Embedding](examples/gdrive_text_embedding) | Index text documents from Google Drive |
 | [Docs to Knowledge Graph](examples/docs_to_knowledge_graph) | Extract relationships from Markdown documents and build a knowledge graph |
 | [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |

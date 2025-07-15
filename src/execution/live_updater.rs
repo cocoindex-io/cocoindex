@@ -238,16 +238,10 @@ impl FlowLiveUpdater {
         while let Some(result) = self.tasks.join_next().await {
             match result {
                 Err(e) if !e.is_cancelled() => {
-                    error!(
-                        "A background task in FlowLiveUpdater failed to join: {:?}",
-                        e
-                    );
+                    error!("A background task in FlowLiveUpdater failed to join: {e:?}");
                 }
                 Ok(Err(e)) => {
-                    error!(
-                        "Error reported by a source update task during live update: {:?}",
-                        e
-                    );
+                    error!("Error reported by a source update task during live update: {e:?}");
                 }
                 _ => {}
             }

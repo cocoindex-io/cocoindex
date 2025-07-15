@@ -1,28 +1,18 @@
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
-from pgvector.psycopg import register_vector
-from typing import Any
 import cocoindex
 import os
-from numpy.typing import NDArray
-import numpy as np
-from datetime import timedelta
+from typing import Any
 
 
 @cocoindex.transform_flow()
 def text_to_embedding(
     text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[NDArray[np.float32]]:
+) -> cocoindex.DataSlice[list[float]]:
     """
     Embed the text using a SentenceTransformer model.
-    This is a shared logic between indexing and querying, so extract it as a function."""
-    # You can also switch to remote embedding model:
-    #   return text.transform(
-    #       cocoindex.functions.EmbedText(
-    #           api_type=cocoindex.LlmApiType.OPENAI,
-    #           model="text-embedding-3-small",
-    #       )
-    #   )
+    This is a shared logic between indexing and querying, so extract it as a function.
+    """
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
             model="sentence-transformers/all-MiniLM-L6-v2"
@@ -30,16 +20,25 @@ def text_to_embedding(
     )
 
 
-@cocoindex.flow_def(name="TextEmbedding")
-def text_embedding_flow(
+@cocoindex.flow_def(name="AzureBlobTextEmbedding")
+def azure_blob_text_embedding_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
     """
-    Define an example flow that embeds text into a vector database.
+    Define an example flow that embeds text from Azure Blob Storage into a vector database.
     """
+    account_name = os.environ["AZURE_STORAGE_ACCOUNT_NAME"]
+    container_name = os.environ["AZURE_BLOB_CONTAINER_NAME"]
+    prefix = os.environ.get("AZURE_BLOB_PREFIX", None)
+
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="markdown_files"),
-        refresh_interval=timedelta(seconds=5),
+        cocoindex.sources.AzureBlob(
+            account_name=account_name,
+            container_name=container_name,
+            prefix=prefix,
+            included_patterns=["*.md", "*.mdx", "*.txt", "*.docx"],
+            binary=False,
+        )
     )
 
     doc_embeddings = data_scope.add_collector()
@@ -75,19 +74,18 @@ def text_embedding_flow(
 
 
 def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-    # Get the table name, for the export target in the text_embedding_flow above.
+    # Get the table name, for the export target in the azure_blob_text_embedding_flow above.
     table_name = cocoindex.utils.get_target_default_name(
-        text_embedding_flow, "doc_embeddings"
+        azure_blob_text_embedding_flow, "doc_embeddings"
     )
     # Evaluate the transform flow defined above with the input query, to get the embedding.
     query_vector = text_to_embedding.eval(query)
     # Run the query and get the results.
     with pool.connection() as conn:
-        register_vector(conn)
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT filename, text, embedding <=> %s AS distance
+                SELECT filename, text, embedding <=> %s::vector AS distance
                 FROM {table_name} ORDER BY distance LIMIT %s
             """,
                 (query_vector, top_k),
@@ -101,6 +99,11 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
 def _main() -> None:
     # Initialize the database connection pool.
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
+
+    azure_blob_text_embedding_flow.setup()
+    update_stats = azure_blob_text_embedding_flow.update()
+    print(update_stats)
+
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         query = input("Enter search query (or Enter to quit): ")

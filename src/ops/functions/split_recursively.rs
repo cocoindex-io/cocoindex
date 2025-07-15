@@ -3,7 +3,6 @@ use log::{error, trace};
 use regex::{Matches, Regex};
 use std::collections::HashSet;
 use std::sync::LazyLock;
-use std::usize;
 use std::{collections::HashMap, sync::Arc};
 use unicase::UniCase;
 
@@ -389,7 +388,7 @@ fn line_break_level(c: &str) -> LineBreakLevel {
     while let Some(c) = iter.next() {
         if c == '\n' || c == '\r' {
             lb_level = LineBreakLevel::Newline;
-            while let Some(c2) = iter.next() {
+            for c2 in iter.by_ref() {
                 if c2 == '\n' || c2 == '\r' {
                     if c == c2 {
                         return LineBreakLevel::DoubleNewline;
@@ -568,7 +567,8 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
                 next_regexp_sep_id,
             } => {
                 if next_regexp_sep_id >= lang_config.separator_regex.len() {
-                    Ok(atom_collector.collect(chunk.range))
+                    atom_collector.collect(chunk.range);
+                    Ok(())
                 } else {
                     self.collect_atom_chunks_from_iter(
                         TextChunksIter::new(lang_config, &chunk, next_regexp_sep_id),
@@ -619,7 +619,7 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
             }
         };
 
-        for (i, chunk) in (&atom_chunks[0..atom_chunks.len() - 1]).iter().enumerate() {
+        for (i, chunk) in atom_chunks[0..atom_chunks.len() - 1].iter().enumerate() {
             let mut min_cost = usize::MAX;
             let mut arg_min_start_idx: usize = 0;
             let mut arg_min_prev_plan_idx: usize = 0;
@@ -1047,14 +1047,12 @@ mod tests {
         // Assert that the expected text matches the text provided in the chunk.
         assert_eq!(
             actual_chunk.text, expected_text,
-            "Provided chunk text mismatch - {}",
-            context
+            "Provided chunk text mismatch - {context}"
         );
         // Assert that the expected text also matches the text extracted using the chunk's range.
         assert_eq!(
             extracted_text, expected_text,
-            "Range inconsistency: extracted text mismatch - {}",
-            context
+            "Range inconsistency: extracted text mismatch - {context}"
         );
     }
 
@@ -1118,16 +1116,17 @@ mod tests {
                     let key: KeyValue = range.into();
                     match table.get(&key) {
                         Some(scope_value_ref) => {
-                            let chunk_text = scope_value_ref.0.fields[0]
-                                .as_str()
-                                .expect(&format!("Chunk text not a string for key {:?}", key));
+                            let chunk_text =
+                                scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
+                                    panic!("Chunk text not a string for key {key:?}")
+                                });
                             assert_eq!(**chunk_text, *expected_text);
                         }
-                        None => panic!("Expected row value for key {:?}, not found", key),
+                        None => panic!("Expected row value for key {key:?}, not found"),
                     }
                 }
             }
-            other => panic!("Expected Value::KTable, got {:?}", other),
+            other => panic!("Expected Value::KTable, got {other:?}"),
         }
     }
 

@@ -71,7 +71,7 @@ impl LlmGenerationClient for Client {
             Some(img_bytes) => {
                 let base64_image = BASE64_STANDARD.encode(img_bytes.as_ref());
                 let mime_type = detect_image_mime_type(img_bytes.as_ref())?;
-                let image_url = format!("data:{};base64,{}", mime_type, base64_image);
+                let image_url = format!("data:{mime_type};base64,{base64_image}");
                 ChatCompletionRequestUserMessageContent::Array(vec![
                     ChatCompletionRequestUserMessageContentPart::Text(
                         ChatCompletionRequestMessageContentPartText {

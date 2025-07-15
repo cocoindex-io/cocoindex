@@ -76,7 +76,7 @@ fn basic_value_to_py_object<'py>(
         value::BasicValue::Json(v) => pythonize(py, v).into_py_result()?,
         value::BasicValue::Vector(v) => handle_vector_to_py(py, v)?,
         value::BasicValue::UnionVariant { tag_id, value } => {
-            (*tag_id, basic_value_to_py_object(py, &value)?).into_bound_py_any(py)?
+            (*tag_id, basic_value_to_py_object(py, value)?).into_bound_py_any(py)?
         }
     };
     Ok(result)
@@ -218,10 +218,10 @@ fn handle_ndarray_from_py<'py>(
         };
     }
 
-    match elem_type {
-        &schema::BasicValueType::Float32 => try_convert!(f32, value::BasicValue::Float32),
-        &schema::BasicValueType::Float64 => try_convert!(f64, value::BasicValue::Float64),
-        &schema::BasicValueType::Int64 => try_convert!(i64, value::BasicValue::Int64),
+    match *elem_type {
+        schema::BasicValueType::Float32 => try_convert!(f32, value::BasicValue::Float32),
+        schema::BasicValueType::Float64 => try_convert!(f64, value::BasicValue::Float64),
+        schema::BasicValueType::Int64 => try_convert!(i64, value::BasicValue::Int64),
         _ => {}
     }
 
@@ -371,11 +371,11 @@ mod tests {
             let py_object = value_to_py_object(py, original_value)
                 .expect("Failed to convert Rust value to Python object");
 
-            println!("Python object: {:?}", py_object);
+            println!("Python object: {py_object:?}");
             let roundtripped_value = value_from_py_object(value_type, &py_object)
                 .expect("Failed to convert Python object back to Rust value");
 
-            println!("Roundtripped value: {:?}", roundtripped_value);
+            println!("Roundtripped value: {roundtripped_value:?}");
             assert_eq!(
                 original_value, &roundtripped_value,
                 "Value mismatch after roundtrip"

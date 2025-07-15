@@ -22,6 +22,7 @@ We support the following types of LLM APIs:
 | [OpenAI](#openai) | `LlmApiType.OPENAI` | ✅ | ✅ |
 | [Ollama](#ollama) | `LlmApiType.OLLAMA` | ✅ | ❌ |
 | [Google Gemini](#google-gemini) | `LlmApiType.GEMINI` | ✅ | ✅ |
+| [Vertex AI](#vertex-ai) | `LlmApiType.VERTEX_AI` | ✅ | ✅ |
 | [Anthropic](#anthropic) | `LlmApiType.ANTHROPIC` | ✅ | ❌ |
 | [Voyage](#voyage) | `LlmApiType.VOYAGE` | ❌ | ✅ |
 | [LiteLLM](#litellm) | `LlmApiType.LITE_LLM` | ✅ | ❌ |
@@ -47,6 +48,7 @@ It has the following fields:
     See supported LLM APIs in the [LLM API integrations](#llm-api-integrations) section below.
 *   `model` (type: `str`, required): The name of the LLM model to use.
 *   `address` (type: `str`, optional): The address of the LLM API.
+*   `api_config` (optional): Specific configuration for the LLM API. Only needed for specific LLM APIs (see below).
 
 
 ### Text Embedding
@@ -137,7 +139,11 @@ cocoindex.LlmSpec(
 
 ### Google Gemini
 
-To use the Gemini LLM API, you need to set the environment variable `GEMINI_API_KEY`.
+Google exposes Gemini through Google AI Studio APIs.
+Based on [Gemini API recommendation](https://cloud.google.com/ai/gemini?hl=en), this is recommended for experimenting and prototyping purposes.
+You may use [Vertex AI](#vertex-ai) for production usages.
+
+To use the Gemini by Google AI Studio API, you need to set the environment variable `GEMINI_API_KEY`.
 You can generate the API key from [Google AI Studio](https://aistudio.google.com/apikey).
 
 You can find the full list of models supported by Gemini [here](https://ai.google.dev/gemini-api/docs/models).
@@ -150,7 +156,7 @@ For text generation, a spec looks like this:
 ```python
 cocoindex.LlmSpec(
     api_type=cocoindex.LlmApiType.GEMINI,
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
 )
 ```
 
@@ -170,12 +176,72 @@ cocoindex.functions.EmbedText(
 )
 ```
 
+</TabItem>
+</Tabs>
+
 All supported embedding models can be found [here](https://ai.google.dev/gemini-api/docs/embeddings#embeddings-models).
 Gemini supports task type (optional), which can be found [here](https://ai.google.dev/gemini-api/docs/embeddings#supported-task-types).
 
 
+### Vertex AI
+
+Google Cloud Vertex AI offers production-level integration with Google Gemini models.
+
+To use the Vertex AI API:
+
+1.  Register / login in *Google Cloud*.
+2.  In [Google Cloud Console](https://console.cloud.google.com/).
+    -   Search for *Vertex AI API*. Enable this API.
+    -   Search for *Billing*. Set the billing account for the current project.
+3.  Setup [application default credentials (ADC)](https://cloud.google.com/docs/authentication/application-default-credentials).
+
+    The easiest way during development is to [install the `gcloud` CLI](https://cloud.google.com/sdk/docs/install-sdk) and run
+
+    ```sh
+    gcloud auth application-default login
+    ```
+
+Spec for Vertex AI takes additional `api_config` field, in type `cocoindex.llm.VertexAiConfig` with the following fields:
+-   `project` (type: `str`, required): The project ID of the Google Cloud project.
+-   `region` (type: `str`, optional): The region of the Google Cloud project. Use `global` if not specified.
+
+You can find the full list of models supported by Vertex AI [here](https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions).
+
+For text generation, a spec for Vertex AI looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.VERTEX_AI,
+    model="gemini-2.0-flash",
+    api_config=cocoindex.llm.VertexAiConfig(project="your-project-id"),
+)
+```
+
 </TabItem>
 </Tabs>
+
+
+For text embedding, a spec for Vertex AI looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.VERTEX_AI,
+    model="text-embedding-005",
+    task_type="SEMANTICS_SIMILARITY",
+    api_config=cocoindex.llm.VertexAiConfig(project="your-project-id"),
+)
+```
+
+</TabItem>
+</Tabs>
+
+Vertex AI API supports task type (optional), which can be found [here](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/text-embeddings-api#parameter-list).
 
 ### Anthropic
 

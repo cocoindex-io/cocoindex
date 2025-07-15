@@ -41,7 +41,7 @@ impl Client {
             None => OLLAMA_DEFAULT_ADDRESS,
         };
         Ok(Self {
-            generate_url: format!("{}/api/generate", address),
+            generate_url: format!("{address}/api/generate"),
             reqwest_client: reqwest::Client::new(),
         })
     }
@@ -56,7 +56,7 @@ impl LlmGenerationClient for Client {
         let req = OllamaRequest {
             model: request.model,
             prompt: request.user_prompt.as_ref(),
-            images: request.image.as_deref().map(|img| vec![img.as_ref()]),
+            images: request.image.as_deref().map(|img| vec![img]),
             format: request.output_format.as_ref().map(
                 |super::OutputFormat::JsonSchema { schema, .. }| {
                     OllamaFormat::JsonSchema(schema.as_ref())

@@ -167,8 +167,8 @@ fn field_values_to_bolt<'a>(
 }
 
 fn mapped_field_values_to_bolt(
-    fields_schema: &Vec<schema::FieldSchema>,
-    fields_input_idx: &Vec<usize>,
+    fields_schema: &[schema::FieldSchema],
+    fields_input_idx: &[usize],
     field_values: &FieldValues,
 ) -> Result<BoltType> {
     let bolt_value = BoltType::Map(neo4rs::BoltMap {
@@ -298,8 +298,8 @@ impl ExportContext {
             .into_iter()
             .enumerate()
             .map(|(i, name)| {
-                let param = format!("{}_{}", param_prefix, i);
-                let item = format!("{}: ${}", name, param);
+                let param = format!("{param_prefix}_{i}");
+                let item = format!("{name}: ${param}");
                 (param, item)
             })
             .unzip();
@@ -750,7 +750,7 @@ impl components::SetupOperator for SetupComponentOperator {
                 format!(
                     "CREATE CONSTRAINT {name} IF NOT EXISTS FOR {matcher} REQUIRE {field_names} IS {key_type} KEY",
                     name = key.name,
-                    field_names = build_composite_field_names(qualifier, &field_names),
+                    field_names = build_composite_field_names(qualifier, field_names),
                 )
             }
             IndexDef::VectorIndex {
@@ -796,7 +796,7 @@ fn build_composite_field_names(qualifier: &str, field_names: &[String]) -> Strin
     if field_names.len() == 1 {
         strs
     } else {
-        format!("({})", strs)
+        format!("({strs})")
     }
 }
 #[derive(Debug)]
@@ -991,7 +991,6 @@ impl StorageFactoryBase for Factory {
             })
             .collect::<Result<Vec<_>>>()?;
         let decl_output = std::iter::zip(declarations, declared_graph_elements)
-            .into_iter()
             .map(|(decl, graph_elem_schema)| {
                 let setup_state =
                     SetupState::new(&graph_elem_schema, &decl.decl.index_options, vec![])?;

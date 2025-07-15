@@ -173,9 +173,9 @@ struct SetupState {
     referenced_node_tables: Option<(ReferencedNodeTable, ReferencedNodeTable)>,
 }
 
-impl<'a> Into<Cow<'a, TableColumnsSchema<String>>> for &'a SetupState {
-    fn into(self) -> Cow<'a, TableColumnsSchema<String>> {
-        Cow::Borrowed(&self.schema)
+impl<'a> From<&'a SetupState> for Cow<'a, TableColumnsSchema<String>> {
+    fn from(val: &'a SetupState) -> Self {
+        Cow::Borrowed(&val.schema)
     }
 }
 
@@ -204,18 +204,18 @@ fn append_drop_table(
     if !setup_status.actions.drop_existing {
         return Ok(());
     }
-    write!(
+    writeln!(
         cypher.query_mut(),
-        "DROP TABLE IF EXISTS {};\n",
+        "DROP TABLE IF EXISTS {};",
         elem_type.label()
     )?;
     Ok(())
 }
 
 fn append_delete_orphaned_nodes(cypher: &mut CypherBuilder, node_table: &str) -> Result<()> {
-    write!(
+    writeln!(
         cypher.query_mut(),
-        "MATCH (n:{node_table}) WITH n WHERE NOT (n)--() DELETE n;\n"
+        "MATCH (n:{node_table}) WITH n WHERE NOT (n)--() DELETE n;"
     )?;
     Ok(())
 }
@@ -244,7 +244,7 @@ fn append_upsert_table(
             cypher.query_mut().push_str(
                 keys.iter()
                     .chain(values.iter())
-                    .map(|(name, kuzu_type)| format!("{} {}", name, kuzu_type))
+                    .map(|(name, kuzu_type)| format!("{name} {kuzu_type}"))
                     .join(", ")
                     .as_str(),
             );
@@ -269,15 +269,15 @@ fn append_upsert_table(
                 .iter()
                 .chain(columns_to_upsert.iter().map(|(name, _)| name))
             {
-                write!(
+                writeln!(
                     cypher.query_mut(),
-                    "ALTER TABLE {table_name} DROP IF EXISTS {name};\n"
+                    "ALTER TABLE {table_name} DROP IF EXISTS {name};"
                 )?;
             }
             for (name, kuzu_type) in columns_to_upsert.iter() {
-                write!(
+                writeln!(
                     cypher.query_mut(),
-                    "ALTER TABLE {table_name} ADD {name} {kuzu_type};\n",
+                    "ALTER TABLE {table_name} ADD {name} {kuzu_type};",
                 )?;
             }
         }
@@ -305,7 +305,7 @@ fn append_string_literal(cypher: &mut CypherBuilder, s: &str) -> Result<()> {
                 let code = c as u32;
                 let high = 0xD800 + ((code - 0x10000) >> 10);
                 let low = 0xDC00 + ((code - 0x10000) & 0x3FF);
-                write!(out, "\\u{:04X}\\u{:04X}", high, low)?;
+                write!(out, "\\u{high:04X}\\u{low:04X}")?;
             }
         }
     }
@@ -318,7 +318,7 @@ fn append_basic_value(cypher: &mut CypherBuilder, basic_value: &BasicValue) -> R
         BasicValue::Bytes(bytes) => {
             write!(cypher.query_mut(), "BLOB(")?;
             for byte in bytes {
-                write!(cypher.query_mut(), "\\\\x{:02X}", byte)?;
+                write!(cypher.query_mut(), "\\\\x{byte:02X}")?;
             }
             write!(cypher.query_mut(), ")")?;
         }
@@ -326,46 +326,39 @@ fn append_basic_value(cypher: &mut CypherBuilder, basic_value: &BasicValue) -> R
             append_string_literal(cypher, s)?;
         }
         BasicValue::Bool(b) => {
-            write!(cypher.query_mut(), "{}", b)?;
+            write!(cypher.query_mut(), "{b}")?;
         }
         BasicValue::Int64(i) => {
-            write!(cypher.query_mut(), "{}", i)?;
+            write!(cypher.query_mut(), "{i}")?;
         }
         BasicValue::Float32(f) => {
-            write!(cypher.query_mut(), "{}", f)?;
+            write!(cypher.query_mut(), "{f}")?;
         }
         BasicValue::Float64(f) => {
-            write!(cypher.query_mut(), "{}", f)?;
+            write!(cypher.query_mut(), "{f}")?;
         }
         BasicValue::Range(r) => {
             write!(cypher.query_mut(), "[{}, {}]", r.start, r.end)?;
         }
         BasicValue::Uuid(u) => {
-            write!(cypher.query_mut(), "UUID(\"{}\")", u)?;
+            write!(cypher.query_mut(), "UUID(\"{u}\")")?;
         }
         BasicValue::Date(d) => {
-            write!(cypher.query_mut(), "DATE(\"{}\")", d)?;
+            write!(cypher.query_mut(), "DATE(\"{d}\")")?;
         }
-        BasicValue::LocalDateTime(dt) => {
-            write!(cypher.query_mut(), "TIMESTAMP(\"{}\")", dt)?;
-        }
-        BasicValue::OffsetDateTime(dt) => {
-            write!(cypher.query_mut(), "TIMESTAMP(\"{}\")", dt)?;
-        }
+        BasicValue::LocalDateTime(dt) => write!(cypher.query_mut(), "TIMESTAMP(\"{dt}\")")?,
+        BasicValue::OffsetDateTime(dt) => write!(cypher.query_mut(), "TIMESTAMP(\"{dt}\")")?,
         BasicValue::TimeDelta(td) => {
             let num_days = td.num_days();
             let sub_day_duration = *td - TimeDelta::days(num_days);
             write!(cypher.query_mut(), "INTERVAL(\"")?;
             if num_days != 0 {
-                write!(cypher.query_mut(), "{} days ", num_days)?;
+                write!(cypher.query_mut(), "{num_days} days ")?;
             }
-            write!(
-                cypher.query_mut(),
-                "{} microseconds\")",
-                sub_day_duration
-                    .num_microseconds()
-                    .ok_or_else(invariance_violation)?
-            )?;
+            let microseconds = sub_day_duration
+                .num_microseconds()
+                .ok_or_else(invariance_violation)?;
+            write!(cypher.query_mut(), "{microseconds} microseconds\")")?;
         }
         BasicValue::Vector(v) => {
             write!(cypher.query_mut(), "[")?;
@@ -546,10 +539,10 @@ fn append_upsert_node(
         NODE_VAR_NAME,
         &data_coll.schema.value_fields,
         &data_coll.value_fields_input_idx,
-        &upsert_entry,
+        upsert_entry,
         true,
     )?;
-    write!(cypher.query_mut(), ";\n")?;
+    writeln!(cypher.query_mut(), ";")?;
     Ok(())
 }
 
@@ -581,10 +574,10 @@ fn append_merge_node_for_rel(
         var_name,
         &field_mapping.schema.value_fields,
         &field_mapping.fields_input_idx.value,
-        &upsert_entry,
+        upsert_entry,
         false,
     )?;
-    write!(cypher.query_mut(), "\n")?;
+    writeln!(cypher.query_mut())?;
     Ok(())
 }
 
@@ -602,8 +595,8 @@ fn append_upsert_rel(
     } else {
         return Ok(());
     };
-    append_merge_node_for_rel(cypher, SRC_NODE_VAR_NAME, &rel_info.source, &upsert_entry)?;
-    append_merge_node_for_rel(cypher, TGT_NODE_VAR_NAME, &rel_info.target, &upsert_entry)?;
+    append_merge_node_for_rel(cypher, SRC_NODE_VAR_NAME, &rel_info.source, upsert_entry)?;
+    append_merge_node_for_rel(cypher, TGT_NODE_VAR_NAME, &rel_info.target, upsert_entry)?;
     {
         let rel_type = data_coll.schema.elem_type.label();
         write!(
@@ -625,10 +618,10 @@ fn append_upsert_rel(
         REL_VAR_NAME,
         &data_coll.schema.value_fields,
         &data_coll.value_fields_input_idx,
-        &upsert_entry,
+        upsert_entry,
         false,
     )?;
-    write!(cypher.query_mut(), ";\n")?;
+    writeln!(cypher.query_mut(), ";")?;
     Ok(())
 }
 
@@ -646,16 +639,16 @@ fn append_delete_node(
         key.fields_iter(data_coll.schema.key_fields.len())?
             .map(|f| Cow::Owned(value::Value::from(f))),
     )?;
-    write!(cypher.query_mut(), ")\n")?;
-    write!(
+    writeln!(cypher.query_mut(), ")")?;
+    writeln!(
         cypher.query_mut(),
-        "WITH {NODE_VAR_NAME} SET {NODE_VAR_NAME}.{SELF_CONTAINED_TAG_FIELD_NAME} = NULL\n"
+        "WITH {NODE_VAR_NAME} SET {NODE_VAR_NAME}.{SELF_CONTAINED_TAG_FIELD_NAME} = NULL"
     )?;
-    write!(
+    writeln!(
         cypher.query_mut(),
-        "WITH {NODE_VAR_NAME} WHERE NOT ({NODE_VAR_NAME})--() DELETE {NODE_VAR_NAME}\n"
+        "WITH {NODE_VAR_NAME} WHERE NOT ({NODE_VAR_NAME})--() DELETE {NODE_VAR_NAME}"
     )?;
-    write!(cypher.query_mut(), ";\n")?;
+    writeln!(cypher.query_mut(), ";")?;
     Ok(())
 }
 
@@ -708,7 +701,7 @@ fn append_delete_rel(
             .map(|k| Cow::Owned(value::Value::from(k))),
     )?;
     write!(cypher.query_mut(), ") DELETE {REL_VAR_NAME}")?;
-    write!(cypher.query_mut(), ";\n")?;
+    writeln!(cypher.query_mut(), ";")?;
     Ok(())
 }
 
@@ -726,12 +719,12 @@ fn append_maybe_gc_node(
         key.fields_iter(schema.key_fields.len())?
             .map(|f| Cow::Owned(value::Value::from(f))),
     )?;
-    write!(cypher.query_mut(), ")\n")?;
+    writeln!(cypher.query_mut(), ")")?;
     write!(
         cypher.query_mut(),
         "WITH {NODE_VAR_NAME} WHERE NOT ({NODE_VAR_NAME})--() DELETE {NODE_VAR_NAME}"
     )?;
-    write!(cypher.query_mut(), ";\n")?;
+    writeln!(cypher.query_mut(), ";")?;
     Ok(())
 }
 
@@ -856,7 +849,7 @@ impl StorageFactoryBase for Factory {
         existing: CombinedState<SetupState>,
         _auth_registry: &Arc<AuthRegistry>,
     ) -> Result<Self::SetupStatus> {
-        let existing_invalidated = desired.as_ref().map_or(false, |desired| {
+        let existing_invalidated = desired.as_ref().is_some_and(|desired| {
             existing
                 .possible_versions()
                 .any(|v| v.referenced_node_tables != desired.referenced_node_tables)
@@ -875,8 +868,7 @@ impl StorageFactoryBase for Factory {
         Ok(GraphElementDataSetupStatus {
             actions,
             referenced_node_tables: desired
-                .map(|desired| desired.referenced_node_tables)
-                .flatten()
+                .and_then(|desired| desired.referenced_node_tables)
                 .map(|(src, tgt)| (src.table_name, tgt.table_name)),
             drop_affected_referenced_node_tables,
         })
@@ -904,11 +896,11 @@ impl StorageFactoryBase for Factory {
         ))
     }
 
-    fn extract_additional_key<'ctx>(
+    fn extract_additional_key(
         &self,
         _key: &KeyValue,
         value: &FieldValues,
-        export_context: &'ctx ExportContext,
+        export_context: &ExportContext,
     ) -> Result<serde_json::Value> {
         let additional_key = if let Some(rel_info) = &export_context.analyzed_data_coll.rel {
             serde_json::to_value((
@@ -935,7 +927,7 @@ impl StorageFactoryBase for Factory {
         for mutations in mutations_by_conn.into_values() {
             let kuzu_client = &mutations[0].export_context.kuzu_client;
             let mut cypher = CypherBuilder::new();
-            write!(cypher.query_mut(), "BEGIN TRANSACTION;\n")?;
+            writeln!(cypher.query_mut(), "BEGIN TRANSACTION;")?;
 
             let (mut rel_mutations, nodes_mutations): (Vec<_>, Vec<_>) = mutations
                 .into_iter()
@@ -1039,7 +1031,7 @@ impl StorageFactoryBase for Factory {
                 }
             }
 
-            write!(cypher.query_mut(), "COMMIT;\n")?;
+            writeln!(cypher.query_mut(), "COMMIT;")?;
             kuzu_client.run_cypher(cypher).await?;
         }
         Ok(())
@@ -1074,7 +1066,7 @@ impl StorageFactoryBase for Factory {
                 if !change.setup_status.actions.drop_existing {
                     continue;
                 }
-                append_drop_table(&mut cypher, &change.setup_status, &change.key.typ)?;
+                append_drop_table(&mut cypher, change.setup_status, &change.key.typ)?;
 
                 partial_affected_node_tables.extend(
                     change
@@ -1088,11 +1080,11 @@ impl StorageFactoryBase for Factory {
             }
             // Nodes first when creating.
             for change in node_changes.iter().chain(rel_changes.iter()) {
-                append_upsert_table(&mut cypher, &change.setup_status, &change.key.typ)?;
+                append_upsert_table(&mut cypher, change.setup_status, &change.key.typ)?;
             }
 
             for table in partial_affected_node_tables {
-                append_delete_orphaned_nodes(&mut cypher, &table)?;
+                append_delete_orphaned_nodes(&mut cypher, table)?;
             }
 
             kuzu_client.run_cypher(cypher).await?;

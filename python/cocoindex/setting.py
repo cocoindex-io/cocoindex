@@ -44,12 +44,12 @@ class DatabaseConnectionSpec:
 
 
 @dataclass
-class DefaultExecutionOptions:
-    """Default execution options."""
+class GlobalExecutionOptions:
+    """Global execution options."""
 
-    # The maximum number of concurrent inflight requests.
-    source_max_inflight_rows: int | None = 256
-    source_max_inflight_bytes: int | None = 1024 * 1024 * 1024
+    # The maximum number of concurrent inflight requests, shared among all sources from all flows.
+    source_max_inflight_rows: int | None = None
+    source_max_inflight_bytes: int | None = None
 
 
 def _load_field(
@@ -81,7 +81,7 @@ class Settings:
 
     database: DatabaseConnectionSpec | None = None
     app_namespace: str = ""
-    default_execution_options: DefaultExecutionOptions | None = None
+    global_execution_options: GlobalExecutionOptions | None = None
 
     @classmethod
     def from_env(cls) -> Self:
@@ -110,14 +110,14 @@ class Settings:
             "COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES",
             parse=int,
         )
-        default_execution_options = DefaultExecutionOptions(**exec_kwargs)
+        global_execution_options = GlobalExecutionOptions(**exec_kwargs)
 
         app_namespace = os.getenv("COCOINDEX_APP_NAMESPACE", "")
 
         return cls(
             database=database,
             app_namespace=app_namespace,
-            default_execution_options=default_execution_options,
+            global_execution_options=global_execution_options,
         )
 
 

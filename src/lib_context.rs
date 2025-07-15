@@ -78,7 +78,7 @@ impl FlowExecutionContext {
         source_idx: usize,
         pool: &PgPool,
     ) -> Result<&Arc<SourceIndexingContext>> {
-        Ok(self.source_indexing_contexts[source_idx]
+        self.source_indexing_contexts[source_idx]
             .get_or_try_init(|| async move {
                 anyhow::Ok(Arc::new(
                     SourceIndexingContext::load(
@@ -90,7 +90,7 @@ impl FlowExecutionContext {
                     .await?,
                 ))
             })
-            .await?)
+            .await
     }
 }
 
@@ -151,9 +151,12 @@ impl FlowContext {
 static TOKIO_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| Runtime::new().unwrap());
 static AUTH_REGISTRY: LazyLock<Arc<AuthRegistry>> = LazyLock::new(|| Arc::new(AuthRegistry::new()));
 
+type PoolKey = (String, Option<String>);
+type PoolValue = Arc<tokio::sync::OnceCell<PgPool>>;
+
 #[derive(Default)]
 pub struct DbPools {
-    pub pools: Mutex<HashMap<(String, Option<String>), Arc<tokio::sync::OnceCell<PgPool>>>>,
+    pub pools: Mutex<HashMap<PoolKey, PoolValue>>,
 }
 
 impl DbPools {
@@ -196,7 +199,7 @@ pub struct LibContext {
     pub persistence_ctx: Option<PersistenceContext>,
     pub flows: Mutex<BTreeMap<String, Arc<FlowContext>>>,
 
-    pub default_execution_options: settings::DefaultExecutionOptions,
+    pub global_concurrency_controller: Arc<concur_control::ConcurrencyController>,
 }
 
 impl LibContext {
@@ -244,6 +247,8 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         let _ = env_logger::try_init();
 
         pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).unwrap();
+
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     });
 
     let db_pools = DbPools::default();
@@ -269,7 +274,12 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         db_pools,
         persistence_ctx,
         flows: Mutex::new(BTreeMap::new()),
-        default_execution_options: settings.default_execution_options,
+        global_concurrency_controller: Arc::new(concur_control::ConcurrencyController::new(
+            &concur_control::Options {
+                max_inflight_rows: settings.global_execution_options.source_max_inflight_rows,
+                max_inflight_bytes: settings.global_execution_options.source_max_inflight_bytes,
+            },
+        )),
     })
 }
 

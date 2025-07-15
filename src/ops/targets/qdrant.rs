@@ -297,11 +297,6 @@ impl StorageFactoryBase for Factory {
         Vec<TypedExportDataCollectionBuildOutput<Self>>,
         Vec<(CollectionKey, SetupState)>,
     )> {
-        // Hotfix to resolve
-        // `no process-level CryptoProvider available -- call CryptoProvider::install_default() before this point`
-        // when using HTTPS URLs.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
         let data_coll_output = data_collections
             .into_iter()
             .map(|d| {
@@ -437,7 +432,7 @@ impl StorageFactoryBase for Factory {
             key.collection_name,
             key.connection
                 .as_ref()
-                .map_or_else(|| "".to_string(), |auth_entry| format!(" @ {}", auth_entry))
+                .map_or_else(|| "".to_string(), |auth_entry| format!(" @ {auth_entry}"))
         ))
     }
 

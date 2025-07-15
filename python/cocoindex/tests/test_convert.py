@@ -1229,3 +1229,115 @@ def test_full_roundtrip_scalar_with_python_types() -> None:
         annotated_float=2.0,
     )
     validate_full_roundtrip(instance, MixedStruct)
+
+
+def test_roundtrip_struct_to_dict_binding() -> None:
+    """Test struct -> dict binding with Any annotation."""
+
+    @dataclass
+    class SimpleStruct:
+        name: str
+        value: int
+        price: float
+
+    instance = SimpleStruct("test", 42, 3.14)
+    expected_dict = {"name": "test", "value": 42, "price": 3.14}
+
+    # Test Any annotation
+    validate_full_roundtrip(instance, SimpleStruct, (expected_dict, Any))
+
+
+def test_roundtrip_struct_to_dict_explicit() -> None:
+    """Test struct -> dict binding with explicit dict annotations."""
+
+    @dataclass
+    class Product:
+        id: str
+        name: str
+        price: float
+        active: bool
+
+    instance = Product("P1", "Widget", 29.99, True)
+    expected_dict = {"id": "P1", "name": "Widget", "price": 29.99, "active": True}
+
+    # Test explicit dict annotations
+    validate_full_roundtrip(
+        instance, Product, (expected_dict, dict), (expected_dict, dict[str, Any])
+    )
+
+
+def test_roundtrip_struct_to_dict_with_none_annotation() -> None:
+    """Test struct -> dict binding with None annotation."""
+
+    @dataclass
+    class Config:
+        host: str
+        port: int
+        debug: bool
+
+    instance = Config("localhost", 8080, True)
+    expected_dict = {"host": "localhost", "port": 8080, "debug": True}
+
+    # Test None annotation (should be treated as Any)
+    validate_full_roundtrip(instance, Config, (expected_dict, None))
+
+
+def test_roundtrip_struct_to_dict_nested() -> None:
+    """Test struct -> dict binding with nested structs."""
+
+    @dataclass
+    class Address:
+        street: str
+        city: str
+
+    @dataclass
+    class Person:
+        name: str
+        age: int
+        address: Address
+
+    address = Address("123 Main St", "Anytown")
+    person = Person("John", 30, address)
+    expected_dict = {
+        "name": "John",
+        "age": 30,
+        "address": {"street": "123 Main St", "city": "Anytown"},
+    }
+
+    # Test nested struct conversion
+    validate_full_roundtrip(person, Person, (expected_dict, dict[str, Any]))
+
+
+def test_roundtrip_struct_to_dict_with_list() -> None:
+    """Test struct -> dict binding with list fields."""
+
+    @dataclass
+    class Team:
+        name: str
+        members: list[str]
+        active: bool
+
+    instance = Team("Dev Team", ["Alice", "Bob", "Charlie"], True)
+    expected_dict = {
+        "name": "Dev Team",
+        "members": ["Alice", "Bob", "Charlie"],
+        "active": True,
+    }
+
+    validate_full_roundtrip(instance, Team, (expected_dict, dict))
+
+
+def test_roundtrip_namedtuple_to_dict_binding() -> None:
+    """Test NamedTuple -> dict binding."""
+
+    class Point(NamedTuple):
+        x: float
+        y: float
+        z: float
+
+    instance = Point(1.0, 2.0, 3.0)
+    expected_dict = {"x": 1.0, "y": 2.0, "z": 3.0}
+
+    validate_full_roundtrip(
+        instance, Point, (expected_dict, dict), (expected_dict, Any)
+    )

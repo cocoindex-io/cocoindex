@@ -46,7 +46,7 @@ impl std::fmt::Display for OpScopeRef {
 #[pymethods]
 impl OpScopeRef {
     pub fn __str__(&self) -> String {
-        format!("{}", self)
+        format!("{self}")
     }
 
     pub fn __repr__(&self) -> String {
@@ -105,7 +105,7 @@ impl DataSlice {
     }
 
     pub fn __str__(&self) -> String {
-        format!("{}", self)
+        format!("{self}")
     }
 
     pub fn __repr__(&self) -> String {
@@ -142,7 +142,7 @@ impl DataSlice {
                 .iter()
                 .find(|f| f.name == field_name)
                 .map(|f| f.spec.clone())
-                .ok_or_else(|| PyException::new_err(format!("field {} not found", field_name)))?,
+                .ok_or_else(|| PyException::new_err(format!("field {field_name} not found")))?,
 
             spec::ValueMapping::Constant { .. } => {
                 return Err(PyException::new_err(
@@ -191,7 +191,7 @@ pub struct DataCollector {
 #[pymethods]
 impl DataCollector {
     fn __str__(&self) -> String {
-        format!("{}", self)
+        format!("{self}")
     }
 
     fn __repr__(&self) -> String {
@@ -271,6 +271,7 @@ impl FlowBuilder {
     }
 
     #[pyo3(signature = (kind, op_spec, target_scope, name, refresh_options=None, execution_options=None))]
+    #[allow(clippy::too_many_arguments)]
     pub fn add_source(
         &mut self,
         py: Python<'_>,
@@ -327,7 +328,7 @@ impl FlowBuilder {
         let schema = value_type.into_inner();
         let value = py::value_from_py_object(&schema.typ, &value)?;
         let slice = DataSlice {
-            scope: self.root_op_scope.clone().into(),
+            scope: self.root_op_scope.clone(),
             value: Arc::new(spec::ValueMapping::Constant(spec::ConstantMapping {
                 schema: schema.clone(),
                 value: serde_json::to_value(value).into_py_result()?,
@@ -571,7 +572,7 @@ impl FlowBuilder {
             let (_, field_schema) = scope_builder
                 .data
                 .find_field(field_name)
-                .ok_or_else(|| PyException::new_err(format!("field {} not found", field_name)))?;
+                .ok_or_else(|| PyException::new_err(format!("field {field_name} not found")))?;
             schema::EnrichedValueType::from_alternative(&field_schema.value_type)
                 .into_py_result()?
         };
@@ -671,7 +672,7 @@ impl FlowBuilder {
     }
 
     pub fn __str__(&self) -> String {
-        format!("{}", self)
+        format!("{self}")
     }
 
     pub fn __repr__(&self) -> String {
@@ -713,7 +714,7 @@ impl std::fmt::Display for FlowBuilder {
             )?;
         }
         if let Some(output) = &self.direct_output_value {
-            write!(f, "Direct output: {}\n\n", output)?;
+            write!(f, "Direct output: {output}\n\n")?;
         }
         Ok(())
     }

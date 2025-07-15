@@ -14,8 +14,8 @@ struct LanguageConfig {
     parse_fn: ParseFn,
 }
 
-fn add_language<'a>(
-    output: &'a mut HashMap<UniCase<&'static str>, Arc<LanguageConfig>>,
+fn add_language(
+    output: &mut HashMap<UniCase<&'static str>, Arc<LanguageConfig>>,
     name: &'static str,
     aliases: impl IntoIterator<Item = &'static str>,
     parse_fn: ParseFn,
@@ -141,7 +141,7 @@ mod tests {
                     "Parsed JSON value mismatch with specified language"
                 );
             }
-            _ => panic!("Expected Value::Basic(BasicValue::Json), got {:?}", value),
+            _ => panic!("Expected Value::Basic(BasicValue::Json), got {value:?}"),
         }
     }
 }

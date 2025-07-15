@@ -86,7 +86,7 @@ impl std::fmt::Display for BasicValueType {
             BasicValueType::Vector(s) => {
                 write!(f, "Vector[{}", s.element_type)?;
                 if let Some(dimension) = s.dimension {
-                    write!(f, ", {}", dimension)?;
+                    write!(f, ", {dimension}")?;
                 }
                 write!(f, "]")
             }
@@ -97,7 +97,7 @@ impl std::fmt::Display for BasicValueType {
                         // Add type delimiter
                         write!(f, " | ")?;
                     }
-                    write!(f, "{}", typ)?;
+                    write!(f, "{typ}")?;
                 }
                 write!(f, "]")
             }
@@ -129,13 +129,14 @@ impl std::fmt::Display for StructSchema {
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", field)?;
+            write!(f, "{field}")?;
         }
         write!(f, ")")
     }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub enum TableKind {
     /// An table with unordered rows, without key.
     UTable,
@@ -307,9 +308,9 @@ impl std::fmt::Display for EnrichedValueType {
 impl std::fmt::Display for ValueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ValueType::Basic(b) => write!(f, "{}", b),
-            ValueType::Struct(s) => write!(f, "{}", s),
-            ValueType::Table(c) => write!(f, "{}", c),
+            ValueType::Basic(b) => write!(f, "{b}"),
+            ValueType::Struct(s) => write!(f, "{s}"),
+            ValueType::Table(c) => write!(f, "{c}"),
         }
     }
 }
@@ -371,7 +372,7 @@ impl std::fmt::Display for CollectorSchema {
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", field)?;
+            write!(f, "{field}")?;
         }
         write!(f, ")")
     }

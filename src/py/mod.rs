@@ -28,16 +28,16 @@ impl PythonExecutionContext {
     }
 }
 
-pub trait FromPyResult<T> {
-    fn from_py_result(self, py: Python<'_>) -> anyhow::Result<T>;
+pub trait ToResultWithPyTrace<T> {
+    fn to_result_with_py_trace(self, py: Python<'_>) -> anyhow::Result<T>;
 }
 
-impl<T> FromPyResult<T> for Result<T, PyErr> {
-    fn from_py_result(self, py: Python<'_>) -> anyhow::Result<T> {
+impl<T> ToResultWithPyTrace<T> for Result<T, PyErr> {
+    fn to_result_with_py_trace(self, py: Python<'_>) -> anyhow::Result<T> {
         match self {
             Ok(value) => Ok(value),
             Err(err) => {
-                let mut err_str = format!("Error calling Python function: {}", err);
+                let mut err_str = format!("Error calling Python function: {err}");
                 if let Some(tb) = err.traceback(py) {
                     write!(&mut err_str, "\n{}", tb.format()?)?;
                 }
@@ -54,7 +54,7 @@ impl<T, E: std::fmt::Debug> IntoPyResult<T> for Result<T, E> {
     fn into_py_result(self) -> PyResult<T> {
         match self {
             Ok(value) => Ok(value),
-            Err(err) => Err(PyException::new_err(format!("{:?}", err))),
+            Err(err) => Err(PyException::new_err(format!("{err:?}"))),
         }
     }
 }
@@ -299,7 +299,7 @@ impl Flow {
                 let field_name = format!("{}{}", prefix, field.name);
 
                 let mut field_type = match &field.value_type.typ {
-                    ValueType::Basic(basic) => format!("{}", basic),
+                    ValueType::Basic(basic) => format!("{basic}"),
                     ValueType::Table(t) => format!("{}", t.kind),
                     ValueType::Struct(_) => "Struct".to_string(),
                 };
@@ -324,10 +324,10 @@ impl Flow {
 
                 match &field.value_type.typ {
                     ValueType::Struct(s) => {
-                        process_fields(&s.fields, &format!("{}.", field_name), result);
+                        process_fields(&s.fields, &format!("{field_name}."), result);
                     }
                     ValueType::Table(t) => {
-                        process_fields(&t.row.fields, &format!("{}[].", field_name), result);
+                        process_fields(&t.row.fields, &format!("{field_name}[]."), result);
                     }
                     ValueType::Basic(_) => {}
                 }
@@ -487,7 +487,7 @@ fn seder_roundtrip<'py>(
     let typ = typ.into_inner();
     let value = value_from_py_object(&typ, &value)?;
     let value = value::test_util::seder_roundtrip(&value, &typ).into_py_result()?;
-    Ok(value_to_py_object(py, &value)?)
+    value_to_py_object(py, &value)
 }
 
 /// A Python module implemented in Rust.

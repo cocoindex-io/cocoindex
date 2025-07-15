@@ -21,10 +21,14 @@ All you need to do is to make sure the data passed to functions and targets are 
 Each type in CocoIndex type system is mapped to one or multiple types in Python.
 When you define a [custom function](/docs/core/custom_function), you need to annotate the data types of arguments and return values.
 
-*   For return values, type annotation is required. Because this provides the ground truth to define the type of the output of the custom function.
-*   For arguments, type annotation is only used to enable the conversion from data values already existing in CocoIndex engine to Python value.
-    Type annotation is optional for basic types. When not specified, CocoIndex will use the *default Python type* for the argument.
-    Type annotation is required for arguments of struct types and table types.
+*   When you pass a Python value to the engine (e.g. return values of a custom function), type annotation is required,
+    as it provides the ground truth of the data type in the flow.
+
+*   When you use a Python variable to bind to an engine value (e.g. arguments of a custom function),
+    we use the type annotation as a guidance to construct the Python value.
+    Type annotation is optional for basic types and struct types, and required for table types.
+
+*   When you define a [custom function](/docs/core/custom_function), type annotation is required for arguments and return values.
 
 ### Basic Types
 
@@ -52,7 +56,7 @@ This is the list of all primitive types supported by CocoIndex:
 Notes:
 
 *   For some CocoIndex types, we support multiple Python types. You can annotate with any of these Python types.
-    The first one is the *default Python type*, which means CocoIndex will create a value with this type when you don't annotate the type in function arguments.
+    The first one is the default type, i.e. CocoIndex will create a value with this type when the type annotation is not provided (e.g. for arguments of a custom function).
 
 *   All Python types starting with `cocoindex.` are type aliases exported by CocoIndex. They're annotated types based on certain Python types:
 
@@ -66,8 +70,8 @@ Notes:
     These aliases provide a non-ambiguous way to represent a specific type in CocoIndex, given their base Python types can represent a superset of possible values.
 
 *   When we say a CocoIndex type is *convertible to* another type, it means Python types for the second type can be also used to bind to a value of the first type.
-    For example, *Float32* is convertible to *Float64*, so you can bind a value of *Float32* to a Python value of `float` or `np.float64` types.
-    For *LocalDatetime*, when you use `cocoindex.OffsetDateTime` or `datetime.datetime` as the annotation to bind its value, the timezone will be set to UTC.
+    *   For example, *Float32* is convertible to *Float64*, so you can bind a value of *Float32* to a Python value of `float` or `np.float64` types.
+    *   For *LocalDatetime*, when you use `cocoindex.OffsetDateTime` or `datetime.datetime` as the annotation to bind its value, the timezone will be set to UTC.
 
 
 #### Json Type
@@ -132,6 +136,9 @@ class PersonTuple(NamedTuple):
 
 Both `Person` and `PersonTuple` are valid Struct types in CocoIndex, with identical schemas (three fields: `first_name` (Str), `last_name` (Str), `dob` (Date)).
 Choose `dataclass` for mutable objects or when you need additional methods, and `NamedTuple` for immutable, lightweight structures.
+
+Besides, for arguments of custom functions, CocoIndex also supports using dictionaries (`dict[str, Any]`) to represent a *Struct* type.
+It's the default Python type if you don't annotate the function argument.
 
 ### Table Types
 

@@ -207,7 +207,7 @@ impl<'a> Dumper<'a> {
                     let num_keys = keys.len();
                     keys.into_iter().enumerate().map(move |(i, key)| {
                         let extra_id = if num_keys > 1 {
-                            Cow::Owned(format!(".{}", i))
+                            Cow::Owned(format!(".{i}"))
                         } else {
                             Cow::Borrowed("")
                         };

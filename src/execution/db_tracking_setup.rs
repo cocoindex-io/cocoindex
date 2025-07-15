@@ -181,7 +181,7 @@ impl TrackingTableSetupStatus {
             }
         } else {
             for lagacy_name in self.legacy_table_names.iter() {
-                let query = format!("DROP TABLE IF EXISTS {}", lagacy_name);
+                let query = format!("DROP TABLE IF EXISTS {lagacy_name}");
                 sqlx::query(&query).execute(pool).await?;
             }
             return Ok(());

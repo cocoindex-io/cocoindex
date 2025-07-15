@@ -17,6 +17,19 @@ pub enum LlmApiType {
     OpenRouter,
     Voyage,
     Vllm,
+    VertexAi,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VertexAiConfig {
+    pub project: String,
+    pub region: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum LlmApiConfig {
+    VertexAi(VertexAiConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +37,7 @@ pub struct LlmSpec {
     pub api_type: LlmApiType,
     pub address: Option<String>,
     pub model: String,
+    pub api_config: Option<LlmApiConfig>,
 }
 
 #[derive(Debug)]
@@ -86,12 +100,14 @@ mod litellm;
 mod ollama;
 mod openai;
 mod openrouter;
+mod vertex_ai;
 mod vllm;
 mod voyage;
 
 pub async fn new_llm_generation_client(
     api_type: LlmApiType,
     address: Option<String>,
+    api_config: Option<LlmApiConfig>,
 ) -> Result<Box<dyn LlmGenerationClient>> {
     let client = match api_type {
         LlmApiType::Ollama => {
@@ -101,8 +117,10 @@ pub async fn new_llm_generation_client(
             Box::new(openai::Client::new(address)?) as Box<dyn LlmGenerationClient>
         }
         LlmApiType::Gemini => {
-            Box::new(gemini::Client::new(address)?) as Box<dyn LlmGenerationClient>
+            Box::new(gemini::AiStudioClient::new(address)?) as Box<dyn LlmGenerationClient>
         }
+        LlmApiType::VertexAi => Box::new(gemini::VertexAiClient::new(address, api_config).await?)
+            as Box<dyn LlmGenerationClient>,
         LlmApiType::Anthropic => {
             Box::new(anthropic::Client::new(address).await?) as Box<dyn LlmGenerationClient>
         }
@@ -121,13 +139,14 @@ pub async fn new_llm_generation_client(
     Ok(client)
 }
 
-pub fn new_llm_embedding_client(
+pub async fn new_llm_embedding_client(
     api_type: LlmApiType,
     address: Option<String>,
+    api_config: Option<LlmApiConfig>,
 ) -> Result<Box<dyn LlmEmbeddingClient>> {
     let client = match api_type {
         LlmApiType::Gemini => {
-            Box::new(gemini::Client::new(address)?) as Box<dyn LlmEmbeddingClient>
+            Box::new(gemini::AiStudioClient::new(address)?) as Box<dyn LlmEmbeddingClient>
         }
         LlmApiType::OpenAi => {
             Box::new(openai::Client::new(address)?) as Box<dyn LlmEmbeddingClient>
@@ -135,6 +154,8 @@ pub fn new_llm_embedding_client(
         LlmApiType::Voyage => {
             Box::new(voyage::Client::new(address)?) as Box<dyn LlmEmbeddingClient>
         }
+        LlmApiType::VertexAi => Box::new(gemini::VertexAiClient::new(address, api_config).await?)
+            as Box<dyn LlmEmbeddingClient>,
         LlmApiType::Ollama
         | LlmApiType::OpenRouter
         | LlmApiType::LiteLlm

@@ -143,6 +143,16 @@ impl<'a> ScopeKey<'a> {
     }
 }
 
+impl std::fmt::Display for ScopeKey<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScopeKey::None => write!(f, "()"),
+            ScopeKey::MapKey(k) => write!(f, "{{{k}}}"),
+            ScopeKey::ListIndex(i) => write!(f, "[{i}]"),
+        }
+    }
+}
+
 struct ScopeEntry<'a> {
     key: ScopeKey<'a>,
     value: &'a ScopeValueBuilder,
@@ -254,19 +264,20 @@ impl<'a> ScopeEntry<'a> {
         &self,
         output_field: &AnalyzedOpOutput,
         val: value::Value<ScopeValueBuilder>,
-    ) {
+    ) -> Result<()> {
         let field_index = output_field.field_idx as usize;
         let index_base = self.key.value_field_index_base() as usize;
-        self.value.fields[field_index - index_base]
-            .set(val)
-            .expect("Field is already set, violating single-definition rule");
+        self.value.fields[field_index - index_base].set(val).map_err(|_| {
+            anyhow!("Field {field_index} for scope is already set, violating single-definition rule.")
+        })?;
+        Ok(())
     }
 
     fn define_field(&self, output_field: &AnalyzedOpOutput, val: &value::Value) -> Result<()> {
         let field_index = output_field.field_idx as usize;
         let field_schema = &self.schema.fields[field_index];
         let val = augmented_value(val, &field_schema.value_type.typ)?;
-        self.define_field_w_builder(output_field, val);
+        self.define_field_w_builder(output_field, val)?;
         Ok(())
     }
 }
@@ -517,7 +528,7 @@ pub async fn evaluate_source_entry(
     root_scope_entry.define_field_w_builder(
         &src_eval_ctx.import_op.output,
         value::Value::KTable(BTreeMap::from([(src_eval_ctx.key.clone(), scope_value)])),
-    );
+    )?;
 
     evaluate_op_scope(
         &src_eval_ctx.plan.op_scope,

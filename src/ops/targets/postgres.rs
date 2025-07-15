@@ -385,7 +385,7 @@ fn to_column_type_sql(column_type: &ValueType) -> String {
             BasicValueType::Json => "jsonb".into(),
             BasicValueType::Vector(vec_schema) => {
                 if convertible_to_pgvector(vec_schema) {
-                    format!("vector({})", vec_schema.dimension.unwrap_or(0)).into()
+                    format!("vector({})", vec_schema.dimension.unwrap_or(0))
                 } else {
                     "jsonb".into()
                 }
@@ -396,16 +396,16 @@ fn to_column_type_sql(column_type: &ValueType) -> String {
     }
 }
 
-impl<'a> Into<Cow<'a, TableColumnsSchema<String>>> for &'a SetupState {
-    fn into(self) -> Cow<'a, TableColumnsSchema<String>> {
+impl<'a> From<&'a SetupState> for Cow<'a, TableColumnsSchema<String>> {
+    fn from(val: &'a SetupState) -> Self {
         Cow::Owned(TableColumnsSchema {
-            key_columns: self
+            key_columns: val
                 .columns
                 .key_columns
                 .iter()
                 .map(|(k, v)| (k.clone(), to_column_type_sql(v)))
                 .collect(),
-            value_columns: self
+            value_columns: val
                 .columns
                 .value_columns
                 .iter()
@@ -741,7 +741,7 @@ impl StorageFactoryBase for Factory {
         auth_registry: &Arc<AuthRegistry>,
     ) -> Result<()> {
         for change in changes.iter() {
-            let db_pool = get_db_pool(change.key.database.as_ref(), &auth_registry).await?;
+            let db_pool = get_db_pool(change.key.database.as_ref(), auth_registry).await?;
             change
                 .setup_status
                 .apply_change(&db_pool, &change.key.table_name)

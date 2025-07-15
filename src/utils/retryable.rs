@@ -115,7 +115,7 @@ pub async fn run<
                 if !err.is_retryable()
                     || options
                         .max_retries
-                        .map_or(false, |max_retries| retries >= max_retries)
+                        .is_some_and(|max_retries| retries >= max_retries)
                 {
                     return Result::Err(err);
                 }

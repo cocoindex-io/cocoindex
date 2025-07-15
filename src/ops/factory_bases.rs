@@ -331,11 +331,11 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
 
     fn describe_resource(&self, key: &Self::Key) -> Result<String>;
 
-    fn extract_additional_key<'ctx>(
+    fn extract_additional_key(
         &self,
         _key: &value::KeyValue,
         _value: &value::FieldValues,
-        _export_context: &'ctx Self::ExportContext,
+        _export_context: &Self::ExportContext,
     ) -> Result<serde_json::Value> {
         Ok(serde_json::Value::Null)
     }
@@ -461,11 +461,11 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         Ok(result)
     }
 
-    fn extract_additional_key<'ctx>(
+    fn extract_additional_key(
         &self,
         key: &value::KeyValue,
         value: &value::FieldValues,
-        export_context: &'ctx (dyn Any + Send + Sync),
+        export_context: &(dyn Any + Send + Sync),
     ) -> Result<serde_json::Value> {
         StorageFactoryBase::extract_additional_key(
             self,

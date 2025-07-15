@@ -164,11 +164,11 @@ impl std::fmt::Display for KeyValue {
         match self {
             KeyValue::Bytes(v) => write!(f, "{}", BASE64_STANDARD.encode(v)),
             KeyValue::Str(v) => write!(f, "\"{}\"", v.escape_default()),
-            KeyValue::Bool(v) => write!(f, "{}", v),
-            KeyValue::Int64(v) => write!(f, "{}", v),
+            KeyValue::Bool(v) => write!(f, "{v}"),
+            KeyValue::Int64(v) => write!(f, "{v}"),
             KeyValue::Range(v) => write!(f, "[{}, {})", v.start, v.end),
-            KeyValue::Uuid(v) => write!(f, "{}", v),
-            KeyValue::Date(v) => write!(f, "{}", v),
+            KeyValue::Uuid(v) => write!(f, "{v}"),
+            KeyValue::Date(v) => write!(f, "{v}"),
             KeyValue::Struct(v) => {
                 write!(
                     f,
@@ -191,7 +191,7 @@ impl KeyValue {
             let field_values: FieldValues = FieldValues::from_json(value, fields_schema)?;
             Value::Struct(field_values)
         };
-        Ok(value.as_key()?)
+        value.as_key()
     }
 
     pub fn from_values<'a>(values: impl ExactSizeIterator<Item = &'a Value>) -> Result<Self> {
@@ -226,10 +226,10 @@ impl KeyValue {
                     .next()
                     .ok_or_else(|| api_error!("Key parts less than expected"))?;
                 match basic_type {
-                    BasicValueType::Bytes { .. } => {
+                    BasicValueType::Bytes => {
                         KeyValue::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
                     }
-                    BasicValueType::Str { .. } => KeyValue::Str(Arc::from(v)),
+                    BasicValueType::Str => KeyValue::Str(Arc::from(v)),
                     BasicValueType::Bool => KeyValue::Bool(v.parse()?),
                     BasicValueType::Int64 => KeyValue::Int64(v.parse()?),
                     BasicValueType::Range => {
@@ -1030,12 +1030,10 @@ impl serde::Serialize for BasicValue {
 impl BasicValue {
     pub fn from_json(value: serde_json::Value, schema: &BasicValueType) -> Result<Self> {
         let result = match (value, schema) {
-            (serde_json::Value::String(v), BasicValueType::Bytes { .. }) => {
+            (serde_json::Value::String(v), BasicValueType::Bytes) => {
                 BasicValue::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
             }
-            (serde_json::Value::String(v), BasicValueType::Str { .. }) => {
-                BasicValue::Str(Arc::from(v))
-            }
+            (serde_json::Value::String(v), BasicValueType::Str) => BasicValue::Str(Arc::from(v)),
             (serde_json::Value::Bool(v), BasicValueType::Bool) => BasicValue::Bool(v),
             (serde_json::Value::Number(v), BasicValueType::Int64) => BasicValue::Int64(
                 v.as_i64()

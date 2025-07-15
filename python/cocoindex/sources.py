@@ -43,3 +43,18 @@ class AmazonS3(op.SourceSpec):
     included_patterns: list[str] | None = None
     excluded_patterns: list[str] | None = None
     sqs_queue_url: str | None = None
+
+
+class AzureBlob(op.SourceSpec):
+    """
+    Import data from an Azure Blob Storage container. Supports optional prefix and file filtering by glob patterns.
+    """
+
+    _op_category = op.OpCategory.SOURCE
+
+    account_name: str
+    container_name: str
+    prefix: str | None = None
+    binary: bool = False
+    included_patterns: list[str] | None = None
+    excluded_patterns: list[str] | None = None

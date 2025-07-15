@@ -381,10 +381,7 @@ mod tests {
 
     fn assert_yaml_serialization<T: Serialize>(value: T, expected_yaml: Yaml) {
         let result = YamlSerializer::serialize(&value);
-        println!(
-            "Serialized value: {:?}, Expected value: {:?}",
-            result, expected_yaml
-        );
+        println!("Serialized value: {result:?}, Expected value: {expected_yaml:?}");
 
         assert!(
             result.is_ok(),
@@ -713,7 +710,7 @@ mod tests {
             msg: "A test error message".to_string(),
         };
         assert_eq!(
-            format!("{}", error),
+            format!("{error}"),
             "YamlSerializerError: A test error message"
         );
     }
@@ -723,7 +720,7 @@ mod tests {
         let error = YamlSerializerError::custom("Custom error detail");
         assert_eq!(error.msg, "Custom error detail");
         assert_eq!(
-            format!("{}", error),
+            format!("{error}"),
             "YamlSerializerError: Custom error detail"
         );
         let _err_trait_obj: Box<dyn std::error::Error> = Box::new(error);
