@@ -54,7 +54,7 @@ CocoIndex makes it super easy to transform data with AI workloads, and keep sour
 </br>
 
 <p align="center">
-    <img src="https://cocoindex.io/images/venn-features.png" alt="CocoIndex Features" width='480'>
+    <img src="https://cocoindex.io/images/venn-features.png" alt="CocoIndex Features" width='400'>
 </p>
 
 </br>
