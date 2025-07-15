@@ -167,7 +167,7 @@ These are actions you need to take:
 *   Create a storage account in the [Azure Portal](https://portal.azure.com/).
 *   Create a container in the storage account.
 *   Upload your files to the container.
-*   Grant the user / identity / service principal (depends on your authentication method, see below) access to the container. At minimum, a **Storage Blob Data Reader** role is needed. See [this doc](https://learn.microsoft.com/en-us/azure/storage/blobs/authorize-data-operations-portal) for reference.
+*   Grant the user / identity / service principal (depends on your authentication method, see below) access to the storage account. At minimum, a **Storage Blob Data Reader** role is needed. See [this doc](https://learn.microsoft.com/en-us/azure/storage/blobs/authorize-data-operations-portal) for reference.
 
 #### Authentication
 
