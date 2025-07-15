@@ -17,9 +17,25 @@
 [![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
 </div>
 
+
 Ultra performant data transformation framework for AI, with core engine written in Rust. Support incremental processing and data lineage out-of-box.  Exceptional developer velocity. Production-ready at day 0.
 
 ⭐ Drop a star to help us grow!
+
+<div align="center">
+    
+<!-- Keep these links. Translations will automatically update with the README. -->
+[Deutsch](https://readme-i18n.com/cocoindex-io/cocoindex?lang=de) | 
+[English](https://readme-i18n.com/cocoindex-io/cocoindex?lang=en) | 
+[Español](https://readme-i18n.com/cocoindex-io/cocoindex?lang=es) | 
+[français](https://readme-i18n.com/cocoindex-io/cocoindex?lang=fr) | 
+[日本語](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ja) | 
+[한국어](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ko) | 
+[Português](https://readme-i18n.com/cocoindex-io/cocoindex?lang=pt) | 
+[Русский](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ru) | 
+[中文](https://readme-i18n.com/cocoindex-io/cocoindex?lang=zh)
+    
+</div>
 
 </br>
 
