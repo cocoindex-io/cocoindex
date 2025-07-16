@@ -955,7 +955,7 @@ class TransformFlow(Generic[T]):
     def _flow_info(self) -> TransformFlowInfo:
         if self._lazy_flow_info is not None:
             return self._lazy_flow_info
-        return cast(TransformFlowInfo, execution_context.run(self._flow_info_async()))
+        return execution_context.run(self._flow_info_async())
 
     async def _flow_info_async(self) -> TransformFlowInfo:
         if self._lazy_flow_info is not None:
