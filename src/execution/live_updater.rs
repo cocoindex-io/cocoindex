@@ -3,12 +3,32 @@ use crate::prelude::*;
 use super::stats;
 use futures::future::try_join_all;
 use sqlx::PgPool;
-use tokio::{task::JoinSet, time::MissedTickBehavior};
+use tokio::{sync::watch, time::MissedTickBehavior};
+
+pub struct FlowLiveUpdaterUpdates {
+    pub active_sources: Vec<String>,
+    pub updated_sources: Vec<String>,
+}
+struct FlowLiveUpdaterStatus {
+    pub active_source_idx: BTreeSet<usize>,
+    pub source_updates_num: Vec<usize>,
+}
+
+struct UpdateReceiveState {
+    status_rx: watch::Receiver<FlowLiveUpdaterStatus>,
+    last_num_source_updates: Vec<usize>,
+    is_done: bool,
+}
 
 pub struct FlowLiveUpdater {
     flow_ctx: Arc<FlowContext>,
-    tasks: JoinSet<Result<()>>,
-    sources_update_stats: Vec<Arc<stats::UpdateStats>>,
+    tasks: Vec<(tokio::task::JoinHandle<Result<()>>, Arc<stats::UpdateStats>)>,
+    recv_state: tokio::sync::Mutex<UpdateReceiveState>,
+    num_remaining_tasks_rx: watch::Receiver<usize>,
+
+    // Hold tx to avoid dropping the sender.
+    _status_tx: watch::Sender<FlowLiveUpdaterStatus>,
+    _num_remaining_tasks_tx: watch::Sender<usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -23,16 +43,13 @@ pub struct FlowLiveUpdaterOptions {
 
 const REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
-struct SharedAckFn {
+struct SharedAckFn<AckAsyncFn: AsyncFnOnce() -> Result<()>> {
     count: usize,
-    ack_fn: Option<Box<dyn FnOnce() -> BoxFuture<'static, Result<()>> + Send + Sync>>,
+    ack_fn: Option<AckAsyncFn>,
 }
 
-impl SharedAckFn {
-    fn new(
-        count: usize,
-        ack_fn: Box<dyn FnOnce() -> BoxFuture<'static, Result<()>> + Send + Sync>,
-    ) -> Self {
+impl<AckAsyncFn: AsyncFnOnce() -> Result<()>> SharedAckFn<AckAsyncFn> {
+    fn new(count: usize, ack_fn: AckAsyncFn) -> Self {
         Self {
             count,
             ack_fn: Some(ack_fn),
@@ -52,154 +69,196 @@ impl SharedAckFn {
     }
 }
 
-async fn update_source(
+struct SourceUpdateTask {
+    source_idx: usize,
+
     flow: Arc<builder::AnalyzedFlow>,
     plan: Arc<plan::ExecutionPlan>,
     execution_ctx: Arc<tokio::sync::OwnedRwLockReadGuard<crate::lib_context::FlowExecutionContext>>,
     source_update_stats: Arc<stats::UpdateStats>,
-    source_idx: usize,
     pool: PgPool,
     options: FlowLiveUpdaterOptions,
-) -> Result<()> {
-    let source_context = execution_ctx
-        .get_source_indexing_context(&flow, source_idx, &pool)
-        .await?;
 
-    let import_op = &plan.import_ops[source_idx];
+    status_tx: watch::Sender<FlowLiveUpdaterStatus>,
+    num_remaining_tasks_tx: watch::Sender<usize>,
+}
 
-    let report_stats = |stats: &stats::UpdateStats, kind: &str| {
-        source_update_stats.merge(stats);
-        if options.print_stats {
-            println!(
-                "{}.{} ({kind}): {}",
-                flow.flow_instance.name, import_op.name, stats
-            );
-        } else {
-            trace!(
-                "{}.{} ({kind}): {}",
-                flow.flow_instance.name, import_op.name, stats
-            );
-        }
-    };
+impl Drop for SourceUpdateTask {
+    fn drop(&mut self) {
+        self.status_tx.send_modify(|update| {
+            update.active_source_idx.remove(&self.source_idx);
+        });
+        self.num_remaining_tasks_tx.send_modify(|update| {
+            *update -= 1;
+        });
+    }
+}
 
-    let mut futs: Vec<BoxFuture<'_, Result<()>>> = Vec::new();
+impl SourceUpdateTask {
+    async fn run(self) -> Result<()> {
+        let source_idx = self.source_idx;
+        let source_context = self
+            .execution_ctx
+            .get_source_indexing_context(&self.flow, source_idx, &self.pool)
+            .await?;
 
-    // Deal with change streams.
-    if options.live_mode {
-        if let Some(change_stream) = import_op.executor.change_stream().await? {
-            let change_stream_stats = Arc::new(stats::UpdateStats::default());
-            futs.push(
-                {
-                    let change_stream_stats = change_stream_stats.clone();
-                    let pool = pool.clone();
-                    async move {
-                        let mut change_stream = change_stream;
-                        let retry_options = retryable::RetryOptions {
-                            max_retries: None,
-                            initial_backoff: std::time::Duration::from_secs(5),
-                            max_backoff: std::time::Duration::from_secs(60),
-                        };
-                        loop {
-                            // Workaround as AsyncFnMut isn't mature yet.
-                            // Should be changed to use AsyncFnMut once it is.
-                            let change_stream = tokio::sync::Mutex::new(&mut change_stream);
-                            let change_msg = retryable::run(
-                                || async {
-                                    let mut change_stream = change_stream.lock().await;
-                                    change_stream
-                                        .next()
-                                        .await
-                                        .transpose()
-                                        .map_err(retryable::Error::always_retryable)
-                                },
-                                &retry_options,
-                            )
-                            .await?;
-                            let change_msg = if let Some(change_msg) = change_msg {
-                                change_msg
-                            } else {
-                                break;
+        let import_op = &self.plan.import_ops[source_idx];
+
+        let report_stats = |stats: &stats::UpdateStats, kind: &str| {
+            self.source_update_stats.merge(stats);
+            if self.options.print_stats {
+                println!(
+                    "{}.{} ({kind}): {}",
+                    self.flow.flow_instance.name, import_op.name, stats
+                );
+            } else {
+                trace!(
+                    "{}.{} ({kind}): {}",
+                    self.flow.flow_instance.name, import_op.name, stats
+                );
+            }
+        };
+
+        let mut futs: Vec<BoxFuture<'_, Result<()>>> = Vec::new();
+
+        // Deal with change streams.
+        if self.options.live_mode {
+            if let Some(change_stream) = import_op.executor.change_stream().await? {
+                let change_stream_stats = Arc::new(stats::UpdateStats::default());
+                futs.push(
+                    {
+                        let change_stream_stats = change_stream_stats.clone();
+                        let pool = self.pool.clone();
+                        let status_tx = self.status_tx.clone();
+                        async move {
+                            let mut change_stream = change_stream;
+                            let retry_options = retryable::RetryOptions {
+                                max_retries: None,
+                                initial_backoff: std::time::Duration::from_secs(5),
+                                max_backoff: std::time::Duration::from_secs(60),
                             };
-                            let ack_fn = change_msg.ack_fn.map(|ack_fn| {
-                                Arc::new(Mutex::new(SharedAckFn::new(
+                            loop {
+                                // Workaround as AsyncFnMut isn't mature yet.
+                                // Should be changed to use AsyncFnMut once it is.
+                                let change_stream = tokio::sync::Mutex::new(&mut change_stream);
+                                let change_msg = retryable::run(
+                                    || async {
+                                        let mut change_stream = change_stream.lock().await;
+                                        change_stream
+                                            .next()
+                                            .await
+                                            .transpose()
+                                            .map_err(retryable::Error::always_retryable)
+                                    },
+                                    &retry_options,
+                                )
+                                .await?;
+                                let change_msg = if let Some(change_msg) = change_msg {
+                                    change_msg
+                                } else {
+                                    break;
+                                };
+
+                                let ack_fn = {
+                                    let status_tx = status_tx.clone();
+                                    async move || {
+                                        status_tx.send_modify(|update| {
+                                            update.source_updates_num[source_idx] += 1;
+                                        });
+                                        if let Some(ack_fn) = change_msg.ack_fn {
+                                            ack_fn().await
+                                        } else {
+                                            Ok(())
+                                        }
+                                    }
+                                };
+                                let shared_ack_fn = Arc::new(Mutex::new(SharedAckFn::new(
                                     change_msg.changes.iter().len(),
                                     ack_fn,
-                                )))
-                            });
-                            for change in change_msg.changes {
-                                let ack_fn = ack_fn.clone();
-                                let concur_permit = import_op
-                                    .concurrency_controller
-                                    .acquire(concur_control::BYTES_UNKNOWN_YET)
-                                    .await?;
-                                tokio::spawn(source_context.clone().process_source_key(
-                                    change.key,
-                                    change.data,
-                                    change_stream_stats.clone(),
-                                    concur_permit,
-                                    ack_fn.map(|ack_fn| {
-                                        move || async move { SharedAckFn::ack(&ack_fn).await }
-                                    }),
-                                    pool.clone(),
-                                ));
+                                )));
+                                for change in change_msg.changes {
+                                    let shared_ack_fn = shared_ack_fn.clone();
+                                    let concur_permit = import_op
+                                        .concurrency_controller
+                                        .acquire(concur_control::BYTES_UNKNOWN_YET)
+                                        .await?;
+                                    tokio::spawn(source_context.clone().process_source_key(
+                                        change.key,
+                                        change.data,
+                                        change_stream_stats.clone(),
+                                        concur_permit,
+                                        Some(move || async move {
+                                            SharedAckFn::ack(&shared_ack_fn).await
+                                        }),
+                                        pool.clone(),
+                                    ));
+                                }
+                            }
+                            Ok(())
+                        }
+                    }
+                    .boxed(),
+                );
+
+                futs.push(
+                    async move {
+                        let mut interval = tokio::time::interval(REPORT_INTERVAL);
+                        let mut last_change_stream_stats = change_stream_stats.as_ref().clone();
+                        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                        interval.tick().await;
+                        loop {
+                            interval.tick().await;
+                            let curr_change_stream_stats = change_stream_stats.as_ref().clone();
+                            let delta = curr_change_stream_stats.delta(&last_change_stream_stats);
+                            if !delta.has_any_change() {
+                                report_stats(&delta, "change stream");
+                                last_change_stream_stats = curr_change_stream_stats;
                             }
                         }
-                        Ok(())
                     }
-                }
-                .boxed(),
-            );
+                    .boxed(),
+                );
+            }
+        }
 
-            futs.push(
-                async move {
-                    let mut interval = tokio::time::interval(REPORT_INTERVAL);
-                    let mut last_change_stream_stats = change_stream_stats.as_ref().clone();
+        // The main update loop.
+        futs.push({
+            let status_tx = self.status_tx.clone();
+            let pool = self.pool.clone();
+            let live_mode = self.options.live_mode;
+            async move {
+                let update_stats = Arc::new(stats::UpdateStats::default());
+                source_context.update(&pool, &update_stats).await?;
+                status_tx.send_modify(|update| {
+                    update.source_updates_num[source_idx] += 1;
+                });
+                report_stats(&update_stats, "batch update");
+
+                if let (true, Some(refresh_interval)) =
+                    (live_mode, import_op.refresh_options.refresh_interval)
+                {
+                    let mut interval = tokio::time::interval(refresh_interval);
                     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                     interval.tick().await;
                     loop {
                         interval.tick().await;
-                        let curr_change_stream_stats = change_stream_stats.as_ref().clone();
-                        let delta = curr_change_stream_stats.delta(&last_change_stream_stats);
-                        if !delta.has_any_change() {
-                            report_stats(&delta, "change stream");
-                            last_change_stream_stats = curr_change_stream_stats;
-                        }
+
+                        let update_stats = Arc::new(stats::UpdateStats::default());
+                        source_context.update(&pool, &update_stats).await?;
+                        status_tx.send_modify(|update| {
+                            update.source_updates_num[source_idx] += 1;
+                        });
+                        report_stats(&update_stats, "interval refresh");
                     }
                 }
-                .boxed(),
-            );
-        }
-    }
-
-    // The main update loop.
-    futs.push(
-        async move {
-            let update_stats = Arc::new(stats::UpdateStats::default());
-            source_context.update(&pool, &update_stats).await?;
-            report_stats(&update_stats, "batch update");
-
-            if let (true, Some(refresh_interval)) = (
-                options.live_mode,
-                import_op.refresh_options.refresh_interval,
-            ) {
-                let mut interval = tokio::time::interval(refresh_interval);
-                interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-                interval.tick().await;
-                loop {
-                    interval.tick().await;
-
-                    let update_stats = Arc::new(stats::UpdateStats::default());
-                    source_context.update(&pool, &update_stats).await?;
-                    report_stats(&update_stats, "interval refresh");
-                }
+                Ok(())
             }
-            Ok(())
-        }
-        .boxed(),
-    );
+            .boxed()
+        });
 
-    try_join_all(futs).await?;
-    Ok(())
+        try_join_all(futs).await?;
+        Ok(())
+    }
 }
 
 impl FlowLiveUpdater {
@@ -211,59 +270,119 @@ impl FlowLiveUpdater {
         let plan = flow_ctx.flow.get_execution_plan().await?;
         let execution_ctx = Arc::new(flow_ctx.use_owned_execution_ctx().await?);
 
-        let mut tasks = JoinSet::new();
-        let sources_update_stats = (0..plan.import_ops.len())
+        let (status_tx, status_rx) = watch::channel(FlowLiveUpdaterStatus {
+            active_source_idx: BTreeSet::from_iter(0..plan.import_ops.len()),
+            source_updates_num: vec![0; plan.import_ops.len()],
+        });
+
+        let (num_remaining_tasks_tx, num_remaining_tasks_rx) =
+            watch::channel(plan.import_ops.len());
+        let tasks = (0..plan.import_ops.len())
             .map(|source_idx| {
                 let source_update_stats = Arc::new(stats::UpdateStats::default());
-                tasks.spawn(update_source(
-                    flow_ctx.flow.clone(),
-                    plan.clone(),
-                    execution_ctx.clone(),
-                    source_update_stats.clone(),
+                let source_update_task = SourceUpdateTask {
                     source_idx,
-                    pool.clone(),
-                    options.clone(),
-                ));
-                source_update_stats
+                    flow: flow_ctx.flow.clone(),
+                    plan: plan.clone(),
+                    execution_ctx: execution_ctx.clone(),
+                    source_update_stats: source_update_stats.clone(),
+                    pool: pool.clone(),
+                    options: options.clone(),
+                    status_tx: status_tx.clone(),
+                    num_remaining_tasks_tx: num_remaining_tasks_tx.clone(),
+                };
+                let task = tokio::spawn(source_update_task.run());
+                (task, source_update_stats)
             })
             .collect();
         Ok(Self {
             flow_ctx,
             tasks,
-            sources_update_stats,
+            recv_state: tokio::sync::Mutex::new(UpdateReceiveState {
+                status_rx,
+                last_num_source_updates: vec![0; plan.import_ops.len()],
+                is_done: false,
+            }),
+            num_remaining_tasks_rx,
+
+            _status_tx: status_tx,
+            _num_remaining_tasks_tx: num_remaining_tasks_tx,
         })
     }
 
-    pub async fn wait(&mut self) -> Result<()> {
-        while let Some(result) = self.tasks.join_next().await {
-            match result {
-                Err(e) if !e.is_cancelled() => {
-                    error!("A background task in FlowLiveUpdater failed to join: {e:?}");
-                }
-                Ok(Err(e)) => {
-                    error!("Error reported by a source update task during live update: {e:?}");
-                }
-                _ => {}
-            }
+    pub async fn wait(&self) -> Result<()> {
+        let mut rx = self.num_remaining_tasks_rx.clone();
+        if *rx.borrow() == 0 {
+            return Ok(());
         }
+        rx.wait_for(|v| *v == 0).await?;
         Ok(())
     }
 
-    pub fn abort(&mut self) {
-        self.tasks.abort_all();
+    pub fn abort(&self) {
+        for (task, _) in &self.tasks {
+            task.abort();
+        }
     }
 
     pub fn index_update_info(&self) -> stats::IndexUpdateInfo {
         stats::IndexUpdateInfo {
             sources: std::iter::zip(
                 self.flow_ctx.flow.flow_instance.import_ops.iter(),
-                self.sources_update_stats.iter(),
+                self.tasks.iter(),
             )
-            .map(|(import_op, stats)| stats::SourceUpdateInfo {
+            .map(|(import_op, (_, stats))| stats::SourceUpdateInfo {
                 source_name: import_op.name.clone(),
-                stats: (**stats).clone(),
+                stats: stats.as_ref().clone(),
             })
             .collect(),
         }
+    }
+
+    pub async fn next_status_updates(&self) -> Result<FlowLiveUpdaterUpdates> {
+        let mut recv_state = self.recv_state.lock().await;
+        let recv_state = &mut *recv_state;
+
+        if recv_state.is_done {
+            return Ok(FlowLiveUpdaterUpdates {
+                active_sources: vec![],
+                updated_sources: vec![],
+            });
+        }
+
+        recv_state.status_rx.changed().await?;
+        let status = recv_state.status_rx.borrow_and_update();
+        let updates = FlowLiveUpdaterUpdates {
+            active_sources: status
+                .active_source_idx
+                .iter()
+                .map(|idx| {
+                    self.flow_ctx.flow.flow_instance.import_ops[*idx]
+                        .name
+                        .clone()
+                })
+                .collect(),
+            updated_sources: status
+                .source_updates_num
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, num_updates)| {
+                    if num_updates > &recv_state.last_num_source_updates[idx] {
+                        Some(
+                            self.flow_ctx.flow.flow_instance.import_ops[idx]
+                                .name
+                                .clone(),
+                        )
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        };
+        recv_state.last_num_source_updates = status.source_updates_num.clone();
+        if status.active_source_idx.is_empty() {
+            recv_state.is_done = true;
+        }
+        Ok(updates)
     }
 }

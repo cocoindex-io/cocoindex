@@ -131,7 +131,23 @@ pub struct RenderedSpec {
 }
 
 #[pyclass]
-pub struct FlowLiveUpdater(pub Arc<tokio::sync::RwLock<execution::FlowLiveUpdater>>);
+struct FlowLiveUpdaterUpdates(execution::FlowLiveUpdaterUpdates);
+
+#[pymethods]
+impl FlowLiveUpdaterUpdates {
+    #[getter]
+    pub fn active_sources(&self) -> Vec<String> {
+        self.0.active_sources.clone()
+    }
+
+    #[getter]
+    pub fn updated_sources(&self) -> Vec<String> {
+        self.0.updated_sources.clone()
+    }
+}
+
+#[pyclass]
+struct FlowLiveUpdater(pub Arc<execution::FlowLiveUpdater>);
 
 #[pymethods]
 impl FlowLiveUpdater {
@@ -151,30 +167,32 @@ impl FlowLiveUpdater {
             )
             .await
             .into_py_result()?;
-            Ok(Self(Arc::new(tokio::sync::RwLock::new(live_updater))))
+            Ok(Self(Arc::new(live_updater)))
         })
     }
 
-    pub fn wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    pub fn wait_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let live_updater = self.0.clone();
+        future_into_py(
+            py,
+            async move { live_updater.wait().await.into_py_result() },
+        )
+    }
+
+    pub fn next_status_updates_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let live_updater = self.0.clone();
         future_into_py(py, async move {
-            let mut live_updater = live_updater.write().await;
-            live_updater.wait().await.into_py_result()
+            let updates = live_updater.next_status_updates().await.into_py_result()?;
+            Ok(FlowLiveUpdaterUpdates(updates))
         })
     }
 
-    pub fn abort(&self, py: Python<'_>) {
-        py.allow_threads(|| {
-            let mut live_updater = self.0.blocking_write();
-            live_updater.abort();
-        })
+    pub fn abort(&self) {
+        self.0.abort();
     }
 
-    pub fn index_update_info(&self, py: Python<'_>) -> IndexUpdateInfo {
-        py.allow_threads(|| {
-            let live_updater = self.0.blocking_read();
-            IndexUpdateInfo(live_updater.index_update_info())
-        })
+    pub fn index_update_info(&self) -> IndexUpdateInfo {
+        IndexUpdateInfo(self.0.index_update_info())
     }
 }
 

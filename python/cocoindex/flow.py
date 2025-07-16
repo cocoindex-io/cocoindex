@@ -534,6 +534,18 @@ class FlowLiveUpdaterOptions:
     print_stats: bool = False
 
 
+class FlowUpdaterStatusUpdates(NamedTuple):
+    """
+    Status updates for a flow updater.
+    """
+
+    # Sources that are still active, i.e. not stopped processing.
+    active_sources: list[str]
+
+    # Sources with updates since last time.
+    updated_sources: list[str]
+
+
 class FlowLiveUpdater:
     """
     A live updater for a flow.
@@ -587,7 +599,23 @@ class FlowLiveUpdater:
         """
         Wait for the live updater to finish. Async version.
         """
-        await self._get_engine_live_updater().wait()
+        await self._get_engine_live_updater().wait_async()
+
+    def next_status_updates(self) -> FlowUpdaterStatusUpdates:
+        """
+        Get the next status updates.
+        """
+        return execution_context.run(self.next_status_updates_async())
+
+    async def next_status_updates_async(self) -> FlowUpdaterStatusUpdates:
+        """
+        Get the next status updates. Async version.
+        """
+        updates = await self._get_engine_live_updater().next_status_updates_async()
+        return FlowUpdaterStatusUpdates(
+            active_sources=updates.active_sources,
+            updated_sources=updates.updated_sources,
+        )
 
     def abort(self) -> None:
         """
@@ -879,10 +907,7 @@ def update_all_flows(
     """
     Update all flows.
     """
-    return cast(
-        dict[str, _engine.IndexUpdateInfo],
-        execution_context.run(update_all_flows_async(options)),
-    )
+    return execution_context.run(update_all_flows_async(options))
 
 
 async def update_all_flows_async(
@@ -1037,7 +1062,7 @@ class TransformFlow(Generic[T]):
         """
         Evaluate the transform flow.
         """
-        return cast(T, execution_context.run(self.eval_async(*args, **kwargs)))
+        return execution_context.run(self.eval_async(*args, **kwargs))
 
     async def eval_async(self, *args: Any, **kwargs: Any) -> T:
         """

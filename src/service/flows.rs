@@ -218,7 +218,7 @@ pub async fn update(
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<stats::IndexUpdateInfo>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
-    let mut live_updater = execution::FlowLiveUpdater::start(
+    let live_updater = execution::FlowLiveUpdater::start(
         flow_ctx.clone(),
         lib_context.require_builtin_db_pool()?,
         execution::FlowLiveUpdaterOptions {
