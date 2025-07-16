@@ -154,7 +154,7 @@ impl SourceIndexingContext {
                     }
                     hash_map::Entry::Vacant(entry) => {
                         if source_version.kind == row_indexer::SourceVersionKind::NonExistence {
-                            update_stats.num_deletions.inc(1);
+                            update_stats.num_no_change.inc(1);
                             return anyhow::Ok(());
                         }
                         let new_entry = SourceRowIndexingState {
