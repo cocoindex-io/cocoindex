@@ -879,10 +879,7 @@ def update_all_flows(
     """
     Update all flows.
     """
-    return cast(
-        dict[str, _engine.IndexUpdateInfo],
-        execution_context.run(update_all_flows_async(options)),
-    )
+    return execution_context.run(update_all_flows_async(options))
 
 
 async def update_all_flows_async(
@@ -1037,7 +1034,7 @@ class TransformFlow(Generic[T]):
         """
         Evaluate the transform flow.
         """
-        return cast(T, execution_context.run(self.eval_async(*args, **kwargs)))
+        return execution_context.run(self.eval_async(*args, **kwargs))
 
     async def eval_async(self, *args: Any, **kwargs: Any) -> T:
         """

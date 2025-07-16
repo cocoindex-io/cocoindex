@@ -5,7 +5,10 @@ manner.
 
 import threading
 import asyncio
-from typing import Any, Coroutine
+from typing import Any, Coroutine, TypeVar
+
+
+T = TypeVar("T")
 
 
 class _ExecutionContext:
@@ -26,7 +29,7 @@ class _ExecutionContext:
                 ).start()
             return self._event_loop
 
-    def run(self, coro: Coroutine[Any, Any, Any]) -> Any:
+    def run(self, coro: Coroutine[Any, Any, T]) -> T:
         """Run a coroutine in the event loop, blocking until it finishes. Return its result."""
         return asyncio.run_coroutine_threadsafe(coro, self.event_loop).result()
 
