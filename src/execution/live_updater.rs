@@ -210,7 +210,7 @@ impl SourceUpdateTask {
                             interval.tick().await;
                             let curr_change_stream_stats = change_stream_stats.as_ref().clone();
                             let delta = curr_change_stream_stats.delta(&last_change_stream_stats);
-                            if !delta.has_any_change() {
+                            if delta.has_any_change() {
                                 report_stats(&delta, "change stream");
                                 last_change_stream_stats = curr_change_stream_stats;
                             }
