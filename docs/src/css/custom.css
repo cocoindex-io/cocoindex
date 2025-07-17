@@ -66,6 +66,7 @@
 
   code {
     font-size: var(--ifm-code-font-size);
+    border: none;
   }
 
   a {
