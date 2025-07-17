@@ -31,7 +31,7 @@ The spec takes the following fields:
 
     *   `separators_regex` (`list[str]`): A list of regex patterns to split the text.
         Higher-level boundaries should come first, and lower-level should be listed later. e.g. `[r"\n# ", r"\n## ", r"\n\n", r"\. "]`.
-        See [regex Syntax](https://docs.rs/regex/latest/regex/#syntax) for supported regular expression syntax.
+        See [regex syntax](https://docs.rs/regex/latest/regex/#syntax) for supported regular expression syntax.
 
 Input data:
 
@@ -57,9 +57,12 @@ Input data:
 
     We use the `language` field to determine how to split the input text, following these rules:
 
-    *   We'll match the input `language` field against the `language_name` or `aliases` of each element of `custom_languages`, and use the matched one. If value of `language` is null, it'll be treated as empty string when matching `language_name` or `aliases`.
-    *   If no match is found, we'll match the `language` field against the builtin language configurations.
-        For all supported builtin language names and aliases (extensions), see [the code](https://github.com/search?q=org%3Acocoindex-io+lang%3Arust++%22static+TREE_SITTER_LANGUAGE_BY_LANG%22&type=code).
+    *   We match the input `language` field against the following registries in the following order:
+        *   `custom_languages` in the spec, against the `language_name` or `aliases` field of each entry.
+        *   Builtin languages (see [Supported Languages](#supported-languages) section below), against the language, aliases or file extensions of each entry.
+
+        All matches are in a case-insensitive manner. If the value of `language` is null, it'll be treated as empty string.
+
     *   If no match is found, the input will be treated as plain text.
 
     :::
@@ -72,6 +75,42 @@ Return: [*KTable*](/docs/core/data_types#ktable), each row represents a chunk, w
     *   `offset` (*Int64*): The byte offset of the position.
     *   `line` (*Int64*): The line number of the position. Starting from 1.
     *   `column` (*Int64*): The column number of the position. Starting from 1.
+
+### Supported Languages
+
+Currently, `SplitRecursively` supports the following languages:
+
+| Language | Aliases | File Extensions |
+|----------|---------|-----------------|
+| C | | `.c` |
+| C++ | `cpp` | `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp` |
+| C# | `cs` | `.cs` |
+| CSS | | `.css`, `.scss` |
+| DTD | | `.dtd` |
+| Fortran | `f`, `f90`, `f95`, `f03` | `.f`, `.f90`, `.f95`, `.f03` |
+| Go | `golang` | `.go` |
+| HTML | | `.html`, `.htm` |
+| Java | | `.java` |
+| JavaScript | `js` | `.js` |
+| JSON | | `.json` |
+| Kotlin | | `.kt`, `.kts` |
+| Markdown | `md` | `.md`, `.mdx` |
+| Pascal | `pas`, `dpr`, `Delphi` | `.pas`, `.dpr` |
+| PHP | | `.php` |
+| Python | | `.py` |
+| R | | `.r` |
+| Ruby | | `.rb` |
+| Rust | `rs` | `.rs` |
+| Scala | | `.scala` |
+| SQL | | `.sql` |
+| Swift | | `.swift` |
+| TOML | | `.toml` |
+| TSX | | `.tsx` |
+| TypeScript | `ts` | `.ts` |
+| XML | | `.xml` |
+| YAML | | `.yaml`, `.yml` |
+
+
 
 ## SentenceTransformerEmbed
 
