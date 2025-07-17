@@ -102,9 +102,6 @@ def _main() -> None:
 
     amazon_s3_text_embedding_flow.setup()
     with cocoindex.FlowLiveUpdater(amazon_s3_text_embedding_flow) as updater:
-        updater.abort()
-        updater.wait()
-
         while True:
             updates = updater.next_status_updates()
             print(f"Updates: {updates}")

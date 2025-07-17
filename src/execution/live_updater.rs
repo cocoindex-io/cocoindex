@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{execution::stats::UpdateStats, prelude::*};
 
 use super::stats;
 use futures::future::try_join_all;
@@ -159,12 +159,18 @@ impl SourceUpdateTask {
                                     break;
                                 };
 
+                                let update_stats = Arc::new(stats::UpdateStats::default());
                                 let ack_fn = {
                                     let status_tx = status_tx.clone();
+                                    let update_stats = update_stats.clone();
+                                    let change_stream_stats = change_stream_stats.clone();
                                     async move || {
-                                        status_tx.send_modify(|update| {
-                                            update.source_updates_num[source_idx] += 1;
-                                        });
+                                        if update_stats.has_any_change() {
+                                            status_tx.send_modify(|update| {
+                                                update.source_updates_num[source_idx] += 1;
+                                            });
+                                            change_stream_stats.merge(&update_stats);
+                                        }
                                         if let Some(ack_fn) = change_msg.ack_fn {
                                             ack_fn().await
                                         } else {
@@ -185,7 +191,7 @@ impl SourceUpdateTask {
                                     tokio::spawn(source_context.clone().process_source_key(
                                         change.key,
                                         change.data,
-                                        change_stream_stats.clone(),
+                                        update_stats.clone(),
                                         concur_permit,
                                         Some(move || async move {
                                             SharedAckFn::ack(&shared_ack_fn).await
@@ -203,7 +209,8 @@ impl SourceUpdateTask {
                 futs.push(
                     async move {
                         let mut interval = tokio::time::interval(REPORT_INTERVAL);
-                        let mut last_change_stream_stats = change_stream_stats.as_ref().clone();
+                        let mut last_change_stream_stats: UpdateStats =
+                            change_stream_stats.as_ref().clone();
                         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                         interval.tick().await;
                         loop {
@@ -229,9 +236,11 @@ impl SourceUpdateTask {
             async move {
                 let update_stats = Arc::new(stats::UpdateStats::default());
                 source_context.update(&pool, &update_stats).await?;
-                status_tx.send_modify(|update| {
-                    update.source_updates_num[source_idx] += 1;
-                });
+                if update_stats.has_any_change() {
+                    status_tx.send_modify(|update| {
+                        update.source_updates_num[source_idx] += 1;
+                    });
+                }
                 report_stats(&update_stats, "batch update");
 
                 if let (true, Some(refresh_interval)) =
@@ -245,9 +254,11 @@ impl SourceUpdateTask {
 
                         let update_stats = Arc::new(stats::UpdateStats::default());
                         source_context.update(&pool, &update_stats).await?;
-                        status_tx.send_modify(|update| {
-                            update.source_updates_num[source_idx] += 1;
-                        });
+                        if update_stats.has_any_change() {
+                            status_tx.send_modify(|update| {
+                                update.source_updates_num[source_idx] += 1;
+                            });
+                        }
                         report_stats(&update_stats, "interval refresh");
                     }
                 }
