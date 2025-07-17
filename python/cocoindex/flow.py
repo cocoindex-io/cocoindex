@@ -604,7 +604,9 @@ class FlowLiveUpdater:
     def next_status_updates(self) -> FlowUpdaterStatusUpdates:
         """
         Get the next status updates.
-        It blocks until there's a new status updates, including the target get updated after
+
+        It blocks until there's a new status updates, including the processing finishes for a bunch of source updates,
+        and live updater stops (aborted, or no more sources to process).
         """
         return execution_context.run(self.next_status_updates_async())
 
