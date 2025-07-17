@@ -241,12 +241,26 @@ A `FlowLiveUpdater` object supports the following methods:
 
 *   `start()`: Start the updater.
     CocoIndex will continuously capture changes from the source data and update the target data accordingly in background threads managed by the engine.
+
 *   `abort()`: Abort the updater.
+
 *   `wait()`: Wait for the updater to finish. It only unblocks in one of the following cases:
     *   The updater was aborted.
     *   A one time update is done, and live update is not enabled:
         either `live_mode` is `False`, or all data sources have no change capture mechanisms enabled.
+
+*   `next_status_updates()`: Get the next status updates.
+    It blocks until there's a new status updates, including the processing finishes for a bunch of source updates, and live updater stops (aborted, or no more sources to process).
+    You can continuously call this method in a loop to get the latest status updates and react accordingly.
+
+    It returns a `cocoindex.FlowUpdaterStatusUpdates` object, with the following properties:
+    *   `active_sources`: Names of sources that are still active, i.e. not stopped processing. If it's empty, it means the updater is stopped.
+    *   `updated_sources`: Names of sources with updates since last time.
+        You can check this to see which sources have recent updates and get processed.
+
 *   `update_stats()`: It returns the stats of the updater.
+
+This snippets shows the lifecycle of a live updater:
 
 ```python
 my_updater = cocoindex.FlowLiveUpdater(demo_flow)
@@ -256,13 +270,36 @@ my_updater.start()
 # Perform your own logic (e.g. a query loop).
 ...
 
-# Print the update stats.
-print(my_updater.update_stats())
-# Abort the updater.
-my_updater.abort()
+...
 # Wait for the updater to finish.
 my_updater.wait()
+# Print the update stats.
+print(my_updater.update_stats())
 ```
+
+Somewhere (in the same or other threads) you can also continuously call `next_status_updates()` to get the latest status updates and react accordingly, e.g.
+
+```python
+while True:
+    updates = my_updater.next_status_updates()
+
+    for source in updates.updated_sources:
+        # Perform downstream operations on the target of the source.
+        run_your_downstream_operations_for(source)
+
+    # Break the loop if there's no more active sources.
+    if not updates.active_sources:
+        break
+```
+
+:::info
+
+`next_status_updates()` automatically combines multiple status updates if more than one arrives between two calls,
+e.g. your downstream operations may take more time, or you don't need to process too frequently (in which case you can explicitly sleep for a while).
+
+So you don't need to worry about the status updates piling up.
+
+:::
 
 Python SDK also allows you to use the updater as a context manager.
 It will automatically start the updater during the context entry, and abort and wait for the updater to finish automatically when the context is exited.
@@ -272,7 +309,6 @@ The following code is equivalent to the code above (if no early return happens):
 with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
     # Perform your own logic (e.g. a query loop).
     ...
-    print(my_updater.update_stats())
 ```
 
 CocoIndex also provides asynchronous versions of APIs for blocking operations, including:
@@ -287,20 +323,27 @@ CocoIndex also provides asynchronous versions of APIs for blocking operations, i
     # Perform your own logic (e.g. a query loop).
     ...
 
-    # Print the update stats.
-    print(my_updater.update_stats())
-    # Abort the updater.
-    my_updater.abort()
     # Wait for the updater to finish.
     await my_updater.wait_async()
+    # Print the update stats.
+    print(my_updater.update_stats())
     ```
+
+*   `next_status_updates_async()`, e.g.
+
+    ```python
+    while True:
+        updates = await my_updater.next_status_updates_async()
+
+        ...
+    ```
+
 *   Async context manager, e.g.
 
     ```python
     async with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
         # Perform your own logic (e.g. a query loop).
         ...
-        print(my_updater.update_stats())
     ```
 
 </TabItem>
