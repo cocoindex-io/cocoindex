@@ -63,6 +63,7 @@ reqwest = { version = "0.12.15", default-features = false, features = [
     "rustls-tls",
 ] }
 async-openai = "0.28.0"
+
 tree-sitter = "0.25.3"
 tree-sitter-language = "0.1.5"
 # Per language tree-sitter parsers
@@ -76,6 +77,8 @@ tree-sitter-html = "0.23.2"
 tree-sitter-java = "0.23.5"
 tree-sitter-javascript = "0.23.1"
 tree-sitter-json = "0.24.8"
+# The other more popular crate tree-sitter-kotlin requires tree-sitter < 0.23 for now
+tree-sitter-kotlin-ng = "1.1.0"
 tree-sitter-md = "0.3.2"
 tree-sitter-pascal = "0.10.0"
 tree-sitter-php = "0.23.11"
