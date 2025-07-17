@@ -4,9 +4,20 @@ use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::sync::Arc;
+use urlencoding;
 
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
+
+/// Decode a form-encoded URL string, treating '+' as spaces
+fn decode_form_encoded_url(input: &str) -> Result<Arc<str>> {
+    // Replace '+' with spaces (form encoding convention), then decode
+    // This handles both cases correctly:
+    // - Literal '+' would be encoded as '%2B' and remain unchanged after replacement
+    // - Space would be encoded as '+' and become ' ' after replacement
+    let with_spaces = input.replace("+", " ");
+    Ok(urlencoding::decode(&with_spaces)?.into())
+}
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
@@ -258,8 +269,9 @@ impl Executor {
                     if record.event_name.starts_with("ObjectCreated:")
                         || record.event_name.starts_with("ObjectRemoved:")
                     {
+                        let decoded_key = decode_form_encoded_url(&s3.object.key)?;
                         changes.push(SourceChange {
-                            key: KeyValue::Str(s3.object.key.into()),
+                            key: KeyValue::Str(decoded_key),
                             data: None,
                         });
                     }
