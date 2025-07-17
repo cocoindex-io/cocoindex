@@ -83,30 +83,30 @@ Currently, `SplitRecursively` supports the following languages:
 | Language | Aliases | File Extensions |
 |----------|---------|-----------------|
 | C | | `.c` |
-| C++ | `cpp` | `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp` |
-| C# | `cs` | `.cs` |
+| C++ | CPP | `.cpp`, `.cc`, `.cxx`, `.h`, `.hpp` |
+| C# | CSharp, CS | `.cs` |
 | CSS | | `.css`, `.scss` |
 | DTD | | `.dtd` |
-| Fortran | `f`, `f90`, `f95`, `f03` | `.f`, `.f90`, `.f95`, `.f03` |
-| Go | `golang` | `.go` |
+| Fortran | F, F90, F95, F03 | `.f`, `.f90`, `.f95`, `.f03` |
+| Go | Golang | `.go` |
 | HTML | | `.html`, `.htm` |
 | Java | | `.java` |
-| JavaScript | `js` | `.js` |
+| JavaScript | JS | `.js` |
 | JSON | | `.json` |
 | Kotlin | | `.kt`, `.kts` |
-| Markdown | `md` | `.md`, `.mdx` |
-| Pascal | `pas`, `dpr`, `Delphi` | `.pas`, `.dpr` |
+| Markdown | MD | `.md`, `.mdx` |
+| Pascal | PAS, DPR, Delphi | `.pas`, `.dpr` |
 | PHP | | `.php` |
 | Python | | `.py` |
 | R | | `.r` |
 | Ruby | | `.rb` |
-| Rust | `rs` | `.rs` |
+| Rust | RS | `.rs` |
 | Scala | | `.scala` |
 | SQL | | `.sql` |
 | Swift | | `.swift` |
 | TOML | | `.toml` |
 | TSX | | `.tsx` |
-| TypeScript | `ts` | `.ts` |
+| TypeScript | TS | `.ts` |
 | XML | | `.xml` |
 | YAML | | `.yaml`, `.yml` |
 
