@@ -111,10 +111,9 @@ This is how to setup:
 
 *   In the [Amazon S3 Console](https://s3.console.aws.amazon.com/s3/home), open your S3 bucket. Under *Properties* tab, click *Create event notification*.
     *   Fill in an arbitrary event name, e.g. `S3ChangeNotifications`.
-    *   If you want your AmazonS3 data source expose a subset of files sharing a prefix, set the same prefix here. Otherwise, leave it empty.
+    *   If you want your AmazonS3 data source to expose a subset of files sharing a prefix, set the same prefix here. Otherwise, leave it empty.
     *   Select the following event types: *All object create events*, *All object removal events*.
     *   Select *SQS queue* as the destination, and specify the SQS queue you created above.
-and enable *Change Event Notifications* for your bucket, and specify the SQS queue as the destination.
 
 AWS's [Guide of Configuring a Bucket for Notifications](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ways-to-add-notification-config-to-bucket.html#step1-create-sqs-queue-for-notification) provides more details.
 
@@ -141,7 +140,7 @@ The spec takes the following fields:
     :::info
 
     We will delete messages from the queue after they're processed.
-    If there're unrelated messages in the queue (e.g. test messages that SQS will send automatically on queue creation, messages for a different bucket, for non-included files, etc.), we will delete the message upon receiving it, to avoid keeping receiving irrelevant messages again and again after they're redelivered.
+    If there are unrelated messages in the queue (e.g. test messages that SQS will send automatically on queue creation, messages for a different bucket, for non-included files, etc.), we will delete the message upon receiving it, to avoid repeatedly receiving irrelevant messages after they're redelivered.
 
     :::
 
@@ -253,12 +252,12 @@ The spec takes the following fields:
     it's typically cheaper than a full refresh by setting the [refresh interval](../core/flow_def#refresh-interval) especially when the folder contains a large number of files.
     So you can usually set it with a smaller value compared to the `refresh_interval`.
 
-    On the other hand, this only detects changes for files still exists.
-    If the file is deleted (or the current account no longer has access to), this change will not be detected by this change stream.
+    On the other hand, this only detects changes for files that still exist.
+    If the file is deleted (or the current account no longer has access to it), this change will not be detected by this change stream.
 
-    So when a `GoogleDrive` source enabled `recent_changes_poll_interval`, it's still recommended to set a `refresh_interval`, with a larger value.
+    So when a `GoogleDrive` source has `recent_changes_poll_interval` enabled, it's still recommended to set a `refresh_interval`, with a larger value.
     So that most changes can be covered by polling recent changes (with low latency, like 10 seconds), and remaining changes (files no longer exist or accessible) will still be covered (with a higher latency, like 5 minutes, and should be larger if you have a huge number of files like 1M).
-    In reality, configure them based on your requirement: how freshness do you need to target index to be?
+    In reality, configure them based on your requirement: how fresh do you need the target index to be?
 
     :::
 

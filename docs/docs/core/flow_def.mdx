@@ -468,7 +468,7 @@ Then reference it when building a spec that takes an auth entry:
 Note that CocoIndex backends use the key of an auth entry to identify the backend.
 
 *   Keep the key stable.
-    If the key doesn't change, it's considered to be the same backend (even if the underlying way to connect/authenticate change).
+    If the key doesn't change, it's considered to be the same backend (even if the underlying way to connect/authenticate changes).
 
 *   If a key is no longer referenced in any operation spec, keep it until the next flow setup / drop action,
-    so that cocoindex will be able to clean up the backends.
+    so that CocoIndex will be able to clean up the backends.

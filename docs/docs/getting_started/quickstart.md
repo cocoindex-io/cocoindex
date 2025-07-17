@@ -7,10 +7,10 @@ import ReactPlayer from 'react-player'
 
 # Build your first CocoIndex project
 
-This guide will help you get up and running with CocoIndex in just a few minutes, that does:
+This guide will help you get up and running with CocoIndex in just a few minutes. We'll build a project that does:
 *   Read files from a directory
 *   Perform basic chunking and embedding
-*   loads the data into a vector store (PG Vector)
+*   Load the data into a vector store (PG Vector)
 
 <ReactPlayer controls url='https://www.youtube.com/watch?v=gv5R8nOXsWU' />
 
@@ -107,11 +107,11 @@ Notes:
 3.  A *data source* extracts data from an external source.
     In this example, the `LocalFile` data source imports local files as a KTable (table with a key field, see [KTable](../core/data_types#ktable) for details), each row has `"filename"` and `"content"` fields.
 
-4. After defining the KTable, we extended a new field `"chunks"` to each row by *transforming* the `"content"` field using `SplitRecursively`. The output of the `SplitRecursively` is also a KTable representing each chunk of the document, with `"location"` and `"text"` fields.
+4. After defining the KTable, we extend a new field `"chunks"` to each row by *transforming* the `"content"` field using `SplitRecursively`. The output of the `SplitRecursively` is also a KTable representing each chunk of the document, with `"location"` and `"text"` fields.
 
-5. After defining the KTable, we extended a new field `"embedding"` to each row by *transforming* the `"text"` field using `SentenceTransformerEmbed`.
+5. After defining the KTable, we extend a new field `"embedding"` to each row by *transforming* the `"text"` field using `SentenceTransformerEmbed`.
 
-6. In CocoIndex, a *collector* collects multiple entries of data together. In this example, the `doc_embeddings` collector collects data from all `chunk`s across all `doc`s, and using the collected data to build a vector index `"doc_embeddings"`, using `Postgres`.
+6. In CocoIndex, a *collector* collects multiple entries of data together. In this example, the `doc_embeddings` collector collects data from all `chunk`s across all `doc`s, and uses the collected data to build a vector index `"doc_embeddings"`, using `Postgres`.
 
 ## Step 3: Run the indexing pipeline and queries
 
@@ -271,7 +271,7 @@ Now we can run the same Python file, which will run the new added main logic:
 python quickstart.py
 ```
 
-It will ask you to enter a query and it will return the top 10 results.
+It will ask you to enter a query and it will return the top 5 results.
 
 ## Next Steps
 

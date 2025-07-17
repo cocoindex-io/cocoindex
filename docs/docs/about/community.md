@@ -9,7 +9,7 @@ Welcome with a huge coconut hug 🥥⋆｡˚🤗.
 
 We are super excited for community contributions of all kinds - whether it's code improvements, documentation updates, issue reports, feature requests on [GitHub](https://github.com/cocoindex-io/cocoindex), and discussions in our [Discord](https://discord.com/invite/zpA9S2DR7s).
 
-We would love to fostering an inclusive, welcoming, and supportive environment. Contributing to CocoIndex should feel collaborative, friendly and enjoyable for everyone. Together, we can build better AI applications through robust data infrastructure.
+We would love to foster an inclusive, welcoming, and supportive environment. Contributing to CocoIndex should feel collaborative, friendly and enjoyable for everyone. Together, we can build better AI applications through robust data infrastructure.
 
 :::tip Start hacking CocoIndex
 Check out our [Contributing guide](./contributing) to get started!

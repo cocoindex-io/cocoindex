@@ -44,9 +44,9 @@ For a flow, its persistent backends need to be ready before it can run, includin
 The desired state of the backends for a flow is derived based on the flow definition itself.
 CocoIndex supports two types of actions to manage the persistent backends automatically:
 
-*   *Setup* a flow, which will change the backends owned by the flow to a state to the desired state, e.g. create new tables for new flow, drop an existing table if the corresponding target is gone, add new column to a target table if a new field is collected, etc. It's no-op if the backend states are already in the desired state.
+*   *Setup* a flow, which will change the backends owned by the flow to the desired state, e.g. create new tables for new flow, drop an existing table if the corresponding target is gone, add new column to a target table if a new field is collected, etc. It's no-op if the backend states are already in the desired state.
 
-*   *Drop* a flow, which will drop all backends owned by the flow. It's no-op if there's no existing backends owned by the flow (e.g. never setup or already dropped).
+*   *Drop* a flow, which will drop all backends owned by the flow. It's no-op if there are no existing backends owned by the flow (e.g. never setup or already dropped).
 
 ### CLI
 
@@ -138,7 +138,7 @@ This is to achieve best efficiency.
 
 The `cocoindex update` subcommand creates/updates data in the target.
 
-Once it's done, the target data is fresh up to the moment when the function is called.
+Once it's done, the target data is fresh up to the moment when the command is called.
 
 ```sh
 cocoindex update main.py
@@ -203,7 +203,7 @@ To perform live update, run the `cocoindex update` subcommand with `-L` option:
 cocoindex update main.py -L
 ```
 
-If there's at least one data source with change capture mechanism enabled, it will keep running until the aborted (e.g. by `Ctrl-C`).
+If there's at least one data source with change capture mechanism enabled, it will keep running until aborted (e.g. by `Ctrl-C`).
 Otherwise, it falls back to the same behavior as one time update, and will finish after a one-time update is done.
 
 With a `--setup` option, it will also setup the flow first if needed.

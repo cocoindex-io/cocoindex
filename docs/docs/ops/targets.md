@@ -413,7 +413,7 @@ If you don't have a Neo4j database, you can start a Neo4j database using our doc
 docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/neo4j.yaml) up -d
 ```
 
-If will bring up a Neo4j instance, which can be accessed by username `neo4j` and password `cocoindex`.
+This will bring up a Neo4j instance, which can be accessed by username `neo4j` and password `cocoindex`.
 You can access the Neo4j browser at [http://localhost:7474](http://localhost:7474).
 
 :::warning
