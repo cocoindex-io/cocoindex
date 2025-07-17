@@ -1,9 +1,31 @@
 use crate::prelude::*;
 
 use super::{LlmEmbeddingClient, LlmGenerationClient};
-use phf::phf_map;
 use schemars::schema::SchemaObject;
 use serde_with::{base64::Base64, serde_as};
+
+fn get_embedding_dimension(model: &str) -> Option<u32> {
+    match model.to_ascii_lowercase().as_str() {
+        "mxbai-embed-large"
+        | "bge-m3"
+        | "bge-large"
+        | "snowflake-arctic-embed"
+        | "snowflake-arctic-embed2" => Some(1024),
+
+        "nomic-embed-text"
+        | "paraphrase-multilingual"
+        | "snowflake-arctic-embed:110m"
+        | "snowflake-arctic-embed:137m"
+        | "granite-embedding:278m" => Some(768),
+
+        "all-minilm"
+        | "snowflake-arctic-embed:22m"
+        | "snowflake-arctic-embed:33m"
+        | "granite-embedding" => Some(384),
+
+        _ => None,
+    }
+}
 
 pub struct Client {
     generate_url: String,
@@ -44,23 +66,6 @@ struct OllamaEmbeddingRequest<'a> {
 struct OllamaEmbeddingResponse {
     pub embedding: Vec<f32>,
 }
-
-static DEFAULT_EMBEDDING_DIMENSIONS: phf::Map<&str, u32> = phf_map! {
-    "nomic-embed-text" => 768,
-    "mxbai-embed-large" => 1024,
-    "bge-m3" => 1024,
-    "bge-large" => 1024,
-    "all-minilm" => 384,
-    "snowflake-arctic-embed:22m" => 384,
-    "snowflake-arctic-embed:33m" => 384,
-    "snowflake-arctic-embed:110m" => 768,
-    "snowflake-arctic-embed:137m" => 768,
-    "snowflake-arctic-embed" => 1024,
-    "snowflake-arctic-embed2" => 1024,
-    "paraphrase-multilingual" => 768,
-    "granite-embedding" => 384,
-    "granite-embedding:278m" => 768,
-};
 
 const OLLAMA_DEFAULT_ADDRESS: &str = "http://localhost:11434";
 
@@ -163,6 +168,6 @@ impl LlmEmbeddingClient for Client {
     }
 
     fn get_default_embedding_dimension(&self, model: &str) -> Option<u32> {
-        DEFAULT_EMBEDDING_DIMENSIONS.get(model).copied()
+        get_embedding_dimension(model)
     }
 }
