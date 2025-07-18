@@ -1,0 +1,4 @@
+target:
+  - url: "examples/"
+reinit: "random-string"
+ignore: []
