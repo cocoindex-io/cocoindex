@@ -16,7 +16,7 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 mod convert;
-pub use convert::*;
+pub(crate) use convert::*;
 
 pub struct PythonExecutionContext {
     pub event_loop: Py<PyAny>,
@@ -131,7 +131,7 @@ pub struct RenderedSpec {
 }
 
 #[pyclass]
-struct FlowLiveUpdaterUpdates(execution::FlowLiveUpdaterUpdates);
+pub struct FlowLiveUpdaterUpdates(execution::FlowLiveUpdaterUpdates);
 
 #[pymethods]
 impl FlowLiveUpdaterUpdates {
@@ -147,7 +147,7 @@ impl FlowLiveUpdaterUpdates {
 }
 
 #[pyclass]
-struct FlowLiveUpdater(pub Arc<execution::FlowLiveUpdater>);
+pub struct FlowLiveUpdater(pub Arc<execution::FlowLiveUpdater>);
 
 #[pymethods]
 impl FlowLiveUpdater {
