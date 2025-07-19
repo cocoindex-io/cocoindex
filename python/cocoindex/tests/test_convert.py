@@ -1341,3 +1341,130 @@ def test_roundtrip_namedtuple_to_dict_binding() -> None:
     validate_full_roundtrip(
         instance, Point, (expected_dict, dict), (expected_dict, Any)
     )
+
+
+def test_roundtrip_ltable_to_list_dict_binding() -> None:
+    """Test LTable -> list[dict] binding with Any annotation."""
+
+    @dataclass
+    class User:
+        id: str
+        name: str
+        age: int
+
+    users = [User("u1", "Alice", 25), User("u2", "Bob", 30), User("u3", "Charlie", 35)]
+    expected_list_dict = [
+        {"id": "u1", "name": "Alice", "age": 25},
+        {"id": "u2", "name": "Bob", "age": 30},
+        {"id": "u3", "name": "Charlie", "age": 35},
+    ]
+
+    # Test Any annotation
+    validate_full_roundtrip(users, list[User], (expected_list_dict, Any))
+
+
+def test_roundtrip_ktable_to_dict_dict_binding() -> None:
+    """Test KTable -> dict[K, dict] binding with Any annotation."""
+
+    @dataclass
+    class Product:
+        name: str
+        price: float
+        active: bool
+
+    products = {
+        "p1": Product("Widget", 29.99, True),
+        "p2": Product("Gadget", 49.99, False),
+        "p3": Product("Tool", 19.99, True),
+    }
+    expected_dict_dict = {
+        "p1": {"name": "Widget", "price": 29.99, "active": True},
+        "p2": {"name": "Gadget", "price": 49.99, "active": False},
+        "p3": {"name": "Tool", "price": 19.99, "active": True},
+    }
+
+    # Test Any annotation
+    validate_full_roundtrip(products, dict[str, Product], (expected_dict_dict, Any))
+
+
+def test_roundtrip_ktable_with_complex_key() -> None:
+    """Test KTable with complex key types -> dict binding."""
+
+    @dataclass(frozen=True)
+    class OrderKey:
+        shop_id: str
+        version: int
+
+    @dataclass
+    class Order:
+        customer: str
+        total: float
+
+    orders = {
+        OrderKey("shop1", 1): Order("Alice", 100.0),
+        OrderKey("shop2", 2): Order("Bob", 200.0),
+    }
+    expected_dict_dict = {
+        ("shop1", 1): {"customer": "Alice", "total": 100.0},
+        ("shop2", 2): {"customer": "Bob", "total": 200.0},
+    }
+
+    # Test Any annotation
+    validate_full_roundtrip(orders, dict[OrderKey, Order], (expected_dict_dict, Any))
+
+
+def test_roundtrip_ltable_with_nested_structs() -> None:
+    """Test LTable with nested structs -> list[dict] binding."""
+
+    @dataclass
+    class Address:
+        street: str
+        city: str
+
+    @dataclass
+    class Person:
+        name: str
+        age: int
+        address: Address
+
+    people = [
+        Person("John", 30, Address("123 Main St", "Anytown")),
+        Person("Jane", 25, Address("456 Oak Ave", "Somewhere")),
+    ]
+    expected_list_dict = [
+        {
+            "name": "John",
+            "age": 30,
+            "address": {"street": "123 Main St", "city": "Anytown"},
+        },
+        {
+            "name": "Jane",
+            "age": 25,
+            "address": {"street": "456 Oak Ave", "city": "Somewhere"},
+        },
+    ]
+
+    # Test Any annotation
+    validate_full_roundtrip(people, list[Person], (expected_list_dict, Any))
+
+
+def test_roundtrip_ktable_with_list_fields() -> None:
+    """Test KTable with list fields -> dict binding."""
+
+    @dataclass
+    class Team:
+        name: str
+        members: list[str]
+        active: bool
+
+    teams = {
+        "team1": Team("Dev Team", ["Alice", "Bob"], True),
+        "team2": Team("QA Team", ["Charlie", "David"], False),
+    }
+    expected_dict_dict = {
+        "team1": {"name": "Dev Team", "members": ["Alice", "Bob"], "active": True},
+        "team2": {"name": "QA Team", "members": ["Charlie", "David"], "active": False},
+    }
+
+    # Test Any annotation
+    validate_full_roundtrip(teams, dict[str, Team], (expected_dict_dict, Any))
