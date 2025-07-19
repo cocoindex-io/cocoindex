@@ -1,7 +1,7 @@
 target:
   - url: "docs"
   
-reinit: "a"
+reinit: "b"
 
 include:
   - "src"
