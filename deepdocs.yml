@@ -1,4 +1,5 @@
 target:
   - url: "docs"
 reinit: "sds"
-ignore: []
+include:
+  - "src"
