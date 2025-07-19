@@ -102,12 +102,6 @@ def _main() -> None:
 
     amazon_s3_text_embedding_flow.setup()
     with cocoindex.FlowLiveUpdater(amazon_s3_text_embedding_flow) as updater:
-        while True:
-            updates = updater.next_status_updates()
-            print(f"Updates: {updates}")
-            if not updates.active_sources:
-                break
-
         # Run queries in a loop to demonstrate the query capabilities.
         while True:
             query = input("Enter search query (or Enter to quit): ")
