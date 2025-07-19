@@ -5,3 +5,4 @@ reinit: "a"
 
 include:
   - "src"
+  - "python/cocoindex"
