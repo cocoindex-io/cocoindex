@@ -1,6 +1,7 @@
 """All builtin sources."""
 
 from . import op
+from .auth_registry import TransientAuthEntryReference
 import datetime
 
 
@@ -48,6 +49,11 @@ class AmazonS3(op.SourceSpec):
 class AzureBlob(op.SourceSpec):
     """
     Import data from an Azure Blob Storage container. Supports optional prefix and file filtering by glob patterns.
+
+    Authentication mechanisms taken in the following order:
+    - SAS token (if provided)
+    - Account access key (if provided)
+    - Default Azure credential
     """
 
     _op_category = op.OpCategory.SOURCE
@@ -58,3 +64,6 @@ class AzureBlob(op.SourceSpec):
     binary: bool = False
     included_patterns: list[str] | None = None
     excluded_patterns: list[str] | None = None
+
+    sas_token: TransientAuthEntryReference[str] | None = None
+    account_access_key: TransientAuthEntryReference[str] | None = None

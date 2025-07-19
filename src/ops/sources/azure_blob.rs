@@ -19,6 +19,11 @@ pub struct Spec {
     binary: bool,
     included_patterns: Option<Vec<String>>,
     excluded_patterns: Option<Vec<String>>,
+
+    /// SAS token for authentication. Takes precedence over account_access_key.
+    sas_token: Option<AuthEntryReference<String>>,
+    /// Account access key for authentication. If not provided, will use default Azure credential.
+    account_access_key: Option<AuthEntryReference<String>>,
 }
 
 struct Executor {
@@ -209,15 +214,22 @@ impl SourceFactoryBase for Factory {
     async fn build_executor(
         self: Arc<Self>,
         spec: Spec,
-        _context: Arc<FlowInstanceContext>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SourceExecutor>> {
-        let default_credential = Arc::new(DefaultAzureCredential::create(
-            TokenCredentialOptions::default(),
-        )?);
-        let client = BlobServiceClient::new(
-            &spec.account_name,
-            StorageCredentials::token_credential(default_credential),
-        );
+        let credential = if let Some(sas_token) = spec.sas_token {
+            let sas_token = context.auth_registry.get(&sas_token)?;
+            StorageCredentials::sas_token(sas_token)?
+        } else if let Some(account_access_key) = spec.account_access_key {
+            let account_access_key = context.auth_registry.get(&account_access_key)?;
+            StorageCredentials::access_key(spec.account_name.clone(), account_access_key)
+        } else {
+            let default_credential = Arc::new(DefaultAzureCredential::create(
+                TokenCredentialOptions::default(),
+            )?);
+            StorageCredentials::token_credential(default_credential)
+        };
+
+        let client = BlobServiceClient::new(&spec.account_name, credential);
         Ok(Box::new(Executor {
             client,
             container_name: spec.container_name,

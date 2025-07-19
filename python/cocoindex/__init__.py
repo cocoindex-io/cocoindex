@@ -6,7 +6,7 @@ from . import functions, sources, targets, cli, utils
 
 from . import targets as storages  # Deprecated: Use targets instead
 
-from .auth_registry import AuthEntryReference, add_auth_entry, ref_auth_entry
+from .auth_registry import AuthEntryReference, add_auth_entry, add_transient_auth_entry
 from .flow import FlowBuilder, DataScope, DataSlice, Flow, transform_flow
 from .flow import flow_def
 from .flow import EvaluateAndDumpOptions, GeneratedField
@@ -42,6 +42,7 @@ __all__ = [
     # Auth registry
     "AuthEntryReference",
     "add_auth_entry",
+    "add_transient_auth_entry",
     "ref_auth_entry",
     # Flow
     "FlowBuilder",

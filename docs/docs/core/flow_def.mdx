@@ -416,22 +416,28 @@ flow_builder.declare(
 ### Auth Registry
 
 CocoIndex manages an auth registry. It's an in-memory key-value store, mainly to store authentication information for a backend.
+It's usually used for targets, where key stability is important for backend cleanup.
 
-Operation spec is the default way to configure a persistent backend. But it has the following limitations:
+Operation spec is the default way to configure sources, functions and targets. But it has the following limitations:
 
 *   The spec isn't supposed to contain secret information, and it's frequently shown in various places, e.g. `cocoindex show`.
-*   Once an operation is removed after flow definition code change, the spec is also gone.
-    But we still need to be able to drop the backend (e.g. a table) when [setup / drop flow](/docs/core/flow_methods#setup--drop-flow).
+*   For targets, once an operation is removed after flow definition code change, the spec is also gone.
+    But we still need to be able to drop the persistent backend (e.g. a table) when [setup / drop flow](/docs/core/flow_methods#setup--drop-flow).
 
-Auth registry is introduced to solve the problems above. It works as follows:
+Auth registry is introduced to solve the problems above.
 
-*   You can create new **auth entry** by a key and a value.
-*   You can references the entry by the key, and pass it as part of spec for certain operations. e.g. `Neo4j` takes `connection` field in the form of auth entry reference.
+
+#### Auth Entry
+
+An auth entry is an entry in the auth registry with an explicit key.
+
+*   You can create new *auth entry* by a key and a value.
+*   You can reference the entry by the key, and pass it as part of spec for certain operations. e.g. `Neo4j` takes `connection` field in the form of auth entry reference.
 
 <Tabs>
 <TabItem value="python" label="Python" default>
 
-You can add an auth entry by `cocoindex.add_auth_entry()` function, which returns a `cocoindex.AuthEntryReference`:
+You can add an auth entry by `cocoindex.add_auth_entry()` function, which returns a `cocoindex.AuthEntryReference[T]`:
 
 ```python
 my_graph_conn = cocoindex.add_auth_entry(
@@ -445,7 +451,7 @@ my_graph_conn = cocoindex.add_auth_entry(
 
 Then reference it when building a spec that takes an auth entry:
 
-*   You can either reference by the `AuthEntryReference` object directly:
+*   You can either reference by the `AuthEntryReference[T]` object directly:
 
     ```python
     demo_collector.export(
@@ -472,3 +478,28 @@ Note that CocoIndex backends use the key of an auth entry to identify the backen
 
 *   If a key is no longer referenced in any operation spec, keep it until the next flow setup / drop action,
     so that CocoIndex will be able to clean up the backends.
+
+#### Transient Auth Entry
+
+A transient auth entry is an entry in the auth registry with an automatically generated key.
+It's usually used for sources and functions, where key stability is not important.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+You can create a new *transient auth entry* by `cocoindex.add_transient_auth_entry()` function, which returns a `cocoindex.TransientAuthEntryReference[T]`, and pass it to a source or function spec that takes it, e.g.
+
+```python
+flow_builder.add_source(
+    cocoindex.sources.AzureBlob(
+        ...
+        sas_token=cocoindex.add_transient_auth_entry("...")
+    )
+)
+```
+
+
+</TabItem>
+</Tabs>
+
+Whenever a `TransientAuthEntryReference[T]` is expected, you can also pass a `AuthEntryReference[T]` instead, as `AuthEntryReference[T]` is a subtype of `TransientAuthEntryReference[T]`.
