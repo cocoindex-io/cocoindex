@@ -27,18 +27,18 @@ Ultra performant data transformation framework for AI, with core engine written 
 ⭐ Drop a star to help us grow!
 
 <div align="center">
-    
+
 <!-- Keep these links. Translations will automatically update with the README. -->
-[Deutsch](https://readme-i18n.com/cocoindex-io/cocoindex?lang=de) | 
-[English](https://readme-i18n.com/cocoindex-io/cocoindex?lang=en) | 
-[Español](https://readme-i18n.com/cocoindex-io/cocoindex?lang=es) | 
-[français](https://readme-i18n.com/cocoindex-io/cocoindex?lang=fr) | 
-[日本語](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ja) | 
-[한국어](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ko) | 
-[Português](https://readme-i18n.com/cocoindex-io/cocoindex?lang=pt) | 
-[Русский](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ru) | 
+[Deutsch](https://readme-i18n.com/cocoindex-io/cocoindex?lang=de) |
+[English](https://readme-i18n.com/cocoindex-io/cocoindex?lang=en) |
+[Español](https://readme-i18n.com/cocoindex-io/cocoindex?lang=es) |
+[français](https://readme-i18n.com/cocoindex-io/cocoindex?lang=fr) |
+[日本語](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ja) |
+[한국어](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ko) |
+[Português](https://readme-i18n.com/cocoindex-io/cocoindex?lang=pt) |
+[Русский](https://readme-i18n.com/cocoindex-io/cocoindex?lang=ru) |
 [中文](https://readme-i18n.com/cocoindex-io/cocoindex?lang=zh)
-    
+
 </div>
 
 </br>
@@ -183,6 +183,7 @@ It defines an index flow like this:
 | [FastAPI Server with Docker](examples/fastapi_server_docker) | Run the semantic search server in a Dockerized FastAPI setup |
 | [Product Recommendation](examples/product_recommendation) | Build real-time product recommendations with LLM and graph database|
 | [Image Search with Vision API](examples/image_search) | Generates detailed captions for images using a vision model, embeds them, enables live-updating semantic search via FastAPI and served on a React frontend|
+| [Face Recognition](examples/face_recognition) | Recognize faces in images and build embedding index |
 | [Paper Metadata](examples/paper_metadata) | Index papers in PDF files, and build metadata tables for each paper |
 
 More coming and stay tuned 👀!
