@@ -86,7 +86,7 @@ Optionally, it can have a fixed dimension. Noted as *Vector[Type]* or *Vector[Ty
 
 It supports the following Python types:
 
-*   `cocoindex.Vector[T]` or `cocoindex.Vector[T, typing.Literal[Dim]]`, e.g. `cocoindex.Vector[cocoindex.Float32]` or `cocoindex.Vector[cocoindex.Float32, 384]`
+*   `cocoindex.Vector[T]` or `cocoindex.Vector[T, typing.Literal[Dim]]`, e.g. `cocoindex.Vector[cocoindex.Float32]` or `cocoindex.Vector[cocoindex.Float32, typing.Literal[384]]`
     *   The underlying Python type is `numpy.typing.NDArray[T]` where `T` is a numpy numeric type (`numpy.int64`, `numpy.float32` or `numpy.float64`), or `list[T]` otherwise
 *   `numpy.typing.NDArray[T]` where `T` is a numpy numeric type
 *   `list[T]`
