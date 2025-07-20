@@ -101,7 +101,7 @@ def face_recognition_flow(
         with image["faces"].row() as face:
             face["embedding"] = face["image"].transform(extract_face_embedding)
 
-            # Collect metadata
+            # Collect embeddings
             face_embeddings.collect(
                 filename=image["filename"],
                 rect=face["rect"],
