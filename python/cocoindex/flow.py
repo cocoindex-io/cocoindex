@@ -10,6 +10,8 @@ import functools
 import inspect
 import re
 
+from .validation import validate_flow_name, NamingError
+
 from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
@@ -832,10 +834,11 @@ def get_flow_full_name(name: str) -> str:
 
 def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
     """Add a flow definition to the cocoindex library."""
-    if not all(c.isalnum() or c == "_" for c in name):
-        raise ValueError(
-            f"Flow name '{name}' contains invalid characters. Only alphanumeric characters and underscores are allowed."
-        )
+    try:
+        validate_flow_name(name)
+    except NamingError as e:
+        raise ValueError(str(e)) from e
+
     with _flows_lock:
         if name in _flows:
             raise KeyError(f"Flow with name {name} already exists")
