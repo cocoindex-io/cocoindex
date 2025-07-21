@@ -6,11 +6,11 @@ import asyncio
 import dataclasses
 import inspect
 from enum import Enum
-from typing import Any, Awaitable, Callable, Protocol, dataclass_transform
+from typing import Any, Awaitable, Callable, Protocol, dataclass_transform, Annotated
 
 from . import _engine  # type: ignore
 from .convert import encode_engine_value, make_engine_value_decoder
-from .typing import encode_enriched_type, resolve_forward_ref
+from .typing import TypeAttr, encode_enriched_type, resolve_forward_ref
 
 
 class OpCategory(Enum):
@@ -85,6 +85,17 @@ class _FunctionExecutorFactory:
 _gpu_dispatch_lock = asyncio.Lock()
 
 
+_COCOINDEX_ATTR_PREFIX = "cocoindex.io/"
+
+
+class RelatedFieldAttribute(Enum):
+    """The attribute of a field that is related to the op."""
+
+    VECTOR_ORIGIN_TEXT = _COCOINDEX_ATTR_PREFIX + "vector_origin_text"
+    CHUNKS_BASE_TEXT = _COCOINDEX_ATTR_PREFIX + "chunk_base_text"
+    RECTS_BASE_IMAGE = _COCOINDEX_ATTR_PREFIX + "rects_base_image"
+
+
 @dataclasses.dataclass
 class OpArgs:
     """
@@ -92,11 +103,15 @@ class OpArgs:
     - cache: Whether the executor will be cached.
     - behavior_version: The behavior version of the executor. Cache will be invalidated if it
       changes. Must be provided if `cache` is True.
+    - related_arg_attr: It specifies the relationship between an input argument and the output,
+      e.g. `(RelatedFieldAttribute.CHUNKS_BASE_TEXT, "content")` means the output is chunks for the
+      input argument with name `content`.
     """
 
     gpu: bool = False
     cache: bool = False
     behavior_version: int | None = None
+    related_arg_attr: tuple[RelatedFieldAttribute, str] | None = None
 
 
 def _to_async_call(call: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
@@ -143,6 +158,15 @@ def _register_op_factory(
             """
             self._args_decoders = []
             self._kwargs_decoders = {}
+            attributes = []
+
+            def process_attribute(arg_name: str, arg: _engine.OpArgSchema) -> None:
+                if op_args.related_arg_attr is not None:
+                    related_attr, related_arg_name = op_args.related_arg_attr
+                    if related_arg_name == arg_name:
+                        attributes.append(
+                            TypeAttr(related_attr.value, arg.analyzed_value)
+                        )
 
             # Match arguments with parameters.
             next_param_idx = 0
@@ -164,6 +188,7 @@ def _register_op_factory(
                         [arg_name], arg.value_type["type"], arg_param.annotation
                     )
                 )
+                process_attribute(arg_name, arg)
                 if arg_param.kind != inspect.Parameter.VAR_POSITIONAL:
                     next_param_idx += 1
 
@@ -194,6 +219,7 @@ def _register_op_factory(
                 self._kwargs_decoders[kwarg_name] = make_engine_value_decoder(
                     [kwarg_name], kwarg.value_type["type"], arg_param.annotation
                 )
+                process_attribute(kwarg_name, kwarg)
 
             missing_args = [
                 name
@@ -216,9 +242,12 @@ def _register_op_factory(
 
             prepare_method = getattr(executor_cls, "analyze", None)
             if prepare_method is not None:
-                return prepare_method(self, *args, **kwargs)
+                result = prepare_method(self, *args, **kwargs)
             else:
-                return expected_return
+                result = expected_return
+            if len(attributes) > 0:
+                result = Annotated[result, *attributes]
+            return result
 
         async def prepare(self) -> None:
             """

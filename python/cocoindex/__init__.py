@@ -38,6 +38,7 @@ __all__ = [
     "targets",
     "storages",
     "cli",
+    "op",
     "utils",
     # Auth registry
     "AuthEntryReference",
