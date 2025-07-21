@@ -1,14 +1,7 @@
-import dataclasses
 import datetime
 
 import cocoindex
 from dotenv import load_dotenv
-
-
-@dataclasses.dataclass
-class Document:
-    filename: str
-    content: str
 
 
 @cocoindex.flow_def(name="LiveUpdates")
@@ -49,7 +42,10 @@ def main():
         print("Live updater started. Watching for changes in the 'data' directory.")
         print("Try adding, modifying, or deleting files in the 'data' directory.")
         print("Press Ctrl+C to stop.")
-        updater.wait()
+        try:
+            updater.wait()
+        except KeyboardInterrupt:
+            print("Stopping live updater...")
 
 
 if __name__ == "__main__":
