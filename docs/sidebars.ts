@@ -22,6 +22,7 @@ const sidebars: SidebarsConfig = {
         'core/flow_def',
         'core/settings',
         'core/flow_methods',
+        'core/live_updates',
         'core/cli',
         'core/custom_function',
       ],
