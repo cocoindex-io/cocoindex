@@ -8,6 +8,9 @@ target names, and app namespace names as specified in issue #779.
 import re
 from typing import Optional
 
+_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_IDENTIFIER_WITH_DOTS_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
+
 
 class NamingError(ValueError):
     """Exception raised for naming convention violations."""
@@ -44,13 +47,13 @@ def validate_identifier_name(
 
     # Define allowed pattern
     if allow_dots:
-        pattern = r"^[a-zA-Z_][a-zA-Z0-9_.]*$"
+        pattern = _IDENTIFIER_WITH_DOTS_PATTERN
         allowed_chars = "letters, digits, underscores, and dots"
     else:
-        pattern = r"^[a-zA-Z_][a-zA-Z0-9_]*$"
+        pattern = _IDENTIFIER_PATTERN
         allowed_chars = "letters, digits, and underscores"
 
-    if not re.match(pattern, name):
+    if not pattern.match(name):
         return f"{identifier_type} name '{name}' must start with a letter or underscore and contain only {allowed_chars}"
 
     return None
