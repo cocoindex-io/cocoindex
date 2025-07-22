@@ -14,6 +14,14 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Tutorials',
+      collapsed: false,
+      items: [
+        'tutorials/live_updates',
+      ],
+    },
+    {
+      type: 'category',
       label: 'CocoIndex Core',
       collapsed: false,
       items: [
@@ -22,7 +30,6 @@ const sidebars: SidebarsConfig = {
         'core/flow_def',
         'core/settings',
         'core/flow_methods',
-        'core/live_updates',
         'core/cli',
         'core/custom_function',
       ],

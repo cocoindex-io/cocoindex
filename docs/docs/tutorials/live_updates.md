@@ -87,8 +87,50 @@ This allows you to react to updates in your application, for example, by notifyi
 
 ## Example
 
-For a complete, runnable example of how to use live updates, see the [live updates example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/live_updates) in the CocoIndex repository.
+Let's walk through an example of how to set up a live update flow. For the complete, runnable code, see the [live updates example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/live_updates) in the CocoIndex repository.
+
+### Setting up the Source
+
+The first step is to define a source and configure a `refresh_interval`. In this example, we'll use a `LocalFile` source to monitor a directory named `data`.
+
+```python
+@cocoindex.flow_def(name="LiveUpdateExample")
+def live_update_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+    # Source: local files in the 'data' directory
+    data_scope["documents"] = flow_builder.add_source(
+        cocoindex.sources.LocalFile(path="data"),
+        refresh_interval=cocoindex.timedelta(seconds=5),
+    )
+    # ...
+```
+
+By setting `refresh_interval` to 5 seconds, we're telling CocoIndex to check for changes in the `data` directory every 5 seconds.
+
+### Running the Live Updater
+
+Once the flow is defined, you can use the `FlowLiveUpdater` to start the live update process.
+
+```python
+def main():
+    # Initialize CocoIndex
+    cocoindex.init()
+
+    # Setup the flow
+    live_update_flow.setup(report_to_stdout=True)
+
+    # Start the live updater
+    with cocoindex.FlowLiveUpdater(live_update_flow, cocoindex.FlowLiveUpdaterOptions(print_stats=True)) as updater:
+        print("Live updater started. Watching for changes in the 'data' directory.")
+        updater.wait()
+
+if __name__ == "__main__":
+    main()
+```
+
+The `FlowLiveUpdater` will run in the background, and the `updater.wait()` call will block until the process is stopped.
 
 ## Conclusion
 
-Live updates are a powerful feature of CocoIndex that ensures your indexes are always fresh. By using a combination of refresh intervals and source-specific change capture mechanisms, you can build responsive, real-time applications that are always in sync with your data.
+Live updates is a powerful feature of CocoIndex that ensures your indexes are always fresh. By using a combination of refresh intervals and source-specific change capture mechanisms, you can build responsive, real-time applications that are always in sync with your data.
+
+For more detailed information on the `FlowLiveUpdater` and other live update options, please refer to the [Run a Flow documentation](https://cocoindex.io/docs/core/flow_methods#live-update).

@@ -44,7 +44,7 @@ def main():
         print("Press Ctrl+C to stop.")
         try:
             updater.wait()
-        except KeyboardInterrupt:
+        except KeyboardInterrupt:  # handle graceful shutdown
             print("Stopping live updater...")
 
 
