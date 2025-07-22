@@ -15,4 +15,4 @@ pub static CONTENT_MIME_TYPE: &str = concatcp!(COCOINDEX_PREFIX, "content_mime_t
 pub static CHUNK_BASE_TEXT: &str = concatcp!(COCOINDEX_PREFIX, "chunk_base_text");
 
 /// Base text for an embedding vector.
-pub static _VECTOR_ORIGIN_TEXT: &str = concatcp!(COCOINDEX_PREFIX, "vector_origin_text");
+pub static _EMBEDDING_ORIGIN_TEXT: &str = concatcp!(COCOINDEX_PREFIX, "vector_origin_text");

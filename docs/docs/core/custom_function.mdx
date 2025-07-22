@@ -148,6 +148,17 @@ Custom functions take the following additional parameters:
     When the version is changed, the function will be re-executed even if cache is enabled.
     It's required to be set if `cache` is `True`.
 
+*   `arg_relationship: tuple[ArgRelationship, str]`: It specifies the relationship between an input argument and the output,
+    e.g. `(ArgRelationship.CHUNKS_BASE_TEXT, "content")` means the output is chunks for the text represented by the
+    input argument with name `content`.
+    This provides metadata for tools, e.g. CocoInsight.
+    Currently the following attributes are supported:
+
+    *   `ArgRelationship.CHUNKS_BASE_TEXT`:
+        The output is chunks for the text represented by the input argument. In this case, the output is expected to be a *Table*, whose each row represents a text chunk, and the first column has type *Range*, representing the range of the text chunk.
+    *   `ArgRelationship.EMBEDDING_ORIGIN_TEXT`: The output is embedding vector for the text represented by the input argument. The output is expected to be a *Vector*.
+    *   `ArgRelationship.RECTS_BASE_IMAGE`: The output is rectangles for the image represented by the input argument. The output is expected to be a *Table*, whose each row represents a rectangle, and the first column has type *Struct*, with fields `min_x`, `min_y`, `max_x`, `max_y` to represent the coordinates of the rectangle.
+
 For example:
 
 <Tabs>
