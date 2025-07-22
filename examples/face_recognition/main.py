@@ -11,10 +11,10 @@ import numpy as np
 
 @dataclasses.dataclass
 class ImageRect:
-    top: int
-    left: int
-    bottom: int
-    right: int
+    min_x: int
+    min_y: int
+    max_x: int
+    max_y: int
 
 
 @dataclasses.dataclass
@@ -53,17 +53,17 @@ def extract_faces(content: bytes) -> list[FaceBase]:
     locs = face_recognition.face_locations(np.array(img), model="cnn")
 
     faces: list[FaceBase] = []
-    for top, right, bottom, left in locs:
+    for min_y, max_x, max_y, min_x in locs:
         rect = ImageRect(
-            left=int(left * ratio),
-            top=int(top * ratio),
-            right=int(right * ratio),
-            bottom=int(bottom * ratio),
+            min_x=int(min_x * ratio),
+            min_y=int(min_y * ratio),
+            max_x=int(max_x * ratio),
+            max_y=int(max_y * ratio),
         )
 
         # Crop the face and save it as a PNG.
         buf = io.BytesIO()
-        orig_img.crop((rect.left, rect.top, rect.right, rect.bottom)).save(
+        orig_img.crop((rect.min_x, rect.min_y, rect.max_x, rect.max_y)).save(
             buf, format="PNG"
         )
         face = buf.getvalue()
