@@ -91,7 +91,7 @@ _COCOINDEX_ATTR_PREFIX = "cocoindex.io/"
 class ArgRelationship(Enum):
     """Specifies the relationship between an input argument and the output."""
 
-    VECTOR_ORIGIN_TEXT = _COCOINDEX_ATTR_PREFIX + "vector_origin_text"
+    EMBEDDING_ORIGIN_TEXT = _COCOINDEX_ATTR_PREFIX + "embedding_origin_text"
     CHUNKS_BASE_TEXT = _COCOINDEX_ATTR_PREFIX + "chunk_base_text"
     RECTS_BASE_IMAGE = _COCOINDEX_ATTR_PREFIX + "rects_base_image"
 
