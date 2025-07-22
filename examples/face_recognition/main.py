@@ -32,7 +32,7 @@ MAX_IMAGE_WIDTH = 1280
     cache=True,
     behavior_version=1,
     gpu=True,
-    related_arg_attr=(cocoindex.op.RelatedFieldAttribute.RECTS_BASE_IMAGE, "content"),
+    arg_relationship=(cocoindex.op.ArgRelationship.RECTS_BASE_IMAGE, "content"),
 )
 def extract_faces(content: bytes) -> list[FaceBase]:
     """Extract the first pages of a PDF."""
