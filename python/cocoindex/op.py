@@ -88,8 +88,8 @@ _gpu_dispatch_lock = asyncio.Lock()
 _COCOINDEX_ATTR_PREFIX = "cocoindex.io/"
 
 
-class RelatedFieldAttribute(Enum):
-    """The attribute of a field that is related to the op."""
+class ArgRelationship(Enum):
+    """Specifies the relationship between an input argument and the output."""
 
     VECTOR_ORIGIN_TEXT = _COCOINDEX_ATTR_PREFIX + "vector_origin_text"
     CHUNKS_BASE_TEXT = _COCOINDEX_ATTR_PREFIX + "chunk_base_text"
@@ -103,15 +103,15 @@ class OpArgs:
     - cache: Whether the executor will be cached.
     - behavior_version: The behavior version of the executor. Cache will be invalidated if it
       changes. Must be provided if `cache` is True.
-    - related_arg_attr: It specifies the relationship between an input argument and the output,
-      e.g. `(RelatedFieldAttribute.CHUNKS_BASE_TEXT, "content")` means the output is chunks for the
+    - arg_relationship: It specifies the relationship between an input argument and the output,
+      e.g. `(ArgRelationship.CHUNKS_BASE_TEXT, "content")` means the output is chunks for the
       input argument with name `content`.
     """
 
     gpu: bool = False
     cache: bool = False
     behavior_version: int | None = None
-    related_arg_attr: tuple[RelatedFieldAttribute, str] | None = None
+    arg_relationship: tuple[ArgRelationship, str] | None = None
 
 
 def _to_async_call(call: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
@@ -161,8 +161,8 @@ def _register_op_factory(
             attributes = []
 
             def process_attribute(arg_name: str, arg: _engine.OpArgSchema) -> None:
-                if op_args.related_arg_attr is not None:
-                    related_attr, related_arg_name = op_args.related_arg_attr
+                if op_args.arg_relationship is not None:
+                    related_attr, related_arg_name = op_args.arg_relationship
                     if related_arg_name == arg_name:
                         attributes.append(
                             TypeAttr(related_attr.value, arg.analyzed_value)

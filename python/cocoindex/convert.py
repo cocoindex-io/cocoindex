@@ -92,10 +92,14 @@ def make_engine_value_decoder(
         if src_type_kind == "Struct":
             return _make_engine_struct_to_dict_decoder(field_path, src_type["fields"])
         if src_type_kind in TABLE_TYPES:
-            raise ValueError(
-                f"Missing type annotation for `{''.join(field_path)}`."
-                f"It's required for {src_type_kind} type."
-            )
+            if src_type_kind == "LTable":
+                return _make_engine_ltable_to_list_dict_decoder(
+                    field_path, src_type["row"]["fields"]
+                )
+            elif src_type_kind == "KTable":
+                return _make_engine_ktable_to_dict_dict_decoder(
+                    field_path, src_type["row"]["fields"]
+                )
         return lambda value: value
 
     # Handle struct -> dict binding for explicit dict annotations
@@ -338,6 +342,77 @@ def _make_engine_struct_to_dict_decoder(
         }
 
     return decode_to_dict
+
+
+def _make_engine_ltable_to_list_dict_decoder(
+    field_path: list[str],
+    src_fields: list[dict[str, Any]],
+) -> Callable[[list[Any] | None], list[dict[str, Any]] | None]:
+    """Make a decoder from engine LTable values to a list of dicts."""
+
+    # Create a decoder for each row (struct) to dict
+    row_decoder = _make_engine_struct_to_dict_decoder(field_path, src_fields)
+
+    def decode_to_list_dict(values: list[Any] | None) -> list[dict[str, Any]] | None:
+        if values is None:
+            return None
+        result = []
+        for i, row_values in enumerate(values):
+            decoded_row = row_decoder(row_values)
+            if decoded_row is None:
+                raise ValueError(
+                    f"LTable row at index {i} decoded to None, which is not allowed."
+                )
+            result.append(decoded_row)
+        return result
+
+    return decode_to_list_dict
+
+
+def _make_engine_ktable_to_dict_dict_decoder(
+    field_path: list[str],
+    src_fields: list[dict[str, Any]],
+) -> Callable[[list[Any] | None], dict[Any, dict[str, Any]] | None]:
+    """Make a decoder from engine KTable values to a dict of dicts."""
+
+    if not src_fields:
+        raise ValueError("KTable must have at least one field for the key")
+
+    # First field is the key, remaining fields are the value
+    key_field_schema = src_fields[0]
+    value_fields_schema = src_fields[1:]
+
+    # Create decoders
+    field_path.append(f".{key_field_schema.get('name', KEY_FIELD_NAME)}")
+    key_decoder = make_engine_value_decoder(field_path, key_field_schema["type"], Any)
+    field_path.pop()
+
+    value_decoder = _make_engine_struct_to_dict_decoder(field_path, value_fields_schema)
+
+    def decode_to_dict_dict(
+        values: list[Any] | None,
+    ) -> dict[Any, dict[str, Any]] | None:
+        if values is None:
+            return None
+        result = {}
+        for row_values in values:
+            if not row_values:
+                raise ValueError("KTable row must have at least 1 value (the key)")
+            key = key_decoder(row_values[0])
+            if len(row_values) == 1:
+                value: dict[str, Any] = {}
+            else:
+                tmp = value_decoder(row_values[1:])
+                if tmp is None:
+                    value = {}
+                else:
+                    value = tmp
+            if isinstance(key, dict):
+                key = tuple(key.values())
+            result[key] = value
+        return result
+
+    return decode_to_dict_dict
 
 
 def dump_engine_object(v: Any) -> Any:

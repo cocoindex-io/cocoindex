@@ -70,7 +70,7 @@ class SentenceTransformerEmbed(op.FunctionSpec):
     gpu=True,
     cache=True,
     behavior_version=1,
-    related_arg_attr=(op.RelatedFieldAttribute.VECTOR_ORIGIN_TEXT, "text"),
+    arg_relationship=(op.ArgRelationship.VECTOR_ORIGIN_TEXT, "text"),
 )
 class SentenceTransformerEmbedExecutor:
     """Executor for SentenceTransformerEmbed."""
