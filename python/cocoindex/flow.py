@@ -10,7 +10,12 @@ import functools
 import inspect
 import re
 
-from .validation import validate_flow_name, NamingError
+from .validation import (
+    validate_flow_name,
+    NamingError,
+    validate_full_flow_name,
+    validate_target_name,
+)
 
 from dataclasses import dataclass
 from enum import Enum
@@ -386,9 +391,6 @@ class DataCollector:
 
         `vector_index` is for backward compatibility only. Please use `vector_indexes` instead.
         """
-        from .validation import (
-            validate_target_name,
-        )  # Import locally to avoid circular imports
 
         validate_target_name(target_name)
         if not isinstance(target_spec, op.TargetSpec):
@@ -670,6 +672,7 @@ class Flow:
     def __init__(
         self, name: str, full_name: str, engine_flow_creator: Callable[[], _engine.Flow]
     ):
+        validate_full_flow_name(full_name)
         self._name = name
         self._full_name = full_name
         engine_flow = None
