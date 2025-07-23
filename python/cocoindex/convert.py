@@ -293,15 +293,14 @@ def _get_auto_default_for_type(
         # Case 2: Table types (KTable or LTable)
         if type_info.kind in TABLE_TYPES:
             if type_info.kind == "LTable":
-                return []  # Empty list for LTable
+                return []
             elif type_info.kind == "KTable":
-                return {}  # Empty dict for KTable
+                return {}
 
         # For all other types, don't auto-default to avoid ambiguity
         return None
 
     except (ValueError, TypeError):
-        # If we can't analyze the type, don't auto-default
         return None
 
 
