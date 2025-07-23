@@ -4,10 +4,11 @@ import cocoindex
 from dotenv import load_dotenv
 
 
+# Define the flow
 @cocoindex.flow_def(name="LiveUpdates")
 def live_update_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-):
+) -> None:
     # Source: local files in the 'data' directory
     data_scope["documents"] = flow_builder.add_source(
         cocoindex.sources.LocalFile(path="data"),
@@ -30,7 +31,7 @@ def live_update_flow(
     )
 
 
-def main():
+def main() -> None:
     # Setup the flow
     live_update_flow.setup(report_to_stdout=True)
 

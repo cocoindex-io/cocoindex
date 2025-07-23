@@ -19,6 +19,21 @@ Live updates in CocoIndex can be triggered in two main ways:
 
 When a change is detected, CocoIndex performs an **incremental update**. This means it only re-processes the data that has been affected by the change, without having to re-index your entire dataset. This makes the update process fast and efficient.
 
+Here's an example of how to set up a source with a `refresh_interval`:
+
+```python
+@cocoindex.flow_def(name="LiveUpdateExample")
+def live_update_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+    # Source: local files in the 'data' directory
+    data_scope["documents"] = flow_builder.add_source(
+        cocoindex.sources.LocalFile(path="data"),
+        refresh_interval=cocoindex.timedelta(seconds=5),
+    )
+    # ...
+```
+
+By setting `refresh_interval` to 5 seconds, we're telling CocoIndex to check for changes in the `data` directory every 5 seconds.
+
 ## Implementing Live Updates
 
 You can enable live updates using either the CocoIndex CLI or the Python library.
@@ -44,11 +59,8 @@ Here's how you can use `FlowLiveUpdater` to start and manage a live update proce
 ```python
 import cocoindex
 
-# Assume you have a flow defined as 'my_flow'
-# from my_flows import my_flow
-
 # Create a FlowLiveUpdater instance
-with cocoindex.FlowLiveUpdater(my_flow, cocoindex.FlowLiveUpdaterOptions(print_stats=True)) as updater:
+with cocoindex.FlowLiveUpdater(live_update_flow, cocoindex.FlowLiveUpdaterOptions(print_stats=True)) as updater:
     print("Live updater started. Press Ctrl+C to stop.")
     # The updater runs in the background.
     # The wait() method blocks until the updater is stopped.
@@ -64,10 +76,7 @@ You can also get status updates from the `FlowLiveUpdater` to monitor the update
 ```python
 import cocoindex
 
-# Assume you have a flow defined as 'my_flow'
-# from my_flows import my_flow
-
-updater = cocoindex.FlowLiveUpdater(my_flow)
+updater = cocoindex.FlowLiveUpdater(live_update_flow)
 updater.start()
 
 while True:
@@ -89,7 +98,7 @@ This allows you to react to updates in your application, for example, by notifyi
 
 Let's walk through an example of how to set up a live update flow. For the complete, runnable code, see the [live updates example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/live_updates) in the CocoIndex repository.
 
-### Setting up the Source
+### 1. Setting up the Source
 
 The first step is to define a source and configure a `refresh_interval`. In this example, we'll use a `LocalFile` source to monitor a directory named `data`.
 
@@ -101,12 +110,23 @@ def live_update_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.
         cocoindex.sources.LocalFile(path="data"),
         refresh_interval=cocoindex.timedelta(seconds=5),
     )
-    # ...
+
+    # Collector
+    collector = data_scope.add_collector()
+    with data_scope["documents"].row() as doc:
+        collector.collect(filename=doc["filename"], content=doc["content"])
+
+    # Target: Postgres database
+    collector.export(
+        "documents_index",
+        cocoindex.targets.Postgres(),
+        primary_key_fields=["filename"]
+    )
 ```
 
 By setting `refresh_interval` to 5 seconds, we're telling CocoIndex to check for changes in the `data` directory every 5 seconds.
 
-### Running the Live Updater
+### 2. Running the Live Updater
 
 Once the flow is defined, you can use the `FlowLiveUpdater` to start the live update process.
 
