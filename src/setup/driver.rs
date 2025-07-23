@@ -387,7 +387,12 @@ async fn maybe_update_resource_setup<
                 });
                 writeln!(write, "{}:", resource.description)?;
                 for change in setup_status.describe_changes() {
-                    writeln!(write, "  - {change}")?;
+                    match change {
+                        setup::ChangeDescription::Action(action) => {
+                            writeln!(write, "  - {action}")?;
+                        }
+                        setup::ChangeDescription::Note(_) => {}
+                    }
                 }
             }
         }

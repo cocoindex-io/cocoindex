@@ -103,38 +103,43 @@ impl TrackingTableSetupStatus {
 }
 
 impl ResourceSetupStatus for TrackingTableSetupStatus {
-    fn describe_changes(&self) -> Vec<String> {
-        let mut changes: Vec<String> = vec![];
+    fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
+        let mut changes: Vec<setup::ChangeDescription> = vec![];
         if self.desired_state.is_some() && !self.legacy_table_names.is_empty() {
-            changes.push(format!(
+            changes.push(setup::ChangeDescription::Action(format!(
                 "Rename legacy tracking tables: {}. ",
                 self.legacy_table_names.join(", ")
-            ));
+            )));
         }
         match (self.min_existing_version_id, &self.desired_state) {
             (None, Some(state)) => {
-                changes.push(format!("Create the tracking table: {}. ", state.table_name))
+                changes.push(setup::ChangeDescription::Action(format!(
+                    "Create the tracking table: {}. ",
+                    state.table_name
+                )));
             }
             (Some(min_version_id), Some(desired)) => {
                 if min_version_id < desired.version_id {
-                    changes.push("Update the tracking table. ".into());
+                    changes.push(setup::ChangeDescription::Action(
+                        "Update the tracking table. ".into(),
+                    ));
                 }
             }
-            (Some(_), None) => changes.push(format!(
+            (Some(_), None) => changes.push(setup::ChangeDescription::Action(format!(
                 "Drop existing tracking table: {}. ",
                 self.legacy_table_names.join(", ")
-            )),
+            ))),
             (None, None) => (),
         }
         if !self.source_ids_to_delete.is_empty() {
-            changes.push(format!(
+            changes.push(setup::ChangeDescription::Action(format!(
                 "Delete source IDs: {}. ",
                 self.source_ids_to_delete
                     .iter()
                     .map(|id| id.to_string())
                     .collect::<Vec<String>>()
                     .join(", ")
-            ));
+            )));
         }
         changes
     }

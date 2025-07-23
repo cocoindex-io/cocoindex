@@ -104,10 +104,12 @@ struct SetupStatus {
 }
 
 impl setup::ResourceSetupStatus for SetupStatus {
-    fn describe_changes(&self) -> Vec<String> {
+    fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut result = vec![];
         if self.delete_collection {
-            result.push("Delete collection".to_string());
+            result.push(setup::ChangeDescription::Action(
+                "Delete collection".to_string(),
+            ));
         }
         if let Some(add_collection) = &self.add_collection {
             let vector_descriptions = add_collection
@@ -121,14 +123,14 @@ impl setup::ResourceSetupStatus for SetupStatus {
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            result.push(format!(
+            result.push(setup::ChangeDescription::Action(format!(
                 "Create collection{}",
                 if vector_descriptions.is_empty() {
                     "".to_string()
                 } else {
                     format!(" with vectors: {vector_descriptions}")
                 }
-            ));
+            )));
         }
         result
     }

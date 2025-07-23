@@ -187,7 +187,7 @@ struct GraphElementDataSetupStatus {
 }
 
 impl setup::ResourceSetupStatus for GraphElementDataSetupStatus {
-    fn describe_changes(&self) -> Vec<String> {
+    fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         self.actions.describe_changes()
     }
 

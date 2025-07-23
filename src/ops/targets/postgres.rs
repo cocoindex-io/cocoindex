@@ -504,26 +504,28 @@ fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String 
 }
 
 impl setup::ResourceSetupStatus for SetupStatus {
-    fn describe_changes(&self) -> Vec<String> {
+    fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut descriptions = self.actions.table_action.describe_changes();
         if self.create_pgvector_extension {
-            descriptions.push("Create pg_vector extension (if not exists)".to_string());
-        }
-        if !self.actions.indexes_to_delete.is_empty() {
-            descriptions.push(format!(
-                "Delete indexes from table: {}",
-                self.actions.indexes_to_delete.iter().join(",  "),
+            descriptions.push(setup::ChangeDescription::Action(
+                "Create pg_vector extension (if not exists)".to_string(),
             ));
         }
+        if !self.actions.indexes_to_delete.is_empty() {
+            descriptions.push(setup::ChangeDescription::Action(format!(
+                "Delete indexes from table: {}",
+                self.actions.indexes_to_delete.iter().join(",  "),
+            )));
+        }
         if !self.actions.indexes_to_create.is_empty() {
-            descriptions.push(format!(
+            descriptions.push(setup::ChangeDescription::Action(format!(
                 "Create indexes in table: {}",
                 self.actions
                     .indexes_to_create
                     .iter()
                     .map(|(index_name, index_spec)| describe_index_spec(index_name, index_spec))
                     .join(",  "),
-            ));
+            )));
         }
         descriptions
     }

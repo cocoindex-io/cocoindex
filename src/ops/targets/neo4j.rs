@@ -840,7 +840,7 @@ impl GraphElementDataSetupStatus {
 }
 
 impl ResourceSetupStatus for GraphElementDataSetupStatus {
-    fn describe_changes(&self) -> Vec<String> {
+    fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut result = vec![];
         if let Some(data_clear) = &self.data_clear {
             let mut desc = "Clear data".to_string();
@@ -856,7 +856,7 @@ impl ResourceSetupStatus for GraphElementDataSetupStatus {
                 )
                 .unwrap();
             }
-            result.push(desc);
+            result.push(setup::ChangeDescription::Action(desc));
         }
         result
     }
