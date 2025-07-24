@@ -6,57 +6,102 @@ from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 import cocoindex
-import torch
+import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from qdrant_client import QdrantClient
-from transformers import CLIPModel, CLIPProcessor
+from colpali_engine.models import ColPali, ColPaliProcessor
+
+
+# --- Config ---
+
+# Use GRPC
+QDRANT_URL = os.getenv("QDRANT_URL", "localhost:6334")
+PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "true").lower() == "true"
+
+# Use HTTP
+# QDRANT_URL = os.getenv("QDRANT_URL", "localhost:6333")
+# PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "false").lower() == "true"
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
-QDRANT_COLLECTION = "ImageSearch"
-CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
-CLIP_MODEL_DIMENSION = 768
+QDRANT_COLLECTION = "ImageSearchColpali"
+COLPALI_MODEL_NAME = os.getenv("COLPALI_MODEL", "vidore/colpali-v1.2")
+COLPALI_MODEL_DIMENSION = 1031  # Set to match ColPali's output
+
+# --- ColPali model cache and embedding functions ---
+_colpali_model_cache = {}
 
 
-@functools.cache
-def get_clip_model() -> tuple[CLIPModel, CLIPProcessor]:
-    model = CLIPModel.from_pretrained(CLIP_MODEL_NAME)
-    processor = CLIPProcessor.from_pretrained(CLIP_MODEL_NAME)
-    return model, processor
+def get_colpali_model(model: str = COLPALI_MODEL_NAME):
+    global _colpali_model_cache
+    if model not in _colpali_model_cache:
+        print(f"Loading ColPali model: {model}")
+        _colpali_model_cache[model] = {
+            "model": ColPali.from_pretrained(model),
+            "processor": ColPaliProcessor.from_pretrained(model),
+        }
+    return _colpali_model_cache[model]["model"], _colpali_model_cache[model][
+        "processor"
+    ]
+
+
+def colpali_embed_image(
+    img_bytes: bytes, model: str = COLPALI_MODEL_NAME
+) -> list[float]:
+    from PIL import Image
+    import torch
+    import io
+
+    colpali_model, processor = get_colpali_model(model)
+    pil_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    inputs = processor.process_images([pil_image])
+    with torch.no_grad():
+        embeddings = colpali_model(**inputs)
+    pooled_embedding = embeddings.mean(dim=-1)
+    result = pooled_embedding[0].cpu().numpy()  # [1031]
+    return result.tolist()
+
+
+def colpali_embed_query(query: str, model: str = COLPALI_MODEL_NAME) -> list[float]:
+    import torch
+    import numpy as np
+
+    colpali_model, processor = get_colpali_model(model)
+    inputs = processor.process_queries([query])
+    with torch.no_grad():
+        embeddings = colpali_model(**inputs)
+    pooled_embedding = embeddings.mean(dim=-1)
+    query_tokens = pooled_embedding[0].cpu().numpy()  # [15]
+    target_length = COLPALI_MODEL_DIMENSION
+    result = np.zeros(target_length, dtype=np.float32)
+    result[: min(len(query_tokens), target_length)] = query_tokens[:target_length]
+    return result.tolist()
+
+
+# --- End ColPali embedding functions ---
 
 
 def embed_query(text: str) -> list[float]:
     """
-    Embed the caption using CLIP model.
+    Embed the caption using ColPali model.
     """
-    model, processor = get_clip_model()
-    inputs = processor(text=[text], return_tensors="pt", padding=True)
-    with torch.no_grad():
-        features = model.get_text_features(**inputs)
-    return features[0].tolist()
+    return colpali_embed_query(text, model=COLPALI_MODEL_NAME)
 
 
 @cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
 def embed_image(
     img_bytes: bytes,
-) -> cocoindex.Vector[cocoindex.Float32, Literal[CLIP_MODEL_DIMENSION]]:
+) -> cocoindex.Vector[cocoindex.Float32, Literal[COLPALI_MODEL_DIMENSION]]:
     """
-    Convert image to embedding using CLIP model.
+    Convert image to embedding using ColPali model.
     """
-    model, processor = get_clip_model()
-    image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    inputs = processor(images=image, return_tensors="pt")
-    with torch.no_grad():
-        features = model.get_image_features(**inputs)
-    return features[0].tolist()
+    return colpali_embed_image(img_bytes, model=COLPALI_MODEL_NAME)
 
 
-# CocoIndex flow: Ingest images, extract captions, embed, export to Qdrant
-@cocoindex.flow_def(name="ImageObjectEmbedding")
+@cocoindex.flow_def(name="ImageObjectEmbeddingColpali")
 def image_object_embedding_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
@@ -64,9 +109,7 @@ def image_object_embedding_flow(
         cocoindex.sources.LocalFile(
             path="img", included_patterns=["*.jpg", "*.jpeg", "*.png"], binary=True
         ),
-        refresh_interval=datetime.timedelta(
-            minutes=1
-        ),  # Poll for changes every 1 minute
+        refresh_interval=datetime.timedelta(minutes=1),
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
@@ -117,7 +160,7 @@ async def lifespan(app: FastAPI) -> None:
     cocoindex.init()
     image_object_embedding_flow.setup(report_to_stdout=True)
 
-    app.state.qdrant_client = QdrantClient(url=QDRANT_URL, prefer_grpc=True)
+    app.state.qdrant_client = QdrantClient(url=QDRANT_URL, prefer_grpc=PREFER_GRPC)
 
     # Start updater
     app.state.live_updater = cocoindex.FlowLiveUpdater(image_object_embedding_flow)
@@ -162,9 +205,7 @@ def search(
             {
                 "filename": result.payload["filename"],
                 "score": result.score,
-                "caption": result.payload.get(
-                    "caption"
-                ),  # Include caption if available
+                "caption": result.payload.get("caption"),
             }
             for result in search_results
         ]
