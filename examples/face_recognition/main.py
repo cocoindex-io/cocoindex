@@ -75,7 +75,7 @@ def extract_faces(content: bytes) -> list[FaceBase]:
 @cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
 def extract_face_embedding(
     face: bytes,
-) -> cocoindex.Vector[cocoindex.Float32, typing.Literal[128]]:
+) -> cocoindex.Vector[cocoindex.Float32]:
     """Extract the embedding of a face."""
     img = Image.open(io.BytesIO(face)).convert("RGB")
     embedding = face_recognition.face_encodings(

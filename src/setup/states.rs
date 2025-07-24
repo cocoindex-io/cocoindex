@@ -305,16 +305,21 @@ impl<K, S, C: ResourceSetupStatus> std::fmt::Display for ResourceSetupInfo<K, S,
             let changes = setup_status.describe_changes();
             if !changes.is_empty() {
                 let mut f = indented(f).with_str(INDENT);
-                writeln!(f, "{}", "TODO:".color(AnsiColors::BrightBlack))?;
+                writeln!(f, "")?;
                 for change in changes {
                     match change {
                         ChangeDescription::Action(action) => {
-                            writeln!(f, "  - {}", action.color(AnsiColors::BrightBlack))?;
+                            writeln!(
+                                f,
+                                "{} {}",
+                                "TODO:".color(AnsiColors::BrightBlack).bold(),
+                                action.color(AnsiColors::BrightBlack)
+                            )?;
                         }
                         ChangeDescription::Note(note) => {
                             writeln!(
                                 f,
-                                "  {} {}",
+                                "{} {}",
                                 "NOTE:".color(AnsiColors::Yellow).bold(),
                                 note.color(AnsiColors::Yellow)
                             )?;

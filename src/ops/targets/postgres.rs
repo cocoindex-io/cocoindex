@@ -426,12 +426,41 @@ pub struct TableSetupAction {
 pub struct SetupStatus {
     create_pgvector_extension: bool,
     actions: TableSetupAction,
+    vector_as_jsonb_columns: Vec<(String, ValueType)>,
 }
 
 impl SetupStatus {
     fn new(desired_state: Option<SetupState>, existing: setup::CombinedState<SetupState>) -> Self {
         let table_action =
             TableMainSetupAction::from_states(desired_state.as_ref(), &existing, false);
+        let vector_as_jsonb_columns = desired_state
+            .as_ref()
+            .iter()
+            .flat_map(|s| {
+                s.columns.value_columns.iter().filter_map(|(name, schema)| {
+                    if let ValueType::Basic(BasicValueType::Vector(vec_schema)) = schema
+                        && !convertible_to_pgvector(vec_schema)
+                    {
+                        let is_touched = match &table_action.table_upsertion {
+                            Some(TableUpsertionAction::Create { values, .. }) => {
+                                values.contains_key(name)
+                            }
+                            Some(TableUpsertionAction::Update {
+                                columns_to_upsert, ..
+                            }) => columns_to_upsert.contains_key(name),
+                            None => false,
+                        };
+                        if is_touched {
+                            Some((name.clone(), schema.clone()))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
         let (indexes_to_delete, indexes_to_create) = desired_state
             .as_ref()
             .map(|desired| {
@@ -469,6 +498,7 @@ impl SetupStatus {
                 indexes_to_delete,
                 indexes_to_create,
             },
+            vector_as_jsonb_columns,
         }
     }
 }
@@ -506,6 +536,13 @@ fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String 
 impl setup::ResourceSetupStatus for SetupStatus {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut descriptions = self.actions.table_action.describe_changes();
+        for (column_name, schema) in self.vector_as_jsonb_columns.iter() {
+            descriptions.push(setup::ChangeDescription::Note(format!(
+                "Field `{}` has type `{}`. Only number vector with fixed size is supported by pgvector. It will be stored as `jsonb`.",
+                column_name,
+                schema
+            )));
+        }
         if self.create_pgvector_extension {
             descriptions.push(setup::ChangeDescription::Action(
                 "Create pg_vector extension (if not exists)".to_string(),
