@@ -1,7 +1,7 @@
-# Image Search with CocoIndex
+# Image Search with CocoIndex (ColPali Edition)
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
-We will build live image search and query it with natural language, using multimodal embedding model. We are going use CocoIndex to build real-time indexing flow. During running, you can add new files to the folder and it only process changed files and will be indexed within a minute.
+We will build live image search and query it with natural language, using a multimodal embedding model (ColPali). We use CocoIndex to build a real-time indexing flow. During running, you can add new files to the folder and it only processes changed files, indexing them within a minute.
 
 We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
@@ -10,10 +10,10 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 ## Technologies
 - CocoIndex for ETL and live update
-- CLIP ViT-L/14 - Embeddings Model for images and query
-- Qdrant for Vector Storage
-- FastApi for backend
-- Ollama (Optional) for generating image captions using `gemma3`.
+- **ColPali** - Multimodal Embeddings Model for images and query
+- Qdrant for Vector Storage (supports both gRPC and HTTP)
+- FastAPI for backend
+- Ollama (Optional) for generating image captions using `gemma3` or other models
 
 ## Setup
 - Make sure Postgres and Qdrant are running
@@ -22,8 +22,27 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
   export COCOINDEX_DATABASE_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
   ```
 
-## (Optional) Run Ollama
+## Qdrant Protocol Configuration
+- By default, the app uses **gRPC** (port 6334) to connect to Qdrant for best performance.
+- To use HTTP (port 6333) instead, change the config at the top of `main.py`:
+  ```python
+  # Use GRPC (default)
+  QDRANT_URL = os.getenv("QDRANT_URL", "localhost:6334")
+  PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "true").lower() == "true"
+  # Use HTTP (uncomment below to use HTTP)
+  #QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333/")
+  #PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "false").lower() == "true"
+  ```
+- You can also override these with environment variables:
+  ```sh
+  export QDRANT_URL="localhost:6334"           # for gRPC (default)
+  export QDRANT_PREFER_GRPC=true                # for gRPC (default)
+  # or for HTTP:
+  # export QDRANT_URL="http://localhost:6333/"
+  # export QDRANT_PREFER_GRPC=false
+  ```
 
+## (Optional) Run Ollama
 - This enables automatic image captioning
 ```
 ollama pull gemma3
