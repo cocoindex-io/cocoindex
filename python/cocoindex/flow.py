@@ -672,6 +672,7 @@ class Flow:
     def __init__(
         self, name: str, full_name: str, engine_flow_creator: Callable[[], _engine.Flow]
     ):
+        validate_flow_name(name)
         validate_full_flow_name(full_name)
         self._name = name
         self._full_name = full_name
@@ -844,9 +845,6 @@ def get_flow_full_name(name: str) -> str:
 
 
 def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
-    """Add a flow definition to the cocoindex library."""
-    validate_flow_name(name)
-
     with _flows_lock:
         if name in _flows:
             raise KeyError(f"Flow with name {name} already exists")
