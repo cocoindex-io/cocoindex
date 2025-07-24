@@ -1,15 +1,16 @@
 import cocoindex
-import io
 import dataclasses
 import datetime
+import io
 import os
 
 import face_recognition
-from PIL import Image
 import numpy as np
+from PIL import Image
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "face_embeddings"
+
 
 @dataclasses.dataclass
 class ImageRect:
@@ -118,8 +119,6 @@ def face_recognition_flow(
 
     face_embeddings.export(
         QDRANT_COLLECTION,
-        cocoindex.targets.Qdrant(
-            collection_name=QDRANT_COLLECTION
-        ),
+        cocoindex.targets.Qdrant(collection_name=QDRANT_COLLECTION),
         primary_key_fields=["id"],
     )
