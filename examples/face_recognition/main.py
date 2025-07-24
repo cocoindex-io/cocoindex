@@ -2,12 +2,14 @@ import cocoindex
 import io
 import dataclasses
 import datetime
-import typing
+import os
 
 import face_recognition
 from PIL import Image
 import numpy as np
 
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
+QDRANT_COLLECTION = "face_embeddings"
 
 @dataclasses.dataclass
 class ImageRect:
@@ -90,7 +92,7 @@ def face_recognition_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
     """
-    Define an example flow that embeds files into a vector database.
+    Define an example flow that embeds files into Qdrant vector database.
     """
     data_scope["images"] = flow_builder.add_source(
         cocoindex.sources.LocalFile(path="images", binary=True),
@@ -108,13 +110,16 @@ def face_recognition_flow(
 
             # Collect embeddings
             face_embeddings.collect(
+                id=cocoindex.GeneratedField.UUID,
                 filename=image["filename"],
                 rect=face["rect"],
                 embedding=face["embedding"],
             )
 
     face_embeddings.export(
-        "face_embeddings",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["filename", "rect"],
+        QDRANT_COLLECTION,
+        cocoindex.targets.Qdrant(
+            collection_name=QDRANT_COLLECTION
+        ),
+        primary_key_fields=["id"],
     )
