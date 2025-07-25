@@ -38,7 +38,7 @@ MAX_IMAGE_WIDTH = 1280
     arg_relationship=(cocoindex.op.ArgRelationship.RECTS_BASE_IMAGE, "content"),
 )
 def extract_faces(content: bytes) -> list[FaceBase]:
-    """Extract the first pages of a PDF."""
+    """Extract the faces from a image."""
     orig_img = Image.open(io.BytesIO(content)).convert("RGB")
 
     # The model is too slow on large images, so we resize them if too large.
