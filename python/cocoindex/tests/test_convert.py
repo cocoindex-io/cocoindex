@@ -1,6 +1,6 @@
 import datetime
 import uuid
-from dataclasses import dataclass, make_dataclass
+from dataclasses import dataclass, make_dataclass, field
 from typing import Annotated, Any, Callable, Literal, NamedTuple
 
 import numpy as np
@@ -1468,3 +1468,39 @@ def test_roundtrip_ktable_with_list_fields() -> None:
 
     # Test Any annotation
     validate_full_roundtrip(teams, dict[str, Team], (expected_dict_dict, Any))
+
+
+def test_auto_default_supported_and_unsupported() -> None:
+    from dataclasses import dataclass, field
+
+    @dataclass
+    class Base:
+        a: int
+        b: int
+
+    @dataclass
+    class ExtraFieldSupported:
+        a: int
+        b: int
+        c: list[int] = field(default_factory=list)
+
+    @dataclass
+    class ExtraFieldUnsupported:
+        a: int
+        b: int
+        c: int
+
+    engine_val = [1, 2]
+
+    # Should succeed: c is a list (LTable), auto-defaults to []
+    validate_full_roundtrip(
+        Base(1, 2), Base, (ExtraFieldSupported(1, 2, []), ExtraFieldSupported)
+    )
+
+    # Should fail: c is a non-nullable int, no default, not supported
+    with pytest.raises(
+        ValueError,
+        match=r"Field 'c' \(type <class 'int'>\) without default value is missing in input: ",
+    ):
+        decoder = build_engine_value_decoder(Base, ExtraFieldUnsupported)
+        decoder(engine_val)

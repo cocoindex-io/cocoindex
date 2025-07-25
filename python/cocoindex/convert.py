@@ -5,6 +5,7 @@ Utilities to convert between Python and engine values.
 import dataclasses
 import datetime
 import inspect
+import warnings
 from enum import Enum
 from typing import Any, Callable, Mapping, get_origin
 
@@ -129,7 +130,9 @@ def make_engine_value_decoder(
             for dst_type_variant in dst_type_variants:
                 try:
                     decoder = make_engine_value_decoder(
-                        src_field_path, src_type_variant, dst_type_variant
+                        src_field_path,
+                        src_type_variant,
+                        dst_type_variant,
                     )
                     break
                 except ValueError:
@@ -206,7 +209,9 @@ def make_engine_value_decoder(
 
     if dst_type_info.struct_type is not None:
         return _make_engine_struct_value_decoder(
-            field_path, src_type["fields"], dst_type_info.struct_type
+            field_path,
+            src_type["fields"],
+            dst_type_info.struct_type,
         )
 
     if src_type_kind in TABLE_TYPES:
@@ -222,11 +227,15 @@ def make_engine_value_decoder(
             key_field_schema = engine_fields_schema[0]
             field_path.append(f".{key_field_schema.get('name', KEY_FIELD_NAME)}")
             key_decoder = make_engine_value_decoder(
-                field_path, key_field_schema["type"], elem_type_info.key_type
+                field_path,
+                key_field_schema["type"],
+                elem_type_info.key_type,
             )
             field_path.pop()
             value_decoder = _make_engine_struct_value_decoder(
-                field_path, engine_fields_schema[1:], elem_type_info.struct_type
+                field_path,
+                engine_fields_schema[1:],
+                elem_type_info.struct_type,
             )
 
             def decode(value: Any) -> Any | None:
@@ -235,7 +244,9 @@ def make_engine_value_decoder(
                 return {key_decoder(v[0]): value_decoder(v[1:]) for v in value}
         else:
             elem_decoder = _make_engine_struct_value_decoder(
-                field_path, engine_fields_schema, elem_type_info.struct_type
+                field_path,
+                engine_fields_schema,
+                elem_type_info.struct_type,
             )
 
             def decode(value: Any) -> Any | None:
@@ -247,6 +258,41 @@ def make_engine_value_decoder(
         return decode
 
     return lambda value: value
+
+
+def _get_auto_default_for_type(
+    annotation: Any, field_name: str, field_path: list[str]
+) -> tuple[Any, bool]:
+    """
+    Get an auto-default value for a type annotation if it's safe to do so.
+
+    Returns:
+        A tuple of (default_value, is_supported) where:
+        - default_value: The default value if auto-defaulting is supported
+        - is_supported: True if auto-defaulting is supported for this type
+    """
+    if annotation is None or annotation is inspect.Parameter.empty or annotation is Any:
+        return None, False
+
+    try:
+        type_info = analyze_type_info(annotation)
+
+        # Case 1: Nullable types (Optional[T] or T | None)
+        if type_info.nullable:
+            return None, True
+
+        # Case 2: Table types (KTable or LTable)
+        if type_info.kind in TABLE_TYPES:
+            if type_info.kind == "LTable":
+                return [], True
+            elif type_info.kind == "KTable":
+                return {}, True
+
+        # For all other types, don't auto-default to avoid ambiguity
+        return None, False
+
+    except (ValueError, TypeError):
+        return None, False
 
 
 def _make_engine_struct_value_decoder(
@@ -285,7 +331,9 @@ def _make_engine_struct_value_decoder(
         if src_idx is not None:
             field_path.append(f".{name}")
             field_decoder = make_engine_value_decoder(
-                field_path, src_fields[src_idx]["type"], param.annotation
+                field_path,
+                src_fields[src_idx]["type"],
+                param.annotation,
             )
             field_path.pop()
             return (
@@ -296,8 +344,20 @@ def _make_engine_struct_value_decoder(
 
         default_value = param.default
         if default_value is inspect.Parameter.empty:
+            auto_default, is_supported = _get_auto_default_for_type(
+                param.annotation, name, field_path
+            )
+            if is_supported:
+                warnings.warn(
+                    f"Field '{name}' (type {param.annotation}) without default value is missing in input: "
+                    f"{''.join(field_path)}. Auto-assigning default value: {auto_default}",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                return lambda _: auto_default
+
             raise ValueError(
-                f"Field without default value is missing in input: {''.join(field_path)}"
+                f"Field '{name}' (type {param.annotation}) without default value is missing in input: {''.join(field_path)}"
             )
 
         return lambda _: default_value
