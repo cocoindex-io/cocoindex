@@ -7,9 +7,10 @@ use crate::ops::registry::ExecutorFactoryRegistry;
 use crate::setup;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, DeletePointsBuilder, Distance, NamedVectors, PointId, PointStruct,
-    PointsIdsList, UpsertPointsBuilder, Value as QdrantValue, VectorParamsBuilder,
-    VectorsConfigBuilder,
+    CreateCollectionBuilder, DeletePointsBuilder, DenseVector, Distance, MultiDenseVector,
+    MultiVectorComparator, MultiVectorConfigBuilder, NamedVectors, PointId, PointStruct,
+    PointsIdsList, UpsertPointsBuilder, Value as QdrantValue, Vector as QdrantVector,
+    VectorParamsBuilder, VectorsConfigBuilder,
 };
 
 const DEFAULT_VECTOR_SIMILARITY_METRIC: spec::VectorSimilarityMetric =
@@ -38,16 +39,39 @@ struct Spec {
 
 struct FieldInfo {
     field_schema: schema::FieldSchema,
-    is_qdrant_vector: bool,
+    vector_shape: Option<VectorShape>,
 }
 
-fn parse_supported_vector_size(typ: &schema::ValueType) -> Option<usize> {
-    match typ {
-        schema::ValueType::Basic(schema::BasicValueType::Vector(vector_schema)) => {
-            match &*vector_schema.element_type {
-                schema::BasicValueType::Float32
-                | schema::BasicValueType::Float64
-                | schema::BasicValueType::Int64 => vector_schema.dimension,
+enum VectorShape {
+    Vector(usize),
+    MultiVector(usize),
+}
+
+impl VectorShape {
+    fn vector_size(&self) -> usize {
+        match self {
+            VectorShape::Vector(size) => *size,
+            VectorShape::MultiVector(size) => *size,
+        }
+    }
+
+    fn multi_vector_comparator(&self) -> Option<MultiVectorComparator> {
+        match self {
+            VectorShape::MultiVector(_) => Some(MultiVectorComparator::MaxSim),
+            _ => None,
+        }
+    }
+}
+
+fn parse_vector_schema_shape(vector_schema: &schema::VectorTypeSchema) -> Option<VectorShape> {
+    match &*vector_schema.element_type {
+        schema::BasicValueType::Float32
+        | schema::BasicValueType::Float64
+        | schema::BasicValueType::Int64 => vector_schema.dimension.map(VectorShape::Vector),
+
+        schema::BasicValueType::Vector(nested_vector_schema) => {
+            match parse_vector_schema_shape(nested_vector_schema) {
+                Some(VectorShape::Vector(dim)) => Some(VectorShape::MultiVector(dim)),
                 _ => None,
             }
         }
@@ -55,17 +79,42 @@ fn parse_supported_vector_size(typ: &schema::ValueType) -> Option<usize> {
     }
 }
 
-fn encode_vector(v: &[BasicValue]) -> Result<Vec<f32>> {
-    v.iter()
-        .map(|elem| {
-            Ok(match elem {
-                BasicValue::Float32(f) => *f,
-                BasicValue::Float64(f) => *f as f32,
-                BasicValue::Int64(i) => *i as f32,
-                _ => bail!("Unsupported vector type: {:?}", elem.kind()),
+fn parse_vector_shape(typ: &schema::ValueType) -> Option<VectorShape> {
+    match typ {
+        schema::ValueType::Basic(schema::BasicValueType::Vector(vector_schema)) => {
+            parse_vector_schema_shape(vector_schema)
+        }
+        _ => None,
+    }
+}
+
+fn encode_dense_vector(v: &BasicValue) -> Result<DenseVector> {
+    let vec = match v {
+        BasicValue::Vector(v) => v
+            .iter()
+            .map(|elem| {
+                Ok(match elem {
+                    BasicValue::Float32(f) => *f,
+                    BasicValue::Float64(f) => *f as f32,
+                    BasicValue::Int64(i) => *i as f32,
+                    _ => bail!("Unsupported vector type: {:?}", elem.kind()),
+                })
             })
-        })
-        .collect::<Result<Vec<_>>>()
+            .collect::<Result<Vec<_>>>()?,
+        _ => bail!("Expected a vector field, got {:?}", v),
+    };
+    Ok(vec.into())
+}
+
+fn encode_multi_dense_vector(v: &BasicValue) -> Result<MultiDenseVector> {
+    let vecs = match v {
+        BasicValue::Vector(v) => v
+            .iter()
+            .map(encode_dense_vector)
+            .collect::<Result<Vec<_>>>()?,
+        _ => bail!("Expected a vector field, got {:?}", v),
+    };
+    Ok(vecs.into())
 }
 
 fn embedding_metric_to_qdrant(metric: spec::VectorSimilarityMetric) -> Result<Distance> {
@@ -90,6 +139,8 @@ struct CollectionKey {
 struct VectorDef {
     vector_size: usize,
     metric: spec::VectorSimilarityMetric,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    multi_vector_comparator: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SetupState {
@@ -168,10 +219,21 @@ impl SetupStatus {
             if !add_collection.vectors.is_empty() {
                 let mut vectors_config = VectorsConfigBuilder::default();
                 for (name, vector_def) in add_collection.vectors.iter() {
-                    let params = VectorParamsBuilder::new(
+                    let mut params = VectorParamsBuilder::new(
                         vector_def.vector_size as u64,
                         embedding_metric_to_qdrant(vector_def.metric)?,
                     );
+                    if let Some(multi_vector_comparator) = &vector_def.multi_vector_comparator {
+                        params = params.multivector_config(MultiVectorConfigBuilder::new(
+                            MultiVectorComparator::from_str_name(multi_vector_comparator)
+                                .ok_or_else(|| {
+                                    anyhow!(
+                                        "unrecognized multi vector comparator: {}",
+                                        multi_vector_comparator
+                                    )
+                                })?,
+                        ));
+                    }
                     vectors_config.add_named_vector_params(name, params);
                 }
                 builder = builder.vectors_config(vectors_config);
@@ -247,15 +309,29 @@ fn values_to_payload(
 
     for (value, field_info) in value_fields.iter().zip(fields_info.iter()) {
         let field_name = &field_info.field_schema.name;
-        match value {
-            Value::Basic(BasicValue::Vector(v)) if field_info.is_qdrant_vector => {
-                let vector = encode_vector(v.as_ref())?;
-                vectors = vectors.add_vector(field_name, vector);
+
+        match &field_info.vector_shape {
+            Some(vector_shape) => {
+                if value.is_null() {
+                    continue;
+                }
+                let vector: QdrantVector = match value {
+                    Value::Basic(basic_value) => match vector_shape {
+                        VectorShape::Vector(_) => encode_dense_vector(&basic_value)?.into(),
+                        VectorShape::MultiVector(_) => {
+                            encode_multi_dense_vector(&basic_value)?.into()
+                        }
+                    },
+                    _ => {
+                        bail!("Expected a vector field, got {:?}", value);
+                    }
+                };
+                vectors = vectors.add_vector(field_name.clone(), vector);
             }
-            v => {
+            None => {
                 let json_value = serde_json::to_value(TypedValue {
                     t: &field_info.field_schema.value_type.typ,
-                    v,
+                    v: value,
                 })?;
                 payload.insert(field_name.clone(), json_value.into());
             }
@@ -323,17 +399,14 @@ impl StorageFactoryBase for Factory {
                 let mut unsupported_vector_fields = Vec::<(String, ValueType)>::new();
 
                 for field in d.value_fields_schema.iter() {
-                    let vector_size = parse_supported_vector_size(&field.value_type.typ);
-                    fields_info.push(FieldInfo {
-                        field_schema: field.clone(),
-                        is_qdrant_vector: vector_size.is_some(),
-                    });
-                    if let Some(vector_size) = vector_size {
+                    let vector_shape = parse_vector_shape(&field.value_type.typ);
+                    if let Some(vector_shape) = &vector_shape {
                         vector_def.insert(
                             field.name.clone(),
                             VectorDef {
-                                vector_size,
+                                vector_size: vector_shape.vector_size(),
                                 metric: DEFAULT_VECTOR_SIMILARITY_METRIC,
+                                multi_vector_comparator: vector_shape.multi_vector_comparator().map(|s| s.as_str_name().to_string()),
                             },
                         );
                     } else if matches!(
@@ -343,6 +416,10 @@ impl StorageFactoryBase for Factory {
                         // This is a vector field but not supported by Qdrant
                         unsupported_vector_fields.push((field.name.clone(), field.value_type.typ.clone()));
                     }
+                    fields_info.push(FieldInfo {
+                        field_schema: field.clone(),
+                        vector_shape,
+                    });
                 }
 
                 let mut specified_vector_fields = HashSet::new();
