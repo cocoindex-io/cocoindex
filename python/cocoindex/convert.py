@@ -209,12 +209,9 @@ def make_engine_value_decoder(
 
         vec_elem_decoder = None
         scalar_dtype = None
-        if (
-            dst_type_variant
-            and is_numpy_number_type(dst_type_variant.elem_type)
-            and dst_type_info.base_type is np.ndarray
-        ):
-            scalar_dtype = dst_type_variant.elem_type
+        if dst_type_variant and dst_type_info.base_type is np.ndarray:
+            if is_numpy_number_type(dst_type_variant.elem_type):
+                scalar_dtype = dst_type_variant.elem_type
         else:
             vec_elem_decoder = make_engine_value_decoder(
                 field_path + ["[*]"],

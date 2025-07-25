@@ -124,28 +124,12 @@ def test_vector_str() -> None:
     assert result.variant.vector_info == VectorInfo(dim=None)
 
 
-def test_vector_complex64() -> None:
-    typ = Vector[np.complex64]
-    result = analyze_type_info(typ)
-    assert isinstance(result.variant, AnalyzedListType)
-    assert result.variant.elem_type == np.complex64
-    assert result.variant.vector_info == VectorInfo(dim=None)
-
-
 def test_non_numpy_vector() -> None:
     typ = Vector[float, Literal[3]]
     result = analyze_type_info(typ)
     assert isinstance(result.variant, AnalyzedListType)
     assert result.variant.elem_type is float
     assert result.variant.vector_info == VectorInfo(dim=3)
-
-
-def test_ndarray_any_dtype() -> None:
-    typ = NDArray[Any]
-    with pytest.raises(
-        TypeError, match="NDArray for Vector must use a concrete numpy dtype"
-    ):
-        analyze_type_info(typ)
 
 
 def test_list_of_primitives() -> None:
@@ -439,9 +423,14 @@ def test_annotated_list_with_type_kind() -> None:
 
 
 def test_unsupported_type() -> None:
-    typ = set
     with pytest.raises(
         ValueError,
         match="Unsupported as a specific type annotation for CocoIndex data type.*: <class 'set'>",
     ):
-        analyze_type_info(typ)
+        analyze_type_info(set)
+
+    with pytest.raises(
+        ValueError,
+        match="Unsupported as a specific type annotation for CocoIndex data type.*: <class 'numpy.complex64'>",
+    ):
+        Vector[np.complex64]

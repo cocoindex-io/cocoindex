@@ -67,10 +67,7 @@ else:
             if not isinstance(params, tuple):
                 # No dimension provided, e.g., Vector[np.float32]
                 dtype = params
-                # Use NDArray for supported numeric dtypes, else list
-                if dtype in DtypeRegistry._DTYPE_TO_KIND:
-                    return Annotated[NDArray[dtype], VectorInfo(dim=None)]
-                return Annotated[list[dtype], VectorInfo(dim=None)]
+                vector_info = VectorInfo(dim=None)
             else:
                 # Element type and dimension provided, e.g., Vector[np.float32, Literal[3]]
                 dtype, dim_literal = params
@@ -80,16 +77,20 @@ else:
                     if typing.get_origin(dim_literal) is Literal
                     else None
                 )
-                if dtype in DtypeRegistry._DTYPE_TO_KIND:
-                    return Annotated[NDArray[dtype], VectorInfo(dim=dim_val)]
-                return Annotated[list[dtype], VectorInfo(dim=dim_val)]
+                vector_info = VectorInfo(dim=dim_val)
+
+            # Use NDArray for supported numeric dtypes, else list
+            base_type = analyze_type_info(dtype).base_type
+            if is_numpy_number_type(base_type) or base_type is np.ndarray:
+                return Annotated[NDArray[dtype], vector_info]
+            return Annotated[list[dtype], vector_info]
 
 
 TABLE_TYPES: tuple[str, str] = ("KTable", "LTable")
 KEY_FIELD_NAME: str = "_key"
 
 
-def extract_ndarray_scalar_dtype(ndarray_type: Any) -> Any:
+def extract_ndarray_elem_dtype(ndarray_type: Any) -> Any:
     args = typing.get_args(ndarray_type)
     _, dtype_spec = args
     dtype_args = typing.get_args(dtype_spec)
@@ -99,7 +100,7 @@ def extract_ndarray_scalar_dtype(ndarray_type: Any) -> Any:
 
 
 def is_numpy_number_type(t: type) -> bool:
-    return isinstance(t, type) and issubclass(t, np.number)
+    return isinstance(t, type) and issubclass(t, (np.integer, np.floating))
 
 
 def is_namedtuple_type(t: type) -> bool:
@@ -273,8 +274,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         variant = AnalyzedListType(elem_type=elem_type, vector_info=vector_info)
     elif base_type is np.ndarray:
         np_number_type = t
-        elem_type = extract_ndarray_scalar_dtype(np_number_type)
-        _ = DtypeRegistry.validate_dtype_and_get_kind(elem_type)
+        elem_type = extract_ndarray_elem_dtype(np_number_type)
         variant = AnalyzedListType(elem_type=elem_type, vector_info=vector_info)
     elif base_type is collections.abc.Mapping or base_type is dict or t is dict:
         key_type = type_args[0] if len(type_args) > 0 else None
