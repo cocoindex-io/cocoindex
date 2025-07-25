@@ -143,7 +143,9 @@ class DtypeRegistry:
 
 
 class AnalyzedAnyType(NamedTuple):
-    pass
+    """
+    When the type annotation is missing or matches any type.
+    """
 
 
 class AnalyzedBasicType(NamedTuple):
@@ -155,26 +157,43 @@ class AnalyzedBasicType(NamedTuple):
 
 
 class AnalyzedListType(NamedTuple):
+    """
+    Any list type, e.g. list[T], Sequence[T], NDArray[T], etc.
+    """
+
     elem_type: Any
     vector_info: VectorInfo | None
 
 
 class AnalyzedStructType(NamedTuple):
+    """
+    Any struct type, e.g. dataclass, NamedTuple, etc.
+    """
+
     struct_type: type
 
 
 class AnalyzedUnionType(NamedTuple):
+    """
+    Any union type, e.g. T1 | T2 | ..., etc.
+    """
+
     variant_types: list[Any]
-    nullable: bool
 
 
 class AnalyzedDictType(NamedTuple):
+    """
+    Any dict type, e.g. dict[T1, T2], Mapping[T1, T2], etc.
+    """
+
     key_type: Any
     value_type: Any
 
 
 class AnalyzedUnknownType(NamedTuple):
-    pass
+    """
+    Any type that is not supported by CocoIndex.
+    """
 
 
 AnalyzedTypeVariant = (
@@ -206,7 +225,6 @@ class AnalyzedTypeInfo:
 def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     """
     Analyze a Python type annotation and extract CocoIndex-specific type information.
-    Type annotations for specific CocoIndex types are expected. Raises ValueError for Any, empty, or untyped dict types.
     """
 
     annotations: tuple[Annotation, ...] = ()
@@ -273,7 +291,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             result.nullable = nullable
             return result
 
-        variant = AnalyzedUnionType(variant_types=non_none_types, nullable=nullable)
+        variant = AnalyzedUnionType(variant_types=non_none_types)
     else:
         if t is bytes:
             kind = "Bytes"
