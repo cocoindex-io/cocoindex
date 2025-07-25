@@ -1216,7 +1216,7 @@ def test_full_roundtrip_scalar_with_python_types() -> None:
         numpy_float: np.float64
         python_float: float
         string: str
-        annotated_int: Annotated[np.int64, TypeKind("int")]
+        annotated_int: Annotated[np.int64, TypeKind("Int64")]
         annotated_float: Float32
 
     instance = MixedStruct(

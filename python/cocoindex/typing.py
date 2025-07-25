@@ -88,8 +88,6 @@ else:
 TABLE_TYPES: tuple[str, str] = ("KTable", "LTable")
 KEY_FIELD_NAME: str = "_key"
 
-ElementType = type | tuple[type, type] | Annotated[Any, TypeKind]
-
 
 def extract_ndarray_scalar_dtype(ndarray_type: Any) -> Any:
     args = typing.get_args(ndarray_type)
@@ -108,7 +106,7 @@ def is_namedtuple_type(t: type) -> bool:
     return isinstance(t, type) and issubclass(t, tuple) and hasattr(t, "_fields")
 
 
-def is_struct_type(t: ElementType | None) -> bool:
+def is_struct_type(t: Any) -> bool:
     return isinstance(t, type) and (
         dataclasses.is_dataclass(t) or is_namedtuple_type(t)
     )
@@ -120,14 +118,14 @@ class DtypeRegistry:
     Maps NumPy dtypes to their CocoIndex type kind.
     """
 
-    _DTYPE_TO_KIND: dict[ElementType, str] = {
+    _DTYPE_TO_KIND: dict[Any, str] = {
         np.float32: "Float32",
         np.float64: "Float64",
         np.int64: "Int64",
     }
 
     @classmethod
-    def validate_dtype_and_get_kind(cls, dtype: ElementType) -> str:
+    def validate_dtype_and_get_kind(cls, dtype: Any) -> str:
         """
         Validate that the given dtype is supported, and get its CocoIndex kind by dtype.
         """
@@ -144,26 +142,65 @@ class DtypeRegistry:
         return kind
 
 
+class AnalyzedAnyType(NamedTuple):
+    pass
+
+
+class AnalyzedBasicType(NamedTuple):
+    """
+    For types that fit into basic type, and annotated with basic type or Json type.
+    """
+
+    kind: str
+
+
+class AnalyzedListType(NamedTuple):
+    elem_type: Any
+    vector_info: VectorInfo | None
+
+
+class AnalyzedStructType(NamedTuple):
+    struct_type: type
+
+
+class AnalyzedUnionType(NamedTuple):
+    variant_types: list[Any]
+    nullable: bool
+
+
+class AnalyzedDictType(NamedTuple):
+    key_type: Any
+    value_type: Any
+
+
+class AnalyzedUnknownType(NamedTuple):
+    pass
+
+
+AnalyzedTypeVariant = (
+    AnalyzedAnyType
+    | AnalyzedBasicType
+    | AnalyzedListType
+    | AnalyzedStructType
+    | AnalyzedUnionType
+    | AnalyzedDictType
+    | AnalyzedUnknownType
+)
+
+
 @dataclasses.dataclass
 class AnalyzedTypeInfo:
     """
     Analyzed info of a Python type.
     """
 
-    kind: str
+    # The type without annotations. e.g. int, list[int], dict[str, int]
     core_type: Any
-    vector_info: VectorInfo | None  # For Vector
-    elem_type: ElementType | None  # For Vector and Table
-
-    key_type: type | None  # For element of KTable
-    struct_type: type | None  # For Struct, a dataclass or namedtuple
-    np_number_type: (
-        type | None
-    )  # NumPy dtype for the element type, if represented by numpy.ndarray or a NumPy scalar
-
+    # The type without annotations and parameters. e.g. int, list, dict
+    base_type: Any
+    variant: AnalyzedTypeVariant
     attrs: dict[str, Any] | None
     nullable: bool = False
-    union_variant_types: typing.List[ElementType] | None = None  # For Union
 
 
 def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
@@ -171,14 +208,10 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
     Analyze a Python type annotation and extract CocoIndex-specific type information.
     Type annotations for specific CocoIndex types are expected. Raises ValueError for Any, empty, or untyped dict types.
     """
-    if isinstance(t, tuple) and len(t) == 2:
-        kt, vt = t
-        result = analyze_type_info(vt)
-        result.key_type = kt
-        return result
 
     annotations: tuple[Annotation, ...] = ()
     base_type = None
+    type_args: tuple[Any, ...] = ()
     nullable = False
     while True:
         base_type = typing.get_origin(t)
@@ -186,7 +219,12 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             annotations = t.__metadata__
             t = t.__origin__
         else:
+            if base_type is None:
+                base_type = t
+            else:
+                type_args = typing.get_args(t)
             break
+    core_type = t
 
     attrs: dict[str, Any] | None = None
     vector_info: VectorInfo | None = None
@@ -201,74 +239,42 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         elif isinstance(attr, TypeKind):
             kind = attr.kind
 
-    struct_type: type | None = None
-    elem_type: ElementType | None = None
-    union_variant_types: typing.List[ElementType] | None = None
-    key_type: type | None = None
-    np_number_type: type | None = None
-    if is_struct_type(t):
-        struct_type = t
+    variant: AnalyzedTypeVariant | None = None
 
-        if kind is None:
-            kind = "Struct"
-        elif kind != "Struct":
-            raise ValueError(f"Unexpected type kind for struct: {kind}")
+    if kind is not None:
+        variant = AnalyzedBasicType(kind=kind)
+    elif base_type is None or base_type is Any or base_type is inspect.Parameter.empty:
+        variant = AnalyzedAnyType()
+    elif is_struct_type(base_type):
+        variant = AnalyzedStructType(struct_type=t)
     elif is_numpy_number_type(t):
-        np_number_type = t
         kind = DtypeRegistry.validate_dtype_and_get_kind(t)
+        variant = AnalyzedBasicType(kind=kind)
     elif base_type is collections.abc.Sequence or base_type is list:
-        args = typing.get_args(t)
-        elem_type = args[0]
-
-        if kind is None:
-            if is_struct_type(elem_type):
-                kind = "LTable"
-                if vector_info is not None:
-                    raise ValueError(
-                        "Vector element must be a simple type, not a struct"
-                    )
-            else:
-                kind = "Vector"
-                if vector_info is None:
-                    vector_info = VectorInfo(dim=None)
-        elif not (kind == "Vector" or kind in TABLE_TYPES):
-            raise ValueError(f"Unexpected type kind for list: {kind}")
+        elem_type = type_args[0] if len(type_args) > 0 else None
+        variant = AnalyzedListType(elem_type=elem_type, vector_info=vector_info)
     elif base_type is np.ndarray:
-        kind = "Vector"
         np_number_type = t
         elem_type = extract_ndarray_scalar_dtype(np_number_type)
         _ = DtypeRegistry.validate_dtype_and_get_kind(elem_type)
-        vector_info = VectorInfo(dim=None) if vector_info is None else vector_info
-
+        variant = AnalyzedListType(elem_type=elem_type, vector_info=vector_info)
     elif base_type is collections.abc.Mapping or base_type is dict or t is dict:
-        args = typing.get_args(t)
-        if len(args) == 0:  # Handle untyped dict
-            raise ValueError(
-                "Untyped dict is not accepted as a specific type annotation; please provide a concrete type, "
-                "e.g. a dataclass or namedtuple for Struct types, a dict[str, T] for KTable types."
-            )
-        else:
-            elem_type = (args[0], args[1])
-        kind = "KTable"
+        key_type = type_args[0] if len(type_args) > 0 else None
+        elem_type = type_args[1] if len(type_args) > 1 else None
+        variant = AnalyzedDictType(key_type=key_type, value_type=elem_type)
     elif base_type in (types.UnionType, typing.Union):
-        possible_types = typing.get_args(t)
-        non_none_types = [
-            arg for arg in possible_types if arg not in (None, types.NoneType)
-        ]
-
+        non_none_types = [arg for arg in type_args if arg not in (None, types.NoneType)]
         if len(non_none_types) == 0:
             return analyze_type_info(None)
 
-        nullable = len(non_none_types) < len(possible_types)
-
+        nullable = len(non_none_types) < len(type_args)
         if len(non_none_types) == 1:
             result = analyze_type_info(non_none_types[0])
             result.nullable = nullable
             return result
 
-        kind = "Union"
-        union_variant_types = non_none_types
-    elif kind is None:
+        variant = AnalyzedUnionType(variant_types=non_none_types, nullable=nullable)
+    else:
         if t is bytes:
             kind = "Bytes"
         elif t is str:
@@ -293,25 +299,21 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             raise ValueError(
                 f"Unsupported as a specific type annotation for CocoIndex data type (https://cocoindex.io/docs/core/data_types): {t}"
             )
+        variant = AnalyzedBasicType(kind=kind)
 
     return AnalyzedTypeInfo(
-        kind=kind,
-        core_type=t,
-        vector_info=vector_info,
-        elem_type=elem_type,
-        union_variant_types=union_variant_types,
-        key_type=key_type,
-        struct_type=struct_type,
-        np_number_type=np_number_type,
+        core_type=core_type,
+        base_type=base_type,
+        variant=variant,
         attrs=attrs,
         nullable=nullable,
     )
 
 
-def _encode_fields_schema(
+def _encode_struct_schema(
     struct_type: type, key_type: type | None = None
-) -> list[dict[str, Any]]:
-    result = []
+) -> dict[str, Any]:
+    fields = []
 
     def add_field(name: str, t: Any) -> None:
         try:
@@ -323,7 +325,7 @@ def _encode_fields_schema(
             )
             raise
         type_info["name"] = name
-        result.append(type_info)
+        fields.append(type_info)
 
     if key_type is not None:
         add_field(KEY_FIELD_NAME, key_type)
@@ -335,45 +337,68 @@ def _encode_fields_schema(
         for name, field_type in struct_type.__annotations__.items():
             add_field(name, field_type)
 
+    result: dict[str, Any] = {"fields": fields}
+    if doc := inspect.getdoc(struct_type):
+        result["description"] = doc
     return result
 
 
 def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
-    encoded_type: dict[str, Any] = {"kind": type_info.kind}
+    variant = type_info.variant
 
-    if type_info.kind == "Struct":
-        if type_info.struct_type is None:
-            raise ValueError("Struct type must have a dataclass or namedtuple type")
-        encoded_type["fields"] = _encode_fields_schema(
-            type_info.struct_type, type_info.key_type
-        )
-        if doc := inspect.getdoc(type_info.struct_type):
-            encoded_type["description"] = doc
+    if isinstance(variant, AnalyzedAnyType):
+        raise ValueError("Specific type annotation is expected")
 
-    elif type_info.kind == "Vector":
-        if type_info.vector_info is None:
-            raise ValueError("Vector type must have a vector info")
-        if type_info.elem_type is None:
-            raise ValueError("Vector type must have an element type")
-        elem_type_info = analyze_type_info(type_info.elem_type)
-        encoded_type["element_type"] = _encode_type(elem_type_info)
-        encoded_type["dimension"] = type_info.vector_info.dim
+    if isinstance(variant, AnalyzedUnknownType):
+        raise ValueError(f"Unsupported type annotation: {type_info.core_type}")
 
-    elif type_info.kind == "Union":
-        if type_info.union_variant_types is None:
-            raise ValueError("Union type must have a variant type list")
-        encoded_type["types"] = [
-            _encode_type(analyze_type_info(typ))
-            for typ in type_info.union_variant_types
-        ]
+    if isinstance(variant, AnalyzedBasicType):
+        return {"kind": variant.kind}
 
-    elif type_info.kind in TABLE_TYPES:
-        if type_info.elem_type is None:
-            raise ValueError(f"{type_info.kind} type must have an element type")
-        row_type_info = analyze_type_info(type_info.elem_type)
-        encoded_type["row"] = _encode_type(row_type_info)
+    if isinstance(variant, AnalyzedStructType):
+        encoded_type = _encode_struct_schema(variant.struct_type)
+        encoded_type["kind"] = "Struct"
+        return encoded_type
 
-    return encoded_type
+    if isinstance(variant, AnalyzedListType):
+        elem_type_info = analyze_type_info(variant.elem_type)
+        encoded_elem_type = _encode_type(elem_type_info)
+        if isinstance(elem_type_info.variant, AnalyzedStructType):
+            if variant.vector_info is not None:
+                raise ValueError("LTable type must not have a vector info")
+            return {
+                "kind": "LTable",
+                "row": _encode_struct_schema(elem_type_info.variant.struct_type),
+            }
+        else:
+            vector_info = variant.vector_info
+            return {
+                "kind": "Vector",
+                "element_type": encoded_elem_type,
+                "dimension": vector_info and vector_info.dim,
+            }
+
+    if isinstance(variant, AnalyzedDictType):
+        value_type_info = analyze_type_info(variant.value_type)
+        if not isinstance(value_type_info.variant, AnalyzedStructType):
+            raise ValueError(
+                f"KTable value must have a Struct type, got {value_type_info.core_type}"
+            )
+        return {
+            "kind": "KTable",
+            "row": _encode_struct_schema(
+                value_type_info.variant.struct_type,
+                variant.key_type,
+            ),
+        }
+
+    if isinstance(variant, AnalyzedUnionType):
+        return {
+            "kind": "Union",
+            "types": [
+                _encode_type(analyze_type_info(typ)) for typ in variant.variant_types
+            ],
+        }
 
 
 def encode_enriched_type_info(enriched_type_info: AnalyzedTypeInfo) -> dict[str, Any]:
