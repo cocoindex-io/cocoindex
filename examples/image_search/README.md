@@ -1,19 +1,33 @@
 # Image Search with CocoIndex
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
-We will build live image search and query it with natural language, using multimodal embedding model. We are going use CocoIndex to build real-time indexing flow. During running, you can add new files to the folder and it only process changed files and will be indexed within a minute.
+We will build live image search and query it with natural language, using multimodal embedding models. We use CocoIndex to build real-time indexing flow. During running, you can add new files to the folder and it only processes changed files, indexing them within a minute.
 
 We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
 <img width="1105" alt="cover" src="https://github.com/user-attachments/assets/544fb80d-c085-4150-84b6-b6e62c4a12b9" />
 
+## Two Implementation Options
+
+This example provides two different image search implementations:
+
+### 1. CLIP-based Search (`main.py`)
+- **Model**: CLIP ViT-L/14 (OpenAI)
+- **Embedding**: Single-vector embeddings (768 dimensions)
+- **Search**: Standard cosine similarity
+
+### 2. ColPali-based Search (`colpali_main.py`)
+- **Model**: ColPali (Contextual Late-interaction over Patches)
+- **Embedding**: Multi-vector embeddings with late interaction
+- **Search**: MaxSim scoring for optimal patch-level matching
+- **Performance**: Better for document/text-in-image search
 
 ## Technologies
 - CocoIndex for ETL and live update
-- CLIP ViT-L/14 - Embeddings Model for images and query
-- Qdrant for Vector Storage
-- FastApi for backend
-- Ollama (Optional) for generating image captions using `gemma3`.
+- **CLIP ViT-L/14** OR **ColPali** - Multimodal embedding models
+- Qdrant for Vector Storage (with multi-vector support for ColPali)
+- FastAPI for backend
+- Ollama (Optional) for generating image captions
 
 ## Setup
 - Make sure Postgres and Qdrant are running
@@ -32,21 +46,45 @@ export OLLAMA_MODEL="gemma3"  # Optional, for caption generation
 ```
 
 ## Run the App
+
+### Option 1: CLIP-based Search
 - Install dependencies:
   ```
   pip install -e .
   ```
 
-- Run Backend
+- Run CLIP Backend:
   ```
   uvicorn main:app --reload --host 0.0.0.0 --port 8000
   ```
 
-- Run Frontend
+### Option 2: ColPali-based Search
+- Install dependencies:
+  ```
+  pip install -e .
+  pip install 'cocoindex[embeddings]'  # Adds ColPali and sentence-transformers support
+  ```
+
+- Configure model (optional):
+  ```sh
+  export COLPALI_MODEL="vidore/colpali-v1.2"  # Default model
+  ```
+
+- Run ColPali Backend:
+  ```
+  uvicorn colpali_main:app --reload --host 0.0.0.0 --port 8000
+  ```
+
+### Frontend (same for both)
+- Run Frontend:
   ```
   cd frontend
   npm install
   npm run dev
   ```
 
-Go to `http://localhost:5174` to search.
+Go to `http://localhost:5173` to search. The frontend works with both backends identically.
+
+## Performance Notes
+- **CLIP**: Faster, good for general image-text matching
+- **ColPali**: More accurate for document images and text-heavy content, supports multi-vector late interaction for better precision

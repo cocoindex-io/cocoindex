@@ -99,3 +99,227 @@ class SentenceTransformerEmbedExecutor:
         assert self._model is not None
         result: NDArray[np.float32] = self._model.encode(text, convert_to_numpy=True)
         return result
+
+
+# Global ColPali model cache to avoid reloading models
+_COLPALI_MODEL_CACHE = {}
+
+
+class _ColPaliModelManager:
+    """Shared model manager for ColPali models to avoid duplicate loading."""
+
+    @staticmethod
+    def get_model_and_processor(model_name: str) -> dict[str, Any]:
+        """Get or load ColPali model and processor, with caching."""
+        if model_name not in _COLPALI_MODEL_CACHE:
+            try:
+                from colpali_engine.models import ColPali, ColPaliProcessor  # type: ignore[import-untyped]
+            except ImportError as e:
+                raise ImportError(
+                    "ColPali is not available. Make sure cocoindex is installed with ColPali support."
+                ) from e
+
+            model = ColPali.from_pretrained(model_name)
+            processor = ColPaliProcessor.from_pretrained(model_name)
+
+            # Get dimension from FastEmbed API
+            dimension = _ColPaliModelManager._detect_dimension()
+
+            _COLPALI_MODEL_CACHE[model_name] = {
+                "model": model,
+                "processor": processor,
+                "dimension": dimension,
+            }
+
+        return _COLPALI_MODEL_CACHE[model_name]
+
+    @staticmethod
+    def _detect_dimension() -> int:
+        """Detect ColPali embedding dimension using FastEmbed API."""
+        try:
+            from fastembed import LateInteractionMultimodalEmbedding
+
+            # Use the standard FastEmbed ColPali model for dimension detection
+            standard_colpali_model = "Qdrant/colpali-v1.3-fp16"
+
+            supported_models = (
+                LateInteractionMultimodalEmbedding.list_supported_models()
+            )
+            for supported_model in supported_models:
+                if supported_model["model"] == standard_colpali_model:
+                    dim = supported_model["dim"]
+                    if isinstance(dim, int):
+                        return dim
+                    else:
+                        raise ValueError(
+                            f"Expected integer dimension, got {type(dim)}: {dim}"
+                        )
+
+            raise ValueError(
+                f"Could not find dimension for ColPali model in FastEmbed supported models"
+            )
+
+        except ImportError:
+            raise ImportError(
+                "FastEmbed is required for ColPali dimension detection. "
+                "Install it with: pip install fastembed"
+            )
+
+
+class ColPaliEmbedImage(op.FunctionSpec):
+    """
+    `ColPaliEmbedImage` embeds images using the ColPali multimodal model.
+
+    ColPali (Contextual Late-interaction over Patches) uses late interaction
+    between image patch embeddings and text token embeddings for retrieval.
+
+    Args:
+        model: The ColPali model name to use (e.g., "vidore/colpali-v1.2")
+
+    Note:
+        This function requires the optional colpali-engine dependency.
+        Install it with: pip install 'cocoindex[embeddings]'
+    """
+
+    model: str
+
+
+@op.executor_class(
+    gpu=True,
+    cache=True,
+    behavior_version=1,
+)
+class ColPaliEmbedImageExecutor:
+    """Executor for ColPaliEmbedImage."""
+
+    spec: ColPaliEmbedImage
+    _cached_model_data: dict[str, Any] | None = None
+
+    def analyze(self, _img_bytes: Any) -> type:
+        # Get shared model and dimension
+        if self._cached_model_data is None:
+            self._cached_model_data = _ColPaliModelManager.get_model_and_processor(
+                self.spec.model
+            )
+
+        # Return multi-vector type: Variable patches x Fixed hidden dimension
+        dimension = self._cached_model_data["dimension"]
+        return Vector[Vector[np.float32, Literal[dimension]]]  # type: ignore
+
+    def __call__(self, img_bytes: bytes) -> list[list[float]]:
+        try:
+            from PIL import Image
+            import torch
+            import io
+        except ImportError as e:
+            raise ImportError(
+                "Required dependencies (PIL, torch) are missing for ColPali image embedding."
+            ) from e
+
+        # Get shared model and processor
+        if self._cached_model_data is None:
+            self._cached_model_data = _ColPaliModelManager.get_model_and_processor(
+                self.spec.model
+            )
+
+        model = self._cached_model_data["model"]
+        processor = self._cached_model_data["processor"]
+
+        pil_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        inputs = processor.process_images([pil_image])
+        with torch.no_grad():
+            embeddings = model(**inputs)
+
+        # Return multi-vector format: [patches, hidden_dim]
+        if len(embeddings.shape) != 3:
+            raise ValueError(
+                f"Expected 3D tensor [batch, patches, hidden_dim], got shape {embeddings.shape}"
+            )
+
+        # Keep patch-level embeddings: [batch, patches, hidden_dim] -> [patches, hidden_dim]
+        patch_embeddings = embeddings[0]  # Remove batch dimension
+
+        # Convert to list of lists: [[patch1_embedding], [patch2_embedding], ...]
+        result = []
+        for patch in patch_embeddings:
+            result.append(patch.cpu().numpy().tolist())
+
+        return result
+
+
+class ColPaliEmbedQuery(op.FunctionSpec):
+    """
+    `ColPaliEmbedQuery` embeds text queries using the ColPali multimodal model.
+
+    This produces query embeddings compatible with ColPali image embeddings
+    for late interaction scoring (MaxSim).
+
+    Args:
+        model: The ColPali model name to use (e.g., "vidore/colpali-v1.2")
+
+    Note:
+        This function requires the optional colpali-engine dependency.
+        Install it with: pip install 'cocoindex[embeddings]'
+    """
+
+    model: str
+
+
+@op.executor_class(
+    gpu=True,
+    cache=True,
+    behavior_version=1,
+)
+class ColPaliEmbedQueryExecutor:
+    """Executor for ColPaliEmbedQuery."""
+
+    spec: ColPaliEmbedQuery
+    _cached_model_data: dict[str, Any] | None = None
+
+    def analyze(self, _query: Any) -> type:
+        # Get shared model and dimension
+        if self._cached_model_data is None:
+            self._cached_model_data = _ColPaliModelManager.get_model_and_processor(
+                self.spec.model
+            )
+
+        # Return multi-vector type: Variable tokens x Fixed hidden dimension
+        dimension = self._cached_model_data["dimension"]
+        return Vector[Vector[np.float32, Literal[dimension]]]  # type: ignore
+
+    def __call__(self, query: str) -> list[list[float]]:
+        try:
+            import torch
+        except ImportError as e:
+            raise ImportError(
+                "Required dependencies (torch) are missing for ColPali query embedding."
+            ) from e
+
+        # Get shared model and processor
+        if self._cached_model_data is None:
+            self._cached_model_data = _ColPaliModelManager.get_model_and_processor(
+                self.spec.model
+            )
+
+        model = self._cached_model_data["model"]
+        processor = self._cached_model_data["processor"]
+
+        inputs = processor.process_queries([query])
+        with torch.no_grad():
+            embeddings = model(**inputs)
+
+        # Return multi-vector format: [tokens, hidden_dim]
+        if len(embeddings.shape) != 3:
+            raise ValueError(
+                f"Expected 3D tensor [batch, tokens, hidden_dim], got shape {embeddings.shape}"
+            )
+
+        # Keep token-level embeddings: [batch, tokens, hidden_dim] -> [tokens, hidden_dim]
+        token_embeddings = embeddings[0]  # Remove batch dimension
+
+        # Convert to list of lists: [[token1_embedding], [token2_embedding], ...]
+        result = []
+        for token in token_embeddings:
+            result.append(token.cpu().numpy().tolist())
+
+        return result

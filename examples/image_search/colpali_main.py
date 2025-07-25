@@ -1,9 +1,7 @@
 import datetime
-import functools
-import io
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import Any
 
 import cocoindex
 import numpy as np
@@ -13,7 +11,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from qdrant_client import QdrantClient
-from colpali_engine.models import ColPali, ColPaliProcessor
 
 
 # --- Config ---
@@ -29,76 +26,24 @@ PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "true").lower() == "true"
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
 QDRANT_COLLECTION = "ImageSearchColpali"
 COLPALI_MODEL_NAME = os.getenv("COLPALI_MODEL", "vidore/colpali-v1.2")
-COLPALI_MODEL_DIMENSION = 1031  # Set to match ColPali's output
-
-# --- ColPali model cache and embedding functions ---
-_colpali_model_cache = {}
+print(f"📐 Using ColPali model {COLPALI_MODEL_NAME}")
 
 
-def get_colpali_model(model: str = COLPALI_MODEL_NAME):
-    global _colpali_model_cache
-    if model not in _colpali_model_cache:
-        print(f"Loading ColPali model: {model}")
-        _colpali_model_cache[model] = {
-            "model": ColPali.from_pretrained(model),
-            "processor": ColPaliProcessor.from_pretrained(model),
-        }
-    return _colpali_model_cache[model]["model"], _colpali_model_cache[model][
-        "processor"
-    ]
+# Create ColPali embedding function using the class-based pattern
+colpali_embed = cocoindex.functions.ColPaliEmbedImage(model=COLPALI_MODEL_NAME)
 
 
-def colpali_embed_image(
-    img_bytes: bytes, model: str = COLPALI_MODEL_NAME
-) -> list[float]:
-    from PIL import Image
-    import torch
-    import io
-
-    colpali_model, processor = get_colpali_model(model)
-    pil_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    inputs = processor.process_images([pil_image])
-    with torch.no_grad():
-        embeddings = colpali_model(**inputs)
-    pooled_embedding = embeddings.mean(dim=-1)
-    result = pooled_embedding[0].cpu().numpy()  # [1031]
-    return result.tolist()
-
-
-def colpali_embed_query(query: str, model: str = COLPALI_MODEL_NAME) -> list[float]:
-    import torch
-    import numpy as np
-
-    colpali_model, processor = get_colpali_model(model)
-    inputs = processor.process_queries([query])
-    with torch.no_grad():
-        embeddings = colpali_model(**inputs)
-    pooled_embedding = embeddings.mean(dim=-1)
-    query_tokens = pooled_embedding[0].cpu().numpy()  # [15]
-    target_length = COLPALI_MODEL_DIMENSION
-    result = np.zeros(target_length, dtype=np.float32)
-    result[: min(len(query_tokens), target_length)] = query_tokens[:target_length]
-    return result.tolist()
-
-
-# --- End ColPali embedding functions ---
-
-
-def embed_query(text: str) -> list[float]:
+@cocoindex.transform_flow()
+def text_to_colpali_embedding(
+    text: cocoindex.DataSlice[str],
+) -> cocoindex.DataSlice[list[list[float]]]:
     """
-    Embed the caption using ColPali model.
+    Embed text using a ColPali model, returning multi-vector format.
+    This is shared logic between indexing and querying, ensuring consistent embeddings.
     """
-    return colpali_embed_query(text, model=COLPALI_MODEL_NAME)
-
-
-@cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
-def embed_image(
-    img_bytes: bytes,
-) -> cocoindex.Vector[cocoindex.Float32, Literal[COLPALI_MODEL_DIMENSION]]:
-    """
-    Convert image to embedding using ColPali model.
-    """
-    return colpali_embed_image(img_bytes, model=COLPALI_MODEL_NAME)
+    return text.transform(
+        cocoindex.functions.ColPaliEmbedQuery(model=COLPALI_MODEL_NAME)
+    )
 
 
 @cocoindex.flow_def(name="ImageObjectEmbeddingColpali")
@@ -131,7 +76,7 @@ def image_object_embedding_flow(
                 ),
                 image=img["content"],
             )
-        img["embedding"] = img["content"].transform(embed_image)
+        img["embedding"] = img["content"].transform(colpali_embed)
 
         collect_fields = {
             "id": cocoindex.GeneratedField.UUID,
@@ -189,16 +134,22 @@ def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
 ) -> Any:
-    # Get the embedding for the query
-    query_embedding = embed_query(q)
+    # Get the multi-vector embedding for the query
+    query_embedding = text_to_colpali_embedding.eval(q)
+    print(
+        f"🔍 Query multi-vector shape: {len(query_embedding)} tokens x {len(query_embedding[0]) if query_embedding else 0} dims"
+    )
 
-    # Search in Qdrant
-    search_results = app.state.qdrant_client.search(
+    # Search in Qdrant with multi-vector MaxSim scoring using query_points API
+    search_results = app.state.qdrant_client.query_points(
         collection_name=QDRANT_COLLECTION,
-        query_vector=("embedding", query_embedding),
+        query=query_embedding,  # Multi-vector format: list[list[float]]
+        using="embedding",  # Specify the vector field name
         limit=limit,
         with_payload=True,
     )
+
+    print(f"📈 Found {len(search_results.points)} results with MaxSim scoring")
 
     return {
         "results": [
@@ -207,6 +158,6 @@ def search(
                 "score": result.score,
                 "caption": result.payload.get("caption"),
             }
-            for result in search_results
+            for result in search_results.points
         ]
     }
