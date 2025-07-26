@@ -295,6 +295,31 @@ def _get_auto_default_for_type(
         return None, False
 
 
+def _handle_missing_field_with_auto_default(
+    param: inspect.Parameter, name: str, field_path: list[str]
+) -> Any:
+    """
+    Handle missing field by trying auto-default or raising an error.
+
+    Returns the auto-default value if supported, otherwise raises ValueError.
+    """
+    auto_default, is_supported = _get_auto_default_for_type(
+        param.annotation, name, field_path
+    )
+    if is_supported:
+        warnings.warn(
+            f"Field '{name}' (type {param.annotation}) without default value is missing in input: "
+            f"{''.join(field_path)}. Auto-assigning default value: {auto_default}",
+            UserWarning,
+            stacklevel=4,
+        )
+        return auto_default
+
+    raise ValueError(
+        f"Field '{name}' (type {param.annotation}) without default value is missing in input: {''.join(field_path)}"
+    )
+
+
 def _make_engine_struct_value_decoder(
     field_path: list[str],
     src_fields: list[dict[str, Any]],
@@ -336,29 +361,24 @@ def _make_engine_struct_value_decoder(
                 param.annotation,
             )
             field_path.pop()
-            return (
-                lambda values: field_decoder(values[src_idx])
-                if len(values) > src_idx
-                else param.default
-            )
+
+            def field_value_getter(values: list[Any]) -> Any:
+                if len(values) > src_idx:
+                    return field_decoder(values[src_idx])
+                default_value = param.default
+                if default_value is not inspect.Parameter.empty:
+                    return default_value
+
+                return _handle_missing_field_with_auto_default(param, name, field_path)
+
+            return field_value_getter
 
         default_value = param.default
         if default_value is inspect.Parameter.empty:
-            auto_default, is_supported = _get_auto_default_for_type(
-                param.annotation, name, field_path
+            auto_default = _handle_missing_field_with_auto_default(
+                param, name, field_path
             )
-            if is_supported:
-                warnings.warn(
-                    f"Field '{name}' (type {param.annotation}) without default value is missing in input: "
-                    f"{''.join(field_path)}. Auto-assigning default value: {auto_default}",
-                    UserWarning,
-                    stacklevel=3,
-                )
-                return lambda _: auto_default
-
-            raise ValueError(
-                f"Field '{name}' (type {param.annotation}) without default value is missing in input: {''.join(field_path)}"
-            )
+            return lambda _: auto_default
 
         return lambda _: default_value
 
