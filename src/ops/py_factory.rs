@@ -367,7 +367,7 @@ impl interface::ExportTargetFactory for PyExportTargetFactory {
         Python::with_gil(|py| -> Result<String> {
             let result = self
                 .py_target_connector
-                .call_method(py, "describe", (pythonize(py, key)?,), None)
+                .call_method(py, "describe_resource", (pythonize(py, key)?,), None)
                 .to_result_with_py_trace(py)?;
             let description = result.extract::<String>(py)?;
             Ok(description)
