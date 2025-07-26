@@ -489,7 +489,7 @@ impl StorageFactoryBase for Factory {
         _key: CollectionKey,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
-        _auth_registry: &Arc<AuthRegistry>,
+        _flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<Self::SetupStatus> {
         let desired_exists = desired.is_some();
         let add_collection = desired.filter(|state| {

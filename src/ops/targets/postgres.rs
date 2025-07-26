@@ -719,7 +719,7 @@ impl StorageFactoryBase for Factory {
         _key: TableId,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
-        _auth_registry: &Arc<AuthRegistry>,
+        _flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<SetupStatus> {
         Ok(SetupStatus::new(desired, existing))
     }

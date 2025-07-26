@@ -8,6 +8,8 @@ pub struct AnalyzedFlow {
     pub data_schema: schema::FlowSchema,
     pub setup_state: exec_ctx::AnalyzedSetupState,
 
+    pub flow_instance_ctx: Arc<FlowInstanceContext>,
+
     /// It's None if the flow is not up to date
     pub execution_plan: Shared<BoxFuture<'static, Result<Arc<plan::ExecutionPlan>, SharedError>>>,
 }
@@ -18,7 +20,7 @@ impl AnalyzedFlow {
         flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<Self> {
         let (data_schema, setup_state, execution_plan_fut) =
-            analyzer::analyze_flow(&flow_instance, flow_instance_ctx).await?;
+            analyzer::analyze_flow(&flow_instance, flow_instance_ctx.clone()).await?;
         let execution_plan = async move {
             shared_ok(Arc::new(
                 execution_plan_fut.await.map_err(SharedError::new)?,
@@ -30,6 +32,7 @@ impl AnalyzedFlow {
             flow_instance,
             data_schema,
             setup_state,
+            flow_instance_ctx,
             execution_plan,
         };
         Ok(result)

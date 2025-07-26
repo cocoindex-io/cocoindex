@@ -847,7 +847,7 @@ impl StorageFactoryBase for Factory {
         _key: KuzuGraphElement,
         desired: Option<SetupState>,
         existing: CombinedState<SetupState>,
-        _auth_registry: &Arc<AuthRegistry>,
+        _flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<Self::SetupStatus> {
         let existing_invalidated = desired.as_ref().is_some_and(|desired| {
             existing

@@ -320,7 +320,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         key: Self::Key,
         desired_state: Option<Self::SetupState>,
         existing_states: setup::CombinedState<Self::SetupState>,
-        auth_registry: &Arc<AuthRegistry>,
+        flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<Self::SetupStatus>;
 
     fn check_state_compatibility(
@@ -420,7 +420,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
-        auth_registry: &Arc<AuthRegistry>,
+        flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn setup::ResourceSetupStatus>> {
         let key: T::Key = Self::deserialize_setup_key(key.clone())?;
         let desired_state: Option<T::SetupState> = desired_state
@@ -432,7 +432,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             key,
             desired_state,
             existing_states,
-            auth_registry,
+            flow_instance_ctx,
         )
         .await?;
         Ok(Box::new(setup_status))

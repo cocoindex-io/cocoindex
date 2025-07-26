@@ -1009,9 +1009,11 @@ impl StorageFactoryBase for Factory {
         key: Neo4jGraphElement,
         desired: Option<SetupState>,
         existing: CombinedState<SetupState>,
-        auth_registry: &Arc<AuthRegistry>,
+        flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<Self::SetupStatus> {
-        let conn_spec = auth_registry.get::<ConnectionSpec>(&key.connection)?;
+        let conn_spec = flow_instance_ctx
+            .auth_registry
+            .get::<ConnectionSpec>(&key.connection)?;
         let data_status = GraphElementDataSetupStatus::new(desired.as_ref(), &existing);
         let components = components::SetupStatus::create(
             SetupComponentOperator {

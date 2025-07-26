@@ -33,6 +33,7 @@ async fn build_setup_context(
     let setup_status = setup::check_flow_setup_status(
         Some(&setup_execution_context.setup_state),
         existing_flow_ss,
+        &analyzed_flow.flow_instance_ctx,
     )
     .await?;
 

@@ -1,6 +1,9 @@
 use crate::{
     lib_context::{FlowExecutionContext, LibSetupContext, get_auth_registry},
-    ops::{get_optional_executor_factory, interface::ExportTargetFactory},
+    ops::{
+        get_optional_executor_factory,
+        interface::{ExportTargetFactory, FlowInstanceContext},
+    },
     prelude::*,
 };
 
@@ -252,6 +255,7 @@ fn group_resource_states<'a>(
 pub async fn check_flow_setup_status(
     desired_state: Option<&FlowSetupState<DesiredMode>>,
     existing_state: Option<&FlowSetupState<ExistingMode>>,
+    flow_instance_ctx: &Arc<FlowInstanceContext>,
 ) -> Result<FlowSetupStatus> {
     let metadata_change = diff_state(
         existing_state.map(|e| &e.metadata),
@@ -331,7 +335,7 @@ pub async fn check_flow_setup_status(
                         &resource_id.key,
                         target_state,
                         existing_without_setup_by_user,
-                        get_auth_registry(),
+                        flow_instance_ctx.clone(),
                     )
                     .await?,
             )
@@ -618,7 +622,7 @@ pub struct SetupChangeBundle {
 impl SetupChangeBundle {
     async fn get_flow_setup_status<'a>(
         setup_ctx: &LibSetupContext,
-        flow_name: &str,
+        flow_ctx: &'a FlowContext,
         flow_exec_ctx: &'a FlowExecutionContext,
         action: &FlowSetupChangeAction,
         buffer: &'a mut Option<FlowSetupStatus>,
@@ -626,8 +630,11 @@ impl SetupChangeBundle {
         let result = match action {
             FlowSetupChangeAction::Setup => &flow_exec_ctx.setup_status,
             FlowSetupChangeAction::Drop => {
-                let existing_state = setup_ctx.all_setup_states.flows.get(flow_name);
-                buffer.insert(check_flow_setup_status(None, existing_state).await?)
+                let existing_state = setup_ctx.all_setup_states.flows.get(flow_ctx.flow_name());
+                buffer.insert(
+                    check_flow_setup_status(None, existing_state, &flow_ctx.flow.flow_instance_ctx)
+                        .await?,
+                )
             }
         };
         Ok(result)
@@ -662,7 +669,7 @@ impl SetupChangeBundle {
             let mut setup_status_buffer = None;
             let setup_status = Self::get_flow_setup_status(
                 setup_ctx,
-                flow_name,
+                &flow_ctx,
                 &flow_exec_ctx,
                 &self.action,
                 &mut setup_status_buffer,
@@ -714,7 +721,7 @@ impl SetupChangeBundle {
             let mut setup_status_buffer = None;
             let setup_status = Self::get_flow_setup_status(
                 setup_ctx,
-                flow_name,
+                &flow_ctx,
                 &flow_exec_ctx,
                 &self.action,
                 &mut setup_status_buffer,
