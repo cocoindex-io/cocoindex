@@ -777,10 +777,10 @@ impl StorageFactoryBase for Factory {
     async fn apply_setup_changes(
         &self,
         changes: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<()> {
         for change in changes.iter() {
-            let db_pool = get_db_pool(change.key.database.as_ref(), auth_registry).await?;
+            let db_pool = get_db_pool(change.key.database.as_ref(), &context.auth_registry).await?;
             change
                 .setup_status
                 .apply_change(&db_pool, &change.key.table_name)

@@ -358,7 +358,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
     async fn apply_setup_changes(
         &self,
         setup_status: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<()>;
 }
 
@@ -499,7 +499,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
     async fn apply_setup_changes(
         &self,
         setup_status: Vec<ResourceSetupChangeItem<'async_trait>>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<()> {
         StorageFactoryBase::apply_setup_changes(
             self,
@@ -514,7 +514,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
-            auth_registry,
+            context,
         )
         .await
     }

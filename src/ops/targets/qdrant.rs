@@ -544,11 +544,11 @@ impl StorageFactoryBase for Factory {
     async fn apply_setup_changes(
         &self,
         setup_status: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<()> {
         for setup_change in setup_status.iter() {
             let qdrant_client =
-                self.get_qdrant_client(&setup_change.key.connection, auth_registry)?;
+                self.get_qdrant_client(&setup_change.key.connection, &context.auth_registry)?;
             setup_change
                 .setup_status
                 .apply_delete(&setup_change.key.collection_name, &qdrant_client)
@@ -556,7 +556,7 @@ impl StorageFactoryBase for Factory {
         }
         for setup_change in setup_status.iter() {
             let qdrant_client =
-                self.get_qdrant_client(&setup_change.key.connection, auth_registry)?;
+                self.get_qdrant_client(&setup_change.key.connection, &context.auth_registry)?;
             setup_change
                 .setup_status
                 .apply_create(&setup_change.key.collection_name, &qdrant_client)

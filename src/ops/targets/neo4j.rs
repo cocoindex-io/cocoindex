@@ -1084,7 +1084,7 @@ impl StorageFactoryBase for Factory {
     async fn apply_setup_changes(
         &self,
         changes: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<()> {
         // Relationships first, then nodes, as relationships need to be deleted before nodes they referenced.
         let mut relationship_types = IndexSet::<&Neo4jGraphElement>::new();
@@ -1116,7 +1116,7 @@ impl StorageFactoryBase for Factory {
         for rel_type in relationship_types.into_iter() {
             let graph = self
                 .graph_pool
-                .get_graph_for_key(rel_type, auth_registry)
+                .get_graph_for_key(rel_type, &context.auth_registry)
                 .await?;
             clear_graph_element_data(&graph, rel_type, true).await?;
         }
@@ -1124,7 +1124,7 @@ impl StorageFactoryBase for Factory {
         for node_label in node_labels.iter() {
             let graph = self
                 .graph_pool
-                .get_graph_for_key(node_label, auth_registry)
+                .get_graph_for_key(node_label, &context.auth_registry)
                 .await?;
             clear_graph_element_data(&graph, node_label, true).await?;
         }
@@ -1133,7 +1133,7 @@ impl StorageFactoryBase for Factory {
             if !node_labels.contains(node_label) {
                 let graph = self
                     .graph_pool
-                    .get_graph_for_key(node_label, auth_registry)
+                    .get_graph_for_key(node_label, &context.auth_registry)
                     .await?;
                 clear_graph_element_data(&graph, node_label, false).await?;
             }

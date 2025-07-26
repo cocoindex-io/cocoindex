@@ -1,5 +1,5 @@
 use crate::{
-    lib_context::{FlowExecutionContext, LibSetupContext, get_auth_registry},
+    lib_context::{FlowContext, FlowExecutionContext, LibSetupContext},
     ops::{
         get_optional_executor_factory,
         interface::{ExportTargetFactory, FlowInstanceContext},
@@ -411,7 +411,7 @@ async fn maybe_update_resource_setup<
 
 async fn apply_changes_for_flow(
     write: &mut (dyn std::io::Write + Send),
-    flow_name: &str,
+    flow_ctx: &FlowContext,
     flow_status: &FlowSetupStatus,
     existing_setup_state: &mut Option<setup::FlowSetupState<setup::ExistingMode>>,
     pool: &PgPool,
@@ -425,7 +425,7 @@ async fn apply_changes_for_flow(
         ObjectStatus::Existing => "Updating resources for ",
         _ => bail!("invalid flow status"),
     };
-    write!(write, "\n{verb} flow {flow_name}:\n")?;
+    write!(write, "\n{verb} flow {}:\n", flow_ctx.flow_name())?;
 
     let mut update_info =
         HashMap::<db_metadata::ResourceTypeKey, db_metadata::StateUpdateInfo>::new();
@@ -475,7 +475,7 @@ async fn apply_changes_for_flow(
     }
 
     let new_version_id = db_metadata::stage_changes_for_flow(
-        flow_name,
+        flow_ctx.flow_name(),
         flow_status.seen_flow_metadata_version,
         &update_info,
         pool,
@@ -517,7 +517,7 @@ async fn apply_changes_for_flow(
                                 setup_status: s.setup_status.as_ref(),
                             })
                             .collect(),
-                        get_auth_registry(),
+                        flow_ctx.flow.flow_instance_ctx.clone(),
                     )
                     .await?;
                 Ok(())
@@ -528,7 +528,7 @@ async fn apply_changes_for_flow(
 
     let is_deletion = status == ObjectStatus::Deleted;
     db_metadata::commit_changes_for_flow(
-        flow_name,
+        flow_ctx.flow_name(),
         new_version_id,
         &update_info,
         is_deletion,
@@ -580,7 +580,7 @@ async fn apply_changes_for_flow(
         });
     }
 
-    writeln!(write, "Done for flow {flow_name}")?;
+    writeln!(write, "Done for flow {}", flow_ctx.flow_name())?;
     Ok(())
 }
 
@@ -734,7 +734,7 @@ impl SetupChangeBundle {
             let mut flow_states = setup_ctx.all_setup_states.flows.remove(flow_name);
             apply_changes_for_flow(
                 write,
-                flow_name,
+                &flow_ctx,
                 setup_status,
                 &mut flow_states,
                 &persistence_ctx.builtin_db_pool,

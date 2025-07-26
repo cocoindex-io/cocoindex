@@ -302,7 +302,7 @@ pub trait ExportTargetFactory: Send + Sync {
     async fn apply_setup_changes(
         &self,
         setup_status: Vec<ResourceSetupChangeItem<'async_trait>>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<()>;
 }
 
