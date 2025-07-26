@@ -65,6 +65,22 @@ class Executor(Protocol):
     op_category: OpCategory
 
 
+def _load_spec_from_engine(spec_cls: type, spec: dict[str, Any]) -> Any:
+    """
+    Load a spec from the engine.
+    """
+    return spec_cls(**spec)
+
+
+def _get_required_method(cls: type, name: str) -> Callable[..., Any]:
+    method = getattr(cls, name, None)
+    if method is None:
+        raise ValueError(f"Method {name}() is required for {cls.__name__}")
+    if not inspect.isfunction(method):
+        raise ValueError(f"Method {cls.__name__}.{name}() is not a function")
+    return method
+
+
 class _FunctionExecutorFactory:
     _spec_cls: type
     _executor_cls: type
@@ -76,7 +92,7 @@ class _FunctionExecutorFactory:
     def __call__(
         self, spec: dict[str, Any], *args: Any, **kwargs: Any
     ) -> tuple[dict[str, Any], Executor]:
-        spec = self._spec_cls(**spec)
+        spec = _load_spec_from_engine(self._spec_cls, spec)
         executor = self._executor_cls(spec)
         result_type = executor.analyze(*args, **kwargs)
         return (encode_enriched_type(result_type), executor)
@@ -357,5 +373,111 @@ def function(**args: Any) -> Callable[[Callable[..., Any]], FunctionSpec]:
         )
 
         return _Spec()
+
+    return _inner
+
+
+########################################################
+# Customized target connector
+########################################################
+
+
+@dataclasses.dataclass
+class _TargetConnectorContext:
+    target_name: str
+    spec: Any
+
+
+class _TargetConnector:
+    """
+    The connector class passed to the engine.
+    """
+
+    _spec_cls: type
+    _connector_cls: type
+
+    _get_persistent_key_fn: Callable[[_TargetConnectorContext, str], Any]
+    _apply_setup_change_async_fn: Callable[
+        [Any, dict[str, Any] | None, dict[str, Any] | None], Awaitable[None]
+    ]
+    _mutate_async_fn: Callable[..., Awaitable[None]]
+
+    def __init__(self, spec_cls: type, connector_cls: type):
+        self._spec_cls = spec_cls
+        self._connector_cls = connector_cls
+
+        self._get_persistent_key_fn = _get_required_method(
+            connector_cls, "get_persistent_key"
+        )
+        self._apply_setup_change_async_fn = _to_async_call(
+            _get_required_method(connector_cls, "apply_setup_change")
+        )
+        self._mutate_async_fn = _to_async_call(
+            _get_required_method(connector_cls, "mutate")
+        )
+
+    def create_export_context(
+        self,
+        name: str,
+        spec: dict[str, Any],
+        key_fields_schema: list[Any],
+        value_fields_schema: list[Any],
+    ) -> _TargetConnectorContext:
+        return _TargetConnectorContext(
+            target_name=name,
+            spec=_load_spec_from_engine(self._spec_cls, spec),
+        )
+
+    def get_persistent_key(self, export_context: _TargetConnectorContext) -> Any:
+        return self._get_persistent_key_fn(
+            export_context.spec, export_context.target_name
+        )
+
+    def describe_resource(self, key: Any) -> str:
+        describe_fn = getattr(self._connector_cls, "describe", None)
+        if describe_fn is None:
+            return str(key)
+        return str(describe_fn(key))
+
+    async def apply_setup_changes_async(
+        self,
+        changes: list[tuple[Any, list[dict[str, Any] | None], dict[str, Any] | None]],
+    ) -> None:
+        for key, previous, current in changes:
+            prev_specs = [
+                _load_spec_from_engine(self._spec_cls, spec)
+                if spec is not None
+                else None
+                for spec in previous
+            ]
+            curr_spec = (
+                _load_spec_from_engine(self._spec_cls, current)
+                if current is not None
+                else None
+            )
+            for prev_spec in prev_specs:
+                await self._apply_setup_change_async_fn(key, prev_spec, curr_spec)
+
+    async def mutate_async(
+        self,
+        mutations: list[tuple[_TargetConnectorContext, list[tuple[Any, Any | None]]]],
+    ) -> None:
+        pass
+
+
+def target_connector(spec_cls: type) -> Callable[[type], type]:
+    """
+    Decorate a class to provide a target connector for an op.
+    """
+
+    # Validate the spec_cls is a TargetSpec.
+    if not issubclass(spec_cls, TargetSpec):
+        raise ValueError(f"Expect a TargetSpec, got {spec_cls}")
+
+    # Register the target connector.
+    def _inner(connector_cls: type) -> type:
+        connector = _TargetConnector(spec_cls, connector_cls)
+        _engine.register_target_connector(spec_cls.__name__, connector)
+        return connector_cls
 
     return _inner
