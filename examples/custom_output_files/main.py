@@ -17,7 +17,7 @@ class LocalFileTargetValues:
 
 
 @cocoindex.op.target_connector(spec_cls=LocalFileTarget)
-class LocalFileTargetExecutor:
+class LocalFileTargetConnector:
     @staticmethod
     def get_persistent_key(spec: LocalFileTarget, target_name: str) -> str:
         return spec.directory
@@ -30,17 +30,16 @@ class LocalFileTargetExecutor:
     def apply_setup_change(
         key: str, previous: LocalFileTarget | None, current: LocalFileTarget | None
     ) -> None:
+        print("apply_setup_change", key, previous, current)
         if previous is None and current is not None:
             os.makedirs(current.directory, exist_ok=True)
 
         if previous is not None and current is None:
-            for filename in os.listdir(previous.directory):
-                if filename.endswith(".html"):
-                    os.remove(os.path.join(previous.directory, filename))
-            try:
+            if os.path.exists(previous.directory):
+                for filename in os.listdir(previous.directory):
+                    if filename.endswith(".html"):
+                        os.remove(os.path.join(previous.directory, filename))
                 os.rmdir(previous.directory)
-            except (FileExistsError, FileNotFoundError):
-                pass
 
     @staticmethod
     def prepare(spec: LocalFileTarget) -> LocalFileTarget:
@@ -98,6 +97,7 @@ def custom_output_files(
         output_html.collect(filename=doc["filename"], html=doc["html"])
 
     output_html.export(
-        "output_html",
-        cocoindex.targets.LocalFile(directory="output_html"),
+        "OutputHtml",
+        LocalFileTarget(directory="output_html"),
+        primary_key_fields=["filename"],
     )
