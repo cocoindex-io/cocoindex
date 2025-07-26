@@ -1,21 +1,18 @@
-use std::sync::Arc;
+use crate::prelude::*;
 
-use async_trait::async_trait;
-use futures::{FutureExt, future::BoxFuture};
 use pyo3::{
     IntoPyObjectExt, Py, PyAny, Python, pyclass, pymethods,
-    types::{IntoPyDict, PyString, PyTuple},
+    types::{IntoPyDict, PyList, PyString, PyTuple},
 };
-use pythonize::pythonize;
+use pythonize::{depythonize, pythonize};
 
 use crate::{
     base::{schema, value},
     builder::plan,
+    ops::sdk::SetupStateCompatibility,
     py::{self, ToResultWithPyTrace},
 };
 use anyhow::{Result, anyhow};
-
-use super::interface::{FlowInstanceContext, SimpleFunctionExecutor, SimpleFunctionFactory};
 
 #[pyclass(name = "OpArgSchema")]
 pub struct PyOpArgSchema {
@@ -89,7 +86,7 @@ impl PyFunctionExecutor {
 }
 
 #[async_trait]
-impl SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
+impl interface::SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
     async fn evaluate(&self, input: Vec<value::Value>) -> Result<value::Value> {
         let self = self.clone();
         let result_fut = Python::with_gil(|py| -> Result<_> {
@@ -125,15 +122,15 @@ pub(crate) struct PyFunctionFactory {
 }
 
 #[async_trait]
-impl SimpleFunctionFactory for PyFunctionFactory {
+impl interface::SimpleFunctionFactory for PyFunctionFactory {
     async fn build(
         self: Arc<Self>,
         spec: serde_json::Value,
         input_schema: Vec<schema::OpArgSchema>,
-        context: Arc<FlowInstanceContext>,
+        context: Arc<interface::FlowInstanceContext>,
     ) -> Result<(
         schema::EnrichedValueType,
-        BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
+        BoxFuture<'static, Result<Box<dyn interface::SimpleFunctionExecutor>>>,
     )> {
         let (result_type, executor, kw_args_names, num_positional_args) =
             Python::with_gil(|py| -> anyhow::Result<_> {
@@ -216,10 +213,289 @@ impl SimpleFunctionFactory for PyFunctionFactory {
                     result_type,
                     enable_cache,
                     behavior_version,
-                })) as Box<dyn SimpleFunctionExecutor>)
+                }))
+                    as Box<dyn interface::SimpleFunctionExecutor>)
             }
         };
 
         Ok((result_type, executor_fut.boxed()))
+    }
+}
+
+pub(crate) struct PyExportTargetFactory {
+    pub py_target_connector: Py<PyAny>,
+}
+
+struct PyTargetExecutorContext {
+    py_export_ctx: Py<PyAny>,
+    py_exec_ctx: Arc<crate::py::PythonExecutionContext>,
+}
+
+#[derive(Debug)]
+struct PyTargetResourceSetupStatus {
+    stale_existing_states: IndexSet<Option<serde_json::Value>>,
+    desired_state: Option<serde_json::Value>,
+}
+
+impl setup::ResourceSetupStatus for PyTargetResourceSetupStatus {
+    fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
+        vec![]
+    }
+
+    fn change_type(&self) -> setup::SetupChangeType {
+        if self.stale_existing_states.is_empty() {
+            setup::SetupChangeType::NoChange
+        } else if self.desired_state.is_some() {
+            if self
+                .stale_existing_states
+                .iter()
+                .any(|state| state.is_none())
+            {
+                setup::SetupChangeType::Create
+            } else {
+                setup::SetupChangeType::Update
+            }
+        } else {
+            setup::SetupChangeType::Delete
+        }
+    }
+}
+
+#[async_trait]
+impl interface::ExportTargetFactory for PyExportTargetFactory {
+    async fn build(
+        self: Arc<Self>,
+        data_collections: Vec<interface::ExportDataCollectionSpec>,
+        declarations: Vec<serde_json::Value>,
+        context: Arc<interface::FlowInstanceContext>,
+    ) -> Result<(
+        Vec<interface::ExportDataCollectionBuildOutput>,
+        Vec<(serde_json::Value, serde_json::Value)>,
+    )> {
+        if declarations.len() != 0 {
+            api_error!("Customized target connector doesn't support declarations yet");
+        }
+
+        let mut build_outputs = Vec::with_capacity(data_collections.len());
+        let py_exec_ctx = context
+            .py_exec_ctx
+            .as_ref()
+            .ok_or_else(|| anyhow!("Python execution context is missing"))?
+            .clone();
+        for data_collection in data_collections.into_iter() {
+            let (py_export_ctx, persistent_key) =
+                Python::with_gil(|py| -> Result<(Py<PyAny>, serde_json::Value)> {
+                    // Deserialize the spec to Python object.
+                    let py_export_ctx = self
+                        .py_target_connector
+                        .call_method(
+                            py,
+                            "create_export_context",
+                            (
+                                &data_collection.name,
+                                pythonize(py, &data_collection.spec)?,
+                                pythonize(py, &data_collection.key_fields_schema)?,
+                                pythonize(py, &data_collection.value_fields_schema)?,
+                            ),
+                            None,
+                        )
+                        .to_result_with_py_trace(py)?;
+
+                    // Call the `get_persistent_key` method to get the persistent key.
+                    let persistent_key = self
+                        .py_target_connector
+                        .call_method(py, "get_persistent_key", (&py_export_ctx,), None)
+                        .to_result_with_py_trace(py)?;
+                    let persistent_key = depythonize(&persistent_key.into_bound(py))?;
+                    Ok((py_export_ctx, persistent_key))
+                })?;
+
+            let py_exec_ctx = py_exec_ctx.clone();
+            let build_output = interface::ExportDataCollectionBuildOutput {
+                export_context: Box::pin(async move {
+                    Ok(Arc::new(PyTargetExecutorContext {
+                        py_export_ctx,
+                        py_exec_ctx,
+                    }) as Arc<dyn Any + Send + Sync>)
+                }),
+                setup_key: persistent_key,
+                desired_setup_state: data_collection.spec,
+            };
+            build_outputs.push(build_output);
+        }
+        Ok((build_outputs, vec![]))
+    }
+
+    async fn check_setup_status(
+        &self,
+        _key: &serde_json::Value,
+        desired_state: Option<serde_json::Value>,
+        existing_states: setup::CombinedState<serde_json::Value>,
+        _context: Arc<interface::FlowInstanceContext>,
+    ) -> Result<Box<dyn setup::ResourceSetupStatus>> {
+        // Collect all possible existing states that are not the desired state.
+        let mut stale_existing_states = IndexSet::new();
+        if !existing_states.always_exists() && desired_state.is_some() {
+            stale_existing_states.insert(None);
+        }
+        for possible_state in existing_states.possible_versions() {
+            if Some(possible_state) != desired_state.as_ref() {
+                stale_existing_states.insert(Some(possible_state.clone()));
+            }
+        }
+
+        Ok(Box::new(PyTargetResourceSetupStatus {
+            stale_existing_states,
+            desired_state,
+        }))
+    }
+
+    fn normalize_setup_key(&self, key: &serde_json::Value) -> Result<serde_json::Value> {
+        Ok(key.clone())
+    }
+
+    fn check_state_compatibility(
+        &self,
+        _desired_state: &serde_json::Value,
+        _existing_state: &serde_json::Value,
+    ) -> Result<SetupStateCompatibility> {
+        // The Python target connector doesn't support state update yet.
+        Ok(SetupStateCompatibility::Compatible)
+    }
+
+    fn describe_resource(&self, key: &serde_json::Value) -> Result<String> {
+        Python::with_gil(|py| -> Result<String> {
+            let result = self
+                .py_target_connector
+                .call_method(py, "describe", (pythonize(py, key)?,), None)
+                .to_result_with_py_trace(py)?;
+            let description = result.extract::<String>(py)?;
+            Ok(description)
+        })
+    }
+
+    fn extract_additional_key(
+        &self,
+        _key: &value::KeyValue,
+        _value: &value::FieldValues,
+        _export_context: &(dyn Any + Send + Sync),
+    ) -> Result<serde_json::Value> {
+        Ok(serde_json::Value::Null)
+    }
+
+    async fn apply_setup_changes(
+        &self,
+        setup_status: Vec<interface::ResourceSetupChangeItem<'async_trait>>,
+        context: Arc<interface::FlowInstanceContext>,
+    ) -> Result<()> {
+        // Filter the setup changes that are not NoChange, and flatten to
+        //   `list[tuple[key, list[stale_existing_states | None], desired_state | None]]` for Python.
+        let mut setup_changes = Vec::new();
+        for item in setup_status.into_iter() {
+            let decoded_setup_status = (item.setup_status as &dyn Any)
+                .downcast_ref::<PyTargetResourceSetupStatus>()
+                .ok_or_else(invariance_violation)?;
+            if <dyn setup::ResourceSetupStatus>::change_type(decoded_setup_status)
+                != setup::SetupChangeType::NoChange
+            {
+                setup_changes.push((
+                    item.key,
+                    &decoded_setup_status.stale_existing_states,
+                    &decoded_setup_status.desired_state,
+                ));
+            }
+        }
+
+        if setup_changes.is_empty() {
+            return Ok(());
+        }
+
+        // Call the `apply_setup_changes_async()` method.
+        let py_exec_ctx = context
+            .py_exec_ctx
+            .as_ref()
+            .ok_or_else(|| anyhow!("Python execution context is missing"))?
+            .clone();
+        let py_result = Python::with_gil(move |py| -> Result<_> {
+            let result_coro = self
+                .py_target_connector
+                .call_method(
+                    py,
+                    "apply_setup_changes_async",
+                    (pythonize(py, &setup_changes)?,),
+                    None,
+                )
+                .to_result_with_py_trace(py)?;
+            let task_locals =
+                pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
+            Ok(pyo3_async_runtimes::into_future_with_locals(
+                &task_locals,
+                result_coro.into_bound(py),
+            )?)
+        })?
+        .await;
+        Python::with_gil(move |py| py_result.to_result_with_py_trace(py))?;
+
+        Ok(())
+    }
+
+    async fn apply_mutation(
+        &self,
+        mutations: Vec<
+            interface::ExportTargetMutationWithContext<'async_trait, dyn Any + Send + Sync>,
+        >,
+    ) -> Result<()> {
+        if mutations.is_empty() {
+            return Ok(());
+        }
+
+        let py_result = Python::with_gil(|py| -> Result<_> {
+            // Create a `list[tuple[export_ctx, list[tuple[key, value | None]]]]` for Python, and collect `py_exec_ctx`.
+            let mut py_args = Vec::with_capacity(mutations.len());
+            let mut py_exec_ctx: Option<&Arc<crate::py::PythonExecutionContext>> = None;
+            for mutation in mutations.into_iter() {
+                // Downcast export_context to PyTargetExecutorContext.
+                let export_context = (mutation.export_context as &dyn Any)
+                    .downcast_ref::<PyTargetExecutorContext>()
+                    .ok_or_else(invariance_violation)?;
+
+                let mut flattened_mutations = Vec::with_capacity(
+                    mutation.mutation.upserts.len() + mutation.mutation.deletes.len(),
+                );
+                for upsert in mutation.mutation.upserts.into_iter() {
+                    flattened_mutations.push((
+                        py::value_to_py_object(py, &upsert.key.into())?,
+                        py::field_values_to_py_object(py, upsert.value.fields.iter())?,
+                    ));
+                }
+                for delete in mutation.mutation.deletes.into_iter() {
+                    flattened_mutations.push((
+                        py::value_to_py_object(py, &delete.key.into())?,
+                        py.None().into_bound(py),
+                    ));
+                }
+                py_args.push((
+                    &export_context.py_export_ctx,
+                    PyList::new(py, flattened_mutations)?.into_any(),
+                ));
+                py_exec_ctx = py_exec_ctx.or(Some(&export_context.py_exec_ctx));
+            }
+            let py_exec_ctx = py_exec_ctx.ok_or_else(invariance_violation)?;
+
+            let result_coro = self
+                .py_target_connector
+                .call_method(py, "mutate_async", (py_args,), None)
+                .to_result_with_py_trace(py)?;
+            let task_locals =
+                pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
+            Ok(pyo3_async_runtimes::into_future_with_locals(
+                &task_locals,
+                result_coro.into_bound(py),
+            )?)
+        })?
+        .await;
+
+        Python::with_gil(move |py| py_result.to_result_with_py_trace(py))?;
+        Ok(())
     }
 }
