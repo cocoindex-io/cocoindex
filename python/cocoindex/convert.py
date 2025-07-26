@@ -6,52 +6,72 @@ import dataclasses
 import datetime
 import inspect
 from enum import Enum
-from typing import Any, Callable, Mapping, get_origin
+from typing import Any, Callable, Mapping, Type, get_args, get_origin
 
 import numpy as np
 
 from .typing import (
     KEY_FIELD_NAME,
     TABLE_TYPES,
+    AnalyzedAnyType,
+    AnalyzedBasicType,
+    AnalyzedDictType,
+    AnalyzedListType,
+    AnalyzedStructType,
+    AnalyzedTypeInfo,
+    AnalyzedUnionType,
+    AnalyzedUnknownType,
+    TypeKind,
     analyze_type_info,
     encode_enriched_type,
     is_namedtuple_type,
-    is_struct_type,
-    AnalyzedTypeInfo,
-    AnalyzedAnyType,
-    AnalyzedDictType,
-    AnalyzedListType,
-    AnalyzedBasicType,
-    AnalyzedUnionType,
-    AnalyzedUnknownType,
-    AnalyzedStructType,
     is_numpy_number_type,
+    is_struct_type,
 )
 
 
-def encode_engine_value(value: Any) -> Any:
+def encode_engine_value(
+    value: Any, in_struct: bool = False, type_hint: Type[Any] | str | None = None
+) -> Any:
     """Encode a Python value to an engine value."""
     if dataclasses.is_dataclass(value):
         return [
-            encode_engine_value(getattr(value, f.name))
+            encode_engine_value(
+                getattr(value, f.name), in_struct=True, type_hint=f.type
+            )
             for f in dataclasses.fields(value)
         ]
     if is_namedtuple_type(type(value)):
-        return [encode_engine_value(getattr(value, name)) for name in value._fields]
+        annotations = type(value).__annotations__
+        return [
+            encode_engine_value(
+                getattr(value, name), in_struct=True, type_hint=annotations.get(name)
+            )
+            for name in value._fields
+        ]
     if isinstance(value, np.number):
         return value.item()
     if isinstance(value, np.ndarray):
         return value
     if isinstance(value, (list, tuple)):
-        return [encode_engine_value(v) for v in value]
+        return [encode_engine_value(v, in_struct) for v in value]
     if isinstance(value, dict):
+        is_json_type = type_hint and any(
+            isinstance(arg, TypeKind) and arg.kind == "Json"
+            for arg in get_args(type_hint)[1:]
+        )
+
+        # For empty dicts, check type hints if in a struct context
+        # when no contexts are provided, return an empty dict as default
         if not value:
+            if in_struct:
+                return value if is_json_type else []
             return {}
 
         first_val = next(iter(value.values()))
         if is_struct_type(type(first_val)):  # KTable
             return [
-                [encode_engine_value(k)] + encode_engine_value(v)
+                [encode_engine_value(k, in_struct)] + encode_engine_value(v, in_struct)
                 for k, v in value.items()
             ]
     return value
