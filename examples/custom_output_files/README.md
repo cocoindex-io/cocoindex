@@ -2,23 +2,17 @@
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/cocoindex-io/cocoindex/blob/main/examples/text_embedding/Text_Embedding.ipynb)
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
-In this example, we will build index flow from text embedding from local markdown files, and query the index.
+In this example, we will build index flow to load data from a local directory, convert them to HTML, and save the data to another local directory powered by [CocoIndex Custom Targets](https://cocoindex.io/docs/custom_ops/custom_targets).
 
 We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
 ## Steps
-🌱 A detailed step by step tutorial can be found here: [Get Started Documentation](https://cocoindex.io/docs/getting_started/quickstart)
 
 ### Indexing Flow
-<img width="461" alt="Screenshot 2025-05-19 at 5 48 28 PM" src="https://github.com/user-attachments/assets/b6825302-a0c7-4b86-9a2d-52da8286b4bd" />
 
-1. We will ingest a list of local files.
-2. For each file, perform chunking (recursively split) and then embedding.
-3. We will save the embeddings and the metadata in Postgres with PGVector.
-
-### Query
-We will match against user-provided text by a SQL query, and reuse the embedding operation in the indexing flow.
-
+1. We ingest a list of local markdown files from the `data/` directory.
+2. For each file, convert them to HTML using [markdown-it-py](https://markdown-it-py.readthedocs.io/).
+3. We will save the HTML files to a local directory `output_html/`.
 
 ## Prerequisite
 
@@ -32,22 +26,19 @@ Install dependencies:
 pip install -e .
 ```
 
-Setup:
+Update the target:
 
 ```bash
-cocoindex setup main.py
+cocoindex update --setup main.py
 ```
 
-Update index:
+You can add new files to the `data/` directory, delete or update existing files.
+Each time when you run the `update` command, cocoindex will only re-process the files that have changed, and keep the target in sync with the source.
+
+You can also run `update` command in live mode, which will keep the target in sync with the source in real-time:
 
 ```bash
-cocoindex update main.py
-```
-
-Run:
-
-```bash
-python main.py
+cocoindex update --setup -L main.py
 ```
 
 ## CocoInsight
