@@ -30,8 +30,12 @@ features = ["pyo3/extension-module"]
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "mypy", "pre-commit"]
+
 embeddings = ["sentence-transformers>=3.3.1"]
-all = ["cocoindex[embeddings]"]
+
+# We need to repeat the dependency above to make it available for the `all` feature.
+# Indirect dependencies such as "cocoindex[embeddings]" will not work for local development.
+all = ["sentence-transformers>=3.3.1"]
 
 [tool.mypy]
 python_version = "3.11"
