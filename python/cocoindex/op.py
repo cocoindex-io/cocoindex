@@ -405,6 +405,7 @@ def function(**args: Any) -> Callable[[Callable[..., Any]], FunctionSpec]:
 class _TargetConnectorContext:
     target_name: str
     spec: Any
+    prepared_spec: Any
     key_decoder: Callable[[Any], Any]
     value_decoder: Callable[[Any], Any]
 
@@ -515,9 +516,17 @@ class _TargetConnector:
             ["(value)"], value_fields_schema, analyze_type_info(value_annotation)
         )
 
+        loaded_spec = _load_spec_from_engine(self._spec_cls, spec)
+        prepare_method = getattr(self._connector_cls, "prepare", None)
+        if prepare_method is None:
+            prepared_spec = loaded_spec
+        else:
+            prepared_spec = prepare_method(loaded_spec)
+
         return _TargetConnectorContext(
             target_name=name,
-            spec=_load_spec_from_engine(self._spec_cls, spec),
+            spec=loaded_spec,
+            prepared_spec=prepared_spec,
             key_decoder=key_decoder,
             value_decoder=value_decoder,
         )
@@ -557,7 +566,7 @@ class _TargetConnector:
         context: _TargetConnectorContext, mutation: list[tuple[Any, Any | None]]
     ) -> tuple[Any, dict[Any, Any | None]]:
         return (
-            context.spec,
+            context.prepared_spec,
             {
                 context.key_decoder(key): (
                     context.value_decoder(value) if value is not None else None
