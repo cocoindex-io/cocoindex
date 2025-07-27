@@ -397,7 +397,7 @@ def function(**args: Any) -> Callable[[Callable[..., Any]], FunctionSpec]:
 
 
 ########################################################
-# Customized target connector
+# Custom target connector
 ########################################################
 
 

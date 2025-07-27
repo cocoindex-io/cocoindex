@@ -273,7 +273,7 @@ impl interface::ExportTargetFactory for PyExportTargetFactory {
         Vec<(serde_json::Value, serde_json::Value)>,
     )> {
         if declarations.len() != 0 {
-            api_error!("Customized target connector doesn't support declarations yet");
+            api_error!("Custom target connector doesn't support declarations yet");
         }
 
         let mut build_outputs = Vec::with_capacity(data_collections.len());

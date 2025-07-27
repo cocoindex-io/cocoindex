@@ -45,7 +45,7 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Customized Operations',
+      label: 'Custom Operations',
       collapsed: false,
       items: [
         'custom_ops/custom_functions',
