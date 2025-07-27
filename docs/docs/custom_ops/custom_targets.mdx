@@ -114,13 +114,6 @@ This method should be implemented to:
 - Update configuration when a target spec changes
 - Clean up resources when a target is removed (`current` is `None`)
 
-:::note Best practice: Keep all actions idempotent
-
-Ideally this method should be idempotent, i.e. when calling this with the same arguments multiple times, the effect should remain the same.
-For example, if the target is a directory, it should be a no-op if we try to create it (`previous` is `None`) when the directory already exists, and also a no-op if we try to delete it (`current` is `None`) when the directory does not exist.
-
-:::
-
 #### `describe(key) -> str` (Optional)
 
 Returns a human-readable description of the target for logging and debugging purposes.
@@ -165,6 +158,18 @@ def prepare(spec: CustomTarget) -> PreparedCustomTarget:
 
 If not provided, the original spec will be passed directly to `mutate`.
 
+## Best Practices
+
+### Idempotency of Methods with Side Effects
+
+`apply_setup_change()` and `mutate()` are the two methods that are expected to produce side effects.
+We expect them to be idempotent, i.e. when calling them with the same arguments multiple times, the effect should remain the same.
+
+For example,
+- For `apply_setup_change()`, if the target is a directory, it should be a no-op if we try to create it (`previous` is `None`) when the directory already exists, and also a no-op if we try to delete it (`current` is `None`) when the directory does not exist.
+- For `mutate()`, if a mutation is a deletion, it should be a no-op if the row does not exist.
+
+This is to make sure when the system if left in an intermediate state, e.g. interrupted in the middle between a change is made and CocoIndex notes down the change is completed, the targets can still be gracefully rolled forward to the desired states after the system is resumed.
 
 ## Examples
 
