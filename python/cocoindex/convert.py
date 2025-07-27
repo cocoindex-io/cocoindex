@@ -423,12 +423,14 @@ def make_engine_struct_decoder(
 
                 return field_value_getter
 
-        default_value = param.default
-        if default_value is not inspect.Parameter.empty:
-            return lambda _: default_value
+            default_value = param.default
+            if default_value is not inspect.Parameter.empty:
+                return lambda _: default_value
 
-        auto_default = _handle_missing_field_with_auto_default(param, name, field_path)
-        return lambda _: auto_default
+            auto_default = _handle_missing_field_with_auto_default(
+                param, name, field_path
+            )
+            return lambda _: auto_default
 
     field_value_decoder = [
         make_closure_for_value(name, param) for (name, param) in parameters.items()
