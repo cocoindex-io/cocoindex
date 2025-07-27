@@ -6,7 +6,7 @@ import asyncio
 import dataclasses
 import inspect
 from enum import Enum
-from typing import Any, Awaitable, Callable, Protocol, dataclass_transform, Annotated
+from typing import Annotated, Any, Awaitable, Callable, Protocol, dataclass_transform
 
 from . import _engine  # type: ignore
 from .convert import encode_engine_value, make_engine_value_decoder
@@ -277,7 +277,7 @@ def _register_op_factory(
                     output = await self._acall(*decoded_args, **decoded_kwargs)
             else:
                 output = await self._acall(*decoded_args, **decoded_kwargs)
-            return encode_engine_value(output)
+            return encode_engine_value(output, type_hint=expected_return)
 
     _WrappedClass.__name__ = executor_cls.__name__
     _WrappedClass.__doc__ = executor_cls.__doc__

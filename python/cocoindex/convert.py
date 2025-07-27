@@ -28,58 +28,6 @@ from .typing import (
     is_struct_type,
 )
 
-
-def encode_engine_value(
-    value: Any, in_struct: bool = False, type_hint: Type[Any] | str | None = None
-) -> Any:
-    """Encode a Python value to an engine value."""
-    if dataclasses.is_dataclass(value):
-        return [
-            encode_engine_value(
-                getattr(value, f.name), in_struct=True, type_hint=f.type
-            )
-            for f in dataclasses.fields(value)
-        ]
-    if is_namedtuple_type(type(value)):
-        annotations = type(value).__annotations__
-        return [
-            encode_engine_value(
-                getattr(value, name), in_struct=True, type_hint=annotations.get(name)
-            )
-            for name in value._fields
-        ]
-    if isinstance(value, np.number):
-        return value.item()
-    if isinstance(value, np.ndarray):
-        return value
-    if isinstance(value, (list, tuple)):
-        return [encode_engine_value(v, in_struct) for v in value]
-    if isinstance(value, dict):
-        is_json_type = False
-        if type_hint:
-            type_info = analyze_type_info(type_hint)
-            is_json_type = (
-                isinstance(type_info.variant, AnalyzedBasicType)
-                and type_info.variant.kind == "Json"
-            )
-
-        # For empty dicts, check type hints if in a struct context
-        # when no contexts are provided, return an empty dict as default
-        # TODO: always pass in the type annotation to make this robust
-        if not value:
-            if in_struct:
-                return value if is_json_type else []
-            return {}
-
-        first_val = next(iter(value.values()))
-        if is_struct_type(type(first_val)):  # KTable
-            return [
-                [encode_engine_value(k, in_struct)] + encode_engine_value(v, in_struct)
-                for k, v in value.items()
-            ]
-    return value
-
-
 _CONVERTIBLE_KINDS = {
     ("Float32", "Float64"),
     ("LocalDateTime", "OffsetDateTime"),
@@ -91,6 +39,136 @@ def _is_type_kind_convertible_to(src_type_kind: str, dst_type_kind: str) -> bool
         src_type_kind == dst_type_kind
         or (src_type_kind, dst_type_kind) in _CONVERTIBLE_KINDS
     )
+
+
+def _encode_engine_value_core(
+    value: Any,
+    in_struct: bool = False,
+    type_hint: Type[Any] | str | None = None,
+    type_variant: AnalyzedTypeInfo | None = None,
+) -> Any:
+    """Core encoding logic for converting Python values to engine values."""
+
+    if dataclasses.is_dataclass(value):
+        fields = dataclasses.fields(value)
+        return [
+            encode_engine_value(
+                getattr(value, f.name),
+                in_struct=True,
+                type_hint=f.type,
+            )
+            for f in fields
+        ]
+
+    if is_namedtuple_type(type(value)):
+        annotations = type(value).__annotations__
+        return [
+            encode_engine_value(
+                getattr(value, name),
+                in_struct=True,
+                type_hint=annotations.get(name),
+            )
+            for name in value._fields
+        ]
+
+    if isinstance(value, np.number):
+        return value.item()
+
+    if isinstance(value, np.ndarray):
+        return value
+
+    if isinstance(value, (list, tuple)):
+        if (
+            type_variant
+            and isinstance(type_variant.variant, AnalyzedListType)
+            and type_variant.variant.elem_type
+        ):
+            elem_encoder = make_engine_value_encoder(type_variant.variant.elem_type)
+            return [elem_encoder(v) for v in value]
+        else:
+            return [encode_engine_value(v, in_struct) for v in value]
+
+    if isinstance(value, dict):
+        # Determine if this is a JSON type
+        is_json_type = False
+        if type_variant and isinstance(type_variant.variant, AnalyzedBasicType):
+            is_json_type = type_variant.variant.kind == "Json"
+        elif type_hint:
+            hint_type_info = analyze_type_info(type_hint)
+            is_json_type = (
+                isinstance(hint_type_info.variant, AnalyzedBasicType)
+                and hint_type_info.variant.kind == "Json"
+            )
+
+        # Handle empty dict
+        if not value:
+            if in_struct:
+                return value if is_json_type else []
+            return {} if is_json_type else value
+
+        # Handle KTable
+        first_val = next(iter(value.values()))
+        if is_struct_type(type(first_val)):
+            return [
+                [encode_engine_value(k, in_struct)] + encode_engine_value(v, in_struct)
+                for k, v in value.items()
+            ]
+
+        # Handle regular dict
+        if (
+            type_variant
+            and isinstance(type_variant.variant, AnalyzedDictType)
+            and type_variant.variant.value_type
+        ):
+            value_encoder = make_engine_value_encoder(type_variant.variant.value_type)
+            return {k: value_encoder(v) for k, v in value.items()}
+
+    return value
+
+
+def make_engine_value_encoder(type_annotation: Any) -> Callable[[Any], Any]:
+    """
+    Make an encoder from a Python value to an engine value.
+
+    Args:
+        type_annotation: The type annotation of the Python value.
+
+    Returns:
+        An encoder from a Python value to an engine value.
+    """
+    type_info = analyze_type_info(type_annotation)
+
+    if isinstance(type_info.variant, AnalyzedUnknownType):
+        raise ValueError(f"Type annotation `{type_info.core_type}` is unsupported")
+
+    def encode_value(value: Any, in_struct: bool = False) -> Any:
+        return _encode_engine_value_core(
+            value, in_struct=in_struct, type_variant=type_info
+        )
+
+    return lambda value: encode_value(value, in_struct=False)
+
+
+def encode_engine_value(
+    value: Any, in_struct: bool = False, type_hint: Type[Any] | str | None = None
+) -> Any:
+    """
+    Encode a Python value to an engine value.
+
+    Args:
+        value: The Python value to encode
+        in_struct: Whether this value is being encoded within a struct context
+        type_hint: Type annotation for the value. When provided, enables optimized
+                  type-aware encoding. For top-level calls, this should always be provided.
+
+    Returns:
+        The encoded engine value
+    """
+    if type_hint is not None:
+        encoder = make_engine_value_encoder(type_hint)
+        return encoder(value)
+
+    return _encode_engine_value_core(value, in_struct=in_struct)
 
 
 def make_engine_value_decoder(
