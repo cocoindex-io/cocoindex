@@ -19,7 +19,7 @@ You don't need to spell out any data type explicitly when you define the flow.
 All you need to do is to make sure the data passed to functions and targets are compatible with them.
 
 Each type in CocoIndex type system is mapped to one or multiple types in Python.
-When you define a [custom function](/docs/core/custom_function), you need to annotate the data types of arguments and return values.
+When you define a [custom function](/docs/custom_ops/custom_functions), you need to annotate the data types of arguments and return values.
 
 *   When you pass a Python value to the engine (e.g. return values of a custom function), a specific type annotation is required.
     The type annotation needs to be specific in describing the target data type, as it provides the ground truth of the data type in the flow.

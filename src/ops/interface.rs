@@ -272,7 +272,7 @@ pub trait ExportTargetFactory: Send + Sync {
         key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
-        context: Arc<FlowInstanceContext>,
+        context: Arc<interface::FlowInstanceContext>,
     ) -> Result<Box<dyn setup::ResourceSetupStatus>>;
 
     /// Normalize the key. e.g. the JSON format may change (after code change, e.g. new optional field or field ordering), even if the underlying value is not changed.

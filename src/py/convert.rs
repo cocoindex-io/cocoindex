@@ -82,7 +82,7 @@ fn basic_value_to_py_object<'py>(
     Ok(result)
 }
 
-fn field_values_to_py_object<'py, 'a>(
+pub fn field_values_to_py_object<'py, 'a>(
     py: Python<'py>,
     values: impl Iterator<Item = &'a value::Value>,
 ) -> PyResult<Bound<'py, PyAny>> {
