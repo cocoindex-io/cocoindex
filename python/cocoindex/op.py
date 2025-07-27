@@ -559,7 +559,9 @@ class _TargetConnector:
         return (
             context.spec,
             {
-                context.key_decoder(key): context.value_decoder(value)
+                context.key_decoder(key): (
+                    context.value_decoder(value) if value is not None else None
+                )
                 for key, value in mutation
             },
         )
