@@ -30,12 +30,11 @@ class LocalFileTargetConnector:
     def apply_setup_change(
         key: str, previous: LocalFileTarget | None, current: LocalFileTarget | None
     ) -> None:
-        print("apply_setup_change", key, previous, current)
         if previous is None and current is not None:
             os.makedirs(current.directory, exist_ok=True)
 
         if previous is not None and current is None:
-            if os.path.exists(previous.directory):
+            if os.path.isdir(previous.directory):
                 for filename in os.listdir(previous.directory):
                     if filename.endswith(".html"):
                         os.remove(os.path.join(previous.directory, filename))
