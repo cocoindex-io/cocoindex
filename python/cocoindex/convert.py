@@ -6,7 +6,7 @@ import dataclasses
 import datetime
 import inspect
 from enum import Enum
-from typing import Any, Callable, Mapping, Type, get_args, get_origin
+from typing import Any, Callable, Mapping, Type, get_origin
 
 import numpy as np
 
@@ -21,7 +21,6 @@ from .typing import (
     AnalyzedTypeInfo,
     AnalyzedUnionType,
     AnalyzedUnknownType,
-    TypeKind,
     analyze_type_info,
     encode_enriched_type,
     is_namedtuple_type,
@@ -56,13 +55,17 @@ def encode_engine_value(
     if isinstance(value, (list, tuple)):
         return [encode_engine_value(v, in_struct) for v in value]
     if isinstance(value, dict):
-        is_json_type = type_hint and any(
-            isinstance(arg, TypeKind) and arg.kind == "Json"
-            for arg in get_args(type_hint)[1:]
-        )
+        is_json_type = False
+        if type_hint:
+            type_info = analyze_type_info(type_hint)
+            is_json_type = (
+                isinstance(type_info.variant, AnalyzedBasicType)
+                and type_info.variant.kind == "Json"
+            )
 
         # For empty dicts, check type hints if in a struct context
         # when no contexts are provided, return an empty dict as default
+        # TODO: always pass in the type annotation to make this robust
         if not value:
             if in_struct:
                 return value if is_json_type else []
