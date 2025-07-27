@@ -13,7 +13,7 @@ class LocalFileTarget(cocoindex.op.TargetSpec):
 
 @dataclasses.dataclass
 class LocalFileTargetValues:
-    content: str
+    html: str
 
 
 @cocoindex.op.target_connector(spec_cls=LocalFileTarget)
@@ -71,7 +71,7 @@ class LocalFileTargetConnector:
                     os.remove(full_path)
                 else:
                     with open(full_path, "w") as f:
-                        f.write(mutation.content)
+                        f.write(mutation.html)
 
 
 @cocoindex.op.function()
