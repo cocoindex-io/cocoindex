@@ -28,6 +28,7 @@ from .typing import (
     resolve_forward_ref,
     analyze_type_info,
     AnalyzedAnyType,
+    AnalyzedBasicType,
     AnalyzedDictType,
 )
 
@@ -507,15 +508,21 @@ class _TargetConnector:
             else (None, None)
         )
 
-        if len(key_fields_schema) == 1:
+        key_type_info = analyze_type_info(key_annotation)
+        if (
+            len(key_fields_schema) == 1
+            and key_fields_schema[0]["type"]["kind"] != "Struct"
+            and isinstance(key_type_info.variant, (AnalyzedAnyType, AnalyzedBasicType))
+        ):
+            # Special case for ease of use: single key column can be mapped to a basic type without the wrapper struct.
             key_decoder = make_engine_value_decoder(
                 ["(key)"],
                 key_fields_schema[0]["type"],
-                analyze_type_info(key_annotation),
+                key_type_info,
             )
         else:
             key_decoder = make_engine_struct_decoder(
-                ["(key)"], key_fields_schema, analyze_type_info(key_annotation)
+                ["(key)"], key_fields_schema, key_type_info
             )
 
         value_decoder = make_engine_struct_decoder(
