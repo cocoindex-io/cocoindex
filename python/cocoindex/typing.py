@@ -313,11 +313,11 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
             kind = "OffsetDateTime"
         elif t is datetime.timedelta:
             kind = "TimeDelta"
+
+        if kind is None:
+            variant = AnalyzedUnknownType()
         else:
-            raise ValueError(
-                f"Unsupported as a specific type annotation for CocoIndex data type (https://cocoindex.io/docs/core/data_types): {t}"
-            )
-        variant = AnalyzedBasicType(kind=kind)
+            variant = AnalyzedBasicType(kind=kind)
 
     return AnalyzedTypeInfo(
         core_type=core_type,
