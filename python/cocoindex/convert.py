@@ -30,6 +30,7 @@ from .typing import (
     is_struct_type,
 )
 
+
 class ChildFieldPath:
     """Context manager to append a field to field_path on enter and pop it on exit."""
 
