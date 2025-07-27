@@ -220,7 +220,9 @@ def _register_op_factory(
                     )
                 self._args_decoders.append(
                     make_engine_value_decoder(
-                        [arg_name], arg.value_type["type"], arg_param.annotation
+                        [arg_name],
+                        arg.value_type["type"],
+                        analyze_type_info(arg_param.annotation),
                     )
                 )
                 process_attribute(arg_name, arg)
@@ -252,7 +254,9 @@ def _register_op_factory(
                     )
                 arg_param = expected_arg[1]
                 self._kwargs_decoders[kwarg_name] = make_engine_value_decoder(
-                    [kwarg_name], kwarg.value_type["type"], arg_param.annotation
+                    [kwarg_name],
+                    kwarg.value_type["type"],
+                    analyze_type_info(arg_param.annotation),
                 )
                 process_attribute(kwarg_name, kwarg)
 
@@ -505,7 +509,9 @@ class _TargetConnector:
 
         if len(key_fields_schema) == 1:
             key_decoder = make_engine_value_decoder(
-                ["(key)"], key_fields_schema[0]["type"], key_annotation
+                ["(key)"],
+                key_fields_schema[0]["type"],
+                analyze_type_info(key_annotation),
             )
         else:
             key_decoder = make_engine_struct_decoder(

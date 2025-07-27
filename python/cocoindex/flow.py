@@ -16,6 +16,7 @@ from .validation import (
     validate_full_flow_name,
     validate_target_name,
 )
+from .typing import analyze_type_info
 
 from dataclasses import dataclass
 from enum import Enum
@@ -1053,7 +1054,7 @@ class TransformFlow(Generic[T]):
             sig.return_annotation
         )
         result_decoder = make_engine_value_decoder(
-            [], engine_return_type["type"], python_return_type
+            [], engine_return_type["type"], analyze_type_info(python_return_type)
         )
 
         return TransformFlowInfo(engine_flow, result_decoder)

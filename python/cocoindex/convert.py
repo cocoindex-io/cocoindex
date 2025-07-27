@@ -94,7 +94,7 @@ def _is_type_kind_convertible_to(src_type_kind: str, dst_type_kind: str) -> bool
 def make_engine_value_decoder(
     field_path: list[str],
     src_type: dict[str, Any],
-    dst_annotation: Any,
+    dst_type_info: AnalyzedTypeInfo,
 ) -> Callable[[Any], Any]:
     """
     Make a decoder from an engine value to a Python value.
@@ -110,7 +110,6 @@ def make_engine_value_decoder(
 
     src_type_kind = src_type["kind"]
 
-    dst_type_info = analyze_type_info(dst_annotation)
     dst_type_variant = dst_type_info.variant
 
     if isinstance(dst_type_variant, AnalyzedUnknownType):
@@ -165,7 +164,9 @@ def make_engine_value_decoder(
                 key_field_schema = engine_fields_schema[0]
                 field_path.append(f".{key_field_schema.get('name', KEY_FIELD_NAME)}")
                 key_decoder = make_engine_value_decoder(
-                    field_path, key_field_schema["type"], dst_type_variant.key_type
+                    field_path,
+                    key_field_schema["type"],
+                    analyze_type_info(dst_type_variant.key_type),
                 )
                 field_path.pop()
                 value_decoder = make_engine_struct_decoder(
@@ -185,20 +186,20 @@ def make_engine_value_decoder(
         if isinstance(dst_type_variant, AnalyzedAnyType):
             return lambda value: value[1]
 
-        dst_type_variants = (
-            dst_type_variant.variant_types
+        dst_type_info_variants = (
+            [analyze_type_info(t) for t in dst_type_variant.variant_types]
             if isinstance(dst_type_variant, AnalyzedUnionType)
-            else [dst_annotation]
+            else [dst_type_info]
         )
         src_type_variants = src_type["types"]
         decoders = []
         for i, src_type_variant in enumerate(src_type_variants):
             with ChildFieldPath(field_path, f"[{i}]"):
                 decoder = None
-                for dst_type_variant in dst_type_variants:
+                for dst_type_info_variant in dst_type_info_variants:
                     try:
                         decoder = make_engine_value_decoder(
-                            field_path, src_type_variant, dst_type_variant
+                            field_path, src_type_variant, dst_type_info_variant
                         )
                         break
                     except ValueError:
@@ -236,7 +237,7 @@ def make_engine_value_decoder(
             vec_elem_decoder = make_engine_value_decoder(
                 field_path + ["[*]"],
                 src_type["element_type"],
-                dst_type_variant and dst_type_variant.elem_type,
+                analyze_type_info(dst_type_variant and dst_type_variant.elem_type),
             )
 
         def decode_vector(value: Any) -> Any | None:
@@ -267,7 +268,7 @@ def make_engine_value_decoder(
         if not _is_type_kind_convertible_to(src_type_kind, dst_type_variant.kind):
             raise ValueError(
                 f"Type mismatch for `{''.join(field_path)}`: "
-                f"passed in {src_type_kind}, declared {dst_annotation} ({dst_type_variant.kind})"
+                f"passed in {src_type_kind}, declared {dst_type_info.core_type} ({dst_type_variant.kind})"
             )
 
         if dst_type_variant.kind in ("Float32", "Float64", "Int64"):
@@ -288,7 +289,7 @@ def make_engine_value_decoder(
 
 
 def _get_auto_default_for_type(
-    annotation: Any, field_name: str, field_path: list[str]
+    type_info: AnalyzedTypeInfo,
 ) -> tuple[Any, bool]:
     """
     Get an auto-default value for a type annotation if it's safe to do so.
@@ -298,52 +299,17 @@ def _get_auto_default_for_type(
         - default_value: The default value if auto-defaulting is supported
         - is_supported: True if auto-defaulting is supported for this type
     """
-    if annotation is None or annotation is inspect.Parameter.empty or annotation is Any:
-        return None, False
+    # Case 1: Nullable types (Optional[T] or T | None)
+    if type_info.nullable:
+        return None, True
 
-    try:
-        type_info = analyze_type_info(annotation)
+    # Case 2: Table types (KTable or LTable) - check if it's a list or dict type
+    if isinstance(type_info.variant, AnalyzedListType):
+        return [], True
+    elif isinstance(type_info.variant, AnalyzedDictType):
+        return {}, True
 
-        # Case 1: Nullable types (Optional[T] or T | None)
-        if type_info.nullable:
-            return None, True
-
-        # Case 2: Table types (KTable or LTable) - check if it's a list or dict type
-        if isinstance(type_info.variant, AnalyzedListType):
-            return [], True
-        elif isinstance(type_info.variant, AnalyzedDictType):
-            return {}, True
-
-        # For all other types, don't auto-default to avoid ambiguity
-        return None, False
-
-    except (ValueError, TypeError):
-        return None, False
-
-
-def _handle_missing_field_with_auto_default(
-    param: inspect.Parameter, name: str, field_path: list[str]
-) -> Any:
-    """
-    Handle missing field by trying auto-default or raising an error.
-
-    Returns the auto-default value if supported, otherwise raises ValueError.
-    """
-    auto_default, is_supported = _get_auto_default_for_type(
-        param.annotation, name, field_path
-    )
-    if is_supported:
-        warnings.warn(
-            f"Field '{name}' (type {param.annotation}) without default value is missing in input: "
-            f"{''.join(field_path)}. Auto-assigning default value: {auto_default}",
-            UserWarning,
-            stacklevel=4,
-        )
-        return auto_default
-
-    raise ValueError(
-        f"Field '{name}' (type {param.annotation}) without default value is missing in input: {''.join(field_path)}"
-    )
+    return None, False
 
 
 def make_engine_struct_decoder(
@@ -400,40 +366,39 @@ def make_engine_struct_decoder(
     else:
         raise ValueError(f"Unsupported struct type: {dst_struct_type}")
 
-    def make_closure_for_value(
+    def make_closure_for_field(
         name: str, param: inspect.Parameter
     ) -> Callable[[list[Any]], Any]:
         src_idx = src_name_to_idx.get(name)
+        type_info = analyze_type_info(param.annotation)
+
         with ChildFieldPath(field_path, f".{name}"):
             if src_idx is not None:
                 field_decoder = make_engine_value_decoder(
-                    field_path, src_fields[src_idx]["type"], param.annotation
+                    field_path, src_fields[src_idx]["type"], type_info
                 )
-
-                def field_value_getter(values: list[Any]) -> Any:
-                    if src_idx is not None and len(values) > src_idx:
-                        return field_decoder(values[src_idx])
-                    default_value = param.default
-                    if default_value is not inspect.Parameter.empty:
-                        return default_value
-
-                    return _handle_missing_field_with_auto_default(
-                        param, name, field_path
-                    )
-
-                return field_value_getter
+                return lambda values: field_decoder(values[src_idx])
 
             default_value = param.default
             if default_value is not inspect.Parameter.empty:
                 return lambda _: default_value
 
-            auto_default = _handle_missing_field_with_auto_default(
-                param, name, field_path
+            auto_default, is_supported = _get_auto_default_for_type(type_info)
+            if is_supported:
+                warnings.warn(
+                    f"Field '{name}' (type {param.annotation}) without default value is missing in input: "
+                    f"{''.join(field_path)}. Auto-assigning default value: {auto_default}",
+                    UserWarning,
+                    stacklevel=4,
+                )
+                return lambda _: auto_default
+
+            raise ValueError(
+                f"Field '{name}' (type {param.annotation}) without default value is missing in input: {''.join(field_path)}"
             )
-            return lambda _: auto_default
 
     field_value_decoder = [
-        make_closure_for_value(name, param) for (name, param) in parameters.items()
+        make_closure_for_field(name, param) for (name, param) in parameters.items()
     ]
 
     return lambda values: dst_struct_type(
@@ -454,7 +419,7 @@ def _make_engine_struct_to_dict_decoder(
             field_decoder = make_engine_value_decoder(
                 field_path,
                 field_schema["type"],
-                Any,  # Use Any for recursive decoding
+                analyze_type_info(Any),  # Use Any for recursive decoding
             )
         field_decoders.append((field_name, field_decoder))
 
@@ -514,7 +479,7 @@ def _make_engine_ktable_to_dict_dict_decoder(
     # Create decoders
     with ChildFieldPath(field_path, f".{key_field_schema.get('name', KEY_FIELD_NAME)}"):
         key_decoder = make_engine_value_decoder(
-            field_path, key_field_schema["type"], Any
+            field_path, key_field_schema["type"], analyze_type_info(Any)
         )
 
     value_decoder = _make_engine_struct_to_dict_decoder(field_path, value_fields_schema)

@@ -19,6 +19,7 @@ from cocoindex.typing import (
     TypeKind,
     Vector,
     encode_enriched_type,
+    analyze_type_info,
 )
 
 
@@ -75,7 +76,9 @@ def build_engine_value_decoder(
     If python_type is not specified, uses engine_type_in_py as the target.
     """
     engine_type = encode_enriched_type(engine_type_in_py)["type"]
-    return make_engine_value_decoder([], engine_type, python_type or engine_type_in_py)
+    return make_engine_value_decoder(
+        [], engine_type, analyze_type_info(python_type or engine_type_in_py)
+    )
 
 
 def validate_full_roundtrip_to(
@@ -103,7 +106,9 @@ def validate_full_roundtrip_to(
     )
 
     for other_value, other_type in decoded_values:
-        decoder = make_engine_value_decoder([], encoded_output_type, other_type)
+        decoder = make_engine_value_decoder(
+            [], encoded_output_type, analyze_type_info(other_type)
+        )
         other_decoded_value = decoder(value_from_engine)
         assert eq(other_decoded_value, other_value), (
             f"Expected {other_value} but got {other_decoded_value} for {other_type}"
@@ -364,7 +369,9 @@ def test_decode_scalar_numpy_values() -> None:
         ({"kind": "Float64"}, np.float64, 2.718, np.float64(2.718)),
     ]
     for src_type, dst_type, input_value, expected in test_cases:
-        decoder = make_engine_value_decoder(["field"], src_type, dst_type)
+        decoder = make_engine_value_decoder(
+            ["field"], src_type, analyze_type_info(dst_type)
+        )
         result = decoder(input_value)
         assert isinstance(result, dst_type)
         assert result == expected
@@ -378,7 +385,9 @@ def test_non_ndarray_vector_decoding() -> None:
         "dimension": None,
     }
     dst_type_float = list[np.float64]
-    decoder = make_engine_value_decoder(["field"], src_type, dst_type_float)
+    decoder = make_engine_value_decoder(
+        ["field"], src_type, analyze_type_info(dst_type_float)
+    )
     input_numbers = [1.0, 2.0, 3.0]
     result = decoder(input_numbers)
     assert isinstance(result, list)
@@ -388,7 +397,9 @@ def test_non_ndarray_vector_decoding() -> None:
     # Test list[Uuid]
     src_type = {"kind": "Vector", "element_type": {"kind": "Uuid"}, "dimension": None}
     dst_type_uuid = list[uuid.UUID]
-    decoder = make_engine_value_decoder(["field"], src_type, dst_type_uuid)
+    decoder = make_engine_value_decoder(
+        ["field"], src_type, analyze_type_info(dst_type_uuid)
+    )
     uuid1 = uuid.uuid4()
     uuid2 = uuid.uuid4()
     input_uuids = [uuid1, uuid2]
@@ -398,124 +409,15 @@ def test_non_ndarray_vector_decoding() -> None:
     assert result == [uuid1, uuid2]
 
 
-@pytest.mark.parametrize(
-    "data_type, engine_val, expected",
-    [
-        # All fields match (dataclass)
-        (
-            Order,
-            ["O123", "mixed nuts", 25.0, "default_extra"],
-            Order("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        # All fields match (NamedTuple)
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 25.0, "default_extra"],
-            OrderNamedTuple("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        # Extra field in engine value (should ignore extra)
-        (
-            Order,
-            ["O123", "mixed nuts", 25.0, "default_extra", "unexpected"],
-            Order("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 25.0, "default_extra", "unexpected"],
-            OrderNamedTuple("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        # Fewer fields in engine value (should fill with default)
-        (
-            Order,
-            ["O123", "mixed nuts", 0.0, "default_extra"],
-            Order("O123", "mixed nuts", 0.0, "default_extra"),
-        ),
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 0.0, "default_extra"],
-            OrderNamedTuple("O123", "mixed nuts", 0.0, "default_extra"),
-        ),
-        # More fields in engine value (should ignore extra)
-        (
-            Order,
-            ["O123", "mixed nuts", 25.0, "unexpected"],
-            Order("O123", "mixed nuts", 25.0, "unexpected"),
-        ),
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 25.0, "unexpected"],
-            OrderNamedTuple("O123", "mixed nuts", 25.0, "unexpected"),
-        ),
-        # Truly extra field (should ignore the fifth field)
-        (
-            Order,
-            ["O123", "mixed nuts", 25.0, "default_extra", "ignored"],
-            Order("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 25.0, "default_extra", "ignored"],
-            OrderNamedTuple("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        # Missing optional field in engine value (tags=None)
-        (
-            Customer,
-            ["Alice", ["O1", "item1", 10.0, "default_extra"], None],
-            Customer("Alice", Order("O1", "item1", 10.0, "default_extra"), None),
-        ),
-        (
-            CustomerNamedTuple,
-            ["Alice", ["O1", "item1", 10.0, "default_extra"], None],
-            CustomerNamedTuple(
-                "Alice", OrderNamedTuple("O1", "item1", 10.0, "default_extra"), None
-            ),
-        ),
-        # Extra field in engine value for Customer (should ignore)
-        (
-            Customer,
-            ["Alice", ["O1", "item1", 10.0, "default_extra"], [["vip"]], "extra"],
-            Customer(
-                "Alice", Order("O1", "item1", 10.0, "default_extra"), [Tag("vip")]
-            ),
-        ),
-        (
-            CustomerNamedTuple,
-            ["Alice", ["O1", "item1", 10.0, "default_extra"], [["vip"]], "extra"],
-            CustomerNamedTuple(
-                "Alice",
-                OrderNamedTuple("O1", "item1", 10.0, "default_extra"),
-                [Tag("vip")],
-            ),
-        ),
-        # Missing optional field with default
-        (
-            Order,
-            ["O123", "mixed nuts", 25.0],
-            Order("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 25.0],
-            OrderNamedTuple("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        # Partial optional fields
-        (
-            Customer,
-            ["Alice", ["O1", "item1", 10.0]],
-            Customer("Alice", Order("O1", "item1", 10.0, "default_extra"), None),
-        ),
-        (
-            CustomerNamedTuple,
-            ["Alice", ["O1", "item1", 10.0]],
-            CustomerNamedTuple(
-                "Alice", OrderNamedTuple("O1", "item1", 10.0, "default_extra"), None
-            ),
-        ),
-    ],
-)
-def test_struct_decoder_cases(data_type: Any, engine_val: Any, expected: Any) -> None:
-    decoder = build_engine_value_decoder(data_type)
-    assert decoder(engine_val) == expected
+def test_roundtrip_struct() -> None:
+    validate_full_roundtrip(
+        Order("O123", "mixed nuts", 25.0, "default_extra"),
+        Order,
+    )
+    validate_full_roundtrip(
+        OrderNamedTuple("O123", "mixed nuts", 25.0, "default_extra"),
+        OrderNamedTuple,
+    )
 
 
 def test_make_engine_value_decoder_list_of_struct() -> None:
@@ -974,7 +876,9 @@ def test_decode_nullable_ndarray_none_or_value_input() -> None:
         "dimension": None,
     }
     dst_annotation = NDArrayFloat32Type | None
-    decoder = make_engine_value_decoder([], src_type_dict, dst_annotation)
+    decoder = make_engine_value_decoder(
+        [], src_type_dict, analyze_type_info(dst_annotation)
+    )
 
     none_engine_value = None
     decoded_array = decoder(none_engine_value)
@@ -997,7 +901,9 @@ def test_decode_vector_string() -> None:
         "element_type": {"kind": "Str"},
         "dimension": None,
     }
-    decoder = make_engine_value_decoder([], src_type_dict, Vector[str])
+    decoder = make_engine_value_decoder(
+        [], src_type_dict, analyze_type_info(Vector[str])
+    )
     assert decoder(["hello", "world"]) == ["hello", "world"]
 
 
@@ -1008,7 +914,9 @@ def test_decode_error_non_nullable_or_non_list_vector() -> None:
         "element_type": {"kind": "Float32"},
         "dimension": None,
     }
-    decoder = make_engine_value_decoder([], src_type_dict, NDArrayFloat32Type)
+    decoder = make_engine_value_decoder(
+        [], src_type_dict, analyze_type_info(NDArrayFloat32Type)
+    )
     with pytest.raises(ValueError, match="Received null for non-nullable vector"):
         decoder(None)
     with pytest.raises(TypeError, match="Expected NDArray or list for vector"):
@@ -1516,15 +1424,9 @@ def test_auto_default_for_supported_and_unsupported_types() -> None:
         a: int
         b: int
 
-    engine_val = [1]
-
     validate_full_roundtrip(NullableField(1, None), NullableField)
 
     validate_full_roundtrip(LTableField(1, []), LTableField)
-
-    decoder = build_engine_value_decoder(KTableField)
-    result = decoder(engine_val)
-    assert result == KTableField(1, {})
 
     # validate_full_roundtrip(KTableField(1, {}), KTableField)
 
@@ -1532,5 +1434,4 @@ def test_auto_default_for_supported_and_unsupported_types() -> None:
         ValueError,
         match=r"Field 'b' \(type <class 'int'>\) without default value is missing in input: ",
     ):
-        decoder = build_engine_value_decoder(Base, UnsupportedField)
-        decoder(engine_val)
+        build_engine_value_decoder(Base, UnsupportedField)
