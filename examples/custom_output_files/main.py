@@ -1,8 +1,9 @@
-import cocoindex
-from markdown_it import MarkdownIt
 from datetime import timedelta
 import os
 import dataclasses
+
+import cocoindex
+from markdown_it import MarkdownIt
 
 _markdown_it = MarkdownIt("gfm-like")
 
@@ -20,19 +21,29 @@ class LocalFileTargetValues:
 class LocalFileTargetConnector:
     @staticmethod
     def get_persistent_key(spec: LocalFileTarget, target_name: str) -> str:
+        """Use the directory path as the persistent key for this target."""
         return spec.directory
 
     @staticmethod
     def describe(key: str) -> str:
+        """Return a human-readable description of the target."""
         return f"Local directory {key}"
 
     @staticmethod
     def apply_setup_change(
         key: str, previous: LocalFileTarget | None, current: LocalFileTarget | None
     ) -> None:
+        """
+        Apply setup changes to the target.
+
+        Best practice: keep all actions idempotent.
+        """
+
+        # Create the directory if it didn't exist.
         if previous is None and current is not None:
             os.makedirs(current.directory, exist_ok=True)
 
+        # Delete the directory with its contents if it no longer exists.
         if previous is not None and current is None:
             if os.path.isdir(previous.directory):
                 for filename in os.listdir(previous.directory):
@@ -83,10 +94,10 @@ def custom_output_files(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
     """
-    Define an example flow that embeds text into a vector database.
+    Define an example flow that exports markdown files to HTML files.
     """
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="files", included_patterns=["*.md"]),
+        cocoindex.sources.LocalFile(path="data", included_patterns=["*.md"]),
         refresh_interval=timedelta(seconds=5),
     )
 
