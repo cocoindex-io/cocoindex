@@ -9,11 +9,16 @@ _markdown_it = MarkdownIt("gfm-like")
 
 
 class LocalFileTarget(cocoindex.op.TargetSpec):
+    """Represents the custom target spec."""
+
+    # The directory to save the HTML files.
     directory: str
 
 
 @dataclasses.dataclass
 class LocalFileTargetValues:
+    """Represents value fields of exported data. Used in `mutate` method below."""
+
     html: str
 
 
@@ -26,7 +31,7 @@ class LocalFileTargetConnector:
 
     @staticmethod
     def describe(key: str) -> str:
-        """Return a human-readable description of the target."""
+        """(Optional) Return a human-readable description of the target."""
         return f"Local directory {key}"
 
     @staticmethod
@@ -54,10 +59,10 @@ class LocalFileTargetConnector:
     @staticmethod
     def prepare(spec: LocalFileTarget) -> LocalFileTarget:
         """
-        Prepare for execution. To run common operations before applying any mutations.
+        (Optional) Prepare for execution. To run common operations before applying any mutations.
         The returned value will be passed as the first element of tuples in `mutate` method.
 
-        This is optional. If not provided, will directly pass the spec to `mutate` method.
+        If not provided, will directly pass the spec to `mutate` method.
         """
         return spec
 
@@ -69,16 +74,21 @@ class LocalFileTargetConnector:
         Mutate the target.
 
         The first element of the tuple is the target spec.
-        The second element is a dictionary of mutations.
-        The key is the filename, and the value is the mutation.
-        If the value is `None`, the file will be removed.
-        Otherwise, the file will be written with the content.
+        The second element is a dictionary of mutations:
+        - The key is the filename, and the value is the mutation.
+        - If the value is `None`, the file will be removed.
+          Otherwise, the file will be written with the content.
+
+        Best practice: keep all actions idempotent.
         """
         for spec, mutations in all_mutations:
             for filename, mutation in mutations.items():
                 full_path = os.path.join(spec.directory, filename) + ".html"
                 if mutation is None:
-                    os.remove(full_path)
+                    try:
+                        os.remove(full_path)
+                    except FileNotFoundError:
+                        pass
                 else:
                     with open(full_path, "w") as f:
                         f.write(mutation.html)
