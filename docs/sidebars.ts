@@ -49,6 +49,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'custom_ops/custom_functions',
+        'custom_ops/custom_targets',
       ],
     },
     {
