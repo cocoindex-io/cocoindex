@@ -286,6 +286,7 @@ def make_engine_value_decoder(
 
     return lambda value: value
 
+
 def _get_auto_default_for_type(
     annotation: Any, field_name: str, field_path: list[str]
 ) -> tuple[Any, bool]:
@@ -307,12 +308,11 @@ def _get_auto_default_for_type(
         if type_info.nullable:
             return None, True
 
-        # Case 2: Table types (KTable or LTable)
-        if type_info.kind in TABLE_TYPES:
-            if type_info.kind == "LTable":
-                return [], True
-            elif type_info.kind == "KTable":
-                return {}, True
+        # Case 2: Table types (KTable or LTable) - check if it's a list or dict type
+        if isinstance(type_info.variant, AnalyzedListType):
+            return [], True
+        elif isinstance(type_info.variant, AnalyzedDictType):
+            return {}, True
 
         # For all other types, don't auto-default to avoid ambiguity
         return None, False
@@ -344,6 +344,7 @@ def _handle_missing_field_with_auto_default(
     raise ValueError(
         f"Field '{name}' (type {param.annotation}) without default value is missing in input: {''.join(field_path)}"
     )
+
 
 def make_engine_struct_decoder(
     field_path: list[str],
@@ -408,23 +409,26 @@ def make_engine_struct_decoder(
                 field_decoder = make_engine_value_decoder(
                     field_path, src_fields[src_idx]["type"], param.annotation
                 )
-            def field_value_getter(values: list[Any]) -> Any:
-                if len(values) > src_idx:
-                    return field_decoder(values[src_idx])
-                default_value = param.default
-                if default_value is not inspect.Parameter.empty:
-                    return default_value
 
-                return _handle_missing_field_with_auto_default(param, name, field_path)
+                def field_value_getter(values: list[Any]) -> Any:
+                    if src_idx is not None and len(values) > src_idx:
+                        return field_decoder(values[src_idx])
+                    default_value = param.default
+                    if default_value is not inspect.Parameter.empty:
+                        return default_value
 
-            return field_value_getter
+                    return _handle_missing_field_with_auto_default(
+                        param, name, field_path
+                    )
+
+                return field_value_getter
 
         default_value = param.default
-        if default_value is inspect.Parameter.empty:
-            auto_default = _handle_missing_field_with_auto_default(
-                param, name, field_path
-            )
-            return lambda _: auto_default
+        if default_value is not inspect.Parameter.empty:
+            return lambda _: default_value
+
+        auto_default = _handle_missing_field_with_auto_default(param, name, field_path)
+        return lambda _: auto_default
 
     field_value_decoder = [
         make_closure_for_value(name, param) for (name, param) in parameters.items()
