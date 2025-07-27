@@ -99,7 +99,7 @@ def make_engine_value_decoder(
         )
 
     if src_type_kind == "Struct":
-        return _make_engine_struct_value_decoder(
+        return make_engine_struct_decoder(
             field_path,
             src_type["fields"],
             dst_type_info,
@@ -119,7 +119,7 @@ def make_engine_value_decoder(
                     f"Type mismatch for `{''.join(field_path)}`: "
                     f"declared `{dst_type_info.core_type}`, a list type expected"
                 )
-            row_decoder = _make_engine_struct_value_decoder(
+            row_decoder = make_engine_struct_decoder(
                 field_path,
                 engine_fields_schema,
                 analyze_type_info(dst_type_variant.elem_type),
@@ -147,7 +147,7 @@ def make_engine_value_decoder(
                 field_path, key_field_schema["type"], dst_type_variant.key_type
             )
             field_path.pop()
-            value_decoder = _make_engine_struct_value_decoder(
+            value_decoder = make_engine_struct_decoder(
                 field_path,
                 engine_fields_schema[1:],
                 analyze_type_info(dst_type_variant.value_type),
@@ -267,7 +267,7 @@ def make_engine_value_decoder(
     return lambda value: value
 
 
-def _make_engine_struct_value_decoder(
+def make_engine_struct_decoder(
     field_path: list[str],
     src_fields: list[dict[str, Any]],
     dst_type_info: AnalyzedTypeInfo,
