@@ -9,6 +9,11 @@ import pytest
 from numpy.typing import NDArray
 
 from cocoindex.typing import (
+    AnalyzedBasicType,
+    AnalyzedDictType,
+    AnalyzedListType,
+    AnalyzedStructType,
+    AnalyzedUnknownType,
     AnalyzedTypeInfo,
     TypeAttr,
     TypeKind,
@@ -33,83 +38,67 @@ class SimpleNamedTuple(NamedTuple):
 def test_ndarray_float32_no_dim() -> None:
     typ = NDArray[np.float32]
     result = analyze_type_info(typ)
-    assert result.kind == "Vector"
-    assert result.vector_info == VectorInfo(dim=None)
-    assert result.elem_type == np.float32
-    assert result.key_type is None
-    assert result.struct_type is None
+    assert isinstance(result.variant, AnalyzedListType)
+    assert result.variant.vector_info is None
+    assert result.variant.elem_type == np.float32
     assert result.nullable is False
-    assert result.np_number_type is not None
-    assert get_origin(result.np_number_type) == np.ndarray
-    assert get_args(result.np_number_type)[1] == np.dtype[np.float32]
+    assert get_origin(result.core_type) == np.ndarray
+    assert get_args(result.core_type)[1] == np.dtype[np.float32]
 
 
 def test_vector_float32_no_dim() -> None:
     typ = Vector[np.float32]
     result = analyze_type_info(typ)
-    assert result.kind == "Vector"
-    assert result.vector_info == VectorInfo(dim=None)
-    assert result.elem_type == np.float32
-    assert result.key_type is None
-    assert result.struct_type is None
+    assert isinstance(result.variant, AnalyzedListType)
+    assert result.variant.vector_info == VectorInfo(dim=None)
+    assert result.variant.elem_type == np.float32
     assert result.nullable is False
-    assert result.np_number_type is not None
-    assert get_origin(result.np_number_type) == np.ndarray
-    assert get_args(result.np_number_type)[1] == np.dtype[np.float32]
+    assert get_origin(result.core_type) == np.ndarray
+    assert get_args(result.core_type)[1] == np.dtype[np.float32]
 
 
 def test_ndarray_float64_with_dim() -> None:
     typ = Annotated[NDArray[np.float64], VectorInfo(dim=128)]
     result = analyze_type_info(typ)
-    assert result.kind == "Vector"
-    assert result.vector_info == VectorInfo(dim=128)
-    assert result.elem_type == np.float64
-    assert result.key_type is None
-    assert result.struct_type is None
+    assert isinstance(result.variant, AnalyzedListType)
+    assert result.variant.vector_info == VectorInfo(dim=128)
+    assert result.variant.elem_type == np.float64
     assert result.nullable is False
-    assert result.np_number_type is not None
-    assert get_origin(result.np_number_type) == np.ndarray
-    assert get_args(result.np_number_type)[1] == np.dtype[np.float64]
+    assert get_origin(result.core_type) == np.ndarray
+    assert get_args(result.core_type)[1] == np.dtype[np.float64]
 
 
 def test_vector_float32_with_dim() -> None:
     typ = Vector[np.float32, Literal[384]]
     result = analyze_type_info(typ)
-    assert result.kind == "Vector"
-    assert result.vector_info == VectorInfo(dim=384)
-    assert result.elem_type == np.float32
-    assert result.key_type is None
-    assert result.struct_type is None
+    assert isinstance(result.variant, AnalyzedListType)
+    assert result.variant.vector_info == VectorInfo(dim=384)
+    assert result.variant.elem_type == np.float32
     assert result.nullable is False
-    assert result.np_number_type is not None
-    assert get_origin(result.np_number_type) == np.ndarray
-    assert get_args(result.np_number_type)[1] == np.dtype[np.float32]
+    assert get_origin(result.core_type) == np.ndarray
+    assert get_args(result.core_type)[1] == np.dtype[np.float32]
 
 
 def test_ndarray_int64_no_dim() -> None:
     typ = NDArray[np.int64]
     result = analyze_type_info(typ)
-    assert result.kind == "Vector"
-    assert result.vector_info == VectorInfo(dim=None)
-    assert result.elem_type == np.int64
+    assert isinstance(result.variant, AnalyzedListType)
+    assert result.variant.vector_info is None
+    assert result.variant.elem_type == np.int64
     assert result.nullable is False
-    assert result.np_number_type is not None
-    assert get_origin(result.np_number_type) == np.ndarray
-    assert get_args(result.np_number_type)[1] == np.dtype[np.int64]
+    assert get_origin(result.core_type) == np.ndarray
+    assert get_args(result.core_type)[1] == np.dtype[np.int64]
 
 
 def test_nullable_ndarray() -> None:
     typ = NDArray[np.float32] | None
     result = analyze_type_info(typ)
-    assert result.kind == "Vector"
-    assert result.vector_info == VectorInfo(dim=None)
-    assert result.elem_type == np.float32
-    assert result.key_type is None
-    assert result.struct_type is None
+    assert isinstance(result.variant, AnalyzedListType)
+    assert result.variant.vector_info is None
+    assert result.variant.elem_type == np.float32
     assert result.nullable is True
-    assert result.np_number_type is not None
-    assert get_origin(result.np_number_type) == np.ndarray
-    assert get_args(result.np_number_type)[1] == np.dtype[np.float32]
+    assert get_origin(result.core_type) == np.ndarray
+    assert get_args(result.core_type)[1] == np.dtype[np.float32]
 
 
 def test_scalar_numpy_types() -> None:
@@ -119,59 +108,38 @@ def test_scalar_numpy_types() -> None:
         (np.float64, "Float64"),
     ]:
         type_info = analyze_type_info(np_type)
-        assert type_info.kind == expected_kind, (
-            f"Expected {expected_kind} for {np_type}, got {type_info.kind}"
+        assert isinstance(type_info.variant, AnalyzedBasicType)
+        assert type_info.variant.kind == expected_kind, (
+            f"Expected {expected_kind} for {np_type}, got {type_info.variant.kind}"
         )
-        assert type_info.np_number_type == np_type, (
-            f"Expected {np_type}, got {type_info.np_number_type}"
+        assert type_info.core_type == np_type, (
+            f"Expected {np_type}, got {type_info.core_type}"
         )
-        assert type_info.elem_type is None
-        assert type_info.vector_info is None
 
 
 def test_vector_str() -> None:
     typ = Vector[str]
     result = analyze_type_info(typ)
-    assert result.kind == "Vector"
-    assert result.elem_type is str
-    assert result.vector_info == VectorInfo(dim=None)
-
-
-def test_vector_complex64() -> None:
-    typ = Vector[np.complex64]
-    result = analyze_type_info(typ)
-    assert result.kind == "Vector"
-    assert result.elem_type == np.complex64
-    assert result.vector_info == VectorInfo(dim=None)
+    assert isinstance(result.variant, AnalyzedListType)
+    assert result.variant.elem_type is str
+    assert result.variant.vector_info == VectorInfo(dim=None)
 
 
 def test_non_numpy_vector() -> None:
     typ = Vector[float, Literal[3]]
     result = analyze_type_info(typ)
-    assert result.kind == "Vector"
-    assert result.elem_type is float
-    assert result.vector_info == VectorInfo(dim=3)
-
-
-def test_ndarray_any_dtype() -> None:
-    typ = NDArray[Any]
-    with pytest.raises(
-        TypeError, match="NDArray for Vector must use a concrete numpy dtype"
-    ):
-        analyze_type_info(typ)
+    assert isinstance(result.variant, AnalyzedListType)
+    assert result.variant.elem_type is float
+    assert result.variant.vector_info == VectorInfo(dim=3)
 
 
 def test_list_of_primitives() -> None:
     typ = list[str]
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Vector",
         core_type=list[str],
-        vector_info=VectorInfo(dim=None),
-        elem_type=str,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=list,
+        variant=AnalyzedListType(elem_type=str, vector_info=None),
         attrs=None,
         nullable=False,
     )
@@ -181,13 +149,9 @@ def test_list_of_structs() -> None:
     typ = list[SimpleDataclass]
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="LTable",
         core_type=list[SimpleDataclass],
-        vector_info=None,
-        elem_type=SimpleDataclass,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=list,
+        variant=AnalyzedListType(elem_type=SimpleDataclass, vector_info=None),
         attrs=None,
         nullable=False,
     )
@@ -197,13 +161,9 @@ def test_sequence_of_int() -> None:
     typ = Sequence[int]
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Vector",
         core_type=Sequence[int],
-        vector_info=VectorInfo(dim=None),
-        elem_type=int,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=Sequence,
+        variant=AnalyzedListType(elem_type=int, vector_info=None),
         attrs=None,
         nullable=False,
     )
@@ -213,13 +173,9 @@ def test_list_with_vector_info() -> None:
     typ = Annotated[list[int], VectorInfo(dim=5)]
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Vector",
         core_type=list[int],
-        vector_info=VectorInfo(dim=5),
-        elem_type=int,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=list,
+        variant=AnalyzedListType(elem_type=int, vector_info=VectorInfo(dim=5)),
         attrs=None,
         nullable=False,
     )
@@ -229,13 +185,9 @@ def test_dict_str_int() -> None:
     typ = dict[str, int]
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="KTable",
         core_type=dict[str, int],
-        vector_info=None,
-        elem_type=(str, int),
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=dict,
+        variant=AnalyzedDictType(key_type=str, value_type=int),
         attrs=None,
         nullable=False,
     )
@@ -245,13 +197,9 @@ def test_mapping_str_dataclass() -> None:
     typ = Mapping[str, SimpleDataclass]
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="KTable",
         core_type=Mapping[str, SimpleDataclass],
-        vector_info=None,
-        elem_type=(str, SimpleDataclass),
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=Mapping,
+        variant=AnalyzedDictType(key_type=str, value_type=SimpleDataclass),
         attrs=None,
         nullable=False,
     )
@@ -261,13 +209,9 @@ def test_dataclass() -> None:
     typ = SimpleDataclass
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Struct",
         core_type=SimpleDataclass,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=SimpleDataclass,
-        np_number_type=None,
+        base_type=SimpleDataclass,
+        variant=AnalyzedStructType(struct_type=SimpleDataclass),
         attrs=None,
         nullable=False,
     )
@@ -277,29 +221,9 @@ def test_named_tuple() -> None:
     typ = SimpleNamedTuple
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Struct",
         core_type=SimpleNamedTuple,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=SimpleNamedTuple,
-        np_number_type=None,
-        attrs=None,
-        nullable=False,
-    )
-
-
-def test_tuple_key_value() -> None:
-    typ = (str, int)
-    result = analyze_type_info(typ)
-    assert result == AnalyzedTypeInfo(
-        kind="Int64",
-        core_type=int,
-        vector_info=None,
-        elem_type=None,
-        key_type=str,
-        struct_type=None,
-        np_number_type=None,
+        base_type=SimpleNamedTuple,
+        variant=AnalyzedStructType(struct_type=SimpleNamedTuple),
         attrs=None,
         nullable=False,
     )
@@ -309,13 +233,9 @@ def test_str() -> None:
     typ = str
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Str",
         core_type=str,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=str,
+        variant=AnalyzedBasicType(kind="Str"),
         attrs=None,
         nullable=False,
     )
@@ -325,13 +245,9 @@ def test_bool() -> None:
     typ = bool
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Bool",
         core_type=bool,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=bool,
+        variant=AnalyzedBasicType(kind="Bool"),
         attrs=None,
         nullable=False,
     )
@@ -341,13 +257,9 @@ def test_bytes() -> None:
     typ = bytes
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Bytes",
         core_type=bytes,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=bytes,
+        variant=AnalyzedBasicType(kind="Bytes"),
         attrs=None,
         nullable=False,
     )
@@ -357,13 +269,9 @@ def test_uuid() -> None:
     typ = uuid.UUID
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Uuid",
         core_type=uuid.UUID,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=uuid.UUID,
+        variant=AnalyzedBasicType(kind="Uuid"),
         attrs=None,
         nullable=False,
     )
@@ -373,13 +281,9 @@ def test_date() -> None:
     typ = datetime.date
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Date",
         core_type=datetime.date,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=datetime.date,
+        variant=AnalyzedBasicType(kind="Date"),
         attrs=None,
         nullable=False,
     )
@@ -389,13 +293,9 @@ def test_time() -> None:
     typ = datetime.time
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Time",
         core_type=datetime.time,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=datetime.time,
+        variant=AnalyzedBasicType(kind="Time"),
         attrs=None,
         nullable=False,
     )
@@ -405,13 +305,9 @@ def test_timedelta() -> None:
     typ = datetime.timedelta
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="TimeDelta",
         core_type=datetime.timedelta,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=datetime.timedelta,
+        variant=AnalyzedBasicType(kind="TimeDelta"),
         attrs=None,
         nullable=False,
     )
@@ -421,13 +317,9 @@ def test_float() -> None:
     typ = float
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Float64",
         core_type=float,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=float,
+        variant=AnalyzedBasicType(kind="Float64"),
         attrs=None,
         nullable=False,
     )
@@ -437,13 +329,9 @@ def test_int() -> None:
     typ = int
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Int64",
         core_type=int,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=int,
+        variant=AnalyzedBasicType(kind="Int64"),
         attrs=None,
         nullable=False,
     )
@@ -453,13 +341,9 @@ def test_type_with_attributes() -> None:
     typ = Annotated[str, TypeAttr("key", "value")]
     result = analyze_type_info(typ)
     assert result == AnalyzedTypeInfo(
-        kind="Str",
         core_type=str,
-        vector_info=None,
-        elem_type=None,
-        key_type=None,
-        struct_type=None,
-        np_number_type=None,
+        base_type=str,
+        variant=AnalyzedBasicType(kind="Str"),
         attrs={"key": "value"},
         nullable=False,
     )
@@ -494,7 +378,7 @@ def test_encode_enriched_type_ltable() -> None:
     typ = list[SimpleDataclass]
     result = encode_enriched_type(typ)
     assert result["type"]["kind"] == "LTable"
-    assert result["type"]["row"]["kind"] == "Struct"
+    assert "fields" in result["type"]["row"]
     assert len(result["type"]["row"]["fields"]) == 2
 
 
@@ -525,22 +409,21 @@ def test_encode_scalar_numpy_types_schema() -> None:
         assert not schema.get("nullable", False)
 
 
-def test_invalid_struct_kind() -> None:
+def test_annotated_struct_with_type_kind() -> None:
     typ = Annotated[SimpleDataclass, TypeKind("Vector")]
-    with pytest.raises(ValueError, match="Unexpected type kind for struct: Vector"):
-        analyze_type_info(typ)
+    result = analyze_type_info(typ)
+    assert isinstance(result.variant, AnalyzedBasicType)
+    assert result.variant.kind == "Vector"
 
 
-def test_invalid_list_kind() -> None:
+def test_annotated_list_with_type_kind() -> None:
     typ = Annotated[list[int], TypeKind("Struct")]
-    with pytest.raises(ValueError, match="Unexpected type kind for list: Struct"):
-        analyze_type_info(typ)
+    result = analyze_type_info(typ)
+    assert isinstance(result.variant, AnalyzedBasicType)
+    assert result.variant.kind == "Struct"
 
 
-def test_unsupported_type() -> None:
+def test_unknown_type() -> None:
     typ = set
-    with pytest.raises(
-        ValueError,
-        match="Unsupported as a specific type annotation for CocoIndex data type.*: <class 'set'>",
-    ):
-        analyze_type_info(typ)
+    result = analyze_type_info(typ)
+    assert isinstance(result.variant, AnalyzedUnknownType)

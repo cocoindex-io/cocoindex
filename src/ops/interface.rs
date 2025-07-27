@@ -272,7 +272,7 @@ pub trait ExportTargetFactory: Send + Sync {
         key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<interface::FlowInstanceContext>,
     ) -> Result<Box<dyn setup::ResourceSetupStatus>>;
 
     /// Normalize the key. e.g. the JSON format may change (after code change, e.g. new optional field or field ordering), even if the underlying value is not changed.
@@ -302,7 +302,7 @@ pub trait ExportTargetFactory: Send + Sync {
     async fn apply_setup_changes(
         &self,
         setup_status: Vec<ResourceSetupChangeItem<'async_trait>>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<()>;
 }
 

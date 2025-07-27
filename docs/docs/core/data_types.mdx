@@ -21,12 +21,13 @@ All you need to do is to make sure the data passed to functions and targets are 
 Each type in CocoIndex type system is mapped to one or multiple types in Python.
 When you define a [custom function](/docs/core/custom_function), you need to annotate the data types of arguments and return values.
 
-*   When you pass a Python value to the engine (e.g. return values of a custom function), type annotation is required,
-    as it provides the ground truth of the data type in the flow.
+*   When you pass a Python value to the engine (e.g. return values of a custom function), a specific type annotation is required.
+    The type annotation needs to be specific in describing the target data type, as it provides the ground truth of the data type in the flow.
 
 *   When you use a Python variable to bind to an engine value (e.g. arguments of a custom function),
-    we use the type annotation as a guidance to construct the Python value.
-    Type annotation is optional for basic types and struct types, and required for table types.
+    the engine already knows the specific data type, so we don't require a specific type annotation, e.g. type annotations can be omitted, or you can use `Any` at any level.
+    When a specific type annotation is provided, it's still used as a guidance to construct the Python value with compatible type.
+    Otherwise, we will bind to a default Python type.
 
 ### Basic Types
 
@@ -54,7 +55,7 @@ This is the list of all primitive types supported by CocoIndex:
 Notes:
 
 *   For some CocoIndex types, we support multiple Python types. You can annotate with any of these Python types.
-    The first one is the default type, i.e. CocoIndex will create a value with this type when the type annotation is not provided (e.g. for arguments of a custom function).
+    The first one is the default type, i.e. CocoIndex will create a value with this type when a specific type annotation is not provided (e.g. for arguments of a custom function).
 
 *   All Python types starting with `cocoindex.` are type aliases exported by CocoIndex. They're annotated types based on certain Python types:
 
@@ -87,8 +88,8 @@ Optionally, it can have a fixed dimension. Noted as *Vector[Type]* or *Vector[Ty
 It supports the following Python types:
 
 *   `cocoindex.Vector[T]` or `cocoindex.Vector[T, typing.Literal[Dim]]`, e.g. `cocoindex.Vector[cocoindex.Float32]` or `cocoindex.Vector[cocoindex.Float32, typing.Literal[384]]`
-    *   The underlying Python type is `numpy.typing.NDArray[T]` where `T` is a numpy numeric type (`numpy.int64`, `numpy.float32` or `numpy.float64`), or `list[T]` otherwise
-*   `numpy.typing.NDArray[T]` where `T` is a numpy numeric type
+    *   The underlying Python type is `numpy.typing.NDArray[T]` where `T` is a numpy numeric type (`numpy.int64`, `numpy.float32` or `numpy.float64`) or array type (`numpy.typing.NDArray[T]`), or `list[T]` otherwise
+*   `numpy.typing.NDArray[T]` where `T` is a numpy numeric type or array type
 *   `list[T]`
 
 
@@ -136,7 +137,7 @@ Both `Person` and `PersonTuple` are valid Struct types in CocoIndex, with identi
 Choose `dataclass` for mutable objects or when you need additional methods, and `NamedTuple` for immutable, lightweight structures.
 
 Besides, for arguments of custom functions, CocoIndex also supports using dictionaries (`dict[str, Any]`) to represent a *Struct* type.
-It's the default Python type if you don't annotate the function argument.
+It's the default Python type if you don't annotate the function argument with a specific type.
 
 ### Table Types
 
@@ -152,11 +153,16 @@ The row order of a *KTable* is not preserved.
 Type of the first column (key column) must be a [key type](#key-types).
 
 In Python, a *KTable* type is represented by `dict[K, V]`. 
-The `V` should be a *Struct* type, either a `dataclass` or `NamedTuple`, representing the value fields of each row.
+The `K` should be the type binding to a key type,
+and the `V` should be the type binding to a *Struct* type representing the value fields of each row.
+When the specific type annotation is not provided,
+the key type is bound to a tuple with its key parts when it's a *Struct* type, the value type is bound to `dict[str, Any]`.
+
+
 For example, you can use `dict[str, Person]` or `dict[str, PersonTuple]` to represent a *KTable*, with 4 columns: key (*Str*), `first_name` (*Str*), `last_name` (*Str*), `dob` (*Date*).
+It's bound to `dict[str, dict[str, Any]]` if you don't annotate the function argument with a specific type.
 
 Note that if you want to use a *Struct* as the key, you need to ensure its value in Python is immutable. For `dataclass`, annotate it with `@dataclass(frozen=True)`. For `NamedTuple`, immutability is built-in. For example:
-For example:
 
 ```python
 @dataclass(frozen=True)
@@ -170,14 +176,16 @@ class PersonKeyTuple(NamedTuple):
 ```
 
 Then you can use `dict[PersonKey, Person]` or `dict[PersonKeyTuple, PersonTuple]` to represent a KTable keyed by `PersonKey` or `PersonKeyTuple`.
+It's bound to `dict[(str, str), dict[str, Any]]` if you don't annotate the function argument with a specific type.
 
 
 #### LTable
 
 *LTable* is a *Table* type whose row order is preserved. *LTable* has no key column.
 
-In Python, a *LTable* type is represented by `list[R]`, where `R` is a dataclass representing a row.
+In Python, a *LTable* type is represented by `list[R]`, where `R` is the type binding to the *Struct* type representing the value fields of each row.
 For example, you can use `list[Person]` to represent a *LTable* with 3 columns: `first_name` (*Str*), `last_name` (*Str*), `dob` (*Date*).
+It's bound to `list[dict[str, Any]]` if you don't annotate the function argument with a specific type.
 
 ## Key Types
 

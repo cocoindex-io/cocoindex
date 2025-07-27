@@ -105,7 +105,9 @@ def validate_full_roundtrip_to(
     for other_value, other_type in decoded_values:
         decoder = make_engine_value_decoder([], encoded_output_type, other_type)
         other_decoded_value = decoder(value_from_engine)
-        assert eq(other_decoded_value, other_value)
+        assert eq(other_decoded_value, other_value), (
+            f"Expected {other_value} but got {other_decoded_value} for {other_type}"
+        )
 
 
 def validate_full_roundtrip(
@@ -1096,6 +1098,25 @@ def test_full_roundtrip_vector_numeric_types() -> None:
         validate_full_roundtrip(value_u64, Vector[np.uint64, Literal[3]])
 
 
+def test_full_roundtrip_vector_of_vector() -> None:
+    """Test full roundtrip for vector of vector."""
+    value_f32 = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
+    validate_full_roundtrip(
+        value_f32,
+        Vector[Vector[np.float32, Literal[3]], Literal[2]],
+        ([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], list[list[np.float32]]),
+        ([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], list[list[cocoindex.Float32]]),
+        (
+            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+            list[Vector[cocoindex.Float32, Literal[3]]],
+        ),
+        (
+            value_f32,
+            np.typing.NDArray[np.typing.NDArray[np.float32]],
+        ),
+    )
+
+
 def test_full_roundtrip_vector_other_types() -> None:
     """Test full roundtrip for Vector with non-numeric basic types."""
     uuid_list = [uuid.uuid4(), uuid.uuid4()]
@@ -1216,7 +1237,7 @@ def test_full_roundtrip_scalar_with_python_types() -> None:
         numpy_float: np.float64
         python_float: float
         string: str
-        annotated_int: Annotated[np.int64, TypeKind("int")]
+        annotated_int: Annotated[np.int64, TypeKind("Int64")]
         annotated_float: Float32
 
     instance = MixedStruct(

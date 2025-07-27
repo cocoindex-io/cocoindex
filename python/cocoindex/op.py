@@ -6,11 +6,30 @@ import asyncio
 import dataclasses
 import inspect
 from enum import Enum
-from typing import Any, Awaitable, Callable, Protocol, dataclass_transform, Annotated
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Protocol,
+    dataclass_transform,
+    Annotated,
+    get_args,
+)
 
 from . import _engine  # type: ignore
-from .convert import encode_engine_value, make_engine_value_decoder
-from .typing import TypeAttr, encode_enriched_type, resolve_forward_ref
+from .convert import (
+    encode_engine_value,
+    make_engine_value_decoder,
+    make_engine_struct_decoder,
+)
+from .typing import (
+    TypeAttr,
+    encode_enriched_type,
+    resolve_forward_ref,
+    analyze_type_info,
+    AnalyzedAnyType,
+    AnalyzedDictType,
+)
 
 
 class OpCategory(Enum):
@@ -65,6 +84,22 @@ class Executor(Protocol):
     op_category: OpCategory
 
 
+def _load_spec_from_engine(spec_cls: type, spec: dict[str, Any]) -> Any:
+    """
+    Load a spec from the engine.
+    """
+    return spec_cls(**spec)
+
+
+def _get_required_method(cls: type, name: str) -> Callable[..., Any]:
+    method = getattr(cls, name, None)
+    if method is None:
+        raise ValueError(f"Method {name}() is required for {cls.__name__}")
+    if not inspect.isfunction(method):
+        raise ValueError(f"Method {cls.__name__}.{name}() is not a function")
+    return method
+
+
 class _FunctionExecutorFactory:
     _spec_cls: type
     _executor_cls: type
@@ -76,7 +111,7 @@ class _FunctionExecutorFactory:
     def __call__(
         self, spec: dict[str, Any], *args: Any, **kwargs: Any
     ) -> tuple[dict[str, Any], Executor]:
-        spec = self._spec_cls(**spec)
+        spec = _load_spec_from_engine(self._spec_cls, spec)
         executor = self._executor_cls(spec)
         result_type = executor.analyze(*args, **kwargs)
         return (encode_enriched_type(result_type), executor)
@@ -357,5 +392,205 @@ def function(**args: Any) -> Callable[[Callable[..., Any]], FunctionSpec]:
         )
 
         return _Spec()
+
+    return _inner
+
+
+########################################################
+# Customized target connector
+########################################################
+
+
+@dataclasses.dataclass
+class _TargetConnectorContext:
+    target_name: str
+    spec: Any
+    key_decoder: Callable[[Any], Any]
+    value_decoder: Callable[[Any], Any]
+
+
+class _TargetConnector:
+    """
+    The connector class passed to the engine.
+    """
+
+    _spec_cls: type
+    _connector_cls: type
+
+    _get_persistent_key_fn: Callable[[_TargetConnectorContext, str], Any]
+    _apply_setup_change_async_fn: Callable[
+        [Any, dict[str, Any] | None, dict[str, Any] | None], Awaitable[None]
+    ]
+    _mutate_async_fn: Callable[..., Awaitable[None]]
+    _mutatation_type: AnalyzedDictType | None
+
+    def __init__(self, spec_cls: type, connector_cls: type):
+        self._spec_cls = spec_cls
+        self._connector_cls = connector_cls
+
+        self._get_persistent_key_fn = _get_required_method(
+            connector_cls, "get_persistent_key"
+        )
+        self._apply_setup_change_async_fn = _to_async_call(
+            _get_required_method(connector_cls, "apply_setup_change")
+        )
+
+        mutate_fn = _get_required_method(connector_cls, "mutate")
+        self._mutate_async_fn = _to_async_call(mutate_fn)
+
+        # Store the type annotation for later use
+        self._mutatation_type = self._analyze_mutate_mutation_type(
+            connector_cls, mutate_fn
+        )
+
+    @staticmethod
+    def _analyze_mutate_mutation_type(
+        connector_cls: type, mutate_fn: Callable[..., Any]
+    ) -> AnalyzedDictType | None:
+        # Validate mutate_fn signature and extract type annotation
+        mutate_sig = inspect.signature(mutate_fn)
+        params = list(mutate_sig.parameters.values())
+
+        if len(params) != 1:
+            raise ValueError(
+                f"Method {connector_cls.__name__}.mutate(*args) must have exactly one parameter, "
+                f"got {len(params)}"
+            )
+
+        param = params[0]
+        if param.kind != inspect.Parameter.VAR_POSITIONAL:
+            raise ValueError(
+                f"Method {connector_cls.__name__}.mutate(*args) parameter must be *args format, "
+                f"got {param.kind.name}"
+            )
+
+        # Extract type annotation
+        analyzed_args_type = analyze_type_info(param.annotation)
+        if isinstance(analyzed_args_type.variant, AnalyzedAnyType):
+            return None
+
+        if analyzed_args_type.base_type is tuple:
+            args = get_args(analyzed_args_type.core_type)
+            if not args:
+                return None
+            if len(args) == 2:
+                mutation_type = analyze_type_info(args[1])
+                if isinstance(mutation_type.variant, AnalyzedAnyType):
+                    return None
+                if isinstance(mutation_type.variant, AnalyzedDictType):
+                    return mutation_type.variant
+
+        raise ValueError(
+            f"Method {connector_cls.__name__}.mutate(*args) parameter must be a tuple with "
+            f"2 elements (tuple[SpecType, dict[str, ValueStruct]], spec and mutation in dict), "
+            "got {args_type}"
+        )
+
+    def create_export_context(
+        self,
+        name: str,
+        spec: dict[str, Any],
+        key_fields_schema: list[Any],
+        value_fields_schema: list[Any],
+    ) -> _TargetConnectorContext:
+        key_annotation, value_annotation = (
+            (
+                self._mutatation_type.key_type,
+                self._mutatation_type.value_type,
+            )
+            if self._mutatation_type is not None
+            else (None, None)
+        )
+
+        if len(key_fields_schema) == 1:
+            key_decoder = make_engine_value_decoder(
+                ["(key)"], key_fields_schema[0]["type"], key_annotation
+            )
+        else:
+            key_decoder = make_engine_struct_decoder(
+                ["(key)"], key_fields_schema, analyze_type_info(key_annotation)
+            )
+
+        value_decoder = make_engine_struct_decoder(
+            ["(value)"], value_fields_schema, analyze_type_info(value_annotation)
+        )
+
+        return _TargetConnectorContext(
+            target_name=name,
+            spec=_load_spec_from_engine(self._spec_cls, spec),
+            key_decoder=key_decoder,
+            value_decoder=value_decoder,
+        )
+
+    def get_persistent_key(self, export_context: _TargetConnectorContext) -> Any:
+        return self._get_persistent_key_fn(
+            export_context.spec, export_context.target_name
+        )
+
+    def describe_resource(self, key: Any) -> str:
+        describe_fn = getattr(self._connector_cls, "describe", None)
+        if describe_fn is None:
+            return str(key)
+        return str(describe_fn(key))
+
+    async def apply_setup_changes_async(
+        self,
+        changes: list[tuple[Any, list[dict[str, Any] | None], dict[str, Any] | None]],
+    ) -> None:
+        for key, previous, current in changes:
+            prev_specs = [
+                _load_spec_from_engine(self._spec_cls, spec)
+                if spec is not None
+                else None
+                for spec in previous
+            ]
+            curr_spec = (
+                _load_spec_from_engine(self._spec_cls, current)
+                if current is not None
+                else None
+            )
+            for prev_spec in prev_specs:
+                await self._apply_setup_change_async_fn(key, prev_spec, curr_spec)
+
+    @staticmethod
+    def _decode_mutation(
+        context: _TargetConnectorContext, mutation: list[tuple[Any, Any | None]]
+    ) -> tuple[Any, dict[Any, Any | None]]:
+        return (
+            context.spec,
+            {
+                context.key_decoder(key): (
+                    context.value_decoder(value) if value is not None else None
+                )
+                for key, value in mutation
+            },
+        )
+
+    async def mutate_async(
+        self,
+        mutations: list[tuple[_TargetConnectorContext, list[tuple[Any, Any | None]]]],
+    ) -> None:
+        await self._mutate_async_fn(
+            *(
+                self._decode_mutation(context, mutation)
+                for context, mutation in mutations
+            )
+        )
+
+
+def target_connector(spec_cls: type) -> Callable[[type], type]:
+    """
+    Decorate a class to provide a target connector for an op.
+    """
+
+    # Validate the spec_cls is a TargetSpec.
+    if not issubclass(spec_cls, TargetSpec):
+        raise ValueError(f"Expect a TargetSpec, got {spec_cls}")
+
+    # Register the target connector.
+    def _inner(connector_cls: type) -> type:
+        connector = _TargetConnector(spec_cls, connector_cls)
+        _engine.register_target_connector(spec_cls.__name__, connector)
+        return connector_cls
 
     return _inner

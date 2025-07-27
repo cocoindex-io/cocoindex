@@ -10,6 +10,13 @@ import functools
 import inspect
 import re
 
+from .validation import (
+    validate_flow_name,
+    NamingError,
+    validate_full_flow_name,
+    validate_target_name,
+)
+
 from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
@@ -300,6 +307,9 @@ class DataScope:
         )
 
     def __setitem__(self, field_name: str, value: DataSlice[T]) -> None:
+        from .validation import validate_field_name
+
+        validate_field_name(field_name)
         value._state.attach_to_scope(self._engine_data_scope, field_name)
 
     def __enter__(self) -> DataScope:
@@ -367,7 +377,7 @@ class DataCollector:
 
     def export(
         self,
-        name: str,
+        target_name: str,
         target_spec: op.TargetSpec,
         /,
         *,
@@ -381,6 +391,8 @@ class DataCollector:
 
         `vector_index` is for backward compatibility only. Please use `vector_indexes` instead.
         """
+
+        validate_target_name(target_name)
         if not isinstance(target_spec, op.TargetSpec):
             raise ValueError(
                 "export() can only be called on a CocoIndex target storage"
@@ -398,7 +410,7 @@ class DataCollector:
             vector_indexes=vector_indexes,
         )
         self._flow_builder_state.engine_flow_builder.export(
-            name,
+            target_name,
             _spec_kind(target_spec),
             dump_engine_object(target_spec),
             dump_engine_object(index_options),
@@ -660,6 +672,8 @@ class Flow:
     def __init__(
         self, name: str, full_name: str, engine_flow_creator: Callable[[], _engine.Flow]
     ):
+        validate_flow_name(name)
+        validate_full_flow_name(full_name)
         self._name = name
         self._full_name = full_name
         engine_flow = None
@@ -831,11 +845,6 @@ def get_flow_full_name(name: str) -> str:
 
 
 def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
-    """Add a flow definition to the cocoindex library."""
-    if not all(c.isalnum() or c == "_" for c in name):
-        raise ValueError(
-            f"Flow name '{name}' contains invalid characters. Only alphanumeric characters and underscores are allowed."
-        )
     with _flows_lock:
         if name in _flows:
             raise KeyError(f"Flow with name {name} already exists")

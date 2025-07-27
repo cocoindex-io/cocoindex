@@ -331,11 +331,11 @@ impl MetadataTableSetup {
 }
 
 impl ResourceSetupStatus for MetadataTableSetup {
-    fn describe_changes(&self) -> Vec<String> {
+    fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         if self.metadata_table_missing {
-            vec![format!(
+            vec![setup::ChangeDescription::Action(format!(
                 "Create the cocoindex metadata table {SETUP_METADATA_TABLE_NAME}"
-            )]
+            ))]
         } else {
             vec![]
         }

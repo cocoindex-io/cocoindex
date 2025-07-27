@@ -244,14 +244,19 @@ pub enum SetupChangeType {
     Invalid,
 }
 
+pub enum ChangeDescription {
+    Action(String),
+    Note(String),
+}
+
 pub trait ResourceSetupStatus: Send + Sync + Debug + Any + 'static {
-    fn describe_changes(&self) -> Vec<String>;
+    fn describe_changes(&self) -> Vec<ChangeDescription>;
 
     fn change_type(&self) -> SetupChangeType;
 }
 
 impl ResourceSetupStatus for Box<dyn ResourceSetupStatus> {
-    fn describe_changes(&self) -> Vec<String> {
+    fn describe_changes(&self) -> Vec<ChangeDescription> {
         self.as_ref().describe_changes()
     }
 
@@ -261,7 +266,7 @@ impl ResourceSetupStatus for Box<dyn ResourceSetupStatus> {
 }
 
 impl ResourceSetupStatus for std::convert::Infallible {
-    fn describe_changes(&self) -> Vec<String> {
+    fn describe_changes(&self) -> Vec<ChangeDescription> {
         unreachable!()
     }
 
@@ -300,9 +305,26 @@ impl<K, S, C: ResourceSetupStatus> std::fmt::Display for ResourceSetupInfo<K, S,
             let changes = setup_status.describe_changes();
             if !changes.is_empty() {
                 let mut f = indented(f).with_str(INDENT);
-                writeln!(f, "{}", "TODO:".color(AnsiColors::BrightBlack))?;
+                writeln!(f, "")?;
                 for change in changes {
-                    writeln!(f, "  - {}", change.color(AnsiColors::BrightBlack))?;
+                    match change {
+                        ChangeDescription::Action(action) => {
+                            writeln!(
+                                f,
+                                "{} {}",
+                                "TODO:".color(AnsiColors::BrightBlack).bold(),
+                                action.color(AnsiColors::BrightBlack)
+                            )?;
+                        }
+                        ChangeDescription::Note(note) => {
+                            writeln!(
+                                f,
+                                "{} {}",
+                                "NOTE:".color(AnsiColors::Yellow).bold(),
+                                note.color(AnsiColors::Yellow)
+                            )?;
+                        }
+                    }
                 }
                 writeln!(f)?;
             }

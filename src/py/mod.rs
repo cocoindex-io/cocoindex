@@ -4,7 +4,7 @@ use crate::prelude::*;
 use crate::base::schema::{FieldSchema, ValueType};
 use crate::base::spec::{NamedSpec, OutputMode, ReactiveOpSpec, SpecFormatter};
 use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
-use crate::ops::py_factory::PyOpArgSchema;
+use crate::ops::py_factory::{PyExportTargetFactory, PyOpArgSchema};
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
 use crate::server::{self, ServerSettings};
 use crate::settings::Settings;
@@ -93,6 +93,14 @@ fn register_function_factory(name: String, py_function_factory: Py<PyAny>) -> Py
         py_function_factory,
     };
     register_factory(name, ExecutorFactory::SimpleFunction(Arc::new(factory))).into_py_result()
+}
+
+#[pyfunction]
+fn register_target_connector(name: String, py_target_connector: Py<PyAny>) -> PyResult<()> {
+    let factory = PyExportTargetFactory {
+        py_target_connector,
+    };
+    register_factory(name, ExecutorFactory::ExportTarget(Arc::new(factory))).into_py_result()
 }
 
 #[pyclass]
@@ -516,6 +524,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(start_server, m)?)?;
     m.add_function(wrap_pyfunction!(stop, m)?)?;
     m.add_function(wrap_pyfunction!(register_function_factory, m)?)?;
+    m.add_function(wrap_pyfunction!(register_target_connector, m)?)?;
     m.add_function(wrap_pyfunction!(flow_names_with_setup_async, m)?)?;
     m.add_function(wrap_pyfunction!(make_setup_bundle, m)?)?;
     m.add_function(wrap_pyfunction!(make_drop_bundle, m)?)?;

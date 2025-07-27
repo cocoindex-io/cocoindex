@@ -6,6 +6,7 @@ import os
 
 from typing import Callable, Self, Any, overload
 from dataclasses import dataclass
+from .validation import validate_app_namespace_name
 
 _app_namespace: str = ""
 
@@ -27,6 +28,8 @@ def split_app_namespace(full_name: str, delimiter: str) -> tuple[str, str]:
 
 def set_app_namespace(app_namespace: str) -> None:
     """Set the application namespace."""
+    if app_namespace:
+        validate_app_namespace_name(app_namespace)
     global _app_namespace  # pylint: disable=global-statement
     _app_namespace = app_namespace
 

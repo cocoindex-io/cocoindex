@@ -320,7 +320,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
         key: Self::Key,
         desired_state: Option<Self::SetupState>,
         existing_states: setup::CombinedState<Self::SetupState>,
-        auth_registry: &Arc<AuthRegistry>,
+        flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<Self::SetupStatus>;
 
     fn check_state_compatibility(
@@ -358,7 +358,7 @@ pub trait StorageFactoryBase: ExportTargetFactory + Send + Sync + 'static {
     async fn apply_setup_changes(
         &self,
         setup_status: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<()>;
 }
 
@@ -420,7 +420,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
         key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
-        auth_registry: &Arc<AuthRegistry>,
+        flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn setup::ResourceSetupStatus>> {
         let key: T::Key = Self::deserialize_setup_key(key.clone())?;
         let desired_state: Option<T::SetupState> = desired_state
@@ -432,7 +432,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
             key,
             desired_state,
             existing_states,
-            auth_registry,
+            flow_instance_ctx,
         )
         .await?;
         Ok(Box::new(setup_status))
@@ -499,7 +499,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
     async fn apply_setup_changes(
         &self,
         setup_status: Vec<ResourceSetupChangeItem<'async_trait>>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<()> {
         StorageFactoryBase::apply_setup_changes(
             self,
@@ -514,7 +514,7 @@ impl<T: StorageFactoryBase> ExportTargetFactory for T {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
-            auth_registry,
+            context,
         )
         .await
     }

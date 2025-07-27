@@ -32,6 +32,13 @@ Here's how CocoIndex data elements map to Postgres elements during export:
 For example, if you have a data collector that collects rows with fields `id`, `title`, and `embedding`, it will be exported to a Postgres table with corresponding columns.
 It should be a unique table, meaning that no other export target should export to the same table.
 
+:::warning vector type mapping to Postgres
+
+Since vectors in pgvector must have fixed dimension, we only map vectors of number types with fixed dimension (i.e. *Vector[cocoindex.Float32, N]*, *Vector[cocoindex.Float64, N]*, and *Vector[cocoindex.Int64, N]*) to `vector(N)` columns.
+For all other vector types, we map them to `jsonb` columns.
+
+:::
+
 #### Spec
 
 The spec takes the following fields:
@@ -56,7 +63,19 @@ Here's how CocoIndex data elements map to Qdrant elements during export:
 | a collected row   | a point |
 | a field           | a named vector, if fits into Qdrant vector; or a field within payload otherwise |
 
-*Vector[Float32, N]*, *Vector[Float64, N]* and *Vector[Int64, N]* types fit into Qdrant vector.
+The following vector types fit into Qdrant vector:
+*   One-dimensional vectors with fixed dimension, e.g. *Vector[Float32, N]*, *Vector[Float64, N]* and *Vector[Int64, N]*.
+    We map them to [dense vectors](https://qdrant.tech/documentation/concepts/vectors/#dense-vectors).
+*   Two-dimensional vectors whose inner layer is a one-dimensional vector with fixed dimension, e.g. *Vector[Vector[Float32, N]]*, *Vector[Vector[Int64, N]]*, *Vector[Vector[Float64, N]]*. The outer layer may or may not have a fixed dimension.
+    We map them to [multivectors](https://qdrant.tech/documentation/concepts/vectors/#multivectors).
+
+
+:::warning vector type mapping to Qdrant
+
+Since vectors in Qdrant must have fixed dimension, we only map vectors of number types with fixed dimension to Qdrant vectors.
+For all other vector types, we map to Qdrant payload as JSON arrays.
+
+:::
 
 #### Spec
 

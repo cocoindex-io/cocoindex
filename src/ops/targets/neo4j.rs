@@ -840,7 +840,7 @@ impl GraphElementDataSetupStatus {
 }
 
 impl ResourceSetupStatus for GraphElementDataSetupStatus {
-    fn describe_changes(&self) -> Vec<String> {
+    fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut result = vec![];
         if let Some(data_clear) = &self.data_clear {
             let mut desc = "Clear data".to_string();
@@ -856,7 +856,7 @@ impl ResourceSetupStatus for GraphElementDataSetupStatus {
                 )
                 .unwrap();
             }
-            result.push(desc);
+            result.push(setup::ChangeDescription::Action(desc));
         }
         result
     }
@@ -1009,9 +1009,11 @@ impl StorageFactoryBase for Factory {
         key: Neo4jGraphElement,
         desired: Option<SetupState>,
         existing: CombinedState<SetupState>,
-        auth_registry: &Arc<AuthRegistry>,
+        flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<Self::SetupStatus> {
-        let conn_spec = auth_registry.get::<ConnectionSpec>(&key.connection)?;
+        let conn_spec = flow_instance_ctx
+            .auth_registry
+            .get::<ConnectionSpec>(&key.connection)?;
         let data_status = GraphElementDataSetupStatus::new(desired.as_ref(), &existing);
         let components = components::SetupStatus::create(
             SetupComponentOperator {
@@ -1082,7 +1084,7 @@ impl StorageFactoryBase for Factory {
     async fn apply_setup_changes(
         &self,
         changes: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<()> {
         // Relationships first, then nodes, as relationships need to be deleted before nodes they referenced.
         let mut relationship_types = IndexSet::<&Neo4jGraphElement>::new();
@@ -1114,7 +1116,7 @@ impl StorageFactoryBase for Factory {
         for rel_type in relationship_types.into_iter() {
             let graph = self
                 .graph_pool
-                .get_graph_for_key(rel_type, auth_registry)
+                .get_graph_for_key(rel_type, &context.auth_registry)
                 .await?;
             clear_graph_element_data(&graph, rel_type, true).await?;
         }
@@ -1122,7 +1124,7 @@ impl StorageFactoryBase for Factory {
         for node_label in node_labels.iter() {
             let graph = self
                 .graph_pool
-                .get_graph_for_key(node_label, auth_registry)
+                .get_graph_for_key(node_label, &context.auth_registry)
                 .await?;
             clear_graph_element_data(&graph, node_label, true).await?;
         }
@@ -1131,7 +1133,7 @@ impl StorageFactoryBase for Factory {
             if !node_labels.contains(node_label) {
                 let graph = self
                     .graph_pool
-                    .get_graph_for_key(node_label, auth_registry)
+                    .get_graph_for_key(node_label, &context.auth_registry)
                     .await?;
                 clear_graph_element_data(&graph, node_label, false).await?;
             }

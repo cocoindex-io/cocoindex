@@ -187,7 +187,7 @@ struct GraphElementDataSetupStatus {
 }
 
 impl setup::ResourceSetupStatus for GraphElementDataSetupStatus {
-    fn describe_changes(&self) -> Vec<String> {
+    fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         self.actions.describe_changes()
     }
 
@@ -847,7 +847,7 @@ impl StorageFactoryBase for Factory {
         _key: KuzuGraphElement,
         desired: Option<SetupState>,
         existing: CombinedState<SetupState>,
-        _auth_registry: &Arc<AuthRegistry>,
+        _flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<Self::SetupStatus> {
         let existing_invalidated = desired.as_ref().is_some_and(|desired| {
             existing
@@ -1040,7 +1040,7 @@ impl StorageFactoryBase for Factory {
     async fn apply_setup_changes(
         &self,
         changes: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
-        auth_registry: &Arc<AuthRegistry>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<()> {
         let mut changes_by_conn = IndexMap::new();
         for change in changes.into_iter() {
@@ -1050,7 +1050,7 @@ impl StorageFactoryBase for Factory {
                 .push(change);
         }
         for (conn, changes) in changes_by_conn.into_iter() {
-            let conn_spec = auth_registry.get::<ConnectionSpec>(&conn)?;
+            let conn_spec = context.auth_registry.get::<ConnectionSpec>(&conn)?;
             let kuzu_client = KuzuThinClient::new(&conn_spec, self.reqwest_client.clone());
 
             let (node_changes, rel_changes): (Vec<_>, Vec<_>) =

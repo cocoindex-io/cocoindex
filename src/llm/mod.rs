@@ -100,7 +100,6 @@ mod litellm;
 mod ollama;
 mod openai;
 mod openrouter;
-mod vertex_ai;
 mod vllm;
 mod voyage;
 

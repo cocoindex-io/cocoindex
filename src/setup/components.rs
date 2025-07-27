@@ -110,15 +110,18 @@ impl<D: SetupOperator> SetupStatus<D> {
 }
 
 impl<D: SetupOperator + Send + Sync> ResourceSetupStatus for SetupStatus<D> {
-    fn describe_changes(&self) -> Vec<String> {
+    fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut result = vec![];
 
         for key in &self.keys_to_delete {
-            result.push(format!("Delete {}", self.desc.describe_key(key)));
+            result.push(setup::ChangeDescription::Action(format!(
+                "Delete {}",
+                self.desc.describe_key(key)
+            )));
         }
 
         for state in &self.states_to_upsert {
-            result.push(format!(
+            result.push(setup::ChangeDescription::Action(format!(
                 "{} {}",
                 if state.already_exists {
                     "Update"
@@ -126,7 +129,7 @@ impl<D: SetupOperator + Send + Sync> ResourceSetupStatus for SetupStatus<D> {
                     "Create"
                 },
                 self.desc.describe_state(&state.state)
-            ));
+            )));
         }
 
         result
@@ -171,7 +174,7 @@ pub async fn apply_component_changes<D: SetupOperator>(
 }
 
 impl<A: ResourceSetupStatus, B: ResourceSetupStatus> ResourceSetupStatus for (A, B) {
-    fn describe_changes(&self) -> Vec<String> {
+    fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut result = vec![];
         result.extend(self.0.describe_changes());
         result.extend(self.1.describe_changes());

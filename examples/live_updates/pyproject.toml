@@ -1,0 +1,12 @@
+[project]
+name = "live-updates-example"
+version = "0.1.0"
+description = "Simple example for cocoindex: perform live updates based on local markdown files."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex>=0.1.70",
+    "python-dotenv>=1.1.0",
+]
+
+[tools.setuptools]
+packages = []

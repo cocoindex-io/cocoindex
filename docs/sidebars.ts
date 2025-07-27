@@ -14,6 +14,14 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Tutorials',
+      collapsed: false,
+      items: [
+        'tutorials/live_updates',
+      ],
+    },
+    {
+      type: 'category',
       label: 'CocoIndex Core',
       collapsed: false,
       items: [
