@@ -58,6 +58,10 @@ const config: Config = {
             to: '/core/settings',
           },
           {
+            from: '/core/custom_function',
+            to: '/custom_ops/custom_functions',
+          },
+          {
             from: '/ops/storages',
             to: '/ops/targets',
           },
