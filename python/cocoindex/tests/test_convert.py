@@ -1505,6 +1505,8 @@ def test_auto_default_for_supported_and_unsupported_types() -> None:
     result = decoder(engine_val)
     assert result == KTableField(1, {})
 
+    # validate_full_roundtrip(KTableField(1, {}), KTableField)
+
     with pytest.raises(
         ValueError,
         match=r"Field 'b' \(type <class 'int'>\) without default value is missing in input: ",
