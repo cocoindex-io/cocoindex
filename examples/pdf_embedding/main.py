@@ -1,7 +1,6 @@
 import cocoindex
 import os
 import tempfile
-from typing import List, Dict, Any
 
 from dotenv import load_dotenv
 from marker.config.parser import ConfigParser
