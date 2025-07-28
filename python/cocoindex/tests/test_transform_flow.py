@@ -1,5 +1,6 @@
 import typing
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
@@ -36,15 +37,15 @@ def simple_transform(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[str]
 
 
 @cocoindex.op.function()
-def extract_value(child: int) -> int:
-    """Extracts the value from a Child object."""
-    return child
+def extract_value(value: int) -> int:
+    """Extracts the value."""
+    return value
 
 
 @cocoindex.transform_flow()
 def for_each_transform(
     data: cocoindex.DataSlice[Parent],
-) -> cocoindex.DataSlice[Parent]:
+) -> cocoindex.DataSlice[Any]:
     """Transform flow that processes child rows to extract values."""
     with data["children"].row() as child:
         child["new_field"] = child["value"].transform(extract_value)
@@ -73,12 +74,18 @@ def test_for_each_transform_flow() -> None:
     """Test the complex transform flow with child rows."""
     input_data = Parent(children=[Child(1), Child(2), Child(3)])
     result = for_each_transform.eval(input_data)
-    expected = Parent(children=[Child(1), Child(2), Child(3)])
+    expected = {
+        "children": [
+            {"value": 1, "new_field": 1},
+            {"value": 2, "new_field": 2},
+            {"value": 3, "new_field": 3},
+        ]
+    }
     assert result == expected, f"Expected {expected}, got {result}"
 
     input_data = Parent(children=[])
     result = for_each_transform.eval(input_data)
-    assert result == Parent(children=[]), f"Expected [], got {result}"
+    assert result == {"children": []}, f"Expected {{'children': []}}, got {result}"
 
 
 @pytest.mark.asyncio
@@ -86,5 +93,11 @@ async def test_for_each_transform_flow_async() -> None:
     """Test the complex transform flow asynchronously."""
     input_data = Parent(children=[Child(4), Child(5)])
     result = await for_each_transform.eval_async(input_data)
-    expected = Parent(children=[Child(4), Child(5)])
+    expected = {
+        "children": [
+            {"value": 4, "new_field": 4},
+            {"value": 5, "new_field": 5},
+        ]
+    }
+
     assert result == expected, f"Expected {expected}, got {result}"
