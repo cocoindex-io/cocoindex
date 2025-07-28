@@ -1289,7 +1289,13 @@ def test_roundtrip_ltable_to_list_dict_binding() -> None:
     ]
 
     # Test Any annotation
-    validate_full_roundtrip(users, list[User], (expected_list_dict, Any))
+    validate_full_roundtrip(
+        users,
+        list[User],
+        (expected_list_dict, Any),
+        (expected_list_dict, list[Any]),
+        (expected_list_dict, list[dict[str, Any]]),
+    )
 
 
 def test_roundtrip_ktable_to_dict_dict_binding() -> None:
@@ -1313,7 +1319,17 @@ def test_roundtrip_ktable_to_dict_dict_binding() -> None:
     }
 
     # Test Any annotation
-    validate_full_roundtrip(products, dict[str, Product], (expected_dict_dict, Any))
+    validate_full_roundtrip(
+        products,
+        dict[str, Product],
+        (expected_dict_dict, Any),
+        (expected_dict_dict, dict),
+        (expected_dict_dict, dict[Any, Any]),
+        (expected_dict_dict, dict[str, Any]),
+        (expected_dict_dict, dict[Any, dict[Any, Any]]),
+        (expected_dict_dict, dict[str, dict[Any, Any]]),
+        (expected_dict_dict, dict[str, dict[str, Any]]),
+    )
 
 
 def test_roundtrip_ktable_with_complex_key() -> None:
@@ -1339,7 +1355,28 @@ def test_roundtrip_ktable_with_complex_key() -> None:
     }
 
     # Test Any annotation
-    validate_full_roundtrip(orders, dict[OrderKey, Order], (expected_dict_dict, Any))
+    validate_full_roundtrip(
+        orders,
+        dict[OrderKey, Order],
+        (expected_dict_dict, Any),
+        (expected_dict_dict, dict),
+        (expected_dict_dict, dict[Any, Any]),
+        (expected_dict_dict, dict[Any, dict[str, Any]]),
+        (
+            {
+                ("shop1", 1): Order("Alice", 100.0),
+                ("shop2", 2): Order("Bob", 200.0),
+            },
+            dict[Any, Order],
+        ),
+        (
+            {
+                OrderKey("shop1", 1): {"customer": "Alice", "total": 100.0},
+                OrderKey("shop2", 2): {"customer": "Bob", "total": 200.0},
+            },
+            dict[OrderKey, Any],
+        ),
+    )
 
 
 def test_roundtrip_ltable_with_nested_structs() -> None:
