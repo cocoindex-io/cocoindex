@@ -161,7 +161,6 @@ impl fmt::Display for StructMapping {
 pub enum ValueMapping {
     Constant(ConstantMapping),
     Field(FieldMapping),
-    Struct(StructMapping),
     // TODO: Add support for collections
 }
 
@@ -189,15 +188,6 @@ impl std::fmt::Display for ValueMapping {
             ValueMapping::Field(v) => {
                 write!(f, "{}.{}", v.scope.as_deref().unwrap_or(""), v.field_path)
             }
-            ValueMapping::Struct(v) => write!(
-                f,
-                "Struct({})",
-                v.fields
-                    .iter()
-                    .map(|f| format!("{}={}", f.name, f.spec))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
         }
     }
 }

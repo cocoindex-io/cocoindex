@@ -1,4 +1,4 @@
-use crate::{prelude::*, py::Pythonized};
+use crate::{base::schema::EnrichedValueType, prelude::*, py::Pythonized};
 
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -6,7 +6,8 @@ use std::{collections::btree_map, ops::Deref};
 use tokio::task::LocalSet;
 
 use super::analyzer::{
-    AnalyzerContext, CollectorBuilder, DataScopeBuilder, OpScope, build_flow_instance_context,
+    AnalyzerContext, CollectorBuilder, DataScopeBuilder, OpScope, ValueTypeBuilder,
+    build_flow_instance_context,
 };
 use crate::{
     base::{
@@ -95,13 +96,12 @@ impl DataType {
 pub struct DataSlice {
     scope: Arc<OpScope>,
     value: Arc<spec::ValueMapping>,
-    data_type: DataType,
 }
 
 #[pymethods]
 impl DataSlice {
-    pub fn data_type(&self) -> DataType {
-        self.data_type.clone()
+    pub fn data_type(&self) -> PyResult<DataType> {
+        Ok(DataType::from(self.value_type().into_py_result()?))
     }
 
     pub fn __str__(&self) -> String {
@@ -113,36 +113,32 @@ impl DataSlice {
     }
 
     pub fn field(&self, field_name: &str) -> PyResult<Option<DataSlice>> {
-        let field_schema = match &self.data_type.schema.typ {
-            schema::ValueType::Struct(struct_type) => {
-                match struct_type.fields.iter().find(|f| f.name == field_name) {
-                    Some(field) => field,
-                    None => return Ok(None),
-                }
-            }
-            _ => return Err(PyException::new_err("expect struct type")),
-        };
         let value_mapping = match self.value.as_ref() {
-            spec::ValueMapping::Field(spec::FieldMapping {
-                scope,
-                field_path: spec::FieldPath(field_path),
-            }) => spec::ValueMapping::Field(spec::FieldMapping {
-                scope: scope.clone(),
-                field_path: spec::FieldPath(
-                    field_path
-                        .iter()
-                        .cloned()
-                        .chain([field_name.to_string()])
-                        .collect(),
-                ),
-            }),
-
-            spec::ValueMapping::Struct(v) => v
-                .fields
-                .iter()
-                .find(|f| f.name == field_name)
-                .map(|f| f.spec.clone())
-                .ok_or_else(|| PyException::new_err(format!("field {field_name} not found")))?,
+            spec::ValueMapping::Field(spec::FieldMapping { scope, field_path }) => {
+                let data_scope_builder = self.scope.data.lock().unwrap();
+                let struct_schema = {
+                    let (_, val_type) = data_scope_builder
+                        .analyze_field_path(field_path)
+                        .into_py_result()?;
+                    match &val_type.typ {
+                        ValueTypeBuilder::Struct(struct_type) => struct_type,
+                        _ => return Err(PyException::new_err("expect struct type in field path")),
+                    }
+                };
+                if struct_schema.find_field(field_name).is_none() {
+                    return Ok(None);
+                }
+                spec::ValueMapping::Field(spec::FieldMapping {
+                    scope: scope.clone(),
+                    field_path: spec::FieldPath(
+                        field_path
+                            .iter()
+                            .cloned()
+                            .chain([field_name.to_string()])
+                            .collect(),
+                    ),
+                })
+            }
 
             spec::ValueMapping::Constant { .. } => {
                 return Err(PyException::new_err(
@@ -153,7 +149,6 @@ impl DataSlice {
         Ok(Some(DataSlice {
             scope: self.scope.clone(),
             value: Arc::new(value_mapping),
-            data_type: field_schema.value_type.clone().into(),
         }))
     }
 }
@@ -168,15 +163,28 @@ impl DataSlice {
             v => v.clone(),
         }
     }
+
+    fn value_type(&self) -> Result<schema::EnrichedValueType> {
+        let result = match self.value.as_ref() {
+            spec::ValueMapping::Constant(c) => c.schema.clone(),
+            spec::ValueMapping::Field(v) => {
+                let data_scope_builder = self.scope.data.lock().unwrap();
+                let (_, val_type) = data_scope_builder.analyze_field_path(&v.field_path)?;
+                EnrichedValueType::from_alternative(val_type)?
+            }
+        };
+        Ok(result)
+    }
 }
 
 impl std::fmt::Display for DataSlice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "DataSlice({}; {} {}) ",
-            self.data_type.schema, self.scope, self.value
-        )?;
+        write!(f, "DataSlice(")?;
+        match self.value_type() {
+            Ok(value_type) => write!(f, "{value_type}")?,
+            Err(e) => write!(f, "<error: {}>", e)?,
+        }
+        write!(f, "; {} {}) ", self.scope, self.value)?;
         Ok(())
     }
 }
@@ -333,7 +341,6 @@ impl FlowBuilder {
                 schema: schema.clone(),
                 value: serde_json::to_value(value).into_py_result()?,
             })),
-            data_type: schema.into(),
         };
         Ok(slice)
     }
@@ -510,11 +517,14 @@ impl FlowBuilder {
         let collector_schema = CollectorSchema::from_fields(
             fields
                 .into_iter()
-                .map(|(name, ds)| FieldSchema {
-                    name,
-                    value_type: ds.data_type.schema,
+                .map(|(name, ds)| {
+                    Ok(FieldSchema {
+                        name,
+                        value_type: ds.value_type()?,
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<FieldSchema>>>()
+                .into_py_result()?,
             auto_uuid_field,
         );
         {
@@ -567,22 +577,20 @@ impl FlowBuilder {
     }
 
     pub fn scope_field(&self, scope: OpScopeRef, field_name: &str) -> PyResult<Option<DataSlice>> {
-        let field_type = {
+        {
             let scope_builder = scope.0.data.lock().unwrap();
-            let (_, field_schema) = scope_builder
-                .data
-                .find_field(field_name)
-                .ok_or_else(|| PyException::new_err(format!("field {field_name} not found")))?;
-            schema::EnrichedValueType::from_alternative(&field_schema.value_type)
-                .into_py_result()?
-        };
+            if scope_builder.data.find_field(field_name).is_none() {
+                return Err(PyException::new_err(format!(
+                    "field {field_name} not found"
+                )));
+            }
+        }
         Ok(Some(DataSlice {
             scope: scope.0,
             value: Arc::new(spec::ValueMapping::Field(spec::FieldMapping {
                 scope: None,
                 field_path: spec::FieldPath(vec![field_name.to_string()]),
             })),
-            data_type: DataType { schema: field_type },
         }))
     }
 
@@ -730,7 +738,6 @@ impl FlowBuilder {
                 scope: None,
                 field_path: spec::FieldPath(vec![last_field.name.clone()]),
             })),
-            data_type: schema::EnrichedValueType::from_alternative(&last_field.value_type)?.into(),
         };
         Ok(result)
     }
