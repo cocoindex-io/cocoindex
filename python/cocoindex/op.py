@@ -505,7 +505,7 @@ class _TargetConnector:
                 self._mutatation_type.value_type,
             )
             if self._mutatation_type is not None
-            else (None, None)
+            else (Any, Any)
         )
 
         key_type_info = analyze_type_info(key_annotation)
@@ -519,10 +519,11 @@ class _TargetConnector:
                 ["(key)"],
                 key_fields_schema[0]["type"],
                 key_type_info,
+                for_key=True,
             )
         else:
             key_decoder = make_engine_struct_decoder(
-                ["(key)"], key_fields_schema, key_type_info
+                ["(key)"], key_fields_schema, key_type_info, for_key=True
             )
 
         value_decoder = make_engine_struct_decoder(

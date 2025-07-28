@@ -241,7 +241,9 @@ def make_engine_value_decoder(
             vec_elem_decoder = make_engine_value_decoder(
                 field_path + ["[*]"],
                 src_type["element_type"],
-                analyze_type_info(dst_type_variant and dst_type_variant.elem_type),
+                analyze_type_info(
+                    dst_type_variant.elem_type if dst_type_variant else Any
+                ),
             )
 
         def decode_vector(value: Any) -> Any | None:
