@@ -1160,6 +1160,37 @@ def test_full_roundtrip_scalar_with_python_types() -> None:
     validate_full_roundtrip(instance, MixedStruct)
 
 
+def test_roundtrip_simple_struct_to_dict_binding() -> None:
+    """Test struct -> dict binding with Any annotation."""
+
+    @dataclass
+    class SimpleStruct:
+        first_name: str
+        last_name: str
+
+    instance = SimpleStruct("John", "Doe")
+    expected_dict = {"first_name": "John", "last_name": "Doe"}
+
+    # Test Any annotation
+    validate_full_roundtrip(
+        instance,
+        SimpleStruct,
+        (expected_dict, Any),
+        (expected_dict, dict),
+        (expected_dict, dict[Any, Any]),
+        (expected_dict, dict[str, Any]),
+        # For simple struct, all fields have the same type, so we can directly use the type as the dict value type.
+        (expected_dict, dict[Any, str]),
+        (expected_dict, dict[str, str]),
+    )
+
+    with pytest.raises(ValueError):
+        validate_full_roundtrip(instance, SimpleStruct, (expected_dict, dict[str, int]))
+
+    with pytest.raises(ValueError):
+        validate_full_roundtrip(instance, SimpleStruct, (expected_dict, dict[int, Any]))
+
+
 def test_roundtrip_struct_to_dict_binding() -> None:
     """Test struct -> dict binding with Any annotation."""
 
@@ -1173,7 +1204,20 @@ def test_roundtrip_struct_to_dict_binding() -> None:
     expected_dict = {"name": "test", "value": 42, "price": 3.14}
 
     # Test Any annotation
-    validate_full_roundtrip(instance, SimpleStruct, (expected_dict, Any))
+    validate_full_roundtrip(
+        instance,
+        SimpleStruct,
+        (expected_dict, Any),
+        (expected_dict, dict),
+        (expected_dict, dict[Any, Any]),
+        (expected_dict, dict[str, Any]),
+    )
+
+    with pytest.raises(ValueError):
+        validate_full_roundtrip(instance, SimpleStruct, (expected_dict, dict[str, str]))
+
+    with pytest.raises(ValueError):
+        validate_full_roundtrip(instance, SimpleStruct, (expected_dict, dict[int, Any]))
 
 
 def test_roundtrip_struct_to_dict_explicit() -> None:
