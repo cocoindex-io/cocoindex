@@ -33,14 +33,14 @@ It takes two arguments:
 *   `flow_builder`: a `FlowBuilder` object to help build the flow.
 *   `data_scope`: a `DataScope` object, representing the top-level data scope. Any data created by the flow should be added to it.
 
-Alternatively, for more flexibility (e.g. you want to do this conditionally or generate dynamic name), you can explicitly call the `cocoindex.add_flow_def()` method:
+Alternatively, for more flexibility (e.g. you want to do this conditionally or generate dynamic name), you can explicitly call the `cocoindex.open_flow()` method:
 
 ```python
 def demo_flow_def(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     ...
 
 # Add the flow definition to the flow registry.
-demo_flow = cocoindex.add_flow_def("DemoFlow", demo_flow_def)
+demo_flow = cocoindex.open_flow("DemoFlow", demo_flow_def)
 ```
 
 In both cases, `demo_flow` will be an object with `cocoindex.Flow` class type.

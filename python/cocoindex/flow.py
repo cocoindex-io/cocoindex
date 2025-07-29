@@ -857,12 +857,22 @@ def get_flow_full_name(name: str) -> str:
     return f"{setting.get_app_namespace(trailing_delimiter='.')}{name}"
 
 
-def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
+def open_flow(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
+    """
+    Open a flow, with the given name and definition.
+    """
     with _flows_lock:
         if name in _flows:
             raise KeyError(f"Flow with name {name} already exists")
         fl = _flows[name] = _create_lazy_flow(name, fl_def)
     return fl
+
+
+def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
+    """
+    DEPRECATED: Use `open_flow()` instead.
+    """
+    return open_flow(name, fl_def)
 
 
 def remove_flow(fl: Flow) -> None:
@@ -878,7 +888,7 @@ def flow_def(
     """
     A decorator to wrap the flow definition.
     """
-    return lambda fl_def: add_flow_def(name or fl_def.__name__, fl_def)
+    return lambda fl_def: open_flow(name or fl_def.__name__, fl_def)
 
 
 def flow_names() -> list[str]:
