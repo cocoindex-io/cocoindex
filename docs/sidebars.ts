@@ -18,6 +18,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'tutorials/live_updates',
+        'tutorials/manage_flow_dynamically',
       ],
     },
     {
