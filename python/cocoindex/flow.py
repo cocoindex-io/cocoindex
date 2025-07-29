@@ -798,7 +798,7 @@ class Flow:
         The current instance is still valid after it's called.
         For example, you can still call `setup()` after it, to setup the persistent backends again.
 
-        Call `cocoindex.remove_flow()` if you want to remove the flow from the current process.
+        Call `close()` if you want to remove the flow from the current process.
         """
         execution_context.run(self.drop_async(report_to_stdout=report_to_stdout))
 
@@ -809,6 +809,18 @@ class Flow:
         await make_drop_bundle([self]).describe_and_apply_async(
             report_to_stdout=report_to_stdout
         )
+
+    def close(self) -> None:
+        """
+        Close the flow. It will remove the flow from the current process to free up resources.
+        After it's called, methods of the flow should no longer be called.
+
+        This will NOT touch the persistent backends of the flow.
+        """
+        _engine.remove_flow_context(self.full_name)
+        self._lazy_engine_flow = None
+        with _flows_lock:
+            del _flows[self.name]
 
 
 def _create_lazy_flow(
@@ -855,15 +867,9 @@ def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) ->
 
 def remove_flow(fl: Flow) -> None:
     """
-    Remove a flow from the current process to free up resources.
-    After it's called, methods of the flow should no longer be called.
-
-    This will NOT touch the persistent backends of the flow.
+    DEPRECATED: Use `Flow.close()` instead.
     """
-    _engine.remove_flow_context(fl.full_name)
-    fl._lazy_engine_flow = None  # pylint: disable=protected-access
-    with _flows_lock:
-        del _flows[fl.name]
+    fl.close()
 
 
 def flow_def(
