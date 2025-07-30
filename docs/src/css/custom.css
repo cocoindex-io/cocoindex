@@ -61,6 +61,13 @@
   --theme-color-keyline: #374151;
 }
 
+
+.table-of-contents {
+  code {
+    border: none;
+  }
+}
+
 .markdown {
   line-height: 150%;
 
@@ -92,13 +99,15 @@
 
 .navbar__title {
   font-family: 'Questrial', sans-serif;
-  font-size: 1.125rem; /* 18px */
+  font-size: 1.125rem;
+  /* 18px */
   color: var(--my-color-text-black);
 }
 
 .navbar {
   box-shadow: none;
-  font-size: 0.875rem; /* 14px */
+  font-size: 0.875rem;
+  /* 14px */
   border-bottom: 1px solid var(--ifm-color-emphasis-200);
 }
 
@@ -145,11 +154,13 @@
 }
 
 .theme-doc-sidebar-menu {
-  font-size: 0.875rem; /* 14px */
+  font-size: 0.875rem;
+  /* 14px */
 }
 
 .table-of-contents {
-  font-size: 0.8125rem; /* 13px */
+  font-size: 0.8125rem;
+  /* 13px */
 }
 
 .breadcrumbs {
@@ -161,6 +172,7 @@
   .breadcrumbs__item:first-child {
     display: none;
   }
+
   .breadcrumbs__link {
     padding: 0;
     background: none;
@@ -173,7 +185,7 @@
   background: var(--ifm-menu-link-sublist-icon) 50% / 1rem 1rem;
 }
 
-.navbar__item.navbar-github-link{
+.navbar__item.navbar-github-link {
   display: block;
   width: 120px;
 }

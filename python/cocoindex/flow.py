@@ -28,15 +28,17 @@ from typing import (
 from rich.text import Text
 from rich.tree import Tree
 
-from . import _engine  # type: ignore
-from . import index
-from . import op
-from . import setting
+from . import (
+    _engine,  # type: ignore
+    index,
+    op,
+    setting,
+)
 from .convert import dump_engine_object, encode_engine_value, make_engine_value_decoder
 from .op import FunctionSpec
 from .runtime import execution_context
 from .setup import SetupChangeBundle
-from .typing import encode_enriched_type
+from .typing import analyze_type_info, encode_enriched_type
 from .validation import (
     validate_flow_name,
     validate_full_flow_name,
@@ -794,7 +796,7 @@ class Flow:
         The current instance is still valid after it's called.
         For example, you can still call `setup()` after it, to setup the persistent backends again.
 
-        Call `cocoindex.remove_flow()` if you want to remove the flow from the current process.
+        Call `close()` if you want to remove the flow from the current process.
         """
         execution_context.run(self.drop_async(report_to_stdout=report_to_stdout))
 
@@ -805,6 +807,18 @@ class Flow:
         await make_drop_bundle([self]).describe_and_apply_async(
             report_to_stdout=report_to_stdout
         )
+
+    def close(self) -> None:
+        """
+        Close the flow. It will remove the flow from the current process to free up resources.
+        After it's called, methods of the flow should no longer be called.
+
+        This will NOT touch the persistent backends of the flow.
+        """
+        _engine.remove_flow_context(self.full_name)
+        self._lazy_engine_flow = None
+        with _flows_lock:
+            del _flows[self.name]
 
 
 def _create_lazy_flow(
@@ -841,7 +855,10 @@ def get_flow_full_name(name: str) -> str:
     return f"{setting.get_app_namespace(trailing_delimiter='.')}{name}"
 
 
-def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
+def open_flow(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
+    """
+    Open a flow, with the given name and definition.
+    """
     with _flows_lock:
         if name in _flows:
             raise KeyError(f"Flow with name {name} already exists")
@@ -849,17 +866,18 @@ def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) ->
     return fl
 
 
+def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
+    """
+    DEPRECATED: Use `open_flow()` instead.
+    """
+    return open_flow(name, fl_def)
+
+
 def remove_flow(fl: Flow) -> None:
     """
-    Remove a flow from the current process to free up resources.
-    After it's called, methods of the flow should no longer be called.
-
-    This will NOT touch the persistent backends of the flow.
+    DEPRECATED: Use `Flow.close()` instead.
     """
-    _engine.remove_flow_context(fl.full_name)
-    fl._lazy_engine_flow = None  # pylint: disable=protected-access
-    with _flows_lock:
-        del _flows[fl.name]
+    fl.close()
 
 
 def flow_def(
@@ -868,7 +886,7 @@ def flow_def(
     """
     A decorator to wrap the flow definition.
     """
-    return lambda fl_def: add_flow_def(name or fl_def.__name__, fl_def)
+    return lambda fl_def: open_flow(name or fl_def.__name__, fl_def)
 
 
 def flow_names() -> list[str]:
@@ -1050,7 +1068,7 @@ class TransformFlow(Generic[T]):
             sig.return_annotation
         )
         result_decoder = make_engine_value_decoder(
-            [], engine_return_type["type"], python_return_type
+            [], engine_return_type["type"], analyze_type_info(python_return_type)
         )
 
         return TransformFlowInfo(engine_flow, result_decoder)

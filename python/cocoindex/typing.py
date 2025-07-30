@@ -262,7 +262,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
 
     if kind is not None:
         variant = AnalyzedBasicType(kind=kind)
-    elif base_type is None or base_type is Any or base_type is inspect.Parameter.empty:
+    elif base_type is Any or base_type is inspect.Parameter.empty:
         variant = AnalyzedAnyType()
     elif is_struct_type(base_type):
         variant = AnalyzedStructType(struct_type=t)
@@ -270,15 +270,15 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
         kind = DtypeRegistry.validate_dtype_and_get_kind(t)
         variant = AnalyzedBasicType(kind=kind)
     elif base_type is collections.abc.Sequence or base_type is list:
-        elem_type = type_args[0] if len(type_args) > 0 else None
+        elem_type = type_args[0] if len(type_args) > 0 else Any
         variant = AnalyzedListType(elem_type=elem_type, vector_info=vector_info)
     elif base_type is np.ndarray:
         np_number_type = t
         elem_type = extract_ndarray_elem_dtype(np_number_type)
         variant = AnalyzedListType(elem_type=elem_type, vector_info=vector_info)
     elif base_type is collections.abc.Mapping or base_type is dict or t is dict:
-        key_type = type_args[0] if len(type_args) > 0 else None
-        elem_type = type_args[1] if len(type_args) > 1 else None
+        key_type = type_args[0] if len(type_args) > 0 else Any
+        elem_type = type_args[1] if len(type_args) > 1 else Any
         variant = AnalyzedDictType(key_type=key_type, value_type=elem_type)
     elif base_type in (types.UnionType, typing.Union):
         non_none_types = [arg for arg in type_args if arg not in (None, types.NoneType)]

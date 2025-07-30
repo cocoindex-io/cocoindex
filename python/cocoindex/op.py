@@ -28,6 +28,7 @@ from .typing import (
     resolve_forward_ref,
     analyze_type_info,
     AnalyzedAnyType,
+    AnalyzedBasicType,
     AnalyzedDictType,
 )
 
@@ -220,7 +221,9 @@ def _register_op_factory(
                     )
                 self._args_decoders.append(
                     make_engine_value_decoder(
-                        [arg_name], arg.value_type["type"], arg_param.annotation
+                        [arg_name],
+                        arg.value_type["type"],
+                        analyze_type_info(arg_param.annotation),
                     )
                 )
                 process_attribute(arg_name, arg)
@@ -252,7 +255,9 @@ def _register_op_factory(
                     )
                 arg_param = expected_arg[1]
                 self._kwargs_decoders[kwarg_name] = make_engine_value_decoder(
-                    [kwarg_name], kwarg.value_type["type"], arg_param.annotation
+                    [kwarg_name],
+                    kwarg.value_type["type"],
+                    analyze_type_info(arg_param.annotation),
                 )
                 process_attribute(kwarg_name, kwarg)
 
@@ -500,16 +505,25 @@ class _TargetConnector:
                 self._mutatation_type.value_type,
             )
             if self._mutatation_type is not None
-            else (None, None)
+            else (Any, Any)
         )
 
-        if len(key_fields_schema) == 1:
+        key_type_info = analyze_type_info(key_annotation)
+        if (
+            len(key_fields_schema) == 1
+            and key_fields_schema[0]["type"]["kind"] != "Struct"
+            and isinstance(key_type_info.variant, (AnalyzedAnyType, AnalyzedBasicType))
+        ):
+            # Special case for ease of use: single key column can be mapped to a basic type without the wrapper struct.
             key_decoder = make_engine_value_decoder(
-                ["(key)"], key_fields_schema[0]["type"], key_annotation
+                ["(key)"],
+                key_fields_schema[0]["type"],
+                key_type_info,
+                for_key=True,
             )
         else:
             key_decoder = make_engine_struct_decoder(
-                ["(key)"], key_fields_schema, analyze_type_info(key_annotation)
+                ["(key)"], key_fields_schema, key_type_info, for_key=True
             )
 
         value_decoder = make_engine_struct_decoder(

@@ -1,13 +1,13 @@
 ---
-title: Run a Flow
+title: Operate a Flow
 toc_max_heading_level: 4
-description: Run a CocoIndex Flow, including build / update data in the target and evaluate the flow without changing the target.
+description: Operate a CocoIndex Flow, including build / update data in the target and evaluate the flow without changing the target.
 ---
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# Run a CocoIndex Flow
+# Operate a CocoIndex Flow
 
 After a flow is defined as discussed in [Flow Definition](/docs/core/flow_def), you can start to transform data with it.
 
@@ -39,7 +39,7 @@ It creates a `demo_flow` object in `cocoindex.Flow` type.
 For a flow, its persistent backends need to be ready before it can run, including:
 
 *   [Internal storage](/docs/core/basics#internal-storage) for CocoIndex.
-*   Backend entities for targets exported by the flow, e.g. a table (in relational databases), a collection (in some vector databases), etc.
+*   Backend resources for targets exported by the flow, e.g. a table (in relational databases), a collection (in some vector databases), etc.
 
 The desired state of the backends for a flow is derived based on the flow definition itself.
 CocoIndex supports two types of actions to manage the persistent backends automatically:
@@ -104,7 +104,7 @@ cocoindex.drop_all_flows(report_to_stdout=True)
 
 After dropping the flow, the in-memory `cocoindex.Flow` instance is still valid, and you can call setup methods on it again.
 
-If you want to remove the flow from the current process, you can call `cocoindex.remove_flow(demo_flow)` to do so (see [related doc](/docs/core/flow_def#entry-point)).
+If you want to remove the flow from the current process, you can call `demo_flow.close()` to do so (see [related doc](/docs/core/flow_def#entry-point)).
 
 :::
 

@@ -1,6 +1,7 @@
 import datetime
+import inspect
 import uuid
-from dataclasses import dataclass, make_dataclass
+from dataclasses import dataclass, make_dataclass, field
 from typing import Annotated, Any, Callable, Literal, NamedTuple
 
 import numpy as np
@@ -19,6 +20,7 @@ from cocoindex.typing import (
     TypeKind,
     Vector,
     encode_enriched_type,
+    analyze_type_info,
 )
 
 
@@ -75,7 +77,9 @@ def build_engine_value_decoder(
     If python_type is not specified, uses engine_type_in_py as the target.
     """
     engine_type = encode_enriched_type(engine_type_in_py)["type"]
-    return make_engine_value_decoder([], engine_type, python_type or engine_type_in_py)
+    return make_engine_value_decoder(
+        [], engine_type, analyze_type_info(python_type or engine_type_in_py)
+    )
 
 
 def validate_full_roundtrip_to(
@@ -103,7 +107,9 @@ def validate_full_roundtrip_to(
     )
 
     for other_value, other_type in decoded_values:
-        decoder = make_engine_value_decoder([], encoded_output_type, other_type)
+        decoder = make_engine_value_decoder(
+            [], encoded_output_type, analyze_type_info(other_type)
+        )
         other_decoded_value = decoder(value_from_engine)
         assert eq(other_decoded_value, other_value), (
             f"Expected {other_value} but got {other_decoded_value} for {other_type}"
@@ -231,19 +237,24 @@ def test_encode_engine_value_none() -> None:
 
 
 def test_roundtrip_basic_types() -> None:
-    validate_full_roundtrip(b"hello world", bytes, (b"hello world", None))
-    validate_full_roundtrip(b"\x00\x01\x02\xff\xfe", bytes)
-    validate_full_roundtrip("hello", str, ("hello", None))
-    validate_full_roundtrip(True, bool, (True, None))
-    validate_full_roundtrip(False, bool, (False, None))
     validate_full_roundtrip(
-        42, cocoindex.Int64, (42, int), (np.int64(42), np.int64), (42, None)
+        b"hello world",
+        bytes,
+        (b"hello world", inspect.Parameter.empty),
+        (b"hello world", Any),
+    )
+    validate_full_roundtrip(b"\x00\x01\x02\xff\xfe", bytes)
+    validate_full_roundtrip("hello", str, ("hello", Any))
+    validate_full_roundtrip(True, bool, (True, Any))
+    validate_full_roundtrip(False, bool, (False, Any))
+    validate_full_roundtrip(
+        42, cocoindex.Int64, (42, int), (np.int64(42), np.int64), (42, Any)
     )
     validate_full_roundtrip(42, int, (42, cocoindex.Int64))
     validate_full_roundtrip(np.int64(42), np.int64, (42, cocoindex.Int64))
 
     validate_full_roundtrip(
-        3.25, Float64, (3.25, float), (np.float64(3.25), np.float64), (3.25, None)
+        3.25, Float64, (3.25, float), (np.float64(3.25), np.float64), (3.25, Any)
     )
     validate_full_roundtrip(3.25, float, (3.25, Float64))
     validate_full_roundtrip(np.float64(3.25), np.float64, (3.25, Float64))
@@ -255,35 +266,35 @@ def test_roundtrip_basic_types() -> None:
         (np.float32(3.25), np.float32),
         (np.float64(3.25), np.float64),
         (3.25, Float64),
-        (3.25, None),
+        (3.25, Any),
     )
     validate_full_roundtrip(np.float32(3.25), np.float32, (3.25, Float32))
 
 
 def test_roundtrip_uuid() -> None:
     uuid_value = uuid.uuid4()
-    validate_full_roundtrip(uuid_value, uuid.UUID, (uuid_value, None))
+    validate_full_roundtrip(uuid_value, uuid.UUID, (uuid_value, Any))
 
 
 def test_roundtrip_range() -> None:
     r1 = (0, 100)
-    validate_full_roundtrip(r1, cocoindex.Range, (r1, None))
+    validate_full_roundtrip(r1, cocoindex.Range, (r1, Any))
     r2 = (50, 50)
-    validate_full_roundtrip(r2, cocoindex.Range, (r2, None))
+    validate_full_roundtrip(r2, cocoindex.Range, (r2, Any))
     r3 = (0, 1_000_000_000)
-    validate_full_roundtrip(r3, cocoindex.Range, (r3, None))
+    validate_full_roundtrip(r3, cocoindex.Range, (r3, Any))
 
 
 def test_roundtrip_time() -> None:
     t1 = datetime.time(10, 30, 50, 123456)
-    validate_full_roundtrip(t1, datetime.time, (t1, None))
+    validate_full_roundtrip(t1, datetime.time, (t1, Any))
     t2 = datetime.time(23, 59, 59)
-    validate_full_roundtrip(t2, datetime.time, (t2, None))
+    validate_full_roundtrip(t2, datetime.time, (t2, Any))
     t3 = datetime.time(0, 0, 0)
-    validate_full_roundtrip(t3, datetime.time, (t3, None))
+    validate_full_roundtrip(t3, datetime.time, (t3, Any))
 
     validate_full_roundtrip(
-        datetime.date(2025, 1, 1), datetime.date, (datetime.date(2025, 1, 1), None)
+        datetime.date(2025, 1, 1), datetime.date, (datetime.date(2025, 1, 1), Any)
     )
 
     validate_full_roundtrip(
@@ -328,11 +339,11 @@ def test_roundtrip_timedelta() -> None:
     td1 = datetime.timedelta(
         days=5, seconds=10, microseconds=123, milliseconds=456, minutes=30, hours=2
     )
-    validate_full_roundtrip(td1, datetime.timedelta, (td1, None))
+    validate_full_roundtrip(td1, datetime.timedelta, (td1, Any))
     td2 = datetime.timedelta(days=-5, hours=-2)
-    validate_full_roundtrip(td2, datetime.timedelta, (td2, None))
+    validate_full_roundtrip(td2, datetime.timedelta, (td2, Any))
     td3 = datetime.timedelta(0)
-    validate_full_roundtrip(td3, datetime.timedelta, (td3, None))
+    validate_full_roundtrip(td3, datetime.timedelta, (td3, Any))
 
 
 def test_roundtrip_json() -> None:
@@ -364,7 +375,9 @@ def test_decode_scalar_numpy_values() -> None:
         ({"kind": "Float64"}, np.float64, 2.718, np.float64(2.718)),
     ]
     for src_type, dst_type, input_value, expected in test_cases:
-        decoder = make_engine_value_decoder(["field"], src_type, dst_type)
+        decoder = make_engine_value_decoder(
+            ["field"], src_type, analyze_type_info(dst_type)
+        )
         result = decoder(input_value)
         assert isinstance(result, dst_type)
         assert result == expected
@@ -378,7 +391,9 @@ def test_non_ndarray_vector_decoding() -> None:
         "dimension": None,
     }
     dst_type_float = list[np.float64]
-    decoder = make_engine_value_decoder(["field"], src_type, dst_type_float)
+    decoder = make_engine_value_decoder(
+        ["field"], src_type, analyze_type_info(dst_type_float)
+    )
     input_numbers = [1.0, 2.0, 3.0]
     result = decoder(input_numbers)
     assert isinstance(result, list)
@@ -388,7 +403,9 @@ def test_non_ndarray_vector_decoding() -> None:
     # Test list[Uuid]
     src_type = {"kind": "Vector", "element_type": {"kind": "Uuid"}, "dimension": None}
     dst_type_uuid = list[uuid.UUID]
-    decoder = make_engine_value_decoder(["field"], src_type, dst_type_uuid)
+    decoder = make_engine_value_decoder(
+        ["field"], src_type, analyze_type_info(dst_type_uuid)
+    )
     uuid1 = uuid.uuid4()
     uuid2 = uuid.uuid4()
     input_uuids = [uuid1, uuid2]
@@ -398,124 +415,15 @@ def test_non_ndarray_vector_decoding() -> None:
     assert result == [uuid1, uuid2]
 
 
-@pytest.mark.parametrize(
-    "data_type, engine_val, expected",
-    [
-        # All fields match (dataclass)
-        (
-            Order,
-            ["O123", "mixed nuts", 25.0, "default_extra"],
-            Order("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        # All fields match (NamedTuple)
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 25.0, "default_extra"],
-            OrderNamedTuple("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        # Extra field in engine value (should ignore extra)
-        (
-            Order,
-            ["O123", "mixed nuts", 25.0, "default_extra", "unexpected"],
-            Order("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 25.0, "default_extra", "unexpected"],
-            OrderNamedTuple("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        # Fewer fields in engine value (should fill with default)
-        (
-            Order,
-            ["O123", "mixed nuts", 0.0, "default_extra"],
-            Order("O123", "mixed nuts", 0.0, "default_extra"),
-        ),
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 0.0, "default_extra"],
-            OrderNamedTuple("O123", "mixed nuts", 0.0, "default_extra"),
-        ),
-        # More fields in engine value (should ignore extra)
-        (
-            Order,
-            ["O123", "mixed nuts", 25.0, "unexpected"],
-            Order("O123", "mixed nuts", 25.0, "unexpected"),
-        ),
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 25.0, "unexpected"],
-            OrderNamedTuple("O123", "mixed nuts", 25.0, "unexpected"),
-        ),
-        # Truly extra field (should ignore the fifth field)
-        (
-            Order,
-            ["O123", "mixed nuts", 25.0, "default_extra", "ignored"],
-            Order("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 25.0, "default_extra", "ignored"],
-            OrderNamedTuple("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        # Missing optional field in engine value (tags=None)
-        (
-            Customer,
-            ["Alice", ["O1", "item1", 10.0, "default_extra"], None],
-            Customer("Alice", Order("O1", "item1", 10.0, "default_extra"), None),
-        ),
-        (
-            CustomerNamedTuple,
-            ["Alice", ["O1", "item1", 10.0, "default_extra"], None],
-            CustomerNamedTuple(
-                "Alice", OrderNamedTuple("O1", "item1", 10.0, "default_extra"), None
-            ),
-        ),
-        # Extra field in engine value for Customer (should ignore)
-        (
-            Customer,
-            ["Alice", ["O1", "item1", 10.0, "default_extra"], [["vip"]], "extra"],
-            Customer(
-                "Alice", Order("O1", "item1", 10.0, "default_extra"), [Tag("vip")]
-            ),
-        ),
-        (
-            CustomerNamedTuple,
-            ["Alice", ["O1", "item1", 10.0, "default_extra"], [["vip"]], "extra"],
-            CustomerNamedTuple(
-                "Alice",
-                OrderNamedTuple("O1", "item1", 10.0, "default_extra"),
-                [Tag("vip")],
-            ),
-        ),
-        # Missing optional field with default
-        (
-            Order,
-            ["O123", "mixed nuts", 25.0],
-            Order("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        (
-            OrderNamedTuple,
-            ["O123", "mixed nuts", 25.0],
-            OrderNamedTuple("O123", "mixed nuts", 25.0, "default_extra"),
-        ),
-        # Partial optional fields
-        (
-            Customer,
-            ["Alice", ["O1", "item1", 10.0]],
-            Customer("Alice", Order("O1", "item1", 10.0, "default_extra"), None),
-        ),
-        (
-            CustomerNamedTuple,
-            ["Alice", ["O1", "item1", 10.0]],
-            CustomerNamedTuple(
-                "Alice", OrderNamedTuple("O1", "item1", 10.0, "default_extra"), None
-            ),
-        ),
-    ],
-)
-def test_struct_decoder_cases(data_type: Any, engine_val: Any, expected: Any) -> None:
-    decoder = build_engine_value_decoder(data_type)
-    assert decoder(engine_val) == expected
+def test_roundtrip_struct() -> None:
+    validate_full_roundtrip(
+        Order("O123", "mixed nuts", 25.0, "default_extra"),
+        Order,
+    )
+    validate_full_roundtrip(
+        OrderNamedTuple("O123", "mixed nuts", 25.0, "default_extra"),
+        OrderNamedTuple,
+    )
 
 
 def test_make_engine_value_decoder_list_of_struct() -> None:
@@ -974,7 +882,9 @@ def test_decode_nullable_ndarray_none_or_value_input() -> None:
         "dimension": None,
     }
     dst_annotation = NDArrayFloat32Type | None
-    decoder = make_engine_value_decoder([], src_type_dict, dst_annotation)
+    decoder = make_engine_value_decoder(
+        [], src_type_dict, analyze_type_info(dst_annotation)
+    )
 
     none_engine_value = None
     decoded_array = decoder(none_engine_value)
@@ -997,7 +907,9 @@ def test_decode_vector_string() -> None:
         "element_type": {"kind": "Str"},
         "dimension": None,
     }
-    decoder = make_engine_value_decoder([], src_type_dict, Vector[str])
+    decoder = make_engine_value_decoder(
+        [], src_type_dict, analyze_type_info(Vector[str])
+    )
     assert decoder(["hello", "world"]) == ["hello", "world"]
 
 
@@ -1008,7 +920,9 @@ def test_decode_error_non_nullable_or_non_list_vector() -> None:
         "element_type": {"kind": "Float32"},
         "dimension": None,
     }
-    decoder = make_engine_value_decoder([], src_type_dict, NDArrayFloat32Type)
+    decoder = make_engine_value_decoder(
+        [], src_type_dict, analyze_type_info(NDArrayFloat32Type)
+    )
     with pytest.raises(ValueError, match="Received null for non-nullable vector"):
         decoder(None)
     with pytest.raises(TypeError, match="Expected NDArray or list for vector"):
@@ -1252,6 +1166,37 @@ def test_full_roundtrip_scalar_with_python_types() -> None:
     validate_full_roundtrip(instance, MixedStruct)
 
 
+def test_roundtrip_simple_struct_to_dict_binding() -> None:
+    """Test struct -> dict binding with Any annotation."""
+
+    @dataclass
+    class SimpleStruct:
+        first_name: str
+        last_name: str
+
+    instance = SimpleStruct("John", "Doe")
+    expected_dict = {"first_name": "John", "last_name": "Doe"}
+
+    # Test Any annotation
+    validate_full_roundtrip(
+        instance,
+        SimpleStruct,
+        (expected_dict, Any),
+        (expected_dict, dict),
+        (expected_dict, dict[Any, Any]),
+        (expected_dict, dict[str, Any]),
+        # For simple struct, all fields have the same type, so we can directly use the type as the dict value type.
+        (expected_dict, dict[Any, str]),
+        (expected_dict, dict[str, str]),
+    )
+
+    with pytest.raises(ValueError):
+        validate_full_roundtrip(instance, SimpleStruct, (expected_dict, dict[str, int]))
+
+    with pytest.raises(ValueError):
+        validate_full_roundtrip(instance, SimpleStruct, (expected_dict, dict[int, Any]))
+
+
 def test_roundtrip_struct_to_dict_binding() -> None:
     """Test struct -> dict binding with Any annotation."""
 
@@ -1265,7 +1210,20 @@ def test_roundtrip_struct_to_dict_binding() -> None:
     expected_dict = {"name": "test", "value": 42, "price": 3.14}
 
     # Test Any annotation
-    validate_full_roundtrip(instance, SimpleStruct, (expected_dict, Any))
+    validate_full_roundtrip(
+        instance,
+        SimpleStruct,
+        (expected_dict, Any),
+        (expected_dict, dict),
+        (expected_dict, dict[Any, Any]),
+        (expected_dict, dict[str, Any]),
+    )
+
+    with pytest.raises(ValueError):
+        validate_full_roundtrip(instance, SimpleStruct, (expected_dict, dict[str, str]))
+
+    with pytest.raises(ValueError):
+        validate_full_roundtrip(instance, SimpleStruct, (expected_dict, dict[int, Any]))
 
 
 def test_roundtrip_struct_to_dict_explicit() -> None:
@@ -1299,8 +1257,8 @@ def test_roundtrip_struct_to_dict_with_none_annotation() -> None:
     instance = Config("localhost", 8080, True)
     expected_dict = {"host": "localhost", "port": 8080, "debug": True}
 
-    # Test None annotation (should be treated as Any)
-    validate_full_roundtrip(instance, Config, (expected_dict, None))
+    # Test empty annotation (should be treated as Any)
+    validate_full_roundtrip(instance, Config, (expected_dict, inspect.Parameter.empty))
 
 
 def test_roundtrip_struct_to_dict_nested() -> None:
@@ -1381,7 +1339,13 @@ def test_roundtrip_ltable_to_list_dict_binding() -> None:
     ]
 
     # Test Any annotation
-    validate_full_roundtrip(users, list[User], (expected_list_dict, Any))
+    validate_full_roundtrip(
+        users,
+        list[User],
+        (expected_list_dict, Any),
+        (expected_list_dict, list[Any]),
+        (expected_list_dict, list[dict[str, Any]]),
+    )
 
 
 def test_roundtrip_ktable_to_dict_dict_binding() -> None:
@@ -1405,7 +1369,17 @@ def test_roundtrip_ktable_to_dict_dict_binding() -> None:
     }
 
     # Test Any annotation
-    validate_full_roundtrip(products, dict[str, Product], (expected_dict_dict, Any))
+    validate_full_roundtrip(
+        products,
+        dict[str, Product],
+        (expected_dict_dict, Any),
+        (expected_dict_dict, dict),
+        (expected_dict_dict, dict[Any, Any]),
+        (expected_dict_dict, dict[str, Any]),
+        (expected_dict_dict, dict[Any, dict[Any, Any]]),
+        (expected_dict_dict, dict[str, dict[Any, Any]]),
+        (expected_dict_dict, dict[str, dict[str, Any]]),
+    )
 
 
 def test_roundtrip_ktable_with_complex_key() -> None:
@@ -1431,7 +1405,28 @@ def test_roundtrip_ktable_with_complex_key() -> None:
     }
 
     # Test Any annotation
-    validate_full_roundtrip(orders, dict[OrderKey, Order], (expected_dict_dict, Any))
+    validate_full_roundtrip(
+        orders,
+        dict[OrderKey, Order],
+        (expected_dict_dict, Any),
+        (expected_dict_dict, dict),
+        (expected_dict_dict, dict[Any, Any]),
+        (expected_dict_dict, dict[Any, dict[str, Any]]),
+        (
+            {
+                ("shop1", 1): Order("Alice", 100.0),
+                ("shop2", 2): Order("Bob", 200.0),
+            },
+            dict[Any, Order],
+        ),
+        (
+            {
+                OrderKey("shop1", 1): {"customer": "Alice", "total": 100.0},
+                OrderKey("shop2", 2): {"customer": "Bob", "total": 200.0},
+            },
+            dict[OrderKey, Any],
+        ),
+    )
 
 
 def test_roundtrip_ltable_with_nested_structs() -> None:
@@ -1489,3 +1484,41 @@ def test_roundtrip_ktable_with_list_fields() -> None:
 
     # Test Any annotation
     validate_full_roundtrip(teams, dict[str, Team], (expected_dict_dict, Any))
+
+
+def test_auto_default_for_supported_and_unsupported_types() -> None:
+    @dataclass
+    class Base:
+        a: int
+
+    @dataclass
+    class NullableField:
+        a: int
+        b: int | None
+
+    @dataclass
+    class LTableField:
+        a: int
+        b: list[Base]
+
+    @dataclass
+    class KTableField:
+        a: int
+        b: dict[str, Base]
+
+    @dataclass
+    class UnsupportedField:
+        a: int
+        b: int
+
+    validate_full_roundtrip(NullableField(1, None), NullableField)
+
+    validate_full_roundtrip(LTableField(1, []), LTableField)
+
+    # validate_full_roundtrip(KTableField(1, {}), KTableField)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Field 'b' \(type <class 'int'>\) without default value is missing in input: ",
+    ):
+        build_engine_value_decoder(Base, UnsupportedField)

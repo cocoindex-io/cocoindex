@@ -7,6 +7,8 @@ dependencies = [
     "cocoindex[embeddings]>=0.1.67",
     "python-dotenv>=1.0.1",
     "marker-pdf>=1.5.2",
+    "psycopg[binary,pool]",
+    "jinja2>=3.1.6",
 ]
 
 [tool.setuptools]

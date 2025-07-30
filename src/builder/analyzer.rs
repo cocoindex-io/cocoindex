@@ -322,6 +322,7 @@ impl DataScopeBuilder {
         })
     }
 
+    /// Must be called on an non-empty field path.
     pub fn analyze_field_path<'a>(
         &'a self,
         field_path: &'_ FieldPath,
@@ -331,6 +332,10 @@ impl DataScopeBuilder {
     )> {
         let mut indices = Vec::with_capacity(field_path.len());
         let mut struct_schema = &self.data;
+
+        if field_path.is_empty() {
+            bail!("Field path is empty");
+        }
 
         let mut i = 0;
         let value_type = loop {
@@ -597,21 +602,6 @@ fn analyze_value_mapping(
                 EnrichedValueType::from_alternative(value_type)?,
             )
         }
-
-        ValueMapping::Struct(v) => {
-            let (struct_mapping, field_schemas) = analyze_struct_mapping(v, op_scope)?;
-            (
-                AnalyzedValueMapping::Struct(struct_mapping),
-                EnrichedValueType {
-                    typ: ValueType::Struct(StructSchema {
-                        fields: Arc::new(field_schemas),
-                        description: None,
-                    }),
-                    nullable: false,
-                    attrs: Default::default(),
-                },
-            )
-        }
     };
     Ok(result)
 }
@@ -793,10 +783,12 @@ impl AnalyzerContext {
                         .await?;
                     let sub_op_scope_schema =
                         sub_op_scope.states.lock().unwrap().build_op_scope_schema();
-                    op_scope.states.lock().unwrap().sub_scopes.insert(
-                        foreach_op.op_scope.name.clone(),
-                        Arc::new(sub_op_scope_schema),
-                    );
+                    op_scope
+                        .states
+                        .lock()
+                        .unwrap()
+                        .sub_scopes
+                        .insert(reactive_op.name.clone(), Arc::new(sub_op_scope_schema));
                     analyzed_op_scope_fut
                 };
                 let op_name = reactive_op.name.clone();
