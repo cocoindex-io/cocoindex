@@ -95,7 +95,7 @@ def validate_full_roundtrip_to(
             return np.array_equal(a, b)
         return type(a) is type(b) and not not (a == b)
 
-    encoded_value = encode_engine_value(value)
+    encoded_value = encode_engine_value(value, value_type)
     value_type = value_type or type(value)
     encoded_output_type = encode_enriched_type(value_type)["type"]
     value_from_engine = _engine.testutil.seder_roundtrip(

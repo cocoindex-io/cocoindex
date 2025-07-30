@@ -64,17 +64,18 @@ def _is_type_kind_convertible_to(src_type_kind: str, dst_type_kind: str) -> bool
 
 def _encode_engine_value_core(
     value: Any,
-    in_struct: bool = False,
     type_hint: Type[Any] | str | None = None,
     type_variant: AnalyzedTypeInfo | None = None,
+    _elem_type_cache: dict[Any, AnalyzedTypeInfo] | None = None,
 ) -> Any:
     """Core encoding logic for converting Python values to engine values."""
+    _elem_type_cache = _elem_type_cache or {}
+
     if dataclasses.is_dataclass(value):
         fields = dataclasses.fields(value)
         return [
             encode_engine_value(
                 getattr(value, f.name),
-                in_struct=True,
                 type_hint=f.type,
             )
             for f in fields
@@ -85,7 +86,6 @@ def _encode_engine_value_core(
         return [
             encode_engine_value(
                 getattr(value, name),
-                in_struct=True,
                 type_hint=annotations.get(name),
             )
             for name in value._fields
@@ -103,10 +103,22 @@ def _encode_engine_value_core(
             and isinstance(type_variant.variant, AnalyzedListType)
             and type_variant.variant.elem_type
         ):
-            elem_encoder = make_engine_value_encoder(type_variant.variant.elem_type)
-            return [elem_encoder(v) for v in value]
+            # Cache the analyzed element type
+            elem_type = type_variant.variant.elem_type
+            if elem_type not in _elem_type_cache:
+                _elem_type_cache[elem_type] = analyze_type_info(elem_type)
+            elem_type_info = _elem_type_cache[elem_type]
+            return [
+                _encode_engine_value_core(
+                    v,
+                    type_hint=None,
+                    type_variant=elem_type_info,
+                    _elem_type_cache=_elem_type_cache,
+                )
+                for v in value
+            ]
         else:
-            return [encode_engine_value(v, in_struct) for v in value]
+            return [encode_engine_value(v, type_hint) for v in value]
 
     if isinstance(value, dict):
         # Determine if this is a JSON type
@@ -114,7 +126,7 @@ def _encode_engine_value_core(
         if type_variant and isinstance(type_variant.variant, AnalyzedBasicType):
             is_json_type = type_variant.variant.kind == "Json"
         elif type_hint:
-            hint_type_info = analyze_type_info(type_hint)
+            hint_type_info = type_variant or analyze_type_info(type_hint)
             is_json_type = (
                 isinstance(hint_type_info.variant, AnalyzedBasicType)
                 and hint_type_info.variant.kind == "Json"
@@ -122,15 +134,13 @@ def _encode_engine_value_core(
 
         # Handle empty dict
         if not value:
-            if in_struct:
-                return value if is_json_type else []
-            return {} if is_json_type else value
+            return value if (not type_hint or is_json_type) else []
 
         # Handle KTable
         first_val = next(iter(value.values()))
         if is_struct_type(type(first_val)):
             return [
-                [encode_engine_value(k, in_struct)] + encode_engine_value(v, in_struct)
+                [encode_engine_value(k, type_hint)] + encode_engine_value(v, type_hint)
                 for k, v in value.items()
             ]
 
@@ -140,55 +150,44 @@ def _encode_engine_value_core(
             and isinstance(type_variant.variant, AnalyzedDictType)
             and type_variant.variant.value_type
         ):
-            value_encoder = make_engine_value_encoder(type_variant.variant.value_type)
-            return {k: value_encoder(v) for k, v in value.items()}
+            # Cache the analyzed value type
+            value_type = type_variant.variant.value_type
+            if value_type not in _elem_type_cache:
+                _elem_type_cache[value_type] = analyze_type_info(value_type)
+            value_type_info = _elem_type_cache[value_type]
+            return {
+                k: _encode_engine_value_core(
+                    v,
+                    type_hint=None,
+                    type_variant=value_type_info,
+                    _elem_type_cache=_elem_type_cache,
+                )
+                for k, v in value.items()
+            }
 
     return value
 
 
-def make_engine_value_encoder(type_annotation: Any) -> Callable[[Any], Any]:
-    """
-    Make an encoder from a Python value to an engine value.
-
-    Args:
-        type_annotation: The type annotation of the Python value.
-
-    Returns:
-        An encoder from a Python value to an engine value.
-    """
-    type_info = analyze_type_info(type_annotation)
-
-    if isinstance(type_info.variant, AnalyzedUnknownType):
-        raise ValueError(f"Type annotation `{type_info.core_type}` is unsupported")
-
-    def encode_value(value: Any, in_struct: bool = False) -> Any:
-        return _encode_engine_value_core(
-            value, in_struct=in_struct, type_variant=type_info
-        )
-
-    return lambda value: encode_value(value, in_struct=False)
-
-
-def encode_engine_value(
-    value: Any, in_struct: bool = False, type_hint: Type[Any] | str | None = None
-) -> Any:
+def encode_engine_value(value: Any, type_hint: Type[Any] | str | None = None) -> Any:
     """
     Encode a Python value to an engine value.
 
     Args:
         value: The Python value to encode
-        in_struct: Whether this value is being encoded within a struct context
-        type_hint: Type annotation for the value. When provided, enables optimized
-                  type-aware encoding. For top-level calls, this should always be provided.
+        type_hint: Type annotation for the value. This should always be provided.
 
     Returns:
         The encoded engine value
     """
-    if type_hint is not None:
-        encoder = make_engine_value_encoder(type_hint)
-        return encoder(value)
+    if type_hint is None:
+        return _encode_engine_value_core(value)
 
-    return _encode_engine_value_core(value, in_struct=in_struct)
+    # Analyze type once and reuse the result
+    type_info = analyze_type_info(type_hint)
+    if isinstance(type_info.variant, AnalyzedUnknownType):
+        raise ValueError(f"Type annotation `{type_info.core_type}` is unsupported")
+
+    return _encode_engine_value_core(value, type_hint=type_hint, type_variant=type_info)
 
 
 def make_engine_value_decoder(
