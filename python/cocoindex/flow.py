@@ -28,12 +28,10 @@ from typing import (
 from rich.text import Text
 from rich.tree import Tree
 
-from . import (
-    _engine,  # type: ignore
-    index,
-    op,
-    setting,
-)
+from . import _engine  # type: ignore
+from . import index
+from . import op
+from . import setting
 from .convert import dump_engine_object, encode_engine_value, make_engine_value_decoder
 from .op import FunctionSpec
 from .runtime import execution_context

@@ -1,7 +1,7 @@
 import datetime
 import inspect
 import uuid
-from dataclasses import dataclass, make_dataclass, field
+from dataclasses import dataclass, make_dataclass
 from typing import Annotated, Any, Callable, Literal, NamedTuple
 
 import numpy as np
@@ -19,8 +19,8 @@ from cocoindex.typing import (
     Float64,
     TypeKind,
     Vector,
-    encode_enriched_type,
     analyze_type_info,
+    encode_enriched_type,
 )
 
 
@@ -1515,7 +1515,7 @@ def test_auto_default_for_supported_and_unsupported_types() -> None:
 
     validate_full_roundtrip(LTableField(1, []), LTableField)
 
-    # validate_full_roundtrip(KTableField(1, {}), KTableField)
+    validate_full_roundtrip(KTableField(1, {}), KTableField)
 
     with pytest.raises(
         ValueError,
