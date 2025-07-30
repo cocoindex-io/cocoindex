@@ -63,6 +63,16 @@ def _is_type_kind_convertible_to(src_type_kind: str, dst_type_kind: str) -> bool
     )
 
 
+def _get_cached_type_info(
+    type_to_analyze: Any,
+    cache: dict[Any, AnalyzedTypeInfo],
+) -> AnalyzedTypeInfo:
+    """Retrieve or compute and cache the type information for a given type."""
+    if type_to_analyze not in cache:
+        cache[type_to_analyze] = analyze_type_info(type_to_analyze)
+    return cache[type_to_analyze]
+
+
 def _encode_engine_value_core(
     value: Any,
     type_hint: Type[Any] | str | None = None,
@@ -104,11 +114,9 @@ def _encode_engine_value_core(
             and isinstance(type_variant.variant, AnalyzedListType)
             and type_variant.variant.elem_type
         ):
-            # Cache the analyzed element type
-            elem_type = type_variant.variant.elem_type
-            if elem_type not in _elem_type_cache:
-                _elem_type_cache[elem_type] = analyze_type_info(elem_type)
-            elem_type_info = _elem_type_cache[elem_type]
+            elem_type_info = _get_cached_type_info(
+                type_variant.variant.elem_type, _elem_type_cache
+            )
             return [
                 _encode_engine_value_core(
                     v,
@@ -127,7 +135,9 @@ def _encode_engine_value_core(
         if type_variant and isinstance(type_variant.variant, AnalyzedBasicType):
             is_json_type = type_variant.variant.kind == "Json"
         elif type_hint:
-            hint_type_info = type_variant or analyze_type_info(type_hint)
+            hint_type_info = type_variant or _get_cached_type_info(
+                type_hint, _elem_type_cache
+            )
             is_json_type = (
                 isinstance(hint_type_info.variant, AnalyzedBasicType)
                 and hint_type_info.variant.kind == "Json"
@@ -151,11 +161,9 @@ def _encode_engine_value_core(
             and isinstance(type_variant.variant, AnalyzedDictType)
             and type_variant.variant.value_type
         ):
-            # Cache the analyzed value type
-            value_type = type_variant.variant.value_type
-            if value_type not in _elem_type_cache:
-                _elem_type_cache[value_type] = analyze_type_info(value_type)
-            value_type_info = _elem_type_cache[value_type]
+            value_type_info = _get_cached_type_info(
+                type_variant.variant.value_type, _elem_type_cache
+            )
             return {
                 k: _encode_engine_value_core(
                     v,
@@ -184,7 +192,7 @@ def encode_engine_value(value: Any, type_hint: Type[Any] | str | None = None) ->
         return _encode_engine_value_core(value)
 
     # Analyze type once and reuse the result
-    type_info = analyze_type_info(type_hint)
+    type_info = _get_cached_type_info(type_hint, {})
     if isinstance(type_info.variant, AnalyzedUnknownType):
         raise ValueError(f"Type annotation `{type_info.core_type}` is unsupported")
 
