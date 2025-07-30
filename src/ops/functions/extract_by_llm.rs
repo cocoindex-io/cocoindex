@@ -96,7 +96,7 @@ impl SimpleFunctionExecutor for Executor {
             .transpose()?;
 
         if text.is_none() && image_bytes.is_none() {
-            api_bail!("At least one of `text` or `image` must be provided");
+            return Ok(Value::Null);
         }
 
         let user_prompt = text.map_or("", |v| v);
@@ -147,7 +147,13 @@ impl SimpleFunctionFactoryBase for Factory {
             api_bail!("At least one of 'text' or 'image' must be provided");
         }
 
-        Ok((args, spec.output_type.clone()))
+        let mut output_type = spec.output_type.clone();
+        if args.text.as_ref().map_or(true, |arg| arg.typ.nullable)
+            && args.image.as_ref().map_or(true, |arg| arg.typ.nullable)
+        {
+            output_type.nullable = true;
+        }
+        Ok((args, output_type))
     }
 
     async fn build_executor(
