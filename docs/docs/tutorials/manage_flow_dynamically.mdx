@@ -241,6 +241,7 @@ def text_embedding_flow_def(params: TextEmbeddingFlowParameters):
         data_scope["documents"] = flow_builder.add_source(
             cocoindex.sources.LocalFile(path=params.source_path))
 
+        doc_embeddings = data_scope.add_collector()
         ...
 
         # Export the collected data to a Postgres table, with the specified table name.
