@@ -81,19 +81,21 @@ impl SimpleFunctionExecutor for Executor {
     }
 
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
-        let image_bytes: Option<Cow<'_, [u8]>> = self
-            .args
-            .image
-            .as_ref()
-            .map(|arg| arg.value(&input)?.as_bytes())
-            .transpose()?
-            .map(|bytes| Cow::Borrowed(bytes.as_ref()));
-        let text = self
-            .args
-            .text
-            .as_ref()
-            .map(|arg| arg.value(&input)?.as_str())
-            .transpose()?;
+        let image_bytes: Option<Cow<'_, [u8]>> = if let Some(arg) = self.args.image.as_ref()
+            && let Some(value) = arg.value(&input)?.optional()
+        {
+            Some(Cow::Borrowed(value.as_bytes()?))
+        } else {
+            None
+        };
+
+        let text = if let Some(arg) = self.args.text.as_ref()
+            && let Some(value) = arg.value(&input)?.optional()
+        {
+            Some(value.as_str()?)
+        } else {
+            None
+        };
 
         if text.is_none() && image_bytes.is_none() {
             return Ok(Value::Null);
@@ -161,8 +163,8 @@ impl SimpleFunctionFactoryBase for Factory {
         spec: Spec,
         resolved_input_schema: Args,
         _context: Arc<FlowInstanceContext>,
-    ) -> Result<Box<dyn SimpleFunctionExecutor>> {
-        Ok(Box::new(Executor::new(spec, resolved_input_schema).await?))
+    ) -> Result<impl SimpleFunctionExecutor> {
+        Executor::new(spec, resolved_input_schema).await
     }
 }
 
@@ -211,9 +213,10 @@ mod tests {
 
         let input_args_values = vec![text_content.to_string().into()];
 
-        let input_arg_schemas = vec![build_arg_schema("text", BasicValueType::Str)];
+        let input_arg_schemas = &[build_arg_schema("text", BasicValueType::Str)];
 
-        let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
+        let result =
+            test_flow_function(&factory, &spec, input_arg_schemas, input_args_values).await;
 
         if result.is_err() {
             eprintln!(
@@ -258,5 +261,35 @@ mod tests {
             }
             _ => panic!("Expected Value::Struct, got {value:?}"),
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "This test requires an OpenAI API key or a configured local LLM and may make network calls."]
+    async fn test_null_inputs() {
+        let factory = Arc::new(Factory);
+        let spec = Spec {
+            llm_spec: LlmSpec {
+                api_type: crate::llm::LlmApiType::OpenAi,
+                model: "gpt-4o".to_string(),
+                address: None,
+                api_config: None,
+            },
+            output_type: make_output_type(BasicValueType::Str),
+            instruction: None,
+        };
+        let input_arg_schemas = &[
+            (
+                Some("text"),
+                make_output_type(BasicValueType::Str).with_nullable(true),
+            ),
+            (
+                Some("image"),
+                make_output_type(BasicValueType::Bytes).with_nullable(true),
+            ),
+        ];
+        let input_args_values = vec![Value::Null, Value::Null];
+        let result =
+            test_flow_function(&factory, &spec, input_arg_schemas, input_args_values).await;
+        assert_eq!(result.unwrap(), Value::Null);
     }
 }

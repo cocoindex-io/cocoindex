@@ -89,10 +89,11 @@ pub struct OpArgsResolver<'a> {
     num_positional_args: usize,
     next_positional_idx: usize,
     remaining_kwargs: HashMap<&'a str, usize>,
+    required_args_idx: &'a mut Vec<usize>,
 }
 
 impl<'a> OpArgsResolver<'a> {
-    pub fn new(args: &'a [OpArgSchema]) -> Result<Self> {
+    pub fn new(args: &'a [OpArgSchema], required_args_idx: &'a mut Vec<usize>) -> Result<Self> {
         let mut num_positional_args = 0;
         let mut kwargs = HashMap::new();
         for (idx, arg) in args.iter().enumerate() {
@@ -110,6 +111,7 @@ impl<'a> OpArgsResolver<'a> {
             num_positional_args,
             next_positional_idx: 0,
             remaining_kwargs: kwargs,
+            required_args_idx,
         })
     }
 
@@ -135,9 +137,11 @@ impl<'a> OpArgsResolver<'a> {
     }
 
     pub fn next_arg(&mut self, name: &str) -> Result<ResolvedOpArg> {
-        Ok(self
+        let arg = self
             .next_optional_arg(name)?
-            .ok_or_else(|| api_error!("Required argument `{name}` is missing",))?)
+            .ok_or_else(|| api_error!("Required argument `{name}` is missing",))?;
+        self.required_args_idx.push(arg.idx);
+        Ok(arg)
     }
 
     pub fn done(self) -> Result<()> {
@@ -233,7 +237,7 @@ pub trait SimpleFunctionFactoryBase: SimpleFunctionFactory + Send + Sync + 'stat
         spec: Self::Spec,
         resolved_input_schema: Self::ResolvedArgs,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<Box<dyn SimpleFunctionExecutor>>;
+    ) -> Result<impl SimpleFunctionExecutor>;
 
     fn register(self, registry: &mut ExecutorFactoryRegistry) -> Result<()>
     where
@@ -243,6 +247,31 @@ pub trait SimpleFunctionFactoryBase: SimpleFunctionFactory + Send + Sync + 'stat
             self.name().to_string(),
             ExecutorFactory::SimpleFunction(Arc::new(self)),
         )
+    }
+}
+
+struct FunctionExecutorWrapper<E: SimpleFunctionExecutor> {
+    executor: E,
+    required_args_idx: Vec<usize>,
+}
+
+#[async_trait]
+impl<E: SimpleFunctionExecutor> SimpleFunctionExecutor for FunctionExecutorWrapper<E> {
+    async fn evaluate(&self, args: Vec<value::Value>) -> Result<value::Value> {
+        for idx in &self.required_args_idx {
+            if args[*idx].is_null() {
+                return Ok(value::Value::Null);
+            }
+        }
+        self.executor.evaluate(args).await
+    }
+
+    fn enable_cache(&self) -> bool {
+        self.executor.enable_cache()
+    }
+
+    fn behavior_version(&self) -> Option<u32> {
+        self.executor.behavior_version()
     }
 }
 
@@ -258,13 +287,31 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
         BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
     )> {
         let spec: T::Spec = serde_json::from_value(spec)?;
-        let mut args_resolver = OpArgsResolver::new(&input_schema)?;
-        let (resolved_input_schema, output_schema) = self
+        let mut required_args_idx = vec![];
+        let mut args_resolver = OpArgsResolver::new(&input_schema, &mut required_args_idx)?;
+        let (resolved_input_schema, mut output_schema) = self
             .resolve_schema(&spec, &mut args_resolver, &context)
             .await?;
+
+        // If any required argument is nullable, the output schema should be nullable.
+        if args_resolver
+            .required_args_idx
+            .iter()
+            .any(|idx| input_schema[*idx].value_type.nullable)
+        {
+            output_schema.nullable = true;
+        }
+
         args_resolver.done()?;
-        let executor = self.build_executor(spec, resolved_input_schema, context);
-        Ok((output_schema, executor))
+        let executor = async move {
+            Ok(Box::new(FunctionExecutorWrapper {
+                executor: self
+                    .build_executor(spec, resolved_input_schema, context)
+                    .await?,
+                required_args_idx,
+            }) as Box<dyn SimpleFunctionExecutor>)
+        };
+        Ok((output_schema, Box::pin(executor)))
     }
 }
 

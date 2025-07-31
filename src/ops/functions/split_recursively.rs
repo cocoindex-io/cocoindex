@@ -10,7 +10,7 @@ use crate::base::field_attrs;
 use crate::ops::registry::ExecutorFactoryRegistry;
 use crate::{fields_value, ops::sdk::*};
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct CustomLanguageSpec {
     language_name: String,
     #[serde(default)]
@@ -18,7 +18,7 @@ struct CustomLanguageSpec {
     separators_regex: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Spec {
     #[serde(default)]
     custom_languages: Vec<CustomLanguageSpec>,
@@ -1026,8 +1026,8 @@ impl SimpleFunctionFactoryBase for Factory {
         spec: Spec,
         args: Args,
         _context: Arc<FlowInstanceContext>,
-    ) -> Result<Box<dyn SimpleFunctionExecutor>> {
-        Ok(Box::new(Executor::new(args, spec)?))
+    ) -> Result<impl SimpleFunctionExecutor> {
+        Executor::new(args, spec)
     }
 }
 
@@ -1038,7 +1038,7 @@ pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::functions::test_utils::{build_arg_schema, test_flow_function};
+    use crate::ops::functions::test_utils::test_flow_function;
 
     // Helper function to assert chunk text and its consistency with the range within the original text.
     fn assert_chunk_text_consistency(
@@ -1086,55 +1086,112 @@ mod tests {
         let factory = Arc::new(Factory);
         let text_content = "Linea 1.\nLinea 2.\n\nLinea 3.";
 
-        let input_args_values = vec![
-            text_content.to_string().into(),
-            (15i64).into(),
-            (5i64).into(),
-            (0i64).into(),
-            Value::Null,
+        let input_arg_schemas = &[
+            (
+                Some("text"),
+                make_output_type(BasicValueType::Str).with_nullable(true),
+            ),
+            (
+                Some("chunk_size"),
+                make_output_type(BasicValueType::Int64).with_nullable(true),
+            ),
+            (
+                Some("min_chunk_size"),
+                make_output_type(BasicValueType::Int64).with_nullable(true),
+            ),
+            (
+                Some("chunk_overlap"),
+                make_output_type(BasicValueType::Int64).with_nullable(true),
+            ),
+            (
+                Some("language"),
+                make_output_type(BasicValueType::Str).with_nullable(true),
+            ),
         ];
 
-        let input_arg_schemas = vec![
-            build_arg_schema("text", BasicValueType::Str),
-            build_arg_schema("chunk_size", BasicValueType::Int64),
-            build_arg_schema("min_chunk_size", BasicValueType::Int64),
-            build_arg_schema("chunk_overlap", BasicValueType::Int64),
-            build_arg_schema("language", BasicValueType::Str),
-        ];
+        {
+            let result = test_flow_function(
+                &factory,
+                &spec,
+                input_arg_schemas,
+                vec![
+                    text_content.to_string().into(),
+                    (15i64).into(),
+                    (5i64).into(),
+                    (0i64).into(),
+                    Value::Null,
+                ],
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "test_flow_function failed: {:?}",
+                result.err()
+            );
+            let value = result.unwrap();
+            match value {
+                Value::KTable(table) => {
+                    let expected_chunks = vec![
+                        (RangeValue::new(0, 8), "Linea 1."),
+                        (RangeValue::new(9, 17), "Linea 2."),
+                        (RangeValue::new(19, 27), "Linea 3."),
+                    ];
 
-        let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
-
-        assert!(
-            result.is_ok(),
-            "test_flow_function failed: {:?}",
-            result.err()
-        );
-        let value = result.unwrap();
-
-        match value {
-            Value::KTable(table) => {
-                let expected_chunks = vec![
-                    (RangeValue::new(0, 8), "Linea 1."),
-                    (RangeValue::new(9, 17), "Linea 2."),
-                    (RangeValue::new(19, 27), "Linea 3."),
-                ];
-
-                for (range, expected_text) in expected_chunks {
-                    let key: KeyValue = range.into();
-                    match table.get(&key) {
-                        Some(scope_value_ref) => {
-                            let chunk_text =
-                                scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
-                                    panic!("Chunk text not a string for key {key:?}")
-                                });
-                            assert_eq!(**chunk_text, *expected_text);
+                    for (range, expected_text) in expected_chunks {
+                        let key: KeyValue = range.into();
+                        match table.get(&key) {
+                            Some(scope_value_ref) => {
+                                let chunk_text =
+                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
+                                        panic!("Chunk text not a string for key {key:?}")
+                                    });
+                                assert_eq!(**chunk_text, *expected_text);
+                            }
+                            None => panic!("Expected row value for key {key:?}, not found"),
                         }
-                        None => panic!("Expected row value for key {key:?}, not found"),
                     }
                 }
+                other => panic!("Expected Value::KTable, got {other:?}"),
             }
-            other => panic!("Expected Value::KTable, got {other:?}"),
         }
+
+        // Argument text is required
+        assert_eq!(
+            test_flow_function(
+                &factory,
+                &spec,
+                input_arg_schemas,
+                vec![
+                    Value::Null,
+                    (15i64).into(),
+                    (5i64).into(),
+                    (0i64).into(),
+                    Value::Null,
+                ],
+            )
+            .await
+            .unwrap(),
+            Value::Null
+        );
+
+        // Argument chunk_size is required
+        assert_eq!(
+            test_flow_function(
+                &factory,
+                &spec,
+                input_arg_schemas,
+                vec![
+                    text_content.to_string().into(),
+                    Value::Null,
+                    (5i64).into(),
+                    (0i64).into(),
+                    Value::Null,
+                ],
+            )
+            .await
+            .unwrap(),
+            Value::Null
+        );
     }
 
     #[test]
