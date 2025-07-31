@@ -1,6 +1,7 @@
 """All builtin functions."""
 
 import dataclasses
+import functools
 from typing import Annotated, Any, Literal
 
 import numpy as np
@@ -101,69 +102,51 @@ class SentenceTransformerEmbedExecutor:
         return result
 
 
-# Global ColPali model cache to avoid reloading models
-_COLPALI_MODEL_CACHE = {}
+@functools.cache
+def _get_colpali_model_and_processor(model_name: str) -> dict[str, Any]:
+    """Get or load ColPali model and processor, with caching."""
+    try:
+        from colpali_engine.models import ColPali, ColPaliProcessor  # type: ignore[import-untyped]
+    except ImportError as e:
+        raise ImportError(
+            "ColPali is not available. Make sure cocoindex is installed with ColPali support."
+        ) from e
+
+    model = ColPali.from_pretrained(model_name)
+    processor = ColPaliProcessor.from_pretrained(model_name)
+
+    # Get dimension from the actual model
+    dimension = _detect_colpali_dimension(model, processor)
+
+    return {
+        "model": model,
+        "processor": processor,
+        "dimension": dimension,
+    }
 
 
-class _ColPaliModelManager:
-    """Shared model manager for ColPali models to avoid duplicate loading."""
+def _detect_colpali_dimension(model: Any, processor: Any) -> int:
+    """Detect ColPali embedding dimension from the actual model config."""
+    # Try to access embedding dimension
+    if hasattr(model.config, "embedding_dim"):
+        dim = model.config.embedding_dim
+    else:
+        # Fallback: infer from output shape with dummy data
+        from PIL import Image
+        import numpy as np
+        import torch
 
-    @staticmethod
-    def get_model_and_processor(model_name: str) -> dict[str, Any]:
-        """Get or load ColPali model and processor, with caching."""
-        if model_name not in _COLPALI_MODEL_CACHE:
-            try:
-                from colpali_engine.models import ColPali, ColPaliProcessor  # type: ignore[import-untyped]
-            except ImportError as e:
-                raise ImportError(
-                    "ColPali is not available. Make sure cocoindex is installed with ColPali support."
-                ) from e
-
-            model = ColPali.from_pretrained(model_name)
-            processor = ColPaliProcessor.from_pretrained(model_name)
-
-            # Get dimension from FastEmbed API
-            dimension = _ColPaliModelManager._detect_dimension()
-
-            _COLPALI_MODEL_CACHE[model_name] = {
-                "model": model,
-                "processor": processor,
-                "dimension": dimension,
-            }
-
-        return _COLPALI_MODEL_CACHE[model_name]
-
-    @staticmethod
-    def _detect_dimension() -> int:
-        """Detect ColPali embedding dimension using FastEmbed API."""
-        try:
-            from fastembed import LateInteractionMultimodalEmbedding
-
-            # Use the standard FastEmbed ColPali model for dimension detection
-            standard_colpali_model = "Qdrant/colpali-v1.3-fp16"
-
-            supported_models = (
-                LateInteractionMultimodalEmbedding.list_supported_models()
-            )
-            for supported_model in supported_models:
-                if supported_model["model"] == standard_colpali_model:
-                    dim = supported_model["dim"]
-                    if isinstance(dim, int):
-                        return dim
-                    else:
-                        raise ValueError(
-                            f"Expected integer dimension, got {type(dim)}: {dim}"
-                        )
-
-            raise ValueError(
-                f"Could not find dimension for ColPali model in FastEmbed supported models"
-            )
-
-        except ImportError:
-            raise ImportError(
-                "FastEmbed is required for ColPali dimension detection. "
-                "Install it with: pip install fastembed"
-            )
+        dummy_img = Image.fromarray(np.zeros((224, 224, 3), np.uint8))
+        # Use the processor to process the dummy image
+        processed = processor.process_images([dummy_img])
+        with torch.no_grad():
+            output = model(**processed)
+        dim = int(output.shape[-1])
+    if isinstance(dim, int):
+        return dim
+    else:
+        raise ValueError(f"Expected integer dimension, got {type(dim)}: {dim}")
+    return dim
 
 
 class ColPaliEmbedImage(op.FunctionSpec):
@@ -198,9 +181,7 @@ class ColPaliEmbedImageExecutor:
     def analyze(self, _img_bytes: Any) -> type:
         # Get shared model and dimension
         if self._cached_model_data is None:
-            self._cached_model_data = _ColPaliModelManager.get_model_and_processor(
-                self.spec.model
-            )
+            self._cached_model_data = _get_colpali_model_and_processor(self.spec.model)
 
         # Return multi-vector type: Variable patches x Fixed hidden dimension
         dimension = self._cached_model_data["dimension"]
@@ -218,9 +199,7 @@ class ColPaliEmbedImageExecutor:
 
         # Get shared model and processor
         if self._cached_model_data is None:
-            self._cached_model_data = _ColPaliModelManager.get_model_and_processor(
-                self.spec.model
-            )
+            self._cached_model_data = _get_colpali_model_and_processor(self.spec.model)
 
         model = self._cached_model_data["model"]
         processor = self._cached_model_data["processor"]
@@ -279,9 +258,7 @@ class ColPaliEmbedQueryExecutor:
     def analyze(self, _query: Any) -> type:
         # Get shared model and dimension
         if self._cached_model_data is None:
-            self._cached_model_data = _ColPaliModelManager.get_model_and_processor(
-                self.spec.model
-            )
+            self._cached_model_data = _get_colpali_model_and_processor(self.spec.model)
 
         # Return multi-vector type: Variable tokens x Fixed hidden dimension
         dimension = self._cached_model_data["dimension"]
@@ -297,9 +274,7 @@ class ColPaliEmbedQueryExecutor:
 
         # Get shared model and processor
         if self._cached_model_data is None:
-            self._cached_model_data = _ColPaliModelManager.get_model_and_processor(
-                self.spec.model
-            )
+            self._cached_model_data = _get_colpali_model_and_processor(self.spec.model)
 
         model = self._cached_model_data["model"]
         processor = self._cached_model_data["processor"]

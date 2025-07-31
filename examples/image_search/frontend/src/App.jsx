@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const API_URL = 'http://localhost:8000/search'; // Adjust this to your backend search endpoint
+const API_URL = `http://${window.location.hostname}:8000/search`;
 
 export default function App() {
   const [query, setQuery] = useState('');
@@ -42,7 +42,7 @@ export default function App() {
         {results.length === 0 && !loading && <div>No results</div>}
         {results.map((result, idx) => (
           <div key={idx} className="result-card">
-            <img src={`http://localhost:8000/img/${result.filename}`} alt={result.filename} className="result-img" />
+            <img src={`http://${window.location.hostname}:8000/img/${result.filename}`} alt={result.filename} className="result-img" />
             <div className="score">Score: {result.score?.toFixed(3)}</div>
           </div>
         ))}

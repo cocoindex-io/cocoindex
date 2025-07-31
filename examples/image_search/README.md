@@ -62,7 +62,7 @@ export OLLAMA_MODEL="gemma3"  # Optional, for caption generation
 - Install dependencies:
   ```
   pip install -e .
-  pip install 'cocoindex[embeddings]'  # Adds ColPali and sentence-transformers support
+  pip install 'cocoindex[colpali]'  # Adds ColPali support
   ```
 
 - Configure model (optional):
