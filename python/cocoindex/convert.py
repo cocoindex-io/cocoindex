@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import functools
 import inspect
 import warnings
 from enum import Enum
@@ -63,31 +64,32 @@ def _is_type_kind_convertible_to(src_type_kind: str, dst_type_kind: str) -> bool
     )
 
 
-def _get_cached_type_info(
-    type_to_analyze: Any,
-    cache: dict[Any, AnalyzedTypeInfo],
-) -> AnalyzedTypeInfo:
-    """Retrieve or compute and cache the type information for a given type."""
-    if type_to_analyze not in cache:
-        cache[type_to_analyze] = analyze_type_info(type_to_analyze)
-    return cache[type_to_analyze]
+def _get_type_info_safe(type_to_analyze: Any) -> AnalyzedTypeInfo:
+    """Safely get type info, bypassing cache if type is not hashable."""
+
+    @functools.cache
+    def _get_cached_type_info() -> AnalyzedTypeInfo:
+        """cache the computed type information for a given type."""
+        return analyze_type_info(type_to_analyze)
+
+    try:
+        return _get_cached_type_info(type_to_analyze)
+    except TypeError:
+        return analyze_type_info(type_to_analyze)
 
 
 def _encode_engine_value_core(
     value: Any,
-    type_hint: Type[Any] | str | None = None,
-    type_variant: AnalyzedTypeInfo | None = None,
-    _elem_type_cache: dict[Any, AnalyzedTypeInfo] | None = None,
+    type_info: AnalyzedTypeInfo | None = None,
 ) -> Any:
     """Core encoding logic for converting Python values to engine values."""
-    _elem_type_cache = _elem_type_cache or {}
 
     if dataclasses.is_dataclass(value):
         fields = dataclasses.fields(value)
         return [
-            encode_engine_value(
+            _encode_engine_value_core(
                 getattr(value, f.name),
-                type_hint=f.type,
+                type_info=_get_type_info_safe(f.type),
             )
             for f in fields
         ]
@@ -95,9 +97,11 @@ def _encode_engine_value_core(
     if is_namedtuple_type(type(value)):
         annotations = type(value).__annotations__
         return [
-            encode_engine_value(
+            _encode_engine_value_core(
                 getattr(value, name),
-                type_hint=annotations.get(name),
+                type_info=_get_type_info_safe(annotations.get(name))
+                if annotations.get(name)
+                else None,
             )
             for name in value._fields
         ]
@@ -110,66 +114,51 @@ def _encode_engine_value_core(
 
     if isinstance(value, (list, tuple)):
         if (
-            type_variant
-            and isinstance(type_variant.variant, AnalyzedListType)
-            and type_variant.variant.elem_type
+            type_info
+            and isinstance(type_info.variant, AnalyzedListType)
+            and type_info.variant.elem_type
         ):
-            elem_type_info = _get_cached_type_info(
-                type_variant.variant.elem_type, _elem_type_cache
-            )
+            elem_type_info = _get_type_info_safe(type_info.variant.elem_type)
             return [
                 _encode_engine_value_core(
                     v,
-                    type_hint=None,
-                    type_variant=elem_type_info,
-                    _elem_type_cache=_elem_type_cache,
+                    type_info=elem_type_info,
                 )
                 for v in value
             ]
         else:
-            return [encode_engine_value(v, type_hint) for v in value]
+            return [_encode_engine_value_core(v, type_info=None) for v in value]
 
     if isinstance(value, dict):
         # Determine if this is a JSON type
         is_json_type = False
-        if type_variant and isinstance(type_variant.variant, AnalyzedBasicType):
-            is_json_type = type_variant.variant.kind == "Json"
-        elif type_hint:
-            hint_type_info = type_variant or _get_cached_type_info(
-                type_hint, _elem_type_cache
-            )
-            is_json_type = (
-                isinstance(hint_type_info.variant, AnalyzedBasicType)
-                and hint_type_info.variant.kind == "Json"
-            )
+        if type_info and isinstance(type_info.variant, AnalyzedBasicType):
+            is_json_type = type_info.variant.kind == "Json"
 
         # Handle empty dict
         if not value:
-            return value if (not type_hint or is_json_type) else []
+            return value if (not type_info or is_json_type) else []
 
         # Handle KTable
         first_val = next(iter(value.values()))
         if is_struct_type(type(first_val)):
             return [
-                [encode_engine_value(k, type_hint)] + encode_engine_value(v, type_hint)
+                [_encode_engine_value_core(k, type_info=None)]
+                + _encode_engine_value_core(v, type_info=None)
                 for k, v in value.items()
             ]
 
         # Handle regular dict
         if (
-            type_variant
-            and isinstance(type_variant.variant, AnalyzedDictType)
-            and type_variant.variant.value_type
+            type_info
+            and isinstance(type_info.variant, AnalyzedDictType)
+            and type_info.variant.value_type
         ):
-            value_type_info = _get_cached_type_info(
-                type_variant.variant.value_type, _elem_type_cache
-            )
+            value_type_info = _get_type_info_safe(type_info.variant.value_type)
             return {
                 k: _encode_engine_value_core(
                     v,
-                    type_hint=None,
-                    type_variant=value_type_info,
-                    _elem_type_cache=_elem_type_cache,
+                    type_info=value_type_info,
                 )
                 for k, v in value.items()
             }
@@ -189,11 +178,11 @@ def encode_engine_value(value: Any, type_hint: Type[Any] | str) -> Any:
         The encoded engine value
     """
     # Analyze type once and reuse the result
-    type_info = _get_cached_type_info(type_hint, {})
+    type_info = _get_type_info_safe(type_hint)
     if isinstance(type_info.variant, AnalyzedUnknownType):
         raise ValueError(f"Type annotation `{type_info.core_type}` is unsupported")
 
-    return _encode_engine_value_core(value, type_hint=type_hint, type_variant=type_info)
+    return _encode_engine_value_core(value, type_info)
 
 
 def make_engine_value_decoder(

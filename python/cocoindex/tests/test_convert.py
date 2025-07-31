@@ -226,7 +226,7 @@ def test_encode_engine_value_nested_struct() -> None:
 
 def test_encode_engine_value_empty_list() -> None:
     assert encode_engine_value([], list) == []
-    assert encode_engine_value([[]], list[list]) == [[]]
+    assert encode_engine_value([[]], list[list[Any]]) == [[]]
 
 
 def test_encode_engine_value_tuple() -> None:
@@ -238,7 +238,7 @@ def test_encode_engine_value_tuple() -> None:
 
 
 def test_encode_engine_value_none() -> None:
-    assert encode_engine_value(None, int | None) is None
+    assert encode_engine_value(None, Any) is None
 
 
 def test_roundtrip_basic_types() -> None:
