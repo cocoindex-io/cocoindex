@@ -262,6 +262,11 @@ impl EnrichedValueType {
             attrs: Default::default(),
         }
     }
+
+    pub fn with_nullable(mut self, nullable: bool) -> Self {
+        self.nullable = nullable;
+        self
+    }
 }
 
 impl<DataType> EnrichedValueType<DataType> {

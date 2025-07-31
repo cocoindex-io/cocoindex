@@ -44,7 +44,7 @@ pub fn make_output_type<Type: TypeCore>(value_type: Type) -> EnrichedValueType {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EmptySpec {}
 
 #[macro_export]

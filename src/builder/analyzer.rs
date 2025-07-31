@@ -783,10 +783,12 @@ impl AnalyzerContext {
                         .await?;
                     let sub_op_scope_schema =
                         sub_op_scope.states.lock().unwrap().build_op_scope_schema();
-                    op_scope.states.lock().unwrap().sub_scopes.insert(
-                        foreach_op.op_scope.name.clone(),
-                        Arc::new(sub_op_scope_schema),
-                    );
+                    op_scope
+                        .states
+                        .lock()
+                        .unwrap()
+                        .sub_scopes
+                        .insert(reactive_op.name.clone(), Arc::new(sub_op_scope_schema));
                     analyzed_op_scope_fut
                 };
                 let op_name = reactive_op.name.clone();

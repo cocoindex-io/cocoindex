@@ -5,7 +5,7 @@ use crate::{
     ops::sdk::*,
 };
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Spec {
     api_type: LlmApiType,
     model: String,
@@ -92,8 +92,8 @@ impl SimpleFunctionFactoryBase for Factory {
         spec: Spec,
         args: Args,
         _context: Arc<FlowInstanceContext>,
-    ) -> Result<Box<dyn SimpleFunctionExecutor>> {
-        Ok(Box::new(Executor { spec, args }))
+    ) -> Result<impl SimpleFunctionExecutor> {
+        Ok(Executor { spec, args })
     }
 }
 
@@ -123,9 +123,10 @@ mod tests {
 
         let input_args_values = vec![text_content.to_string().into()];
 
-        let input_arg_schemas = vec![build_arg_schema("text", BasicValueType::Str)];
+        let input_arg_schemas = &[build_arg_schema("text", BasicValueType::Str)];
 
-        let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
+        let result =
+            test_flow_function(&factory, &spec, input_arg_schemas, input_args_values).await;
 
         if result.is_err() {
             eprintln!(

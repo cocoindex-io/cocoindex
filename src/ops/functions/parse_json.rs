@@ -98,8 +98,8 @@ impl SimpleFunctionFactoryBase for Factory {
         _spec: EmptySpec,
         args: Args,
         _context: Arc<FlowInstanceContext>,
-    ) -> Result<Box<dyn SimpleFunctionExecutor>> {
-        Ok(Box::new(Executor { args }))
+    ) -> Result<impl SimpleFunctionExecutor> {
+        Ok(Executor { args })
     }
 }
 
@@ -119,12 +119,13 @@ mod tests {
 
         let input_args_values = vec![json_string_content.to_string().into(), lang_value.clone()];
 
-        let input_arg_schemas = vec![
+        let input_arg_schemas = &[
             build_arg_schema("text", BasicValueType::Str),
             build_arg_schema("language", BasicValueType::Str),
         ];
 
-        let result = test_flow_function(factory, spec, input_arg_schemas, input_args_values).await;
+        let result =
+            test_flow_function(&factory, &spec, input_arg_schemas, input_args_values).await;
 
         assert!(
             result.is_ok(),
