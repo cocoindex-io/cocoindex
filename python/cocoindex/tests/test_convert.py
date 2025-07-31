@@ -133,24 +133,24 @@ def validate_full_roundtrip(
 
 
 def test_encode_engine_value_basic_types() -> None:
-    assert encode_engine_value(123) == 123
-    assert encode_engine_value(3.14) == 3.14
-    assert encode_engine_value("hello") == "hello"
-    assert encode_engine_value(True) is True
+    assert encode_engine_value(123, int) == 123
+    assert encode_engine_value(3.14, float) == 3.14
+    assert encode_engine_value("hello", str) == "hello"
+    assert encode_engine_value(True, bool) is True
 
 
 def test_encode_engine_value_uuid() -> None:
     u = uuid.uuid4()
-    assert encode_engine_value(u) == u
+    assert encode_engine_value(u, uuid.UUID) == u
 
 
 def test_encode_engine_value_date_time_types() -> None:
     d = datetime.date(2024, 1, 1)
-    assert encode_engine_value(d) == d
+    assert encode_engine_value(d, datetime.date) == d
     t = datetime.time(12, 30)
-    assert encode_engine_value(t) == t
+    assert encode_engine_value(t, datetime.time) == t
     dt = datetime.datetime(2024, 1, 1, 12, 30)
-    assert encode_engine_value(dt) == dt
+    assert encode_engine_value(dt, datetime.datetime) == dt
 
 
 def test_encode_scalar_numpy_values() -> None:
@@ -161,17 +161,22 @@ def test_encode_scalar_numpy_values() -> None:
         (np.float64(2.718), pytest.approx(2.718)),
     ]
     for np_value, expected in test_cases:
-        encoded = encode_engine_value(np_value)
+        encoded = encode_engine_value(np_value, type(np_value))
         assert encoded == expected
         assert isinstance(encoded, (int, float))
 
 
 def test_encode_engine_value_struct() -> None:
     order = Order(order_id="O123", name="mixed nuts", price=25.0)
-    assert encode_engine_value(order) == ["O123", "mixed nuts", 25.0, "default_extra"]
+    assert encode_engine_value(order, Order) == [
+        "O123",
+        "mixed nuts",
+        25.0,
+        "default_extra",
+    ]
 
     order_nt = OrderNamedTuple(order_id="O123", name="mixed nuts", price=25.0)
-    assert encode_engine_value(order_nt) == [
+    assert encode_engine_value(order_nt, OrderNamedTuple) == [
         "O123",
         "mixed nuts",
         25.0,
@@ -181,7 +186,7 @@ def test_encode_engine_value_struct() -> None:
 
 def test_encode_engine_value_list_of_structs() -> None:
     orders = [Order("O1", "item1", 10.0), Order("O2", "item2", 20.0)]
-    assert encode_engine_value(orders) == [
+    assert encode_engine_value(orders, list[Order]) == [
         ["O1", "item1", 10.0, "default_extra"],
         ["O2", "item2", 20.0, "default_extra"],
     ]
@@ -190,7 +195,7 @@ def test_encode_engine_value_list_of_structs() -> None:
         OrderNamedTuple("O1", "item1", 10.0),
         OrderNamedTuple("O2", "item2", 20.0),
     ]
-    assert encode_engine_value(orders_nt) == [
+    assert encode_engine_value(orders_nt, list[OrderNamedTuple]) == [
         ["O1", "item1", 10.0, "default_extra"],
         ["O2", "item2", 20.0, "default_extra"],
     ]
@@ -198,12 +203,12 @@ def test_encode_engine_value_list_of_structs() -> None:
 
 def test_encode_engine_value_struct_with_list() -> None:
     basket = Basket(items=["apple", "banana"])
-    assert encode_engine_value(basket) == [["apple", "banana"]]
+    assert encode_engine_value(basket, Basket) == [["apple", "banana"]]
 
 
 def test_encode_engine_value_nested_struct() -> None:
     customer = Customer(name="Alice", order=Order("O1", "item1", 10.0))
-    assert encode_engine_value(customer) == [
+    assert encode_engine_value(customer, Customer) == [
         "Alice",
         ["O1", "item1", 10.0, "default_extra"],
         None,
@@ -212,7 +217,7 @@ def test_encode_engine_value_nested_struct() -> None:
     customer_nt = CustomerNamedTuple(
         name="Alice", order=OrderNamedTuple("O1", "item1", 10.0)
     )
-    assert encode_engine_value(customer_nt) == [
+    assert encode_engine_value(customer_nt, CustomerNamedTuple) == [
         "Alice",
         ["O1", "item1", 10.0, "default_extra"],
         None,
@@ -220,20 +225,20 @@ def test_encode_engine_value_nested_struct() -> None:
 
 
 def test_encode_engine_value_empty_list() -> None:
-    assert encode_engine_value([]) == []
-    assert encode_engine_value([[]]) == [[]]
+    assert encode_engine_value([], list) == []
+    assert encode_engine_value([[]], list[list]) == [[]]
 
 
 def test_encode_engine_value_tuple() -> None:
-    assert encode_engine_value(()) == []
-    assert encode_engine_value((1, 2, 3)) == [1, 2, 3]
-    assert encode_engine_value(((1, 2), (3, 4))) == [[1, 2], [3, 4]]
-    assert encode_engine_value(([],)) == [[]]
-    assert encode_engine_value(((),)) == [[]]
+    assert encode_engine_value((), Any) == []
+    assert encode_engine_value((1, 2, 3), Any) == [1, 2, 3]
+    assert encode_engine_value(((1, 2), (3, 4)), Any) == [[1, 2], [3, 4]]
+    assert encode_engine_value(([],), Any) == [[]]
+    assert encode_engine_value(((),), Any) == [[]]
 
 
 def test_encode_engine_value_none() -> None:
-    assert encode_engine_value(None) is None
+    assert encode_engine_value(None, int | None) is None
 
 
 def test_roundtrip_basic_types() -> None:
@@ -743,7 +748,7 @@ IntVectorType = cocoindex.Vector[np.int64, Literal[5]]
 
 def test_vector_as_vector() -> None:
     value = np.array([1, 2, 3, 4, 5], dtype=np.int64)
-    encoded = encode_engine_value(value)
+    encoded = encode_engine_value(value, IntVectorType)
     assert np.array_equal(encoded, value)
     decoded = build_engine_value_decoder(IntVectorType)(encoded)
     assert np.array_equal(decoded, value)
@@ -754,7 +759,7 @@ ListIntType = list[int]
 
 def test_vector_as_list() -> None:
     value: ListIntType = [1, 2, 3, 4, 5]
-    encoded = encode_engine_value(value)
+    encoded = encode_engine_value(value, ListIntType)
     assert encoded == [1, 2, 3, 4, 5]
     decoded = build_engine_value_decoder(ListIntType)(encoded)
     assert np.array_equal(decoded, value)
@@ -772,13 +777,19 @@ NDArrayInt64Type = NDArray[np.int64]
 def test_encode_engine_value_ndarray() -> None:
     """Test encoding NDArray vectors to lists for the Rust engine."""
     vec_f32: Float32VectorType = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-    assert np.array_equal(encode_engine_value(vec_f32), [1.0, 2.0, 3.0])
+    assert np.array_equal(
+        encode_engine_value(vec_f32, Float32VectorType), [1.0, 2.0, 3.0]
+    )
     vec_f64: Float64VectorType = np.array([1.0, 2.0, 3.0], dtype=np.float64)
-    assert np.array_equal(encode_engine_value(vec_f64), [1.0, 2.0, 3.0])
+    assert np.array_equal(
+        encode_engine_value(vec_f64, Float64VectorType), [1.0, 2.0, 3.0]
+    )
     vec_i64: Int64VectorType = np.array([1, 2, 3], dtype=np.int64)
-    assert np.array_equal(encode_engine_value(vec_i64), [1, 2, 3])
+    assert np.array_equal(encode_engine_value(vec_i64, Int64VectorType), [1, 2, 3])
     vec_nd_f32: NDArrayFloat32Type = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-    assert np.array_equal(encode_engine_value(vec_nd_f32), [1.0, 2.0, 3.0])
+    assert np.array_equal(
+        encode_engine_value(vec_nd_f32, NDArrayFloat32Type), [1.0, 2.0, 3.0]
+    )
 
 
 def test_make_engine_value_decoder_ndarray() -> None:
@@ -808,21 +819,21 @@ def test_make_engine_value_decoder_ndarray() -> None:
 def test_roundtrip_ndarray_vector() -> None:
     """Test roundtrip encoding and decoding of NDArray vectors."""
     value_f32 = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-    encoded_f32 = encode_engine_value(value_f32)
+    encoded_f32 = encode_engine_value(value_f32, Float32VectorType)
     np.array_equal(encoded_f32, [1.0, 2.0, 3.0])
     decoded_f32 = build_engine_value_decoder(Float32VectorType)(encoded_f32)
     assert isinstance(decoded_f32, np.ndarray)
     assert decoded_f32.dtype == np.float32
     assert np.array_equal(decoded_f32, value_f32)
     value_i64 = np.array([1, 2, 3], dtype=np.int64)
-    encoded_i64 = encode_engine_value(value_i64)
+    encoded_i64 = encode_engine_value(value_i64, Int64VectorType)
     assert np.array_equal(encoded_i64, [1, 2, 3])
     decoded_i64 = build_engine_value_decoder(Int64VectorType)(encoded_i64)
     assert isinstance(decoded_i64, np.ndarray)
     assert decoded_i64.dtype == np.int64
     assert np.array_equal(decoded_i64, value_i64)
     value_nd_f64: NDArrayFloat64Type = np.array([1.0, 2.0, 3.0], dtype=np.float64)
-    encoded_nd_f64 = encode_engine_value(value_nd_f64)
+    encoded_nd_f64 = encode_engine_value(value_nd_f64, NDArrayFloat64Type)
     assert np.array_equal(encoded_nd_f64, [1.0, 2.0, 3.0])
     decoded_nd_f64 = build_engine_value_decoder(NDArrayFloat64Type)(encoded_nd_f64)
     assert isinstance(decoded_nd_f64, np.ndarray)
@@ -833,7 +844,7 @@ def test_roundtrip_ndarray_vector() -> None:
 def test_ndarray_dimension_mismatch() -> None:
     """Test dimension enforcement for Vector with specified dimension."""
     value = np.array([1.0, 2.0], dtype=np.float32)
-    encoded = encode_engine_value(value)
+    encoded = encode_engine_value(value, NDArray[np.float32])
     assert np.array_equal(encoded, [1.0, 2.0])
     with pytest.raises(ValueError, match="Vector dimension mismatch"):
         build_engine_value_decoder(Float32VectorType)(encoded)
@@ -842,14 +853,14 @@ def test_ndarray_dimension_mismatch() -> None:
 def test_list_vector_backward_compatibility() -> None:
     """Test that list-based vectors still work for backward compatibility."""
     value = [1, 2, 3, 4, 5]
-    encoded = encode_engine_value(value)
+    encoded = encode_engine_value(value, list[int])
     assert encoded == [1, 2, 3, 4, 5]
     decoded = build_engine_value_decoder(IntVectorType)(encoded)
     assert isinstance(decoded, np.ndarray)
     assert decoded.dtype == np.int64
     assert np.array_equal(decoded, np.array([1, 2, 3, 4, 5], dtype=np.int64))
     value_list: ListIntType = [1, 2, 3, 4, 5]
-    encoded = encode_engine_value(value_list)
+    encoded = encode_engine_value(value_list, ListIntType)
     assert np.array_equal(encoded, [1, 2, 3, 4, 5])
     decoded = build_engine_value_decoder(ListIntType)(encoded)
     assert np.array_equal(decoded, [1, 2, 3, 4, 5])
@@ -867,7 +878,7 @@ def test_encode_complex_structure_with_ndarray() -> None:
     original = MyStructWithNDArray(
         name="test_np", data=np.array([1.0, 0.5], dtype=np.float32), value=100
     )
-    encoded = encode_engine_value(original)
+    encoded = encode_engine_value(original, MyStructWithNDArray)
 
     assert encoded[0] == original.name
     assert np.array_equal(encoded[1], original.data)
@@ -1026,7 +1037,7 @@ def test_full_roundtrip_vector_of_vector() -> None:
         ),
         (
             value_f32,
-            np.typing.NDArray[np.typing.NDArray[np.float32]],
+            np.typing.NDArray[np.float32],
         ),
     )
 

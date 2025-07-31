@@ -177,7 +177,7 @@ def _encode_engine_value_core(
     return value
 
 
-def encode_engine_value(value: Any, type_hint: Type[Any] | str | None = None) -> Any:
+def encode_engine_value(value: Any, type_hint: Type[Any] | str) -> Any:
     """
     Encode a Python value to an engine value.
 
@@ -188,9 +188,6 @@ def encode_engine_value(value: Any, type_hint: Type[Any] | str | None = None) ->
     Returns:
         The encoded engine value
     """
-    if type_hint is None:
-        return _encode_engine_value_core(value)
-
     # Analyze type once and reuse the result
     type_info = _get_cached_type_info(type_hint, {})
     if isinstance(type_info.variant, AnalyzedUnknownType):
