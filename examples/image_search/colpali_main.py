@@ -4,12 +4,10 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import cocoindex
-import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from PIL import Image
 from qdrant_client import QdrantClient
 
 

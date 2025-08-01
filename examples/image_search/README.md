@@ -30,10 +30,11 @@ This example provides two different image search implementations:
 - Ollama (Optional) for generating image captions
 
 ## Setup
-- Make sure Postgres and Qdrant are running
+- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+
+- Make sure Qdrant is running
   ```
   docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
-  export COCOINDEX_DATABASE_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
   ```
 
 ## (Optional) Run Ollama
