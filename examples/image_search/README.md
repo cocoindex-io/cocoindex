@@ -76,6 +76,20 @@ export OLLAMA_MODEL="gemma3"  # Optional, for caption generation
   uvicorn colpali_main:app --reload --host 0.0.0.0 --port 8000
   ```
 
+Note that recent Nvidia GPUs (RTX 5090) will not work with the Stable pytorch version up to 2.7.1
+
+If you get this error:
+
+```
+The current PyTorch install supports CUDA capabilities sm_37 sm_50 sm_60 sm_61 sm_70 sm_75 sm_80 sm_86 sm_90 compute_37.
+```
+
+You can install the nightly pytorch build here: https://pytorch.org/get-started/locally/
+
+```sh
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu129
+```
+
 ### Frontend (same for both)
 - Run Frontend:
   ```
