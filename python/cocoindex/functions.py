@@ -107,25 +107,31 @@ def _get_colpali_model_and_processor(model_name: str) -> dict[str, Any]:
     """Get or load ColPali model and processor, with caching."""
     try:
         from colpali_engine.models import ColPali, ColPaliProcessor  # type: ignore[import-untyped]
+        from colpali_engine.utils.torch_utils import get_torch_device
+        import torch
     except ImportError as e:
         raise ImportError(
             "ColPali is not available. Make sure cocoindex is installed with ColPali support."
         ) from e
 
-    model = ColPali.from_pretrained(model_name)
+    device = get_torch_device("auto")
+    model = ColPali.from_pretrained(
+        model_name, device_map=device, torch_dtype=torch.bfloat16
+    ).eval()
     processor = ColPaliProcessor.from_pretrained(model_name)
 
     # Get dimension from the actual model
-    dimension = _detect_colpali_dimension(model, processor)
+    dimension = _detect_colpali_dimension(model, processor, device)
 
     return {
         "model": model,
         "processor": processor,
         "dimension": dimension,
+        "device": device,
     }
 
 
-def _detect_colpali_dimension(model: Any, processor: Any) -> int:
+def _detect_colpali_dimension(model: Any, processor: Any, device: Any) -> int:
     """Detect ColPali embedding dimension from the actual model config."""
     # Try to access embedding dimension
     if hasattr(model.config, "embedding_dim"):
@@ -138,7 +144,7 @@ def _detect_colpali_dimension(model: Any, processor: Any) -> int:
 
         dummy_img = Image.fromarray(np.zeros((224, 224, 3), np.uint8))
         # Use the processor to process the dummy image
-        processed = processor.process_images([dummy_img])
+        processed = processor.process_images([dummy_img]).to(device)
         with torch.no_grad():
             output = model(**processed)
         dim = int(output.shape[-1])
@@ -203,9 +209,10 @@ class ColPaliEmbedImageExecutor:
 
         model = self._cached_model_data["model"]
         processor = self._cached_model_data["processor"]
+        device = self._cached_model_data["device"]
 
         pil_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        inputs = processor.process_images([pil_image])
+        inputs = processor.process_images([pil_image]).to(device)
         with torch.no_grad():
             embeddings = model(**inputs)
 
@@ -218,7 +225,7 @@ class ColPaliEmbedImageExecutor:
         # Keep patch-level embeddings: [batch, patches, hidden_dim] -> [patches, hidden_dim]
         patch_embeddings = embeddings[0]  # Remove batch dimension
 
-        return patch_embeddings.cpu().numpy()
+        return patch_embeddings.cpu().to(torch.float32).numpy()
 
 
 class ColPaliEmbedQuery(op.FunctionSpec):
@@ -273,8 +280,9 @@ class ColPaliEmbedQueryExecutor:
 
         model = self._cached_model_data["model"]
         processor = self._cached_model_data["processor"]
+        device = self._cached_model_data["device"]
 
-        inputs = processor.process_queries([query])
+        inputs = processor.process_queries([query]).to(device)
         with torch.no_grad():
             embeddings = model(**inputs)
 
@@ -287,4 +295,4 @@ class ColPaliEmbedQueryExecutor:
         # Keep token-level embeddings: [batch, tokens, hidden_dim] -> [tokens, hidden_dim]
         token_embeddings = embeddings[0]  # Remove batch dimension
 
-        return token_embeddings.cpu().numpy()
+        return token_embeddings.cpu().to(torch.float32).numpy()
