@@ -187,7 +187,7 @@ class ColPaliEmbedImageExecutor:
         dimension = self._cached_model_data["dimension"]
         return Vector[Vector[np.float32, Literal[dimension]]]  # type: ignore
 
-    def __call__(self, img_bytes: bytes) -> list[list[float]]:
+    def __call__(self, img_bytes: bytes) -> Any:
         try:
             from PIL import Image
             import torch
@@ -218,12 +218,7 @@ class ColPaliEmbedImageExecutor:
         # Keep patch-level embeddings: [batch, patches, hidden_dim] -> [patches, hidden_dim]
         patch_embeddings = embeddings[0]  # Remove batch dimension
 
-        # Convert to list of lists: [[patch1_embedding], [patch2_embedding], ...]
-        result = []
-        for patch in patch_embeddings:
-            result.append(patch.cpu().numpy().tolist())
-
-        return result
+        return patch_embeddings.cpu().numpy()
 
 
 class ColPaliEmbedQuery(op.FunctionSpec):
@@ -264,7 +259,7 @@ class ColPaliEmbedQueryExecutor:
         dimension = self._cached_model_data["dimension"]
         return Vector[Vector[np.float32, Literal[dimension]]]  # type: ignore
 
-    def __call__(self, query: str) -> list[list[float]]:
+    def __call__(self, query: str) -> Any:
         try:
             import torch
         except ImportError as e:
@@ -292,9 +287,4 @@ class ColPaliEmbedQueryExecutor:
         # Keep token-level embeddings: [batch, tokens, hidden_dim] -> [tokens, hidden_dim]
         token_embeddings = embeddings[0]  # Remove batch dimension
 
-        # Convert to list of lists: [[token1_embedding], [token2_embedding], ...]
-        result = []
-        for token in token_embeddings:
-            result.append(token.cpu().numpy().tolist())
-
-        return result
+        return token_embeddings.cpu().numpy()
