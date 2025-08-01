@@ -24,6 +24,16 @@ class CustomLanguageSpec:
     aliases: list[str] = dataclasses.field(default_factory=list)
 
 
+@dataclasses.dataclass
+class ColPaliModelInfo:
+    """Data structure for ColPali model and processor."""
+
+    model: Any
+    processor: Any
+    dimension: int
+    device: Any
+
+
 class SplitRecursively(op.FunctionSpec):
     """Split a document (in string) recursively."""
 
@@ -103,11 +113,11 @@ class SentenceTransformerEmbedExecutor:
 
 
 @functools.cache
-def _get_colpali_model_and_processor(model_name: str) -> dict[str, Any]:
+def _get_colpali_model_and_processor(model_name: str) -> ColPaliModelInfo:
     """Get or load ColPali model and processor, with caching."""
     try:
         from colpali_engine.models import ColPali, ColPaliProcessor  # type: ignore[import-untyped]
-        from colpali_engine.utils.torch_utils import get_torch_device
+        from colpali_engine.utils.torch_utils import get_torch_device  # type: ignore[import-untyped]
         import torch
     except ImportError as e:
         raise ImportError(
@@ -123,12 +133,12 @@ def _get_colpali_model_and_processor(model_name: str) -> dict[str, Any]:
     # Get dimension from the actual model
     dimension = _detect_colpali_dimension(model, processor, device)
 
-    return {
-        "model": model,
-        "processor": processor,
-        "dimension": dimension,
-        "device": device,
-    }
+    return ColPaliModelInfo(
+        model=model,
+        processor=processor,
+        dimension=dimension,
+        device=device,
+    )
 
 
 def _detect_colpali_dimension(model: Any, processor: Any, device: Any) -> int:
@@ -182,15 +192,14 @@ class ColPaliEmbedImageExecutor:
     """Executor for ColPaliEmbedImage."""
 
     spec: ColPaliEmbedImage
-    _cached_model_data: dict[str, Any] | None = None
+    _model_info: ColPaliModelInfo
 
     def analyze(self, _img_bytes: Any) -> type:
         # Get shared model and dimension
-        if self._cached_model_data is None:
-            self._cached_model_data = _get_colpali_model_and_processor(self.spec.model)
+        self._model_info = _get_colpali_model_and_processor(self.spec.model)
 
         # Return multi-vector type: Variable patches x Fixed hidden dimension
-        dimension = self._cached_model_data["dimension"]
+        dimension = self._model_info.dimension
         return Vector[Vector[np.float32, Literal[dimension]]]  # type: ignore
 
     def __call__(self, img_bytes: bytes) -> Any:
@@ -203,13 +212,9 @@ class ColPaliEmbedImageExecutor:
                 "Required dependencies (PIL, torch) are missing for ColPali image embedding."
             ) from e
 
-        # Get shared model and processor
-        if self._cached_model_data is None:
-            self._cached_model_data = _get_colpali_model_and_processor(self.spec.model)
-
-        model = self._cached_model_data["model"]
-        processor = self._cached_model_data["processor"]
-        device = self._cached_model_data["device"]
+        model = self._model_info.model
+        processor = self._model_info.processor
+        device = self._model_info.device
 
         pil_image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         inputs = processor.process_images([pil_image]).to(device)
@@ -255,15 +260,14 @@ class ColPaliEmbedQueryExecutor:
     """Executor for ColPaliEmbedQuery."""
 
     spec: ColPaliEmbedQuery
-    _cached_model_data: dict[str, Any] | None = None
+    _model_info: ColPaliModelInfo
 
     def analyze(self, _query: Any) -> type:
         # Get shared model and dimension
-        if self._cached_model_data is None:
-            self._cached_model_data = _get_colpali_model_and_processor(self.spec.model)
+        self._model_info = _get_colpali_model_and_processor(self.spec.model)
 
         # Return multi-vector type: Variable tokens x Fixed hidden dimension
-        dimension = self._cached_model_data["dimension"]
+        dimension = self._model_info.dimension
         return Vector[Vector[np.float32, Literal[dimension]]]  # type: ignore
 
     def __call__(self, query: str) -> Any:
@@ -274,13 +278,9 @@ class ColPaliEmbedQueryExecutor:
                 "Required dependencies (torch) are missing for ColPali query embedding."
             ) from e
 
-        # Get shared model and processor
-        if self._cached_model_data is None:
-            self._cached_model_data = _get_colpali_model_and_processor(self.spec.model)
-
-        model = self._cached_model_data["model"]
-        processor = self._cached_model_data["processor"]
-        device = self._cached_model_data["device"]
+        model = self._model_info.model
+        processor = self._model_info.processor
+        device = self._model_info.device
 
         inputs = processor.process_queries([query]).to(device)
         with torch.no_grad():
