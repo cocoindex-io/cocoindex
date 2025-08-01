@@ -188,3 +188,53 @@ Input data:
 *   `text` (*Str*, required): The text to embed.
 
 Return: *Vector[Float32, N]*, where *N* is the dimension of the embedding vector determined by the model.
+
+## ColPaliEmbedImage
+
+`ColPaliEmbedImage` embeds images using the ColPali multimodal model.
+
+ColPali (Contextual Late-interaction over Patches) uses late interaction between image patch embeddings and text token embeddings for retrieval.
+
+:::note Optional Dependency Required
+
+This function requires the `colpali-engine` library, which is an optional dependency. Install CocoIndex with:
+
+```bash
+pip install 'cocoindex[colpali]'
+```
+:::
+
+The spec takes the following fields:
+
+*   `model` (`str`): The ColPali model name to use (e.g., "vidore/colpali-v1.2")
+
+Input data:
+
+*   `img_bytes` (*Bytes*): The image data in bytes format.
+
+Return: *Vector[Vector[Float32, N]]*, where *N* is the hidden dimension determined by the model. This returns a multi-vector format with variable patches and fixed hidden dimension.
+
+## ColPaliEmbedQuery
+
+`ColPaliEmbedQuery` embeds text queries using the ColPali multimodal model.
+
+This produces query embeddings compatible with ColPali image embeddings for late interaction scoring (MaxSim).
+
+:::note Optional Dependency Required
+
+This function requires the `colpali-engine` library, which is an optional dependency. Install CocoIndex with:
+
+```bash
+pip install 'cocoindex[colpali]'
+```
+:::
+
+The spec takes the following fields:
+
+*   `model` (`str`): The ColPali model name to use (e.g., "vidore/colpali-v1.2")
+
+Input data:
+
+*   `query` (*Str*): The text query to embed.
+
+Return: *Vector[Vector[Float32, N]]*, where *N* is the hidden dimension determined by the model. This returns a multi-vector format with variable tokens and fixed hidden dimension.
