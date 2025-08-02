@@ -6,29 +6,30 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import functools
 import inspect
 import warnings
 from enum import Enum
-from typing import Any, Callable, Mapping, get_origin
+from typing import Any, Callable, Mapping, Type, get_origin
 
 import numpy as np
 
 from .typing import (
     KEY_FIELD_NAME,
     TABLE_TYPES,
+    AnalyzedAnyType,
+    AnalyzedBasicType,
+    AnalyzedDictType,
+    AnalyzedListType,
+    AnalyzedStructType,
+    AnalyzedTypeInfo,
+    AnalyzedUnionType,
+    AnalyzedUnknownType,
     analyze_type_info,
     encode_enriched_type,
     is_namedtuple_type,
-    is_struct_type,
-    AnalyzedTypeInfo,
-    AnalyzedAnyType,
-    AnalyzedDictType,
-    AnalyzedListType,
-    AnalyzedBasicType,
-    AnalyzedUnionType,
-    AnalyzedUnknownType,
-    AnalyzedStructType,
     is_numpy_number_type,
+    is_struct_type,
 )
 
 
@@ -50,34 +51,6 @@ class ChildFieldPath:
         self._field_path.pop()
 
 
-def encode_engine_value(value: Any) -> Any:
-    """Encode a Python value to an engine value."""
-    if dataclasses.is_dataclass(value):
-        return [
-            encode_engine_value(getattr(value, f.name))
-            for f in dataclasses.fields(value)
-        ]
-    if is_namedtuple_type(type(value)):
-        return [encode_engine_value(getattr(value, name)) for name in value._fields]
-    if isinstance(value, np.number):
-        return value.item()
-    if isinstance(value, np.ndarray):
-        return value
-    if isinstance(value, (list, tuple)):
-        return [encode_engine_value(v) for v in value]
-    if isinstance(value, dict):
-        if not value:
-            return {}
-
-        first_val = next(iter(value.values()))
-        if is_struct_type(type(first_val)):  # KTable
-            return [
-                [encode_engine_value(k)] + encode_engine_value(v)
-                for k, v in value.items()
-            ]
-    return value
-
-
 _CONVERTIBLE_KINDS = {
     ("Float32", "Float64"),
     ("LocalDateTime", "OffsetDateTime"),
@@ -89,6 +62,127 @@ def _is_type_kind_convertible_to(src_type_kind: str, dst_type_kind: str) -> bool
         src_type_kind == dst_type_kind
         or (src_type_kind, dst_type_kind) in _CONVERTIBLE_KINDS
     )
+
+
+def _get_type_info_safe(type_to_analyze: Any) -> AnalyzedTypeInfo:
+    """Safely get type info, bypassing cache if type is not hashable."""
+
+    @functools.cache
+    def _get_cached_type_info() -> AnalyzedTypeInfo:
+        """cache the computed type information for a given type."""
+        return analyze_type_info(type_to_analyze)
+
+    try:
+        return _get_cached_type_info(type_to_analyze)
+    except TypeError:
+        return analyze_type_info(type_to_analyze)
+
+
+def _encode_engine_value_core(
+    value: Any,
+    type_info: AnalyzedTypeInfo | None = None,
+) -> Any:
+    """Core encoding logic for converting Python values to engine values."""
+
+    if dataclasses.is_dataclass(value):
+        fields = dataclasses.fields(value)
+        return [
+            _encode_engine_value_core(
+                getattr(value, f.name),
+                type_info=_get_type_info_safe(f.type),
+            )
+            for f in fields
+        ]
+
+    if is_namedtuple_type(type(value)):
+        annotations = type(value).__annotations__
+        return [
+            _encode_engine_value_core(
+                getattr(value, name),
+                type_info=_get_type_info_safe(annotations.get(name))
+                if annotations.get(name)
+                else None,
+            )
+            for name in value._fields
+        ]
+
+    if isinstance(value, np.number):
+        return value.item()
+
+    if isinstance(value, np.ndarray):
+        return value
+
+    if isinstance(value, (list, tuple)):
+        if (
+            type_info
+            and isinstance(type_info.variant, AnalyzedListType)
+            and type_info.variant.elem_type
+        ):
+            elem_type_info = _get_type_info_safe(type_info.variant.elem_type)
+            return [
+                _encode_engine_value_core(
+                    v,
+                    type_info=elem_type_info,
+                )
+                for v in value
+            ]
+        else:
+            return [_encode_engine_value_core(v, type_info=None) for v in value]
+
+    if isinstance(value, dict):
+        # Determine if this is a JSON type
+        is_json_type = False
+        if type_info and isinstance(type_info.variant, AnalyzedBasicType):
+            is_json_type = type_info.variant.kind == "Json"
+
+        # Handle empty dict
+        if not value:
+            return value if (not type_info or is_json_type) else []
+
+        # Handle KTable
+        first_val = next(iter(value.values()))
+        if is_struct_type(type(first_val)):
+            return [
+                [_encode_engine_value_core(k, type_info=None)]
+                + _encode_engine_value_core(v, type_info=None)
+                for k, v in value.items()
+            ]
+
+        # Handle regular dict
+        if (
+            type_info
+            and isinstance(type_info.variant, AnalyzedDictType)
+            and type_info.variant.value_type
+        ):
+            value_type_info = _get_type_info_safe(type_info.variant.value_type)
+            return {
+                k: _encode_engine_value_core(
+                    v,
+                    type_info=value_type_info,
+                )
+                for k, v in value.items()
+            }
+
+    return value
+
+
+def encode_engine_value(value: Any, type_hint: Type[Any] | str) -> Any:
+    """
+    Encode a Python value to an engine value.
+
+    Args:
+        value: The Python value to encode
+        type_hint: Type annotation for the value. This should always be provided.
+
+    Returns:
+        The encoded engine value
+    """
+    # Analyze type once and reuse the result
+    type_info = _get_type_info_safe(type_hint)
+    if isinstance(type_info.variant, AnalyzedUnknownType):
+        raise ValueError(f"Type annotation `{type_info.core_type}` is unsupported")
+
+    return _encode_engine_value_core(value, type_info)
 
 
 def make_engine_value_decoder(
