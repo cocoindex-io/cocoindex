@@ -185,6 +185,7 @@ It defines an index flow like this:
 | [Image Search with Vision API](examples/image_search) | Generates detailed captions for images using a vision model, embeds them, enables live-updating semantic search via FastAPI and served on a React frontend|
 | [Face Recognition](examples/face_recognition) | Recognize faces in images and build embedding index |
 | [Paper Metadata](examples/paper_metadata) | Index papers in PDF files, and build metadata tables for each paper |
+| [Multi Format Indexing](examples/multi_format_indexing) | Build visual document index from PDFs and images with ColPali for semantic search |
 | [Custom Output Files](examples/custom_output_files) | Convert markdown files to HTML files and save them to a local directory, using *CocoIndex Custom Targets* |
 
 More coming and stay tuned 👀!
