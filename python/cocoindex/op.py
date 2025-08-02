@@ -114,8 +114,8 @@ class _FunctionExecutorFactory:
     ) -> tuple[dict[str, Any], Executor]:
         spec = _load_spec_from_engine(self._spec_cls, spec)
         executor = self._executor_cls(spec)
-        result_type = executor.analyze(*args, **kwargs)
-        return (encode_enriched_type(result_type), executor)
+        result_type = executor.analyze_schema(*args, **kwargs)
+        return (result_type, executor)
 
 
 _gpu_dispatch_lock = asyncio.Lock()
@@ -156,6 +156,12 @@ def _to_async_call(call: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
     return lambda *args, **kwargs: asyncio.to_thread(lambda: call(*args, **kwargs))
 
 
+@dataclasses.dataclass
+class _ArgInfo:
+    decoder: Callable[[Any], Any]
+    is_required: bool
+
+
 def _register_op_factory(
     category: OpCategory,
     expected_args: list[tuple[str, inspect.Parameter]],
@@ -176,8 +182,8 @@ def _register_op_factory(
             return op_args.behavior_version
 
     class _WrappedClass(executor_cls, _Fallback):  # type: ignore[misc]
-        _args_decoders: list[Callable[[Any], Any]]
-        _kwargs_decoders: dict[str, Callable[[Any], Any]]
+        _args_info: list[_ArgInfo]
+        _kwargs_info: dict[str, _ArgInfo]
         _acall: Callable[..., Awaitable[Any]]
 
         def __init__(self, spec: Any) -> None:
@@ -185,28 +191,45 @@ def _register_op_factory(
             self.spec = spec
             self._acall = _to_async_call(super().__call__)
 
-        def analyze(
+        def analyze_schema(
             self, *args: _engine.OpArgSchema, **kwargs: _engine.OpArgSchema
         ) -> Any:
             """
             Analyze the spec and arguments. In this phase, argument types should be validated.
             It should return the expected result type for the current op.
             """
-            self._args_decoders = []
-            self._kwargs_decoders = {}
+            self._args_info = []
+            self._kwargs_info = {}
             attributes = []
+            potentially_missing_required_arg = False
 
-            def process_attribute(arg_name: str, arg: _engine.OpArgSchema) -> None:
+            def process_arg(
+                arg_name: str,
+                arg_param: inspect.Parameter,
+                actual_arg: _engine.OpArgSchema,
+            ) -> _ArgInfo:
+                nonlocal potentially_missing_required_arg
                 if op_args.arg_relationship is not None:
                     related_attr, related_arg_name = op_args.arg_relationship
                     if related_arg_name == arg_name:
                         attributes.append(
-                            TypeAttr(related_attr.value, arg.analyzed_value)
+                            TypeAttr(related_attr.value, actual_arg.analyzed_value)
                         )
+                type_info = analyze_type_info(arg_param.annotation)
+                decoder = make_engine_value_decoder(
+                    [arg_name], actual_arg.value_type["type"], type_info
+                )
+                is_required = not type_info.nullable
+                if is_required and actual_arg.value_type.get("nullable", False):
+                    potentially_missing_required_arg = True
+                return _ArgInfo(
+                    decoder=decoder,
+                    is_required=is_required,
+                )
 
             # Match arguments with parameters.
             next_param_idx = 0
-            for arg in args:
+            for actual_arg in args:
                 if next_param_idx >= len(expected_args):
                     raise ValueError(
                         f"Too many arguments passed in: {len(args)} > {len(expected_args)}"
@@ -219,20 +242,13 @@ def _register_op_factory(
                     raise ValueError(
                         f"Too many positional arguments passed in: {len(args)} > {next_param_idx}"
                     )
-                self._args_decoders.append(
-                    make_engine_value_decoder(
-                        [arg_name],
-                        arg.value_type["type"],
-                        analyze_type_info(arg_param.annotation),
-                    )
-                )
-                process_attribute(arg_name, arg)
+                self._args_info.append(process_arg(arg_name, arg_param, actual_arg))
                 if arg_param.kind != inspect.Parameter.VAR_POSITIONAL:
                     next_param_idx += 1
 
             expected_kwargs = expected_args[next_param_idx:]
 
-            for kwarg_name, kwarg in kwargs.items():
+            for kwarg_name, actual_arg in kwargs.items():
                 expected_arg = next(
                     (
                         arg
@@ -254,12 +270,9 @@ def _register_op_factory(
                         f"Unexpected keyword argument passed in: {kwarg_name}"
                     )
                 arg_param = expected_arg[1]
-                self._kwargs_decoders[kwarg_name] = make_engine_value_decoder(
-                    [kwarg_name],
-                    kwarg.value_type["type"],
-                    analyze_type_info(arg_param.annotation),
+                self._kwargs_info[kwarg_name] = process_arg(
+                    kwarg_name, arg_param, actual_arg
                 )
-                process_attribute(kwarg_name, kwarg)
 
             missing_args = [
                 name
@@ -280,32 +293,45 @@ def _register_op_factory(
             if len(missing_args) > 0:
                 raise ValueError(f"Missing arguments: {', '.join(missing_args)}")
 
-            prepare_method = getattr(executor_cls, "analyze", None)
-            if prepare_method is not None:
-                result = prepare_method(self, *args, **kwargs)
+            base_analyze_method = getattr(self, "analyze", None)
+            if base_analyze_method is not None:
+                result = base_analyze_method(self, *args, **kwargs)
             else:
                 result = expected_return
             if len(attributes) > 0:
                 result = Annotated[result, *attributes]
-            return result
+
+            encoded_type = encode_enriched_type(result)
+            if potentially_missing_required_arg:
+                encoded_type["nullable"] = True
+            return encoded_type
 
         async def prepare(self) -> None:
             """
             Prepare for execution.
             It's executed after `analyze` and before any `__call__` execution.
             """
-            setup_method = getattr(super(), "prepare", None)
-            if setup_method is not None:
-                await _to_async_call(setup_method)()
+            prepare_method = getattr(super(), "prepare", None)
+            if prepare_method is not None:
+                await _to_async_call(prepare_method)()
 
         async def __call__(self, *args: Any, **kwargs: Any) -> Any:
-            decoded_args = (
-                decoder(arg) for decoder, arg in zip(self._args_decoders, args)
-            )
-            decoded_kwargs = {
-                arg_name: self._kwargs_decoders[arg_name](arg)
-                for arg_name, arg in kwargs.items()
-            }
+            decoded_args = []
+            for arg_info, arg in zip(self._args_info, args):
+                if arg_info.is_required and arg is None:
+                    return None
+                decoded_args.append(arg_info.decoder(arg))
+
+            decoded_kwargs = {}
+            for kwarg_name, arg in kwargs.items():
+                kwarg_info = self._kwargs_info.get(kwarg_name)
+                if kwarg_info is None:
+                    raise ValueError(
+                        f"Unexpected keyword argument passed in: {kwarg_name}"
+                    )
+                if kwarg_info.is_required and arg is None:
+                    return None
+                decoded_kwargs[kwarg_name] = kwarg_info.decoder(arg)
 
             if op_args.gpu:
                 # For GPU executions, data-level parallelism is applied, so we don't want to

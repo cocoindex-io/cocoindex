@@ -101,3 +101,44 @@ async def test_for_each_transform_flow_async() -> None:
     }
 
     assert result == expected, f"Expected {expected}, got {result}"
+
+
+def test_none_arg_yield_none_result() -> None:
+    """Test that None arguments yield None results."""
+
+    @cocoindex.op.function()
+    def custom_fn(
+        required_arg: int,
+        optional_arg: int | None,
+        required_kwarg: int,
+        optional_kwarg: int | None,
+    ) -> int:
+        return (
+            required_arg + (optional_arg or 0) + required_kwarg + (optional_kwarg or 0)
+        )
+
+    @cocoindex.transform_flow()
+    def transform_flow(
+        required_arg: cocoindex.DataSlice[int | None],
+        optional_arg: cocoindex.DataSlice[int | None],
+        required_kwarg: cocoindex.DataSlice[int | None],
+        optional_kwarg: cocoindex.DataSlice[int | None],
+    ) -> cocoindex.DataSlice[int | None]:
+        return required_arg.transform(
+            custom_fn,
+            optional_arg,
+            required_kwarg=required_kwarg,
+            optional_kwarg=optional_kwarg,
+        )
+
+    result = transform_flow.eval(1, 2, 4, 8)
+    assert result == 15, f"Expected 15, got {result}"
+
+    result = transform_flow.eval(1, None, 4, None)
+    assert result == 5, f"Expected 5, got {result}"
+
+    result = transform_flow.eval(None, 2, 4, 8)
+    assert result is None, f"Expected None, got {result}"
+
+    result = transform_flow.eval(1, 2, None, None)
+    assert result is None, f"Expected None, got {result}"
