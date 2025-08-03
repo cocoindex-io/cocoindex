@@ -530,6 +530,17 @@ pub async fn evaluate_source_entry(
         value::Value::KTable(BTreeMap::from([(src_eval_ctx.key.clone(), scope_value)])),
     )?;
 
+    // Fill other source fields with empty tables
+    for import_op in src_eval_ctx.plan.import_ops.iter() {
+        let field_idx = import_op.output.field_idx;
+        if field_idx != src_eval_ctx.import_op.output.field_idx {
+            root_scope_entry.define_field(
+                &AnalyzedOpOutput { field_idx },
+                &value::Value::KTable(BTreeMap::new()),
+            )?;
+        }
+    }
+
     evaluate_op_scope(
         &src_eval_ctx.plan.op_scope,
         RefList::Nil.prepend(&root_scope_entry),
