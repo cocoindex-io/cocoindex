@@ -295,7 +295,7 @@ def _register_op_factory(
 
             base_analyze_method = getattr(self, "analyze", None)
             if base_analyze_method is not None:
-                result = base_analyze_method(self, *args, **kwargs)
+                result = base_analyze_method(*args, **kwargs)
             else:
                 result = expected_return
             if len(attributes) > 0:
