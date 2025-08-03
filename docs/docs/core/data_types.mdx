@@ -204,9 +204,10 @@ Currently, the following types are key types
 
 CocoIndex supports *Null* values. A *Null* value represents the absence of data or an unknown value, distinct from empty strings, zero numbers, or false boolean values.
 
-### Nullable Data
+### Nullable Type
 
-For any data (e.g. a field of a *Struct*, an argument or return value of a CocoIndex function), if it is nullable, it means its value can be *Null*. 
+For any data (e.g. a field of a *Struct*, an argument or return value of a CocoIndex function), if it is nullable, it means its value can be *Null*.
+We use a `?` suffix to indicate a nullable type, e.g. *Str?*, *Person?*.
 
 In Python, *Null* is represented as `None`, so a nullable type can be represented by `T | None` or `typing.Optional[T]`.
 
