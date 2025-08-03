@@ -199,3 +199,22 @@ Currently, the following types are key types
 - *Uuid*
 - *Date*
 - *Struct* with all fields being key types (using `@dataclass(frozen=True)` or `NamedTuple`)
+
+## *Null* Values
+
+CocoIndex supports *Null* values. A *Null* value represents the absence of data or an unknown value, distinct from empty strings, zero numbers, or false boolean values.
+
+### Nullable Data
+
+For any data (e.g. a field of a *Struct*, an argument or return value of a CocoIndex function), if it is nullable, it means its value can be *Null*. 
+
+In Python, *Null* is represented as `None`, so a nullable type can be represented by `T | None` or `typing.Optional[T]`.
+
+### *Null* propagating on CocoIndex functions
+
+A function may specify whether each input argument is nullable or not.
+Non-nullable argument means the function needs a known value for the argument to work.
+However, it doesn't forbid the argument to be *Null* at runtime.
+When a non-nullable argument receives a *Null* value, the function execution is skipped and the result is *Null*.
+
+For example, for [`SplitRecursively` function](/docs/ops/functions#splitrecursively), the `text` and `chunk_size` arguments are not nullable. If the input value of either of them is *Null*, the function will return *Null*.
