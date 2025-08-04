@@ -360,21 +360,40 @@ It will use `Staging__doc_embeddings` as the collection name if the current app 
 
 ### Control Processing Concurrency
 
-You can control the concurrency of the processing by setting the following options:
+CocoIndex processes data in parallel to maximize throughput, but unconstrained parallelism can overwhelm your system.
+Processing too many items simultaneously can lead to:
 
-*   `max_inflight_rows`: the maximum number of concurrent inflight requests for the processing.
-*   `max_inflight_bytes`: the maximum number of concurrent inflight bytes for the processing.
+- **Memory exhaustion**: Large datasets loaded concurrently can consume excessive RAM
+- **Resource contention**: Too many parallel operations competing for CPU, disk I/O, or network bandwidth
+- **System instability**: High concurrency can cause timeouts, crashes, or degraded performance
 
-These options can be passed in to the following APIs:
+To prevent these issues, CocoIndex provides concurrency controls that limit how many data items are processed simultaneously.
 
-*   [`FlowBuilder.add_source()`](#import-from-source): The options above control the processing concurrency of multiple rows from a source. New rows will not be loaded in memory if it'll be over the limit.
+#### Concurrency Options
 
-    Besides, global limits on overall processing concurrency of all sources from all flows can be specified by [`GlobalExecutionOptions`](/docs/core/settings#globalexecutionoptions) or corresponding [environment variables](/docs/core/settings#list-of-environment-variables).
-    If both global and per-source limits are specified, both need to be satisfied to admit additional source rows.
+You can control processing concurrency using these options:
 
-*   [`DataSlice.row()`](#for-each-row):  The options above provides a finer-grained control, to limit the processing concurrency of multiple rows within a table at any level.
+*   `max_inflight_rows`: Limits the maximum number of data rows being processed concurrently
+*   `max_inflight_bytes`: Limits the total memory footprint of data being processed concurrently (measured in bytes)
 
-`max_inflight_bytes` only counts the number of bytes already existing in the current row before any further processing.
+When these limits are reached, CocoIndex will pause loading new data until some of the current processing completes, ensuring your system remains stable.
+
+#### Where to Apply Concurrency Controls
+
+These concurrency options can be configured at different levels:
+
+*   **Source level** via [`FlowBuilder.add_source()`](#import-from-source): Controls how many rows from a data source are processed simultaneously. This prevents overwhelming your system when ingesting large datasets.
+
+    You can also set global limits across all sources and flows using [`GlobalExecutionOptions`](/docs/core/settings#globalexecutionoptions) or environment variables [`COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS`](/docs/core/settings#list-of-environment-variables)/[`COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES`](/docs/core/settings#list-of-environment-variables).
+    When both global and per-source limits are specified, both limits are enforced independently - a new row can only be processed if there's available capacity in both the global budget (shared across all sources) and the per-source budget (specific to that source).
+
+*   **Row iteration level** via [`DataSlice.row()`](#for-each-row): Provides fine-grained control over parallel processing within nested data structures, allowing you to tune concurrency at any level of your data hierarchy.
+
+:::note
+
+The `max_inflight_bytes` limit only counts the size of data that already exists in memory before any transformations are applied. It doesn't include the memory used by intermediate processing results.
+
+:::
 
 For example:
 
