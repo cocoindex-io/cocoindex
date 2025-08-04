@@ -51,7 +51,7 @@ class GlobalExecutionOptions:
     """Global execution options."""
 
     # The maximum number of concurrent inflight requests, shared among all sources from all flows.
-    source_max_inflight_rows: int | None = None
+    source_max_inflight_rows: int | None = 256
     source_max_inflight_bytes: int | None = None
 
 
