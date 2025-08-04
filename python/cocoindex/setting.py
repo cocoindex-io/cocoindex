@@ -44,6 +44,8 @@ class DatabaseConnectionSpec:
     url: str
     user: str | None = None
     password: str | None = None
+    max_connections: int = 64
+    min_connections: int = 16
 
 
 @dataclass
@@ -92,10 +94,22 @@ class Settings:
 
         database_url = os.getenv("COCOINDEX_DATABASE_URL")
         if database_url is not None:
-            db_kwargs: dict[str, str] = dict()
+            db_kwargs: dict[str, Any] = dict()
             _load_field(db_kwargs, "url", "COCOINDEX_DATABASE_URL", required=True)
             _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
             _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
+            _load_field(
+                db_kwargs,
+                "max_connections",
+                "COCOINDEX_DATABASE_MAX_CONNECTIONS",
+                parse=int,
+            )
+            _load_field(
+                db_kwargs,
+                "min_connections",
+                "COCOINDEX_DATABASE_MIN_CONNECTIONS",
+                parse=int,
+            )
             database = DatabaseConnectionSpec(**db_kwargs)
         else:
             database = None

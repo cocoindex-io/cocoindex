@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::prelude::*;
 
 use crate::builder::AnalyzedFlow;
@@ -7,7 +9,7 @@ use crate::settings;
 use crate::setup::ObjectSetupStatus;
 use axum::http::StatusCode;
 use sqlx::PgPool;
-use sqlx::postgres::PgConnectOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tokio::runtime::Runtime;
 
 pub struct FlowExecutionContext {
@@ -176,7 +178,29 @@ impl DbPools {
                 if let Some(password) = &conn_spec.password {
                     pg_options = pg_options.password(password);
                 }
-                let pool = PgPool::connect_with(pg_options)
+
+                // Try to connect to the database with a low timeout first.
+                {
+                    let pool_options = PgPoolOptions::new()
+                        .max_connections(1)
+                        .min_connections(1)
+                        .acquire_timeout(Duration::from_secs(30));
+                    let pool = pool_options
+                        .connect_with(pg_options.clone())
+                        .await
+                        .context(format!("Failed to connect to database {}", conn_spec.url))?;
+                    let _ = pool.acquire().await?;
+                }
+
+                // Now create the actual pool.
+                let pool_options = PgPoolOptions::new()
+                    .max_connections(conn_spec.max_connections)
+                    .min_connections(conn_spec.min_connections)
+                    .acquire_timeout(Duration::from_secs(5 * 60))
+                    .idle_timeout(Duration::from_secs(10 * 60))
+                    .max_lifetime(Duration::from_secs(60 * 60));
+                let pool = pool_options
+                    .connect_with(pg_options)
                     .await
                     .context("Failed to connect to database")?;
                 anyhow::Ok(pool)
@@ -330,6 +354,8 @@ mod tests {
                 url: "postgresql://test".to_string(),
                 user: None,
                 password: None,
+                max_connections: 10,
+                min_connections: 1,
             }),
             ..Default::default()
         };
