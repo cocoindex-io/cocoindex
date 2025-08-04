@@ -6,12 +6,64 @@ use std::hash::Hash;
 use super::interface::*;
 use super::registry::*;
 use crate::api_bail;
-use crate::api_error;
 use crate::base::schema::*;
 use crate::base::spec::*;
 use crate::builder::plan::AnalyzedValueMapping;
 use crate::setup;
 // SourceFactoryBase
+pub struct OpArgResolver<'arg> {
+    name: String,
+    resolved_op_arg: Option<(usize, EnrichedValueType)>,
+    nonnull_args_idx: &'arg mut Vec<usize>,
+    may_nullify_output: &'arg mut bool,
+}
+
+impl<'arg> OpArgResolver<'arg> {
+    pub fn expect_nullable_type(self, expected_type: &ValueType) -> Result<Self> {
+        let Some((_, typ)) = &self.resolved_op_arg else {
+            return Ok(self);
+        };
+        if &typ.typ != expected_type {
+            api_bail!(
+                "Expected argument `{}` to be of type `{}`, got `{}`",
+                self.name,
+                expected_type,
+                typ.typ
+            );
+        }
+        Ok(self)
+    }
+    pub fn expect_type(self, expected_type: &ValueType) -> Result<Self> {
+        let resolver = self.expect_nullable_type(expected_type)?;
+        resolver.resolved_op_arg.as_ref().map(|(idx, typ)| {
+            resolver.nonnull_args_idx.push(*idx);
+            if typ.nullable {
+                *resolver.may_nullify_output = true;
+            }
+        });
+        Ok(resolver)
+    }
+
+    pub fn optional(self) -> Option<ResolvedOpArg> {
+        return self.resolved_op_arg.map(|(idx, typ)| ResolvedOpArg {
+            name: self.name,
+            typ,
+            idx,
+        });
+    }
+
+    pub fn required(self) -> Result<ResolvedOpArg> {
+        let Some((idx, typ)) = self.resolved_op_arg else {
+            api_bail!("Required argument `{}` is missing", self.name);
+        };
+        Ok(ResolvedOpArg {
+            name: self.name,
+            typ,
+            idx,
+        })
+    }
+}
+
 pub struct ResolvedOpArg {
     pub name: String,
     pub typ: EnrichedValueType,
@@ -19,24 +71,11 @@ pub struct ResolvedOpArg {
 }
 
 pub trait ResolvedOpArgExt: Sized {
-    fn expect_type(self, expected_type: &ValueType) -> Result<Self>;
     fn value<'a>(&self, args: &'a [value::Value]) -> Result<&'a value::Value>;
     fn take_value(&self, args: &mut [value::Value]) -> Result<value::Value>;
 }
 
 impl ResolvedOpArgExt for ResolvedOpArg {
-    fn expect_type(self, expected_type: &ValueType) -> Result<Self> {
-        if &self.typ.typ != expected_type {
-            api_bail!(
-                "Expected argument `{}` to be of type `{}`, got `{}`",
-                self.name,
-                expected_type,
-                self.typ.typ
-            );
-        }
-        Ok(self)
-    }
-
     fn value<'a>(&self, args: &'a [value::Value]) -> Result<&'a value::Value> {
         if self.idx >= args.len() {
             api_bail!(
@@ -63,10 +102,6 @@ impl ResolvedOpArgExt for ResolvedOpArg {
 }
 
 impl ResolvedOpArgExt for Option<ResolvedOpArg> {
-    fn expect_type(self, expected_type: &ValueType) -> Result<Self> {
-        self.map(|arg| arg.expect_type(expected_type)).transpose()
-    }
-
     fn value<'a>(&self, args: &'a [value::Value]) -> Result<&'a value::Value> {
         Ok(self
             .as_ref()
@@ -89,11 +124,16 @@ pub struct OpArgsResolver<'a> {
     num_positional_args: usize,
     next_positional_idx: usize,
     remaining_kwargs: HashMap<&'a str, usize>,
-    required_args_idx: &'a mut Vec<usize>,
+    nonnull_args_idx: &'a mut Vec<usize>,
+    may_nullify_output: &'a mut bool,
 }
 
 impl<'a> OpArgsResolver<'a> {
-    pub fn new(args: &'a [OpArgSchema], required_args_idx: &'a mut Vec<usize>) -> Result<Self> {
+    pub fn new(
+        args: &'a [OpArgSchema],
+        nonnull_args_idx: &'a mut Vec<usize>,
+        may_nullify_output: &'a mut bool,
+    ) -> Result<Self> {
         let mut num_positional_args = 0;
         let mut kwargs = HashMap::new();
         for (idx, arg) in args.iter().enumerate() {
@@ -111,11 +151,12 @@ impl<'a> OpArgsResolver<'a> {
             num_positional_args,
             next_positional_idx: 0,
             remaining_kwargs: kwargs,
-            required_args_idx,
+            nonnull_args_idx,
+            may_nullify_output,
         })
     }
 
-    pub fn next_optional_arg(&mut self, name: &str) -> Result<Option<ResolvedOpArg>> {
+    pub fn next_arg<'arg>(&'arg mut self, name: &str) -> Result<OpArgResolver<'arg>> {
         let idx = if let Some(idx) = self.remaining_kwargs.remove(name) {
             if self.next_positional_idx < self.num_positional_args {
                 api_bail!("`{name}` is provided as both positional and keyword arguments");
@@ -129,19 +170,12 @@ impl<'a> OpArgsResolver<'a> {
         } else {
             None
         };
-        Ok(idx.map(|idx| ResolvedOpArg {
+        Ok(OpArgResolver {
             name: name.to_string(),
-            typ: self.args[idx].value_type.clone(),
-            idx,
-        }))
-    }
-
-    pub fn next_arg(&mut self, name: &str) -> Result<ResolvedOpArg> {
-        let arg = self
-            .next_optional_arg(name)?
-            .ok_or_else(|| api_error!("Required argument `{name}` is missing",))?;
-        self.required_args_idx.push(arg.idx);
-        Ok(arg)
+            resolved_op_arg: idx.map(|idx| (idx, self.args[idx].value_type.clone())),
+            nonnull_args_idx: self.nonnull_args_idx,
+            may_nullify_output: self.may_nullify_output,
+        })
     }
 
     pub fn done(self) -> Result<()> {
@@ -252,13 +286,13 @@ pub trait SimpleFunctionFactoryBase: SimpleFunctionFactory + Send + Sync + 'stat
 
 struct FunctionExecutorWrapper<E: SimpleFunctionExecutor> {
     executor: E,
-    required_args_idx: Vec<usize>,
+    nonnull_args_idx: Vec<usize>,
 }
 
 #[async_trait]
 impl<E: SimpleFunctionExecutor> SimpleFunctionExecutor for FunctionExecutorWrapper<E> {
     async fn evaluate(&self, args: Vec<value::Value>) -> Result<value::Value> {
-        for idx in &self.required_args_idx {
+        for idx in &self.nonnull_args_idx {
             if args[*idx].is_null() {
                 return Ok(value::Value::Null);
             }
@@ -287,28 +321,29 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
         BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
     )> {
         let spec: T::Spec = serde_json::from_value(spec)?;
-        let mut required_args_idx = vec![];
-        let mut args_resolver = OpArgsResolver::new(&input_schema, &mut required_args_idx)?;
+        let mut nonnull_args_idx = vec![];
+        let mut may_nullify_output = false;
+        let mut args_resolver = OpArgsResolver::new(
+            &input_schema,
+            &mut nonnull_args_idx,
+            &mut may_nullify_output,
+        )?;
         let (resolved_input_schema, mut output_schema) = self
             .resolve_schema(&spec, &mut args_resolver, &context)
             .await?;
+        args_resolver.done()?;
 
         // If any required argument is nullable, the output schema should be nullable.
-        if args_resolver
-            .required_args_idx
-            .iter()
-            .any(|idx| input_schema[*idx].value_type.nullable)
-        {
+        if may_nullify_output {
             output_schema.nullable = true;
         }
 
-        args_resolver.done()?;
         let executor = async move {
             Ok(Box::new(FunctionExecutorWrapper {
                 executor: self
                     .build_executor(spec, resolved_input_schema, context)
                     .await?,
-                required_args_idx,
+                nonnull_args_idx,
             }) as Box<dyn SimpleFunctionExecutor>)
         };
         Ok((output_schema, Box::pin(executor)))

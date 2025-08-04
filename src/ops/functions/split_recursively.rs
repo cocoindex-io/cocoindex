@@ -963,19 +963,24 @@ impl SimpleFunctionFactoryBase for Factory {
         let args = Args {
             text: args_resolver
                 .next_arg("text")?
-                .expect_type(&ValueType::Basic(BasicValueType::Str))?,
+                .expect_type(&ValueType::Basic(BasicValueType::Str))?
+                .required()?,
             chunk_size: args_resolver
                 .next_arg("chunk_size")?
-                .expect_type(&ValueType::Basic(BasicValueType::Int64))?,
+                .expect_type(&ValueType::Basic(BasicValueType::Int64))?
+                .required()?,
             min_chunk_size: args_resolver
-                .next_optional_arg("min_chunk_size")?
-                .expect_type(&ValueType::Basic(BasicValueType::Int64))?,
+                .next_arg("min_chunk_size")?
+                .expect_nullable_type(&ValueType::Basic(BasicValueType::Int64))?
+                .optional(),
             chunk_overlap: args_resolver
-                .next_optional_arg("chunk_overlap")?
-                .expect_type(&ValueType::Basic(BasicValueType::Int64))?,
+                .next_arg("chunk_overlap")?
+                .expect_nullable_type(&ValueType::Basic(BasicValueType::Int64))?
+                .optional(),
             language: args_resolver
-                .next_optional_arg("language")?
-                .expect_type(&ValueType::Basic(BasicValueType::Str))?,
+                .next_arg("language")?
+                .expect_nullable_type(&ValueType::Basic(BasicValueType::Str))?
+                .optional(),
         };
 
         let pos_struct = schema::ValueType::Struct(schema::StructSchema {

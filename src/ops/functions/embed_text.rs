@@ -69,7 +69,10 @@ impl SimpleFunctionFactoryBase for Factory {
         args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
     ) -> Result<(Self::ResolvedArgs, EnrichedValueType)> {
-        let text = args_resolver.next_arg("text")?;
+        let text = args_resolver
+            .next_arg("text")?
+            .expect_type(&ValueType::Basic(BasicValueType::Str))?
+            .required()?;
         let client =
             new_llm_embedding_client(spec.api_type, spec.address.clone(), spec.api_config.clone())
                 .await?;

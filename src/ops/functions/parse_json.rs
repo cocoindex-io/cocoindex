@@ -83,10 +83,12 @@ impl SimpleFunctionFactoryBase for Factory {
         let args = Args {
             text: args_resolver
                 .next_arg("text")?
-                .expect_type(&ValueType::Basic(BasicValueType::Str))?,
+                .expect_type(&ValueType::Basic(BasicValueType::Str))?
+                .required()?,
             language: args_resolver
-                .next_optional_arg("language")?
-                .expect_type(&ValueType::Basic(BasicValueType::Str))?,
+                .next_arg("language")?
+                .expect_nullable_type(&ValueType::Basic(BasicValueType::Str))?
+                .optional(),
         };
 
         let output_schema = make_output_type(BasicValueType::Json);

@@ -138,11 +138,13 @@ impl SimpleFunctionFactoryBase for Factory {
     ) -> Result<(Args, EnrichedValueType)> {
         let args = Args {
             text: args_resolver
-                .next_optional_arg("text")?
-                .expect_type(&ValueType::Basic(BasicValueType::Str))?,
+                .next_arg("text")?
+                .expect_nullable_type(&ValueType::Basic(BasicValueType::Str))?
+                .optional(),
             image: args_resolver
-                .next_optional_arg("image")?
-                .expect_type(&ValueType::Basic(BasicValueType::Bytes))?,
+                .next_arg("image")?
+                .expect_nullable_type(&ValueType::Basic(BasicValueType::Bytes))?
+                .optional(),
         };
 
         if args.text.is_none() && args.image.is_none() {
