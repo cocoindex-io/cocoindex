@@ -75,7 +75,11 @@ CocoIndex integrates with various LLM APIs for these functions.
 To use the OpenAI LLM API, you need to set the environment variable `OPENAI_API_KEY`.
 You can generate the API key from [OpenAI Dashboard](https://platform.openai.com/api-keys).
 
-Currently we don't support custom address for OpenAI API.
+If you want to use a custom address, you can either provide the `address` parameter in `LlmSpec` / `EmbedText`, or set the environment variable `OPENAI_API_BASE`. The `address` parameter takes precedence over the environment variable.
+
+Spec for OpenAI takes additional `api_config` field, in type `cocoindex.llm.OpenAiConfig` with the following fields:
+-   `org_id` (type: `str`, optional): The organization ID of the OpenAI account.
+-   `project_id` (type: `str`, optional): The project ID of the OpenAI account.
 
 You can find the full list of models supported by OpenAI [here](https://platform.openai.com/docs/models).
 

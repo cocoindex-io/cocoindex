@@ -33,17 +33,31 @@ impl Client {
         Self { client }
     }
 
-    pub fn new(address: Option<String>) -> Result<Self> {
+    pub fn new(address: Option<String>, api_config: Option<super::LlmApiConfig>) -> Result<Self> {
+        let config = match api_config {
+            Some(super::LlmApiConfig::OpenAi(config)) => config,
+            Some(_) => api_bail!("unexpected config type, expected OpenAiConfig"),
+            None => super::OpenAiConfig::default(),
+        };
+
+        let mut openai_config = OpenAIConfig::new();
         if let Some(address) = address {
-            api_bail!("OpenAI doesn't support custom API address: {address}");
+            openai_config = openai_config.with_api_base(address);
         }
+        if let Some(org_id) = config.org_id {
+            openai_config = openai_config.with_org_id(org_id);
+        }
+        if let Some(project_id) = config.project_id {
+            openai_config = openai_config.with_project_id(project_id);
+        }
+
         // Verify API key is set
         if std::env::var("OPENAI_API_KEY").is_err() {
             api_bail!("OPENAI_API_KEY environment variable must be set");
         }
         Ok(Self {
-            // OpenAI client will use OPENAI_API_KEY env variable by default
-            client: OpenAIClient::new(),
+            // OpenAI client will use OPENAI_API_KEY and OPENAI_API_BASE env variables by default
+            client: OpenAIClient::with_config(openai_config),
         })
     }
 }

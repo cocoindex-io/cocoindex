@@ -26,10 +26,17 @@ pub struct VertexAiConfig {
     pub region: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpenAiConfig {
+    pub org_id: Option<String>,
+    pub project_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum LlmApiConfig {
     VertexAi(VertexAiConfig),
+    OpenAi(OpenAiConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,7 +120,7 @@ pub async fn new_llm_generation_client(
             Box::new(ollama::Client::new(address).await?) as Box<dyn LlmGenerationClient>
         }
         LlmApiType::OpenAi => {
-            Box::new(openai::Client::new(address)?) as Box<dyn LlmGenerationClient>
+            Box::new(openai::Client::new(address, api_config)?) as Box<dyn LlmGenerationClient>
         }
         LlmApiType::Gemini => {
             Box::new(gemini::AiStudioClient::new(address)?) as Box<dyn LlmGenerationClient>
@@ -151,7 +158,7 @@ pub async fn new_llm_embedding_client(
             Box::new(gemini::AiStudioClient::new(address)?) as Box<dyn LlmEmbeddingClient>
         }
         LlmApiType::OpenAi => {
-            Box::new(openai::Client::new(address)?) as Box<dyn LlmEmbeddingClient>
+            Box::new(openai::Client::new(address, api_config)?) as Box<dyn LlmEmbeddingClient>
         }
         LlmApiType::Voyage => {
             Box::new(voyage::Client::new(address)?) as Box<dyn LlmEmbeddingClient>

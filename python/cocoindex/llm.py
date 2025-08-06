@@ -27,10 +27,20 @@ class VertexAiConfig:
 
 
 @dataclass
+class OpenAiConfig:
+    """A specification for a OpenAI LLM."""
+
+    kind = "OpenAi"
+
+    org_id: str | None = None
+    project_id: str | None = None
+
+
+@dataclass
 class LlmSpec:
     """A specification for a LLM."""
 
     api_type: LlmApiType
     model: str
     address: str | None = None
-    api_config: VertexAiConfig | None = None
+    api_config: VertexAiConfig | OpenAiConfig | None = None
