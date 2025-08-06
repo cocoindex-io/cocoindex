@@ -118,7 +118,7 @@ If you use the Postgres database hosted by [Supabase](https://supabase.com/), pl
 
 `GlobalExecutionOptions` is used to configure the global execution options shared by all flows. It has the following fields:
 
-*   `source_max_inflight_rows` (type: `int | None`, default: `256`): The maximum number of concurrent inflight rows for all source operations.
+*   `source_max_inflight_rows` (type: `int | None`, default: `1024`): The maximum number of concurrent inflight rows for all source operations.
 *   `source_max_inflight_bytes` (type: `int | None`, default: `None`): The maximum number of concurrent inflight bytes for all source operations.
 
 See also [flow definition docs](/docs/core/flow_def#control-processing-concurrency) about why it's necessary to control processing concurrency, and how to configure it on per-source basis.
@@ -136,5 +136,5 @@ This is the list of environment variables, each of which has a corresponding fie
 | `COCOINDEX_DATABASE_PASSWORD` | `database.password` | No |
 | `COCOINDEX_DATABASE_MAX_CONNECTIONS` | `database.max_connections` | No (default: `64`) |
 | `COCOINDEX_DATABASE_MIN_CONNECTIONS` | `database.min_connections` | No (default: `16`) |
-| `COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS` | `global_execution_options.source_max_inflight_rows` | No (default: `256`) |
+| `COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS` | `global_execution_options.source_max_inflight_rows` | No (default: `1024`) |
 | `COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES` | `global_execution_options.source_max_inflight_bytes` | No |
