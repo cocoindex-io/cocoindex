@@ -27,10 +27,6 @@ COLPALI_MODEL_NAME = os.getenv("COLPALI_MODEL", "vidore/colpali-v1.2")
 print(f"📐 Using ColPali model {COLPALI_MODEL_NAME}")
 
 
-# Create ColPali embedding function using the class-based pattern
-colpali_embed = cocoindex.functions.ColPaliEmbedImage(model=COLPALI_MODEL_NAME)
-
-
 @cocoindex.transform_flow()
 def text_to_colpali_embedding(
     text: cocoindex.DataSlice[str],
@@ -56,38 +52,15 @@ def image_object_embedding_flow(
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
-        ollama_model_name = os.getenv("OLLAMA_MODEL")
-        if ollama_model_name is not None:
-            # If an Ollama model is specified, generate an image caption
-            img["caption"] = flow_builder.transform(
-                cocoindex.functions.ExtractByLlm(
-                    llm_spec=cocoindex.llm.LlmSpec(
-                        api_type=cocoindex.LlmApiType.OLLAMA, model=ollama_model_name
-                    ),
-                    instruction=(
-                        "Describe the image in one detailed sentence. "
-                        "Name all visible animal species, objects, and the main scene. "
-                        "Be specific about type, color, and notable features. "
-                        "Mention what each animal is doing."
-                    ),
-                    output_type=str,
-                ),
-                image=img["content"],
-            )
-        img["embedding"] = img["content"].transform(colpali_embed)
+        img["embedding"] = img["content"].transform(
+            cocoindex.functions.ColPaliEmbedImage(model=COLPALI_MODEL_NAME)
+        )
 
         collect_fields = {
             "id": cocoindex.GeneratedField.UUID,
             "filename": img["filename"],
             "embedding": img["embedding"],
         }
-
-        if ollama_model_name is not None:
-            print(f"Using Ollama model '{ollama_model_name}' for captioning.")
-            collect_fields["caption"] = img["caption"]
-        else:
-            print(f"No Ollama model '{ollama_model_name}' found — skipping captioning.")
-
         img_embeddings.collect(**collect_fields)
 
     img_embeddings.export(
