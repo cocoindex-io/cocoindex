@@ -1095,16 +1095,16 @@ class TransformFlow(Generic[T]):
         """
         flow_info = await self._flow_info_async()
         params = []
-        for i, arg in enumerate(self._param_names):
+        for i, (arg, arg_type) in enumerate(
+            zip(self._param_names, self._flow_arg_types)
+        ):
             param_type = (
-                self._flow_arg_types[i] if i < len(self._flow_arg_types) else None
+                self._flow_arg_types[i] if i < len(self._flow_arg_types) else Any
             )
             if i < len(args):
-                params.append(encode_engine_value(args[i], type_hint=param_type or Any))
+                params.append(encode_engine_value(args[i], type_hint=param_type))
             elif arg in kwargs:
-                params.append(
-                    encode_engine_value(kwargs[arg], type_hint=param_type or Any)
-                )
+                params.append(encode_engine_value(kwargs[arg], type_hint=param_type))
             else:
                 raise ValueError(f"Parameter {arg} is not provided")
         engine_result = await flow_info.engine_flow.evaluate_async(params)
