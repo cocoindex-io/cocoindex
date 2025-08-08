@@ -82,199 +82,122 @@ def _make_encoder_closure(type_info: AnalyzedTypeInfo | None) -> Callable[[Any],
     """
     Create an encoder closure for a specific type.
     """
-    if type_info is None:
-        # For untyped encoding, fall back to basic logic
-        def encode_untyped(value: Any) -> Any:
-            if dataclasses.is_dataclass(value):
-                fields = dataclasses.fields(value)
-                return [
-                    _make_encoder_closure(_get_type_info(f.type))(
-                        getattr(value, f.name)
-                    )
-                    for f in fields
-                ]
 
-            if is_namedtuple_type(type(value)):
-                annotations = type(value).__annotations__
-                return [
-                    _make_encoder_closure(
-                        _get_type_info(annotations.get(name))
-                        if annotations.get(name)
-                        else None
-                    )(getattr(value, name))
-                    for name in value._fields
-                ]
-
-            if isinstance(value, np.number):
-                return value.item()
-
-            if isinstance(value, np.ndarray):
-                return value
-
-            if isinstance(value, (list, tuple)):
-                return [_make_encoder_closure(None)(v) for v in value]
-
-            if isinstance(value, dict):
-                # Handle empty dict
-                if not value:
-                    return value
-
-                # Handle KTable
-                first_val = next(iter(value.values()))
-                if is_struct_type(type(first_val)):
-                    return [
-                        [_make_encoder_closure(None)(k)]
-                        + _make_encoder_closure(None)(v)
-                        for k, v in value.items()
-                    ]
-
+    def _encode_numpy(value: Any) -> Any | None:
+        if isinstance(value, np.number):
+            return value.item()
+        if isinstance(value, np.ndarray):
             return value
+        return None
 
-        return encode_untyped
+    def _encode_struct_like(value: Any) -> Any | None:
+        if dataclasses.is_dataclass(value):
+            return [
+                _make_encoder_closure(_get_type_info(f.type))(getattr(value, f.name))
+                for f in dataclasses.fields(value)
+            ]
+        if is_namedtuple_type(type(value)):
+            annotations = type(value).__annotations__
+            return [
+                _make_encoder_closure(
+                    _get_type_info(annotations.get(name))
+                    if annotations.get(name)
+                    else None
+                )(getattr(value, name))
+                for name in value._fields
+            ]
+        return None
+
+    def _encode_list_or_tuple(value: Any) -> Any | None:
+        if isinstance(value, (list, tuple)):
+            encoder = _make_encoder_closure(None)
+            return [encoder(v) for v in value]
+        return None
+
+    def _encode_ktable_dict(value: dict[Any, Any]) -> Any | None:
+        if not value:
+            return value
+        first_val = next(iter(value.values()))
+        if is_struct_type(type(first_val)):
+            encoder = _make_encoder_closure(None)
+            return [[encoder(k)] + encoder(v) for k, v in value.items()]
+        return None
+
+    def _encode_untyped(value: Any) -> Any:
+        if (res := _encode_numpy(value)) is not None:
+            return res
+        if (res := _encode_struct_like(value)) is not None:
+            return res
+        if (res := _encode_list_or_tuple(value)) is not None:
+            return res
+        if isinstance(value, dict):
+            if (res := _encode_ktable_dict(value)) is not None:
+                return res
+        return value
+
+    if type_info is None:
+        return _encode_untyped
 
     variant = type_info.variant
 
-    # Handle JSON types
-    if isinstance(variant, AnalyzedBasicType) and variant.kind == "Json":
-
-        def encode_json_dict(value: Any) -> Any:
-            if isinstance(value, dict):
-                # Handle empty dict
-                if not value:
-                    return value
-
-                # Handle KTable
-                first_val = next(iter(value.values()))
-                if is_struct_type(type(first_val)):
-                    untyped_encoder = _make_encoder_closure(None)
-                    return [
-                        [untyped_encoder(k)] + untyped_encoder(v)
-                        for k, v in value.items()
-                    ]
-
-            return value
-
-        return encode_json_dict
-
-    # Handle Any types and special numpy cases
     if isinstance(variant, AnalyzedAnyType):
 
         def encode_any_type(value: Any) -> Any:
-            # Handle numpy types first
-            if isinstance(value, np.number):
-                return value.item()
-            if isinstance(value, np.ndarray):
-                return value
-
-            # Handle tuples - convert to lists for Any type
+            if (res := _encode_numpy(value)) is not None:
+                return res
             if isinstance(value, tuple):
                 return [_make_encoder_closure(None)(v) for v in value]
-
-            # Handle dataclasses
-            if dataclasses.is_dataclass(value):
-                fields = dataclasses.fields(value)
-                return [
-                    _make_encoder_closure(_get_type_info(f.type))(
-                        getattr(value, f.name)
-                    )
-                    for f in fields
-                ]
-
-            # Handle namedtuples
-            if is_namedtuple_type(type(value)):
-                annotations = type(value).__annotations__
-                return [
-                    _make_encoder_closure(
-                        _get_type_info(annotations.get(name))
-                        if annotations.get(name)
-                        else None
-                    )(getattr(value, name))
-                    for name in value._fields
-                ]
-
-            # Handle lists
+            if (res := _encode_struct_like(value)) is not None:
+                return res
             if isinstance(value, list):
                 return [_make_encoder_closure(None)(v) for v in value]
-
-            # Handle dicts
             if isinstance(value, dict):
-                # Handle empty dict
-                if not value:
-                    return value
-
-                # Handle KTable
-                first_val = next(iter(value.values()))
-                if is_struct_type(type(first_val)):
-                    return [
-                        [_make_encoder_closure(None)(k)]
-                        + _make_encoder_closure(None)(v)
-                        for k, v in value.items()
-                    ]
-
+                if (res := _encode_ktable_dict(value)) is not None:
+                    return res
             return value
 
         return encode_any_type
 
-    # Handle basic types
     if isinstance(variant, AnalyzedBasicType):
 
         def encode_basic_with_numpy(value: Any) -> Any:
-            # Handle numpy types for basic types
-            if isinstance(value, np.number):
-                return value.item()
-            if isinstance(value, np.ndarray):
-                return value
+            if (res := _encode_numpy(value)) is not None:
+                return res
             return value
 
         return encode_basic_with_numpy
 
-    # Handle lists
     if isinstance(variant, AnalyzedListType):
-        if variant.elem_type:
-            elem_encoder = _make_encoder_closure(_get_type_info(variant.elem_type))
-            return (
-                lambda value: [elem_encoder(v) for v in value]
-                if isinstance(value, (list, tuple))
-                else value
-            )
-        else:
-            fallback_encoder = _make_encoder_closure(None)
-            return (
-                lambda value: [fallback_encoder(v) for v in value]
-                if isinstance(value, (list, tuple))
-                else value
-            )
+        elem_encoder = (
+            _make_encoder_closure(None)
+            if not variant.elem_type
+            else _make_encoder_closure(_get_type_info(variant.elem_type))
+        )
 
-    # Handle dicts
+        def encode_list(value: Any) -> Any:
+            if isinstance(value, (list, tuple)):
+                return [elem_encoder(v) for v in value]
+            return value
+
+        return encode_list
+
     if isinstance(variant, AnalyzedDictType):
-        if variant.value_type:
-            value_encoder = _make_encoder_closure(_get_type_info(variant.value_type))
-            untyped_encoder = _make_encoder_closure(None)
-
-            def encode_dict(value: Any) -> Any:
-                if not isinstance(value, dict):
-                    return value
-
-                # Handle empty dict
-                if not value:
-                    return []
-
-                # Handle KTable
-                first_val = next(iter(value.values()))
-                if is_struct_type(type(first_val)):
-                    return [
-                        [untyped_encoder(k)] + untyped_encoder(v)
-                        for k, v in value.items()
-                    ]
-
-                # Handle regular dict
-                return {k: value_encoder(v) for k, v in value.items()}
-
-            return encode_dict
-        else:
+        if not variant.value_type:
             return lambda value: value
 
-    # Handle struct types
+        value_encoder = _make_encoder_closure(_get_type_info(variant.value_type))
+
+        def encode_dict(value: Any) -> Any:
+            if not isinstance(value, dict):
+                return value
+            if not value:
+                return []
+            if (res := _encode_ktable_dict(value)) is not None:
+                return res
+            return {k: value_encoder(v) for k, v in value.items()}
+
+        return encode_dict
+
     if isinstance(variant, AnalyzedStructType):
         struct_type = variant.struct_type
 
@@ -317,17 +240,14 @@ def _make_encoder_closure(type_info: AnalyzedTypeInfo | None) -> Callable[[Any],
 
             return encode_namedtuple
 
-    # Handle numpy types
-    def encode_with_numpy_check(value: Any) -> Any:
-        if isinstance(value, np.number):
-            return value.item()
-        if isinstance(value, np.ndarray):
-            return value
+    def encode_fallback(value: Any) -> Any:
+        if (res := _encode_numpy(value)) is not None:
+            return res
         if isinstance(value, tuple):
             return [_make_encoder_closure(None)(v) for v in value]
         return value
 
-    return encode_with_numpy_check
+    return encode_fallback
 
 
 def make_engine_value_encoder(type_hint: Type[Any] | str) -> Callable[[Any], Any]:
