@@ -6,29 +6,30 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import functools
 import inspect
 import warnings
 from enum import Enum
-from typing import Any, Callable, Mapping, get_origin
+from typing import Any, Callable, Mapping, Type, get_origin
 
 import numpy as np
 
 from .typing import (
     KEY_FIELD_NAME,
     TABLE_TYPES,
+    AnalyzedAnyType,
+    AnalyzedBasicType,
+    AnalyzedDictType,
+    AnalyzedListType,
+    AnalyzedStructType,
+    AnalyzedTypeInfo,
+    AnalyzedUnionType,
+    AnalyzedUnknownType,
     analyze_type_info,
     encode_enriched_type,
     is_namedtuple_type,
-    is_struct_type,
-    AnalyzedTypeInfo,
-    AnalyzedAnyType,
-    AnalyzedDictType,
-    AnalyzedListType,
-    AnalyzedBasicType,
-    AnalyzedUnionType,
-    AnalyzedUnknownType,
-    AnalyzedStructType,
     is_numpy_number_type,
+    is_struct_type,
 )
 
 
@@ -50,34 +51,6 @@ class ChildFieldPath:
         self._field_path.pop()
 
 
-def encode_engine_value(value: Any) -> Any:
-    """Encode a Python value to an engine value."""
-    if dataclasses.is_dataclass(value):
-        return [
-            encode_engine_value(getattr(value, f.name))
-            for f in dataclasses.fields(value)
-        ]
-    if is_namedtuple_type(type(value)):
-        return [encode_engine_value(getattr(value, name)) for name in value._fields]
-    if isinstance(value, np.number):
-        return value.item()
-    if isinstance(value, np.ndarray):
-        return value
-    if isinstance(value, (list, tuple)):
-        return [encode_engine_value(v) for v in value]
-    if isinstance(value, dict):
-        if not value:
-            return {}
-
-        first_val = next(iter(value.values()))
-        if is_struct_type(type(first_val)):  # KTable
-            return [
-                [encode_engine_value(k)] + encode_engine_value(v)
-                for k, v in value.items()
-            ]
-    return value
-
-
 _CONVERTIBLE_KINDS = {
     ("Float32", "Float64"),
     ("LocalDateTime", "OffsetDateTime"),
@@ -89,6 +62,224 @@ def _is_type_kind_convertible_to(src_type_kind: str, dst_type_kind: str) -> bool
         src_type_kind == dst_type_kind
         or (src_type_kind, dst_type_kind) in _CONVERTIBLE_KINDS
     )
+
+
+def _get_type_info(type_to_analyze: Any) -> AnalyzedTypeInfo:
+    """Safely get type info, bypassing cache if type is not hashable."""
+
+    @functools.cache
+    def _get_cached_type_info(t: Any) -> AnalyzedTypeInfo:
+        """cache the computed type information for a given type."""
+        return analyze_type_info(t)
+
+    try:
+        return _get_cached_type_info(type_to_analyze)
+    except TypeError:  # The type is not hashable
+        return analyze_type_info(type_to_analyze)
+
+
+def _make_encoder_closure(type_info: AnalyzedTypeInfo | None) -> Callable[[Any], Any]:
+    """
+    Create an encoder closure for a specific type.
+    """
+
+    def _encode_numpy(value: Any) -> Any | None:
+        if isinstance(value, np.number):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value
+        return None
+
+    def _encode_struct_like(value: Any) -> Any | None:
+        if dataclasses.is_dataclass(value):
+            return [
+                _make_encoder_closure(_get_type_info(f.type))(getattr(value, f.name))
+                for f in dataclasses.fields(value)
+            ]
+        if is_namedtuple_type(type(value)):
+            annotations = type(value).__annotations__
+            return [
+                _make_encoder_closure(
+                    _get_type_info(annotations.get(name))
+                    if annotations.get(name)
+                    else None
+                )(getattr(value, name))
+                for name in value._fields
+            ]
+        return None
+
+    def _encode_list_or_tuple(value: Any) -> Any | None:
+        if isinstance(value, (list, tuple)):
+            encoder = _make_encoder_closure(None)
+            return [encoder(v) for v in value]
+        return None
+
+    def _encode_ktable_dict(value: dict[Any, Any]) -> Any | None:
+        if not value:
+            return value
+        first_val = next(iter(value.values()))
+        if is_struct_type(type(first_val)):
+            encoder = _make_encoder_closure(None)
+            return [[encoder(k)] + encoder(v) for k, v in value.items()]
+        return None
+
+    def _encode_untyped(value: Any) -> Any:
+        if (res := _encode_numpy(value)) is not None:
+            return res
+        if (res := _encode_struct_like(value)) is not None:
+            return res
+        if (res := _encode_list_or_tuple(value)) is not None:
+            return res
+        if isinstance(value, dict):
+            if (res := _encode_ktable_dict(value)) is not None:
+                return res
+        return value
+
+    if type_info is None:
+        return _encode_untyped
+
+    variant = type_info.variant
+
+    if isinstance(variant, AnalyzedAnyType):
+
+        def encode_any_type(value: Any) -> Any:
+            if (res := _encode_numpy(value)) is not None:
+                return res
+            if isinstance(value, tuple):
+                return [_make_encoder_closure(None)(v) for v in value]
+            if (res := _encode_struct_like(value)) is not None:
+                return res
+            if isinstance(value, list):
+                return [_make_encoder_closure(None)(v) for v in value]
+            if isinstance(value, dict):
+                if (res := _encode_ktable_dict(value)) is not None:
+                    return res
+            return value
+
+        return encode_any_type
+
+    if isinstance(variant, AnalyzedBasicType):
+
+        def encode_basic_with_numpy(value: Any) -> Any:
+            if (res := _encode_numpy(value)) is not None:
+                return res
+            return value
+
+        return encode_basic_with_numpy
+
+    if isinstance(variant, AnalyzedListType):
+        elem_encoder = (
+            _make_encoder_closure(None)
+            if not variant.elem_type
+            else _make_encoder_closure(_get_type_info(variant.elem_type))
+        )
+
+        def encode_list(value: Any) -> Any:
+            if isinstance(value, (list, tuple)):
+                return [elem_encoder(v) for v in value]
+            return value
+
+        return encode_list
+
+    if isinstance(variant, AnalyzedDictType):
+        if not variant.value_type:
+            return lambda value: value
+
+        value_encoder = _make_encoder_closure(_get_type_info(variant.value_type))
+
+        def encode_dict(value: Any) -> Any:
+            if not isinstance(value, dict):
+                return value
+            if not value:
+                return []
+            if (res := _encode_ktable_dict(value)) is not None:
+                return res
+            return {k: value_encoder(v) for k, v in value.items()}
+
+        return encode_dict
+
+    if isinstance(variant, AnalyzedStructType):
+        struct_type = variant.struct_type
+
+        if dataclasses.is_dataclass(struct_type):
+            fields = dataclasses.fields(struct_type)
+            field_encoders = [
+                _make_encoder_closure(_get_type_info(f.type)) for f in fields
+            ]
+            field_names = [f.name for f in fields]
+
+            def encode_dataclass(value: Any) -> Any:
+                if not dataclasses.is_dataclass(value):
+                    return value
+                return [
+                    encoder(getattr(value, name))
+                    for encoder, name in zip(field_encoders, field_names)
+                ]
+
+            return encode_dataclass
+
+        elif is_namedtuple_type(struct_type):
+            annotations = struct_type.__annotations__
+            field_names = list(getattr(struct_type, "_fields", ()))
+            field_encoders = [
+                _make_encoder_closure(
+                    _get_type_info(annotations.get(name))
+                    if annotations.get(name)
+                    else None
+                )
+                for name in field_names
+            ]
+
+            def encode_namedtuple(value: Any) -> Any:
+                if not is_namedtuple_type(type(value)):
+                    return value
+                return [
+                    encoder(getattr(value, name))
+                    for encoder, name in zip(field_encoders, field_names)
+                ]
+
+            return encode_namedtuple
+
+    def encode_fallback(value: Any) -> Any:
+        if (res := _encode_numpy(value)) is not None:
+            return res
+        if isinstance(value, tuple):
+            return [_make_encoder_closure(None)(v) for v in value]
+        return value
+
+    return encode_fallback
+
+
+def make_engine_value_encoder(type_hint: Type[Any] | str) -> Callable[[Any], Any]:
+    """
+    Create an encoder closure for converting Python values to engine values.
+
+    Args:
+        type_hint: Type annotation for the values to encode
+
+    Returns:
+        A closure that encodes Python values to engine values
+    """
+    type_info = _get_type_info(type_hint)
+    if isinstance(type_info.variant, AnalyzedUnknownType):
+        raise ValueError(f"Type annotation `{type_info.core_type}` is unsupported")
+
+    return _make_encoder_closure(type_info)
+
+
+def encode_engine_value(value: Any, type_hint: Type[Any] | str) -> Any:
+    """
+    Encode a Python value to an engine value.
+
+    Args:
+        value: The Python value to encode
+        type_hint: Type annotation for the value. This should always be provided.
+
+    Returns:
+        The encoded engine value
+    """
+    encoder = make_engine_value_encoder(type_hint)
+    return encoder(value)
 
 
 def make_engine_value_decoder(
