@@ -100,12 +100,14 @@ impl SourceIndexingContext {
         })
     }
 
+    /// `key_aux_info` is not available for deletions. It must not be provided if `source_data` is `None`.
     pub async fn process_source_key<
         AckFut: Future<Output = Result<()>> + Send + 'static,
         AckFn: FnOnce() -> AckFut,
     >(
         self: Arc<Self>,
         key: value::KeyValue,
+        key_aux_info: Option<serde_json::Value>,
         source_data: Option<interface::SourceData>,
         update_stats: Arc<stats::UpdateStats>,
         _concur_permit: concur_control::CombinedConcurrencyControllerPermit,
@@ -122,6 +124,11 @@ impl SourceIndexingContext {
                     .executor
                     .get_value(
                         &key,
+                        key_aux_info.as_ref().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "`key_aux_info` must be provided when there's no `source_data`"
+                            )
+                        })?,
                         &interface::SourceExecutorGetOptions {
                             include_value: true,
                             include_ordinal: true,
@@ -330,6 +337,7 @@ impl SourceIndexingContext {
                     .await?;
                 join_set.spawn(self.clone().process_source_key(
                     row.key,
+                    Some(row.key_aux_info),
                     None,
                     update_stats.clone(),
                     concur_permit,
@@ -357,17 +365,15 @@ impl SourceIndexingContext {
             deleted_key_versions
         };
         for (key, source_ordinal) in deleted_key_versions {
-            // If the source ordinal is unavailable, call without source ordinal so that another polling will be triggered to avoid out-of-order.
-            let source_data = source_ordinal
-                .is_available()
-                .then(|| interface::SourceData {
-                    value: interface::SourceValue::NonExistence,
-                    ordinal: source_ordinal,
-                });
+            let source_data = interface::SourceData {
+                value: interface::SourceValue::NonExistence,
+                ordinal: source_ordinal,
+            };
             let concur_permit = import_op.concurrency_controller.acquire(Some(|| 0)).await?;
             join_set.spawn(self.clone().process_source_key(
                 key,
-                source_data,
+                None,
+                Some(source_data),
                 update_stats.clone(),
                 concur_permit,
                 NO_ACK,

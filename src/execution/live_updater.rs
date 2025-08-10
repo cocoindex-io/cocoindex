@@ -191,6 +191,7 @@ impl SourceUpdateTask {
                                         .await?;
                                     tokio::spawn(source_context.clone().process_source_key(
                                         change.key,
+                                        Some(change.key_aux_info),
                                         change.data,
                                         update_stats.clone(),
                                         concur_permit,

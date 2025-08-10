@@ -588,6 +588,7 @@ async fn try_content_hash_optimization(
 
 pub async fn evaluate_source_entry_with_memory(
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
+    key_aux_info: &serde_json::Value,
     setup_execution_ctx: &exec_ctx::FlowSetupExecutionContext,
     options: EvaluationMemoryOptions,
     pool: &PgPool,
@@ -614,6 +615,7 @@ pub async fn evaluate_source_entry_with_memory(
         .executor
         .get_value(
             src_eval_ctx.key,
+            key_aux_info,
             &SourceExecutorGetOptions {
                 include_value: true,
                 include_ordinal: false,

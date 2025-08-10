@@ -122,6 +122,7 @@ pub async fn get_keys(
 pub struct SourceRowKeyParams {
     field: String,
     key: Vec<String>,
+    key_aux: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -135,6 +136,7 @@ struct SourceRowKeyContextHolder<'a> {
     import_op_idx: usize,
     schema: &'a FlowSchema,
     key: value::KeyValue,
+    key_aux_info: serde_json::Value,
 }
 
 impl<'a> SourceRowKeyContextHolder<'a> {
@@ -163,11 +165,13 @@ impl<'a> SourceRowKeyContextHolder<'a> {
             .key_field()
             .ok_or_else(|| api_error!("field {} does not have a key", source_row_key.field))?;
         let key = value::KeyValue::from_strs(source_row_key.key, &key_field.value_type.typ)?;
+        let key_aux_info = source_row_key.key_aux.unwrap_or_default();
         Ok(Self {
             plan,
             import_op_idx,
             schema,
             key,
+            key_aux_info,
         })
     }
 
@@ -192,6 +196,7 @@ pub async fn evaluate_data(
     let execution_ctx = flow_ctx.use_execution_ctx().await?;
     let evaluate_output = row_indexer::evaluate_source_entry_with_memory(
         &source_row_key_ctx.as_context(),
+        &source_row_key_ctx.key_aux_info,
         &execution_ctx.setup_execution_context,
         memoization::EvaluationMemoryOptions {
             enable_cache: true,
@@ -242,6 +247,7 @@ pub async fn get_row_indexing_status(
     let execution_ctx = flow_ctx.use_execution_ctx().await?;
     let indexing_status = indexing_status::get_source_row_indexing_status(
         &source_row_key_ctx.as_context(),
+        &source_row_key_ctx.key_aux_info,
         &execution_ctx.setup_execution_context,
         lib_context.require_builtin_db_pool()?,
     )

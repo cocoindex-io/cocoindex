@@ -93,6 +93,7 @@ impl SourceExecutor for Executor {
                         let ordinal = Some(datetime_to_ordinal(&blob.properties.last_modified));
                         batch.push(PartialSourceRowMetadata {
                             key: KeyValue::Str(key.clone().into()),
+                            key_aux_info: serde_json::Value::Null,
                             ordinal,
                         });
                     }
@@ -114,6 +115,7 @@ impl SourceExecutor for Executor {
     async fn get_value(
         &self,
         key: &KeyValue,
+        _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
         let key_str = key.str_value()?;

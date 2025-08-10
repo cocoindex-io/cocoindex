@@ -24,6 +24,7 @@ pub struct SourceRowIndexingStatus {
 
 pub async fn get_source_row_indexing_status(
     src_eval_ctx: &evaluator::SourceRowEvaluationContext<'_>,
+    key_aux_info: &serde_json::Value,
     setup_execution_ctx: &exec_ctx::FlowSetupExecutionContext,
     pool: &sqlx::PgPool,
 ) -> Result<SourceRowIndexingStatus> {
@@ -36,6 +37,7 @@ pub async fn get_source_row_indexing_status(
     );
     let current_fut = src_eval_ctx.import_op.executor.get_value(
         src_eval_ctx.key,
+        key_aux_info,
         &interface::SourceExecutorGetOptions {
             include_value: false,
             include_ordinal: true,

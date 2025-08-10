@@ -135,6 +135,7 @@ impl Executor {
         } else if is_supported_file_type(&mime_type) {
             Some(PartialSourceRowMetadata {
                 key: KeyValue::Str(id),
+                key_aux_info: serde_json::Value::Null,
                 ordinal: file.modified_time.map(|t| t.try_into()).transpose()?,
             })
         } else {
@@ -210,6 +211,7 @@ impl Executor {
                 if self.is_file_covered(&file_id).await? {
                     changes.push(SourceChange {
                         key: KeyValue::Str(Arc::from(file_id)),
+                        key_aux_info: serde_json::Value::Null,
                         data: None,
                     });
                 }
@@ -323,6 +325,7 @@ impl SourceExecutor for Executor {
     async fn get_value(
         &self,
         key: &KeyValue,
+        _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
         let file_id = key.str_value()?;

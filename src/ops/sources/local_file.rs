@@ -71,6 +71,7 @@ impl SourceExecutor for Executor {
                         if let Some(relative_path) = relative_path.to_str() {
                             yield vec![PartialSourceRowMetadata {
                                 key: KeyValue::Str(relative_path.into()),
+                                key_aux_info: serde_json::Value::Null,
                                 ordinal,
                             }];
                         } else {
@@ -87,6 +88,7 @@ impl SourceExecutor for Executor {
     async fn get_value(
         &self,
         key: &KeyValue,
+        _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
         if !self.is_file_included(key.str_value()?.as_ref()) {

@@ -70,6 +70,7 @@ impl<'a> Dumper<'a> {
         import_op_idx: usize,
         import_op: &'a AnalyzedImportOp,
         key: &value::KeyValue,
+        key_aux_info: &serde_json::Value,
         collected_values_buffer: &'b mut Vec<Vec<value::FieldValues>>,
     ) -> Result<Option<IndexMap<&'b str, TargetExportData<'b>>>>
     where
@@ -83,6 +84,7 @@ impl<'a> Dumper<'a> {
                 key,
                 import_op_idx,
             },
+            key_aux_info,
             self.setup_execution_ctx,
             EvaluationMemoryOptions {
                 enable_cache: self.options.use_cache,
@@ -134,6 +136,7 @@ impl<'a> Dumper<'a> {
         import_op_idx: usize,
         import_op: &AnalyzedImportOp,
         key: value::KeyValue,
+        key_aux_info: serde_json::Value,
         file_path: PathBuf,
     ) -> Result<()> {
         let _permit = import_op
@@ -142,7 +145,13 @@ impl<'a> Dumper<'a> {
             .await?;
         let mut collected_values_buffer = Vec::new();
         let (exports, error) = match self
-            .evaluate_source_entry(import_op_idx, import_op, &key, &mut collected_values_buffer)
+            .evaluate_source_entry(
+                import_op_idx,
+                import_op,
+                &key,
+                &key_aux_info,
+                &mut collected_values_buffer,
+            )
             .await
         {
             Ok(exports) => (exports, None),
@@ -177,7 +186,10 @@ impl<'a> Dumper<'a> {
         import_op_idx: usize,
         import_op: &AnalyzedImportOp,
     ) -> Result<()> {
-        let mut keys_by_filename_prefix: IndexMap<String, Vec<value::KeyValue>> = IndexMap::new();
+        let mut keys_by_filename_prefix: IndexMap<
+            String,
+            Vec<(value::KeyValue, serde_json::Value)>,
+        > = IndexMap::new();
 
         let mut rows_stream = import_op.executor.list(&SourceExecutorListOptions {
             include_ordinal: false,
@@ -196,7 +208,10 @@ impl<'a> Dumper<'a> {
                         .find(|i| s.is_char_boundary(*i))
                         .unwrap_or(0),
                 );
-                keys_by_filename_prefix.entry(s).or_default().push(row.key);
+                keys_by_filename_prefix
+                    .entry(s)
+                    .or_default()
+                    .push((row.key, row.key_aux_info));
             }
         }
         let output_dir = Path::new(&self.options.output_dir);
@@ -205,22 +220,25 @@ impl<'a> Dumper<'a> {
                 .into_iter()
                 .flat_map(|(filename_prefix, keys)| {
                     let num_keys = keys.len();
-                    keys.into_iter().enumerate().map(move |(i, key)| {
-                        let extra_id = if num_keys > 1 {
-                            Cow::Owned(format!(".{i}"))
-                        } else {
-                            Cow::Borrowed("")
-                        };
-                        let file_name =
-                            format!("{}@{}{}.yaml", import_op.name, filename_prefix, extra_id);
-                        let file_path = output_dir.join(Path::new(&file_name));
-                        self.evaluate_and_dump_source_entry(
-                            import_op_idx,
-                            import_op,
-                            key,
-                            file_path,
-                        )
-                    })
+                    keys.into_iter()
+                        .enumerate()
+                        .map(move |(i, (key, key_aux_info))| {
+                            let extra_id = if num_keys > 1 {
+                                Cow::Owned(format!(".{i}"))
+                            } else {
+                                Cow::Borrowed("")
+                            };
+                            let file_name =
+                                format!("{}@{}{}.yaml", import_op.name, filename_prefix, extra_id);
+                            let file_path = output_dir.join(Path::new(&file_name));
+                            self.evaluate_and_dump_source_entry(
+                                import_op_idx,
+                                import_op,
+                                key,
+                                key_aux_info,
+                                file_path,
+                            )
+                        })
                 });
         try_join_all(evaluate_futs).await?;
         Ok(())

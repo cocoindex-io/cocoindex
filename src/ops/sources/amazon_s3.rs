@@ -111,6 +111,7 @@ impl SourceExecutor for Executor {
                             if include && !exclude {
                                 batch.push(PartialSourceRowMetadata {
                                     key: KeyValue::Str(key.to_string().into()),
+                                    key_aux_info: serde_json::Value::Null,
                                     ordinal: obj.last_modified().map(datetime_to_ordinal),
                                 });
                             }
@@ -132,6 +133,7 @@ impl SourceExecutor for Executor {
     async fn get_value(
         &self,
         key: &KeyValue,
+        _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
         let key_str = key.str_value()?;
@@ -272,6 +274,7 @@ impl Executor {
                         let decoded_key = decode_form_encoded_url(&s3.object.key)?;
                         changes.push(SourceChange {
                             key: KeyValue::Str(decoded_key),
+                            key_aux_info: serde_json::Value::Null,
                             data: None,
                         });
                     }
