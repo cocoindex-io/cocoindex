@@ -55,6 +55,19 @@ Run:
 python main.py
 ```
 
+## Data Attribution
+
+The example data files used in this demonstration come from the following sources:
+
+### PDF Documents
+- **ArXiv Papers**: Research papers sourced from [ArXiv](https://arxiv.org/), an open-access repository of electronic preprints covering various scientific disciplines.
+
+### Image Documents
+- **Healthcare Industry Dataset**: Images from the [vidore/syntheticDocQA_healthcare_industry_test](https://huggingface.co/datasets/vidore/syntheticDocQA_healthcare_industry_test) dataset on Hugging Face, which contains synthetic document question-answering data for healthcare industry documents.
+- **ESG Reports Dataset**: Images from the [vidore/esg_reports_eng_v2](https://huggingface.co/datasets/vidore/esg_reports_eng_v2) dataset on Hugging Face, containing Environmental, Social, and Governance (ESG) reports.
+
+We thank the creators and maintainers of these datasets for making their data available for research and development purposes.
+
 ## About ColPali
 This example uses [ColPali](https://github.com/illuin-tech/colpali), a state-of-the-art vision-language model that enables:
 - Direct visual understanding of document layouts, tables, and figures
