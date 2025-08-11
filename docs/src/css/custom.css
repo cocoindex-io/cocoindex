@@ -189,3 +189,15 @@
   display: block;
   width: 120px;
 }
+
+@media (min-width: 769px) and (max-width: 996px) {
+  .navbar__item.navbar-github-link {
+    margin-right: 160px;
+  }
+}
+
+@media (max-width: 768px) {
+.navbar__item.navbar-github-link {
+  margin-right: 40px;
+}
+}
