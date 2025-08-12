@@ -1,10 +1,9 @@
 use async_stream::try_stream;
-use globset::{Glob, GlobSet, GlobSetBuilder};
 use log::warn;
 use std::borrow::Cow;
-use std::path::Path;
 use std::{path::PathBuf, sync::Arc};
 
+use super::shared::pattern_matcher::PatternMatcher;
 use crate::base::field_attrs;
 use crate::{fields_value, ops::sdk::*};
 
@@ -19,23 +18,7 @@ pub struct Spec {
 struct Executor {
     root_path: PathBuf,
     binary: bool,
-    included_glob_set: Option<GlobSet>,
-    excluded_glob_set: Option<GlobSet>,
-}
-
-impl Executor {
-    fn is_excluded(&self, path: impl AsRef<Path> + Copy) -> bool {
-        self.excluded_glob_set
-            .as_ref()
-            .is_some_and(|glob_set| glob_set.is_match(path))
-    }
-
-    fn is_file_included(&self, path: impl AsRef<Path> + Copy) -> bool {
-        self.included_glob_set
-            .as_ref()
-            .is_none_or(|glob_set| glob_set.is_match(path))
-            && !self.is_excluded(path)
-    }
+    pattern_matcher: PatternMatcher,
 }
 
 #[async_trait]
@@ -57,26 +40,25 @@ impl SourceExecutor for Executor {
                     for _ in 0..root_component_size {
                         path_components.next();
                     }
-                    let relative_path = path_components.as_path();
+                    let Some(relative_path) = path_components.as_path().to_str() else {
+                        warn!("Skipped ill-formed file path: {}", path.display());
+                        continue;
+                    };
                     if path.is_dir() {
-                        if !self.is_excluded(relative_path) {
+                        if !self.pattern_matcher.is_excluded(relative_path) {
                             new_dirs.push(Cow::Owned(path));
                         }
-                    } else if self.is_file_included(relative_path) {
+                    } else if self.pattern_matcher.is_file_included(relative_path) {
                         let ordinal: Option<Ordinal> = if options.include_ordinal {
                             Some(path.metadata()?.modified()?.try_into()?)
                         } else {
                             None
                         };
-                        if let Some(relative_path) = relative_path.to_str() {
-                            yield vec![PartialSourceRowMetadata {
-                                key: KeyValue::Str(relative_path.into()),
-                                key_aux_info: serde_json::Value::Null,
-                                ordinal,
-                            }];
-                        } else {
-                            warn!("Skipped ill-formed file path: {}", path.display());
-                        }
+                        yield vec![PartialSourceRowMetadata {
+                            key: KeyValue::Str(relative_path.into()),
+                            key_aux_info: serde_json::Value::Null,
+                            ordinal,
+                        }];
                     }
                 }
                 dirs.extend(new_dirs.drain(..).rev());
@@ -91,7 +73,10 @@ impl SourceExecutor for Executor {
         _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
-        if !self.is_file_included(key.str_value()?.as_ref()) {
+        if !self
+            .pattern_matcher
+            .is_file_included(key.str_value()?.as_ref())
+        {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
                 ordinal: Some(Ordinal::unavailable()),
@@ -173,16 +158,7 @@ impl SourceFactoryBase for Factory {
         Ok(Box::new(Executor {
             root_path: PathBuf::from(spec.path),
             binary: spec.binary,
-            included_glob_set: spec.included_patterns.map(build_glob_set).transpose()?,
-            excluded_glob_set: spec.excluded_patterns.map(build_glob_set).transpose()?,
+            pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
         }))
     }
-}
-
-fn build_glob_set(patterns: Vec<String>) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
-        builder.add(Glob::new(pattern.as_str())?);
-    }
-    Ok(builder.build()?)
 }

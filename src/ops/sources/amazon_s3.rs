@@ -2,10 +2,10 @@ use crate::fields_value;
 use async_stream::try_stream;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
-use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::sync::Arc;
 use urlencoding;
 
+use super::shared::pattern_matcher::PatternMatcher;
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
 
@@ -51,24 +51,8 @@ struct Executor {
     bucket_name: String,
     prefix: Option<String>,
     binary: bool,
-    included_glob_set: Option<GlobSet>,
-    excluded_glob_set: Option<GlobSet>,
+    pattern_matcher: PatternMatcher,
     sqs_context: Option<Arc<SqsContext>>,
-}
-
-impl Executor {
-    fn is_excluded(&self, key: &str) -> bool {
-        self.excluded_glob_set
-            .as_ref()
-            .is_some_and(|glob_set| glob_set.is_match(key))
-    }
-
-    fn is_file_included(&self, key: &str) -> bool {
-        self.included_glob_set
-            .as_ref()
-            .is_none_or(|glob_set| glob_set.is_match(key))
-            && !self.is_excluded(key)
-    }
 }
 
 fn datetime_to_ordinal(dt: &aws_sdk_s3::primitives::DateTime) -> Ordinal {
@@ -100,15 +84,7 @@ impl SourceExecutor for Executor {
                         if let Some(key) = obj.key() {
                             // Only include files (not folders)
                             if key.ends_with('/') { continue; }
-                            let include = self.included_glob_set
-                                .as_ref()
-                                .map(|gs| gs.is_match(key))
-                                .unwrap_or(true);
-                            let exclude = self.excluded_glob_set
-                                .as_ref()
-                                .map(|gs| gs.is_match(key))
-                                .unwrap_or(false);
-                            if include && !exclude {
+                            if self.pattern_matcher.is_file_included(key) {
                                 batch.push(PartialSourceRowMetadata {
                                     key: KeyValue::Str(key.to_string().into()),
                                     key_aux_info: serde_json::Value::Null,
@@ -137,7 +113,7 @@ impl SourceExecutor for Executor {
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
         let key_str = key.str_value()?;
-        if !self.is_file_included(key_str) {
+        if !self.pattern_matcher.is_file_included(key_str) {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
                 ordinal: Some(Ordinal::unavailable()),
@@ -349,8 +325,7 @@ impl SourceFactoryBase for Factory {
             bucket_name: spec.bucket_name,
             prefix: spec.prefix,
             binary: spec.binary,
-            included_glob_set: spec.included_patterns.map(build_glob_set).transpose()?,
-            excluded_glob_set: spec.excluded_patterns.map(build_glob_set).transpose()?,
+            pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
             sqs_context: spec.sqs_queue_url.map(|url| {
                 Arc::new(SqsContext {
                     client: aws_sdk_sqs::Client::new(&config),
@@ -359,12 +334,4 @@ impl SourceFactoryBase for Factory {
             }),
         }))
     }
-}
-
-fn build_glob_set(patterns: Vec<String>) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
-        builder.add(Glob::new(pattern.as_str())?);
-    }
-    Ok(builder.build()?)
 }

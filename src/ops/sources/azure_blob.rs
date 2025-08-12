@@ -5,9 +5,9 @@ use azure_identity::{DefaultAzureCredential, TokenCredentialOptions};
 use azure_storage::StorageCredentials;
 use azure_storage_blobs::prelude::*;
 use futures::StreamExt;
-use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::sync::Arc;
 
+use super::shared::pattern_matcher::PatternMatcher;
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
 
@@ -31,23 +31,7 @@ struct Executor {
     container_name: String,
     prefix: Option<String>,
     binary: bool,
-    included_glob_set: Option<GlobSet>,
-    excluded_glob_set: Option<GlobSet>,
-}
-
-impl Executor {
-    fn is_excluded(&self, key: &str) -> bool {
-        self.excluded_glob_set
-            .as_ref()
-            .is_some_and(|glob_set| glob_set.is_match(key))
-    }
-
-    fn is_file_included(&self, key: &str) -> bool {
-        self.included_glob_set
-            .as_ref()
-            .is_none_or(|glob_set| glob_set.is_match(key))
-            && !self.is_excluded(key)
-    }
+    pattern_matcher: PatternMatcher,
 }
 
 fn datetime_to_ordinal(dt: &time::OffsetDateTime) -> Ordinal {
@@ -89,7 +73,7 @@ impl SourceExecutor for Executor {
                     // Only include files (not directories)
                     if key.ends_with('/') { continue; }
 
-                    if self.is_file_included(key) {
+                    if self.pattern_matcher.is_file_included(key) {
                         let ordinal = Some(datetime_to_ordinal(&blob.properties.last_modified));
                         batch.push(PartialSourceRowMetadata {
                             key: KeyValue::Str(key.clone().into()),
@@ -119,7 +103,7 @@ impl SourceExecutor for Executor {
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
         let key_str = key.str_value()?;
-        if !self.is_file_included(key_str) {
+        if !self.pattern_matcher.is_file_included(key_str) {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
                 ordinal: Some(Ordinal::unavailable()),
@@ -237,16 +221,7 @@ impl SourceFactoryBase for Factory {
             container_name: spec.container_name,
             prefix: spec.prefix,
             binary: spec.binary,
-            included_glob_set: spec.included_patterns.map(build_glob_set).transpose()?,
-            excluded_glob_set: spec.excluded_patterns.map(build_glob_set).transpose()?,
+            pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
         }))
     }
-}
-
-fn build_glob_set(patterns: Vec<String>) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
-        builder.add(Glob::new(pattern.as_str())?);
-    }
-    Ok(builder.build()?)
 }
