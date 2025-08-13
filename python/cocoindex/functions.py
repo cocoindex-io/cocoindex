@@ -116,19 +116,62 @@ class SentenceTransformerEmbedExecutor:
 def _get_colpali_model_and_processor(model_name: str) -> ColPaliModelInfo:
     """Get or load ColPali model and processor, with caching."""
     try:
-        from colpali_engine.models import ColPali, ColPaliProcessor  # type: ignore[import-untyped]
+        from colpali_engine.models import (  # type: ignore[import-untyped]
+            ColPali,
+            ColPaliProcessor,
+            ColQwen2,
+            ColQwen2Processor,
+            ColQwen2_5,
+            ColQwen2_5_Processor,
+            ColIdefics3,
+            ColIdefics3Processor,
+        )
         from colpali_engine.utils.torch_utils import get_torch_device  # type: ignore[import-untyped]
         import torch
     except ImportError as e:
         raise ImportError(
-            "ColPali is not available. Make sure cocoindex is installed with ColPali support."
+            "ColVision models are not available. Make sure cocoindex is installed with ColPali support."
         ) from e
 
     device = get_torch_device("auto")
-    model = ColPali.from_pretrained(
-        model_name, device_map=device, torch_dtype=torch.bfloat16
-    ).eval()
-    processor = ColPaliProcessor.from_pretrained(model_name)
+
+    # Manual model detection based on model name
+    model_name_lower = model_name.lower()
+
+    try:
+        if "qwen2.5" in model_name_lower:
+            model = ColQwen2_5.from_pretrained(
+                model_name,
+                torch_dtype=torch.bfloat16,
+                device_map=device,
+            ).eval()
+            processor = ColQwen2_5_Processor.from_pretrained(model_name)
+        elif "qwen2" in model_name_lower:
+            model = ColQwen2.from_pretrained(
+                model_name,
+                torch_dtype=torch.bfloat16,
+                device_map=device,
+            ).eval()
+            processor = ColQwen2Processor.from_pretrained(model_name)
+        elif "colsmol" in model_name_lower or "smol" in model_name_lower:
+            # ColSmol models use Idefics3 architecture
+            model = ColIdefics3.from_pretrained(
+                model_name,
+                torch_dtype=torch.bfloat16,
+                device_map=device,
+            ).eval()
+            processor = ColIdefics3Processor.from_pretrained(model_name)
+        else:
+            # Default to ColPali
+            model = ColPali.from_pretrained(
+                model_name,
+                torch_dtype=torch.bfloat16,
+                device_map=device,
+            ).eval()
+            processor = ColPaliProcessor.from_pretrained(model_name)
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to load model {model_name}: {e}")
 
     # Get dimension from the actual model
     dimension = _detect_colpali_dimension(model, processor, device)
@@ -167,13 +210,15 @@ def _detect_colpali_dimension(model: Any, processor: Any, device: Any) -> int:
 
 class ColPaliEmbedImage(op.FunctionSpec):
     """
-    `ColPaliEmbedImage` embeds images using the ColPali multimodal model.
+    `ColPaliEmbedImage` embeds images using ColVision multimodal models.
 
-    ColPali (Contextual Late-interaction over Patches) uses late interaction
-    between image patch embeddings and text token embeddings for retrieval.
+    Supports all ColVision models including ColPali, ColQwen2, ColSmol, and future models.
+    These models use late interaction between image patch embeddings and text token
+    embeddings for retrieval.
 
     Args:
-        model: The ColPali model name to use (e.g., "vidore/colpali-v1.2")
+        model: The ColVision model name to use (e.g., "vidore/colpali-v1.2",
+               "vidore/colqwen2.5-v0.2", "vidore/colsmol-v1.0")
 
     Note:
         This function requires the optional colpali-engine dependency.
@@ -189,7 +234,7 @@ class ColPaliEmbedImage(op.FunctionSpec):
     behavior_version=1,
 )
 class ColPaliEmbedImageExecutor:
-    """Executor for ColPaliEmbedImage."""
+    """Executor for ColVision image embedding (ColPali, ColQwen2, ColSmol, etc.)."""
 
     spec: ColPaliEmbedImage
     _model_info: ColPaliModelInfo
@@ -209,7 +254,7 @@ class ColPaliEmbedImageExecutor:
             import io
         except ImportError as e:
             raise ImportError(
-                "Required dependencies (PIL, torch) are missing for ColPali image embedding."
+                "Required dependencies (PIL, torch) are missing for ColVision image embedding."
             ) from e
 
         model = self._model_info.model
@@ -235,13 +280,14 @@ class ColPaliEmbedImageExecutor:
 
 class ColPaliEmbedQuery(op.FunctionSpec):
     """
-    `ColPaliEmbedQuery` embeds text queries using the ColPali multimodal model.
+    `ColPaliEmbedQuery` embeds text queries using ColVision multimodal models.
 
-    This produces query embeddings compatible with ColPali image embeddings
+    This produces query embeddings compatible with ColVision image embeddings
     for late interaction scoring (MaxSim).
 
     Args:
-        model: The ColPali model name to use (e.g., "vidore/colpali-v1.2")
+        model: The ColVision model name to use (e.g., "vidore/colpali-v1.2",
+               "vidore/colqwen2.5-v0.2", "vidore/colsmol-v1.0")
 
     Note:
         This function requires the optional colpali-engine dependency.
@@ -257,7 +303,7 @@ class ColPaliEmbedQuery(op.FunctionSpec):
     behavior_version=1,
 )
 class ColPaliEmbedQueryExecutor:
-    """Executor for ColPaliEmbedQuery."""
+    """Executor for ColVision query embedding (ColPali, ColQwen2, ColSmol, etc.)."""
 
     spec: ColPaliEmbedQuery
     _model_info: ColPaliModelInfo
@@ -275,7 +321,7 @@ class ColPaliEmbedQueryExecutor:
             import torch
         except ImportError as e:
             raise ImportError(
-                "Required dependencies (torch) are missing for ColPali query embedding."
+                "Required dependencies (torch) are missing for ColVision query embedding."
             ) from e
 
         model = self._model_info.model
