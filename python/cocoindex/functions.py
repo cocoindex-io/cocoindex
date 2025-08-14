@@ -212,17 +212,23 @@ class ColPaliEmbedImage(op.FunctionSpec):
     """
     `ColPaliEmbedImage` embeds images using ColVision multimodal models.
 
-    Supports all ColVision models including ColPali, ColQwen2, ColSmol, and future models.
+    Supports ALL models available in the colpali-engine library, including:
+    - ColPali models (colpali-*): PaliGemma-based, best for general document retrieval
+    - ColQwen2 models (colqwen-*): Qwen2-VL-based, excellent for multilingual text (29+ languages) and general vision
+    - ColSmol models (colsmol-*): Lightweight, good for resource-constrained environments
+    - Any future ColVision models supported by colpali-engine
+
     These models use late interaction between image patch embeddings and text token
     embeddings for retrieval.
 
     Args:
-        model: The ColVision model name to use (e.g., "vidore/colpali-v1.2",
-               "vidore/colqwen2.5-v0.2", "vidore/colsmol-v1.0")
+        model: Any ColVision model name supported by colpali-engine
+               (e.g., "vidore/colpali-v1.2", "vidore/colqwen2.5-v0.2", "vidore/colsmol-v1.0")
+               See https://github.com/illuin-tech/colpali for the complete list of supported models.
 
     Note:
         This function requires the optional colpali-engine dependency.
-        Install it with: pip install 'cocoindex[embeddings]'
+        Install it with: pip install 'cocoindex[colpali]'
     """
 
     model: str
@@ -282,16 +288,23 @@ class ColPaliEmbedQuery(op.FunctionSpec):
     """
     `ColPaliEmbedQuery` embeds text queries using ColVision multimodal models.
 
+    Supports ALL models available in the colpali-engine library, including:
+    - ColPali models (colpali-*): PaliGemma-based, best for general document retrieval
+    - ColQwen2 models (colqwen-*): Qwen2-VL-based, excellent for multilingual text (29+ languages) and general vision
+    - ColSmol models (colsmol-*): Lightweight, good for resource-constrained environments
+    - Any future ColVision models supported by colpali-engine
+
     This produces query embeddings compatible with ColVision image embeddings
     for late interaction scoring (MaxSim).
 
     Args:
-        model: The ColVision model name to use (e.g., "vidore/colpali-v1.2",
-               "vidore/colqwen2.5-v0.2", "vidore/colsmol-v1.0")
+        model: Any ColVision model name supported by colpali-engine
+               (e.g., "vidore/colpali-v1.2", "vidore/colqwen2.5-v0.2", "vidore/colsmol-v1.0")
+               See https://github.com/illuin-tech/colpali for the complete list of supported models.
 
     Note:
         This function requires the optional colpali-engine dependency.
-        Install it with: pip install 'cocoindex[embeddings]'
+        Install it with: pip install 'cocoindex[colpali]'
     """
 
     model: str

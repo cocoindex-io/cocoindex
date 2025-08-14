@@ -189,24 +189,33 @@ Input data:
 
 Return: *Vector[Float32, N]*, where *N* is the dimension of the embedding vector determined by the model.
 
-## ColPaliEmbedImage
+## ColPali Functions
 
-`ColPaliEmbedImage` embeds images using the ColPali multimodal model.
+ColPali functions enable multimodal document retrieval using ColVision models. These functions support ALL models available in the [colpali-engine library](https://github.com/illuin-tech/colpali), including:
 
-ColPali (Contextual Late-interaction over Patches) uses late interaction between image patch embeddings and text token embeddings for retrieval.
+- **ColPali models** (colpali-*): PaliGemma-based, best for general document retrieval
+- **ColQwen2 models** (colqwen-*): Qwen2-VL-based, excellent for multilingual text (29+ languages) and general vision
+- **ColSmol models** (colsmol-*): Lightweight, good for resource-constrained environments  
+- Any future ColVision models supported by colpali-engine
+
+These models use late interaction between image patch embeddings and text token embeddings for retrieval.
 
 :::note Optional Dependency Required
 
-This function requires the `colpali-engine` library, which is an optional dependency. Install CocoIndex with:
+These functions require the `colpali-engine` library, which is an optional dependency. Install CocoIndex with:
 
 ```bash
 pip install 'cocoindex[colpali]'
 ```
 :::
 
+### ColPaliEmbedImage
+
+`ColPaliEmbedImage` embeds images using ColVision multimodal models.
+
 The spec takes the following fields:
 
-*   `model` (`str`): The ColPali model name to use (e.g., "vidore/colpali-v1.2")
+*   `model` (`str`): Any ColVision model name supported by colpali-engine (e.g., "vidore/colpali-v1.2", "vidore/colqwen2.5-v0.2", "vidore/colsmol-v1.0"). See the [complete list of supported models](https://github.com/illuin-tech/colpali#list-of-colvision-models).
 
 Input data:
 
@@ -214,24 +223,15 @@ Input data:
 
 Return: *Vector[Vector[Float32, N]]*, where *N* is the hidden dimension determined by the model. This returns a multi-vector format with variable patches and fixed hidden dimension.
 
-## ColPaliEmbedQuery
+### ColPaliEmbedQuery
 
-`ColPaliEmbedQuery` embeds text queries using the ColPali multimodal model.
+`ColPaliEmbedQuery` embeds text queries using ColVision multimodal models.
 
-This produces query embeddings compatible with ColPali image embeddings for late interaction scoring (MaxSim).
-
-:::note Optional Dependency Required
-
-This function requires the `colpali-engine` library, which is an optional dependency. Install CocoIndex with:
-
-```bash
-pip install 'cocoindex[colpali]'
-```
-:::
+This produces query embeddings compatible with ColVision image embeddings for late interaction scoring (MaxSim).
 
 The spec takes the following fields:
 
-*   `model` (`str`): The ColPali model name to use (e.g., "vidore/colpali-v1.2")
+*   `model` (`str`): Any ColVision model name supported by colpali-engine (e.g., "vidore/colpali-v1.2", "vidore/colqwen2.5-v0.2", "vidore/colsmol-v1.0"). See the [complete list of supported models](https://github.com/illuin-tech/colpali#list-of-colvision-models).
 
 Input data:
 
