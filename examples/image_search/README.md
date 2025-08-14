@@ -81,7 +81,7 @@ export OLLAMA_MODEL="gemma3"  # Optional, for caption generation
 
   # ColSmol models (colsmol-*) - Lightweight, good for resource-constrained environments
   export COLPALI_MODEL="vidore/colSmol-256M"
-  
+
   # Any other ColVision models from https://github.com/illuin-tech/colpali are supported
   ```
 

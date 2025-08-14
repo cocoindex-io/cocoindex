@@ -195,7 +195,7 @@ ColPali functions enable multimodal document retrieval using ColVision models. T
 
 - **ColPali models** (colpali-*): PaliGemma-based, best for general document retrieval
 - **ColQwen2 models** (colqwen-*): Qwen2-VL-based, excellent for multilingual text (29+ languages) and general vision
-- **ColSmol models** (colsmol-*): Lightweight, good for resource-constrained environments  
+- **ColSmol models** (colsmol-*): Lightweight, good for resource-constrained environments
 - Any future ColVision models supported by colpali-engine
 
 These models use late interaction between image patch embeddings and text token embeddings for retrieval.
