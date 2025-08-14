@@ -190,6 +190,8 @@ pub struct FlowSetupMetadata {
     pub last_source_id: i32,
     pub last_target_id: i32,
     pub sources: BTreeMap<String, SourceSetupState>,
+    #[serde(default)]
+    pub features: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]

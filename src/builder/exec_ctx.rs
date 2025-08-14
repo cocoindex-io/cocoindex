@@ -76,7 +76,8 @@ fn build_import_op_exec_ctx(
 fn build_target_id(
     analyzed_target_ss: &AnalyzedTargetSetupState,
     existing_target_states: &HashMap<&setup::ResourceIdentifier, Vec<&setup::TargetSetupState>>,
-    flow_setup_state: &mut setup::FlowSetupState<setup::DesiredMode>,
+    metadata: &mut setup::FlowSetupMetadata,
+    target_states: &mut IndexMap<setup::ResourceIdentifier, setup::TargetSetupState>,
 ) -> Result<i32> {
     let interface::ExecutorFactory::ExportTarget(target_factory) =
         get_executor_factory(&analyzed_target_ss.target_kind)?
@@ -125,8 +126,8 @@ fn build_target_id(
         None
     };
     let target_id = target_id.unwrap_or_else(|| {
-        flow_setup_state.metadata.last_target_id += 1;
-        flow_setup_state.metadata.last_target_id
+        metadata.last_target_id += 1;
+        metadata.last_target_id
     });
     let max_schema_version_id = existing_target_states
         .iter()
@@ -143,7 +144,7 @@ fn build_target_id(
     } else {
         max_schema_version_id + 1
     };
-    match flow_setup_state.targets.entry(resource_id) {
+    match target_states.entry(resource_id) {
         indexmap::map::Entry::Occupied(entry) => {
             api_bail!(
                 "Target resource already exists: kind = {}, key = {}",
@@ -199,34 +200,27 @@ pub fn build_flow_setup_execution_context(
         }
     }
 
-    let mut setup_state = setup::FlowSetupState::<setup::DesiredMode> {
-        seen_flow_metadata_version: existing_flow_ss
-            .and_then(|flow_ss| flow_ss.seen_flow_metadata_version),
-        metadata: setup::FlowSetupMetadata {
-            last_source_id: existing_metadata_versions()
-                .map(|metadata| metadata.last_source_id)
-                .max()
-                .unwrap_or(0),
-            last_target_id: existing_metadata_versions()
-                .map(|metadata| metadata.last_target_id)
-                .max()
-                .unwrap_or(0),
-            sources: BTreeMap::new(),
-        },
-        tracking_table: db_tracking_setup::TrackingTableSetupState {
-            table_name: existing_flow_ss
-                .and_then(|flow_ss| {
-                    flow_ss
-                        .tracking_table
-                        .current
-                        .as_ref()
-                        .map(|v| v.table_name.clone())
-                })
-                .unwrap_or_else(|| db_tracking_setup::default_tracking_table_name(&flow_inst.name)),
-            version_id: db_tracking_setup::CURRENT_TRACKING_TABLE_VERSION,
-        },
-        targets: IndexMap::new(),
+    let mut metadata = setup::FlowSetupMetadata {
+        last_source_id: existing_metadata_versions()
+            .map(|metadata| metadata.last_source_id)
+            .max()
+            .unwrap_or(0),
+        last_target_id: existing_metadata_versions()
+            .map(|metadata| metadata.last_target_id)
+            .max()
+            .unwrap_or(0),
+        sources: BTreeMap::new(),
+        features: existing_flow_ss
+            .map(|m| {
+                m.metadata
+                    .possible_versions()
+                    .flat_map(|v| v.features.iter())
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_else(setup::flow_features::default_features),
     };
+    let mut target_states = IndexMap::new();
 
     let import_op_exec_ctx = flow_inst
         .import_ops
@@ -241,7 +235,7 @@ pub fn build_flow_setup_execution_context(
                 &import_op.name,
                 output_type,
                 source_states_by_name.get(&import_op.name.as_str()),
-                &mut setup_state.metadata,
+                &mut metadata,
             )
         })
         .collect::<Result<Vec<_>>>()?;
@@ -253,7 +247,8 @@ pub fn build_flow_setup_execution_context(
             let target_id = build_target_id(
                 analyzed_target_ss,
                 &target_states_by_name_type,
-                &mut setup_state,
+                &mut metadata,
+                &mut target_states,
             )?;
             Ok(ExportOpExecutionContext { target_id })
         })
@@ -263,10 +258,40 @@ pub fn build_flow_setup_execution_context(
         build_target_id(
             analyzed_target_ss,
             &target_states_by_name_type,
-            &mut setup_state,
+            &mut metadata,
+            &mut target_states,
         )?;
     }
 
+    let setup_state = setup::FlowSetupState::<setup::DesiredMode> {
+        seen_flow_metadata_version: existing_flow_ss
+            .and_then(|flow_ss| flow_ss.seen_flow_metadata_version),
+        tracking_table: db_tracking_setup::TrackingTableSetupState {
+            table_name: existing_flow_ss
+                .and_then(|flow_ss| {
+                    flow_ss
+                        .tracking_table
+                        .current
+                        .as_ref()
+                        .map(|v| v.table_name.clone())
+                })
+                .unwrap_or_else(|| db_tracking_setup::default_tracking_table_name(&flow_inst.name)),
+            version_id: db_tracking_setup::CURRENT_TRACKING_TABLE_VERSION,
+            source_state_table_name: metadata
+                .features
+                .contains(setup::flow_features::SOURCE_STATE_TABLE)
+                .then(|| {
+                    existing_flow_ss
+                        .and_then(|flow_ss| flow_ss.tracking_table.current.as_ref())
+                        .and_then(|v| v.source_state_table_name.clone())
+                        .unwrap_or_else(|| {
+                            db_tracking_setup::default_source_state_table_name(&flow_inst.name)
+                        })
+                }),
+        },
+        targets: target_states,
+        metadata,
+    };
     Ok(FlowSetupExecutionContext {
         setup_state,
         import_ops: import_op_exec_ctx,
