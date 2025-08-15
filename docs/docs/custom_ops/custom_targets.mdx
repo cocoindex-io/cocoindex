@@ -158,6 +158,95 @@ def prepare(spec: CustomTarget) -> PreparedCustomTarget:
 
 If not provided, the original spec will be passed directly to `mutate`.
 
+### Complete Example
+
+In this example, we define a custom target that accepts data with the following fields:
+- `filename` (key field)
+- `author` (value field)
+- `html` (value field)
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+import dataclasses
+import cocoindex
+
+# 1. Define the target spec
+class MyCustomTarget(cocoindex.op.TargetSpec):
+    """Spec of the custom target, to configure the target location etc."""
+    location: str
+
+# 2. Define the value dataclass for exported data
+@dataclasses.dataclass
+class LocalFileTargetValues:
+    """Represents value fields of exported data."""
+    author: str
+    html: str
+
+# 3. Define the target connector
+@cocoindex.op.target_connector(spec_cls=MyCustomTarget)
+class LocalFileTargetConnector:
+    @staticmethod
+    def get_persistent_key(spec: MyCustomTarget, target_name: str) -> str:
+        return spec.location
+
+    @staticmethod
+    def apply_setup_change(
+        key: str, previous: MyCustomTarget | None, current: MyCustomTarget | None
+    ) -> None:
+        # Setup/teardown logic here
+        ...
+
+    @staticmethod
+    def mutate(
+        *all_mutations: tuple[MyCustomTarget, dict[str, LocalFileTargetValues | None]],
+    ) -> None:
+        """Apply data mutations to the target."""
+        for spec, mutations in all_mutations:
+            for filename, mutation in mutations.items():
+                if mutation is None:
+                    # Delete the file
+                    ...
+                else:
+                    # Write the file with author and html content
+                    ...
+
+# 4. Usage in a flow
+@cocoindex.flow_def(name="ExampleFlow")
+def example_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope) -> None:
+    # Add data source
+    data_scope["documents"] = flow_builder.add_source(...)
+
+    # Create collector
+    output_data = data_scope.add_collector()
+
+    # Collect data
+    with data_scope["documents"].row() as doc:
+        # Create the "author" and "fieldname" field
+        ...
+
+        # Collect the data
+        output_data.collect(filename=doc["filename"], author=doc["author"], html=doc["transformed_html"])
+
+    # Export to custom target
+    output_data.export(
+        "OutputData",
+        MyCustomTarget(location=...),
+        primary_key_fields=["filename"],
+    )
+```
+
+In this example, the type for data in `all_mutations` is `dict[str, LocalFileTargetValues | None]`:
+- `str` is the `DataKeyType` (the filename)
+- `LocalFileTargetValues` is the `DataValueType` (containing `html` and `author` fields)
+- The `mutate()` method receives tuples of `(MyCustomTarget, dict[str, LocalFileTargetValues | None])`
+
+For simplicity, the type hints can be omitted and a `dict` will be created instead of a dataclass instance, and `author` and `html` will be the keys of the dict.
+
+</TabItem>
+</Tabs>
+
 ## Best Practices
 
 ### Idempotency of Methods with Side Effects
