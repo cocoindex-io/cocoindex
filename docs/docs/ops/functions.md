@@ -12,7 +12,7 @@ description: CocoIndex Built-in Functions
 Input data:
 
 *   `text` (*Str*): The source text to parse.
-*   `language` (*Str?*, default: `"json"`): The language of the source text.  Only `json` is supported now.
+*   `language` (*Optional[Str]*, default: `"json"`): The language of the source text.  Only `json` is supported now.
 
 Return: *Json*, the parsed JSON object.
 
@@ -48,7 +48,7 @@ Input data:
 
     :::
 
-*   `chunk_overlap` (*Int64?*, default: *Null*): The maximum overlap size between adjacent chunks, in bytes.
+*   `chunk_overlap` (*Optional[Int64]*, default: *None*): The maximum overlap size between adjacent chunks, in bytes.
 *   `language` (*Str*, default: `""`): The language of the document.
     Can be a language name (e.g. `Python`, `Javascript`, `Markdown`) or a file extension (e.g. `.py`, `.js`, `.md`).
 

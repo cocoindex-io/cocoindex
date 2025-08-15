@@ -200,22 +200,22 @@ Currently, the following types are key types
 - *Date*
 - *Struct* with all fields being key types (using `@dataclass(frozen=True)` or `NamedTuple`)
 
-## *Null* Values
+## *None* Values
 
-CocoIndex supports *Null* values. A *Null* value represents the absence of data or an unknown value, distinct from empty strings, zero numbers, or false boolean values.
+CocoIndex supports *None* values. A *None* value represents the absence of data or an unknown value, distinct from empty strings, zero numbers, or false boolean values.
 
-### Nullable Type
+### Optional Type
 
-For any data (e.g. a field of a *Struct*, an argument or return value of a CocoIndex function), if it is nullable, it means its value can be *Null*.
-We use a `?` suffix to indicate a nullable type, e.g. *Str?*, *Person?*.
+For any data (e.g. a field of a *Struct*, an argument or return value of a CocoIndex function), if it is optional, it means its value can be *None*.
+We use *Optional[T]* to indicate an optional type, e.g. *Optional[Str]*, *Optional[Person]*.
 
-In Python, *Null* is represented as `None`, so a nullable type can be represented by `T | None` or `typing.Optional[T]`.
+In Python, *None* is represented as `None`, so an optional type can be represented by `T | None` or `typing.Optional[T]`.
 
-### *Null* propagating on CocoIndex functions
+### *None* propagating on CocoIndex functions
 
-A function may specify whether each input argument is nullable or not.
-Non-nullable argument means the function needs a known value for the argument to work.
-However, it doesn't forbid the argument to be *Null* at runtime.
-When a non-nullable argument receives a *Null* value, the function execution is skipped and the result is *Null*.
+A function may specify whether each input argument is optional or not.
+Non-optional argument means the function needs a known value for the argument to work.
+However, it doesn't forbid the argument to be *None* at runtime.
+When a non-optional argument receives a *None* value, the function execution is skipped and the result is *None*.
 
-For example, for [`SplitRecursively` function](/docs/ops/functions#splitrecursively), the `text` and `chunk_size` arguments are not nullable. If the input value of either of them is *Null*, the function will return *Null*.
+For example, for [`SplitRecursively` function](/docs/ops/functions#splitrecursively), the `text` and `chunk_size` arguments are not optional. If the input value of either of them is *None*, the function will return *None*.

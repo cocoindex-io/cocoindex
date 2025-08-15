@@ -81,11 +81,11 @@ If not set, all flows are in a default unnamed namespace.
 
     *Environment variable* for `Settings.database.url`: `COCOINDEX_DATABASE_URL`
 
-*   `user` (type: `str | None`, default: `None`): The username for the Postgres database. If not provided, username will come from `url`.
+*   `user` (type: `Optional[str]`, default: `None`): The username for the Postgres database. If not provided, username will come from `url`.
 
     *Environment variable* for `Settings.database.user`: `COCOINDEX_DATABASE_USER`
 
-*   `password` (type: `str | None`, default: `None`): The password for the Postgres database. If not provided, password will come from `url`.
+*   `password` (type: `Optional[str]`, default: `None`): The password for the Postgres database. If not provided, password will come from `url`.
 
     *Environment variable* for `Settings.database.password`: `COCOINDEX_DATABASE_PASSWORD`
 
