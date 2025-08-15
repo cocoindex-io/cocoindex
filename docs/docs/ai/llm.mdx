@@ -20,7 +20,7 @@ We support the following types of LLM APIs:
 | API Name | `LlmApiType` enum | Text Generation | Text Embedding |
 |----------|---------------------|--------------------|--------------------|
 | [OpenAI](#openai) | `LlmApiType.OPENAI` | ✅ | ✅ |
-| [Ollama](#ollama) | `LlmApiType.OLLAMA` | ✅ | ❌ |
+| [Ollama](#ollama) | `LlmApiType.OLLAMA` | ✅ | ✅ |
 | [Google Gemini](#google-gemini) | `LlmApiType.GEMINI` | ✅ | ✅ |
 | [Vertex AI](#vertex-ai) | `LlmApiType.VERTEX_AI` | ✅ | ✅ |
 | [Anthropic](#anthropic) | `LlmApiType.ANTHROPIC` | ✅ | ❌ |
@@ -133,6 +133,29 @@ A spec for Ollama looks like this:
 cocoindex.LlmSpec(
     api_type=cocoindex.LlmApiType.OLLAMA,
     model="llama3.2:latest",
+    # Optional, use Ollama's default port (11434) on localhost if not specified
+    address="http://localhost:11434",
+)
+```
+
+</TabItem>
+</Tabs>
+
+For text embedding with Ollama, you'll need to pull an embedding model first:
+
+```bash
+ollama pull nomic-embed-text
+```
+
+Then, a spec for Ollama embedding looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.OLLAMA,
+    model="nomic-embed-text",
     # Optional, use Ollama's default port (11434) on localhost if not specified
     address="http://localhost:11434",
 )
