@@ -1,4 +1,7 @@
-use crate::{execution::stats::UpdateStats, prelude::*};
+use crate::{
+    execution::{source_indexer::ProcessSourceKeyOptions, stats::UpdateStats},
+    prelude::*,
+};
 
 use super::stats;
 use futures::future::try_join_all;
@@ -191,14 +194,17 @@ impl SourceUpdateTask {
                                         .await?;
                                     tokio::spawn(source_context.clone().process_source_key(
                                         change.key,
-                                        Some(change.key_aux_info),
-                                        change.data,
                                         update_stats.clone(),
                                         concur_permit,
                                         Some(move || async move {
                                             SharedAckFn::ack(&shared_ack_fn).await
                                         }),
                                         pool.clone(),
+                                        ProcessSourceKeyOptions {
+                                            key_aux_info: Some(change.key_aux_info),
+                                            source_data: change.data,
+                                            ..Default::default()
+                                        },
                                     ));
                                 }
                             }
