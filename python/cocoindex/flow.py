@@ -9,15 +9,6 @@ import datetime
 import functools
 import inspect
 import re
-
-from .validation import (
-    validate_flow_name,
-    NamingError,
-    validate_full_flow_name,
-    validate_target_name,
-)
-from .typing import analyze_type_info
-
 from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
@@ -25,13 +16,13 @@ from typing import (
     Any,
     Callable,
     Generic,
+    Iterable,
     NamedTuple,
     Sequence,
     TypeVar,
     cast,
     get_args,
     get_origin,
-    Iterable,
 )
 
 from rich.text import Text
@@ -45,7 +36,12 @@ from .convert import dump_engine_object, encode_engine_value, make_engine_value_
 from .op import FunctionSpec
 from .runtime import execution_context
 from .setup import SetupChangeBundle
-from .typing import encode_enriched_type
+from .typing import analyze_type_info, encode_enriched_type
+from .validation import (
+    validate_flow_name,
+    validate_full_flow_name,
+    validate_target_name,
+)
 
 
 class _NameBuilder:
@@ -1099,11 +1095,16 @@ class TransformFlow(Generic[T]):
         """
         flow_info = await self._flow_info_async()
         params = []
-        for i, arg in enumerate(self._param_names):
+        for i, (arg, arg_type) in enumerate(
+            zip(self._param_names, self._flow_arg_types)
+        ):
+            param_type = (
+                self._flow_arg_types[i] if i < len(self._flow_arg_types) else Any
+            )
             if i < len(args):
-                params.append(encode_engine_value(args[i]))
+                params.append(encode_engine_value(args[i], type_hint=param_type))
             elif arg in kwargs:
-                params.append(encode_engine_value(kwargs[arg]))
+                params.append(encode_engine_value(kwargs[arg], type_hint=param_type))
             else:
                 raise ValueError(f"Parameter {arg} is not provided")
         engine_result = await flow_info.engine_flow.evaluate_async(params)
