@@ -47,7 +47,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         debug!("Internal server error:\n{:?}", self.err);
         let error_response = ErrorResponse {
-            error: self.err.to_string(),
+            error: format!("{:?}", self.err),
         };
         (self.status_code, Json(error_response)).into_response()
     }
