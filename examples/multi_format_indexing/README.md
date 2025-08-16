@@ -37,6 +37,8 @@ Install dependencies:
 pip install -e .
 ```
 
+**NOTE**: The `pdf2image` requires `poppler` to be installed manually. Please refer to [this document](https://pdf2image.readthedocs.io/en/latest/installation.html#installing-poppler) for the specific installation instructions for your platform.
+
 Setup:
 
 ```bash
