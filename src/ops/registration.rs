@@ -12,6 +12,7 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
     sources::google_drive::Factory.register(registry)?;
     sources::amazon_s3::Factory.register(registry)?;
     sources::azure_blob::Factory.register(registry)?;
+    sources::postgres_db::Factory.register(registry)?;
 
     functions::parse_json::Factory.register(registry)?;
     functions::split_recursively::register(registry)?;

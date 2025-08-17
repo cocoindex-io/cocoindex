@@ -67,3 +67,22 @@ class AzureBlob(op.SourceSpec):
 
     sas_token: TransientAuthEntryReference[str] | None = None
     account_access_key: TransientAuthEntryReference[str] | None = None
+
+
+class PostgresDb(op.SourceSpec):
+    """Import data from a PostgreSQL table."""
+
+    _op_category = op.OpCategory.SOURCE
+
+    # Table name to read from (required)
+    table_name: str
+
+    # Database connection reference (optional - uses default if not provided)
+    database: TransientAuthEntryReference[str] | None = None
+
+    # Optional: specific columns to include (if None, includes all columns)
+    included_columns: list[str] | None = None
+
+    # Optional: column name to use for ordinal tracking (for incremental updates)
+    # Should be a timestamp, serial, or other incrementing column
+    ordinal_column: str | None = None
