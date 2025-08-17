@@ -50,17 +50,17 @@ Ultra performant data transformation framework for AI, with core engine written 
 
 </br>
 
-CocoIndex makes it super easy to transform data with AI workloads, and keep source data and target in sync effortlessly.
+CocoIndex makes it effortless to transform data with AI, and keep source data and target in sync. Whether you’re building a vector index for RAG, creating knowledge graphs, or performing any custom data transformations — goes beyond SQL.
 
 </br>
 
 <p align="center">
-    <img src="https://cocoindex.io/images/venn-features.png" alt="CocoIndex Features" width='400'>
+<img width="4187" height="1883" alt="CocoIndex Features" src="https://github.com/user-attachments/assets/6147673f-0daf-4313-a0c7-7c4205ba2e31" />
 </p>
 
 </br>
 
-Either creating embedding, building knowledge graphs, or any data transformations - beyond traditional SQL.
+
 
 ## Exceptional velocity
 Just declare transformation in dataflow with ~100 lines of python
