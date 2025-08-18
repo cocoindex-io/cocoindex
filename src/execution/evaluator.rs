@@ -354,24 +354,31 @@ async fn evaluate_op_scope(
                 let mut input_values = Vec::with_capacity(op.inputs.len());
                 input_values
                     .extend(assemble_input_values(&op.inputs, scoped_entries).collect::<Vec<_>>());
-                let output_value_cell = memory.get_cache_entry(
-                    || {
-                        Ok(op
-                            .function_exec_info
-                            .fingerprinter
-                            .clone()
-                            .with(&input_values)?
-                            .into_fingerprint())
-                    },
-                    &op.function_exec_info.output_type,
-                    /*ttl=*/ None,
-                )?;
-                let output_value = evaluate_with_cell(output_value_cell.as_ref(), move || {
-                    op.executor.evaluate(input_values)
-                })
-                .await
-                .with_context(|| format!("Evaluating Transform op `{}`", op.name,))?;
-                head_scope.define_field(&op.output, &output_value)?;
+                if op.function_exec_info.enable_cache {
+                    let output_value_cell = memory.get_cache_entry(
+                        || {
+                            Ok(op
+                                .function_exec_info
+                                .fingerprinter
+                                .clone()
+                                .with(&input_values)?
+                                .into_fingerprint())
+                        },
+                        &op.function_exec_info.output_type,
+                        /*ttl=*/ None,
+                    )?;
+                    evaluate_with_cell(output_value_cell.as_ref(), move || {
+                        op.executor.evaluate(input_values)
+                    })
+                    .await
+                    .and_then(|v| head_scope.define_field(&op.output, &v))
+                } else {
+                    op.executor
+                        .evaluate(input_values)
+                        .await
+                        .and_then(|v| head_scope.define_field(&op.output, &v))
+                }
+                .with_context(|| format!("Evaluating Transform op `{}`", op.name,))?
             }
 
             AnalyzedReactiveOp::ForEach(op) => {
