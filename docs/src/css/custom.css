@@ -116,7 +116,9 @@
   /* 14px */
   border-bottom: 1px solid var(--ifm-color-emphasis-200);
 }
-
+.navbar__item{
+  margin-top: 3px;
+}
 .sidebarItemTitle_pO2u,
 .navbar__items {
   font-family: 'Questrial', sans-serif;
