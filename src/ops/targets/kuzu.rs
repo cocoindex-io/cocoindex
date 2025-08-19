@@ -745,7 +745,7 @@ impl TargetFactoryBase for Factory {
     type SetupState = SetupState;
     type SetupChange = GraphElementDataSetupChange;
 
-    type Key = KuzuGraphElement;
+    type SetupKey = KuzuGraphElement;
     type ExportContext = ExportContext;
 
     fn name(&self) -> &str {

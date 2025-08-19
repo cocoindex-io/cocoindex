@@ -368,7 +368,7 @@ impl TargetFactoryBase for Factory {
     type DeclarationSpec = ();
     type SetupState = SetupState;
     type SetupChange = SetupChange;
-    type Key = CollectionKey;
+    type SetupKey = CollectionKey;
     type ExportContext = ExportContext;
 
     fn name(&self) -> &str {

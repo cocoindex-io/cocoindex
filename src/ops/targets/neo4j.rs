@@ -926,7 +926,7 @@ impl TargetFactoryBase for Factory {
         GraphElementDataSetupChange,
         components::SetupChange<SetupComponentOperator>,
     );
-    type Key = Neo4jGraphElement;
+    type SetupKey = Neo4jGraphElement;
     type ExportContext = ExportContext;
 
     fn name(&self) -> &str {
