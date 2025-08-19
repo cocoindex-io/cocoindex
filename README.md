@@ -85,8 +85,8 @@ CocoIndex follows the idea of [Dataflow](https://en.wikipedia.org/wiki/Dataflow_
 
 **Particularly**, developers don't explicitly mutate data by creating, updating and deleting. They just need to define transformation/formula for a set of source data.
 
-## Build like LEGO
-Native builtins for different source, targets and transformations. Standardize interface, make it 1-line code switch between different components.
+## Plug-and-Play Building Blocks
+Native builtins for different source, targets and transformations. Standardize interface, make it 1-line code switch between different components - as easy as assembling building blocks.
 
 <p align="center">
     <img src="https://cocoindex.io/images/components.svg" alt="CocoIndex Features">
