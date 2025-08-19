@@ -32,7 +32,11 @@ from . import _engine  # type: ignore
 from . import index
 from . import op
 from . import setting
-from .convert import dump_engine_object, encode_engine_value, make_engine_value_decoder
+from .convert import (
+    dump_engine_object,
+    make_engine_value_decoder,
+    make_engine_value_encoder,
+)
 from .op import FunctionSpec
 from .runtime import execution_context
 from .setup import SetupChangeBundle
@@ -974,6 +978,12 @@ class TransformFlowInfo(NamedTuple):
     result_decoder: Callable[[Any], T]
 
 
+class FlowArgInfo(NamedTuple):
+    name: str
+    type_hint: Any
+    encoder: Callable[[Any], Any]
+
+
 class TransformFlow(Generic[T]):
     """
     A transient transformation flow that transforms in-memory data.
@@ -981,8 +991,7 @@ class TransformFlow(Generic[T]):
 
     _flow_fn: Callable[..., DataSlice[T]]
     _flow_name: str
-    _flow_arg_types: list[Any]
-    _param_names: list[str]
+    _args_info: list[FlowArgInfo]
 
     _lazy_lock: asyncio.Lock
     _lazy_flow_info: TransformFlowInfo | None = None
@@ -990,7 +999,6 @@ class TransformFlow(Generic[T]):
     def __init__(
         self,
         flow_fn: Callable[..., DataSlice[T]],
-        flow_arg_types: Sequence[Any],
         /,
         name: str | None = None,
     ):
@@ -998,8 +1006,31 @@ class TransformFlow(Generic[T]):
         self._flow_name = _transform_flow_name_builder.build_name(
             name, prefix="_transform_flow_"
         )
-        self._flow_arg_types = list(flow_arg_types)
         self._lazy_lock = asyncio.Lock()
+
+        sig = inspect.signature(flow_fn)
+        args_info = []
+        for param_name, param in sig.parameters.items():
+            if param.kind not in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                raise ValueError(
+                    f"Parameter `{param_name}` is not a parameter can be passed by name"
+                )
+            value_type_annotation: type | None = _get_data_slice_annotation_type(
+                param.annotation
+            )
+            if value_type_annotation is None:
+                raise ValueError(
+                    f"Parameter `{param_name}` for {flow_fn} has no value type annotation. "
+                    "Please use `cocoindex.DataSlice[T]` where T is the type of the value."
+                )
+            encoder = make_engine_value_encoder(
+                analyze_type_info(value_type_annotation)
+            )
+            args_info.append(FlowArgInfo(param_name, value_type_annotation, encoder))
+        self._args_info = args_info
 
     def __call__(self, *args: Any, **kwargs: Any) -> DataSlice[T]:
         return self._flow_fn(*args, **kwargs)
@@ -1020,31 +1051,15 @@ class TransformFlow(Generic[T]):
 
     async def _build_flow_info_async(self) -> TransformFlowInfo:
         flow_builder_state = _FlowBuilderState(self._flow_name)
-        sig = inspect.signature(self._flow_fn)
-        if len(sig.parameters) != len(self._flow_arg_types):
-            raise ValueError(
-                f"Number of parameters in the flow function ({len(sig.parameters)}) "
-                f"does not match the number of argument types ({len(self._flow_arg_types)})"
-            )
-
         kwargs: dict[str, DataSlice[T]] = {}
-        for (param_name, param), param_type in zip(
-            sig.parameters.items(), self._flow_arg_types
-        ):
-            if param.kind not in (
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            ):
-                raise ValueError(
-                    f"Parameter `{param_name}` is not a parameter can be passed by name"
-                )
-            encoded_type = encode_enriched_type(param_type)
+        for arg_info in self._args_info:
+            encoded_type = encode_enriched_type(arg_info.type_hint)
             if encoded_type is None:
-                raise ValueError(f"Parameter `{param_name}` has no type annotation")
+                raise ValueError(f"Parameter `{arg_info.name}` has no type annotation")
             engine_ds = flow_builder_state.engine_flow_builder.add_direct_input(
-                param_name, encoded_type
+                arg_info.name, encoded_type
             )
-            kwargs[param_name] = DataSlice(
+            kwargs[arg_info.name] = DataSlice(
                 _DataSliceState(flow_builder_state, engine_ds)
             )
 
@@ -1057,13 +1072,12 @@ class TransformFlow(Generic[T]):
                 execution_context.event_loop
             )
         )
-        self._param_names = list(sig.parameters.keys())
 
         engine_return_type = (
             _data_slice_state(output).engine_data_slice.data_type().schema()
         )
         python_return_type: type[T] | None = _get_data_slice_annotation_type(
-            sig.return_annotation
+            inspect.signature(self._flow_fn).return_annotation
         )
         result_decoder = make_engine_value_decoder(
             [], engine_return_type["type"], analyze_type_info(python_return_type)
@@ -1095,18 +1109,14 @@ class TransformFlow(Generic[T]):
         """
         flow_info = await self._flow_info_async()
         params = []
-        for i, (arg, arg_type) in enumerate(
-            zip(self._param_names, self._flow_arg_types)
-        ):
-            param_type = (
-                self._flow_arg_types[i] if i < len(self._flow_arg_types) else Any
-            )
+        for i, arg_info in enumerate(self._args_info):
             if i < len(args):
-                params.append(encode_engine_value(args[i], type_hint=param_type))
+                arg = args[i]
             elif arg in kwargs:
-                params.append(encode_engine_value(kwargs[arg], type_hint=param_type))
+                arg = kwargs[arg]
             else:
                 raise ValueError(f"Parameter {arg} is not provided")
+            params.append(arg_info.encoder(arg))
         engine_result = await flow_info.engine_flow.evaluate_async(params)
         return flow_info.result_decoder(engine_result)
 
@@ -1117,27 +1127,7 @@ def transform_flow() -> Callable[[Callable[..., DataSlice[T]]], TransformFlow[T]
     """
 
     def _transform_flow_wrapper(fn: Callable[..., DataSlice[T]]) -> TransformFlow[T]:
-        sig = inspect.signature(fn)
-        arg_types = []
-        for param_name, param in sig.parameters.items():
-            if param.kind not in (
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            ):
-                raise ValueError(
-                    f"Parameter `{param_name}` is not a parameter can be passed by name"
-                )
-            value_type_annotation: type[T] | None = _get_data_slice_annotation_type(
-                param.annotation
-            )
-            if value_type_annotation is None:
-                raise ValueError(
-                    f"Parameter `{param_name}` for {fn} has no value type annotation. "
-                    "Please use `cocoindex.DataSlice[T]` where T is the type of the value."
-                )
-            arg_types.append(value_type_annotation)
-
-        _transform_flow = TransformFlow(fn, arg_types)
+        _transform_flow = TransformFlow(fn)
         functools.update_wrapper(_transform_flow, fn)
         return _transform_flow
 

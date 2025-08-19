@@ -67,18 +67,21 @@ def _is_type_kind_convertible_to(src_type_kind: str, dst_type_kind: str) -> bool
 ANY_TYPE_INFO = analyze_type_info(inspect.Parameter.empty)
 
 
-def _make_encoder_closure(type_info: AnalyzedTypeInfo) -> Callable[[Any], Any]:
+def make_engine_value_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], Any]:
     """
     Create an encoder closure for a specific type.
     """
     variant = type_info.variant
+
+    if isinstance(variant, AnalyzedUnknownType):
+        raise ValueError(f"Type annotation `{type_info.core_type}` is unsupported")
 
     if isinstance(variant, AnalyzedListType):
         elem_type_info = (
             analyze_type_info(variant.elem_type) if variant.elem_type else ANY_TYPE_INFO
         )
         if isinstance(elem_type_info.variant, AnalyzedStructType):
-            elem_encoder = _make_encoder_closure(elem_type_info)
+            elem_encoder = make_engine_value_encoder(elem_type_info)
 
             def encode_struct_list(value: Any) -> Any:
                 return None if value is None else [elem_encoder(v) for v in value]
@@ -104,11 +107,13 @@ def _make_encoder_closure(type_info: AnalyzedTypeInfo) -> Callable[[Any], Any]:
                 # Handle KTable case
                 if value and is_struct_type(val_type):
                     key_encoder = (
-                        _make_encoder_closure(analyze_type_info(key_type))
+                        make_engine_value_encoder(analyze_type_info(key_type))
                         if is_struct_type(key_type)
-                        else _make_encoder_closure(ANY_TYPE_INFO)
+                        else make_engine_value_encoder(ANY_TYPE_INFO)
                     )
-                    value_encoder = _make_encoder_closure(analyze_type_info(val_type))
+                    value_encoder = make_engine_value_encoder(
+                        analyze_type_info(val_type)
+                    )
                     return [
                         [key_encoder(k)] + value_encoder(v) for k, v in value.items()
                     ]
@@ -122,7 +127,7 @@ def _make_encoder_closure(type_info: AnalyzedTypeInfo) -> Callable[[Any], Any]:
         if dataclasses.is_dataclass(struct_type):
             fields = dataclasses.fields(struct_type)
             field_encoders = [
-                _make_encoder_closure(analyze_type_info(f.type)) for f in fields
+                make_engine_value_encoder(analyze_type_info(f.type)) for f in fields
             ]
             field_names = [f.name for f in fields]
 
@@ -140,7 +145,7 @@ def _make_encoder_closure(type_info: AnalyzedTypeInfo) -> Callable[[Any], Any]:
             annotations = struct_type.__annotations__
             field_names = list(getattr(struct_type, "_fields", ()))
             field_encoders = [
-                _make_encoder_closure(
+                make_engine_value_encoder(
                     analyze_type_info(annotations[name])
                     if name in annotations
                     else ANY_TYPE_INFO
@@ -168,38 +173,6 @@ def _make_encoder_closure(type_info: AnalyzedTypeInfo) -> Callable[[Any], Any]:
         return value
 
     return encode_basic_value
-
-
-def make_engine_value_encoder(type_hint: Type[Any] | str) -> Callable[[Any], Any]:
-    """
-    Create an encoder closure for converting Python values to engine values.
-
-    Args:
-        type_hint: Type annotation for the values to encode
-
-    Returns:
-        A closure that encodes Python values to engine values
-    """
-    type_info = analyze_type_info(type_hint)
-    if isinstance(type_info.variant, AnalyzedUnknownType):
-        raise ValueError(f"Type annotation `{type_info.core_type}` is unsupported")
-
-    return _make_encoder_closure(type_info)
-
-
-def encode_engine_value(value: Any, type_hint: Type[Any] | str) -> Any:
-    """
-    Encode a Python value to an engine value.
-
-    Args:
-        value: The Python value to encode
-        type_hint: Type annotation for the value. This should always be provided.
-
-    Returns:
-        The encoded engine value
-    """
-    encoder = make_engine_value_encoder(type_hint)
-    return encoder(value)
 
 
 def make_engine_value_decoder(

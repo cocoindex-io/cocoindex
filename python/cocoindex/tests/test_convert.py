@@ -2,7 +2,7 @@ import datetime
 import inspect
 import uuid
 from dataclasses import dataclass, make_dataclass
-from typing import Annotated, Any, Callable, Literal, NamedTuple
+from typing import Annotated, Any, Callable, Literal, NamedTuple, Type
 
 import numpy as np
 import pytest
@@ -11,7 +11,7 @@ from numpy.typing import NDArray
 import cocoindex
 from cocoindex.convert import (
     dump_engine_object,
-    encode_engine_value,
+    make_engine_value_encoder,
     make_engine_value_decoder,
 )
 from cocoindex.typing import (
@@ -67,6 +67,14 @@ class CustomerNamedTuple(NamedTuple):
     name: str
     order: OrderNamedTuple
     tags: list[Tag] | None = None
+
+
+def encode_engine_value(value: Any, type_hint: Type[Any] | str) -> Any:
+    """
+    Encode a Python value to an engine value.
+    """
+    encoder = make_engine_value_encoder(analyze_type_info(type_hint))
+    return encoder(value)
 
 
 def build_engine_value_decoder(

@@ -18,13 +18,13 @@ from typing import (
 
 from . import _engine  # type: ignore
 from .convert import (
-    encode_engine_value,
+    make_engine_value_encoder,
     make_engine_value_decoder,
     make_engine_struct_decoder,
 )
 from .typing import (
     TypeAttr,
-    encode_enriched_type,
+    encode_enriched_type_info,
     resolve_forward_ref,
     analyze_type_info,
     AnalyzedAnyType,
@@ -185,6 +185,7 @@ def _register_op_factory(
         _args_info: list[_ArgInfo]
         _kwargs_info: dict[str, _ArgInfo]
         _acall: Callable[..., Awaitable[Any]]
+        _result_encoder: Callable[[Any], Any]
 
         def __init__(self, spec: Any) -> None:
             super().__init__()
@@ -295,15 +296,19 @@ def _register_op_factory(
 
             base_analyze_method = getattr(self, "analyze", None)
             if base_analyze_method is not None:
-                result = base_analyze_method(*args, **kwargs)
+                result_type = base_analyze_method(*args, **kwargs)
             else:
-                result = expected_return
+                result_type = expected_return
             if len(attributes) > 0:
-                result = Annotated[result, *attributes]
+                result_type = Annotated[result_type, *attributes]
 
-            encoded_type = encode_enriched_type(result)
+            analyzed_result_type_info = analyze_type_info(result_type)
+            encoded_type = encode_enriched_type_info(analyzed_result_type_info)
             if potentially_missing_required_arg:
                 encoded_type["nullable"] = True
+
+            self._result_encoder = make_engine_value_encoder(analyzed_result_type_info)
+
             return encoded_type
 
         async def prepare(self) -> None:
@@ -343,7 +348,7 @@ def _register_op_factory(
                     output = await self._acall(*decoded_args, **decoded_kwargs)
             else:
                 output = await self._acall(*decoded_args, **decoded_kwargs)
-            return encode_engine_value(output, type_hint=expected_return)
+            return self._result_encoder(output)
 
     _WrappedClass.__name__ = executor_cls.__name__
     _WrappedClass.__doc__ = executor_cls.__doc__
