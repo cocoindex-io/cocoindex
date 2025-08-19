@@ -1,6 +1,6 @@
 ---
 title: New Built-in Target
-description: Learn how to create a new target in CocoIndex.
+description: Learn how to create a new built-in target in CocoIndex.
 toc_max_heading_level: 4
 ---
 
@@ -20,7 +20,9 @@ You're recommended to read the [custom target documentation](/docs/custom_ops/cu
 
 ## Life of a Built-in Target
 
-*Users* provide a *Target Spec* when they export specific data (in the form of [Data Collector](/docs/core/data_collector)) to the target.
+The core logic of a built-in target is the *Target Connector*, which is an implementation of the trait [`TargetFactoryBase`](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex%20%22trait%20TargetFactoryBase%22&type=code).
+
+*Users* provide a *Target Spec* when they export specific data (in the form of [Data Collector](/docs/core/flow_def#data-collector)) to the target.
 
 ```mermaid
 flowchart TD
@@ -127,8 +129,8 @@ This is not a consideration for target types that different targets are independ
 
 The following target implementations provide good examples:
 
--   [Postgres](/docs/ops/targets/postgres), see [related code](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex+path%3A%2Ftarget%2F+Postgres&type=code).
+-   [Postgres](/docs/ops/targets#postgres), see [related code](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex+path%3A%2Ftarget%2F+Postgres&type=code).
     It provides a good example for targets with specific column types in the schema.
 
--   [Qdrant](/docs/ops/targets/qdrant), see [related code](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex+path%3A%2Ftarget%2F+Qdrant&type=code).
+-   [Qdrant](/docs/ops/targets#qdrant), see [related code](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex+path%3A%2Ftarget%2F+Qdrant&type=code).
     It provides a good example for targets without specific column types in the schema, as Qdrant's payloads are JSON objects.
