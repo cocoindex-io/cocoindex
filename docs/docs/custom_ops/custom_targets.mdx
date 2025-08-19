@@ -8,11 +8,24 @@ import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
 A custom target allows you to export data to any destination you want, such as databases, cloud storage, file systems, APIs, or other external systems.
+You can either continuously update the destination to keep it in sync with the latest exported data, or simply publish the changes as a changelog to somewhere.
+
+## Overview
 
 Custom targets are defined by two components:
 
 *   A **target spec** that configures the behavior and connection parameters for the target.
 *   A **target connector** that handles the actual data export operations.
+
+When you define a flow within CocoIndex, you define how data are transformed, collected and exported, without worrying about how to handle data change (insert, update, delete). CocoIndex handles it for you.
+However, a target connects CocoIndex flow and external systems, and needs to synchronize changes of data from the CocoIndex flow to outside.
+The implementation of a target connector needs to deal with changes, in two aspects:
+
+-   Setup changes. When users add a new target, delete an existing target, or make changes to the target spec,
+    the framework will trigger the connector to apply these setup changes by calling `apply_setup_change()`.
+-   Data changes. During the flow is running, when new rows-to-export appear, or existing ones are updated or deleted in the CocoIndex flow, the framework will trigger the connector to apply these data changes by calling `mutate()`.
+
+The target connector needs to react to these changes and reflect them to the external system.
 
 ## Target Spec
 
