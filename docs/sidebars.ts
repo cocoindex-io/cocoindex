@@ -68,11 +68,19 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Contributing',
+      collapsed: false,
+      items: [
+        'contributing/guide',
+        'contributing/setup_dev_environment',
+      ],
+    },
+    {
+      type: 'category',
       label: 'About',
       collapsed: false,
       items: [
         'about/community',
-        'about/contributing',
       ],
     },
   ],
