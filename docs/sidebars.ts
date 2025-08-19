@@ -73,6 +73,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'contributing/guide',
         'contributing/setup_dev_environment',
+        'contributing/new_built_in_target',
       ],
     },
     {
