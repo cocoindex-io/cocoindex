@@ -3,7 +3,7 @@ use crate::prelude::*;
 use super::shared::property_graph::*;
 
 use crate::setup::components::{self, State, apply_component_changes};
-use crate::setup::{ResourceSetupStatus, SetupChangeType};
+use crate::setup::{ResourceSetupChange, SetupChangeType};
 use crate::{ops::sdk::*, setup::CombinedState};
 
 use indoc::formatdoc;
@@ -800,12 +800,12 @@ fn build_composite_field_names(qualifier: &str, field_names: &[String]) -> Strin
     }
 }
 #[derive(Debug)]
-pub struct GraphElementDataSetupStatus {
+pub struct GraphElementDataSetupChange {
     data_clear: Option<DataClearAction>,
     change_type: SetupChangeType,
 }
 
-impl GraphElementDataSetupStatus {
+impl GraphElementDataSetupChange {
     fn new(desired_state: Option<&SetupState>, existing: &CombinedState<SetupState>) -> Self {
         let mut data_clear: Option<DataClearAction> = None;
         for v in existing.possible_versions() {
@@ -839,7 +839,7 @@ impl GraphElementDataSetupStatus {
     }
 }
 
-impl ResourceSetupStatus for GraphElementDataSetupStatus {
+impl ResourceSetupChange for GraphElementDataSetupChange {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut result = vec![];
         if let Some(data_clear) = &self.data_clear {
@@ -918,13 +918,13 @@ impl Factory {
 }
 
 #[async_trait]
-impl StorageFactoryBase for Factory {
+impl TargetFactoryBase for Factory {
     type Spec = Spec;
     type DeclarationSpec = Declaration;
     type SetupState = SetupState;
-    type SetupStatus = (
-        GraphElementDataSetupStatus,
-        components::SetupStatus<SetupComponentOperator>,
+    type SetupChange = (
+        GraphElementDataSetupChange,
+        components::SetupChange<SetupComponentOperator>,
     );
     type Key = Neo4jGraphElement;
     type ExportContext = ExportContext;
@@ -1004,18 +1004,18 @@ impl StorageFactoryBase for Factory {
         Ok((data_coll_output, decl_output))
     }
 
-    async fn check_setup_status(
+    async fn diff_setup_states(
         &self,
         key: Neo4jGraphElement,
         desired: Option<SetupState>,
         existing: CombinedState<SetupState>,
         flow_instance_ctx: Arc<FlowInstanceContext>,
-    ) -> Result<Self::SetupStatus> {
+    ) -> Result<Self::SetupChange> {
         let conn_spec = flow_instance_ctx
             .auth_registry
             .get::<ConnectionSpec>(&key.connection)?;
-        let data_status = GraphElementDataSetupStatus::new(desired.as_ref(), &existing);
-        let components = components::SetupStatus::create(
+        let data_status = GraphElementDataSetupChange::new(desired.as_ref(), &existing);
+        let components = components::SetupChange::create(
             SetupComponentOperator {
                 graph_pool: self.graph_pool.clone(),
                 conn_spec,
@@ -1093,7 +1093,7 @@ impl StorageFactoryBase for Factory {
 
         let mut components = vec![];
         for change in changes.iter() {
-            if let Some(data_clear) = &change.setup_status.0.data_clear {
+            if let Some(data_clear) = &change.setup_change.0.data_clear {
                 match &change.key.typ {
                     ElementType::Relationship(_) => {
                         relationship_types.insert(&change.key);
@@ -1109,7 +1109,7 @@ impl StorageFactoryBase for Factory {
                     }
                 }
             }
-            components.push(&change.setup_status.1);
+            components.push(&change.setup_change.1);
         }
 
         // Relationships have no dependency, so can be cleared first.

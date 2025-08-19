@@ -1,4 +1,4 @@
-use super::{CombinedState, ResourceSetupStatus, SetupChangeType, StateChange};
+use super::{CombinedState, ResourceSetupChange, SetupChangeType, StateChange};
 use crate::prelude::*;
 use std::fmt::Debug;
 
@@ -37,14 +37,14 @@ struct CompositeStateUpsert<S> {
 
 #[derive(Derivative)]
 #[derivative(Debug)]
-pub struct SetupStatus<D: SetupOperator> {
+pub struct SetupChange<D: SetupOperator> {
     #[derivative(Debug = "ignore")]
     desc: D,
     keys_to_delete: IndexSet<D::Key>,
     states_to_upsert: Vec<CompositeStateUpsert<D::State>>,
 }
 
-impl<D: SetupOperator> SetupStatus<D> {
+impl<D: SetupOperator> SetupChange<D> {
     pub fn create(
         desc: D,
         desired: Option<D::SetupState>,
@@ -109,7 +109,7 @@ impl<D: SetupOperator> SetupStatus<D> {
     }
 }
 
-impl<D: SetupOperator + Send + Sync> ResourceSetupStatus for SetupStatus<D> {
+impl<D: SetupOperator + Send + Sync> ResourceSetupChange for SetupChange<D> {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut result = vec![];
 
@@ -149,7 +149,7 @@ impl<D: SetupOperator + Send + Sync> ResourceSetupStatus for SetupStatus<D> {
 }
 
 pub async fn apply_component_changes<D: SetupOperator>(
-    changes: Vec<&SetupStatus<D>>,
+    changes: Vec<&SetupChange<D>>,
     context: &D::Context,
 ) -> Result<()> {
     // First delete components that need to be removed
@@ -173,7 +173,7 @@ pub async fn apply_component_changes<D: SetupOperator>(
     Ok(())
 }
 
-impl<A: ResourceSetupStatus, B: ResourceSetupStatus> ResourceSetupStatus for (A, B) {
+impl<A: ResourceSetupChange, B: ResourceSetupChange> ResourceSetupChange for (A, B) {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut result = vec![];
         result.extend(self.0.describe_changes());

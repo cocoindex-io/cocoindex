@@ -180,13 +180,13 @@ impl<'a> From<&'a SetupState> for Cow<'a, TableColumnsSchema<String>> {
 }
 
 #[derive(Debug)]
-struct GraphElementDataSetupStatus {
+struct GraphElementDataSetupChange {
     actions: TableMainSetupAction<String>,
     referenced_node_tables: Option<(String, String)>,
     drop_affected_referenced_node_tables: IndexSet<String>,
 }
 
-impl setup::ResourceSetupStatus for GraphElementDataSetupStatus {
+impl setup::ResourceSetupChange for GraphElementDataSetupChange {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         self.actions.describe_changes()
     }
@@ -198,10 +198,10 @@ impl setup::ResourceSetupStatus for GraphElementDataSetupStatus {
 
 fn append_drop_table(
     cypher: &mut CypherBuilder,
-    setup_status: &GraphElementDataSetupStatus,
+    setup_change: &GraphElementDataSetupChange,
     elem_type: &ElementType,
 ) -> Result<()> {
-    if !setup_status.actions.drop_existing {
+    if !setup_change.actions.drop_existing {
         return Ok(());
     }
     writeln!(
@@ -222,10 +222,10 @@ fn append_delete_orphaned_nodes(cypher: &mut CypherBuilder, node_table: &str) ->
 
 fn append_upsert_table(
     cypher: &mut CypherBuilder,
-    setup_status: &GraphElementDataSetupStatus,
+    setup_change: &GraphElementDataSetupChange,
     elem_type: &ElementType,
 ) -> Result<()> {
-    let table_upsertion = if let Some(table_upsertion) = &setup_status.actions.table_upsertion {
+    let table_upsertion = if let Some(table_upsertion) = &setup_change.actions.table_upsertion {
         table_upsertion
     } else {
         return Ok(());
@@ -238,7 +238,7 @@ fn append_upsert_table(
                 kuzu_table_type = kuzu_table_type(elem_type),
                 table_name = elem_type.label(),
             )?;
-            if let Some((src, tgt)) = &setup_status.referenced_node_tables {
+            if let Some((src, tgt)) = &setup_change.referenced_node_tables {
                 write!(cypher.query_mut(), "FROM {src} TO {tgt}, ")?;
             }
             cypher.query_mut().push_str(
@@ -739,11 +739,11 @@ struct Factory {
 }
 
 #[async_trait]
-impl StorageFactoryBase for Factory {
+impl TargetFactoryBase for Factory {
     type Spec = Spec;
     type DeclarationSpec = Declaration;
     type SetupState = SetupState;
-    type SetupStatus = GraphElementDataSetupStatus;
+    type SetupChange = GraphElementDataSetupChange;
 
     type Key = KuzuGraphElement;
     type ExportContext = ExportContext;
@@ -842,13 +842,13 @@ impl StorageFactoryBase for Factory {
         Ok((data_coll_outputs, decl_output))
     }
 
-    async fn check_setup_status(
+    async fn diff_setup_states(
         &self,
         _key: KuzuGraphElement,
         desired: Option<SetupState>,
         existing: CombinedState<SetupState>,
         _flow_instance_ctx: Arc<FlowInstanceContext>,
-    ) -> Result<Self::SetupStatus> {
+    ) -> Result<Self::SetupChange> {
         let existing_invalidated = desired.as_ref().is_some_and(|desired| {
             existing
                 .possible_versions()
@@ -865,7 +865,7 @@ impl StorageFactoryBase for Factory {
         } else {
             IndexSet::new()
         };
-        Ok(GraphElementDataSetupStatus {
+        Ok(GraphElementDataSetupChange {
             actions,
             referenced_node_tables: desired
                 .and_then(|desired| desired.referenced_node_tables)
@@ -1063,14 +1063,14 @@ impl StorageFactoryBase for Factory {
             let mut cypher = CypherBuilder::new();
             // Relationships first when dropping.
             for change in rel_changes.iter().chain(node_changes.iter()) {
-                if !change.setup_status.actions.drop_existing {
+                if !change.setup_change.actions.drop_existing {
                     continue;
                 }
-                append_drop_table(&mut cypher, change.setup_status, &change.key.typ)?;
+                append_drop_table(&mut cypher, change.setup_change, &change.key.typ)?;
 
                 partial_affected_node_tables.extend(
                     change
-                        .setup_status
+                        .setup_change
                         .drop_affected_referenced_node_tables
                         .iter(),
                 );
@@ -1080,7 +1080,7 @@ impl StorageFactoryBase for Factory {
             }
             // Nodes first when creating.
             for change in node_changes.iter().chain(rel_changes.iter()) {
-                append_upsert_table(&mut cypher, change.setup_status, &change.key.typ)?;
+                append_upsert_table(&mut cypher, change.setup_change, &change.key.typ)?;
             }
 
             for table in partial_affected_node_tables {

@@ -101,7 +101,7 @@ pub enum AnalyzedPrimaryKeyDef {
 pub struct AnalyzedExportOp {
     pub name: String,
     pub input: AnalyzedLocalCollectorReference,
-    pub export_target_factory: Arc<dyn ExportTargetFactory + Send + Sync>,
+    pub export_target_factory: Arc<dyn TargetFactory + Send + Sync>,
     pub export_context: Arc<dyn Any + Send + Sync>,
     pub primary_key_def: AnalyzedPrimaryKeyDef,
     pub primary_key_type: schema::ValueType,
@@ -113,7 +113,7 @@ pub struct AnalyzedExportOp {
 }
 
 pub struct AnalyzedExportTargetOpGroup {
-    pub target_factory: Arc<dyn ExportTargetFactory + Send + Sync>,
+    pub target_factory: Arc<dyn TargetFactory + Send + Sync>,
     pub op_idx: Vec<usize>,
 }
 

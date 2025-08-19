@@ -423,13 +423,13 @@ pub struct TableSetupAction {
 }
 
 #[derive(Debug)]
-pub struct SetupStatus {
+pub struct SetupChange {
     create_pgvector_extension: bool,
     actions: TableSetupAction,
     vector_as_jsonb_columns: Vec<(String, ValueType)>,
 }
 
-impl SetupStatus {
+impl SetupChange {
     fn new(desired_state: Option<SetupState>, existing: setup::CombinedState<SetupState>) -> Self {
         let table_action =
             TableMainSetupAction::from_states(desired_state.as_ref(), &existing, false);
@@ -533,7 +533,7 @@ fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String 
     format!("{} {}", index_name, to_index_spec_sql(index_spec))
 }
 
-impl setup::ResourceSetupStatus for SetupStatus {
+impl setup::ResourceSetupChange for SetupChange {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut descriptions = self.actions.table_action.describe_changes();
         for (column_name, schema) in self.vector_as_jsonb_columns.iter() {
@@ -574,7 +574,7 @@ impl setup::ResourceSetupStatus for SetupStatus {
     }
 }
 
-impl SetupStatus {
+impl SetupChange {
     async fn apply_change(&self, db_pool: &PgPool, table_name: &str) -> Result<()> {
         if self.actions.table_action.drop_existing {
             sqlx::query(&format!("DROP TABLE IF EXISTS {table_name}"))
@@ -651,11 +651,11 @@ async fn get_db_pool(
 }
 
 #[async_trait]
-impl StorageFactoryBase for Factory {
+impl TargetFactoryBase for Factory {
     type Spec = Spec;
     type DeclarationSpec = ();
     type SetupState = SetupState;
-    type SetupStatus = SetupStatus;
+    type SetupChange = SetupChange;
     type Key = TableId;
     type ExportContext = ExportContext;
 
@@ -714,14 +714,14 @@ impl StorageFactoryBase for Factory {
         Ok((data_coll_output, vec![]))
     }
 
-    async fn check_setup_status(
+    async fn diff_setup_states(
         &self,
         _key: TableId,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
         _flow_instance_ctx: Arc<FlowInstanceContext>,
-    ) -> Result<SetupStatus> {
-        Ok(SetupStatus::new(desired, existing))
+    ) -> Result<SetupChange> {
+        Ok(SetupChange::new(desired, existing))
     }
 
     fn check_state_compatibility(
@@ -782,7 +782,7 @@ impl StorageFactoryBase for Factory {
         for change in changes.iter() {
             let db_pool = get_db_pool(change.key.database.as_ref(), &context.auth_registry).await?;
             change
-                .setup_status
+                .setup_change
                 .apply_change(&db_pool, &change.key.table_name)
                 .await?;
         }

@@ -6,7 +6,7 @@ use crate::builder::AnalyzedFlow;
 use crate::execution::source_indexer::SourceIndexingContext;
 use crate::service::error::ApiError;
 use crate::settings;
-use crate::setup::ObjectSetupStatus;
+use crate::setup::ObjectSetupChange;
 use axum::http::StatusCode;
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -14,7 +14,7 @@ use tokio::runtime::Runtime;
 
 pub struct FlowExecutionContext {
     pub setup_execution_context: Arc<exec_ctx::FlowSetupExecutionContext>,
-    pub setup_status: setup::FlowSetupStatus,
+    pub setup_change: setup::FlowSetupChange,
     source_indexing_contexts: Vec<tokio::sync::OnceCell<Arc<SourceIndexingContext>>>,
 }
 
@@ -23,7 +23,7 @@ async fn build_setup_context(
     existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
 ) -> Result<(
     Arc<exec_ctx::FlowSetupExecutionContext>,
-    setup::FlowSetupStatus,
+    setup::FlowSetupChange,
 )> {
     let setup_execution_context = Arc::new(exec_ctx::build_flow_setup_execution_context(
         &analyzed_flow.flow_instance,
@@ -32,14 +32,14 @@ async fn build_setup_context(
         existing_flow_ss,
     )?);
 
-    let setup_status = setup::check_flow_setup_status(
+    let setup_change = setup::diff_flow_setup_states(
         Some(&setup_execution_context.setup_state),
         existing_flow_ss,
         &analyzed_flow.flow_instance_ctx,
     )
     .await?;
 
-    Ok((setup_execution_context, setup_status))
+    Ok((setup_execution_context, setup_change))
 }
 
 impl FlowExecutionContext {
@@ -47,7 +47,7 @@ impl FlowExecutionContext {
         analyzed_flow: &AnalyzedFlow,
         existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
     ) -> Result<Self> {
-        let (setup_execution_context, setup_status) =
+        let (setup_execution_context, setup_change) =
             build_setup_context(analyzed_flow, existing_flow_ss).await?;
 
         let mut source_indexing_contexts = Vec::new();
@@ -57,7 +57,7 @@ impl FlowExecutionContext {
 
         Ok(Self {
             setup_execution_context,
-            setup_status,
+            setup_change,
             source_indexing_contexts,
         })
     }
@@ -67,11 +67,11 @@ impl FlowExecutionContext {
         analyzed_flow: &AnalyzedFlow,
         existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
     ) -> Result<()> {
-        let (setup_execution_context, setup_status) =
+        let (setup_execution_context, setup_change) =
             build_setup_context(analyzed_flow, existing_flow_ss).await?;
 
         self.setup_execution_context = setup_execution_context;
-        self.setup_status = setup_status;
+        self.setup_change = setup_change;
         Ok(())
     }
 
@@ -124,7 +124,7 @@ impl FlowContext {
         &self,
     ) -> Result<tokio::sync::RwLockReadGuard<FlowExecutionContext>> {
         let execution_ctx = self.execution_ctx.read().await;
-        if !execution_ctx.setup_status.is_up_to_date() {
+        if !execution_ctx.setup_change.is_up_to_date() {
             api_bail!(
                 "Setup for flow `{}` is not up-to-date. Please run `cocoindex setup` to update the setup.",
                 self.flow_name()
@@ -137,7 +137,7 @@ impl FlowContext {
         &self,
     ) -> Result<tokio::sync::OwnedRwLockReadGuard<FlowExecutionContext>> {
         let execution_ctx = self.execution_ctx.clone().read_owned().await;
-        if !execution_ctx.setup_status.is_up_to_date() {
+        if !execution_ctx.setup_change.is_up_to_date() {
             api_bail!(
                 "Setup for flow `{}` is not up-to-date. Please run `cocoindex setup` to update the setup.",
                 self.flow_name()
@@ -212,7 +212,7 @@ impl DbPools {
 
 pub struct LibSetupContext {
     pub all_setup_states: setup::AllSetupStates<setup::ExistingMode>,
-    pub global_setup_status: setup::GlobalSetupStatus,
+    pub global_setup_change: setup::GlobalSetupChange,
 }
 pub struct PersistenceContext {
     pub builtin_db_pool: PgPool,
@@ -286,7 +286,7 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
         Some(PersistenceContext {
             builtin_db_pool: pool,
             setup_ctx: tokio::sync::RwLock::new(LibSetupContext {
-                global_setup_status: setup::GlobalSetupStatus::from_setup_states(&all_setup_states),
+                global_setup_change: setup::GlobalSetupChange::from_setup_states(&all_setup_states),
                 all_setup_states,
             }),
         })

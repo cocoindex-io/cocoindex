@@ -232,7 +232,7 @@ pub struct ExportTargetMutationWithContext<'ctx, T: ?Sized + Send + Sync> {
 
 pub struct ResourceSetupChangeItem<'a> {
     pub key: &'a serde_json::Value,
-    pub setup_status: &'a dyn setup::ResourceSetupStatus,
+    pub setup_change: &'a dyn setup::ResourceSetupChange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,7 +263,7 @@ pub struct ExportDataCollectionSpec {
 }
 
 #[async_trait]
-pub trait ExportTargetFactory: Send + Sync {
+pub trait TargetFactory: Send + Sync {
     async fn build(
         self: Arc<Self>,
         data_collections: Vec<ExportDataCollectionSpec>,
@@ -276,13 +276,13 @@ pub trait ExportTargetFactory: Send + Sync {
 
     /// Will not be called if it's setup by user.
     /// It returns an error if the target only supports setup by user.
-    async fn check_setup_status(
+    async fn diff_setup_states(
         &self,
         key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
         context: Arc<interface::FlowInstanceContext>,
-    ) -> Result<Box<dyn setup::ResourceSetupStatus>>;
+    ) -> Result<Box<dyn setup::ResourceSetupChange>>;
 
     /// Normalize the key. e.g. the JSON format may change (after code change, e.g. new optional field or field ordering), even if the underlying value is not changed.
     /// This should always return the canonical serialized form.
@@ -310,7 +310,7 @@ pub trait ExportTargetFactory: Send + Sync {
 
     async fn apply_setup_changes(
         &self,
-        setup_status: Vec<ResourceSetupChangeItem<'async_trait>>,
+        setup_change: Vec<ResourceSetupChangeItem<'async_trait>>,
         context: Arc<FlowInstanceContext>,
     ) -> Result<()>;
 }
@@ -319,5 +319,5 @@ pub trait ExportTargetFactory: Send + Sync {
 pub enum ExecutorFactory {
     Source(Arc<dyn SourceFactory + Send + Sync>),
     SimpleFunction(Arc<dyn SimpleFunctionFactory + Send + Sync>),
-    ExportTarget(Arc<dyn ExportTargetFactory + Send + Sync>),
+    ExportTarget(Arc<dyn TargetFactory + Send + Sync>),
 }

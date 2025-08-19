@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use super::{ResourceSetupInfo, ResourceSetupStatus, SetupChangeType, StateChange};
+use super::{ResourceSetupChange, ResourceSetupInfo, SetupChangeType, StateChange};
 use crate::utils::db::WriteAction;
 use axum::http::StatusCode;
 use sqlx::PgPool;
@@ -324,13 +324,13 @@ impl MetadataTableSetup {
             key: (),
             state: None,
             description: "CocoIndex Metadata Table".to_string(),
-            setup_status: Some(self),
+            setup_change: Some(self),
             legacy_key: None,
         }
     }
 }
 
-impl ResourceSetupStatus for MetadataTableSetup {
+impl ResourceSetupChange for MetadataTableSetup {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         if self.metadata_table_missing {
             vec![setup::ChangeDescription::Action(format!(

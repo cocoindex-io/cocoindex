@@ -232,12 +232,12 @@ struct PyTargetExecutorContext {
 }
 
 #[derive(Debug)]
-struct PyTargetResourceSetupStatus {
+struct PyTargetResourceSetupChange {
     stale_existing_states: IndexSet<Option<serde_json::Value>>,
     desired_state: Option<serde_json::Value>,
 }
 
-impl setup::ResourceSetupStatus for PyTargetResourceSetupStatus {
+impl setup::ResourceSetupChange for PyTargetResourceSetupChange {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         vec![]
     }
@@ -262,7 +262,7 @@ impl setup::ResourceSetupStatus for PyTargetResourceSetupStatus {
 }
 
 #[async_trait]
-impl interface::ExportTargetFactory for PyExportTargetFactory {
+impl interface::TargetFactory for PyExportTargetFactory {
     async fn build(
         self: Arc<Self>,
         data_collections: Vec<interface::ExportDataCollectionSpec>,
@@ -326,13 +326,13 @@ impl interface::ExportTargetFactory for PyExportTargetFactory {
         Ok((build_outputs, vec![]))
     }
 
-    async fn check_setup_status(
+    async fn diff_setup_states(
         &self,
         _key: &serde_json::Value,
         desired_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
         _context: Arc<interface::FlowInstanceContext>,
-    ) -> Result<Box<dyn setup::ResourceSetupStatus>> {
+    ) -> Result<Box<dyn setup::ResourceSetupChange>> {
         // Collect all possible existing states that are not the desired state.
         let mut stale_existing_states = IndexSet::new();
         if !existing_states.always_exists() && desired_state.is_some() {
@@ -344,7 +344,7 @@ impl interface::ExportTargetFactory for PyExportTargetFactory {
             }
         }
 
-        Ok(Box::new(PyTargetResourceSetupStatus {
+        Ok(Box::new(PyTargetResourceSetupChange {
             stale_existing_states,
             desired_state,
         }))
@@ -385,23 +385,23 @@ impl interface::ExportTargetFactory for PyExportTargetFactory {
 
     async fn apply_setup_changes(
         &self,
-        setup_status: Vec<interface::ResourceSetupChangeItem<'async_trait>>,
+        setup_change: Vec<interface::ResourceSetupChangeItem<'async_trait>>,
         context: Arc<interface::FlowInstanceContext>,
     ) -> Result<()> {
         // Filter the setup changes that are not NoChange, and flatten to
         //   `list[tuple[key, list[stale_existing_states | None], desired_state | None]]` for Python.
         let mut setup_changes = Vec::new();
-        for item in setup_status.into_iter() {
-            let decoded_setup_status = (item.setup_status as &dyn Any)
-                .downcast_ref::<PyTargetResourceSetupStatus>()
+        for item in setup_change.into_iter() {
+            let decoded_setup_change = (item.setup_change as &dyn Any)
+                .downcast_ref::<PyTargetResourceSetupChange>()
                 .ok_or_else(invariance_violation)?;
-            if <dyn setup::ResourceSetupStatus>::change_type(decoded_setup_status)
+            if <dyn setup::ResourceSetupChange>::change_type(decoded_setup_change)
                 != setup::SetupChangeType::NoChange
             {
                 setup_changes.push((
                     item.key,
-                    &decoded_setup_status.stale_existing_states,
-                    &decoded_setup_status.desired_state,
+                    &decoded_setup_change.stale_existing_states,
+                    &decoded_setup_change.desired_state,
                 ));
             }
         }

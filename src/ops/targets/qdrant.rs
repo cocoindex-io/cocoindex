@@ -152,12 +152,12 @@ struct SetupState {
 }
 
 #[derive(Debug)]
-struct SetupStatus {
+struct SetupChange {
     delete_collection: bool,
     add_collection: Option<SetupState>,
 }
 
-impl setup::ResourceSetupStatus for SetupStatus {
+impl setup::ResourceSetupChange for SetupChange {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut result = vec![];
         if self.delete_collection {
@@ -205,7 +205,7 @@ impl setup::ResourceSetupStatus for SetupStatus {
     }
 }
 
-impl SetupStatus {
+impl SetupChange {
     async fn apply_delete(&self, collection_name: &String, qdrant_client: &Qdrant) -> Result<()> {
         if self.delete_collection {
             qdrant_client.delete_collection(collection_name).await?;
@@ -363,11 +363,11 @@ impl Display for CollectionId {
 }
 
 #[async_trait]
-impl StorageFactoryBase for Factory {
+impl TargetFactoryBase for Factory {
     type Spec = Spec;
     type DeclarationSpec = ();
     type SetupState = SetupState;
-    type SetupStatus = SetupStatus;
+    type SetupChange = SetupChange;
     type Key = CollectionKey;
     type ExportContext = ExportContext;
 
@@ -484,13 +484,13 @@ impl StorageFactoryBase for Factory {
         })
     }
 
-    async fn check_setup_status(
+    async fn diff_setup_states(
         &self,
         _key: CollectionKey,
         desired: Option<SetupState>,
         existing: setup::CombinedState<SetupState>,
         _flow_instance_ctx: Arc<FlowInstanceContext>,
-    ) -> Result<Self::SetupStatus> {
+    ) -> Result<Self::SetupChange> {
         let desired_exists = desired.is_some();
         let add_collection = desired.filter(|state| {
             !existing.always_exists()
@@ -500,7 +500,7 @@ impl StorageFactoryBase for Factory {
         });
         let delete_collection = existing.possible_versions().next().is_some()
             && (!desired_exists || add_collection.is_some());
-        Ok(SetupStatus {
+        Ok(SetupChange {
             delete_collection,
             add_collection,
         })
@@ -543,22 +543,22 @@ impl StorageFactoryBase for Factory {
 
     async fn apply_setup_changes(
         &self,
-        setup_status: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
+        setup_change: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
         context: Arc<FlowInstanceContext>,
     ) -> Result<()> {
-        for setup_change in setup_status.iter() {
+        for setup_change in setup_change.iter() {
             let qdrant_client =
                 self.get_qdrant_client(&setup_change.key.connection, &context.auth_registry)?;
             setup_change
-                .setup_status
+                .setup_change
                 .apply_delete(&setup_change.key.collection_name, &qdrant_client)
                 .await?;
         }
-        for setup_change in setup_status.iter() {
+        for setup_change in setup_change.iter() {
             let qdrant_client =
                 self.get_qdrant_client(&setup_change.key.connection, &context.auth_registry)?;
             setup_change
-                .setup_status
+                .setup_change
                 .apply_create(&setup_change.key.collection_name, &qdrant_client)
                 .await?;
         }

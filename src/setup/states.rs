@@ -22,7 +22,7 @@ use std::hash::Hash;
 
 use super::db_metadata;
 use crate::execution::db_tracking_setup::{
-    self, TrackingTableSetupState, TrackingTableSetupStatus,
+    self, TrackingTableSetupChange, TrackingTableSetupState,
 };
 
 const INDENT: &str = "    ";
@@ -251,13 +251,13 @@ pub enum ChangeDescription {
     Note(String),
 }
 
-pub trait ResourceSetupStatus: Send + Sync + Debug + Any + 'static {
+pub trait ResourceSetupChange: Send + Sync + Debug + Any + 'static {
     fn describe_changes(&self) -> Vec<ChangeDescription>;
 
     fn change_type(&self) -> SetupChangeType;
 }
 
-impl ResourceSetupStatus for Box<dyn ResourceSetupStatus> {
+impl ResourceSetupChange for Box<dyn ResourceSetupChange> {
     fn describe_changes(&self) -> Vec<ChangeDescription> {
         self.as_ref().describe_changes()
     }
@@ -267,7 +267,7 @@ impl ResourceSetupStatus for Box<dyn ResourceSetupStatus> {
     }
 }
 
-impl ResourceSetupStatus for std::convert::Infallible {
+impl ResourceSetupChange for std::convert::Infallible {
     fn describe_changes(&self) -> Vec<ChangeDescription> {
         unreachable!()
     }
@@ -278,20 +278,20 @@ impl ResourceSetupStatus for std::convert::Infallible {
 }
 
 #[derive(Debug)]
-pub struct ResourceSetupInfo<K, S, C: ResourceSetupStatus> {
+pub struct ResourceSetupInfo<K, S, C: ResourceSetupChange> {
     pub key: K,
     pub state: Option<S>,
     pub description: String,
 
     /// If `None`, the resource is managed by users.
-    pub setup_status: Option<C>,
+    pub setup_change: Option<C>,
 
     pub legacy_key: Option<K>,
 }
 
-impl<K, S, C: ResourceSetupStatus> std::fmt::Display for ResourceSetupInfo<K, S, C> {
+impl<K, S, C: ResourceSetupChange> std::fmt::Display for ResourceSetupInfo<K, S, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let status_code = match self.setup_status.as_ref().map(|c| c.change_type()) {
+        let status_code = match self.setup_change.as_ref().map(|c| c.change_type()) {
             Some(SetupChangeType::NoChange) => "READY",
             Some(SetupChangeType::Create) => "TO CREATE",
             Some(SetupChangeType::Update) => "TO UPDATE",
@@ -303,8 +303,8 @@ impl<K, S, C: ResourceSetupStatus> std::fmt::Display for ResourceSetupInfo<K, S,
         let status_full = status_str.color(AnsiColors::Cyan);
         let desc_colored = &self.description;
         writeln!(f, "{status_full} {desc_colored}")?;
-        if let Some(setup_status) = &self.setup_status {
-            let changes = setup_status.describe_changes();
+        if let Some(setup_change) = &self.setup_change {
+            let changes = setup_change.describe_changes();
             if !changes.is_empty() {
                 let mut f = indented(f).with_str(INDENT);
                 writeln!(f, "")?;
@@ -335,9 +335,9 @@ impl<K, S, C: ResourceSetupStatus> std::fmt::Display for ResourceSetupInfo<K, S,
     }
 }
 
-impl<K, S, C: ResourceSetupStatus> ResourceSetupInfo<K, S, C> {
+impl<K, S, C: ResourceSetupChange> ResourceSetupInfo<K, S, C> {
     pub fn is_up_to_date(&self) -> bool {
-        self.setup_status
+        self.setup_change
             .as_ref()
             .is_none_or(|c| c.change_type() == SetupChangeType::NoChange)
     }
@@ -351,27 +351,27 @@ pub enum ObjectStatus {
     Deleted,
 }
 
-pub trait ObjectSetupStatus {
+pub trait ObjectSetupChange {
     fn status(&self) -> Option<ObjectStatus>;
     fn is_up_to_date(&self) -> bool;
 }
 
 #[derive(Debug)]
-pub struct FlowSetupStatus {
+pub struct FlowSetupChange {
     pub status: Option<ObjectStatus>,
     pub seen_flow_metadata_version: Option<u64>,
 
     pub metadata_change: Option<StateChange<FlowSetupMetadata>>,
 
     pub tracking_table:
-        Option<ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupStatus>>,
+        Option<ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupChange>>,
     pub target_resources:
-        Vec<ResourceSetupInfo<ResourceIdentifier, TargetSetupState, Box<dyn ResourceSetupStatus>>>,
+        Vec<ResourceSetupInfo<ResourceIdentifier, TargetSetupState, Box<dyn ResourceSetupChange>>>,
 
     pub unknown_resources: Vec<ResourceIdentifier>,
 }
 
-impl ObjectSetupStatus for FlowSetupStatus {
+impl ObjectSetupChange for FlowSetupChange {
     fn status(&self) -> Option<ObjectStatus> {
         self.status
     }
@@ -390,11 +390,11 @@ impl ObjectSetupStatus for FlowSetupStatus {
 }
 
 #[derive(Debug)]
-pub struct GlobalSetupStatus {
+pub struct GlobalSetupChange {
     pub metadata_table: ResourceSetupInfo<(), (), db_metadata::MetadataTableSetup>,
 }
 
-impl GlobalSetupStatus {
+impl GlobalSetupChange {
     pub fn from_setup_states(setup_states: &AllSetupStates<ExistingMode>) -> Self {
         Self {
             metadata_table: db_metadata::MetadataTableSetup {
@@ -409,8 +409,8 @@ impl GlobalSetupStatus {
     }
 }
 
-pub struct ObjectSetupStatusCode<'a, Status: ObjectSetupStatus>(&'a Status);
-impl<Status: ObjectSetupStatus> std::fmt::Display for ObjectSetupStatusCode<'_, Status> {
+pub struct ObjectSetupChangeCode<'a, Status: ObjectSetupChange>(&'a Status);
+impl<Status: ObjectSetupChange> std::fmt::Display for ObjectSetupChangeCode<'_, Status> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Some(status) = self.0.status() else {
             return Ok(());
@@ -433,38 +433,38 @@ impl<Status: ObjectSetupStatus> std::fmt::Display for ObjectSetupStatusCode<'_, 
     }
 }
 
-impl std::fmt::Display for GlobalSetupStatus {
+impl std::fmt::Display for GlobalSetupChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{}", self.metadata_table)
     }
 }
 
-pub struct FormattedFlowSetupStatus<'a>(pub &'a str, pub &'a FlowSetupStatus);
+pub struct FormattedFlowSetupChange<'a>(pub &'a str, pub &'a FlowSetupChange);
 
-impl std::fmt::Display for FormattedFlowSetupStatus<'_> {
+impl std::fmt::Display for FormattedFlowSetupChange<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let flow_ssc = self.1;
-        if flow_ssc.status.is_none() {
+        let flow_setup_change = self.1;
+        if flow_setup_change.status.is_none() {
             return Ok(());
         }
 
         writeln!(
             f,
             "{} Flow: {}",
-            ObjectSetupStatusCode(flow_ssc)
+            ObjectSetupChangeCode(flow_setup_change)
                 .to_string()
                 .color(AnsiColors::Cyan),
             self.0
         )?;
 
         let mut f = indented(f).with_str(INDENT);
-        if let Some(tracking_table) = &flow_ssc.tracking_table {
+        if let Some(tracking_table) = &flow_setup_change.tracking_table {
             write!(f, "{tracking_table}")?;
         }
-        for target_resource in &flow_ssc.target_resources {
+        for target_resource in &flow_setup_change.target_resources {
             write!(f, "{target_resource}")?;
         }
-        for resource in &flow_ssc.unknown_resources {
+        for resource in &flow_setup_change.unknown_resources {
             writeln!(f, "[  UNKNOWN  ] {resource}")?;
         }
 

@@ -2,7 +2,7 @@ use crate::{
     lib_context::{FlowContext, FlowExecutionContext, LibSetupContext},
     ops::{
         get_optional_executor_factory,
-        interface::{ExportTargetFactory, FlowInstanceContext},
+        interface::{FlowInstanceContext, TargetFactory},
     },
     prelude::*,
 };
@@ -13,10 +13,10 @@ use std::{
     str::FromStr,
 };
 
-use super::{AllSetupStates, GlobalSetupStatus};
+use super::{AllSetupStates, GlobalSetupChange};
 use super::{
-    CombinedState, DesiredMode, ExistingMode, FlowSetupState, FlowSetupStatus, ObjectSetupStatus,
-    ObjectStatus, ResourceIdentifier, ResourceSetupInfo, ResourceSetupStatus, SetupChangeType,
+    CombinedState, DesiredMode, ExistingMode, FlowSetupChange, FlowSetupState, ObjectSetupChange,
+    ObjectStatus, ResourceIdentifier, ResourceSetupChange, ResourceSetupInfo, SetupChangeType,
     StateChange, TargetSetupState, db_metadata,
 };
 use crate::execution::db_tracking_setup;
@@ -80,9 +80,7 @@ fn from_metadata_record<S: DeserializeOwned + Debug + Clone>(
     })
 }
 
-fn get_export_target_factory(
-    target_type: &str,
-) -> Option<Arc<dyn ExportTargetFactory + Send + Sync>> {
+fn get_export_target_factory(target_type: &str) -> Option<Arc<dyn TargetFactory + Send + Sync>> {
     match get_optional_executor_factory(target_type) {
         Some(ExecutorFactory::ExportTarget(factory)) => Some(factory),
         _ => None,
@@ -252,11 +250,11 @@ fn group_resource_states<'a>(
     Ok(grouped)
 }
 
-pub async fn check_flow_setup_status(
+pub async fn diff_flow_setup_states(
     desired_state: Option<&FlowSetupState<DesiredMode>>,
     existing_state: Option<&FlowSetupState<ExistingMode>>,
     flow_instance_ctx: &Arc<FlowInstanceContext>,
-) -> Result<FlowSetupStatus> {
+) -> Result<FlowSetupChange> {
     let metadata_change = diff_state(
         existing_state.map(|e| &e.metadata),
         desired_state.map(|d| &d.metadata),
@@ -267,7 +265,7 @@ pub async fn check_flow_setup_status(
         .iter()
         .flat_map(|d| d.metadata.sources.values().map(|v| v.source_id))
         .collect::<HashSet<i32>>();
-    let tracking_table_change = db_tracking_setup::TrackingTableSetupStatus::new(
+    let tracking_table_change = db_tracking_setup::TrackingTableSetupChange::new(
         desired_state.map(|d| &d.tracking_table),
         &existing_state
             .map(|e| Cow::Borrowed(&e.tracking_table))
@@ -326,12 +324,12 @@ pub async fn check_flow_setup_status(
         let never_setup_by_sys = target_state.is_none()
             && existing_without_setup_by_user.current.is_none()
             && existing_without_setup_by_user.staging.is_empty();
-        let setup_status = if never_setup_by_sys {
+        let setup_change = if never_setup_by_sys {
             None
         } else {
             Some(
                 factory
-                    .check_setup_status(
+                    .diff_setup_states(
                         &resource_id.key,
                         target_state,
                         existing_without_setup_by_user,
@@ -344,7 +342,7 @@ pub async fn check_flow_setup_status(
             key: resource_id.clone(),
             state,
             description: factory.describe_resource(&resource_id.key)?,
-            setup_status,
+            setup_change,
             legacy_key: v
                 .existing
                 .legacy_state_key
@@ -354,7 +352,7 @@ pub async fn check_flow_setup_status(
                 }),
         });
     }
-    Ok(FlowSetupStatus {
+    Ok(FlowSetupChange {
         status: to_object_status(existing_state, desired_state),
         seen_flow_metadata_version: existing_state.and_then(|s| s.seen_flow_metadata_version),
         metadata_change,
@@ -364,16 +362,16 @@ pub async fn check_flow_setup_status(
     })
 }
 
-struct ResourceSetupChangeItem<'a, K: 'a, C: ResourceSetupStatus> {
+struct ResourceSetupChangeItem<'a, K: 'a, C: ResourceSetupChange> {
     key: &'a K,
-    setup_status: &'a C,
+    setup_change: &'a C,
 }
 
 async fn maybe_update_resource_setup<
     'a,
     K: 'a,
     S: 'a,
-    C: ResourceSetupStatus,
+    C: ResourceSetupChange,
     ChangeApplierResultFut: Future<Output = Result<()>>,
 >(
     resource_kind: &str,
@@ -383,14 +381,14 @@ async fn maybe_update_resource_setup<
 ) -> Result<()> {
     let mut changes = Vec::new();
     for resource in resources {
-        if let Some(setup_status) = &resource.setup_status {
-            if setup_status.change_type() != SetupChangeType::NoChange {
+        if let Some(setup_change) = &resource.setup_change {
+            if setup_change.change_type() != SetupChangeType::NoChange {
                 changes.push(ResourceSetupChangeItem {
                     key: &resource.key,
-                    setup_status,
+                    setup_change,
                 });
                 writeln!(write, "{}:", resource.description)?;
-                for change in setup_status.describe_changes() {
+                for change in setup_change.describe_changes() {
                     match change {
                         setup::ChangeDescription::Action(action) => {
                             writeln!(write, "  - {action}")?;
@@ -412,7 +410,7 @@ async fn maybe_update_resource_setup<
 async fn apply_changes_for_flow(
     write: &mut (dyn std::io::Write + Send),
     flow_ctx: &FlowContext,
-    flow_status: &FlowSetupStatus,
+    flow_status: &FlowSetupChange,
     existing_setup_state: &mut Option<setup::FlowSetupState<setup::ExistingMode>>,
     pool: &PgPool,
 ) -> Result<()> {
@@ -441,7 +439,7 @@ async fn apply_changes_for_flow(
     }
     if let Some(tracking_table) = &flow_status.tracking_table {
         if tracking_table
-            .setup_status
+            .setup_change
             .as_ref()
             .map(|c| c.change_type() != SetupChangeType::NoChange)
             .unwrap_or_default()
@@ -487,34 +485,34 @@ async fn apply_changes_for_flow(
             "tracking table",
             write,
             std::iter::once(tracking_table),
-            |setup_status| setup_status[0].setup_status.apply_change(),
+            |setup_change| setup_change[0].setup_change.apply_change(),
         )
         .await?;
     }
 
-    let mut setup_status_by_target_kind = IndexMap::<&str, Vec<_>>::new();
+    let mut setup_change_by_target_kind = IndexMap::<&str, Vec<_>>::new();
     for target_resource in &flow_status.target_resources {
-        setup_status_by_target_kind
+        setup_change_by_target_kind
             .entry(target_resource.key.target_kind.as_str())
             .or_default()
             .push(target_resource);
     }
-    for (target_kind, resources) in setup_status_by_target_kind.into_iter() {
+    for (target_kind, resources) in setup_change_by_target_kind.into_iter() {
         maybe_update_resource_setup(
             target_kind,
             write,
             resources.into_iter(),
-            |setup_status| async move {
+            |setup_change| async move {
                 let factory = get_export_target_factory(target_kind).ok_or_else(|| {
                     anyhow::anyhow!("No factory found for target kind: {}", target_kind)
                 })?;
                 factory
                     .apply_setup_changes(
-                        setup_status
+                        setup_change
                             .into_iter()
                             .map(|s| interface::ResourceSetupChangeItem {
                                 key: &s.key.key,
-                                setup_status: s.setup_status.as_ref(),
+                                setup_change: s.setup_change.as_ref(),
                             })
                             .collect(),
                         flow_ctx.flow.flow_instance_ctx.clone(),
@@ -553,7 +551,7 @@ async fn apply_changes_for_flow(
         let tracking_table = CombinedState::from_change(
             existing_tracking_table,
             flow_status.tracking_table.as_ref().map(|c| {
-                c.setup_status
+                c.setup_change
                     .as_ref()
                     .and_then(|c| c.desired_state.as_ref())
             }),
@@ -586,20 +584,20 @@ async fn apply_changes_for_flow(
 
 async fn apply_global_changes(
     write: &mut (dyn std::io::Write + Send),
-    setup_status: &GlobalSetupStatus,
+    setup_change: &GlobalSetupChange,
     all_setup_states: &mut AllSetupStates<ExistingMode>,
 ) -> Result<()> {
     maybe_update_resource_setup(
         "metadata table",
         write,
-        std::iter::once(&setup_status.metadata_table),
-        |setup_status| setup_status[0].setup_status.apply_change(),
+        std::iter::once(&setup_change.metadata_table),
+        |setup_change| setup_change[0].setup_change.apply_change(),
     )
     .await?;
 
-    if setup_status
+    if setup_change
         .metadata_table
-        .setup_status
+        .setup_change
         .as_ref()
         .is_some_and(|c| c.change_type() == SetupChangeType::Create)
     {
@@ -620,19 +618,19 @@ pub struct SetupChangeBundle {
 }
 
 impl SetupChangeBundle {
-    async fn get_flow_setup_status<'a>(
+    async fn get_flow_setup_change<'a>(
         setup_ctx: &LibSetupContext,
         flow_ctx: &'a FlowContext,
         flow_exec_ctx: &'a FlowExecutionContext,
         action: &FlowSetupChangeAction,
-        buffer: &'a mut Option<FlowSetupStatus>,
-    ) -> Result<&'a FlowSetupStatus> {
+        buffer: &'a mut Option<FlowSetupChange>,
+    ) -> Result<&'a FlowSetupChange> {
         let result = match action {
-            FlowSetupChangeAction::Setup => &flow_exec_ctx.setup_status,
+            FlowSetupChangeAction::Setup => &flow_exec_ctx.setup_change,
             FlowSetupChangeAction::Drop => {
                 let existing_state = setup_ctx.all_setup_states.flows.get(flow_ctx.flow_name());
                 buffer.insert(
-                    check_flow_setup_status(None, existing_state, &flow_ctx.flow.flow_instance_ctx)
+                    diff_flow_setup_states(None, existing_state, &flow_ctx.flow.flow_instance_ctx)
                         .await?,
                 )
             }
@@ -652,8 +650,8 @@ impl SetupChangeBundle {
         let setup_ctx = &*setup_ctx;
 
         if self.action == FlowSetupChangeAction::Setup {
-            is_up_to_date = is_up_to_date && setup_ctx.global_setup_status.is_up_to_date();
-            write!(&mut text, "{}", setup_ctx.global_setup_status)?;
+            is_up_to_date = is_up_to_date && setup_ctx.global_setup_change.is_up_to_date();
+            write!(&mut text, "{}", setup_ctx.global_setup_change)?;
         }
 
         for flow_name in &self.flow_names {
@@ -666,21 +664,21 @@ impl SetupChangeBundle {
             };
             let flow_exec_ctx = flow_ctx.get_execution_ctx_for_setup().read().await;
 
-            let mut setup_status_buffer = None;
-            let setup_status = Self::get_flow_setup_status(
+            let mut setup_change_buffer = None;
+            let setup_change = Self::get_flow_setup_change(
                 setup_ctx,
                 &flow_ctx,
                 &flow_exec_ctx,
                 &self.action,
-                &mut setup_status_buffer,
+                &mut setup_change_buffer,
             )
             .await?;
 
-            is_up_to_date = is_up_to_date && setup_status.is_up_to_date();
+            is_up_to_date = is_up_to_date && setup_change.is_up_to_date();
             write!(
                 &mut text,
                 "{}",
-                setup::FormattedFlowSetupStatus(flow_name, setup_status)
+                setup::FormattedFlowSetupChange(flow_name, setup_change)
             )?;
         }
         Ok((text, is_up_to_date))
@@ -696,16 +694,16 @@ impl SetupChangeBundle {
         let setup_ctx = &mut *setup_ctx;
 
         if self.action == FlowSetupChangeAction::Setup
-            && !setup_ctx.global_setup_status.is_up_to_date()
+            && !setup_ctx.global_setup_change.is_up_to_date()
         {
             apply_global_changes(
                 write,
-                &setup_ctx.global_setup_status,
+                &setup_ctx.global_setup_change,
                 &mut setup_ctx.all_setup_states,
             )
             .await?;
-            setup_ctx.global_setup_status =
-                GlobalSetupStatus::from_setup_states(&setup_ctx.all_setup_states);
+            setup_ctx.global_setup_change =
+                GlobalSetupChange::from_setup_states(&setup_ctx.all_setup_states);
         }
 
         for flow_name in &self.flow_names {
@@ -718,16 +716,16 @@ impl SetupChangeBundle {
             };
             let mut flow_exec_ctx = flow_ctx.get_execution_ctx_for_setup().write().await;
 
-            let mut setup_status_buffer = None;
-            let setup_status = Self::get_flow_setup_status(
+            let mut setup_change_buffer = None;
+            let setup_change = Self::get_flow_setup_change(
                 setup_ctx,
                 &flow_ctx,
                 &flow_exec_ctx,
                 &self.action,
-                &mut setup_status_buffer,
+                &mut setup_change_buffer,
             )
             .await?;
-            if setup_status.is_up_to_date() {
+            if setup_change.is_up_to_date() {
                 continue;
             }
 
@@ -735,7 +733,7 @@ impl SetupChangeBundle {
             apply_changes_for_flow(
                 write,
                 &flow_ctx,
-                setup_status,
+                setup_change,
                 &mut flow_states,
                 &persistence_ctx.builtin_db_pool,
             )

@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use crate::setup::{CombinedState, ResourceSetupInfo, ResourceSetupStatus, SetupChangeType};
+use crate::setup::{CombinedState, ResourceSetupChange, ResourceSetupInfo, SetupChangeType};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -76,7 +76,7 @@ pub struct TrackingTableSetupState {
 }
 
 #[derive(Debug)]
-pub struct TrackingTableSetupStatus {
+pub struct TrackingTableSetupChange {
     pub desired_state: Option<TrackingTableSetupState>,
 
     pub min_existing_version_id: Option<i32>,
@@ -88,7 +88,7 @@ pub struct TrackingTableSetupStatus {
     pub source_ids_to_delete: Vec<i32>,
 }
 
-impl TrackingTableSetupStatus {
+impl TrackingTableSetupChange {
     pub fn new(
         desired: Option<&TrackingTableSetupState>,
         existing: &CombinedState<TrackingTableSetupState>,
@@ -127,18 +127,18 @@ impl TrackingTableSetupStatus {
 
     pub fn into_setup_info(
         self,
-    ) -> ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupStatus> {
+    ) -> ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupChange> {
         ResourceSetupInfo {
             key: (),
             state: self.desired_state.clone(),
             description: "Internal Storage for Tracking".to_string(),
-            setup_status: Some(self),
+            setup_change: Some(self),
             legacy_key: None,
         }
     }
 }
 
-impl ResourceSetupStatus for TrackingTableSetupStatus {
+impl ResourceSetupChange for TrackingTableSetupChange {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         let mut changes: Vec<setup::ChangeDescription> = vec![];
         if self.desired_state.is_some() && !self.legacy_tracking_table_names.is_empty() {
@@ -234,7 +234,7 @@ impl ResourceSetupStatus for TrackingTableSetupStatus {
     }
 }
 
-impl TrackingTableSetupStatus {
+impl TrackingTableSetupChange {
     pub async fn apply_change(&self) -> Result<()> {
         let lib_context = get_lib_context()?;
         let pool = lib_context.require_builtin_db_pool()?;
