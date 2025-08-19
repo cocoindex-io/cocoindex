@@ -21,11 +21,15 @@ When you define a flow within CocoIndex, you define how data are transformed, co
 However, a target connects CocoIndex flow and external systems, and needs to synchronize changes of data from the CocoIndex flow to outside.
 The implementation of a target connector needs to deal with changes, in two aspects:
 
--   Setup changes. When users add a new target, delete an existing target, or make changes to the target spec,
+-   **Setup changes**.
+    They're for basic setup of a target's corresponding infrastructure (e.g. a table, a directory) without specific data.
+    When users add a new target, delete an existing target, or make changes to the target spec,
     the framework will trigger the connector to apply these setup changes by calling `apply_setup_change()`.
--   Data changes. During the flow is running, when new rows-to-export appear, or existing ones are updated or deleted in the CocoIndex flow, the framework will trigger the connector to apply these data changes by calling `mutate()`.
+    The connector needs apply corresponding setup changes to the external system, e.g. create/delete a table, update/delete a directory, etc.
 
-The target connector needs to react to these changes and reflect them to the external system.
+-   **Data changes**.
+    They're changes of specific data exported to the target.
+    During the flow is running, when new rows-to-export appear, or existing ones are updated or deleted in the CocoIndex flow, the framework will trigger the connector to apply these data changes by calling `mutate()`, e.g. insert/update/delete a row in a table, write/delete a file, etc.
 
 ## Target Spec
 
@@ -57,7 +61,7 @@ Notes:
 
 A target connector handles the actual data export operations for your custom target. It defines how data should be written to your target destination.
 
-Target connectors implement two categories of methods: **setup methods** for managing target infrastructure (similar to DDL operations in databases), and **data methods** for handling specific data operations (similar to DML operations).
+Target connectors implement two categories of methods: setup methods to deal with setup changes, and data methods to deal with data changes.
 
 <Tabs>
 <TabItem value="python" label="Python" default>
@@ -171,7 +175,21 @@ def prepare(spec: CustomTarget) -> PreparedCustomTarget:
 
 If not provided, the original spec will be passed directly to `mutate`.
 
-### Complete Example
+## Best Practices
+
+### Idempotency of Methods with Side Effects
+
+`apply_setup_change()` and `mutate()` are the two methods that are expected to produce side effects.
+We expect them to be idempotent, i.e. when calling them with the same arguments multiple times, the effect should remain the same.
+
+For example,
+- For `apply_setup_change()`, if the target is a directory, it should be a no-op if we try to create it (`previous` is `None`) when the directory already exists, and also a no-op if we try to delete it (`current` is `None`) when the directory does not exist.
+- For `mutate()`, if a mutation is a deletion, it should be a no-op if the row does not exist.
+
+This is to make sure when the system if left in an intermediate state, e.g. interrupted in the middle between a change is made and CocoIndex notes down the change is completed, the targets can still be gracefully rolled forward to the desired states after the system is resumed.
+
+
+## Example
 
 In this example, we define a custom target that accepts data with the following fields:
 - `filename` (key field)
@@ -260,21 +278,4 @@ For simplicity, the type hints can be omitted and a `dict` will be created inste
 </TabItem>
 </Tabs>
 
-## Best Practices
-
-### Idempotency of Methods with Side Effects
-
-`apply_setup_change()` and `mutate()` are the two methods that are expected to produce side effects.
-We expect them to be idempotent, i.e. when calling them with the same arguments multiple times, the effect should remain the same.
-
-For example,
-- For `apply_setup_change()`, if the target is a directory, it should be a no-op if we try to create it (`previous` is `None`) when the directory already exists, and also a no-op if we try to delete it (`current` is `None`) when the directory does not exist.
-- For `mutate()`, if a mutation is a deletion, it should be a no-op if the row does not exist.
-
-This is to make sure when the system if left in an intermediate state, e.g. interrupted in the middle between a change is made and CocoIndex notes down the change is completed, the targets can still be gracefully rolled forward to the desired states after the system is resumed.
-
-## Examples
-
-The cocoindex repository contains the following examples of custom targets:
-
-*   In the [custom_output_files](https://github.com/cocoindex-io/cocoindex/blob/main/examples/custom_output_files/main.py) example, `LocalFileTarget` exports data to local HTML files.
+See the [custom_output_files](https://github.com/cocoindex-io/cocoindex/blob/main/examples/custom_output_files/main.py) for the an end-to-end example.
