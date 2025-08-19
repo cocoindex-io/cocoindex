@@ -97,11 +97,17 @@
   }
 }
 
+.navbar__logo{
+  height: 24px;
+  line-height: 24px;
+  margin-right: 4px;
+}
+
 .navbar__title {
-  font-family: 'Questrial', sans-serif;
-  font-size: 1.125rem;
-  /* 18px */
+  font-size: 1.125rem; /* 18px */
   color: var(--my-color-text-black);
+  font-weight: bold;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
 }
 
 .navbar {
