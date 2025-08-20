@@ -11,12 +11,17 @@ from typing import (
     Awaitable,
     Callable,
     Protocol,
+    ParamSpec,
+    TypeVar,
+    Type,
+    cast,
     dataclass_transform,
     Annotated,
     get_args,
 )
 
 from . import _engine  # type: ignore
+from .subprocess_exec import executor_stub
 from .convert import (
     make_engine_value_encoder,
     make_engine_value_decoder,
@@ -85,11 +90,13 @@ class Executor(Protocol):
     op_category: OpCategory
 
 
-def _load_spec_from_engine(spec_cls: type, spec: dict[str, Any]) -> Any:
+def _load_spec_from_engine(
+    spec_loader: Callable[..., Any], spec: dict[str, Any]
+) -> Any:
     """
     Load a spec from the engine.
     """
-    return spec_cls(**spec)
+    return spec_loader(**spec)
 
 
 def _get_required_method(cls: type, name: str) -> Callable[..., Any]:
@@ -101,18 +108,18 @@ def _get_required_method(cls: type, name: str) -> Callable[..., Any]:
     return method
 
 
-class _FunctionExecutorFactory:
-    _spec_cls: type
+class _EngineFunctionExecutorFactory:
+    _spec_loader: Callable[..., Any]
     _executor_cls: type
 
-    def __init__(self, spec_cls: type, executor_cls: type):
-        self._spec_cls = spec_cls
+    def __init__(self, spec_loader: Callable[..., Any], executor_cls: type):
+        self._spec_loader = spec_loader
         self._executor_cls = executor_cls
 
     def __call__(
         self, spec: dict[str, Any], *args: Any, **kwargs: Any
     ) -> tuple[dict[str, Any], Executor]:
-        spec = _load_spec_from_engine(self._spec_cls, spec)
+        spec = _load_spec_from_engine(self._spec_loader, spec)
         executor = self._executor_cls(spec)
         result_type = executor.analyze_schema(*args, **kwargs)
         return (result_type, executor)
@@ -166,8 +173,8 @@ def _register_op_factory(
     category: OpCategory,
     expected_args: list[tuple[str, inspect.Parameter]],
     expected_return: Any,
-    executor_cls: type,
-    spec_cls: type,
+    executor_factory: Any,
+    spec_loader: Callable[..., Any],
     op_kind: str,
     op_args: OpArgs,
 ) -> None:
@@ -179,15 +186,19 @@ def _register_op_factory(
         _executor: Any
         _args_info: list[_ArgInfo]
         _kwargs_info: dict[str, _ArgInfo]
-        _acall: Callable[..., Awaitable[Any]]
         _result_encoder: Callable[[Any], Any]
+        _acall: Callable[..., Awaitable[Any]] | None = None
 
         def __init__(self, spec: Any) -> None:
-            executor: Any = executor_class()
-            executor = executor_cls()
-            executor.spec = spec
+            executor: Any
+
+            if op_args.gpu:
+                executor = executor_stub(executor_factory, spec)
+            else:
+                executor = executor_factory()
+                executor.spec = spec
+
             self._executor = executor
-            self._acall = _to_async_call(executor.__call__)
 
         def analyze_schema(
             self, *args: _engine.OpArgSchema, **kwargs: _engine.OpArgSchema
@@ -293,7 +304,7 @@ def _register_op_factory(
 
             base_analyze_method = getattr(self._executor, "analyze", None)
             if base_analyze_method is not None:
-                result_type = base_analyze_method(*args, **kwargs)
+                result_type = base_analyze_method()
             else:
                 result_type = expected_return
             if len(attributes) > 0:
@@ -316,6 +327,7 @@ def _register_op_factory(
             prepare_method = getattr(self._executor, "prepare", None)
             if prepare_method is not None:
                 await _to_async_call(prepare_method)()
+            self._acall = _to_async_call(self._executor.__call__)
 
         async def __call__(self, *args: Any, **kwargs: Any) -> Any:
             decoded_args = []
@@ -335,6 +347,7 @@ def _register_op_factory(
                     return None
                 decoded_kwargs[kwarg_name] = kwarg_info.decoder(arg)
 
+            assert self._acall is not None
             if op_args.gpu:
                 # For GPU executions, data-level parallelism is applied, so we don't want to
                 # execute different tasks in parallel.
@@ -355,7 +368,7 @@ def _register_op_factory(
 
     if category == OpCategory.FUNCTION:
         _engine.register_function_factory(
-            op_kind, _FunctionExecutorFactory(spec_cls, _WrappedExecutor)
+            op_kind, _EngineFunctionExecutorFactory(spec_loader, _WrappedExecutor)
         )
     else:
         raise ValueError(f"Unsupported executor type {category}")
@@ -381,8 +394,8 @@ def executor_class(**args: Any) -> Callable[[type], type]:
             category=spec_cls._op_category,
             expected_args=list(sig.parameters.items())[1:],  # First argument is `self`
             expected_return=sig.return_annotation,
-            executor_cls=cls,
-            spec_cls=spec_cls,
+            executor_factory=cls,
+            spec_loader=spec_cls,
             op_kind=spec_cls.__name__,
             op_args=op_args,
         )
@@ -395,6 +408,13 @@ class _EmptyFunctionSpec(FunctionSpec):
     pass
 
 
+class _SimpleFunctionExecutor:
+    spec: Any
+
+    def prepare(self) -> None:
+        self.__call__ = self.spec.__call__
+
+
 def function(**args: Any) -> Callable[[Callable[..., Any]], FunctionSpec]:
     """
     Decorate a function to provide a function for an op.
@@ -405,29 +425,32 @@ def function(**args: Any) -> Callable[[Callable[..., Any]], FunctionSpec]:
         # Convert snake case to camel case.
         op_name = "".join(word.capitalize() for word in fn.__name__.split("_"))
         sig = inspect.signature(fn)
+        full_name = f"{fn.__module__}.{fn.__qualname__}"
 
-        class _SpecExecutor(_EmptyFunctionSpec):
-            def __call__(self, *args: Any, **kwargs: Any) -> Any:
-                return fn(*args, **kwargs)
+        # An object that is both callable and can act as a FunctionSpec.
+        class _CallableSpec(_EmptyFunctionSpec):
+            __call__ = staticmethod(fn)
 
             def __reduce__(self) -> str | tuple[Any, ...]:
-                return fn.__qualname__
+                return full_name
 
-        _SpecExecutor.__name__ = op_name
-        _SpecExecutor.__doc__ = fn.__doc__
-        _SpecExecutor.__module__ = fn.__module__
+        _CallableSpec.__name__ = op_name
+        _CallableSpec.__doc__ = fn.__doc__
+        _CallableSpec.__qualname__ = fn.__qualname__
+        _CallableSpec.__module__ = fn.__module__
+        callable_spec = _CallableSpec()
 
         _register_op_factory(
             category=OpCategory.FUNCTION,
             expected_args=list(sig.parameters.items()),
             expected_return=sig.return_annotation,
-            executor_cls=_SpecExecutor,
-            spec_cls=_EmptyFunctionSpec,
+            executor_factory=_SimpleFunctionExecutor,
+            spec_loader=lambda: callable_spec,
             op_kind=op_name,
             op_args=op_args,
         )
 
-        return _SpecExecutor()
+        return callable_spec
 
     return _inner
 

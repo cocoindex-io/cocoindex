@@ -142,3 +142,35 @@ def test_none_arg_yield_none_result() -> None:
 
     result = transform_flow.eval(1, 2, None, None)
     assert result is None, f"Expected None, got {result}"
+
+
+# Test GPU function behavior.
+# They're not really executed on GPU, but we want to make sure they're scheduled on subprocesses correctly.
+
+
+@cocoindex.op.function(gpu=True)
+def gpu_append_world(text: str) -> str:
+    """Append ' world' to the input text."""
+    return f"{text} world"
+
+
+class GpuAppendSuffix(cocoindex.op.FunctionSpec):
+    suffix: str
+
+
+@cocoindex.op.executor_class(gpu=True)
+class GpuAppendSuffixExecutor:
+    spec: GpuAppendSuffix
+
+    def __call__(self, text: str) -> str:
+        return f"{text}{self.spec.suffix}"
+
+
+def test_gpu_function() -> None:
+    @cocoindex.transform_flow()
+    def transform_flow(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[str]:
+        return text.transform(gpu_append_world).transform(GpuAppendSuffix(suffix="!"))
+
+    result = transform_flow.eval("Hello")
+    expected = "Hello world!"
+    assert result == expected, f"Expected {expected}, got {result}"

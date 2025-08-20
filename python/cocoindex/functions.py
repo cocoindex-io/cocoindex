@@ -89,7 +89,7 @@ class SentenceTransformerEmbedExecutor:
     spec: SentenceTransformerEmbed
     _model: Any | None = None
 
-    def analyze(self, _text: Any) -> type:
+    def analyze(self) -> type:
         try:
             # Only import sentence_transformers locally when it's needed, as its import is very slow.
             import sentence_transformers  # pylint: disable=import-outside-toplevel
@@ -245,7 +245,7 @@ class ColPaliEmbedImageExecutor:
     spec: ColPaliEmbedImage
     _model_info: ColPaliModelInfo
 
-    def analyze(self, _img_bytes: Any) -> type:
+    def analyze(self) -> type:
         # Get shared model and dimension
         self._model_info = _get_colpali_model_and_processor(self.spec.model)
 
@@ -321,7 +321,7 @@ class ColPaliEmbedQueryExecutor:
     spec: ColPaliEmbedQuery
     _model_info: ColPaliModelInfo
 
-    def analyze(self, _query: Any) -> type:
+    def analyze(self) -> type:
         # Get shared model and dimension
         self._model_info = _get_colpali_model_and_processor(self.spec.model)
 
