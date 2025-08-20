@@ -11,10 +11,6 @@ from typing import (
     Awaitable,
     Callable,
     Protocol,
-    ParamSpec,
-    TypeVar,
-    Type,
-    cast,
     dataclass_transform,
     Annotated,
     get_args,
@@ -123,9 +119,6 @@ class _EngineFunctionExecutorFactory:
         executor = self._executor_cls(spec)
         result_type = executor.analyze_schema(*args, **kwargs)
         return (result_type, executor)
-
-
-_gpu_dispatch_lock = asyncio.Lock()
 
 
 _COCOINDEX_ATTR_PREFIX = "cocoindex.io/"
@@ -348,16 +341,7 @@ def _register_op_factory(
                 decoded_kwargs[kwarg_name] = kwarg_info.decoder(arg)
 
             assert self._acall is not None
-            if op_args.gpu:
-                # For GPU executions, data-level parallelism is applied, so we don't want to
-                # execute different tasks in parallel.
-                # Besides, multiprocessing is more appropriate for pytorch.
-                # For now, we use a lock to ensure only one task is executed at a time.
-                # TODO: Implement multi-processing dispatching.
-                async with _gpu_dispatch_lock:
-                    output = await self._acall(*decoded_args, **decoded_kwargs)
-            else:
-                output = await self._acall(*decoded_args, **decoded_kwargs)
+            output = await self._acall(*decoded_args, **decoded_kwargs)
             return self._result_encoder(output)
 
         def enable_cache(self) -> bool:
