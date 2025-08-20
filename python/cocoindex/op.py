@@ -168,8 +168,9 @@ def _register_op_factory(
     expected_return: Any,
     executor_cls: type,
     spec_cls: type,
+    op_kind: str,
     op_args: OpArgs,
-) -> type:
+) -> None:
     """
     Register an op factory.
     """
@@ -350,20 +351,12 @@ def _register_op_factory(
                 output = await self._acall(*decoded_args, **decoded_kwargs)
             return self._result_encoder(output)
 
-    _WrappedClass.__name__ = executor_cls.__name__
-    _WrappedClass.__doc__ = executor_cls.__doc__
-    _WrappedClass.__module__ = executor_cls.__module__
-    _WrappedClass.__qualname__ = executor_cls.__qualname__
-    _WrappedClass.__wrapped__ = executor_cls
-
     if category == OpCategory.FUNCTION:
         _engine.register_function_factory(
-            spec_cls.__name__, _FunctionExecutorFactory(spec_cls, _WrappedClass)
+            op_kind, _FunctionExecutorFactory(spec_cls, _WrappedClass)
         )
     else:
         raise ValueError(f"Unsupported executor type {category}")
-
-    return _WrappedClass
 
 
 def executor_class(**args: Any) -> Callable[[type], type]:
@@ -382,16 +375,22 @@ def executor_class(**args: Any) -> Callable[[type], type]:
             raise TypeError("Expect a `spec` field with type hint")
         spec_cls = resolve_forward_ref(type_hints["spec"])
         sig = inspect.signature(cls.__call__)
-        return _register_op_factory(
+        _register_op_factory(
             category=spec_cls._op_category,
             expected_args=list(sig.parameters.items())[1:],  # First argument is `self`
             expected_return=sig.return_annotation,
             executor_cls=cls,
             spec_cls=spec_cls,
+            op_kind=spec_cls.__name__,
             op_args=op_args,
         )
+        return cls
 
     return _inner
+
+
+class _EmptyFunctionSpec(FunctionSpec):
+    pass
 
 
 def function(**args: Any) -> Callable[[Callable[..., Any]], FunctionSpec]:
@@ -405,29 +404,28 @@ def function(**args: Any) -> Callable[[Callable[..., Any]], FunctionSpec]:
         op_name = "".join(word.capitalize() for word in fn.__name__.split("_"))
         sig = inspect.signature(fn)
 
-        class _Executor:
+        class _SpecExecutor(_EmptyFunctionSpec):
             def __call__(self, *args: Any, **kwargs: Any) -> Any:
                 return fn(*args, **kwargs)
 
-        class _Spec(FunctionSpec):
-            def __call__(self, *args: Any, **kwargs: Any) -> Any:
-                return fn(*args, **kwargs)
+            def __reduce__(self) -> str | tuple[Any, ...]:
+                return fn.__qualname__
 
-        _Spec.__name__ = op_name
-        _Spec.__doc__ = fn.__doc__
-        _Spec.__module__ = fn.__module__
-        _Spec.__qualname__ = fn.__qualname__
+        _SpecExecutor.__name__ = op_name
+        _SpecExecutor.__doc__ = fn.__doc__
+        _SpecExecutor.__module__ = fn.__module__
 
         _register_op_factory(
             category=OpCategory.FUNCTION,
             expected_args=list(sig.parameters.items()),
             expected_return=sig.return_annotation,
-            executor_cls=_Executor,
-            spec_cls=_Spec,
+            executor_cls=_SpecExecutor,
+            spec_cls=_EmptyFunctionSpec,
+            op_kind=op_name,
             op_args=op_args,
         )
 
-        return _Spec()
+        return _SpecExecutor()
 
     return _inner
 
