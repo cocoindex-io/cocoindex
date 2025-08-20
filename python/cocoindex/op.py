@@ -175,23 +175,19 @@ def _register_op_factory(
     Register an op factory.
     """
 
-    class _Fallback:
-        def enable_cache(self) -> bool:
-            return op_args.cache
-
-        def behavior_version(self) -> int | None:
-            return op_args.behavior_version
-
-    class _WrappedClass(executor_cls, _Fallback):  # type: ignore[misc]
+    class _WrappedExecutor:
+        _executor: Any
         _args_info: list[_ArgInfo]
         _kwargs_info: dict[str, _ArgInfo]
         _acall: Callable[..., Awaitable[Any]]
         _result_encoder: Callable[[Any], Any]
 
         def __init__(self, spec: Any) -> None:
-            super().__init__()
-            self.spec = spec
-            self._acall = _to_async_call(super().__call__)
+            executor: Any = executor_class()
+            executor = executor_cls()
+            executor.spec = spec
+            self._executor = executor
+            self._acall = _to_async_call(executor.__call__)
 
         def analyze_schema(
             self, *args: _engine.OpArgSchema, **kwargs: _engine.OpArgSchema
@@ -295,7 +291,7 @@ def _register_op_factory(
             if len(missing_args) > 0:
                 raise ValueError(f"Missing arguments: {', '.join(missing_args)}")
 
-            base_analyze_method = getattr(self, "analyze", None)
+            base_analyze_method = getattr(self._executor, "analyze", None)
             if base_analyze_method is not None:
                 result_type = base_analyze_method(*args, **kwargs)
             else:
@@ -317,7 +313,7 @@ def _register_op_factory(
             Prepare for execution.
             It's executed after `analyze` and before any `__call__` execution.
             """
-            prepare_method = getattr(super(), "prepare", None)
+            prepare_method = getattr(self._executor, "prepare", None)
             if prepare_method is not None:
                 await _to_async_call(prepare_method)()
 
@@ -351,9 +347,15 @@ def _register_op_factory(
                 output = await self._acall(*decoded_args, **decoded_kwargs)
             return self._result_encoder(output)
 
+        def enable_cache(self) -> bool:
+            return op_args.cache
+
+        def behavior_version(self) -> int | None:
+            return op_args.behavior_version
+
     if category == OpCategory.FUNCTION:
         _engine.register_function_factory(
-            op_kind, _FunctionExecutorFactory(spec_cls, _WrappedClass)
+            op_kind, _FunctionExecutorFactory(spec_cls, _WrappedExecutor)
         )
     else:
         raise ValueError(f"Unsupported executor type {category}")
