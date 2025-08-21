@@ -51,6 +51,10 @@ impl Fingerprint {
             Err(e) => bail!("Fingerprint bytes length is unexpected: {}", e.len()),
         }
     }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 impl Serialize for Fingerprint {

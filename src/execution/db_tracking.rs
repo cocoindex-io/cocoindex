@@ -82,6 +82,7 @@ pub struct SourceTrackingInfoForProcessing {
     pub memoization_info: Option<sqlx::types::Json<Option<StoredMemoizationInfo>>>,
 
     pub processed_source_ordinal: Option<i64>,
+    pub processed_source_fp: Option<Vec<u8>>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
     pub max_process_ordinal: Option<i64>,
     pub process_ordinal: Option<i64>,
@@ -94,7 +95,12 @@ pub async fn read_source_tracking_info_for_processing(
     pool: &PgPool,
 ) -> Result<Option<SourceTrackingInfoForProcessing>> {
     let query_str = format!(
-        "SELECT memoization_info, processed_source_ordinal, process_logic_fingerprint, max_process_ordinal, process_ordinal FROM {} WHERE source_id = $1 AND source_key = $2",
+        "SELECT memoization_info, processed_source_ordinal, {}, process_logic_fingerprint, max_process_ordinal, process_ordinal FROM {} WHERE source_id = $1 AND source_key = $2",
+        if db_setup.has_fast_fingerprint_column {
+            "processed_source_fp"
+        } else {
+            "NULL::bytea AS processed_source_fp"
+        },
         db_setup.table_name
     );
     let tracking_info = sqlx::query_as(&query_str)
@@ -198,6 +204,7 @@ pub async fn commit_source_tracking_info(
     source_key_json: &serde_json::Value,
     staging_target_keys: TrackedTargetKeyForSource,
     processed_source_ordinal: Option<i64>,
+    processed_source_fp: Option<Vec<u8>>,
     logic_fingerprint: &[u8],
     process_ordinal: i64,
     process_time_micros: i64,
@@ -211,16 +218,31 @@ pub async fn commit_source_tracking_info(
             "INSERT INTO {} ( \
                source_id, source_key, \
                max_process_ordinal, staging_target_keys, \
-               processed_source_ordinal, process_logic_fingerprint, process_ordinal, process_time_micros, target_keys) \
-            VALUES ($1, $2, $6 + 1, $3, $4, $5, $6, $7, $8)",
-            db_setup.table_name
+               processed_source_ordinal, process_logic_fingerprint, process_ordinal, process_time_micros, target_keys{}) \
+            VALUES ($1, $2, $6 + 1, $3, $4, $5, $6, $7, $8{})",
+            db_setup.table_name,
+            if db_setup.has_fast_fingerprint_column {
+                ", processed_source_fp"
+            } else {
+                ""
+            },
+            if db_setup.has_fast_fingerprint_column {
+                ", $9"
+            } else {
+                ""
+            },
         ),
         WriteAction::Update => format!(
-            "UPDATE {} SET staging_target_keys = $3, processed_source_ordinal = $4, process_logic_fingerprint = $5, process_ordinal = $6, process_time_micros = $7, target_keys = $8 WHERE source_id = $1 AND source_key = $2",
-            db_setup.table_name
+            "UPDATE {} SET staging_target_keys = $3, processed_source_ordinal = $4, process_logic_fingerprint = $5, process_ordinal = $6, process_time_micros = $7, target_keys = $8{} WHERE source_id = $1 AND source_key = $2",
+            db_setup.table_name,
+            if db_setup.has_fast_fingerprint_column {
+                ", processed_source_fp = $9"
+            } else {
+                ""
+            },
         ),
     };
-    sqlx::query(&query_str)
+    let mut query = sqlx::query(&query_str)
         .bind(source_id) // $1
         .bind(source_key_json) // $2
         .bind(sqlx::types::Json(staging_target_keys)) // $3
@@ -228,9 +250,13 @@ pub async fn commit_source_tracking_info(
         .bind(logic_fingerprint) // $5
         .bind(process_ordinal) // $6
         .bind(process_time_micros) // $7
-        .bind(sqlx::types::Json(target_keys)) // $8
-        .execute(db_executor)
-        .await?;
+        .bind(sqlx::types::Json(target_keys)); // $8
+
+    if db_setup.has_fast_fingerprint_column {
+        query = query.bind(processed_source_fp); // $9
+    }
+    query.execute(db_executor).await?;
+
     Ok(())
 }
 

@@ -1,5 +1,7 @@
 use crate::prelude::*;
 
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use futures::future::try_join_all;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
@@ -419,6 +421,7 @@ async fn commit_source_tracking_info(
     source_id: i32,
     source_key_json: &serde_json::Value,
     source_version: &SourceVersion,
+    source_fp: Option<Vec<u8>>,
     logic_fingerprint: &[u8],
     precommit_metadata: PrecommitMetadata,
     process_timestamp: &chrono::DateTime<chrono::Utc>,
@@ -482,6 +485,7 @@ async fn commit_source_tracking_info(
             source_key_json,
             cleaned_staging_target_keys,
             source_version.ordinal.into(),
+            source_fp,
             logic_fingerprint,
             precommit_metadata.process_ordinal,
             process_timestamp.timestamp_micros(),
@@ -508,7 +512,7 @@ async fn try_content_hash_optimization(
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
     source_key_json: &serde_json::Value,
     source_version: &SourceVersion,
-    current_hash: &crate::utils::fingerprint::Fingerprint,
+    current_hash: &[u8],
     tracking_info: &db_tracking::SourceTrackingInfoForProcessing,
     existing_version: &Option<SourceVersion>,
     db_setup: &db_tracking_setup::TrackingTableSetupState,
@@ -523,21 +527,31 @@ async fn try_content_hash_optimization(
         return Ok(None);
     }
 
-    if tracking_info
-        .max_process_ordinal
-        .zip(tracking_info.process_ordinal)
-        .is_none_or(|(max_ord, proc_ord)| max_ord != proc_ord)
-    {
-        return Ok(None);
-    }
+    let existing_hash: Option<Cow<'_, Vec<u8>>> = if db_setup.has_fast_fingerprint_column {
+        tracking_info
+            .processed_source_fp
+            .as_ref()
+            .map(|fp| Cow::Borrowed(fp))
+    } else {
+        if tracking_info
+            .max_process_ordinal
+            .zip(tracking_info.process_ordinal)
+            .is_none_or(|(max_ord, proc_ord)| max_ord != proc_ord)
+        {
+            return Ok(None);
+        }
 
-    let existing_hash = tracking_info
-        .memoization_info
-        .as_ref()
-        .and_then(|info| info.0.as_ref())
-        .and_then(|stored_info| stored_info.content_hash.as_ref());
+        tracking_info
+            .memoization_info
+            .as_ref()
+            .and_then(|info| info.0.as_ref())
+            .and_then(|stored_info| stored_info.content_hash.as_ref())
+            .map(|content_hash| BASE64_STANDARD.decode(content_hash))
+            .transpose()?
+            .map(Cow::Owned)
+    };
 
-    if existing_hash != Some(current_hash) {
+    if existing_hash.as_ref().map(|fp| fp.as_slice()) != Some(current_hash) {
         return Ok(None);
     }
 
@@ -641,6 +655,8 @@ pub async fn update_source_row(
     pool: &PgPool,
     update_stats: &stats::UpdateStats,
 ) -> Result<SkippedOr<()>> {
+    let tracking_setup_state = &setup_execution_ctx.setup_state.tracking_table;
+
     let source_key_json = serde_json::to_value(src_eval_ctx.key)?;
     let process_time = chrono::Utc::now();
     let source_id = setup_execution_ctx.import_ops[src_eval_ctx.import_op_idx].source_id;
@@ -689,10 +705,10 @@ pub async fn update_source_row(
             src_eval_ctx,
             &source_key_json,
             source_version,
-            current_hash,
+            current_hash.as_slice(),
             existing_tracking_info,
             &existing_version,
-            &setup_execution_ctx.setup_state.tracking_table,
+            tracking_setup_state,
             update_stats,
             pool,
         )
@@ -702,7 +718,7 @@ pub async fn update_source_row(
         }
     }
 
-    let (output, stored_mem_info) = {
+    let (output, stored_mem_info, source_fp) = {
         let extracted_memoization_info = existing_tracking_info
             .and_then(|info| info.memoization_info)
             .and_then(|info| info.0);
@@ -721,11 +737,15 @@ pub async fn update_source_row(
                 let output =
                     evaluate_source_entry(src_eval_ctx, source_value, &evaluation_memory).await?;
                 let mut stored_info = evaluation_memory.into_stored()?;
-                stored_info.content_hash = current_content_hash;
-
-                (Some(output), stored_info)
+                let content_hash = current_content_hash.map(|fp| fp.0.to_vec());
+                if tracking_setup_state.has_fast_fingerprint_column {
+                    (Some(output), stored_info, content_hash)
+                } else {
+                    stored_info.content_hash = content_hash.map(|fp| BASE64_STANDARD.encode(fp));
+                    (Some(output), stored_info, None)
+                }
             }
-            interface::SourceValue::NonExistence => (None, Default::default()),
+            interface::SourceValue::NonExistence => (None, Default::default(), None),
         }
     };
 
@@ -788,10 +808,11 @@ pub async fn update_source_row(
         source_id,
         &source_key_json,
         source_version,
+        source_fp,
         &src_eval_ctx.plan.logic_fingerprint.0,
         precommit_output.metadata,
         &process_time,
-        &setup_execution_ctx.setup_state.tracking_table,
+        tracking_setup_state,
         pool,
     )
     .await?;
