@@ -22,12 +22,16 @@ pub const CURRENT_TRACKING_TABLE_VERSION: i32 = 1;
 
 async fn upgrade_tracking_table(
     pool: &PgPool,
-    table_name: &str,
+    desired_state: &TrackingTableSetupState,
     existing_version_id: i32,
-    target_version_id: i32,
 ) -> Result<()> {
-    if existing_version_id < 1 && target_version_id >= 1 {
-        let query = format!(
+    if existing_version_id < 1 && desired_state.version_id >= 1 {
+        let table_name = &desired_state.table_name;
+        let opt_fast_fingerprint_column = desired_state
+            .has_fast_fingerprint_column
+            .then(|| "processed_source_fp BYTEA,")
+            .unwrap_or("");
+        let query =  format!(
             "CREATE TABLE IF NOT EXISTS {table_name} (
                 source_id INTEGER NOT NULL,
                 source_key JSONB NOT NULL,
@@ -39,6 +43,7 @@ async fn upgrade_tracking_table(
 
                 -- Update after applying the changes to the target storage.
                 processed_source_ordinal BIGINT,
+                {opt_fast_fingerprint_column}
                 process_logic_fingerprint BYTEA,
                 process_ordinal BIGINT,
                 process_time_micros BIGINT,
@@ -73,6 +78,8 @@ pub struct TrackingTableSetupState {
     pub version_id: i32,
     #[serde(default)]
     pub source_state_table_name: Option<String>,
+    #[serde(default)]
+    pub has_fast_fingerprint_column: bool,
 }
 
 #[derive(Debug)]
@@ -248,13 +255,8 @@ impl TrackingTableSetupChange {
             }
 
             if self.min_existing_version_id != Some(desired.version_id) {
-                upgrade_tracking_table(
-                    pool,
-                    &desired.table_name,
-                    self.min_existing_version_id.unwrap_or(0),
-                    desired.version_id,
-                )
-                .await?;
+                upgrade_tracking_table(pool, desired, self.min_existing_version_id.unwrap_or(0))
+                    .await?;
             }
         } else {
             for lagacy_name in self.legacy_tracking_table_names.iter() {
