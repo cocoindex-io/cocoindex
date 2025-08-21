@@ -1,6 +1,6 @@
 ---
-title: Custom Targets - Export Markdown Files to Local HTML
-description: Simple to export Markdown files to local HTML files using Custom Targets.
+title: Export markdown files to local Html with Custom Targets
+description: Simple example to export Markdown files to local HTML files using Custom Targets.
 sidebar_class_name: hidden
 slug: /examples/custom_targets
 canonicalUrl: '/examples/custom_targets'
