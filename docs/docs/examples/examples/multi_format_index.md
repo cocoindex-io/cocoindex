@@ -10,23 +10,14 @@ import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButto
 
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing"/>
 
-
+## Overview
 Do you have a messy collection of scanned documents, PDFs, academic papers, presentation slides, and standalone images — all mixed together with charts, tables, and figures — that you want to process into the same vector space for semantic search or to power an AI agent?
 
 In this example, we’ll walk through how to build a visual document indexing pipeline using ColPali for embedding both PDFs and images — and then query the index using natural language.  
 We’ll skip OCR entirely — ColPali can directly understand document layouts, tables, and figures from images, making it perfect for semantic search across visual-heavy content.
 
 
-## Use Cases
-
-- Semantic search across scanned documents and visual-heavy reports
-- Searching tables, charts, or diagrams without OCR
-- Cross-modal search (e.g., “find the page showing a bar chart about Q2 revenue”)
-- Research paper figure indexing
-- Historical archive search without text extraction
-
 ## Flow Overview
-
 
 We’ll build a pipeline that:
 

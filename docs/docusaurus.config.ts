@@ -113,15 +113,15 @@ const config: Config = {
       },
       items: [
         {
-          label: 'User guide',
+          label: 'Documentation',
           type: 'doc',
           docId: 'getting_started/overview',
           position: 'left',
         },
         {
           label: 'Examples',
-          type: 'docSidebar',
-          sidebarId: 'examples',
+          type: 'doc',
+          docId: 'examples/index',
           position: 'left',
         }, 
         { to: 'https://cocoindex.io/blogs/', label: 'Blog', position: 'left', target: '_self' },
