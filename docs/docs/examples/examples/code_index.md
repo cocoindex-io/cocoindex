@@ -1,5 +1,5 @@
 ---
-title: Codebase Indexing
+title: Real-time Codebase Indexing
 description: Build a real-time codebase index for retrieval-augmented generation (RAG) using CocoIndex and Tree-sitter. Chunk, embed, and search code with semantic understanding.
 sidebar_class_name: hidden
 slug: /examples/code_index
