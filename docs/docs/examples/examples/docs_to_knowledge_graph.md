@@ -1,5 +1,5 @@
 ---
-title: Build Real-Time Knowledge Graph For Documents with LLM
+title: Real-Time Knowledge Graph for Documents with LLM
 description: CocoIndex now supports knowledge graph with incremental processing. Build live knowledge for agents is super easy with CocoIndex.
 sidebar_class_name: hidden
 slug: /examples/knowledge-graph-for-docs
@@ -17,9 +17,6 @@ We will generate two kinds of relationships:
 
 1. Relationships between subjects and objects. E.g., "CocoIndex supports Incremental Processing"
 2. Mentions of entities in a document. E.g., "core/basics.mdx" mentions `CocoIndex` and `Incremental Processing`.
-
-The source code is available at [CocoIndex Examples - docs_to_knowledge_graph](https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph).
-
 
 ## Setup
 *   [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing. 
