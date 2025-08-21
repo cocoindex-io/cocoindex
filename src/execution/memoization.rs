@@ -26,8 +26,9 @@ pub struct StoredMemoizationInfo {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub uuids: HashMap<Fingerprint, Vec<uuid::Uuid>>,
 
+    /// TO BE DEPRECATED. Use the new `processed_source_fp` column instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_hash: Option<Fingerprint>,
+    pub content_hash: Option<String>,
 }
 
 pub type CacheEntryCell = Arc<tokio::sync::OnceCell<Result<value::Value, SharedError>>>;

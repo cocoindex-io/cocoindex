@@ -288,6 +288,9 @@ pub fn build_flow_setup_execution_context(
                             db_tracking_setup::default_source_state_table_name(&flow_inst.name)
                         })
                 }),
+            has_fast_fingerprint_column: metadata
+                .features
+                .contains(setup::flow_features::FAST_FINGERPRINT),
         },
         targets: target_states,
         metadata,
