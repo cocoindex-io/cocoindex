@@ -49,7 +49,7 @@ to answer questions like "Give me all the papers by Jeff Dean."
         - Show all papers by X
         - Which co-authors worked with Y?
 
-## Prerequisites
+## Setup
 
 - [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
   CocoIndex uses PostgreSQL internally for incremental processing.
@@ -58,10 +58,6 @@ to answer questions like "Give me all the papers by Jeff Dean."
   You can choose your favorite LLM provider and work completely on-premises.
 
 ## Define Indexing Flow
-
-This project demonstrates a slightly more comprehensive example of metadata understanding closer to real-world use cases. 
-You’ll see how easy it is to achieve this design by CocoIndex within 100 lines of indexing logic - 
-[code](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata).
 
 To better help you navigate what we will walk through, here is a flow diagram: 
 
