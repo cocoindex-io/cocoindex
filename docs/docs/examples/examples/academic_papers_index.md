@@ -23,32 +23,6 @@ to answer questions like "Give me all the papers by Jeff Dean."
 
 4. If you want to perform full PDF embedding for the paper, you can extend the flow.
 
-## Core Components
-
-1. **PDF Preprocessing**
-    - Reads PDFs using `pypdf` and extracts:
-        - Total number of pages
-        - First page content (used as a proxy for metadata-rich information)
-
-2. **Markdown Conversion**
-   - Converts the first page to Markdown using [Marker](https://github.com/datalab-to/marker).
-
-3. **LLM-Powered Metadata Extraction**
-    - Sends the first-page Markdown to GPT-4o using CocoIndex's `ExtractByLlm` function.
-    - Extracted metadata includes:
-        - `title` (string)
-        - `authors` (with name, email, and affiliation)
-        - `abstract` (string)
-
-4. **Semantic Embedding**
-    - The title is embedded directly using the `all-MiniLM-L6-v2` model by the SentenceTransformer.
-    - Abstracts are chunked based on semantic punctuation and token count, then each chunk is embedded individually.
-
-5. **Relational Data Collection**
-    - Authors are unrolled and collected into an `author_papers` relation, enabling queries like:
-        - Show all papers by X
-        - Which co-authors worked with Y?
-
 ## Setup
 
 - [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
