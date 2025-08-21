@@ -112,7 +112,18 @@ const config: Config = {
         target: '_self' // This makes the logo click follow the link in the same window
       },
       items: [
-        { to: '/docs/', label: 'Documentation', position: 'left', target: '_self' },
+        {
+          label: 'User guide',
+          type: 'doc',
+          docId: 'getting_started/overview',
+          position: 'left',
+        },
+        {
+          label: 'Examples',
+          type: 'docSidebar',
+          sidebarId: 'examples',
+          position: 'left',
+        }, 
         { to: 'https://cocoindex.io/blogs/', label: 'Blog', position: 'left', target: '_self' },
         {
           type: 'html',

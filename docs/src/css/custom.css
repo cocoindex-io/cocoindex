@@ -96,6 +96,9 @@
     --ifm-h5-font-size: 0.8rem;
   }
 }
+.markdown h1:first-child {
+  margin-bottom: 20px;
+}
 
 .navbar__logo{
   height: 24px;
@@ -123,6 +126,8 @@
 .navbar__items {
   font-family: 'Questrial', sans-serif;
 }
+
+
 
 .footer {
   padding: 4rem 2rem;
@@ -176,6 +181,7 @@
   flex-wrap: wrap;
   align-items: center;
   color: var(--theme-color-text-light);
+  display: none;
 
   .breadcrumbs__item:first-child {
     display: none;

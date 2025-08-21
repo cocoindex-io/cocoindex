@@ -1,0 +1,27 @@
+.cardContainer {
+    --ifm-link-color: var(--ifm-color-emphasis-800);
+    --ifm-link-hover-color: var(--ifm-color-emphasis-700);
+    --ifm-link-hover-decoration: none;
+
+    border: 1px solid var(--ifm-color-emphasis-200);
+    padding: 1rem !important;
+}
+  
+  .cardContainer:hover {
+    border-color: var(--ifm-color-primary);
+  }
+  
+  .cardTitleContainer {
+    display: flex;
+  }
+  
+  .cardTitle {
+    font-size: 1rem;
+    margin-top: 16px;
+    margin-bottom: 16px;
+}
+
+  .cardDescription {
+    font-size: 0.85rem !important;
+    overflow: hidden;
+}
