@@ -6,6 +6,10 @@ slug: /examples/multi_format_index
 canonicalUrl: '/examples/multi_format_index'
 ---
 
+import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';
+
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing"/>
+
 
 Do you have a messy collection of scanned documents, PDFs, academic papers, presentation slides, and standalone images — all mixed together with charts, tables, and figures — that you want to process into the same vector space for semantic search or to power an AI agent?
 
