@@ -137,6 +137,7 @@ impl Executor {
                 key: KeyValue::Str(id),
                 key_aux_info: serde_json::Value::Null,
                 ordinal: file.modified_time.map(|t| t.try_into()).transpose()?,
+                content_version_fp: None,
             })
         } else {
             None
@@ -212,7 +213,7 @@ impl Executor {
                     changes.push(SourceChange {
                         key: KeyValue::Str(Arc::from(file_id)),
                         key_aux_info: serde_json::Value::Null,
-                        data: None,
+                        data: PartialSourceRowData::default(),
                     });
                 }
             }
@@ -348,6 +349,7 @@ impl SourceExecutor for Executor {
                 return Ok(PartialSourceRowData {
                     value: Some(SourceValue::NonExistence),
                     ordinal: Some(Ordinal::unavailable()),
+                    content_version_fp: None,
                 });
             }
         };
@@ -404,7 +406,11 @@ impl SourceExecutor for Executor {
             }
             None => None,
         };
-        Ok(PartialSourceRowData { value, ordinal })
+        Ok(PartialSourceRowData {
+            value,
+            ordinal,
+            content_version_fp: None,
+        })
     }
 
     async fn change_stream(

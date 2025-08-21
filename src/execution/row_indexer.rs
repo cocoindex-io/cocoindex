@@ -42,7 +42,7 @@ pub enum SourceVersionKind {
     NonExistence,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SourceVersion {
     pub ordinal: Ordinal,
     pub kind: SourceVersionKind,
@@ -91,6 +91,7 @@ impl SourceVersion {
         )
     }
 
+    /// Create a version from the current ordinal. For existing rows only.
     pub fn from_current_with_ordinal(ordinal: Ordinal) -> Self {
         Self {
             ordinal,
@@ -98,15 +99,12 @@ impl SourceVersion {
         }
     }
 
-    pub fn from_current_data(data: &interface::SourceData) -> Self {
-        let kind = match &data.value {
+    pub fn from_current_data(ordinal: Ordinal, value: &interface::SourceValue) -> Self {
+        let kind = match value {
             interface::SourceValue::Existence(_) => SourceVersionKind::CurrentLogic,
             interface::SourceValue::NonExistence => SourceVersionKind::NonExistence,
         };
-        Self {
-            ordinal: data.ordinal,
-            kind,
-        }
+        Self { ordinal, kind }
     }
 
     pub fn should_skip(
@@ -135,7 +133,7 @@ impl SourceVersion {
 
 pub enum SkippedOr<T> {
     Normal(T),
-    Skipped(SourceVersion),
+    Skipped(SourceVersion, Option<Vec<u8>>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -202,9 +200,12 @@ async fn precommit_source_tracking_info(
     .await?;
     if let Some(tracking_info) = &tracking_info {
         let existing_source_version =
-            SourceVersion::from_stored_precommit_info(tracking_info, logic_fp);
+            SourceVersion::from_stored_precommit_info(&tracking_info, logic_fp);
         if existing_source_version.should_skip(source_version, Some(update_stats)) {
-            return Ok(SkippedOr::Skipped(existing_source_version));
+            return Ok(SkippedOr::Skipped(
+                existing_source_version,
+                tracking_info.processed_source_fp.clone(),
+            ));
         }
     }
     let tracking_info_exists = tracking_info.is_some();
@@ -506,98 +507,337 @@ async fn commit_source_tracking_info(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn try_content_hash_optimization(
+pub struct RowIndexer<'a> {
+    src_eval_ctx: &'a SourceRowEvaluationContext<'a>,
+    setup_execution_ctx: &'a exec_ctx::FlowSetupExecutionContext,
+    update_stats: &'a stats::UpdateStats,
+    pool: &'a PgPool,
+
     source_id: i32,
-    src_eval_ctx: &SourceRowEvaluationContext<'_>,
-    source_key_json: &serde_json::Value,
-    source_version: &SourceVersion,
-    current_hash: &[u8],
-    tracking_info: &db_tracking::SourceTrackingInfoForProcessing,
-    existing_version: &Option<SourceVersion>,
-    db_setup: &db_tracking_setup::TrackingTableSetupState,
-    update_stats: &stats::UpdateStats,
-    pool: &PgPool,
-) -> Result<Option<SkippedOr<()>>> {
-    // Check if we can use content hash optimization
-    if existing_version
-        .as_ref()
-        .is_none_or(|v| v.kind != SourceVersionKind::CurrentLogic)
-    {
-        return Ok(None);
+    process_time: chrono::DateTime<chrono::Utc>,
+    source_key_json: serde_json::Value,
+}
+pub enum ContentHashBasedCollapsingBaseline<'a> {
+    ProcessedSourceFingerprint(&'a Vec<u8>),
+    SourceTrackingInfo(&'a db_tracking::SourceTrackingInfoForProcessing),
+}
+
+impl<'a> RowIndexer<'a> {
+    pub fn new(
+        src_eval_ctx: &'a SourceRowEvaluationContext<'_>,
+        setup_execution_ctx: &'a exec_ctx::FlowSetupExecutionContext,
+        pool: &'a PgPool,
+        update_stats: &'a stats::UpdateStats,
+    ) -> Result<Self> {
+        Ok(Self {
+            source_id: setup_execution_ctx.import_ops[src_eval_ctx.import_op_idx].source_id,
+            process_time: chrono::Utc::now(),
+            source_key_json: serde_json::to_value(src_eval_ctx.key)?,
+
+            src_eval_ctx,
+            setup_execution_ctx,
+            pool,
+            update_stats,
+        })
     }
 
-    let existing_hash: Option<Cow<'_, Vec<u8>>> = if db_setup.has_fast_fingerprint_column {
-        tracking_info
-            .processed_source_fp
-            .as_ref()
-            .map(|fp| Cow::Borrowed(fp))
-    } else {
-        if tracking_info
-            .max_process_ordinal
-            .zip(tracking_info.process_ordinal)
-            .is_none_or(|(max_ord, proc_ord)| max_ord != proc_ord)
-        {
+    pub async fn update_source_row(
+        &mut self,
+        source_version: &SourceVersion,
+        source_value: interface::SourceValue,
+        source_version_fp: Option<Vec<u8>>,
+    ) -> Result<SkippedOr<()>> {
+        let tracking_setup_state = &self.setup_execution_ctx.setup_state.tracking_table;
+        // Phase 1: Check existing tracking info and apply optimizations
+        let existing_tracking_info = read_source_tracking_info_for_processing(
+            self.source_id,
+            &self.source_key_json,
+            &self.setup_execution_ctx.setup_state.tracking_table,
+            self.pool,
+        )
+        .await?;
+
+        let existing_version = match &existing_tracking_info {
+            Some(info) => {
+                let existing_version = SourceVersion::from_stored_processing_info(
+                    info,
+                    self.src_eval_ctx.plan.logic_fingerprint,
+                );
+
+                // First check ordinal-based skipping
+                if existing_version.should_skip(source_version, Some(self.update_stats)) {
+                    return Ok(SkippedOr::Skipped(
+                        existing_version,
+                        info.processed_source_fp.clone(),
+                    ));
+                }
+
+                Some(existing_version)
+            }
+            None => None,
+        };
+
+        // Compute content hash once if needed for both optimization and evaluation
+        let content_version_fp = match (source_version_fp, &source_value) {
+            (Some(fp), _) => Some(fp),
+            (None, interface::SourceValue::Existence(field_values)) => Some(Vec::from(
+                Fingerprinter::default()
+                    .with(field_values)?
+                    .into_fingerprint()
+                    .0,
+            )),
+            (None, interface::SourceValue::NonExistence) => None,
+        };
+
+        if let Some(content_version_fp) = &content_version_fp {
+            let baseline = if tracking_setup_state.has_fast_fingerprint_column {
+                existing_tracking_info
+                    .as_ref()
+                    .and_then(|info| info.processed_source_fp.as_ref())
+                    .map(ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint)
+            } else {
+                existing_tracking_info
+                    .as_ref()
+                    .map(ContentHashBasedCollapsingBaseline::SourceTrackingInfo)
+            };
+            if let Some(baseline) = baseline
+                && let Some(existing_version) = &existing_version
+                && let Some(optimization_result) = self
+                    .try_collapse(
+                        source_version,
+                        &content_version_fp.as_slice(),
+                        &existing_version,
+                        baseline,
+                    )
+                    .await?
+            {
+                return Ok(optimization_result);
+            }
+        }
+
+        let (output, stored_mem_info, source_fp) = {
+            let extracted_memoization_info = existing_tracking_info
+                .and_then(|info| info.memoization_info)
+                .and_then(|info| info.0);
+
+            match source_value {
+                interface::SourceValue::Existence(source_value) => {
+                    let evaluation_memory = EvaluationMemory::new(
+                        self.process_time,
+                        extracted_memoization_info,
+                        EvaluationMemoryOptions {
+                            enable_cache: true,
+                            evaluation_only: false,
+                        },
+                    );
+
+                    let output =
+                        evaluate_source_entry(self.src_eval_ctx, source_value, &evaluation_memory)
+                            .await?;
+                    let mut stored_info = evaluation_memory.into_stored()?;
+                    if tracking_setup_state.has_fast_fingerprint_column {
+                        (Some(output), stored_info, content_version_fp)
+                    } else {
+                        stored_info.content_hash =
+                            content_version_fp.map(|fp| BASE64_STANDARD.encode(fp));
+                        (Some(output), stored_info, None)
+                    }
+                }
+                interface::SourceValue::NonExistence => (None, Default::default(), None),
+            }
+        };
+
+        // Phase 2 (precommit): Update with the memoization info and stage target keys.
+        let precommit_output = precommit_source_tracking_info(
+            self.source_id,
+            &self.source_key_json,
+            source_version,
+            self.src_eval_ctx.plan.logic_fingerprint,
+            output.as_ref().map(|scope_value| PrecommitData {
+                evaluate_output: scope_value,
+                memoization_info: &stored_mem_info,
+            }),
+            &self.process_time,
+            &self.setup_execution_ctx.setup_state.tracking_table,
+            &self.src_eval_ctx.plan.export_ops,
+            &self.setup_execution_ctx.export_ops,
+            self.update_stats,
+            self.pool,
+        )
+        .await?;
+        let precommit_output = match precommit_output {
+            SkippedOr::Normal(output) => output,
+            SkippedOr::Skipped(v, fp) => return Ok(SkippedOr::Skipped(v, fp)),
+        };
+
+        // Phase 3: Apply changes to the target storage, including upserting new target records and removing existing ones.
+        let mut target_mutations = precommit_output.target_mutations;
+        let apply_futs =
+            self.src_eval_ctx
+                .plan
+                .export_op_groups
+                .iter()
+                .filter_map(|export_op_group| {
+                    let mutations_w_ctx: Vec<_> = export_op_group
+                        .op_idx
+                        .iter()
+                        .filter_map(|export_op_idx| {
+                            let export_op = &self.src_eval_ctx.plan.export_ops[*export_op_idx];
+                            target_mutations
+                                .remove(
+                                    &self.setup_execution_ctx.export_ops[*export_op_idx].target_id,
+                                )
+                                .filter(|m| !m.is_empty())
+                                .map(|mutation| interface::ExportTargetMutationWithContext {
+                                    mutation,
+                                    export_context: export_op.export_context.as_ref(),
+                                })
+                        })
+                        .collect();
+                    (!mutations_w_ctx.is_empty()).then(|| {
+                        export_op_group
+                            .target_factory
+                            .apply_mutation(mutations_w_ctx)
+                    })
+                });
+
+        // TODO: Handle errors.
+        try_join_all(apply_futs).await?;
+
+        // Phase 4: Update the tracking record.
+        commit_source_tracking_info(
+            self.source_id,
+            &self.source_key_json,
+            source_version,
+            source_fp,
+            &self.src_eval_ctx.plan.logic_fingerprint.0,
+            precommit_output.metadata,
+            &self.process_time,
+            tracking_setup_state,
+            self.pool,
+        )
+        .await?;
+
+        if let Some(existing_version) = existing_version {
+            if output.is_some() {
+                if !source_version.ordinal.is_available()
+                    || source_version.ordinal != existing_version.ordinal
+                {
+                    self.update_stats.num_updates.inc(1);
+                } else {
+                    self.update_stats.num_reprocesses.inc(1);
+                }
+            } else {
+                self.update_stats.num_deletions.inc(1);
+            }
+        } else if output.is_some() {
+            self.update_stats.num_insertions.inc(1);
+        }
+
+        Ok(SkippedOr::Normal(()))
+    }
+
+    pub async fn try_collapse(
+        &mut self,
+        source_version: &SourceVersion,
+        content_version_fp: &[u8],
+        existing_version: &SourceVersion,
+        baseline: ContentHashBasedCollapsingBaseline<'_>,
+    ) -> Result<Option<SkippedOr<()>>> {
+        let tracking_table_setup = &self.setup_execution_ctx.setup_state.tracking_table;
+
+        // Check if we can use content hash optimization
+        if existing_version.kind != SourceVersionKind::CurrentLogic {
             return Ok(None);
         }
 
-        tracking_info
-            .memoization_info
-            .as_ref()
-            .and_then(|info| info.0.as_ref())
-            .and_then(|stored_info| stored_info.content_hash.as_ref())
-            .map(|content_hash| BASE64_STANDARD.decode(content_hash))
-            .transpose()?
-            .map(Cow::Owned)
-    };
+        let existing_hash: Option<Cow<'_, Vec<u8>>> = match baseline {
+            ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint(fp) => {
+                Some(Cow::Borrowed(fp))
+            }
+            ContentHashBasedCollapsingBaseline::SourceTrackingInfo(tracking_info) => {
+                if tracking_info
+                    .max_process_ordinal
+                    .zip(tracking_info.process_ordinal)
+                    .is_none_or(|(max_ord, proc_ord)| max_ord != proc_ord)
+                {
+                    return Ok(None);
+                }
 
-    if existing_hash.as_ref().map(|fp| fp.as_slice()) != Some(current_hash) {
-        return Ok(None);
+                tracking_info
+                    .memoization_info
+                    .as_ref()
+                    .and_then(|info| info.0.as_ref())
+                    .and_then(|stored_info| stored_info.content_hash.as_ref())
+                    .map(|content_hash| BASE64_STANDARD.decode(content_hash))
+                    .transpose()?
+                    .map(Cow::Owned)
+            }
+        };
+        if existing_hash.as_ref().map(|fp| fp.as_slice()) != Some(content_version_fp) {
+            return Ok(None);
+        }
+
+        // Content hash matches - try optimization
+        let mut txn = self.pool.begin().await?;
+
+        let existing_tracking_info = db_tracking::read_source_tracking_info_for_precommit(
+            self.source_id,
+            &self.source_key_json,
+            tracking_table_setup,
+            &mut *txn,
+        )
+        .await?;
+
+        let Some(existing_tracking_info) = existing_tracking_info else {
+            return Ok(None);
+        };
+
+        // Check 1: Same check as precommit - verify no newer version exists
+        let existing_source_version = SourceVersion::from_stored_precommit_info(
+            &existing_tracking_info,
+            self.src_eval_ctx.plan.logic_fingerprint,
+        );
+        if existing_source_version.should_skip(source_version, Some(self.update_stats)) {
+            return Ok(Some(SkippedOr::Skipped(
+                existing_source_version,
+                existing_tracking_info.processed_source_fp.clone(),
+            )));
+        }
+
+        // Check 2: Verify the situation hasn't changed (no concurrent processing)
+        match baseline {
+            ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint(fp) => {
+                if existing_tracking_info
+                    .processed_source_fp
+                    .as_ref()
+                    .map(|fp| fp.as_slice())
+                    != Some(fp)
+                {
+                    return Ok(None);
+                }
+            }
+            ContentHashBasedCollapsingBaseline::SourceTrackingInfo(info) => {
+                if existing_tracking_info.process_ordinal != info.process_ordinal {
+                    return Ok(None);
+                }
+            }
+        }
+
+        // Safe to apply optimization - just update tracking table
+        db_tracking::update_source_tracking_ordinal(
+            self.source_id,
+            &self.source_key_json,
+            source_version.ordinal.0,
+            tracking_table_setup,
+            &mut *txn,
+        )
+        .await?;
+
+        txn.commit().await?;
+        self.update_stats.num_no_change.inc(1);
+        Ok(Some(SkippedOr::Normal(())))
     }
-
-    // Content hash matches - try optimization
-    let mut txn = pool.begin().await?;
-
-    let current_tracking_info = db_tracking::read_source_tracking_info_for_precommit(
-        source_id,
-        source_key_json,
-        db_setup,
-        &mut *txn,
-    )
-    .await?;
-
-    let Some(current_tracking_info) = current_tracking_info else {
-        return Ok(None);
-    };
-
-    // Check 1: Same check as precommit - verify no newer version exists
-    let current_source_version = SourceVersion::from_stored_precommit_info(
-        &current_tracking_info,
-        src_eval_ctx.plan.logic_fingerprint,
-    );
-    if current_source_version.should_skip(source_version, Some(update_stats)) {
-        return Ok(Some(SkippedOr::Skipped(current_source_version)));
-    }
-
-    // Check 2: Verify process_ordinal hasn't changed (no concurrent processing)
-    let original_process_ordinal = tracking_info.process_ordinal;
-    if current_tracking_info.process_ordinal != original_process_ordinal {
-        return Ok(None);
-    }
-
-    // Safe to apply optimization - just update tracking table
-    db_tracking::update_source_tracking_ordinal(
-        source_id,
-        source_key_json,
-        source_version.ordinal.0,
-        db_setup,
-        &mut *txn,
-    )
-    .await?;
-
-    txn.commit().await?;
-    update_stats.num_no_change.inc(1);
-    Ok(Some(SkippedOr::Normal(())))
 }
 
 pub async fn evaluate_source_entry_with_memory(
@@ -633,6 +873,7 @@ pub async fn evaluate_source_entry_with_memory(
             &SourceExecutorGetOptions {
                 include_value: true,
                 include_ordinal: false,
+                include_content_version_fp: false,
             },
         )
         .await?
@@ -645,195 +886,6 @@ pub async fn evaluate_source_entry_with_memory(
         interface::SourceValue::NonExistence => None,
     };
     Ok(output)
-}
-
-pub async fn update_source_row(
-    src_eval_ctx: &SourceRowEvaluationContext<'_>,
-    setup_execution_ctx: &exec_ctx::FlowSetupExecutionContext,
-    source_value: interface::SourceValue,
-    source_version: &SourceVersion,
-    pool: &PgPool,
-    update_stats: &stats::UpdateStats,
-) -> Result<SkippedOr<()>> {
-    let tracking_setup_state = &setup_execution_ctx.setup_state.tracking_table;
-
-    let source_key_json = serde_json::to_value(src_eval_ctx.key)?;
-    let process_time = chrono::Utc::now();
-    let source_id = setup_execution_ctx.import_ops[src_eval_ctx.import_op_idx].source_id;
-
-    // Phase 1: Check existing tracking info and apply optimizations
-    let existing_tracking_info = read_source_tracking_info_for_processing(
-        source_id,
-        &source_key_json,
-        &setup_execution_ctx.setup_state.tracking_table,
-        pool,
-    )
-    .await?;
-
-    let existing_version = match &existing_tracking_info {
-        Some(info) => {
-            let existing_version = SourceVersion::from_stored_processing_info(
-                info,
-                src_eval_ctx.plan.logic_fingerprint,
-            );
-
-            // First check ordinal-based skipping
-            if existing_version.should_skip(source_version, Some(update_stats)) {
-                return Ok(SkippedOr::Skipped(existing_version));
-            }
-
-            Some(existing_version)
-        }
-        None => None,
-    };
-
-    // Compute content hash once if needed for both optimization and evaluation
-    let current_content_hash = match &source_value {
-        interface::SourceValue::Existence(source_value) => Some(
-            Fingerprinter::default()
-                .with(source_value)?
-                .into_fingerprint(),
-        ),
-        interface::SourceValue::NonExistence => None,
-    };
-
-    if let (Some(current_hash), Some(existing_tracking_info)) =
-        (&current_content_hash, &existing_tracking_info)
-    {
-        if let Some(optimization_result) = try_content_hash_optimization(
-            source_id,
-            src_eval_ctx,
-            &source_key_json,
-            source_version,
-            current_hash.as_slice(),
-            existing_tracking_info,
-            &existing_version,
-            tracking_setup_state,
-            update_stats,
-            pool,
-        )
-        .await?
-        {
-            return Ok(optimization_result);
-        }
-    }
-
-    let (output, stored_mem_info, source_fp) = {
-        let extracted_memoization_info = existing_tracking_info
-            .and_then(|info| info.memoization_info)
-            .and_then(|info| info.0);
-
-        match source_value {
-            interface::SourceValue::Existence(source_value) => {
-                let evaluation_memory = EvaluationMemory::new(
-                    process_time,
-                    extracted_memoization_info,
-                    EvaluationMemoryOptions {
-                        enable_cache: true,
-                        evaluation_only: false,
-                    },
-                );
-
-                let output =
-                    evaluate_source_entry(src_eval_ctx, source_value, &evaluation_memory).await?;
-                let mut stored_info = evaluation_memory.into_stored()?;
-                let content_hash = current_content_hash.map(|fp| fp.0.to_vec());
-                if tracking_setup_state.has_fast_fingerprint_column {
-                    (Some(output), stored_info, content_hash)
-                } else {
-                    stored_info.content_hash = content_hash.map(|fp| BASE64_STANDARD.encode(fp));
-                    (Some(output), stored_info, None)
-                }
-            }
-            interface::SourceValue::NonExistence => (None, Default::default(), None),
-        }
-    };
-
-    // Phase 2 (precommit): Update with the memoization info and stage target keys.
-    let precommit_output = precommit_source_tracking_info(
-        source_id,
-        &source_key_json,
-        source_version,
-        src_eval_ctx.plan.logic_fingerprint,
-        output.as_ref().map(|scope_value| PrecommitData {
-            evaluate_output: scope_value,
-            memoization_info: &stored_mem_info,
-        }),
-        &process_time,
-        &setup_execution_ctx.setup_state.tracking_table,
-        &src_eval_ctx.plan.export_ops,
-        &setup_execution_ctx.export_ops,
-        update_stats,
-        pool,
-    )
-    .await?;
-    let precommit_output = match precommit_output {
-        SkippedOr::Normal(output) => output,
-        SkippedOr::Skipped(source_version) => return Ok(SkippedOr::Skipped(source_version)),
-    };
-
-    // Phase 3: Apply changes to the target storage, including upserting new target records and removing existing ones.
-    let mut target_mutations = precommit_output.target_mutations;
-    let apply_futs = src_eval_ctx
-        .plan
-        .export_op_groups
-        .iter()
-        .filter_map(|export_op_group| {
-            let mutations_w_ctx: Vec<_> = export_op_group
-                .op_idx
-                .iter()
-                .filter_map(|export_op_idx| {
-                    let export_op = &src_eval_ctx.plan.export_ops[*export_op_idx];
-                    target_mutations
-                        .remove(&setup_execution_ctx.export_ops[*export_op_idx].target_id)
-                        .filter(|m| !m.is_empty())
-                        .map(|mutation| interface::ExportTargetMutationWithContext {
-                            mutation,
-                            export_context: export_op.export_context.as_ref(),
-                        })
-                })
-                .collect();
-            (!mutations_w_ctx.is_empty()).then(|| {
-                export_op_group
-                    .target_factory
-                    .apply_mutation(mutations_w_ctx)
-            })
-        });
-
-    // TODO: Handle errors.
-    try_join_all(apply_futs).await?;
-
-    // Phase 4: Update the tracking record.
-    commit_source_tracking_info(
-        source_id,
-        &source_key_json,
-        source_version,
-        source_fp,
-        &src_eval_ctx.plan.logic_fingerprint.0,
-        precommit_output.metadata,
-        &process_time,
-        tracking_setup_state,
-        pool,
-    )
-    .await?;
-
-    if let Some(existing_version) = existing_version {
-        if output.is_some() {
-            if !source_version.ordinal.is_available()
-                || source_version.ordinal != existing_version.ordinal
-            {
-                update_stats.num_updates.inc(1);
-            } else {
-                update_stats.num_reprocesses.inc(1);
-            }
-        } else {
-            update_stats.num_deletions.inc(1);
-        }
-    } else if output.is_some() {
-        update_stats.num_insertions.inc(1);
-    }
-
-    Ok(SkippedOr::Normal(()))
 }
 
 #[cfg(test)]

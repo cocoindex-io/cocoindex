@@ -41,6 +41,7 @@ pub async fn get_source_row_indexing_status(
         &interface::SourceExecutorGetOptions {
             include_value: false,
             include_ordinal: true,
+            include_content_version_fp: false,
         },
     );
     let (last_processed, current) = try_join!(last_processed_fut, current_fut)?;

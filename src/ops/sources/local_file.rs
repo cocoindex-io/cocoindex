@@ -58,6 +58,7 @@ impl SourceExecutor for Executor {
                             key: KeyValue::Str(relative_path.into()),
                             key_aux_info: serde_json::Value::Null,
                             ordinal,
+                            content_version_fp: None,
                         }];
                     }
                 }
@@ -80,6 +81,7 @@ impl SourceExecutor for Executor {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
                 ordinal: Some(Ordinal::unavailable()),
+                content_version_fp: None,
             });
         }
         let path = self.root_path.join(key.str_value()?.as_ref());
@@ -106,7 +108,11 @@ impl SourceExecutor for Executor {
         } else {
             None
         };
-        Ok(PartialSourceRowData { value, ordinal })
+        Ok(PartialSourceRowData {
+            value,
+            ordinal,
+            content_version_fp: None,
+        })
     }
 }
 

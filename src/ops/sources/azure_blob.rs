@@ -79,6 +79,7 @@ impl SourceExecutor for Executor {
                             key: KeyValue::Str(key.clone().into()),
                             key_aux_info: serde_json::Value::Null,
                             ordinal,
+                            content_version_fp: None,
                         });
                     }
                 }
@@ -107,6 +108,7 @@ impl SourceExecutor for Executor {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
                 ordinal: Some(Ordinal::unavailable()),
+                content_version_fp: None,
             });
         }
 
@@ -124,6 +126,7 @@ impl SourceExecutor for Executor {
                 return Ok(PartialSourceRowData {
                     value: Some(SourceValue::NonExistence),
                     ordinal: Some(Ordinal::unavailable()),
+                    content_version_fp: None,
                 });
             }
         };
@@ -147,7 +150,11 @@ impl SourceExecutor for Executor {
             None
         };
 
-        Ok(PartialSourceRowData { value, ordinal })
+        Ok(PartialSourceRowData {
+            value,
+            ordinal,
+            content_version_fp: None,
+        })
     }
 
     async fn change_stream(
