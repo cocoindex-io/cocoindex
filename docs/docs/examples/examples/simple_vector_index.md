@@ -2,8 +2,11 @@
 title: Simple Vector Index with Text Embedding
 description: Indexing text with CocoIndex and text embeddings, and query it with natural language.
 sidebar_class_name: hidden
-slug: /examples/simple_text_embedding
-canonicalUrl: '/examples/simple_text_embedding'
+slug: /examples/simple_vector_index
+canonicalUrl: '/examples/simple_vector_index'
+sidebar_custom_props:
+  image: /img/examples/simple_vector_index.png
+tags: [vector-index]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';
