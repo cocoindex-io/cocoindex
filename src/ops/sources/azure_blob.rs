@@ -40,11 +40,11 @@ fn datetime_to_ordinal(dt: &time::OffsetDateTime) -> Ordinal {
 
 #[async_trait]
 impl SourceExecutor for Executor {
-    fn list<'a>(
-        &'a self,
-        _options: &'a SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>> {
-        try_stream! {
+    async fn list(
+        &self,
+        _options: &SourceExecutorListOptions,
+    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRowMetadata>>>> {
+        let stream = try_stream! {
             let mut continuation_token: Option<NextMarker> = None;
             loop {
                 let mut list_builder = self.client
@@ -93,8 +93,8 @@ impl SourceExecutor for Executor {
                     break;
                 }
             }
-        }
-        .boxed()
+        };
+        Ok(stream.boxed())
     }
 
     async fn get_value(

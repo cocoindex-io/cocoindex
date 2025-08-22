@@ -288,10 +288,10 @@ fn optional_modified_time(include_ordinal: bool) -> &'static str {
 
 #[async_trait]
 impl SourceExecutor for Executor {
-    fn list<'a>(
-        &'a self,
-        options: &'a SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>> {
+    async fn list(
+        &self,
+        options: &SourceExecutorListOptions,
+    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRowMetadata>>>> {
         let mut seen_ids = HashSet::new();
         let mut folder_ids = self.root_folder_ids.clone();
         let fields = format!(
@@ -299,7 +299,7 @@ impl SourceExecutor for Executor {
             optional_modified_time(options.include_ordinal)
         );
         let mut new_folder_ids = Vec::new();
-        try_stream! {
+        let stream = try_stream! {
             while let Some(folder_id) = folder_ids.pop() {
                 let mut next_page_token = None;
                 loop {
@@ -319,8 +319,8 @@ impl SourceExecutor for Executor {
                 }
                 folder_ids.extend(new_folder_ids.drain(..).rev());
             }
-        }
-        .boxed()
+        };
+        Ok(stream.boxed())
     }
 
     async fn get_value(

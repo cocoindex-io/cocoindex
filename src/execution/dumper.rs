@@ -191,10 +191,13 @@ impl<'a> Dumper<'a> {
             Vec<(value::KeyValue, serde_json::Value)>,
         > = IndexMap::new();
 
-        let mut rows_stream = import_op.executor.list(&SourceExecutorListOptions {
-            include_ordinal: false,
-            include_content_version_fp: false,
-        });
+        let mut rows_stream = import_op
+            .executor
+            .list(&SourceExecutorListOptions {
+                include_ordinal: false,
+                include_content_version_fp: false,
+            })
+            .await?;
         while let Some(rows) = rows_stream.next().await {
             for row in rows?.into_iter() {
                 let mut s = row

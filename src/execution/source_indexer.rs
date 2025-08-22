@@ -414,7 +414,8 @@ impl SourceIndexingContext {
             .list(&interface::SourceExecutorListOptions {
                 include_ordinal: true,
                 include_content_version_fp: true,
-            });
+            })
+            .await?;
         self.update_with_stream(import_op, rows_stream, pool, update_stats)
             .await
     }
