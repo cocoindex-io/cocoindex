@@ -6,6 +6,7 @@ slug: /examples/product_recommendation
 canonicalUrl: '/examples/product_recommendation'
 sidebar_custom_props:
   image: /img/examples/product_recommendation.png
+  tags: [knowledge-graph ]
 tags: [knowledge-graph]
 ---
 

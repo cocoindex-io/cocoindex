@@ -6,7 +6,8 @@ slug: /examples/knowledge-graph-for-docs
 canonicalUrl: '/examples/knowledge-graph-for-docs'
 sidebar_custom_props:
   image: /img/examples/docs_to_knowledge_graph.png
-tags: [knowledge-graph]
+  tags: [knowledge-graph, structured-data-extraction]
+tags: [knowledge-graph, structured-data-extraction]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

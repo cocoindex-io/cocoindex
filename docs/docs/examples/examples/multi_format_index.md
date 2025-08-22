@@ -6,7 +6,8 @@ slug: /examples/multi_format_index
 canonicalUrl: '/examples/multi_format_index'
 sidebar_custom_props:
   image: /img/examples/multi_format_index.png
-tags: [vector-index, multi-modal, images]
+  tags: [vector-index, multi-modal]
+tags: [vector-index, multi-modal]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

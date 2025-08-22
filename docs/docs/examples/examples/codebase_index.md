@@ -6,7 +6,8 @@ slug: /examples/code_index
 canonicalUrl: '/examples/code_index'
 sidebar_custom_props:
   image: /img/examples/codebase_index.png
-tags: [vector-index]
+  tags: [vector-index, codebase]
+tags: [vector-index, codebase]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

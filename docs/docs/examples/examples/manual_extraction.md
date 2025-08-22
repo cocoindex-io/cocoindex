@@ -6,6 +6,7 @@ slug: /examples/manual_extraction
 canonicalUrl: '/examples/manual_extraction'
 sidebar_custom_props:
   image: /img/examples/manual_extraction.png
+  tags: [structured-data-extraction, data-mapping]
 tags: [structured-data-extraction, data-mapping]
 ---
 

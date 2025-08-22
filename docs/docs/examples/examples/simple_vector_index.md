@@ -6,6 +6,7 @@ slug: /examples/simple_vector_index
 canonicalUrl: '/examples/simple_vector_index'
 sidebar_custom_props:
   image: /img/examples/simple_vector_index.png
+  tags: [vector-index]
 tags: [vector-index]
 ---
 

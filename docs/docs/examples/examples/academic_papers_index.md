@@ -6,7 +6,8 @@ slug: /examples/academic_papers_index
 canonicalUrl: '/examples/academic_papers_index'
 sidebar_custom_props:
   image: /img/examples/academic_papers_index.png
-tags: [vector-index]
+  tags: [vector-index, metadata]
+tags: [vector-index, metadata]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

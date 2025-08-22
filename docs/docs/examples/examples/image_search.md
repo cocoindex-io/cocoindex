@@ -6,7 +6,8 @@ slug: /examples/image_search
 canonicalUrl: '/examples/image_search'
 sidebar_custom_props:
   image: /img/examples/image_search.png
-tags: [vector-index, multi-modal, images]
+  tags: [vector-index, multi-modal]
+tags: [vector-index, multi-modal]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

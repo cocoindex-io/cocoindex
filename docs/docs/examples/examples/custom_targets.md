@@ -6,7 +6,8 @@ slug: /examples/custom_targets
 canonicalUrl: '/examples/custom_targets'
 sidebar_custom_props:
   image: /img/examples/custom_targets.png
-tags: [custom-targets]
+  tags: [custom-building-blocks]
+tags: [custom-building-blocks]
 ---
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';
 
