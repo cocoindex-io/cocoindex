@@ -24,6 +24,8 @@ struct Spec {
     custom_languages: Vec<CustomLanguageSpec>,
 }
 
+const TREESITTER_MAX_RECURSION_DEPTH: usize = 128;
+
 const SYNTAX_LEVEL_GAP_COST: usize = 512;
 const MISSING_OVERLAP_COST: usize = 512;
 const PER_LINE_BREAK_LEVEL_GAP_COST: usize = 64;
@@ -542,7 +544,9 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
     ) -> Result<()> {
         match chunk.kind {
             ChunkKind::TreeSitterNode { lang_config, node } => {
-                if !lang_config.terminal_node_kind_ids.contains(&node.kind_id()) {
+                if !lang_config.terminal_node_kind_ids.contains(&node.kind_id())
+                    && atom_collector.curr_level < TREESITTER_MAX_RECURSION_DEPTH
+                {
                     let mut cursor = node.walk();
                     if cursor.goto_first_child() {
                         return self.collect_atom_chunks_from_iter(
