@@ -1,5 +1,5 @@
 use crate::{
-    execution::{source_indexer::ProcessSourceKeyOptions, stats::UpdateStats},
+    execution::{source_indexer::ProcessSourceKeyInput, stats::UpdateStats},
     prelude::*,
 };
 
@@ -200,10 +200,9 @@ impl SourceUpdateTask {
                                             SharedAckFn::ack(&shared_ack_fn).await
                                         }),
                                         pool.clone(),
-                                        ProcessSourceKeyOptions {
+                                        ProcessSourceKeyInput {
                                             key_aux_info: Some(change.key_aux_info),
-                                            source_data: change.data,
-                                            ..Default::default()
+                                            data: change.data,
                                         },
                                     ));
                                 }

@@ -56,6 +56,14 @@ pub struct PartialSourceRowMetadata {
     pub key_aux_info: serde_json::Value,
 
     pub ordinal: Option<Ordinal>,
+
+    /// A content version fingerprint can be anything that changes when the content of the row changes.
+    /// Note that it's acceptable if sometimes the fingerprint differs even though the content is the same,
+    /// which will lead to less optimization opportunities but won't break correctness.
+    ///
+    /// It's optional. The source shouldn't use generic way to compute it, e.g. computing a hash of the content.
+    /// The framework will do so. If there's no fast way to get it from the source, leave it as `None`.
+    pub content_version_fp: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -84,11 +92,6 @@ impl SourceValue {
     }
 }
 
-pub struct SourceData {
-    pub value: SourceValue,
-    pub ordinal: Ordinal,
-}
-
 pub struct SourceChange {
     pub key: KeyValue,
     /// Auxiliary information for the source row, to be used when reading the content.
@@ -96,7 +99,7 @@ pub struct SourceChange {
     pub key_aux_info: serde_json::Value,
 
     /// If None, the engine will poll to get the latest existence state and value.
-    pub data: Option<SourceData>,
+    pub data: PartialSourceRowData,
 }
 
 pub struct SourceChangeMessage {
@@ -107,34 +110,23 @@ pub struct SourceChangeMessage {
 #[derive(Debug, Default)]
 pub struct SourceExecutorListOptions {
     pub include_ordinal: bool,
+    pub include_content_version_fp: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct SourceExecutorGetOptions {
     pub include_ordinal: bool,
     pub include_value: bool,
+    pub include_content_version_fp: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PartialSourceRowData {
     pub value: Option<SourceValue>,
     pub ordinal: Option<Ordinal>,
+    pub content_version_fp: Option<Vec<u8>>,
 }
 
-impl TryFrom<PartialSourceRowData> for SourceData {
-    type Error = anyhow::Error;
-
-    fn try_from(data: PartialSourceRowData) -> Result<Self, Self::Error> {
-        Ok(Self {
-            value: data
-                .value
-                .ok_or_else(|| anyhow::anyhow!("value is missing"))?,
-            ordinal: data
-                .ordinal
-                .ok_or_else(|| anyhow::anyhow!("ordinal is missing"))?,
-        })
-    }
-}
 #[async_trait]
 pub trait SourceExecutor: Send + Sync {
     /// Get the list of keys for the source.

@@ -1,4 +1,5 @@
 use crate::{
+    execution::row_indexer::ContentHashBasedCollapsingBaseline,
     prelude::*,
     service::error::{SharedError, SharedResult, SharedResultExt},
 };
@@ -6,7 +7,10 @@ use crate::{
 use futures::future::Ready;
 use sqlx::PgPool;
 use std::collections::{HashMap, hash_map};
-use tokio::{sync::Semaphore, task::JoinSet};
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore},
+    task::JoinSet,
+};
 
 use super::{
     db_tracking,
@@ -18,6 +22,7 @@ use super::{
 use crate::ops::interface;
 struct SourceRowIndexingState {
     source_version: SourceVersion,
+    content_version_fp: Option<Vec<u8>>,
     processing_sem: Arc<Semaphore>,
     touched_generation: usize,
 }
@@ -26,6 +31,7 @@ impl Default for SourceRowIndexingState {
     fn default() -> Self {
         Self {
             source_version: SourceVersion::default(),
+            content_version_fp: None,
             processing_sem: Arc::new(Semaphore::new(1)),
             touched_generation: 0,
         }
@@ -48,11 +54,122 @@ pub struct SourceIndexingContext {
 
 pub const NO_ACK: Option<fn() -> Ready<Result<()>>> = None;
 
-#[derive(Default)]
-pub struct ProcessSourceKeyOptions {
-    /// `key_aux_info` is not available for deletions. It must not be provided if `source_data` is `None`.
+struct LocalSourceRowStateOperator<'a> {
+    key: &'a value::KeyValue,
+    indexing_state: &'a Mutex<SourceIndexingState>,
+    update_stats: &'a Arc<stats::UpdateStats>,
+
+    processing_sem: Option<Arc<Semaphore>>,
+    processing_sem_permit: Option<OwnedSemaphorePermit>,
+    last_source_version: Option<SourceVersion>,
+}
+
+enum RowStateAdvanceOutcome {
+    Skipped,
+    Advanced {
+        prev_source_version: Option<SourceVersion>,
+        prev_content_version_fp: Option<Vec<u8>>,
+    },
+    Noop,
+}
+
+impl<'a> LocalSourceRowStateOperator<'a> {
+    fn new(
+        key: &'a value::KeyValue,
+        indexing_state: &'a Mutex<SourceIndexingState>,
+        update_stats: &'a Arc<stats::UpdateStats>,
+    ) -> Self {
+        Self {
+            key,
+            indexing_state,
+            update_stats,
+            processing_sem: None,
+            processing_sem_permit: None,
+            last_source_version: None,
+        }
+    }
+    async fn advance(
+        &mut self,
+        source_version: SourceVersion,
+        content_version_fp: Option<&Vec<u8>>,
+    ) -> Result<RowStateAdvanceOutcome> {
+        let (sem, outcome) = {
+            let mut state = self.indexing_state.lock().unwrap();
+            let touched_generation = state.scan_generation;
+
+            if self.last_source_version == Some(source_version) {
+                return Ok(RowStateAdvanceOutcome::Noop);
+            }
+            self.last_source_version = Some(source_version);
+
+            match state.rows.entry(self.key.clone()) {
+                hash_map::Entry::Occupied(mut entry) => {
+                    if entry
+                        .get()
+                        .source_version
+                        .should_skip(&source_version, Some(self.update_stats.as_ref()))
+                    {
+                        return Ok(RowStateAdvanceOutcome::Skipped);
+                    }
+                    let entry_sem = &entry.get().processing_sem;
+                    let sem = if self
+                        .processing_sem
+                        .as_ref()
+                        .is_none_or(|sem| !Arc::ptr_eq(sem, &entry_sem))
+                    {
+                        Some(entry_sem.clone())
+                    } else {
+                        None
+                    };
+
+                    let entry_mut = entry.get_mut();
+                    let outcome = RowStateAdvanceOutcome::Advanced {
+                        prev_source_version: Some(std::mem::take(&mut entry_mut.source_version)),
+                        prev_content_version_fp: entry_mut.content_version_fp.take(),
+                    };
+                    if source_version.kind == row_indexer::SourceVersionKind::NonExistence {
+                        entry.remove();
+                    } else {
+                        entry_mut.source_version = source_version;
+                        entry_mut.content_version_fp = content_version_fp.cloned();
+                    }
+                    (sem, outcome)
+                }
+                hash_map::Entry::Vacant(entry) => {
+                    if source_version.kind == row_indexer::SourceVersionKind::NonExistence {
+                        self.update_stats.num_no_change.inc(1);
+                        return Ok(RowStateAdvanceOutcome::Skipped);
+                    }
+                    let new_entry = SourceRowIndexingState {
+                        source_version,
+                        content_version_fp: content_version_fp.cloned(),
+                        touched_generation,
+                        ..Default::default()
+                    };
+                    let sem = new_entry.processing_sem.clone();
+                    entry.insert(new_entry);
+                    (
+                        Some(sem),
+                        RowStateAdvanceOutcome::Advanced {
+                            prev_source_version: None,
+                            prev_content_version_fp: None,
+                        },
+                    )
+                }
+            }
+        };
+        if let Some(sem) = sem {
+            self.processing_sem_permit = Some(sem.clone().acquire_owned().await?);
+            self.processing_sem = Some(sem);
+        }
+        Ok(outcome)
+    }
+}
+
+pub struct ProcessSourceKeyInput {
+    /// `key_aux_info` is not available for deletions. It must be provided if `data.value` is `None`.
     pub key_aux_info: Option<serde_json::Value>,
-    pub source_data: Option<interface::SourceData>,
+    pub data: interface::PartialSourceRowData,
 }
 
 impl SourceIndexingContext {
@@ -88,6 +205,7 @@ impl SourceIndexingContext {
                             &key_metadata.process_logic_fingerprint,
                             plan.logic_fingerprint,
                         ),
+                        content_version_fp: key_metadata.processed_source_fp,
                         processing_sem: Arc::new(Semaphore::new(1)),
                         touched_generation: scan_generation,
                     },
@@ -117,130 +235,114 @@ impl SourceIndexingContext {
         _concur_permit: concur_control::CombinedConcurrencyControllerPermit,
         ack_fn: Option<AckFn>,
         pool: PgPool,
-        options: ProcessSourceKeyOptions,
+        inputs: ProcessSourceKeyInput,
     ) {
         let process = async {
             let plan = self.flow.get_execution_plan().await?;
             let import_op = &plan.import_ops[self.source_idx];
             let schema = &self.flow.data_schema;
-            let source_data = match options.source_data {
-                Some(source_data) => source_data,
-                None => import_op
-                    .executor
-                    .get_value(
-                        &key,
-                        options.key_aux_info.as_ref().ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "`key_aux_info` must be provided when there's no `source_data`"
-                            )
-                        })?,
-                        &interface::SourceExecutorGetOptions {
-                            include_value: true,
-                            include_ordinal: true,
-                        },
-                    )
-                    .await?
-                    .try_into()?,
-            };
 
-            let source_version = SourceVersion::from_current_data(&source_data);
-            let processing_sem = {
-                let mut state = self.state.lock().unwrap();
-                let touched_generation = state.scan_generation;
-                match state.rows.entry(key.clone()) {
-                    hash_map::Entry::Occupied(mut entry) => {
-                        if entry
-                            .get()
-                            .source_version
-                            .should_skip(&source_version, Some(update_stats.as_ref()))
-                        {
-                            return anyhow::Ok(());
-                        }
-                        let sem = entry.get().processing_sem.clone();
-                        if source_version.kind == row_indexer::SourceVersionKind::NonExistence {
-                            entry.remove();
-                        } else {
-                            entry.get_mut().source_version = source_version.clone();
-                        }
-                        sem
-                    }
-                    hash_map::Entry::Vacant(entry) => {
-                        if source_version.kind == row_indexer::SourceVersionKind::NonExistence {
-                            update_stats.num_no_change.inc(1);
-                            return anyhow::Ok(());
-                        }
-                        let new_entry = SourceRowIndexingState {
-                            source_version: source_version.clone(),
-                            touched_generation,
-                            ..Default::default()
-                        };
-                        let sem = new_entry.processing_sem.clone();
-                        entry.insert(new_entry);
-                        sem
-                    }
-                }
+            let eval_ctx = SourceRowEvaluationContext {
+                plan: &plan,
+                import_op,
+                schema,
+                key: &key,
+                import_op_idx: self.source_idx,
             };
-
-            let _processing_permit = processing_sem.acquire().await?;
-            let result = row_indexer::update_source_row(
-                &SourceRowEvaluationContext {
-                    plan: &plan,
-                    import_op,
-                    schema,
-                    key: &key,
-                    import_op_idx: self.source_idx,
-                },
+            let mut row_indexer = row_indexer::RowIndexer::new(
+                &eval_ctx,
                 &self.setup_execution_ctx,
-                source_data.value,
-                &source_version,
                 &pool,
                 &update_stats,
-            )
-            .await?;
-            let target_source_version = if let SkippedOr::Skipped(existing_source_version) = result
+            )?;
+
+            let mut row_state_operator =
+                LocalSourceRowStateOperator::new(&key, &self.state, &update_stats);
+
+            let source_data = inputs.data;
+            if let Some(ordinal) = source_data.ordinal
+                && let Some(content_version_fp) = &source_data.content_version_fp
             {
-                Some(existing_source_version)
-            } else if source_version.kind == row_indexer::SourceVersionKind::NonExistence {
-                Some(source_version)
-            } else {
-                None
-            };
-            if let Some(target_source_version) = target_source_version {
-                let mut state = self.state.lock().unwrap();
-                let scan_generation = state.scan_generation;
-                let entry = state.rows.entry(key.clone());
-                match entry {
-                    hash_map::Entry::Occupied(mut entry) => {
-                        if !entry
-                            .get()
-                            .source_version
-                            .should_skip(&target_source_version, None)
+                let version = SourceVersion::from_current_with_ordinal(ordinal);
+                match row_state_operator
+                    .advance(version, Some(content_version_fp))
+                    .await?
+                {
+                    RowStateAdvanceOutcome::Skipped => {
+                        return anyhow::Ok(());
+                    }
+                    RowStateAdvanceOutcome::Advanced {
+                        prev_source_version: Some(prev_source_version),
+                        prev_content_version_fp: Some(prev_content_version_fp),
+                    } => {
+                        // Fast path optimization: may collapse the row based on source version fingerprint.
+                        // Still need to update the tracking table as the processed ordinal advanced.
+                        if row_indexer
+                            .try_collapse(
+                                &version,
+                                content_version_fp.as_slice(),
+                                &prev_source_version,
+                                ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint(
+                                    &prev_content_version_fp,
+                                ),
+                            )
+                            .await?
+                            .is_some()
                         {
-                            if target_source_version.kind
-                                == row_indexer::SourceVersionKind::NonExistence
-                            {
-                                entry.remove();
-                            } else {
-                                let mut_entry = entry.get_mut();
-                                mut_entry.source_version = target_source_version;
-                                mut_entry.touched_generation = scan_generation;
-                            }
+                            return Ok(());
                         }
                     }
-                    hash_map::Entry::Vacant(entry) => {
-                        if target_source_version.kind
-                            != row_indexer::SourceVersionKind::NonExistence
-                        {
-                            entry.insert(SourceRowIndexingState {
-                                source_version: target_source_version,
-                                touched_generation: scan_generation,
-                                ..Default::default()
-                            });
-                        }
-                    }
+                    _ => {}
                 }
             }
-            anyhow::Ok(())
+
+            let (ordinal, value, content_version_fp) =
+                match (source_data.ordinal, source_data.value) {
+                    (Some(ordinal), Some(value)) => {
+                        (ordinal, value, source_data.content_version_fp)
+                    }
+                    _ => {
+                        let data = import_op
+                        .executor
+                        .get_value(
+                            &key,
+                            inputs.key_aux_info.as_ref().ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "`key_aux_info` must be provided when there's no `source_data`"
+                                )
+                            })?,
+                            &interface::SourceExecutorGetOptions {
+                                include_value: true,
+                                include_ordinal: true,
+                                include_content_version_fp: true,
+                            },
+                        )
+                        .await?;
+                        (
+                            data.ordinal
+                                .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
+                            data.value
+                                .ok_or_else(|| anyhow::anyhow!("value is not available"))?,
+                            data.content_version_fp,
+                        )
+                    }
+                };
+
+            let source_version = SourceVersion::from_current_data(ordinal, &value);
+            if let RowStateAdvanceOutcome::Skipped = row_state_operator
+                .advance(source_version, content_version_fp.as_ref())
+                .await?
+            {
+                return Ok(());
+            }
+
+            let result = row_indexer
+                .update_source_row(&source_version, value, content_version_fp.clone())
+                .await?;
+            if let SkippedOr::Skipped(version, fp) = result {
+                row_state_operator.advance(version, fp.as_ref()).await?;
+            }
+            Ok(())
         };
         let process_and_ack = async {
             process.await?;
@@ -311,6 +413,7 @@ impl SourceIndexingContext {
             .executor
             .list(&interface::SourceExecutorListOptions {
                 include_ordinal: true,
+                include_content_version_fp: true,
             });
         let mut join_set = JoinSet::new();
         let scan_generation = {
@@ -346,9 +449,13 @@ impl SourceIndexingContext {
                     concur_permit,
                     NO_ACK,
                     pool.clone(),
-                    ProcessSourceKeyOptions {
+                    ProcessSourceKeyInput {
                         key_aux_info: Some(row.key_aux_info),
-                        ..Default::default()
+                        data: interface::PartialSourceRowData {
+                            value: None,
+                            ordinal: Some(source_version.ordinal),
+                            content_version_fp: row.content_version_fp,
+                        },
                     },
                 ));
             }
@@ -372,10 +479,6 @@ impl SourceIndexingContext {
             deleted_key_versions
         };
         for (key, source_ordinal) in deleted_key_versions {
-            let source_data = interface::SourceData {
-                value: interface::SourceValue::NonExistence,
-                ordinal: source_ordinal,
-            };
             let concur_permit = import_op.concurrency_controller.acquire(Some(|| 0)).await?;
             join_set.spawn(self.clone().process_source_key(
                 key,
@@ -383,9 +486,13 @@ impl SourceIndexingContext {
                 concur_permit,
                 NO_ACK,
                 pool.clone(),
-                ProcessSourceKeyOptions {
-                    source_data: Some(source_data),
-                    ..Default::default()
+                ProcessSourceKeyInput {
+                    key_aux_info: None,
+                    data: interface::PartialSourceRowData {
+                        value: Some(interface::SourceValue::NonExistence),
+                        ordinal: Some(source_ordinal),
+                        content_version_fp: None,
+                    },
                 },
             ));
         }

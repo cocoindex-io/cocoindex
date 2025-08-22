@@ -89,6 +89,7 @@ impl SourceExecutor for Executor {
                                     key: KeyValue::Str(key.to_string().into()),
                                     key_aux_info: serde_json::Value::Null,
                                     ordinal: obj.last_modified().map(datetime_to_ordinal),
+                                    content_version_fp: None,
                                 });
                             }
                         }
@@ -117,6 +118,7 @@ impl SourceExecutor for Executor {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
                 ordinal: Some(Ordinal::unavailable()),
+                content_version_fp: None,
             });
         }
         let resp = self
@@ -131,6 +133,7 @@ impl SourceExecutor for Executor {
                 return Ok(PartialSourceRowData {
                     value: Some(SourceValue::NonExistence),
                     ordinal: Some(Ordinal::unavailable()),
+                    content_version_fp: None,
                 });
             }
             r => r?,
@@ -150,7 +153,11 @@ impl SourceExecutor for Executor {
         } else {
             None
         };
-        Ok(PartialSourceRowData { value, ordinal })
+        Ok(PartialSourceRowData {
+            value,
+            ordinal,
+            content_version_fp: None,
+        })
     }
 
     async fn change_stream(
@@ -251,7 +258,7 @@ impl Executor {
                         changes.push(SourceChange {
                             key: KeyValue::Str(decoded_key),
                             key_aux_info: serde_json::Value::Null,
-                            data: None,
+                            data: PartialSourceRowData::default(),
                         });
                     }
                 }

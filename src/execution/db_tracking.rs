@@ -118,6 +118,7 @@ pub struct SourceTrackingInfoForPrecommit {
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
 
     pub processed_source_ordinal: Option<i64>,
+    pub processed_source_fp: Option<Vec<u8>>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
     pub process_ordinal: Option<i64>,
     pub target_keys: Option<sqlx::types::Json<TrackedTargetKeyForSource>>,
@@ -130,7 +131,12 @@ pub async fn read_source_tracking_info_for_precommit(
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<Option<SourceTrackingInfoForPrecommit>> {
     let query_str = format!(
-        "SELECT max_process_ordinal, staging_target_keys, processed_source_ordinal, process_logic_fingerprint, process_ordinal, target_keys FROM {} WHERE source_id = $1 AND source_key = $2",
+        "SELECT max_process_ordinal, staging_target_keys, processed_source_ordinal, {}, process_logic_fingerprint, process_ordinal, target_keys FROM {} WHERE source_id = $1 AND source_key = $2",
+        if db_setup.has_fast_fingerprint_column {
+            "processed_source_fp"
+        } else {
+            "NULL::bytea AS processed_source_fp"
+        },
         db_setup.table_name
     );
     let precommit_tracking_info = sqlx::query_as(&query_str)
@@ -282,6 +288,7 @@ pub async fn delete_source_tracking_info(
 pub struct TrackedSourceKeyMetadata {
     pub source_key: serde_json::Value,
     pub processed_source_ordinal: Option<i64>,
+    pub processed_source_fp: Option<Vec<u8>>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
 }
 
@@ -303,7 +310,12 @@ impl ListTrackedSourceKeyMetadataState {
         pool: &'a PgPool,
     ) -> impl Stream<Item = Result<TrackedSourceKeyMetadata, sqlx::Error>> + 'a {
         self.query_str = format!(
-            "SELECT source_key, processed_source_ordinal, process_logic_fingerprint FROM {} WHERE source_id = $1",
+            "SELECT source_key, processed_source_ordinal, {}, process_logic_fingerprint FROM {} WHERE source_id = $1",
+            if db_setup.has_fast_fingerprint_column {
+                "processed_source_fp"
+            } else {
+                "NULL::bytea AS processed_source_fp"
+            },
             db_setup.table_name
         );
         sqlx::query_as(&self.query_str).bind(source_id).fetch(pool)
