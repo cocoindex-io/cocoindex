@@ -409,12 +409,23 @@ impl SourceIndexingContext {
     ) -> Result<()> {
         let plan = self.flow.get_execution_plan().await?;
         let import_op = &plan.import_ops[self.source_idx];
-        let mut rows_stream = import_op
+        let rows_stream = import_op
             .executor
             .list(&interface::SourceExecutorListOptions {
                 include_ordinal: true,
                 include_content_version_fp: true,
             });
+        self.update_with_stream(import_op, rows_stream, pool, update_stats)
+            .await
+    }
+
+    async fn update_with_stream(
+        self: &Arc<Self>,
+        import_op: &plan::AnalyzedImportOp,
+        mut rows_stream: BoxStream<'_, Result<Vec<interface::PartialSourceRowMetadata>>>,
+        pool: &PgPool,
+        update_stats: &Arc<stats::UpdateStats>,
+    ) -> Result<()> {
         let mut join_set = JoinSet::new();
         let scan_generation = {
             let mut state = self.state.lock().unwrap();
