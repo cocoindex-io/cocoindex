@@ -23,7 +23,11 @@ function CardLayout({
   return (
     <Link href={href} className={clsx('card padding--lg', styles.cardContainer)} style={{ height: '100%' }}>
       <div>
-        {image && <img src={useBaseUrl(image)} />}
+        {image && (
+          <div className={styles.cardImageWrapper}>
+            <img src={useBaseUrl(image)} alt={title} className={styles.cardImage} />
+          </div>
+        )}
         <div style={{ display: 'flex', flexDirection: 'row' }}>
           <Heading as="h2" className={clsx('', styles.cardTitle)} title={title}>
             {title}
@@ -44,9 +48,11 @@ export default function DocCard({ item }: Props): ReactNode {
   if (item.type !== 'link') {
     return null;
   }
-  // Inline CardLink logic here
+  // Pass image and render image on each card
   const image: string | undefined =
-    typeof item?.customProps?.image === 'string' ? item.customProps.image : undefined;
+    typeof item?.customProps?.image === 'string'
+      ? item.customProps.image
+      : undefined;
   const doc = useDocById(item.docId ?? undefined);
 
   return (

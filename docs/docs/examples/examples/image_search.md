@@ -4,6 +4,9 @@ description: Build image search index with ColPali and FastAPI
 sidebar_class_name: hidden
 slug: /examples/image_search
 canonicalUrl: '/examples/image_search'
+sidebar_custom_props:
+  image: /img/examples/image_search.png
+tags: [vector-index, multi-modal, images]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

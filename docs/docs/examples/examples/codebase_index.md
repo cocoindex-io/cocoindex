@@ -4,6 +4,9 @@ description: Build a real-time codebase index for retrieval-augmented generation
 sidebar_class_name: hidden
 slug: /examples/code_index
 canonicalUrl: '/examples/code_index'
+sidebar_custom_props:
+  image: /img/examples/codebase_index.png
+tags: [vector-index]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

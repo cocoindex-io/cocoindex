@@ -4,6 +4,9 @@ description: CocoIndex now supports knowledge graph with incremental processing.
 sidebar_class_name: hidden
 slug: /examples/knowledge-graph-for-docs
 canonicalUrl: '/examples/knowledge-graph-for-docs'
+sidebar_custom_props:
+  image: /img/examples/docs_to_knowledge_graph.png
+tags: [knowledge-graph]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

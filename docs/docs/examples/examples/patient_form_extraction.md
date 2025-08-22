@@ -4,6 +4,9 @@ description: Extract nested structured data from patient form
 sidebar_class_name: hidden
 slug: /examples/patient_form_extraction
 canonicalUrl: '/examples/patient_form_extraction'
+sidebar_custom_props:
+  image: /img/examples/patient_form_extraction.png
+tags: [structured-data-extraction, data-mapping]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';
@@ -14,6 +17,10 @@ import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButto
 ## Prerequisites
 ### Install Postgres
 If you don't have Postgres installed, please refer to the [installation guide](https://cocoindex.io/docs/getting_started/installation).
+
+:::info
+The extraction quality is highly dependent on the OCR quality. You can use CocoIndex with any commercial parser (or open source ones) that is tailored for your domain for better results. For example, Document AI from Google Cloud and more. 
+:::
 
 ### Google Drive as alternative source (optional)
 If you plan to load patient intake forms from Google Drive, you can refer to this [example](https://cocoindex.io/blogs/text-embedding-from-google-drive#enable-google-drive-access-by-service-account) for more details.

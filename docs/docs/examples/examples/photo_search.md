@@ -4,6 +4,9 @@ description: Covers extracting and embedding faces from images, structuring data
 sidebar_class_name: hidden
 slug: /examples/photo_search
 canonicalUrl: '/examples/photo_search'
+sidebar_custom_props:
+  image: /img/examples/photo_search.png
+tags: [vector-index, multi-modal, images]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

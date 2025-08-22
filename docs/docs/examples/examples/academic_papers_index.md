@@ -4,6 +4,9 @@ description: Build a real-time academic papers index. Extract metadata, chunk an
 sidebar_class_name: hidden
 slug: /examples/academic_papers_index
 canonicalUrl: '/examples/academic_papers_index'
+sidebar_custom_props:
+  image: /img/examples/academic_papers_index.png
+tags: [vector-index]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

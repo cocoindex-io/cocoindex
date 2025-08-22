@@ -4,6 +4,9 @@ description: Build a visual document indexing pipeline using ColPali to index sc
 sidebar_class_name: hidden
 slug: /examples/multi_format_index
 canonicalUrl: '/examples/multi_format_index'
+sidebar_custom_props:
+  image: /img/examples/multi_format_index.png
+tags: [vector-index, multi-modal, images]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

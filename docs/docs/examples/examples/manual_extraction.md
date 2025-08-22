@@ -4,6 +4,9 @@ description: Extract structured data from markdowns (Python Manual)
 sidebar_class_name: hidden
 slug: /examples/manual_extraction
 canonicalUrl: '/examples/manual_extraction'
+sidebar_custom_props:
+  image: /img/examples/manual_extraction.png
+tags: [structured-data-extraction, data-mapping]
 ---
 
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';

@@ -4,6 +4,9 @@ description: Simple example to export Markdown files to local HTML files using C
 sidebar_class_name: hidden
 slug: /examples/custom_targets
 canonicalUrl: '/examples/custom_targets'
+sidebar_custom_props:
+  image: /img/examples/custom_targets.png
+tags: [custom-targets]
 ---
 import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';
 
