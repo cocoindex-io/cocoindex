@@ -13,6 +13,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::fmt::Write;
+use std::io::Cursor;
 use std::sync::Arc;
 
 mod convert;
