@@ -148,6 +148,10 @@ impl<State> StateChange<State> {
 pub struct SourceSetupState {
     pub source_id: i32,
     pub key_schema: schema::ValueType,
+
+    // Allow empty string during deserialization for backward compatibility.
+    #[serde(default)]
+    pub source_kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]

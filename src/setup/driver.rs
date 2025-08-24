@@ -261,27 +261,58 @@ pub async fn diff_flow_setup_states(
         |_, desired_state| Some(StateChange::Upsert(desired_state.clone())),
     );
 
-    let new_source_ids = desired_state
-        .iter()
-        .flat_map(|d| d.metadata.sources.values().map(|v| v.source_id))
-        .collect::<HashSet<i32>>();
+    // If the source kind has changed, we need to clean the source states.
+    let source_names_needs_states_cleanup: BTreeMap<i32, BTreeSet<String>> =
+        if let Some(desired_state) = desired_state
+            && let Some(existing_state) = existing_state
+        {
+            let new_source_id_to_kind = desired_state
+                .metadata
+                .sources
+                .values()
+                .map(|v| (v.source_id, &v.source_kind))
+                .collect::<HashMap<i32, &String>>();
+
+            let mut existing_source_id_to_name_kind =
+                BTreeMap::<i32, Vec<(&String, &String)>>::new();
+            for (name, setup_state) in existing_state
+                .metadata
+                .possible_versions()
+                .flat_map(|v| v.sources.iter())
+            {
+                existing_source_id_to_name_kind
+                    .entry(setup_state.source_id)
+                    .or_default()
+                    .push((&name, &setup_state.source_kind));
+            }
+
+            (existing_source_id_to_name_kind.into_iter())
+                .map(|(id, name_kinds)| {
+                    let new_kind = new_source_id_to_kind.get(&id).map(|v| *v);
+                    let source_names_for_legacy_states = name_kinds
+                        .into_iter()
+                        .filter_map(|(name, kind)| {
+                            if Some(kind) != new_kind {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<BTreeSet<_>>();
+                    (id, source_names_for_legacy_states)
+                })
+                .filter(|(_, v)| !v.is_empty())
+                .collect::<BTreeMap<_, _>>()
+        } else {
+            BTreeMap::new()
+        };
+
     let tracking_table_change = db_tracking_setup::TrackingTableSetupChange::new(
         desired_state.map(|d| &d.tracking_table),
         &existing_state
             .map(|e| Cow::Borrowed(&e.tracking_table))
             .unwrap_or_default(),
-        (existing_state.iter())
-            .flat_map(|state| state.metadata.possible_versions())
-            .flat_map(|metadata| {
-                metadata
-                    .sources
-                    .values()
-                    .map(|v| v.source_id)
-                    .filter(|id| !new_source_ids.contains(id))
-            })
-            .collect::<BTreeSet<i32>>()
-            .into_iter()
-            .collect(),
+        source_names_needs_states_cleanup,
     );
 
     let mut target_resources = Vec::new();

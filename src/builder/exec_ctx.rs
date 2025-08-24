@@ -31,7 +31,7 @@ pub struct AnalyzedSetupState {
 }
 
 fn build_import_op_exec_ctx(
-    import_field_name: &spec::FieldName,
+    import_op: &spec::NamedSpec<spec::ImportOpSpec>,
     import_op_output_type: &schema::EnrichedValueType,
     existing_source_states: Option<&Vec<&setup::SourceSetupState>>,
     metadata: &mut setup::FlowSetupMetadata,
@@ -64,10 +64,11 @@ fn build_import_op_exec_ctx(
         metadata.last_source_id
     };
     metadata.sources.insert(
-        import_field_name.clone(),
+        import_op.name.clone(),
         setup::SourceSetupState {
             source_id,
             key_schema: key_schema_no_attrs,
+            source_kind: import_op.spec.source.kind.clone(),
         },
     );
     Ok(ImportOpExecutionContext { source_id })
@@ -232,7 +233,7 @@ pub fn build_flow_setup_execution_context(
                 .get(&import_op.name)
                 .ok_or_else(invariance_violation)?;
             build_import_op_exec_ctx(
-                &import_op.name,
+                &import_op,
                 output_type,
                 source_states_by_name.get(&import_op.name.as_str()),
                 &mut metadata,
