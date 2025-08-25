@@ -7,7 +7,6 @@ use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 
 use super::db_tracking::{self, TrackedTargetKeyInfo, read_source_tracking_info_for_processing};
-use super::db_tracking_setup;
 use super::evaluator::{
     EvaluateSourceEntryOutput, SourceRowEvaluationContext, evaluate_source_entry,
 };
