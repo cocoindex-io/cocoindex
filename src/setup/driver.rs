@@ -280,10 +280,13 @@ pub async fn diff_flow_setup_states(
                 .possible_versions()
                 .flat_map(|v| v.sources.iter())
             {
-                existing_source_id_to_name_kind
-                    .entry(setup_state.source_id)
-                    .or_default()
-                    .push((&name, &setup_state.source_kind));
+                // For backward compatibility, we only process source states for non-empty source kinds.
+                if !setup_state.source_kind.is_empty() {
+                    existing_source_id_to_name_kind
+                        .entry(setup_state.source_id)
+                        .or_default()
+                        .push((&name, &setup_state.source_kind));
+                }
             }
 
             (existing_source_id_to_name_kind.into_iter())
