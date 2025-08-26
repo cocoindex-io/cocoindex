@@ -20,7 +20,7 @@ import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButto
 If you don't have Postgres installed, please refer to the [installation guide](https://cocoindex.io/docs/getting_started/installation).
 
 :::info
-The extraction quality is highly dependent on the OCR quality. You can use CocoIndex with any commercial parser (or open source ones) that is tailored for your domain for better results. For example, Document AI from Google Cloud and more.
+The extraction quality is highly dependent on the OCR quality. You can use CocoIndex with any commercial parser (or open source ones) that is tailored for your domain for better results. For example, Document AI from Google Cloud and more. 
 :::
 
 ### Google Drive as alternative source (optional)
@@ -117,7 +117,7 @@ Let's define the CocoIndex flow to extract the structured data from patient inta
         """
         credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
         root_folder_ids = os.environ["GOOGLE_DRIVE_ROOT_FOLDER_IDS"].split(",")
-
+        
         data_scope["documents"] = flow_builder.add_source(
             cocoindex.sources.GoogleDrive(
                 service_account_credential_path=credential_path,
@@ -167,7 +167,7 @@ Let's define the CocoIndex flow to extract the structured data from patient inta
     ```
 
 3.  Extract structured data from Markdown
-    CocoIndex provides built-in functions (e.g. `ExtractByLlm`) that process data using LLMs. In this example, we use `gpt-4o` from OpenAI to extract structured data from the Markdown. We also provide built-in support for Ollama, which allows you to run LLM models on your local machine easily.
+    CocoIndex provides built-in functions (e.g. `ExtractByLlm`) that process data using LLMs. In this example, we use `gpt-4o` from OpenAI to extract structured data from the Markdown. We also provide built-in support for Ollama, which allows you to run LLM models on your local machine easily. 
 
     ```python
     with data_scope["documents"].row() as doc:
@@ -225,14 +225,14 @@ Let's define the CocoIndex flow to extract the structured data from patient inta
 
 ### Troubleshooting
 
-My original golden file for this record is [this one](https://github.com/cocoindex-io/patient-intake-extraction/blob/main/data/example_forms/Patient_Intake_Form_Joe_Artificial.pdf).
+My original golden file for this record is [this one](https://github.com/cocoindex-io/patient-intake-extraction/blob/main/data/example_forms/Patient_Intake_Form_Joe_Artificial.pdf). 
 
 
 We will troubleshoot in two steps:
 1. Convert to Markdown
 2. Extract structured data from Markdown
 
-In this tutorial, we'll show how to use CocoInsight to troubleshoot this issue.
+In this tutorial, we'll show how to use CocoInsight to troubleshoot this issue. 
 
 ```bash
 cocoindex server -ci main.py

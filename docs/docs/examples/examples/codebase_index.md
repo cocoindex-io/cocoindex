@@ -15,11 +15,11 @@ import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButto
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/code_embedding"/>
 <YouTubeButton url="https://youtu.be/G3WstvhHO24?si=ndYfM0XRs03_hVPR" />
 
-## Setup
+## Setup 
 
 If you don't have Postgres installed, please follow [installation guide](https://cocoindex.io/docs/getting_started/installation).
 
-## Add the codebase as a source.
+## Add the codebase as a source. 
 
 Ingest files from the CocoIndex codebase root directory.
 
@@ -39,7 +39,7 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 - Include files with the extensions of `.py`, `.rs`, `.toml`, `.md`, `.mdx`
 - Exclude files and directories starting `.`,  `target` in the root and `node_modules` under any directory.
 
-`flow_builder.add_source` will create a table with sub fields (`filename`, `content`).
+`flow_builder.add_source` will create a table with sub fields (`filename`, `content`). 
 See [documentation](https://cocoindex.io/docs/ops/sources) for more details.
 
 
@@ -70,8 +70,8 @@ Here we extract the extension of the filename and store it in the `extension` fi
 
 ### Split the file into chunks
 
-We will chunk the code with Tree-sitter.
-We use the `SplitRecursively` function to split the file into chunks.
+We will chunk the code with Tree-sitter. 
+We use the `SplitRecursively` function to split the file into chunks. 
 It is integrated with Tree-sitter, so you can pass in the language to the `language` parameter.
 To see all supported language names and extensions, see the documentation [here](https://cocoindex.io/docs/ops/functions#splitrecursively). All the major languages are supported, e.g., Python, Rust, JavaScript, TypeScript, Java, C++, etc. If it's unspecified or the specified language is not supported, it will be treated as plain text.
 
@@ -79,14 +79,14 @@ To see all supported language names and extensions, see the documentation [here]
 with data_scope["files"].row() as file:
     file["chunks"] = file["content"].transform(
           cocoindex.functions.SplitRecursively(),
-          language=file["extension"], chunk_size=1000, chunk_overlap=300)
+          language=file["extension"], chunk_size=1000, chunk_overlap=300) 
 ```
 
 
 ### Embed the chunks
 
-We use `SentenceTransformerEmbed` to embed the chunks.
-You can refer to the documentation [here](https://cocoindex.io/docs/ops/functions#sentencetransformerembed).
+We use `SentenceTransformerEmbed` to embed the chunks. 
+You can refer to the documentation [here](https://cocoindex.io/docs/ops/functions#sentencetransformerembed). 
 
 ```python
 @cocoindex.transform_flow()
@@ -101,7 +101,7 @@ def code_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[lis
 
 Then for each chunk, we will embed it using the `code_to_embedding` function. and collect the embeddings to the `code_embeddings` collector.
 
-`@cocoindex.transform_flow()` is needed to share the transformation across indexing and query. We build a vector index and query against it,
+`@cocoindex.transform_flow()` is needed to share the transformation across indexing and query. We build a vector index and query against it, 
 the embedding computation needs to be consistent between indexing and querying. See [documentation](https://cocoindex.io/docs/query#transform-flow) for more details.
 
 
@@ -126,7 +126,7 @@ code_embeddings.export(
     vector_indexes=[cocoindex.VectorIndex("embedding", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 ```
 
-We use Consine Similarity to measure the similarity between the query and the indexed data.
+We use Consine Similarity to measure the similarity between the query and the indexed data. 
 To learn more about Consine Similarity, see [Wiki](https://en.wikipedia.org/wiki/Cosine_similarity).
 
 ## Query the index

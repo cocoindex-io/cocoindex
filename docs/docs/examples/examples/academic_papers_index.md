@@ -19,10 +19,10 @@ import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButto
 
 1. Extract the paper metadata, including file name, title, author information, abstract, and number of pages.
 
-2. Build vector embeddings for the metadata, such as the title and abstract, for semantic search.
+2. Build vector embeddings for the metadata, such as the title and abstract, for semantic search. 
 This enables better metadata-driven semantic search results. For example, you can match text queries against titles and abstracts.
 
-3. Build an index of authors and all the file names associated with each author
+3. Build an index of authors and all the file names associated with each author 
 to answer questions like "Give me all the papers by Jeff Dean."
 
 4. If you want to perform full PDF embedding for the paper, you can extend the flow.
@@ -31,13 +31,13 @@ to answer questions like "Give me all the papers by Jeff Dean."
 
 - [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
   CocoIndex uses PostgreSQL internally for incremental processing.
-- [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).
+- [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).  
   Alternatively, we have native support for Gemini, Ollama, LiteLLM. Check out the [guide](https://cocoindex.io/docs/ai/llm#ollama).
   You can choose your favorite LLM provider and work completely on-premises.
 
 ## Define Indexing Flow
 
-To better help you navigate what we will walk through, here is a flow diagram:
+To better help you navigate what we will walk through, here is a flow diagram: 
 
 1. Import a list of papers in PDF.
 2. For each file:
@@ -65,7 +65,7 @@ def paper_metadata_flow(
     )
 ```
 
-`flow_builder.add_source` will create a table with sub fields (`filename`, `content`),
+`flow_builder.add_source` will create a table with sub fields (`filename`, `content`), 
 we can refer to the [documentation](https://cocoindex.io/docs/ops/sources) for more details.
 
 ### Extract and collect metadata
@@ -108,10 +108,10 @@ After this step, you should have the basic info of each paper.
 
 ### Parse basic info
 
-We will convert the first page to Markdown using Marker.
+We will convert the first page to Markdown using Marker. 
 Alternatively, you can easily plug in your favorite PDF parser, such as Docling.
 
-Define a marker converter function and cache it, since its initialization is resource-intensive.
+Define a marker converter function and cache it, since its initialization is resource-intensive. 
 This ensures that the same converter instance is reused for different input files.
 
 ```python
@@ -140,7 +140,7 @@ def pdf_to_markdown(content: bytes) -> str:
 Pass it to your transform
 
 ```python
-with data_scope["documents"].row() as doc:
+with data_scope["documents"].row() as doc:      
     doc["first_page_md"] = doc["basic_info"]["first_page"].transform(
             pdf_to_markdown
         )
@@ -201,7 +201,7 @@ After this step, you should have the metadata of each paper.
 Just collect anything you need :)
 
 #### Collect `author` to `filename` information
-We’ve already extracted author list. Here we want to collect Author → Papers in a separate table to build a look up functionality.
+We’ve already extracted author list. Here we want to collect Author → Papers in a separate table to build a look up functionality. 
 Simply collect by author.
 
 ```python
@@ -230,8 +230,8 @@ doc["title_embedding"] = doc["metadata"]["title"].transform(
 
 #### Abstract
 
-Split abstract into chunks, embed each chunk and collect their embeddings.
-Sometimes the abstract could be very long.
+Split abstract into chunks, embed each chunk and collect their embeddings. 
+Sometimes the abstract could be very long. 
 
 ```python
 doc["abstract_chunks"] = doc["metadata"]["abstract"].transform(
@@ -305,7 +305,7 @@ author_papers.export(
     "author_papers",
     cocoindex.targets.Postgres(),
     primary_key_fields=["author_name", "filename"],
-)
+)    
 metadata_embeddings.export(
     "metadata_embeddings",
     cocoindex.targets.Postgres(),
@@ -325,14 +325,14 @@ We aim to standardize interfaces and make it like assembling building blocks.
 
 ## View in CocoInsight step by step
 
-You can walk through the project step by step in [CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk) to see
+You can walk through the project step by step in [CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk) to see 
 exactly how each field is constructed and what happens behind the scenes.
 
 ## Query the index
 
-You can refer to this section of [Text Embeddings](https://cocoindex.io/blogs/text-embeddings-101#3-query-the-index) about
-how to build query against embeddings.
-For now CocoIndex doesn't provide additional query interface. We can write SQL or rely on the query engine by the target storage.
+You can refer to this section of [Text Embeddings](https://cocoindex.io/blogs/text-embeddings-101#3-query-the-index) about 
+how to build query against embeddings. 
+For now CocoIndex doesn't provide additional query interface. We can write SQL or rely on the query engine by the target storage. 
 
 - Many databases already have optimized query implementations with their own best practices
 - The query space has excellent solutions for querying, reranking, and other search-related functionality.

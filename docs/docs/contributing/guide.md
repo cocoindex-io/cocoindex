@@ -5,7 +5,7 @@ description: How to contribute to CocoIndex
 
 [CocoIndex](https://github.com/cocoindex-io/cocoindex) is an open source project. We are respectful, open and friendly. This guide explains how to get involved and contribute to [CocoIndex](https://github.com/cocoindex-io/cocoindex).
 
-Our [Discord server](https://discord.com/invite/zpA9S2DR7s) is constantly open.
+Our [Discord server](https://discord.com/invite/zpA9S2DR7s) is constantly open. 
 If you are unsure about anything, it is a good place to discuss! We'd love to collaborate and will always be friendly.
 
 ## Good First Issues

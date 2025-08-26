@@ -16,14 +16,14 @@ import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButto
 
 
 ## Overview
-In this blog, we will build index with text embeddings and query it with natural language.
+In this blog, we will build index with text embeddings and query it with natural language. 
 We try to keep it minimalistic and focus on the gist of the indexing flow.
 
 
 ## Prerequisites
 
 - [Install Postgres](https://cocoindex.io/docs/getting_started/installation).
-CocoIndex uses Postgres to keep track of data lineage for incremental processing.
+CocoIndex uses Postgres to keep track of data lineage for incremental processing. 
 
 ## Define Indexing Flow
 
@@ -64,7 +64,7 @@ with data_scope["documents"].row() as doc:
 
 
 
-#### 2.2 Embed each chunk
+#### 2.2 Embed each chunk 
 
 ```
 @cocoindex.transform_flow()
