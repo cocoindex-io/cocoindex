@@ -14,11 +14,13 @@ def postgres_message_embedding_flow(
     data_scope["messages"] = flow_builder.add_source(
         cocoindex.sources.Postgres(
             table_name="source_messages",
+            # Optional. Use the default CocoIndex database if not specified.
             database=cocoindex.add_transient_auth_entry(
                 cocoindex.sources.DatabaseConnectionSpec(
                     url=os.getenv("SOURCE_DATABASE_URL"),
                 )
             ),
+            # Optional.
             ordinal_column="created_at",
         )
     )
@@ -80,11 +82,14 @@ def postgres_product_embedding_flow(
     data_scope["products"] = flow_builder.add_source(
         cocoindex.sources.Postgres(
             table_name="source_products",
+            # Optional. Use the default CocoIndex database if not specified.
             database=cocoindex.add_transient_auth_entry(
                 cocoindex.sources.DatabaseConnectionSpec(
                     url=os.getenv("SOURCE_DATABASE_URL"),
                 )
             ),
+            # Optional.
+            ordinal_column="modified_time",
         )
     )
 
@@ -95,6 +100,11 @@ def postgres_product_embedding_flow(
             product["_key"]["product_category"],
             product["_key"]["product_name"],
             product["description"],
+        )
+        product["total_value"] = flow_builder.transform(
+            calculate_total_value,
+            product["price"],
+            product["amount"],
         )
         product["embedding"] = product["full_description"].transform(
             cocoindex.functions.SentenceTransformerEmbed(
@@ -107,6 +117,7 @@ def postgres_product_embedding_flow(
             description=product["description"],
             price=product["price"],
             amount=product["amount"],
+            total_value=product["total_value"],
             embedding=product["embedding"],
         )
 

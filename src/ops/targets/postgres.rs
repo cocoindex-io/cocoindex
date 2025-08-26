@@ -186,9 +186,10 @@ impl ExportContext {
                     query_builder.push(",");
                 }
                 query_builder.push(" (");
-                for (j, key_value) in key_value_fields_iter(&self.key_fields_schema, &upsert.key)?
-                    .iter()
-                    .enumerate()
+                for (j, key_value) in
+                    key_value_fields_iter(self.key_fields_schema.iter(), &upsert.key)?
+                        .iter()
+                        .enumerate()
                 {
                     if j > 0 {
                         query_builder.push(", ");
@@ -230,7 +231,7 @@ impl ExportContext {
             for (i, (schema, value)) in self
                 .key_fields_schema
                 .iter()
-                .zip(key_value_fields_iter(&self.key_fields_schema, &deletion.key)?.iter())
+                .zip(key_value_fields_iter(self.key_fields_schema.iter(), &deletion.key)?.iter())
                 .enumerate()
             {
                 if i > 0 {

@@ -88,7 +88,7 @@ VALUES (
         'Sports',
         'Running Shoes',
         'Lightweight running shoes for daily training',
-        129.99,
+        129.5,
         60,
         NOW() - INTERVAL '1 day'
     ) ON CONFLICT (product_category, product_name) DO NOTHING;

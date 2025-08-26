@@ -5,6 +5,14 @@ use crate::settings::DatabaseConnectionSpec;
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgPool, Row};
 
+type PgValueDecoder = fn(&sqlx::postgres::PgRow, usize) -> Result<Value>;
+
+#[derive(Clone)]
+struct FieldSchemaInfo {
+    schema: FieldSchema,
+    decoder: PgValueDecoder,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Spec {
     /// Table name to read from (required)
@@ -17,41 +25,137 @@ pub struct Spec {
     ordinal_column: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct PostgresTableSchema {
-    primary_key_columns: Vec<FieldSchema>,
-    value_columns: Vec<FieldSchema>,
+    primary_key_columns: Vec<FieldSchemaInfo>,
+    value_columns: Vec<FieldSchemaInfo>,
     ordinal_field_idx: Option<usize>,
-    ordinal_field_schema: Option<FieldSchema>,
+    ordinal_field_schema: Option<FieldSchemaInfo>,
 }
 
 struct Executor {
     db_pool: PgPool,
     table_name: String,
-    ordinal_column: Option<String>,
     table_schema: PostgresTableSchema,
 }
 
-/// Map PostgreSQL data types to CocoIndex BasicValueType
-fn map_postgres_type_to_cocoindex(pg_type: &str) -> BasicValueType {
+/// Map PostgreSQL data types to CocoIndex BasicValueType and a decoder function
+fn map_postgres_type_to_cocoindex_and_decoder(pg_type: &str) -> (BasicValueType, PgValueDecoder) {
     match pg_type {
-        "bytea" => BasicValueType::Bytes,
-        "text" | "varchar" | "char" | "character" | "character varying" => BasicValueType::Str,
-        "boolean" | "bool" => BasicValueType::Bool,
-        "bigint" | "int8" | "integer" | "int4" | "smallint" | "int2" => BasicValueType::Int64,
-        "real" | "float4" => BasicValueType::Float32,
-        "double precision" | "float8" => BasicValueType::Float64,
-        "uuid" => BasicValueType::Uuid,
-        "date" => BasicValueType::Date,
-        "time" | "time without time zone" => BasicValueType::Time,
-        "timestamp" | "timestamp without time zone" => BasicValueType::LocalDateTime,
-        "timestamp with time zone" | "timestamptz" => BasicValueType::OffsetDateTime,
-        "interval" => BasicValueType::TimeDelta,
-        "jsonb" | "json" => BasicValueType::Json,
-        // Vector types (if supported)
-        t if t.starts_with("vector(") => BasicValueType::Json, // fallback to JSON
-        // Union types and others fallback to JSON
-        _ => BasicValueType::Json,
+        "bytea" => (
+            BasicValueType::Bytes,
+            (|row, idx| Ok(Value::from(row.try_get::<Option<Vec<u8>>, _>(idx)?))) as PgValueDecoder,
+        ),
+        "text" | "varchar" | "char" | "character" | "character varying" => (
+            BasicValueType::Str,
+            (|row, idx| Ok(Value::from(row.try_get::<Option<String>, _>(idx)?))) as PgValueDecoder,
+        ),
+        "boolean" | "bool" => (
+            BasicValueType::Bool,
+            (|row, idx| Ok(Value::from(row.try_get::<Option<bool>, _>(idx)?))) as PgValueDecoder,
+        ),
+        // Integers: decode with actual PG width, convert to i64 Value
+        "bigint" | "int8" => (
+            BasicValueType::Int64,
+            (|row, idx| Ok(Value::from(row.try_get::<Option<i64>, _>(idx)?))) as PgValueDecoder,
+        ),
+        "integer" | "int4" => (
+            BasicValueType::Int64,
+            (|row, idx| {
+                let opt_v = row.try_get::<Option<i32>, _>(idx)?;
+                Ok(Value::from(opt_v.map(|v| v as i64)))
+            }) as PgValueDecoder,
+        ),
+        "smallint" | "int2" => (
+            BasicValueType::Int64,
+            (|row, idx| {
+                let opt_v = row.try_get::<Option<i16>, _>(idx)?;
+                Ok(Value::from(opt_v.map(|v| v as i64)))
+            }) as PgValueDecoder,
+        ),
+        "real" | "float4" => (
+            BasicValueType::Float32,
+            (|row, idx| Ok(Value::from(row.try_get::<Option<f32>, _>(idx)?))) as PgValueDecoder,
+        ),
+        "double precision" | "float8" => (
+            BasicValueType::Float64,
+            (|row, idx| Ok(Value::from(row.try_get::<Option<f64>, _>(idx)?))) as PgValueDecoder,
+        ),
+        "uuid" => (
+            BasicValueType::Uuid,
+            (|row, idx| Ok(Value::from(row.try_get::<Option<uuid::Uuid>, _>(idx)?)))
+                as PgValueDecoder,
+        ),
+        "date" => (
+            BasicValueType::Date,
+            (|row, idx| {
+                Ok(Value::from(
+                    row.try_get::<Option<chrono::NaiveDate>, _>(idx)?,
+                ))
+            }) as PgValueDecoder,
+        ),
+        "time" | "time without time zone" => (
+            BasicValueType::Time,
+            (|row, idx| {
+                Ok(Value::from(
+                    row.try_get::<Option<chrono::NaiveTime>, _>(idx)?,
+                ))
+            }) as PgValueDecoder,
+        ),
+        "timestamp" | "timestamp without time zone" => (
+            BasicValueType::LocalDateTime,
+            (|row, idx| {
+                Ok(Value::from(
+                    row.try_get::<Option<chrono::NaiveDateTime>, _>(idx)?,
+                ))
+            }) as PgValueDecoder,
+        ),
+        "timestamp with time zone" | "timestamptz" => (
+            BasicValueType::OffsetDateTime,
+            (|row, idx| {
+                Ok(Value::from(row.try_get::<Option<
+                    chrono::DateTime<chrono::FixedOffset>,
+                >, _>(idx)?))
+            }) as PgValueDecoder,
+        ),
+        "interval" => (
+            BasicValueType::TimeDelta,
+            (|row, idx| {
+                let opt_iv = row.try_get::<Option<PgInterval>, _>(idx)?;
+                let opt_dur = opt_iv.map(|iv| {
+                    let approx_days = iv.days as i64 + (iv.months as i64) * 30;
+                    chrono::Duration::microseconds(iv.microseconds)
+                        + chrono::Duration::days(approx_days)
+                });
+                Ok(Value::from(opt_dur))
+            }) as PgValueDecoder,
+        ),
+        "jsonb" | "json" => (
+            BasicValueType::Json,
+            (|row, idx| {
+                Ok(Value::from(
+                    row.try_get::<Option<serde_json::Value>, _>(idx)?,
+                ))
+            }) as PgValueDecoder,
+        ),
+        // Vector types (if supported) -> fallback to JSON
+        t if t.starts_with("vector(") => (
+            BasicValueType::Json,
+            (|row, idx| {
+                Ok(Value::from(
+                    row.try_get::<Option<serde_json::Value>, _>(idx)?,
+                ))
+            }) as PgValueDecoder,
+        ),
+        // Others fallback to JSON
+        _ => (
+            BasicValueType::Json,
+            (|row, idx| {
+                Ok(Value::from(
+                    row.try_get::<Option<serde_json::Value>, _>(idx)?,
+                ))
+            }) as PgValueDecoder,
+        ),
     }
 }
 
@@ -90,9 +194,9 @@ async fn fetch_table_schema(
 
     let rows = sqlx::query(query).bind(table_name).fetch_all(pool).await?;
 
-    let mut primary_key_columns = Vec::new();
-    let mut value_columns = Vec::new();
-    let mut ordinal_field_schema: Option<FieldSchema> = None;
+    let mut primary_key_columns: Vec<FieldSchemaInfo> = Vec::new();
+    let mut value_columns: Vec<FieldSchemaInfo> = Vec::new();
+    let mut ordinal_field_schema: Option<FieldSchemaInfo> = None;
 
     for row in rows {
         let col_name: String = row.try_get::<String, _>("column_name")?;
@@ -100,30 +204,35 @@ async fn fetch_table_schema(
         let is_nullable: bool = row.try_get::<String, _>("is_nullable")? == "YES";
         let is_primary_key: bool = row.try_get::<bool, _>("is_primary_key")?;
 
+        let (basic_type, decoder) = map_postgres_type_to_cocoindex_and_decoder(&pg_type_str);
         let field_schema = FieldSchema::new(
             &col_name,
-            make_output_type(map_postgres_type_to_cocoindex(&pg_type_str))
-                .with_nullable(is_nullable),
+            make_output_type(basic_type).with_nullable(is_nullable),
         );
 
-        if is_primary_key {
-            primary_key_columns.push(field_schema.clone());
-        } else if included_columns
-            .as_ref()
-            .map_or(true, |cols| cols.contains(&col_name))
-        {
-            value_columns.push(field_schema.clone());
-        }
+        let info = FieldSchemaInfo {
+            schema: field_schema.clone(),
+            decoder: decoder.clone(),
+        };
 
         if let Some(ord_col) = ordinal_column {
             if &col_name == ord_col {
-                ordinal_field_schema = Some(field_schema.clone());
+                ordinal_field_schema = Some(info.clone());
                 if is_primary_key {
                     api_bail!(
                         "`ordinal_column` cannot be a primary key column. It must be one of the value columns."
                     );
                 }
             }
+        }
+
+        if is_primary_key {
+            primary_key_columns.push(info);
+        } else if included_columns
+            .as_ref()
+            .map_or(true, |cols| cols.contains(&col_name))
+        {
+            value_columns.push(info.clone());
         }
     }
 
@@ -140,13 +249,13 @@ async fn fetch_table_schema(
             let schema = ordinal_field_schema
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("`ordinal_column` `{}` not found in table", ord))?;
-            if !is_supported_ordinal_type(&schema.value_type.typ) {
+            if !is_supported_ordinal_type(&schema.schema.value_type.typ) {
                 api_bail!(
                     "Unsupported `ordinal_column` type for `{}`. Supported types: Int64, LocalDateTime, OffsetDateTime",
-                    schema.name
+                    schema.schema.name
                 );
             }
-            value_columns.iter().position(|c| c.name == *ord)
+            value_columns.iter().position(|c| c.schema.name == *ord)
         }
         None => None,
     };
@@ -159,56 +268,7 @@ async fn fetch_table_schema(
     })
 }
 
-/// Convert a PostgreSQL row value directly into Value (Basic or Null)
-fn convert_pg_value_to_value(
-    row: &sqlx::postgres::PgRow,
-    column: &FieldSchema,
-    col_index: usize,
-) -> Result<Value> {
-    let basic_type = match &column.value_type.typ {
-        ValueType::Basic(t) => t,
-        _ => bail!("expect basic value type"),
-    };
-    let value = match basic_type {
-        BasicValueType::Bytes => Value::from(row.try_get::<Option<Vec<u8>>, _>(col_index)?),
-        BasicValueType::Str => Value::from(row.try_get::<Option<String>, _>(col_index)?),
-        BasicValueType::Bool => Value::from(row.try_get::<Option<bool>, _>(col_index)?),
-        BasicValueType::Int64 => Value::from(row.try_get::<Option<i64>, _>(col_index)?),
-        BasicValueType::Float32 => Value::from(row.try_get::<Option<f32>, _>(col_index)?),
-        BasicValueType::Float64 => Value::from(row.try_get::<Option<f64>, _>(col_index)?),
-        BasicValueType::Range => {
-            Value::from(row.try_get::<Option<serde_json::Value>, _>(col_index)?)
-        }
-        BasicValueType::Uuid => Value::from(row.try_get::<Option<uuid::Uuid>, _>(col_index)?),
-        BasicValueType::Date => {
-            Value::from(row.try_get::<Option<chrono::NaiveDate>, _>(col_index)?)
-        }
-        BasicValueType::Time => {
-            Value::from(row.try_get::<Option<chrono::NaiveTime>, _>(col_index)?)
-        }
-        BasicValueType::LocalDateTime => {
-            Value::from(row.try_get::<Option<chrono::NaiveDateTime>, _>(col_index)?)
-        }
-        BasicValueType::OffsetDateTime => {
-            Value::from(row.try_get::<Option<chrono::DateTime<chrono::FixedOffset>>, _>(col_index)?)
-        }
-        BasicValueType::TimeDelta => {
-            let opt_iv = row.try_get::<Option<PgInterval>, _>(col_index)?;
-            let opt_dur = opt_iv.map(|iv| {
-                let approx_days = iv.days as i64 + (iv.months as i64) * 30;
-                chrono::Duration::microseconds(iv.microseconds)
-                    + chrono::Duration::days(approx_days)
-            });
-            Value::from(opt_dur)
-        }
-        BasicValueType::Json => {
-            Value::from(row.try_get::<Option<serde_json::Value>, _>(col_index)?)
-        }
-        // Fallback: treat as JSON
-        _ => Value::from(row.try_get::<Option<serde_json::Value>, _>(col_index)?),
-    };
-    Ok(value)
-}
+// Per-column decoders are attached to schema; no generic converter needed anymore
 
 /// Convert a CocoIndex `Value` into an `Ordinal` if supported.
 /// Supported inputs:
@@ -254,16 +314,16 @@ impl SourceExecutor for Executor {
                 .table_schema
                 .primary_key_columns
                 .iter()
-                .map(|col| format!("\"{}\"", col.name))
+                .map(|col| format!("\"{}\"", col.schema.name))
                 .collect();
 
             let mut select_parts = pk_columns.clone();
             let mut ordinal_col_index: Option<usize> = None;
             if options.include_ordinal
-                && let Some(ref ordinal_col) = self.ordinal_column
+                && let Some(ord_schema) = &self.table_schema.ordinal_field_schema
             {
                 // Only append ordinal column if present.
-                select_parts.push(format!("\"{}\"", ordinal_col));
+                select_parts.push(format!("\"{}\"", ord_schema.schema.name));
                 ordinal_col_index = Some(select_parts.len() - 1);
             }
 
@@ -274,8 +334,8 @@ impl SourceExecutor for Executor {
             );
 
             // Add ordering by ordinal column if specified
-            if let Some(ref ordinal_col) = self.ordinal_column {
-                query.push_str(&format!(" ORDER BY \"{}\"", ordinal_col));
+            if let Some(ord_schema) = &self.table_schema.ordinal_field_schema {
+                query.push_str(&format!(" ORDER BY \"{}\"", ord_schema.schema.name));
             }
 
             let mut rows = sqlx::query(&query).fetch(&self.db_pool);
@@ -285,7 +345,7 @@ impl SourceExecutor for Executor {
                     .primary_key_columns
                     .iter()
                     .enumerate()
-                    .map(|(i, pk_col)| convert_pg_value_to_value(&row, pk_col, i))
+                    .map(|(i, info)| (info.decoder)(&row, i))
                     .collect::<Result<Vec<_>>>()?;
                 if parts.iter().any(|v| v.is_null()) {
                     Err(anyhow::anyhow!(
@@ -296,11 +356,14 @@ impl SourceExecutor for Executor {
 
                 // Compute ordinal if requested
                 let ordinal = if options.include_ordinal {
-                    if let (Some(col_idx), Some(ord_schema)) = (
+                    if let (Some(col_idx), Some(_ord_schema)) = (
                         ordinal_col_index,
                         self.table_schema.ordinal_field_schema.as_ref(),
                     ) {
-                        let val = convert_pg_value_to_value(&row, ord_schema, col_idx)?;
+                        let val = match self.table_schema.ordinal_field_idx {
+                            Some(idx) => (self.table_schema.value_columns[idx].decoder)(&row, col_idx)?,
+                            None => (self.table_schema.ordinal_field_schema.as_ref().unwrap().decoder)(&row, col_idx)?,
+                        };
                         Some(value_to_ordinal(&val))
                     } else {
                         Some(Ordinal::unavailable())
@@ -334,17 +397,16 @@ impl SourceExecutor for Executor {
                 self.table_schema
                     .value_columns
                     .iter()
-                    .map(|col| format!("\"{}\"", col.name)),
+                    .map(|col| format!("\"{}\"", col.schema.name)),
             );
         }
 
-        let ordinal_col_name = self.ordinal_column.as_ref();
         if options.include_ordinal {
-            if let Some(ord_col) = ordinal_col_name {
+            if let Some(ord_schema) = &self.table_schema.ordinal_field_schema {
                 // Append ordinal column if not already provided by included value columns,
                 // or when value columns are not selected at all
                 if self.table_schema.ordinal_field_idx.is_none() || !options.include_value {
-                    selected_columns.push(format!("\"{}\"", ord_col));
+                    selected_columns.push(format!("\"{}\"", ord_schema.schema.name));
                 }
             }
         }
@@ -358,7 +420,13 @@ impl SourceExecutor for Executor {
         qb.push(&self.table_name);
         qb.push("\" WHERE ");
 
-        let key_values = key_value_fields_iter(&self.table_schema.primary_key_columns, key)?;
+        let key_values = key_value_fields_iter(
+            self.table_schema
+                .primary_key_columns
+                .iter()
+                .map(|i| &i.schema),
+            key,
+        )?;
         if key_values.len() != self.table_schema.primary_key_columns.len() {
             bail!(
                 "Composite key has {} values but table has {} primary key columns",
@@ -378,7 +446,7 @@ impl SourceExecutor for Executor {
                 qb.push(" AND ");
             }
             qb.push("\"");
-            qb.push(pk_col.name.as_str());
+            qb.push(pk_col.schema.name.as_str());
             qb.push("\" = ");
             bind_key_field(&mut qb, key_value)?;
         }
@@ -389,8 +457,8 @@ impl SourceExecutor for Executor {
             match &row_opt {
                 Some(row) => {
                     let mut fields = Vec::with_capacity(self.table_schema.value_columns.len());
-                    for (i, value_col) in self.table_schema.value_columns.iter().enumerate() {
-                        let value = convert_pg_value_to_value(&row, value_col, i)?;
+                    for (i, info) in self.table_schema.value_columns.iter().enumerate() {
+                        let value = (info.decoder)(&row, i)?;
                         fields.push(value);
                     }
                     Some(SourceValue::Existence(FieldValues { fields }))
@@ -402,12 +470,8 @@ impl SourceExecutor for Executor {
         };
 
         let ordinal = if options.include_ordinal {
-            match (
-                &row_opt,
-                self.table_schema.ordinal_field_schema.as_ref(),
-                ordinal_col_name,
-            ) {
-                (Some(row), Some(ord_schema), Some(_ord_col_name)) => {
+            match (&row_opt, &self.table_schema.ordinal_field_schema) {
+                (Some(row), Some(ord_schema)) => {
                     // Determine index without scanning the row metadata.
                     let col_index = if options.include_value {
                         match self.table_schema.ordinal_field_idx {
@@ -418,7 +482,7 @@ impl SourceExecutor for Executor {
                         // Only ordinal was selected
                         0
                     };
-                    let val = convert_pg_value_to_value(&row, ord_schema, col_index)?;
+                    let val = (ord_schema.decoder)(&row, col_index)?;
                     Some(value_to_ordinal(&val))
                 }
                 _ => Some(Ordinal::unavailable()),
@@ -460,35 +524,38 @@ impl SourceFactoryBase for Factory {
         )
         .await?;
 
-        let mut struct_schema = StructSchema::default();
-        let mut schema_builder = StructSchemaBuilder::new(&mut struct_schema);
-
-        // For KTable, first field is the key, remaining fields are values
-        // This matches the KTable schema: KTable<KeyStruct, ValueStruct>
+        // Build fields: first key, then value columns
+        let mut fields: Vec<FieldSchema> = Vec::new();
 
         if table_schema.primary_key_columns.len() == 1 {
             let pk_col = &table_schema.primary_key_columns[0];
-            schema_builder.add_field(FieldSchema::new(&pk_col.name, pk_col.value_type.clone()));
+            fields.push(FieldSchema::new(
+                &pk_col.schema.name,
+                pk_col.schema.value_type.clone(),
+            ));
         } else {
-            // Composite primary key - first field is _key containing all PK columns
-            let mut key_struct_schema = StructSchema::default();
-            let mut key_builder = StructSchemaBuilder::new(&mut key_struct_schema);
-
-            for pk_col in &table_schema.primary_key_columns {
-                key_builder.add_field(FieldSchema::new(&pk_col.name, pk_col.value_type.clone()));
-            }
-
-            // Add _key field containing the composite primary key
-            schema_builder.add_field(FieldSchema::new(
+            // Composite primary key - put all PK columns into a nested struct `_key`
+            let key_fields: Vec<FieldSchema> = table_schema
+                .primary_key_columns
+                .iter()
+                .map(|pk_col| {
+                    FieldSchema::new(&pk_col.schema.name, pk_col.schema.value_type.clone())
+                })
+                .collect();
+            let key_struct_schema = StructSchema {
+                fields: Arc::new(key_fields),
+                description: None,
+            };
+            fields.push(FieldSchema::new(
                 "_key",
                 make_output_type(key_struct_schema),
             ));
         }
 
         for value_col in &table_schema.value_columns {
-            schema_builder.add_field(FieldSchema::new(
-                &value_col.name,
-                value_col.value_type.clone(),
+            fields.push(FieldSchema::new(
+                &value_col.schema.name,
+                value_col.schema.value_type.clone(),
             ));
         }
 
@@ -500,6 +567,10 @@ impl SourceFactoryBase for Factory {
             );
         }
 
+        let struct_schema = StructSchema {
+            fields: Arc::new(fields),
+            description: None,
+        };
         Ok(make_output_type(TableSchema::new(
             TableKind::KTable,
             struct_schema,
@@ -525,7 +596,6 @@ impl SourceFactoryBase for Factory {
         let executor = Executor {
             db_pool,
             table_name: spec.table_name.clone(),
-            ordinal_column: spec.ordinal_column.clone(),
             table_schema,
         };
 
@@ -533,14 +603,6 @@ impl SourceFactoryBase for Factory {
             Some(cols) => format!(" (filtered to {} specified columns)", cols.len()),
             None => " (all columns)".to_string(),
         };
-
-        info!(
-            "Successfully connected to PostgreSQL table '{}' with {} primary key columns and {} value columns{}",
-            spec.table_name,
-            executor.table_schema.primary_key_columns.len(),
-            executor.table_schema.value_columns.len(),
-            filter_info
-        );
 
         Ok(Box::new(executor))
     }
