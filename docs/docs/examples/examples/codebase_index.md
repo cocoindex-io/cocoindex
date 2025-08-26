@@ -10,25 +10,40 @@ sidebar_custom_props:
 tags: [vector-index, codebase]
 ---
 
-import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';
+import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/code_embedding"/>
 <YouTubeButton url="https://youtu.be/G3WstvhHO24?si=ndYfM0XRs03_hVPR" />
 
-## Setup 
+## Overview
+In this tutorial, we will build codebase index. [CocoIndex](https://github.com/cocoindex-io/cocoindex) provides built-in support for codebase chunking, with native Tree-sitter support. It works with large codebases, and can be updated in near real-time with incremental processing - only reprocess what's changed. 
 
-If you don't have Postgres installed, please follow [installation guide](https://cocoindex.io/docs/getting_started/installation).
+## Use Cases
+A wide range of applications can be built with an effective codebase index that is always up-to-date. Some examples include:
+
+![Use case illustration](/img/examples/codebase_index/usecase.png)
+
+- Semantic code context for AI coding agents like Claude, Codex, Gemini CLI.
+- MCP for code editors such as Cursor, Windsurf, and VSCode.
+- Context-aware code search applications—semantic code search, natural language code retrieval.
+- Context for code review agents—AI code review, automated code analysis, code quality checks, pull request summarization.
+- Automated code refactoring, large-scale code migration.
+- Enhance SRE workflows: enable rapid root cause analysis, incident response, and change impact assessment by indexing infrastructure-as-code, deployment scripts, and config files for semantic search and lineage tracking.
+- Automatically generate design documentation from code—keep design docs up-to-date.
+
+## Setup 
+- Install Postgres, follow [installation guide](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
+- Install CocoIndex
+  ```bash
+  pip install -U cocoindex
+  ```
 
 ## Add the codebase as a source. 
-
-Ingest files from the CocoIndex codebase root directory.
+We will index the CocoIndex codebase. Here we use the `LocalFile` source to ingest files from the CocoIndex codebase root directory.
 
 ```python
 @cocoindex.flow_def(name="CodeEmbedding")
 def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-    """
-    Define an example flow that embeds files into a vector database.
-    """
     data_scope["files"] = flow_builder.add_source(
         cocoindex.sources.LocalFile(path="../..",
                                     included_patterns=["*.py", "*.rs", "*.toml", "*.md", "*.mdx"],
@@ -40,16 +55,16 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 - Exclude files and directories starting `.`,  `target` in the root and `node_modules` under any directory.
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`). 
-See [documentation](https://cocoindex.io/docs/ops/sources) for more details.
+<DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="Sources" />
 
 
-## Process each file and collect the information.
 
-###  Extract the extension of a filename
+## Process each file and collect the information
+
+### Extract the extension of a filename
 
 We need to pass the language (or extension) to Tree-sitter to parse the code.
 Let's define a function to extract the extension of a filename while processing each file.
-You can find the documentation for custom function [here](https://cocoindex.io/docs/core/custom_function).
 
 ```python
 @cocoindex.op.function()
@@ -58,52 +73,41 @@ def extract_extension(filename: str) -> str:
     return os.path.splitext(filename)[1]
 ```
 
-Then we are going to process each file and collect the information.
-
-```python
-with data_scope["files"].row() as file:
-    file["extension"] = file["filename"].transform(extract_extension)
-```
-
-Here we extract the extension of the filename and store it in the `extension` field.
-
+<DocumentationButton href="https://cocoindex.io/docs/custom_ops/custom_functions" text="Custom Function" margin="0 0 16px 0" />
 
 ### Split the file into chunks
-
-We will chunk the code with Tree-sitter. 
-We use the `SplitRecursively` function to split the file into chunks. 
-It is integrated with Tree-sitter, so you can pass in the language to the `language` parameter.
-To see all supported language names and extensions, see the documentation [here](https://cocoindex.io/docs/ops/functions#splitrecursively). All the major languages are supported, e.g., Python, Rust, JavaScript, TypeScript, Java, C++, etc. If it's unspecified or the specified language is not supported, it will be treated as plain text.
+We use the `SplitRecursively` function to split the file into chunks.  `SplitRecursively` is CocoIndex building block, with native integration with Tree-sitter. You need to pass in the language to the `language` parameter if you are processing code.
 
 ```python
 with data_scope["files"].row() as file:
+    # Extract the extension of the filename.
+    file["extension"] = file["filename"].transform(extract_extension)
     file["chunks"] = file["content"].transform(
           cocoindex.functions.SplitRecursively(),
           language=file["extension"], chunk_size=1000, chunk_overlap=300) 
 ```
-
+<DocumentationButton href="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" margin="0 0 16px 0" />
 
 ### Embed the chunks
-
 We use `SentenceTransformerEmbed` to embed the chunks. 
-You can refer to the documentation [here](https://cocoindex.io/docs/ops/functions#sentencetransformerembed). 
 
 ```python
 @cocoindex.transform_flow()
 def code_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
-    """
-    Embed the text using a SentenceTransformer model.
-    """
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
             model="sentence-transformers/all-MiniLM-L6-v2"))
 ```
 
-Then for each chunk, we will embed it using the `code_to_embedding` function. and collect the embeddings to the `code_embeddings` collector.
+<DocumentationButton href="https://cocoindex.io/docs/ops/functions#sentencetransformerembed" text="SentenceTransformerEmbed" margin="0 0 16px 0" />
 
-`@cocoindex.transform_flow()` is needed to share the transformation across indexing and query. We build a vector index and query against it, 
-the embedding computation needs to be consistent between indexing and querying. See [documentation](https://cocoindex.io/docs/query#transform-flow) for more details.
+:::tip
+`@cocoindex.transform_flow()` is needed to share the transformation across indexing and query. When building a vector index and querying against it, the embedding computation must remain consistent between indexing and querying.
+:::
 
+<DocumentationButton href="https://cocoindex.io/docs/query#transform-flow" text="Transform Flow" margin="0 0 16px 0" />
+
+Then for each chunk, we will embed it using the `code_to_embedding` function, and collect the embeddings to the `code_embeddings` collector.
 
 ```python
 with data_scope["files"].row() as file:
@@ -113,10 +117,7 @@ with data_scope["files"].row() as file:
                                 code=chunk["text"], embedding=chunk["embedding"])
 ```
 
-
-### 2.4 Collect the embeddings
-
-Export the embeddings to a table.
+### Export the embeddings
 
 ```python
 code_embeddings.export(
@@ -126,8 +127,7 @@ code_embeddings.export(
     vector_indexes=[cocoindex.VectorIndex("embedding", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 ```
 
-We use Consine Similarity to measure the similarity between the query and the indexed data. 
-To learn more about Consine Similarity, see [Wiki](https://en.wikipedia.org/wiki/Cosine_similarity).
+We use [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity) to measure the similarity between the query and the indexed data. 
 
 ## Query the index
 We match against user-provided text by a SQL query, reusing the embedding operation in the indexing flow.
@@ -180,13 +180,16 @@ if __name__ == "__main__":
 
 ## Run the index setup & update
 
-🎉 Now you are all set!
+- Install dependencies
+    ```bash
+    pip install -e .
+    ```
 
-Run following command to setup and update the index.
-```sh
-cocoindex update --setup main.py
-```
-You'll see the index updates state in the terminal
+- Setup and update the index
+    ```sh
+    cocoindex update --setup main.py
+    ```
+    You'll see the index updates state in the terminal
 
 
 ## Test the query
@@ -197,7 +200,13 @@ python main.py
 ```
 
 When you see the prompt, you can enter your search query. for example: spec.
-
-You can find the search results in the terminal
-
 The returned results - each entry contains score (Cosine Similarity), filename, and the code snippet that get matched.
+
+## CocoInsight
+To get a better understanding of the indexing flow, you can use CocoInsight to help the development step by step.
+To spin up, it is super easy.
+
+```
+cocoindex server main.py -ci
+```
+Follow the url from the terminal - "Open CocoInsight at: ..." to access the CocoInsight.

@@ -1,12 +1,14 @@
 import type { ReactNode } from 'react';
 import { FaGithub, FaYoutube } from 'react-icons/fa';
+import { MdMenuBook } from 'react-icons/md';
 
 type ButtonProps = {
     href: string;
     children: ReactNode;
+    margin?: string;
 };
 
-function Button({ href, children }: ButtonProps): ReactNode {
+function Button({ href, children, margin = '0' }: ButtonProps): ReactNode {
     return (
         <a
             href={href}
@@ -15,6 +17,7 @@ function Button({ href, children }: ButtonProps): ReactNode {
             style={{
                 display: 'inline-block',
                 padding: '8px 12px',
+                margin: margin,
                 borderRadius: '4px',
                 textDecoration: 'none',
                 border: '1px solid #ccc',
@@ -29,11 +32,12 @@ function Button({ href, children }: ButtonProps): ReactNode {
 
 type GitHubButtonProps = {
     url: string;
+    margin?: string;
 };
 
-function GitHubButton({ url }: GitHubButtonProps): ReactNode {
+function GitHubButton({ url, margin }: GitHubButtonProps): ReactNode {
     return (
-        <Button href={url}>
+        <Button href={url} margin={margin}>
             <FaGithub style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
             View on GitHub
         </Button>
@@ -42,15 +46,31 @@ function GitHubButton({ url }: GitHubButtonProps): ReactNode {
 
 type YouTubeButtonProps = {
     url: string;
+    margin?: string;
 };
 
-function YouTubeButton({ url }: YouTubeButtonProps): ReactNode {
+function YouTubeButton({ url, margin }: YouTubeButtonProps): ReactNode {
     return (
-        <Button href={url}>
+        <Button href={url} margin={margin}>
             <FaYoutube style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
             Watch on YouTube
         </Button>
     );
 }
 
-export { GitHubButton, YouTubeButton };
+type DocumentationButtonProps = {
+    href: string;
+    text: string;
+    margin?: string;
+};
+
+function DocumentationButton({ href, text, margin }: DocumentationButtonProps): ReactNode {
+    return (
+        <Button href={href} margin={margin}>
+            <MdMenuBook style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
+            {text}
+        </Button>
+    );
+}
+
+export { GitHubButton, YouTubeButton, DocumentationButton };
