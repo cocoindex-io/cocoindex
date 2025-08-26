@@ -1,7 +1,7 @@
 use crate::{
     lib_context::{FlowContext, FlowExecutionContext, LibSetupContext},
     ops::{
-        get_optional_executor_factory,
+        get_optional_target_factory,
         interface::{FlowInstanceContext, TargetFactory},
     },
     prelude::*,
@@ -20,7 +20,6 @@ use super::{
     StateChange, TargetSetupState, db_metadata,
 };
 use crate::execution::db_tracking_setup;
-use crate::ops::interface::ExecutorFactory;
 use std::fmt::Write;
 
 enum MetadataRecordType {
@@ -81,10 +80,7 @@ fn from_metadata_record<S: DeserializeOwned + Debug + Clone>(
 }
 
 fn get_export_target_factory(target_type: &str) -> Option<Arc<dyn TargetFactory + Send + Sync>> {
-    match get_optional_executor_factory(target_type) {
-        Some(ExecutorFactory::ExportTarget(factory)) => Some(factory),
-        _ => None,
-    }
+    get_optional_target_factory(target_type)
 }
 
 pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupStates<ExistingMode>> {
