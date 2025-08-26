@@ -43,6 +43,13 @@ The flow is composed of the following steps:
 - Generate embeddings for each chunk
 - Store in a vector database for retrieval
 
+## Setup 
+- Install Postgres, follow [installation guide](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
+- Install CocoIndex
+  ```bash
+  pip install -U cocoindex
+  ```
+
 ## Add the codebase as a source. 
 We will index the CocoIndex codebase. Here we use the `LocalFile` source to ingest files from the CocoIndex codebase root directory.
 
@@ -62,12 +69,6 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`). 
 <DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="Sources" />
 
-## Setup 
-- Install Postgres, follow [installation guide](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
-- Install CocoIndex
-  ```bash
-  pip install -U cocoindex
-  ```
 
 ## Process each file and collect the information
 
@@ -97,6 +98,8 @@ with data_scope["files"].row() as file:
           language=file["extension"], chunk_size=1000, chunk_overlap=300) 
 ```
 <DocumentationButton href="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" margin="0 0 16px 0" />
+
+![SplitRecursively](/img/examples/codebase_index/chunk.png)
 
 ### Embed the chunks
 We use `SentenceTransformerEmbed` to embed the chunks. 
