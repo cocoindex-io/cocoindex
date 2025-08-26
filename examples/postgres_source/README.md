@@ -1,4 +1,4 @@
-# PostgreSQL Source Embedding Example 🗄️
+# PostgreSQL Source Example 🗄️
 
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 

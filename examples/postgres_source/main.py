@@ -25,7 +25,7 @@ def postgres_message_indexing_flow(
         )
     )
 
-    message_embeddings = data_scope.add_collector()
+    indexed_messages = data_scope.add_collector()
     with data_scope["messages"].row() as message_row:
         # Use the indexing column for embedding generation
         message_row["embedding"] = message_row["message"].transform(
@@ -34,14 +34,14 @@ def postgres_message_indexing_flow(
             )
         )
         # Collect the data - include key columns and content
-        message_embeddings.collect(
+        indexed_messages.collect(
             id=message_row["id"],
             author=message_row["author"],
             message=message_row["message"],
             embedding=message_row["embedding"],
         )
 
-    message_embeddings.export(
+    indexed_messages.export(
         "output",
         cocoindex.targets.Postgres(),
         primary_key_fields=["id"],
@@ -93,7 +93,7 @@ def postgres_product_indexing_flow(
         )
     )
 
-    product_embeddings = data_scope.add_collector()
+    indexed_product = data_scope.add_collector()
     with data_scope["products"].row() as product:
         product["full_description"] = flow_builder.transform(
             make_full_description,
@@ -111,7 +111,7 @@ def postgres_product_indexing_flow(
                 model="sentence-transformers/all-MiniLM-L6-v2"
             )
         )
-        product_embeddings.collect(
+        indexed_product.collect(
             product_category=product["_key"]["product_category"],
             product_name=product["_key"]["product_name"],
             description=product["description"],
@@ -121,7 +121,7 @@ def postgres_product_indexing_flow(
             embedding=product["embedding"],
         )
 
-    product_embeddings.export(
+    indexed_product.export(
         "output",
         cocoindex.targets.Postgres(),
         primary_key_fields=["product_category", "product_name"],
