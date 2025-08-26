@@ -3,6 +3,7 @@ use crate::ops::sdk::*;
 use crate::fields_value;
 use crate::ops::shared::postgres::get_db_pool;
 use crate::settings::DatabaseConnectionSpec;
+use sqlx::postgres::types::PgInterval;
 use sqlx::{Column, PgPool, Row};
 
 #[derive(Debug, Deserialize)]
@@ -135,86 +136,51 @@ async fn fetch_table_schema(
     })
 }
 
-/// Convert a PostgreSQL row value to a serde_json::Value based on the column type
-fn convert_pg_value_to_json(
+/// Convert a PostgreSQL row value directly into Value (Basic or Null)
+fn convert_pg_value_to_value(
     row: &sqlx::postgres::PgRow,
     column: &ColumnInfo,
     col_index: usize,
-) -> Result<serde_json::Value> {
-    // Check for null values in a type-agnostic way based on the actual column type
-    let is_null = match &column.value_type {
-        BasicValueType::Uuid => row.try_get::<Option<uuid::Uuid>, _>(col_index)?.is_none(),
-        BasicValueType::Int64 => row.try_get::<Option<i64>, _>(col_index)?.is_none(),
-        BasicValueType::Bool => row.try_get::<Option<bool>, _>(col_index)?.is_none(),
-        BasicValueType::Float32 => row.try_get::<Option<f32>, _>(col_index)?.is_none(),
-        BasicValueType::Float64 => row.try_get::<Option<f64>, _>(col_index)?.is_none(),
-        _ => row.try_get::<Option<String>, _>(col_index)?.is_none(), // Default to string check
-    };
-
-    if is_null {
-        return Ok(serde_json::Value::Null);
-    }
-
-    match &column.value_type {
-        BasicValueType::Bytes => {
-            let bytes: Vec<u8> = row.try_get(col_index)?;
-            Ok(serde_json::to_value(bytes)?)
+) -> Result<Value> {
+    let value = match &column.value_type {
+        BasicValueType::Bytes => Value::from(row.try_get::<Option<Vec<u8>>, _>(col_index)?),
+        BasicValueType::Str => Value::from(row.try_get::<Option<String>, _>(col_index)?),
+        BasicValueType::Bool => Value::from(row.try_get::<Option<bool>, _>(col_index)?),
+        BasicValueType::Int64 => Value::from(row.try_get::<Option<i64>, _>(col_index)?),
+        BasicValueType::Float32 => Value::from(row.try_get::<Option<f32>, _>(col_index)?),
+        BasicValueType::Float64 => Value::from(row.try_get::<Option<f64>, _>(col_index)?),
+        BasicValueType::Range => {
+            Value::from(row.try_get::<Option<serde_json::Value>, _>(col_index)?)
         }
-        BasicValueType::Str => {
-            let s: String = row.try_get(col_index)?;
-            Ok(serde_json::Value::String(s))
-        }
-        BasicValueType::Bool => {
-            let b: bool = row.try_get(col_index)?;
-            Ok(serde_json::Value::Bool(b))
-        }
-        BasicValueType::Int64 => {
-            let i: i64 = row.try_get(col_index)?;
-            Ok(serde_json::Value::Number(i.into()))
-        }
-        BasicValueType::Float32 => {
-            let f: f32 = row.try_get(col_index)?;
-            Ok(serde_json::to_value(f)?)
-        }
-        BasicValueType::Float64 => {
-            let f: f64 = row.try_get(col_index)?;
-            Ok(serde_json::to_value(f)?)
-        }
-        BasicValueType::Uuid => {
-            let uuid: uuid::Uuid = row.try_get(col_index)?;
-            Ok(serde_json::Value::String(uuid.to_string()))
-        }
+        BasicValueType::Uuid => Value::from(row.try_get::<Option<uuid::Uuid>, _>(col_index)?),
         BasicValueType::Date => {
-            let date: chrono::NaiveDate = row.try_get(col_index)?;
-            Ok(serde_json::Value::String(date.to_string()))
+            Value::from(row.try_get::<Option<chrono::NaiveDate>, _>(col_index)?)
         }
         BasicValueType::Time => {
-            let time: chrono::NaiveTime = row.try_get(col_index)?;
-            Ok(serde_json::Value::String(time.to_string()))
+            Value::from(row.try_get::<Option<chrono::NaiveTime>, _>(col_index)?)
         }
         BasicValueType::LocalDateTime => {
-            let dt: chrono::NaiveDateTime = row.try_get(col_index)?;
-            Ok(serde_json::Value::String(dt.to_string()))
+            Value::from(row.try_get::<Option<chrono::NaiveDateTime>, _>(col_index)?)
         }
         BasicValueType::OffsetDateTime => {
-            let dt: chrono::DateTime<chrono::Utc> = row.try_get(col_index)?;
-            Ok(serde_json::Value::String(dt.to_rfc3339()))
+            Value::from(row.try_get::<Option<chrono::DateTime<chrono::FixedOffset>>, _>(col_index)?)
         }
         BasicValueType::TimeDelta => {
-            // PostgreSQL interval to string representation
-            let interval: String = row.try_get(col_index)?;
-            Ok(serde_json::Value::String(interval))
+            let opt_iv = row.try_get::<Option<PgInterval>, _>(col_index)?;
+            let opt_dur = opt_iv.map(|iv| {
+                let approx_days = iv.days as i64 + (iv.months as i64) * 30;
+                chrono::Duration::microseconds(iv.microseconds)
+                    + chrono::Duration::days(approx_days)
+            });
+            Value::from(opt_dur)
         }
         BasicValueType::Json => {
-            let json: serde_json::Value = row.try_get(col_index)?;
-            Ok(json)
+            Value::from(row.try_get::<Option<serde_json::Value>, _>(col_index)?)
         }
-        _ => {
-            // Fallback: convert to string
-            let s: String = row.try_get(col_index)?;
-            Ok(serde_json::Value::String(s))
-        }
-    }
+        // Fallback: treat as JSON
+        _ => Value::from(row.try_get::<Option<serde_json::Value>, _>(col_index)?),
+    };
+    Ok(value)
 }
 
 #[async_trait]
@@ -243,47 +209,27 @@ impl SourceExecutor for Executor {
                 let key = if self.table_schema.primary_key_columns.len() == 1 {
                     // Single primary key - extract directly
                     let pk_col = &self.table_schema.primary_key_columns[0];
-                    let json_value = convert_pg_value_to_json(&row, pk_col, 0)?;
-
-                    match &pk_col.value_type {
-                        BasicValueType::Str => KeyValue::Str(json_value.as_str().unwrap_or("").to_string().into()),
-                        BasicValueType::Int64 => KeyValue::Int64(json_value.as_i64().unwrap_or(0)),
-                        BasicValueType::Uuid => {
-                            let uuid_str = json_value.as_str().unwrap_or("");
-                            KeyValue::Uuid(uuid::Uuid::parse_str(uuid_str).unwrap_or_default())
-                        },
-                        _ => {
-                            // For other types, convert to string representation
-                            KeyValue::Str(json_value.to_string().into())
-                        }
+                    let v = convert_pg_value_to_value(&row, pk_col, 0)?;
+                    if v.is_null() {
+                        Err(anyhow::anyhow!(
+                            "Primary key value is NULL for column `{}`",
+                            pk_col.name
+                        ))?;
                     }
+                    v.into_key()?
                 } else {
-                    // Composite primary key - create a struct with individual KeyValue fields
-                    let mut key_values = Vec::new();
-                    for (i, pk_col) in self.table_schema.primary_key_columns.iter().enumerate() {
-                        let json_value = convert_pg_value_to_json(&row, pk_col, i)?;
-
-                        // Convert each primary key column to appropriate KeyValue type
-                        let key_value = match &pk_col.value_type {
-                            BasicValueType::Str => KeyValue::Str(json_value.as_str().unwrap_or("").to_string().into()),
-                            BasicValueType::Int64 => KeyValue::Int64(json_value.as_i64().unwrap_or(0)),
-                            BasicValueType::Uuid => {
-                                let uuid_str = json_value.as_str().unwrap_or("");
-                                KeyValue::Uuid(uuid::Uuid::parse_str(uuid_str).unwrap_or_default())
-                            },
-                            BasicValueType::Bool => KeyValue::Bool(json_value.as_bool().unwrap_or(false)),
-                            BasicValueType::Date => {
-                                let date_str = json_value.as_str().unwrap_or("");
-                                KeyValue::Date(chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d").unwrap_or_default())
-                            },
-                            _ => {
-                                // For other types, convert to string representation
-                                KeyValue::Str(json_value.to_string().into())
-                            }
-                        };
-                        key_values.push(key_value);
+                    // Composite primary key - combine each part
+                    let parts = self
+                        .table_schema
+                        .primary_key_columns
+                        .iter()
+                        .enumerate()
+                        .map(|(i, pk_col)| convert_pg_value_to_value(&row, pk_col, i))
+                        .collect::<Result<Vec<_>>>()?;
+                    if parts.iter().any(|v| v.is_null()) {
+                        Err(anyhow::anyhow!("Composite primary key contains NULL component"))?;
                     }
-                    KeyValue::Struct(key_values)
+                    KeyValue::from_values(parts.iter())?
                 };
 
                 yield vec![PartialSourceRowMetadata {
@@ -479,16 +425,8 @@ impl SourceExecutor for Executor {
                                     )
                                 })?;
 
-                            let json_value = convert_pg_value_to_json(&row, value_col, col_index)?;
-
-                            // Convert each column value to a field, similar to Google Drive
-                            match json_value {
-                                serde_json::Value::String(s) => fields.push(s.into()),
-                                serde_json::Value::Number(n) => fields.push(n.to_string().into()),
-                                serde_json::Value::Bool(b) => fields.push(b.to_string().into()),
-                                serde_json::Value::Null => fields.push("".to_string().into()),
-                                _ => fields.push(json_value.to_string().into()),
-                            }
+                            let value = convert_pg_value_to_value(&row, value_col, col_index)?;
+                            fields.push(value);
                         }
                         Some(SourceValue::Existence(FieldValues { fields }))
                     }
