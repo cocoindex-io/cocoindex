@@ -23,7 +23,7 @@ We will generate two kinds of relationships:
 2. Mentions of entities in a document. E.g., "core/basics.mdx" mentions `CocoIndex` and `Incremental Processing`.
 
 ## Setup
-*   [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing. 
+*   [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
 *   [Install Neo4j](https://cocoindex.io/docs/ops/storages#Neo4j), a graph database.
 *   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai). Alternatively, you can switch to Ollama, which runs LLM models locally - [guide](https://cocoindex.io/docs/ai/llm#ollama).
 
@@ -36,7 +36,7 @@ You can read the official CocoIndex Documentation for Property Graph Targets [he
 
 ### Add documents as source
 
-We will process CocoIndex documentation markdown files (`.md`, `.mdx`) from the `docs/core` directory ([markdown files](https://github.com/cocoindex-io/cocoindex/tree/main/docs/docs/core), [deployed docs](https://cocoindex.io/docs/core/basics)). 
+We will process CocoIndex documentation markdown files (`.md`, `.mdx`) from the `docs/core` directory ([markdown files](https://github.com/cocoindex-io/cocoindex/tree/main/docs/docs/core), [deployed docs](https://cocoindex.io/docs/core/basics)).
 
 ```python
 @cocoindex.flow_def(name="DocsToKG")
@@ -124,7 +124,7 @@ Next, we will use `cocoindex.functions.ExtractByLlm` to extract the relationship
 doc["relationships"] = doc["content"].transform(
     cocoindex.functions.ExtractByLlm(
         llm_spec=cocoindex.LlmSpec(
-            api_type=cocoindex.LlmApiType.OPENAI, 
+            api_type=cocoindex.LlmApiType.OPENAI,
             model="gpt-4o"
         ),
         output_type=list[Relationship],
@@ -170,7 +170,7 @@ with doc["relationships"].row() as relationship:
 
 
 ### Build knowledge graph
- 
+
 #### Basic concepts
 All nodes for Neo4j need two things:
 1. Label: The type of the node. E.g., `Document`, `Entity`.
@@ -216,10 +216,10 @@ This exports Neo4j nodes with label `Document` from the `document_node` collecto
 
 #### Export `RELATIONSHIP` and `Entity` nodes to Neo4j
 
-We don't have explicit collector for `Entity` nodes. 
+We don't have explicit collector for `Entity` nodes.
 They are part of the `entity_relationship` collector and fields are collected during the relationship extraction.
 
-To export them as Neo4j nodes, we need to first declare `Entity` nodes. 
+To export them as Neo4j nodes, we need to first declare `Entity` nodes.
 
 ```python
 flow_builder.declare(
@@ -268,7 +268,7 @@ In a relationship, there's:
 2.  A relationship connecting the source and target.
 Note that different relationships may share the same source and target nodes.
 
-`NodeFromFields` takes the fields from the `entity_relationship` collector and creates `Entity` nodes. 
+`NodeFromFields` takes the fields from the `entity_relationship` collector and creates `Entity` nodes.
 
 #### Export the `entity_mention` to Neo4j.
 
@@ -314,14 +314,14 @@ It creates relationships by:
     ```sh
     cocoindex update --setup main.py
     ```
-    
+
     You'll see the index updates state in the terminal. For example, you'll see the following output:
 
     ```
     documents: 7 added, 0 removed, 0 updated
     ```
 
-3.  (Optional) I used CocoInsight to troubleshoot the index generation and understand the data lineage of the pipeline. 
+3.  (Optional) I used CocoInsight to troubleshoot the index generation and understand the data lineage of the pipeline.
 It is in free beta now, you can give it a try. Run following command to start CocoInsight:
 
     ```sh
@@ -348,8 +348,7 @@ MATCH p=()-->() RETURN p
 
 
 ## Support us
-We are constantly improving, and more features and examples are coming soon. 
+We are constantly improving, and more features and examples are coming soon.
 If you love this article, please give us a star ⭐ at [GitHub repo](https://github.com/cocoindex-io/cocoindex) to help us grow.
 
 Thanks for reading!
-

@@ -1,5 +1,5 @@
 ---
-title: Index PDFs, Images, Slides without OCR 
+title: Index PDFs, Images, Slides without OCR
 description: Build a visual document indexing pipeline using ColPali to index scanned documents, PDFs, academic papers, presentation slides, and standalone images — all mixed together with charts, tables, and figures - into the same vector space.
 sidebar_class_name: hidden
 slug: /examples/multi_format_index
@@ -17,7 +17,7 @@ import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButto
 ## Overview
 Do you have a messy collection of scanned documents, PDFs, academic papers, presentation slides, and standalone images — all mixed together with charts, tables, and figures — that you want to process into the same vector space for semantic search or to power an AI agent?
 
-In this example, we’ll walk through how to build a visual document indexing pipeline using ColPali for embedding both PDFs and images — and then query the index using natural language.  
+In this example, we’ll walk through how to build a visual document indexing pipeline using ColPali for embedding both PDFs and images — and then query the index using natural language.
 We’ll skip OCR entirely — ColPali can directly understand document layouts, tables, and figures from images, making it perfect for semantic search across visual-heavy content.
 
 
@@ -37,7 +37,7 @@ Example queries:
 - *"architectural floor plan with annotations"*
 - *"pie chart of Q3 revenue"*
 
-Full code is open source and available [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing). 
+Full code is open source and available [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing).
 :rocket: Only ~70 lines of Python on the indexing path (super simple!)
 
 ## Core Components
@@ -55,7 +55,7 @@ data_scope["documents"] = flow_builder.add_source(
 
 ### Convert Files to Pages
 
-We classify files by MIME type and process accordingly. 
+We classify files by MIME type and process accordingly.
 
 Define a dataclass:
 
@@ -109,7 +109,7 @@ In the flow we convert all the files to pages. this makes each pages and all ima
 
 ### Generate Visual Embeddings
 
-We use ColPali to generate embeddings for images on each page. 
+We use ColPali to generate embeddings for images on each page.
 
 ```python
 with doc["pages"].row() as page:
@@ -126,7 +126,7 @@ with doc["pages"].row() as page:
 
 
 ColPali Architecture fundamentally rethinks how documents, especially visually complex or image-rich ones, are represented and searched.
-Instead of reducing each image or page to a single dense vector (as in traditional bi-encoders), ColPali breaks an image into many smaller patches, preserving local spatial and semantic structure. 
+Instead of reducing each image or page to a single dense vector (as in traditional bi-encoders), ColPali breaks an image into many smaller patches, preserving local spatial and semantic structure.
 
 Each patch receives its own embedding, which together form a multi-vector representation of the complete document.
 
@@ -137,7 +137,7 @@ For a detailed explanation of ColPali Architecture, please refer to [our previou
 
 ## Collect & Export to Qdrant
 
-Note the way to embed image and query are different, as they’re two different types of data. 
+Note the way to embed image and query are different, as they’re two different types of data.
 
 Create a function to embed query:
 

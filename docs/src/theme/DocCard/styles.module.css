@@ -10,11 +10,11 @@
     /* transform: translateY(-2px); */
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
-  
+
   .cardTitleContainer {
     display: flex;
   }
-  
+
   .cardTitle {
     font-size: 1rem;
     margin-top: 16px;
@@ -53,7 +53,7 @@
   border: 1px solid var(--ifm-color-emphasis-300);
   background: var(--ifm-background-color);
   color: var(--ifm-color-emphasis-700);
-  transition: 
+  transition:
     background 0.15s,
     border-color 0.15s,
     color 0.15s;

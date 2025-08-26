@@ -431,7 +431,9 @@ def main():
         "--create_db", action="store_true", help="Create database if it doesn't exist"
     )
     parser.add_argument(
-        "--no_overwrite", action="store_true", help="Don't overwrite existing tables (default: overwrite)"
+        "--no_overwrite",
+        action="store_true",
+        help="Don't overwrite existing tables (default: overwrite)",
     )
 
     args = parser.parse_args()
@@ -441,7 +443,9 @@ def main():
 
     # Override with command line arguments
     source_db_url = args.db_url or config["source_db_url"]
-    overwrite = not args.no_overwrite  # Default to True unless --no_overwrite is specified
+    overwrite = (
+        not args.no_overwrite
+    )  # Default to True unless --no_overwrite is specified
 
     print("🚀 PostgreSQL Test Database Setup for CocoIndex Source Testing")
     print("=" * 70)
@@ -486,10 +490,10 @@ def main():
 
         # Setup both schemas
         print(f"\n📋 Setting up both test tables...")
-        
+
         # Setup simple schema (single primary key)
         setup.setup_simple_schema("test_simple")
-        
+
         # Setup multiple schema (composite primary key)
         setup.setup_multiple_schema("test_multiple")
 
@@ -525,7 +529,9 @@ def main():
             print(f"INDEXING_COLUMN=description")
             print(f"ORDINAL_COLUMN=modified_time")
             print(f"")
-            print(f"💡 Pro tip: Use --no_overwrite if you want to keep existing tables!")
+            print(
+                f"💡 Pro tip: Use --no_overwrite if you want to keep existing tables!"
+            )
         else:
             print("❌ Setup verification failed!")
             sys.exit(1)

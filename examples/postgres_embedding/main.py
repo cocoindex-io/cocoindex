@@ -6,8 +6,9 @@ import cocoindex
 import os
 import sys
 
-os.environ['RUST_BACKTRACE'] = '1'
-os.environ['COCOINDEX_LOG'] = 'debug'
+os.environ["RUST_BACKTRACE"] = "1"
+os.environ["COCOINDEX_LOG"] = "debug"
+
 
 @cocoindex.transform_flow()
 def text_to_embedding(
@@ -28,31 +29,39 @@ def get_key_columns_from_env() -> list[str]:
     """
     Get key columns from environment variables.
     Ensures only one of KEY_COLUMN_FOR_SINGLE_KEY or KEY_COLUMNS_FOR_MULTIPLE_KEYS is set.
-    
+
     Returns:
         List of key column names
-        
+
     Raises:
         SystemExit: If configuration is invalid
     """
     single_key = os.environ.get("KEY_COLUMN_FOR_SINGLE_KEY")
     multiple_keys = os.environ.get("KEY_COLUMNS_FOR_MULTIPLE_KEYS")
-    
+
     # Check that exactly one is set
     if single_key and multiple_keys:
-        print("❌ Error: Both KEY_COLUMN_FOR_SINGLE_KEY and KEY_COLUMNS_FOR_MULTIPLE_KEYS are set")
+        print(
+            "❌ Error: Both KEY_COLUMN_FOR_SINGLE_KEY and KEY_COLUMNS_FOR_MULTIPLE_KEYS are set"
+        )
         print("   Please set only one of them:")
         print("   - KEY_COLUMN_FOR_SINGLE_KEY=id (for single primary key)")
-        print("   - KEY_COLUMNS_FOR_MULTIPLE_KEYS=product_category,product_name (for composite primary key)")
+        print(
+            "   - KEY_COLUMNS_FOR_MULTIPLE_KEYS=product_category,product_name (for composite primary key)"
+        )
         sys.exit(1)
-    
+
     if not single_key and not multiple_keys:
-        print("❌ Error: Neither KEY_COLUMN_FOR_SINGLE_KEY nor KEY_COLUMNS_FOR_MULTIPLE_KEYS is set")
+        print(
+            "❌ Error: Neither KEY_COLUMN_FOR_SINGLE_KEY nor KEY_COLUMNS_FOR_MULTIPLE_KEYS is set"
+        )
         print("   Please set one of them:")
         print("   - KEY_COLUMN_FOR_SINGLE_KEY=id (for single primary key)")
-        print("   - KEY_COLUMNS_FOR_MULTIPLE_KEYS=product_category,product_name (for composite primary key)")
+        print(
+            "   - KEY_COLUMNS_FOR_MULTIPLE_KEYS=product_category,product_name (for composite primary key)"
+        )
         sys.exit(1)
-    
+
     if single_key:
         # Single primary key
         return [single_key.strip()]
@@ -60,10 +69,11 @@ def get_key_columns_from_env() -> list[str]:
         # Multiple primary keys (composite key)
         return [col.strip() for col in multiple_keys.split(",")]
 
+
 def is_single_key() -> bool:
     """
     Check if using single key or composite key configuration.
-    
+
     Returns:
         bool: True if using single key, False if using composite key
     """
@@ -81,13 +91,13 @@ def postgres_embedding_flow(
     # Required environment variables
     table_name = os.environ["TABLE_NAME"]
     indexing_column = os.environ["INDEXING_COLUMN"]
-    
+
     # Get key columns from environment
     key_columns = get_key_columns_from_env()
-    
+
     # Optional environment variables
     ordinal_column = os.environ.get("ORDINAL_COLUMN")
-    
+
     # Only include the data column - primary keys are automatically read by the PostgreSQL source
     included_columns = [indexing_column]
 
@@ -100,10 +110,7 @@ def postgres_embedding_flow(
 
     # Create auth entry for the source database
     source_db_conn = cocoindex.add_auth_entry(
-        "source_db_conn",
-        cocoindex.DatabaseConnectionSpec(
-            url=source_db_url
-        )
+        "source_db_conn", cocoindex.DatabaseConnectionSpec(url=source_db_url)
     )
 
     # Read from source PostgreSQL table with only the specified columns
@@ -114,7 +121,7 @@ def postgres_embedding_flow(
     }
     if ordinal_column:
         postgres_source_kwargs["ordinal_column"] = ordinal_column
-    
+
     data_scope["documents"] = flow_builder.add_source(
         cocoindex.sources.PostgresDb(**postgres_source_kwargs)
     )
@@ -129,14 +136,14 @@ def postgres_embedding_flow(
             "content": row[indexing_column],
             "text_embedding": row["text_embedding"],
         }
-        
+
         # Add each key column as a separate field
         for key_col in key_columns:
             if is_single_key():
                 collect_data[key_col] = row[key_col]
             else:
                 collect_data[key_col] = row["_key"][key_col]
-        
+
         document_embeddings.collect(**collect_data)
 
     document_embeddings.export(
@@ -157,12 +164,12 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
     table_name = cocoindex.utils.get_target_default_name(
         postgres_embedding_flow, "document_embeddings"
     )
-    
+
     # Get key columns configuration
     key_columns = get_key_columns_from_env()
     # Build SELECT clause with all key columns
     key_columns_select = ", ".join(key_columns)
-    
+
     # Evaluate the transform flow defined above with the input query, to get the embedding.
     query_vector = text_to_embedding.eval(query)
     # Run the query and get the results.
@@ -178,7 +185,11 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
             )
             results = []
             for row in cur.fetchall():
-                result = {"content": row[0], "score": 1.0 - row[1], "key": "__".join(str(x) for x in row[2:])}
+                result = {
+                    "content": row[0],
+                    "score": 1.0 - row[1],
+                    "key": "__".join(str(x) for x in row[2:]),
+                }
                 results.append(result)
             return results
 
@@ -204,7 +215,9 @@ def _main() -> None:
             results = search(pool, query)
             print("\nSearch results:")
             for result in results:
-                print(f"[{result['score']:.3f}] {result['content']} key: {result['key']}")
+                print(
+                    f"[{result['score']:.3f}] {result['content']} key: {result['key']}"
+                )
                 print("---")
             print()
 

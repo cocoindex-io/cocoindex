@@ -18,7 +18,7 @@ import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButto
 ## What We Will Achieve
 - Detect all faces in the image and extract their bounding boxes
 - Crop and encode each face image into a 128-dimensional face embedding
-- Store metadata and vectors in a structured index to support queries like: 
+- Store metadata and vectors in a structured index to support queries like:
 “Find all similar faces to this one” or “Search images that include this person”
 
 
@@ -49,8 +49,8 @@ def face_recognition_flow(flow_builder, data_scope):
 This creates a table with `filename` and `content` fields. 📂
 
 
-You can connect it to your [S3 Buckets](https://cocoindex.io/docs/ops/sources#amazons3) (with SQS integration, [example](https://cocoindex.io/blogs/s3-incremental-etl)) 
-or [Azure Blob store](https://cocoindex.io/docs/ops/sources#azureblob). 
+You can connect it to your [S3 Buckets](https://cocoindex.io/docs/ops/sources#amazons3) (with SQS integration, [example](https://cocoindex.io/blogs/s3-incremental-etl))
+or [Azure Blob store](https://cocoindex.io/docs/ops/sources#azureblob).
 
 ## Detect and Extract Faces
 
@@ -184,6 +184,5 @@ You can now build facial search apps or dashboards. For example:
 
 For querying embeddings, check out [Image Search project](https://cocoindex.io/blogs/live-image-search).
 
-If you’d like to see a full example on the query path with image match, give it a shout at 
+If you’d like to see a full example on the query path with image match, give it a shout at
 [our group](https://discord.com/invite/zpA9S2DR7s).
-

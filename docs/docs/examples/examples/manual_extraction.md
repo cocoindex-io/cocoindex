@@ -75,7 +75,7 @@ First, let's add Python docs in markdown as a source. We will illustrate how to 
 @cocoindex.flow_def(name="ManualExtraction")
 def manual_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="markdown_files")) 
+        cocoindex.sources.LocalFile(path="markdown_files"))
 
     modules_index = data_scope.add_collector()
 ```
@@ -175,7 +175,7 @@ class ModuleSummary:
 ```
 
 ### 2. Define cocoIndex Flow
-Next, let's define a custom function to summarize the data. You can see detailed documentation [here](https://cocoindex.io/docs/core/custom_function#option-1-by-a-standalone-function) 
+Next, let's define a custom function to summarize the data. You can see detailed documentation [here](https://cocoindex.io/docs/core/custom_function#option-1-by-a-standalone-function)
 
 
 ``` python
@@ -210,7 +210,7 @@ To do this, we can plugin a custom function to convert PDF to markdown. See the 
 
 ### 1. Define a function spec
 
-The function spec of a function configures behavior of a specific instance of the function. 
+The function spec of a function configures behavior of a specific instance of the function.
 
 ``` python
 class PdfToMarkdown(cocoindex.op.FunctionSpec):
@@ -219,7 +219,7 @@ class PdfToMarkdown(cocoindex.op.FunctionSpec):
 
 ### 2. Define an executor class
 
-The executor class is a class that implements the function spec. It is responsible for the actual execution of the function. 
+The executor class is a class that implements the function spec. It is responsible for the actual execution of the function.
 
 This class takes PDF content as bytes, saves it to a temporary file, and uses PdfConverter to extract the text content. The extracted text is then returned as a string, converting PDF to markdown format.
 
