@@ -123,7 +123,7 @@ def postgres_embedding_flow(
         postgres_source_kwargs["ordinal_column"] = ordinal_column
 
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.PostgresDb(**postgres_source_kwargs)
+        cocoindex.sources.Postgres(**postgres_source_kwargs)
     )
 
     document_embeddings = data_scope.add_collector()

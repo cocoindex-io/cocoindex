@@ -1,15 +1,8 @@
-use crate::fields_value;
-use async_stream::try_stream;
-use futures::TryStreamExt;
-use log::info;
-use std::sync::Arc;
-
-use crate::base::spec;
 use crate::ops::sdk::*;
+
+use crate::fields_value;
 use crate::settings::DatabaseConnectionSpec;
-use async_trait::async_trait;
-use sqlx::Column;
-use sqlx::{PgPool, Row};
+use sqlx::{Column, PgPool, Row};
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
@@ -227,11 +220,11 @@ fn convert_pg_value_to_json(
 
 #[async_trait]
 impl SourceExecutor for Executor {
-    fn list<'a>(
-        &'a self,
-        _options: &'a SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>> {
-        try_stream! {
+    async fn list(
+        &self,
+        _options: &SourceExecutorListOptions,
+    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRowMetadata>>>> {
+        let stream = try_stream! {
             // Build query to select primary key columns
             let pk_columns: Vec<String> = self.table_schema.primary_key_columns
                 .iter()
@@ -303,6 +296,7 @@ impl SourceExecutor for Executor {
                     key,
                     key_aux_info: serde_json::Value::Null,
                     ordinal: Some(Ordinal::unavailable()),
+                    content_version_fp: None,
                 });
 
                 if batch.len() >= batch_size {
@@ -314,8 +308,8 @@ impl SourceExecutor for Executor {
             if !batch.is_empty() {
                 yield batch;
             }
-        }
-        .boxed()
+        };
+        Ok(stream.boxed())
     }
 
     async fn get_value(
@@ -520,7 +514,11 @@ impl SourceExecutor for Executor {
             None
         };
 
-        Ok(PartialSourceRowData { value, ordinal })
+        Ok(PartialSourceRowData {
+            value,
+            ordinal,
+            content_version_fp: None,
+        })
     }
 }
 
@@ -531,7 +529,7 @@ impl SourceFactoryBase for Factory {
     type Spec = Spec;
 
     fn name(&self) -> &str {
-        "PostgresDb"
+        "Postgres"
     }
 
     async fn get_output_schema(

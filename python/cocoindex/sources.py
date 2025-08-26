@@ -69,7 +69,7 @@ class AzureBlob(op.SourceSpec):
     account_access_key: TransientAuthEntryReference[str] | None = None
 
 
-class PostgresDb(op.SourceSpec):
+class Postgres(op.SourceSpec):
     """Import data from a PostgreSQL table."""
 
     _op_category = op.OpCategory.SOURCE

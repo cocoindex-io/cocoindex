@@ -107,7 +107,7 @@ The example uses these environment variables to configure the PostgreSQL source:
 
 The example demonstrates a simple flow:
 
-1. **Read from Source**: Uses `cocoindex.sources.PostgresDb` to read from your existing table
+1. **Read from Source**: Uses `cocoindex.sources.Postgres` to read from your existing table
 2. **Generate Embeddings**: Processes text and creates embeddings using SentenceTransformers
 3. **Store Embeddings**: Exports to the CocoIndex database with automatic table creation
 4. **Search**: Provides interactive semantic search over the stored embeddings
