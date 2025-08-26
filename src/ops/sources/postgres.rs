@@ -65,7 +65,7 @@ async fn fetch_table_schema(
             c.column_name,
             c.data_type,
             c.is_nullable,
-            CASE WHEN pk.column_name IS NOT NULL THEN true ELSE false END as is_primary_key
+            (pk.column_name IS NOT NULL) as is_primary_key
         FROM
             information_schema.columns c
         LEFT JOIN (
@@ -113,6 +113,9 @@ async fn fetch_table_schema(
     }
 
     if primary_key_columns.is_empty() {
+        if value_columns.is_empty() {
+            api_bail!("Table `{table_name}` not found");
+        }
         api_bail!("Table `{table_name}` has no primary key defined");
     }
 
