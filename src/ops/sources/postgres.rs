@@ -1,6 +1,7 @@
 use crate::ops::sdk::*;
 
 use crate::fields_value;
+use crate::ops::shared::postgres::get_db_pool;
 use crate::settings::DatabaseConnectionSpec;
 use sqlx::{Column, PgPool, Row};
 
@@ -33,8 +34,6 @@ struct PostgresTableSchema {
 struct Executor {
     db_pool: PgPool,
     table_name: String,
-    #[allow(dead_code)] // Used indirectly during schema discovery, kept for completeness
-    included_columns: Option<Vec<String>>,
     ordinal_column: Option<String>,
     table_schema: PostgresTableSchema,
 }
@@ -538,7 +537,7 @@ impl SourceFactoryBase for Factory {
         context: &FlowInstanceContext,
     ) -> Result<EnrichedValueType> {
         // Fetch table schema to build dynamic output schema
-        let db_pool = create_db_pool(spec.database.as_ref(), &context.auth_registry).await?;
+        let db_pool = get_db_pool(spec.database.as_ref(), &context.auth_registry).await?;
         let table_schema =
             fetch_table_schema(&db_pool, &spec.table_name, &spec.included_columns).await?;
 
@@ -613,7 +612,7 @@ impl SourceFactoryBase for Factory {
         spec: Spec,
         context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SourceExecutor>> {
-        let db_pool = create_db_pool(spec.database.as_ref(), &context.auth_registry).await?;
+        let db_pool = get_db_pool(spec.database.as_ref(), &context.auth_registry).await?;
 
         // Fetch table schema for dynamic type handling
         let table_schema =
@@ -622,7 +621,6 @@ impl SourceFactoryBase for Factory {
         let executor = Executor {
             db_pool,
             table_name: spec.table_name.clone(),
-            included_columns: spec.included_columns.clone(),
             ordinal_column: spec.ordinal_column.clone(),
             table_schema,
         };
@@ -642,21 +640,4 @@ impl SourceFactoryBase for Factory {
 
         Ok(Box::new(executor))
     }
-}
-
-/// Create a PostgreSQL connection pool (reused from postgres target)
-async fn create_db_pool(
-    db_ref: Option<&spec::AuthEntryReference<DatabaseConnectionSpec>>,
-    auth_registry: &AuthRegistry,
-) -> Result<PgPool> {
-    let lib_context = crate::lib_context::get_lib_context()?;
-    let db_conn_spec = db_ref
-        .as_ref()
-        .map(|db_ref| auth_registry.get(db_ref))
-        .transpose()?;
-    let db_pool = match db_conn_spec {
-        Some(db_conn_spec) => lib_context.db_pools.get_pool(&db_conn_spec).await?,
-        None => lib_context.require_builtin_db_pool()?.clone(),
-    };
-    Ok(db_pool)
 }

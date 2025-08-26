@@ -2,7 +2,6 @@ pub(crate) use crate::prelude::*;
 
 use crate::builder::plan::AnalyzedFieldReference;
 use crate::builder::plan::AnalyzedLocalFieldReference;
-use std::collections::BTreeMap;
 
 pub use super::factory_bases::*;
 pub use super::interface::*;
