@@ -3,7 +3,7 @@ use crate::ops::sdk::*;
 use crate::ops::shared::postgres::{bind_key_field, get_db_pool, key_value_fields_iter};
 use crate::settings::DatabaseConnectionSpec;
 use sqlx::postgres::types::PgInterval;
-use sqlx::{Column, PgPool, Row};
+use sqlx::{PgPool, Row};
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
@@ -21,6 +21,8 @@ pub struct Spec {
 struct PostgresTableSchema {
     primary_key_columns: Vec<FieldSchema>,
     value_columns: Vec<FieldSchema>,
+    ordinal_field_idx: Option<usize>,
+    ordinal_field_schema: Option<FieldSchema>,
 }
 
 struct Executor {
@@ -58,6 +60,7 @@ async fn fetch_table_schema(
     pool: &PgPool,
     table_name: &str,
     included_columns: &Option<Vec<String>>,
+    ordinal_column: &Option<String>,
 ) -> Result<PostgresTableSchema> {
     // Query to get column information including primary key status
     let query = r#"
@@ -89,6 +92,7 @@ async fn fetch_table_schema(
 
     let mut primary_key_columns = Vec::new();
     let mut value_columns = Vec::new();
+    let mut ordinal_field_schema: Option<FieldSchema> = None;
 
     for row in rows {
         let col_name: String = row.try_get::<String, _>("column_name")?;
@@ -103,12 +107,23 @@ async fn fetch_table_schema(
         );
 
         if is_primary_key {
-            primary_key_columns.push(field_schema);
+            primary_key_columns.push(field_schema.clone());
         } else if included_columns
             .as_ref()
             .map_or(true, |cols| cols.contains(&col_name))
         {
-            value_columns.push(field_schema);
+            value_columns.push(field_schema.clone());
+        }
+
+        if let Some(ord_col) = ordinal_column {
+            if &col_name == ord_col {
+                ordinal_field_schema = Some(field_schema.clone());
+                if is_primary_key {
+                    api_bail!(
+                        "`ordinal_column` cannot be a primary key column. It must be one of the value columns."
+                    );
+                }
+            }
         }
     }
 
@@ -119,9 +134,28 @@ async fn fetch_table_schema(
         api_bail!("Table `{table_name}` has no primary key defined");
     }
 
+    // If ordinal column specified, validate and compute its index within value columns if present
+    let ordinal_field_idx = match ordinal_column {
+        Some(ord) => {
+            let schema = ordinal_field_schema
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("`ordinal_column` `{}` not found in table", ord))?;
+            if !is_supported_ordinal_type(&schema.value_type.typ) {
+                api_bail!(
+                    "Unsupported `ordinal_column` type for `{}`. Supported types: Int64, LocalDateTime, OffsetDateTime",
+                    schema.name
+                );
+            }
+            value_columns.iter().position(|c| c.name == *ord)
+        }
+        None => None,
+    };
+
     Ok(PostgresTableSchema {
         primary_key_columns,
         value_columns,
+        ordinal_field_idx,
+        ordinal_field_schema,
     })
 }
 
@@ -176,20 +210,68 @@ fn convert_pg_value_to_value(
     Ok(value)
 }
 
+/// Convert a CocoIndex `Value` into an `Ordinal` if supported.
+/// Supported inputs:
+/// - Basic(Int64): interpreted directly as microseconds
+/// - Basic(LocalDateTime): converted to UTC micros
+/// - Basic(OffsetDateTime): micros since epoch
+/// Otherwise returns unavailable.
+fn is_supported_ordinal_type(t: &ValueType) -> bool {
+    matches!(
+        t,
+        ValueType::Basic(BasicValueType::Int64)
+            | ValueType::Basic(BasicValueType::LocalDateTime)
+            | ValueType::Basic(BasicValueType::OffsetDateTime)
+    )
+}
+
+fn value_to_ordinal(value: &Value) -> Ordinal {
+    match value {
+        Value::Null => Ordinal::unavailable(),
+        Value::Basic(basic) => match basic {
+            crate::base::value::BasicValue::Int64(v) => Ordinal(Some(*v)),
+            crate::base::value::BasicValue::LocalDateTime(dt) => {
+                Ordinal(Some(dt.and_utc().timestamp_micros()))
+            }
+            crate::base::value::BasicValue::OffsetDateTime(dt) => {
+                Ordinal(Some(dt.timestamp_micros()))
+            }
+            _ => Ordinal::unavailable(),
+        },
+        _ => Ordinal::unavailable(),
+    }
+}
+
 #[async_trait]
 impl SourceExecutor for Executor {
     async fn list(
         &self,
-        _options: &SourceExecutorListOptions,
+        options: &SourceExecutorListOptions,
     ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRowMetadata>>>> {
         let stream = try_stream! {
             // Build query to select primary key columns
-            let pk_columns: Vec<String> = self.table_schema.primary_key_columns
+            let pk_columns: Vec<String> = self
+                .table_schema
+                .primary_key_columns
                 .iter()
                 .map(|col| format!("\"{}\"", col.name))
                 .collect();
 
-            let mut query = format!("SELECT {} FROM \"{}\"", pk_columns.join(", "), self.table_name);
+            let mut select_parts = pk_columns.clone();
+            let mut ordinal_col_index: Option<usize> = None;
+            if options.include_ordinal
+                && let Some(ref ordinal_col) = self.ordinal_column
+            {
+                // Only append ordinal column if present.
+                select_parts.push(format!("\"{}\"", ordinal_col));
+                ordinal_col_index = Some(select_parts.len() - 1);
+            }
+
+            let mut query = format!(
+                "SELECT {} FROM \"{}\"",
+                select_parts.join(", "),
+                self.table_name
+            );
 
             // Add ordering by ordinal column if specified
             if let Some(ref ordinal_col) = self.ordinal_column {
@@ -206,14 +288,31 @@ impl SourceExecutor for Executor {
                     .map(|(i, pk_col)| convert_pg_value_to_value(&row, pk_col, i))
                     .collect::<Result<Vec<_>>>()?;
                 if parts.iter().any(|v| v.is_null()) {
-                    Err(anyhow::anyhow!("Composite primary key contains NULL component"))?;
+                    Err(anyhow::anyhow!(
+                        "Composite primary key contains NULL component"
+                    ))?;
                 }
                 let key = KeyValue::from_values(parts.iter())?;
+
+                // Compute ordinal if requested
+                let ordinal = if options.include_ordinal {
+                    if let (Some(col_idx), Some(ord_schema)) = (
+                        ordinal_col_index,
+                        self.table_schema.ordinal_field_schema.as_ref(),
+                    ) {
+                        let val = convert_pg_value_to_value(&row, ord_schema, col_idx)?;
+                        Some(value_to_ordinal(&val))
+                    } else {
+                        Some(Ordinal::unavailable())
+                    }
+                } else {
+                    None
+                };
 
                 yield vec![PartialSourceRowMetadata {
                     key,
                     key_aux_info: serde_json::Value::Null,
-                    ordinal: Some(Ordinal::unavailable()),
+                    ordinal,
                     content_version_fp: None,
                 }];
             }
@@ -228,17 +327,32 @@ impl SourceExecutor for Executor {
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
         let mut qb = sqlx::QueryBuilder::new("SELECT ");
-        if self.table_schema.value_columns.is_empty() {
-            qb.push("1");
-        } else {
-            qb.push(
+        let mut selected_columns: Vec<String> = Vec::new();
+
+        if options.include_value {
+            selected_columns.extend(
                 self.table_schema
                     .value_columns
                     .iter()
-                    .map(|col| format!("\"{}\"", col.name))
-                    .collect::<Vec<String>>()
-                    .join(", "),
+                    .map(|col| format!("\"{}\"", col.name)),
             );
+        }
+
+        let ordinal_col_name = self.ordinal_column.as_ref();
+        if options.include_ordinal {
+            if let Some(ord_col) = ordinal_col_name {
+                // Append ordinal column if not already provided by included value columns,
+                // or when value columns are not selected at all
+                if self.table_schema.ordinal_field_idx.is_none() || !options.include_value {
+                    selected_columns.push(format!("\"{}\"", ord_col));
+                }
+            }
+        }
+
+        if selected_columns.is_empty() {
+            qb.push("1");
+        } else {
+            qb.push(selected_columns.join(", "));
         }
         qb.push(" FROM \"");
         qb.push(&self.table_name);
@@ -271,35 +385,43 @@ impl SourceExecutor for Executor {
 
         let row_opt = qb.build().fetch_optional(&self.db_pool).await?;
 
-        let ordinal = if options.include_ordinal {
-            Some(Ordinal::unavailable())
-        } else {
-            None
-        };
-
         let value = if options.include_value {
-            match row_opt {
+            match &row_opt {
                 Some(row) => {
-                    let mut fields = Vec::new();
-                    for value_col in &self.table_schema.value_columns {
-                        // Find the column by name in the result row to get the correct index
-                        let col_index = row
-                            .columns()
-                            .iter()
-                            .position(|col| col.name() == value_col.name.as_str())
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "Column '{}' not found in result row",
-                                    value_col.name
-                                )
-                            })?;
-
-                        let value = convert_pg_value_to_value(&row, value_col, col_index)?;
+                    let mut fields = Vec::with_capacity(self.table_schema.value_columns.len());
+                    for (i, value_col) in self.table_schema.value_columns.iter().enumerate() {
+                        let value = convert_pg_value_to_value(&row, value_col, i)?;
                         fields.push(value);
                     }
                     Some(SourceValue::Existence(FieldValues { fields }))
                 }
                 None => Some(SourceValue::NonExistence),
+            }
+        } else {
+            None
+        };
+
+        let ordinal = if options.include_ordinal {
+            match (
+                &row_opt,
+                self.table_schema.ordinal_field_schema.as_ref(),
+                ordinal_col_name,
+            ) {
+                (Some(row), Some(ord_schema), Some(_ord_col_name)) => {
+                    // Determine index without scanning the row metadata.
+                    let col_index = if options.include_value {
+                        match self.table_schema.ordinal_field_idx {
+                            Some(idx) => idx,
+                            None => self.table_schema.value_columns.len(),
+                        }
+                    } else {
+                        // Only ordinal was selected
+                        0
+                    };
+                    let val = convert_pg_value_to_value(&row, ord_schema, col_index)?;
+                    Some(value_to_ordinal(&val))
+                }
+                _ => Some(Ordinal::unavailable()),
             }
         } else {
             None
@@ -330,8 +452,13 @@ impl SourceFactoryBase for Factory {
     ) -> Result<EnrichedValueType> {
         // Fetch table schema to build dynamic output schema
         let db_pool = get_db_pool(spec.database.as_ref(), &context.auth_registry).await?;
-        let table_schema =
-            fetch_table_schema(&db_pool, &spec.table_name, &spec.included_columns).await?;
+        let table_schema = fetch_table_schema(
+            &db_pool,
+            &spec.table_name,
+            &spec.included_columns,
+            &spec.ordinal_column,
+        )
+        .await?;
 
         let mut struct_schema = StructSchema::default();
         let mut schema_builder = StructSchemaBuilder::new(&mut struct_schema);
@@ -387,8 +514,13 @@ impl SourceFactoryBase for Factory {
         let db_pool = get_db_pool(spec.database.as_ref(), &context.auth_registry).await?;
 
         // Fetch table schema for dynamic type handling
-        let table_schema =
-            fetch_table_schema(&db_pool, &spec.table_name, &spec.included_columns).await?;
+        let table_schema = fetch_table_schema(
+            &db_pool,
+            &spec.table_name,
+            &spec.included_columns,
+            &spec.ordinal_column,
+        )
+        .await?;
 
         let executor = Executor {
             db_pool,
