@@ -31,12 +31,17 @@ A wide range of applications can be built with an effective codebase index that 
 - Enhance SRE workflows: enable rapid root cause analysis, incident response, and change impact assessment by indexing infrastructure-as-code, deployment scripts, and config files for semantic search and lineage tracking.
 - Automatically generate design documentation from code—keep design docs up-to-date.
 
-## Setup 
-- Install Postgres, follow [installation guide](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
-- Install CocoIndex
-  ```bash
-  pip install -U cocoindex
-  ```
+## Flow Overview
+
+![Flow Overview](/img/examples/codebase_index/flow.png)
+
+The flow is composed of the following steps:
+
+- Read code files from the local filesystem
+- Extract file extensions, to get the language of the code for Tree-sitter to parse
+- Split code into semantic chunks using Tree-sitter
+- Generate embeddings for each chunk
+- Store in a vector database for retrieval
 
 ## Add the codebase as a source. 
 We will index the CocoIndex codebase. Here we use the `LocalFile` source to ingest files from the CocoIndex codebase root directory.
@@ -57,7 +62,12 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`). 
 <DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="Sources" />
 
-
+## Setup 
+- Install Postgres, follow [installation guide](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
+- Install CocoIndex
+  ```bash
+  pip install -U cocoindex
+  ```
 
 ## Process each file and collect the information
 
