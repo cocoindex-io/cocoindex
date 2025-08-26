@@ -9,19 +9,13 @@ sidebar_custom_props:
   tags: [custom-building-blocks]
 tags: [custom-building-blocks]
 ---
-import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';
+import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/custom_output_files"/>
 
 ## Overview
 
-Let’s walk through a simple example—exporting `.md` files as `.html` using a custom file-based target. This project monitors folder changes and continuously converts markdown to HTML incrementally.
-Check out the full [source code](https://github.com/cocoindex-io/cocoindex/tree/main/examples/custom_output_files).
-
-The overall flow is simple:
-This example focuses on 
-- how to configure your custom target
-- the flow effortless picks up the changes in the source, recomputes only what's changed and export to the target
+Let’s walk through a simple example—exporting `.md` files as `.html` using a custom file-based target. This project monitors folder changes and continuously converts markdown to HTML incrementally. The overall flow is simple and primarily focuses on how to configure your custom target.
 
 
 ## Ingest files
@@ -33,16 +27,13 @@ Ingest a list of markdown files:
 def custom_output_files(
 flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
-	"""
-	Define an example flow that exports markdown files to HTML files.
-	"""
 	data_scope["documents"] = flow_builder.add_source(
 		cocoindex.sources.LocalFile(path="data", included_patterns=["*.md"]),
 		refresh_interval=timedelta(seconds=5),
 	)
 ```
 This ingestion creates a table with `filename` and `content` fields. 
-
+<DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="Sources" />
 
 ## Process each file and collect
 
@@ -50,10 +41,11 @@ Define custom function that converts markdown to HTML
 
 ```python
 @cocoindex.op.function()
-
 def markdown_to_html(text: str) -> str:
     return _markdown_it.render(text)
 ```
+
+<DocumentationButton href="https://cocoindex.io/docs/custom_ops/custom_functions" text="Custom Function" margin="0 0 16px 0" />
 
 Define data collector and transform each document to html.
 
@@ -63,11 +55,14 @@ with data_scope["documents"].row() as doc:
     doc["html"] = doc["content"].transform(markdown_to_html)
     output_html.collect(filename=doc["filename"], html=doc["html"])
 ```
+![Convert markdown to html](/img/examples/custom_targets/convert.png)
 
 
 ##  Define the custom target
 
 ### Define the target spec
+
+<DocumentationButton href="https://cocoindex.io/docs/custom_ops/custom_targets#target-spec" text="Target Spec" margin="0 0 16px 0" />
 
 The target spec contains a directory for output files:
 
@@ -76,7 +71,10 @@ class LocalFileTarget(cocoindex.op.TargetSpec):
     directory: str
 ```
 
+
 ### Implement the connector
+
+<DocumentationButton href="https://cocoindex.io/docs/custom_ops/custom_targets#target-connector" text="Target Connector" margin="0 0 16px 0" />
 
 `get_persistent_key()` defines the persistent key,
 which uniquely identifies the target for change tracking and incremental updates. Here, we simply use the target directory as the key (e.g., `./data/output`).
@@ -180,16 +178,14 @@ def mutate(
 ### Use it in the Flow
 
 ```python
-    output_html.export(
-        "OutputHtml",
-        LocalFileTarget(directory="output_html"),
-        primary_key_fields=["filename"],
-    )
+output_html.export(
+    "OutputHtml",
+    LocalFileTarget(directory="output_html"),
+    primary_key_fields=["filename"],
+)
 ```
 
 ## Run the example
-
-Once your pipeline is set up, keeping your knowledge graph updated is simple:
 
 ```bash
 pip install -e .

@@ -1,5 +1,4 @@
-# Build text embedding and semantic search 🔍
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/cocoindex-io/cocoindex/blob/main/examples/text_embedding/Text_Embedding.ipynb)
+# Export markdown files to local Html with Custom Targets
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
 In this example, we will build index flow to load data from a local directory, convert them to HTML, and save the data to another local directory powered by [CocoIndex Custom Targets](https://cocoindex.io/docs/custom_ops/custom_targets).
