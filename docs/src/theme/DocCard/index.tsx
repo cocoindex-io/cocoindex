@@ -65,8 +65,8 @@ export default function DocCard({ item }: Props): ReactNode {
   const doc = useDocById(item.docId ?? undefined);
 
   // Extract tags from customProps or doc metadata
-  const tags: string[] | undefined =
-    (item?.customProps?.tags as string[]) ||
+  const tags: string[] | undefined = 
+    (item?.customProps?.tags as string[]) || 
     undefined;
 
   return (

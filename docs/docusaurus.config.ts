@@ -123,7 +123,7 @@ const config: Config = {
           type: 'doc',
           docId: 'examples/index',
           position: 'left',
-        },
+        }, 
         { to: 'https://cocoindex.io/blogs/', label: 'Blog', position: 'left', target: '_self' },
         {
           type: 'html',
