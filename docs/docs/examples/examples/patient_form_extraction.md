@@ -5,7 +5,7 @@ sidebar_class_name: hidden
 slug: /examples/patient_form_extraction
 canonicalUrl: '/examples/patient_form_extraction'
 sidebar_custom_props:
-  image: /img/examples/patient_form_extraction.png
+  image: /img/examples/patient_form_extraction/cover.png
   tags: [structured-data-extraction, data-mapping ]
 tags: [structured-data-extraction, data-mapping]
 ---

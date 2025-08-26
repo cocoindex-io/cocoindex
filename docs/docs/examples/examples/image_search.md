@@ -5,7 +5,7 @@ sidebar_class_name: hidden
 slug: /examples/image_search
 canonicalUrl: '/examples/image_search'
 sidebar_custom_props:
-  image: /img/examples/image_search.png
+  image: /img/examples/image_search/cover.png
   tags: [vector-index, multi-modal]
 tags: [vector-index, multi-modal]
 ---

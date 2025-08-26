@@ -5,7 +5,7 @@ sidebar_class_name: hidden
 slug: /examples/code_index
 canonicalUrl: '/examples/code_index'
 sidebar_custom_props:
-  image: /img/examples/codebase_index.png
+  image: /img/examples/codebase_index/cover.png
   tags: [vector-index, codebase]
 tags: [vector-index, codebase]
 ---
@@ -222,4 +222,4 @@ To spin up, it is super easy.
 ```
 cocoindex server main.py -ci
 ```
-Follow the url from the terminal - "Open CocoInsight at: ..." to access the CocoInsight.
+Follow the url from the terminal - `https://cocoindex.io/cocoinsight` to access the CocoInsight.

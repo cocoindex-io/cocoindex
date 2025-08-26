@@ -5,7 +5,7 @@ sidebar_class_name: hidden
 slug: /examples/manual_extraction
 canonicalUrl: '/examples/manual_extraction'
 sidebar_custom_props:
-  image: /img/examples/manual_extraction.png
+  image: /img/examples/manual_extraction/cover.png
   tags: [structured-data-extraction, data-mapping]
 tags: [structured-data-extraction, data-mapping]
 ---

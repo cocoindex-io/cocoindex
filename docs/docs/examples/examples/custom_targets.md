@@ -5,7 +5,7 @@ sidebar_class_name: hidden
 slug: /examples/custom_targets
 canonicalUrl: '/examples/custom_targets'
 sidebar_custom_props:
-  image: /img/examples/custom_targets.png
+  image: /img/examples/custom_targets/cover.png
   tags: [custom-building-blocks]
 tags: [custom-building-blocks]
 ---

@@ -5,7 +5,7 @@ sidebar_class_name: hidden
 slug: /examples/simple_vector_index
 canonicalUrl: '/examples/simple_vector_index'
 sidebar_custom_props:
-  image: /img/examples/simple_vector_index.png
+  image: /img/examples/simple_vector_index/cover.png
   tags: [vector-index]
 tags: [vector-index]
 ---
