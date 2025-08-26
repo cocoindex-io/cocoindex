@@ -2,6 +2,7 @@
 
 from . import op
 from .auth_registry import TransientAuthEntryReference
+from .setting import DatabaseConnectionSpec
 import datetime
 
 
@@ -78,7 +79,7 @@ class Postgres(op.SourceSpec):
     table_name: str
 
     # Database connection reference (optional - uses default if not provided)
-    database: TransientAuthEntryReference[str] | None = None
+    database: TransientAuthEntryReference[DatabaseConnectionSpec] | None = None
 
     # Optional: specific columns to include (if None, includes all columns)
     included_columns: list[str] | None = None
