@@ -34,14 +34,46 @@ static EXECUTOR_FACTORY_REGISTRY: LazyLock<RwLock<ExecutorFactoryRegistry>> = La
     RwLock::new(registry)
 });
 
-pub fn get_optional_executor_factory(kind: &str) -> Option<ExecutorFactory> {
+pub fn get_optional_source_factory(
+    kind: &str,
+) -> Option<std::sync::Arc<dyn super::interface::SourceFactory + Send + Sync>> {
     let registry = EXECUTOR_FACTORY_REGISTRY.read().unwrap();
-    registry.get(kind).cloned()
+    registry.get_source(kind).cloned()
 }
 
-pub fn get_executor_factory(kind: &str) -> Result<ExecutorFactory> {
-    get_optional_executor_factory(kind)
-        .ok_or_else(|| anyhow::anyhow!("Executor factory not found for op kind: {}", kind))
+pub fn get_optional_function_factory(
+    kind: &str,
+) -> Option<std::sync::Arc<dyn super::interface::SimpleFunctionFactory + Send + Sync>> {
+    let registry = EXECUTOR_FACTORY_REGISTRY.read().unwrap();
+    registry.get_function(kind).cloned()
+}
+
+pub fn get_optional_target_factory(
+    kind: &str,
+) -> Option<std::sync::Arc<dyn super::interface::TargetFactory + Send + Sync>> {
+    let registry = EXECUTOR_FACTORY_REGISTRY.read().unwrap();
+    registry.get_target(kind).cloned()
+}
+
+pub fn get_source_factory(
+    kind: &str,
+) -> Result<std::sync::Arc<dyn super::interface::SourceFactory + Send + Sync>> {
+    get_optional_source_factory(kind)
+        .ok_or_else(|| anyhow::anyhow!("Source factory not found for op kind: {}", kind))
+}
+
+pub fn get_function_factory(
+    kind: &str,
+) -> Result<std::sync::Arc<dyn super::interface::SimpleFunctionFactory + Send + Sync>> {
+    get_optional_function_factory(kind)
+        .ok_or_else(|| anyhow::anyhow!("Function factory not found for op kind: {}", kind))
+}
+
+pub fn get_target_factory(
+    kind: &str,
+) -> Result<std::sync::Arc<dyn super::interface::TargetFactory + Send + Sync>> {
+    get_optional_target_factory(kind)
+        .ok_or_else(|| anyhow::anyhow!("Target factory not found for op kind: {}", kind))
 }
 
 pub fn register_factory(name: String, factory: ExecutorFactory) -> Result<()> {
