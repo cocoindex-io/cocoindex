@@ -11,13 +11,19 @@ Lightweight subprocess-backed executor stub.
 from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from typing import Any, Callable
 import pickle
 import threading
 import asyncio
+import os
+import time
 from .user_app_loader import load_user_app
+from .runtime import execution_context
+import logging
 
+WATCHDOG_INTERVAL_SECONDS = 10.0
 
 # ---------------------------------------------
 # Main process: single, lazily-created pool
@@ -25,6 +31,7 @@ from .user_app_loader import load_user_app
 _pool_lock = threading.Lock()
 _pool: ProcessPoolExecutor | None = None
 _user_apps: list[str] = []
+_logger = logging.getLogger(__name__)
 
 
 def _get_pool() -> ProcessPoolExecutor:
@@ -33,7 +40,9 @@ def _get_pool() -> ProcessPoolExecutor:
         if _pool is None:
             # Single worker process as requested
             _pool = ProcessPoolExecutor(
-                max_workers=1, initializer=_subprocess_init, initargs=(_user_apps,)
+                max_workers=1,
+                initializer=_subprocess_init,
+                initargs=(_user_apps, os.getpid()),
             )
         return _pool
 
@@ -43,12 +52,78 @@ def add_user_app(app_target: str) -> None:
         _user_apps.append(app_target)
 
 
+def _restart_pool(old_pool: ProcessPoolExecutor | None = None) -> None:
+    """Safely restart the global ProcessPoolExecutor.
+
+    Thread-safe via `_pool_lock`. Shuts down the old pool and re-creates a new
+    one with the same initializer/args.
+    """
+    global _pool
+    with _pool_lock:
+        # If another thread already swapped the pool, skip restart
+        if old_pool is not None and _pool is not old_pool:
+            return
+        _logger.error("Detected dead subprocess pool; restarting and retrying.")
+        prev_pool = _pool
+        _pool = ProcessPoolExecutor(
+            max_workers=1,
+            initializer=_subprocess_init,
+            initargs=(_user_apps, os.getpid()),
+        )
+        if prev_pool is not None:
+            # Best-effort shutdown of previous pool; letting exceptions bubble up
+            # is acceptable here and signals irrecoverable executor state.
+            prev_pool.shutdown(cancel_futures=True)
+
+
+async def _submit_with_restart(fn: Callable[..., Any], *args: Any) -> Any:
+    """Submit and await work, restarting the subprocess until it succeeds.
+
+    Retries on BrokenProcessPool or pool-shutdown RuntimeError; re-raises other
+    exceptions.
+    """
+    while True:
+        pool = _get_pool()
+        try:
+            fut = pool.submit(fn, *args)
+            return await asyncio.wrap_future(fut)
+        except BrokenProcessPool:
+            _restart_pool(old_pool=pool)
+            # loop and retry
+
+
 # ---------------------------------------------
 # Subprocess: executor registry and helpers
 # ---------------------------------------------
 
 
-def _subprocess_init(user_apps: list[str]) -> None:
+def _start_parent_watchdog(
+    parent_pid: int, interval_seconds: float = WATCHDOG_INTERVAL_SECONDS
+) -> None:
+    """Terminate this process if the parent process exits or PPID changes.
+
+    This runs in a background daemon thread so it never blocks pool work.
+    """
+
+    def _watch() -> None:
+        while True:
+            # If PPID changed (parent died and we were reparented), exit.
+            if os.getppid() != parent_pid:
+                os._exit(1)
+
+            # Best-effort liveness probe in case PPID was reused.
+            try:
+                os.kill(parent_pid, 0)
+            except OSError:
+                os._exit(1)
+
+            time.sleep(interval_seconds)
+
+    threading.Thread(target=_watch, name="parent-watchdog", daemon=True).start()
+
+
+def _subprocess_init(user_apps: list[str], parent_pid: int) -> None:
+    _start_parent_watchdog(parent_pid)
     for app_target in user_apps:
         load_user_app(app_target)
 
@@ -133,27 +208,26 @@ class _ExecutorStub:
             (executor_factory, spec), protocol=pickle.HIGHEST_PROTOCOL
         )
 
-        # Conditionally expose analyze if underlying class has it (sync-only in caller)
+        # Conditionally expose analyze if underlying class has it
         if hasattr(executor_factory, "analyze"):
             # Bind as attribute so getattr(..., "analyze", None) works upstream
-            def _analyze() -> Any:
-                fut = self._pool.submit(_sp_analyze, self._key_bytes)
-                return fut.result()
+            def analyze() -> Any:
+                return execution_context.run(
+                    _submit_with_restart(_sp_analyze, self._key_bytes)
+                )
 
             # Attach method
-            setattr(self, "analyze", _analyze)
+            setattr(self, "analyze", analyze)
 
         if hasattr(executor_factory, "prepare"):
 
             async def prepare() -> Any:
-                fut = self._pool.submit(_sp_prepare, self._key_bytes)
-                return await asyncio.wrap_future(fut)
+                return await _submit_with_restart(_sp_prepare, self._key_bytes)
 
             setattr(self, "prepare", prepare)
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        fut = self._pool.submit(_sp_call, self._key_bytes, args, kwargs)
-        return await asyncio.wrap_future(fut)
+        return await _submit_with_restart(_sp_call, self._key_bytes, args, kwargs)
 
 
 def executor_stub(executor_factory: type[Any], spec: Any) -> Any:
