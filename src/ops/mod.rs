@@ -4,9 +4,9 @@ pub mod registry;
 // All operations
 mod factory_bases;
 mod functions;
+mod shared;
 mod sources;
 mod targets;
-mod shared;
 
 mod registration;
 pub(crate) use registration::*;

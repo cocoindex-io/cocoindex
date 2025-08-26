@@ -20,7 +20,7 @@ pub struct Spec {
 #[derive(Debug, Clone)]
 struct ColumnInfo {
     name: String,
-    data_type: String,
+    value_type: BasicValueType,
     is_nullable: bool,
     is_primary_key: bool,
 }
@@ -99,11 +99,16 @@ async fn fetch_table_schema(
     let mut value_columns = Vec::new();
 
     for row in rows {
+        let col_name: String = row.try_get::<String, _>("column_name")?;
+        let pg_type_str: String = row.try_get::<String, _>("data_type")?;
+        let is_nullable: bool = row.try_get::<String, _>("is_nullable")? == "YES";
+        let is_primary_key: bool = row.try_get::<bool, _>("is_primary_key")?;
+
         let column_info = ColumnInfo {
-            name: row.try_get::<String, _>("column_name")?,
-            data_type: row.try_get::<String, _>("data_type")?,
-            is_nullable: row.try_get::<String, _>("is_nullable")? == "YES",
-            is_primary_key: row.try_get::<bool, _>("is_primary_key")?,
+            name: col_name,
+            value_type: map_postgres_type_to_cocoindex(&pg_type_str),
+            is_nullable,
+            is_primary_key,
         };
 
         // Always include primary key columns
@@ -111,22 +116,17 @@ async fn fetch_table_schema(
             primary_key_columns.push(column_info.clone());
         } else {
             // For value columns, check if filtering is enabled
-            let should_include = match included_columns {
-                Some(included_list) => included_list.contains(&column_info.name),
-                None => true, // Include all columns if no filter specified
-            };
-
-            if should_include {
+            if included_columns
+                .as_ref()
+                .map_or(true, |cols| cols.contains(&column_info.name))
+            {
                 value_columns.push(column_info);
             }
         }
     }
 
     if primary_key_columns.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Table '{}' has no primary key defined",
-            table_name
-        ));
+        api_bail!("Table `{table_name}` has no primary key defined");
     }
 
     Ok(PostgresTableSchema {
@@ -142,7 +142,7 @@ fn convert_pg_value_to_json(
     col_index: usize,
 ) -> Result<serde_json::Value> {
     // Check for null values in a type-agnostic way based on the actual column type
-    let is_null = match map_postgres_type_to_cocoindex(&column.data_type) {
+    let is_null = match &column.value_type {
         BasicValueType::Uuid => row.try_get::<Option<uuid::Uuid>, _>(col_index)?.is_none(),
         BasicValueType::Int64 => row.try_get::<Option<i64>, _>(col_index)?.is_none(),
         BasicValueType::Bool => row.try_get::<Option<bool>, _>(col_index)?.is_none(),
@@ -155,7 +155,7 @@ fn convert_pg_value_to_json(
         return Ok(serde_json::Value::Null);
     }
 
-    match map_postgres_type_to_cocoindex(&column.data_type) {
+    match &column.value_type {
         BasicValueType::Bytes => {
             let bytes: Vec<u8> = row.try_get(col_index)?;
             Ok(serde_json::to_value(bytes)?)
@@ -237,12 +237,7 @@ impl SourceExecutor for Executor {
                 query.push_str(&format!(" ORDER BY \"{}\"", ordinal_col));
             }
 
-            info!("Executing query: {}", query);
-
             let mut rows = sqlx::query(&query).fetch(&self.db_pool);
-            let mut batch: Vec<PartialSourceRowMetadata> = Vec::new();
-            let batch_size = 1000; // Process in batches
-
             while let Some(row) = rows.try_next().await? {
                 // Handle both single and composite primary keys
                 let key = if self.table_schema.primary_key_columns.len() == 1 {
@@ -250,7 +245,7 @@ impl SourceExecutor for Executor {
                     let pk_col = &self.table_schema.primary_key_columns[0];
                     let json_value = convert_pg_value_to_json(&row, pk_col, 0)?;
 
-                    match map_postgres_type_to_cocoindex(&pk_col.data_type) {
+                    match &pk_col.value_type {
                         BasicValueType::Str => KeyValue::Str(json_value.as_str().unwrap_or("").to_string().into()),
                         BasicValueType::Int64 => KeyValue::Int64(json_value.as_i64().unwrap_or(0)),
                         BasicValueType::Uuid => {
@@ -269,7 +264,7 @@ impl SourceExecutor for Executor {
                         let json_value = convert_pg_value_to_json(&row, pk_col, i)?;
 
                         // Convert each primary key column to appropriate KeyValue type
-                        let key_value = match map_postgres_type_to_cocoindex(&pk_col.data_type) {
+                        let key_value = match &pk_col.value_type {
                             BasicValueType::Str => KeyValue::Str(json_value.as_str().unwrap_or("").to_string().into()),
                             BasicValueType::Int64 => KeyValue::Int64(json_value.as_i64().unwrap_or(0)),
                             BasicValueType::Uuid => {
@@ -291,21 +286,12 @@ impl SourceExecutor for Executor {
                     KeyValue::Struct(key_values)
                 };
 
-                batch.push(PartialSourceRowMetadata {
+                yield vec![PartialSourceRowMetadata {
                     key,
                     key_aux_info: serde_json::Value::Null,
                     ordinal: Some(Ordinal::unavailable()),
                     content_version_fp: None,
-                });
-
-                if batch.len() >= batch_size {
-                    yield batch;
-                    batch = Vec::new();
-                }
-            }
-
-            if !batch.is_empty() {
-                yield batch;
+                }];
             }
         };
         Ok(stream.boxed())
@@ -326,7 +312,7 @@ impl SourceExecutor for Executor {
             .collect();
         let simple_query = if self.table_schema.primary_key_columns.len() == 1 {
             let pk_col = &self.table_schema.primary_key_columns[0];
-            let key_condition = match map_postgres_type_to_cocoindex(&pk_col.data_type) {
+            let key_condition = match &pk_col.value_type {
                 BasicValueType::Uuid => {
                     // For UUID keys, extract the UUID value directly
                     let uuid_val = match key {
@@ -383,7 +369,7 @@ impl SourceExecutor for Executor {
                         .zip(key_values.iter())
                         .enumerate()
                     {
-                        let condition = match map_postgres_type_to_cocoindex(&pk_col.data_type) {
+                        let condition = match &pk_col.value_type {
                             BasicValueType::Uuid => {
                                 let uuid_val = match key_value {
                                     KeyValue::Uuid(uuid) => uuid,
@@ -550,7 +536,7 @@ impl SourceFactoryBase for Factory {
         if table_schema.primary_key_columns.len() == 1 {
             // Single primary key - first field is the key
             let pk_col = &table_schema.primary_key_columns[0];
-            let cocoindex_type = map_postgres_type_to_cocoindex(&pk_col.data_type);
+            let cocoindex_type = pk_col.value_type.clone();
             let field_type = if pk_col.is_nullable {
                 make_output_type(cocoindex_type).with_nullable(true)
             } else {
@@ -564,7 +550,7 @@ impl SourceFactoryBase for Factory {
             let mut key_builder = StructSchemaBuilder::new(&mut key_struct_schema);
 
             for pk_col in &table_schema.primary_key_columns {
-                let cocoindex_type = map_postgres_type_to_cocoindex(&pk_col.data_type);
+                let cocoindex_type = pk_col.value_type.clone();
                 let field_type = if pk_col.is_nullable {
                     make_output_type(cocoindex_type).with_nullable(true)
                 } else {
@@ -583,7 +569,7 @@ impl SourceFactoryBase for Factory {
 
         // Add value columns as fields (these match what get_value() returns)
         for value_col in &table_schema.value_columns {
-            let cocoindex_type = map_postgres_type_to_cocoindex(&value_col.data_type);
+            let cocoindex_type = value_col.value_type.clone();
             let field_type = if value_col.is_nullable {
                 make_output_type(cocoindex_type).with_nullable(true)
             } else {
