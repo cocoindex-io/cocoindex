@@ -23,15 +23,15 @@ struct Executor {
 
 #[async_trait]
 impl SourceExecutor for Executor {
-    fn list<'a>(
-        &'a self,
-        options: &'a SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>> {
+    async fn list(
+        &self,
+        options: &SourceExecutorListOptions,
+    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRowMetadata>>>> {
         let root_component_size = self.root_path.components().count();
         let mut dirs = Vec::new();
         dirs.push(Cow::Borrowed(&self.root_path));
         let mut new_dirs = Vec::new();
-        try_stream! {
+        let stream = try_stream! {
             while let Some(dir) = dirs.pop() {
                 let mut entries = tokio::fs::read_dir(dir.as_ref()).await?;
                 while let Some(entry) = entries.next_entry().await? {
@@ -64,8 +64,8 @@ impl SourceExecutor for Executor {
                 }
                 dirs.extend(new_dirs.drain(..).rev());
             }
-        }
-        .boxed()
+        };
+        Ok(stream.boxed())
     }
 
     async fn get_value(

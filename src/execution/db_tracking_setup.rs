@@ -72,6 +72,16 @@ async fn create_source_state_table(pool: &PgPool, table_name: &str) -> Result<()
     Ok(())
 }
 
+async fn delete_source_states_for_sources(
+    pool: &PgPool,
+    table_name: &str,
+    source_ids: &Vec<i32>,
+) -> Result<()> {
+    let query = format!("DELETE FROM {} WHERE source_id = ANY($1)", table_name,);
+    sqlx::query(&query).bind(source_ids).execute(pool).await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TrackingTableSetupState {
     pub table_name: String,
@@ -92,14 +102,14 @@ pub struct TrackingTableSetupChange {
     pub source_state_table_always_exists: bool,
     pub legacy_source_state_table_names: BTreeSet<String>,
 
-    pub source_ids_to_delete: Vec<i32>,
+    pub source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
 }
 
 impl TrackingTableSetupChange {
     pub fn new(
         desired: Option<&TrackingTableSetupState>,
         existing: &CombinedState<TrackingTableSetupState>,
-        source_ids_to_delete: Vec<i32>,
+        source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
     ) -> Option<Self> {
         let legacy_tracking_table_names = existing
             .legacy_values(desired, |v| &v.table_name)
@@ -125,7 +135,7 @@ impl TrackingTableSetupChange {
                         .all(|v| v.source_state_table_name.is_some()),
                 legacy_source_state_table_names,
                 min_existing_version_id,
-                source_ids_to_delete,
+                source_names_need_state_cleanup,
             })
         } else {
             None
@@ -201,13 +211,13 @@ impl ResourceSetupChange for TrackingTableSetupChange {
             )));
         }
 
-        if !self.source_ids_to_delete.is_empty() {
+        if !self.source_names_need_state_cleanup.is_empty() {
             changes.push(setup::ChangeDescription::Action(format!(
-                "Delete source IDs: {}. ",
-                self.source_ids_to_delete
-                    .iter()
-                    .map(|id| id.to_string())
-                    .collect::<Vec<String>>()
+                "Clean up legacy source states: {}. ",
+                self.source_names_need_state_cleanup
+                    .values()
+                    .flatten()
+                    .dedup()
                     .join(", ")
             )));
         }
@@ -215,15 +225,14 @@ impl ResourceSetupChange for TrackingTableSetupChange {
     }
 
     fn change_type(&self) -> SetupChangeType {
-        let source_state_table_up_to_date = self.legacy_source_state_table_names.is_empty()
-            && (self.source_state_table_always_exists
-                || self
-                    .desired_state
-                    .as_ref()
-                    .map_or(true, |v| v.source_state_table_name.is_none()));
         match (self.min_existing_version_id, &self.desired_state) {
             (None, Some(_)) => SetupChangeType::Create,
             (Some(min_version_id), Some(desired)) => {
+                let source_state_table_up_to_date = self.legacy_source_state_table_names.is_empty()
+                    && self.source_names_need_state_cleanup.is_empty()
+                    && (self.source_state_table_always_exists
+                        || desired.source_state_table_name.is_none());
+
                 if min_version_id == desired.version_id
                     && self.legacy_tracking_table_names.is_empty()
                     && source_state_table_up_to_date
@@ -278,6 +287,18 @@ impl TrackingTableSetupChange {
             }
             if !self.source_state_table_always_exists {
                 create_source_state_table(pool, source_state_table_name).await?;
+            }
+            if !self.source_names_need_state_cleanup.is_empty() {
+                delete_source_states_for_sources(
+                    pool,
+                    source_state_table_name,
+                    &self
+                        .source_names_need_state_cleanup
+                        .keys()
+                        .map(|v| *v)
+                        .collect::<Vec<_>>(),
+                )
+                .await?;
             }
         } else {
             for lagacy_name in self.legacy_source_state_table_names.iter() {

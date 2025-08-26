@@ -122,7 +122,7 @@ impl FlowContext {
 
     pub async fn use_execution_ctx(
         &self,
-    ) -> Result<tokio::sync::RwLockReadGuard<FlowExecutionContext>> {
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, FlowExecutionContext>> {
         let execution_ctx = self.execution_ctx.read().await;
         if !execution_ctx.setup_change.is_up_to_date() {
             api_bail!(

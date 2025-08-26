@@ -105,10 +105,13 @@ pub async fn get_keys(
             )
         })?;
 
-    let mut rows_stream = import_op.executor.list(&SourceExecutorListOptions {
-        include_ordinal: false,
-        include_content_version_fp: false,
-    });
+    let mut rows_stream = import_op
+        .executor
+        .list(&SourceExecutorListOptions {
+            include_ordinal: false,
+            include_content_version_fp: false,
+        })
+        .await?;
     let mut keys = Vec::new();
     while let Some(rows) = rows_stream.next().await {
         keys.extend(rows?.into_iter().map(|row| (row.key, row.key_aux_info)));

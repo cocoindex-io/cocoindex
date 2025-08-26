@@ -148,6 +148,10 @@ impl<State> StateChange<State> {
 pub struct SourceSetupState {
     pub source_id: i32,
     pub key_schema: schema::ValueType,
+
+    // Allow empty string during deserialization for backward compatibility.
+    #[serde(default)]
+    pub source_kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -353,7 +357,16 @@ pub enum ObjectStatus {
 
 pub trait ObjectSetupChange {
     fn status(&self) -> Option<ObjectStatus>;
-    fn is_up_to_date(&self) -> bool;
+
+    /// Returns true if it has internal changes, i.e. changes that don't need user intervention.
+    fn has_internal_changes(&self) -> bool;
+
+    /// Returns true if it has external changes, i.e. changes that should notify users.
+    fn has_external_changes(&self) -> bool;
+
+    fn is_up_to_date(&self) -> bool {
+        return !self.has_internal_changes() && !self.has_external_changes();
+    }
 }
 
 #[derive(Debug)]
@@ -376,16 +389,19 @@ impl ObjectSetupChange for FlowSetupChange {
         self.status
     }
 
-    fn is_up_to_date(&self) -> bool {
-        self.metadata_change.is_none()
-            && self
-                .tracking_table
-                .as_ref()
-                .is_none_or(|t| t.is_up_to_date())
-            && self
+    fn has_internal_changes(&self) -> bool {
+        return self.metadata_change.is_some();
+    }
+
+    fn has_external_changes(&self) -> bool {
+        return self
+            .tracking_table
+            .as_ref()
+            .is_some_and(|t| !t.is_up_to_date())
+            || self
                 .target_resources
                 .iter()
-                .all(|target| target.is_up_to_date())
+                .any(|target| !target.is_up_to_date());
     }
 }
 

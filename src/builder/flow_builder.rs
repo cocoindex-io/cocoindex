@@ -1,4 +1,6 @@
-use crate::{base::schema::EnrichedValueType, prelude::*, py::Pythonized};
+use crate::{
+    base::schema::EnrichedValueType, prelude::*, py::Pythonized, setup::ObjectSetupChange,
+};
 
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -612,7 +614,7 @@ impl FlowBuilder {
                     let analyzed_flow =
                         super::AnalyzedFlow::from_flow_instance(spec, flow_instance_ctx).await?;
                     let persistence_ctx = self.lib_context.require_persistence_ctx()?;
-                    let execution_ctx = {
+                    let flow_ctx = {
                         let flow_setup_ctx = persistence_ctx.setup_ctx.read().await;
                         FlowContext::new(
                             Arc::new(analyzed_flow),
@@ -623,7 +625,34 @@ impl FlowBuilder {
                         )
                         .await?
                     };
-                    anyhow::Ok(execution_ctx)
+
+                    // Apply internal-only changes if any.
+                    {
+                        let mut flow_exec_ctx =
+                            flow_ctx.get_execution_ctx_for_setup().write().await;
+                        if flow_exec_ctx.setup_change.has_internal_changes()
+                            && !flow_exec_ctx.setup_change.has_external_changes()
+                        {
+                            let mut lib_setup_ctx = persistence_ctx.setup_ctx.write().await;
+                            let mut output_buffer = Vec::<u8>::new();
+                            setup::apply_changes_for_flow_ctx(
+                                setup::FlowSetupChangeAction::Setup,
+                                &flow_ctx,
+                                &mut flow_exec_ctx,
+                                &mut *lib_setup_ctx,
+                                &persistence_ctx.builtin_db_pool,
+                                &mut output_buffer,
+                            )
+                            .await?;
+                            trace!(
+                                "Applied internal-only change for flow {}:\n{}",
+                                self.flow_instance_name,
+                                String::from_utf8_lossy(&output_buffer)
+                            );
+                        }
+                    }
+
+                    anyhow::Ok(flow_ctx)
                 })
             })
             .into_py_result()?;

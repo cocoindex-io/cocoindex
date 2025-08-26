@@ -130,10 +130,10 @@ pub struct PartialSourceRowData {
 #[async_trait]
 pub trait SourceExecutor: Send + Sync {
     /// Get the list of keys for the source.
-    fn list<'a>(
-        &'a self,
-        options: &'a SourceExecutorListOptions,
-    ) -> BoxStream<'a, Result<Vec<PartialSourceRowMetadata>>>;
+    async fn list(
+        &self,
+        options: &SourceExecutorListOptions,
+    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRowMetadata>>>>;
 
     // Get the value for the given key.
     async fn get_value(

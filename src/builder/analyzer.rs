@@ -1,5 +1,5 @@
 use crate::builder::exec_ctx::AnalyzedSetupState;
-use crate::ops::get_executor_factory;
+use crate::ops::{get_function_factory, get_source_factory, get_target_factory};
 use crate::prelude::*;
 
 use super::plan::*;
@@ -654,15 +654,7 @@ impl AnalyzerContext {
         op_scope: &Arc<OpScope>,
         import_op: NamedSpec<ImportOpSpec>,
     ) -> Result<impl Future<Output = Result<AnalyzedImportOp>> + Send + use<>> {
-        let source_factory = match get_executor_factory(&import_op.spec.source.kind)? {
-            ExecutorFactory::Source(source_executor) => source_executor,
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "`{}` is not a source op",
-                    import_op.spec.source.kind
-                ));
-            }
-        };
+        let source_factory = get_source_factory(&import_op.spec.source.kind)?;
         let (output_type, executor) = source_factory
             .build(
                 serde_json::Value::Object(import_op.spec.source.spec),
@@ -719,23 +711,22 @@ impl AnalyzerContext {
                     })?;
                 let spec = serde_json::Value::Object(op.op.spec.clone());
 
-                match get_executor_factory(&op.op.kind)? {
-                    ExecutorFactory::SimpleFunction(fn_executor) => {
-                        let input_value_mappings = input_field_schemas
-                            .iter()
-                            .map(|field| field.analyzed_value.clone())
-                            .collect();
-                        let (output_enriched_type, executor) = fn_executor
-                            .build(spec, input_field_schemas, self.flow_ctx.clone())
-                            .await?;
-                        let logic_fingerprinter = Fingerprinter::default()
-                            .with(&op.op)?
-                            .with(&output_enriched_type.without_attrs())?;
-                        let output_type = output_enriched_type.typ.clone();
-                        let output = op_scope
-                            .add_op_output(reactive_op.name.clone(), output_enriched_type)?;
-                        let op_name = reactive_op.name.clone();
-                        async move {
+                let fn_executor = get_function_factory(&op.op.kind)?;
+                let input_value_mappings = input_field_schemas
+                    .iter()
+                    .map(|field| field.analyzed_value.clone())
+                    .collect();
+                let (output_enriched_type, executor) = fn_executor
+                    .build(spec, input_field_schemas, self.flow_ctx.clone())
+                    .await?;
+                let logic_fingerprinter = Fingerprinter::default()
+                    .with(&op.op)?
+                    .with(&output_enriched_type.without_attrs())?;
+                let output_type = output_enriched_type.typ.clone();
+                let output =
+                    op_scope.add_op_output(reactive_op.name.clone(), output_enriched_type)?;
+                let op_name = reactive_op.name.clone();
+                async move {
                             trace!("Start building executor for transform op `{op_name}`");
                             let executor = executor.await.with_context(|| {
                                 format!("Failed to build executor for transform op: {op_name}")
@@ -764,11 +755,8 @@ impl AnalyzerContext {
                                 executor,
                                 output,
                             }))
-                        }
-                        .boxed()
-                    }
-                    _ => api_bail!("`{}` is not a function op", op.op.kind),
                 }
+                .boxed()
             }
 
             ReactiveOpSpec::ForEach(foreach_op) => {
@@ -1068,10 +1056,7 @@ pub async fn analyze_flow(
     let mut declarations_analyzed_ss = Vec::with_capacity(flow_inst.declarations.len());
 
     for (target_kind, op_ids) in target_op_group.into_iter() {
-        let target_factory = match get_executor_factory(&target_kind)? {
-            ExecutorFactory::ExportTarget(export_executor) => export_executor,
-            _ => api_bail!("`{}` is not a export target op", target_kind),
-        };
+        let target_factory = get_target_factory(&target_kind)?;
         let analyzed_target_op_group = AnalyzedExportTargetOpGroup {
             target_factory,
             op_idx: op_ids.export_op_ids,

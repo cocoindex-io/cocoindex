@@ -18,16 +18,6 @@ pub trait SpecFormatter {
     fn format(&self, mode: OutputMode) -> String;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind")]
-pub enum SpecString {
-    /// The value comes from the environment variable.
-    Env(String),
-    /// The value is defined by the literal string.
-    #[serde(untagged)]
-    Literal(String),
-}
-
 pub type ScopeName = String;
 
 /// Used to identify a data field within a flow.
