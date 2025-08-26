@@ -4,7 +4,7 @@ use super::shared::table_columns::{
     TableColumnsSchema, TableMainSetupAction, TableUpsertionAction, check_table_compatibility,
 };
 use crate::base::spec::{self, *};
-use crate::ops::shared::postgres::get_db_pool;
+use crate::ops::shared::postgres::{bind_key_field, get_db_pool, key_value_fields_iter};
 use crate::settings::DatabaseConnectionSpec;
 use async_trait::async_trait;
 use indexmap::{IndexMap, IndexSet};
@@ -21,21 +21,6 @@ pub struct Spec {
 }
 const BIND_LIMIT: usize = 65535;
 
-fn key_value_fields_iter<'a>(
-    key_fields_schema: &[FieldSchema],
-    key_value: &'a KeyValue,
-) -> Result<&'a [KeyValue]> {
-    let slice = if key_fields_schema.len() == 1 {
-        std::slice::from_ref(key_value)
-    } else {
-        match key_value {
-            KeyValue::Struct(fields) => fields,
-            _ => bail!("expect struct key value"),
-        }
-    };
-    Ok(slice)
-}
-
 fn convertible_to_pgvector(vec_schema: &VectorTypeSchema) -> bool {
     if vec_schema.dimension.is_some() {
         matches!(
@@ -45,42 +30,6 @@ fn convertible_to_pgvector(vec_schema: &VectorTypeSchema) -> bool {
     } else {
         false
     }
-}
-
-fn bind_key_field<'arg>(
-    builder: &mut sqlx::QueryBuilder<'arg, sqlx::Postgres>,
-    key_value: &'arg KeyValue,
-) -> Result<()> {
-    match key_value {
-        KeyValue::Bytes(v) => {
-            builder.push_bind(&**v);
-        }
-        KeyValue::Str(v) => {
-            builder.push_bind(&**v);
-        }
-        KeyValue::Bool(v) => {
-            builder.push_bind(v);
-        }
-        KeyValue::Int64(v) => {
-            builder.push_bind(v);
-        }
-        KeyValue::Range(v) => {
-            builder.push_bind(PgRange {
-                start: Bound::Included(v.start as i64),
-                end: Bound::Excluded(v.end as i64),
-            });
-        }
-        KeyValue::Uuid(v) => {
-            builder.push_bind(v);
-        }
-        KeyValue::Date(v) => {
-            builder.push_bind(v);
-        }
-        KeyValue::Struct(fields) => {
-            builder.push_bind(sqlx::types::Json(fields));
-        }
-    }
-    Ok(())
 }
 
 fn bind_value_field<'arg>(

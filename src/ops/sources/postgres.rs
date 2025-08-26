@@ -1,7 +1,6 @@
 use crate::ops::sdk::*;
 
-use crate::fields_value;
-use crate::ops::shared::postgres::get_db_pool;
+use crate::ops::shared::postgres::{bind_key_field, get_db_pool, key_value_fields_iter};
 use crate::settings::DatabaseConnectionSpec;
 use sqlx::postgres::types::PgInterval;
 use sqlx::{Column, PgPool, Row};
@@ -19,17 +18,9 @@ pub struct Spec {
 }
 
 #[derive(Debug, Clone)]
-struct ColumnInfo {
-    name: String,
-    value_type: BasicValueType,
-    is_nullable: bool,
-    is_primary_key: bool,
-}
-
-#[derive(Debug, Clone)]
 struct PostgresTableSchema {
-    primary_key_columns: Vec<ColumnInfo>,
-    value_columns: Vec<ColumnInfo>,
+    primary_key_columns: Vec<FieldSchema>,
+    value_columns: Vec<FieldSchema>,
 }
 
 struct Executor {
@@ -105,24 +96,19 @@ async fn fetch_table_schema(
         let is_nullable: bool = row.try_get::<String, _>("is_nullable")? == "YES";
         let is_primary_key: bool = row.try_get::<bool, _>("is_primary_key")?;
 
-        let column_info = ColumnInfo {
-            name: col_name,
-            value_type: map_postgres_type_to_cocoindex(&pg_type_str),
-            is_nullable,
-            is_primary_key,
-        };
+        let field_schema = FieldSchema::new(
+            &col_name,
+            make_output_type(map_postgres_type_to_cocoindex(&pg_type_str))
+                .with_nullable(is_nullable),
+        );
 
-        // Always include primary key columns
-        if column_info.is_primary_key {
-            primary_key_columns.push(column_info.clone());
-        } else {
-            // For value columns, check if filtering is enabled
-            if included_columns
-                .as_ref()
-                .map_or(true, |cols| cols.contains(&column_info.name))
-            {
-                value_columns.push(column_info);
-            }
+        if is_primary_key {
+            primary_key_columns.push(field_schema);
+        } else if included_columns
+            .as_ref()
+            .map_or(true, |cols| cols.contains(&col_name))
+        {
+            value_columns.push(field_schema);
         }
     }
 
@@ -139,10 +125,14 @@ async fn fetch_table_schema(
 /// Convert a PostgreSQL row value directly into Value (Basic or Null)
 fn convert_pg_value_to_value(
     row: &sqlx::postgres::PgRow,
-    column: &ColumnInfo,
+    column: &FieldSchema,
     col_index: usize,
 ) -> Result<Value> {
-    let value = match &column.value_type {
+    let basic_type = match &column.value_type.typ {
+        ValueType::Basic(t) => t,
+        _ => bail!("expect basic value type"),
+    };
+    let value = match basic_type {
         BasicValueType::Bytes => Value::from(row.try_get::<Option<Vec<u8>>, _>(col_index)?),
         BasicValueType::Str => Value::from(row.try_get::<Option<String>, _>(col_index)?),
         BasicValueType::Bool => Value::from(row.try_get::<Option<bool>, _>(col_index)?),
@@ -234,152 +224,49 @@ impl SourceExecutor for Executor {
         _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
-        // Select ONLY value columns (non-primary key columns) for get_value() return
-        let value_columns: Vec<String> = self
-            .table_schema
-            .value_columns
-            .iter()
-            .map(|col| format!("\"{}\"", col.name))
-            .collect();
-        let simple_query = if self.table_schema.primary_key_columns.len() == 1 {
-            let pk_col = &self.table_schema.primary_key_columns[0];
-            let key_condition = match &pk_col.value_type {
-                BasicValueType::Uuid => {
-                    // For UUID keys, extract the UUID value directly
-                    let uuid_val = match key {
-                        KeyValue::Uuid(uuid) => uuid,
-                        _ => return Err(anyhow::anyhow!("Expected UUID key, got {:?}", key)),
-                    };
-                    format!("\"{}\" = '{}'", pk_col.name, uuid_val)
-                }
-                BasicValueType::Str => {
-                    // For string keys, use string comparison
-                    let key_str = key.str_value()?;
-                    format!("\"{}\" = '{}'", pk_col.name, key_str.replace("'", "''"))
-                }
-                BasicValueType::Int64 => {
-                    // For integer keys, use numeric comparison
-                    let key_int = key.int64_value()?;
-                    format!("\"{}\" = {}", pk_col.name, key_int)
-                }
-                _ => {
-                    // For other types, convert to string
-                    let key_str = key.to_string();
-                    format!("\"{}\" = '{}'", pk_col.name, key_str.replace("'", "''"))
-                }
-            };
-            format!(
-                "SELECT {} FROM \"{}\" WHERE {}",
-                if value_columns.is_empty() {
-                    "1".to_string()
-                } else {
-                    value_columns.join(", ")
-                },
-                self.table_name,
-                key_condition
-            )
+        let mut qb = sqlx::QueryBuilder::new("SELECT ");
+        if self.table_schema.value_columns.is_empty() {
+            qb.push("1");
         } else {
-            // For composite keys, we need to parse and build the query
-            let mut conditions = Vec::new();
+            qb.push(
+                self.table_schema
+                    .value_columns
+                    .iter()
+                    .map(|col| format!("\"{}\"", col.name))
+                    .collect::<Vec<String>>()
+                    .join(", "),
+            );
+        }
+        qb.push(" FROM \"");
+        qb.push(&self.table_name);
+        qb.push("\" WHERE ");
 
-            match key {
-                KeyValue::Struct(key_values) => {
-                    // Handle struct keys (composite primary keys)
-                    if key_values.len() != self.table_schema.primary_key_columns.len() {
-                        return Err(anyhow::anyhow!(
-                            "Composite key has {} values but table has {} primary key columns",
-                            key_values.len(),
-                            self.table_schema.primary_key_columns.len()
-                        ));
-                    }
+        let key_values = key_value_fields_iter(&self.table_schema.primary_key_columns, key)?;
+        if key_values.len() != self.table_schema.primary_key_columns.len() {
+            bail!(
+                "Composite key has {} values but table has {} primary key columns",
+                key_values.len(),
+                self.table_schema.primary_key_columns.len()
+            );
+        }
 
-                    for (i, (pk_col, key_value)) in self
-                        .table_schema
-                        .primary_key_columns
-                        .iter()
-                        .zip(key_values.iter())
-                        .enumerate()
-                    {
-                        let condition = match &pk_col.value_type {
-                            BasicValueType::Uuid => {
-                                let uuid_val = match key_value {
-                                    KeyValue::Uuid(uuid) => uuid,
-                                    _ => {
-                                        return Err(anyhow::anyhow!(
-                                            "Expected UUID key value at position {}, got {:?}",
-                                            i,
-                                            key_value
-                                        ));
-                                    }
-                                };
-                                format!("\"{}\" = '{}'", pk_col.name, uuid_val)
-                            }
-                            BasicValueType::Str => {
-                                let key_str = key_value.str_value()?;
-                                format!("\"{}\" = '{}'", pk_col.name, key_str.replace("'", "''"))
-                            }
-                            BasicValueType::Int64 => {
-                                let key_int = key_value.int64_value()?;
-                                format!("\"{}\" = {}", pk_col.name, key_int)
-                            }
-                            BasicValueType::Bool => {
-                                let key_bool = key_value.bool_value()?;
-                                format!("\"{}\" = {}", pk_col.name, key_bool)
-                            }
-                            BasicValueType::Date => {
-                                let key_date = key_value.date_value()?;
-                                format!("\"{}\" = '{}'", pk_col.name, key_date)
-                            }
-                            _ => {
-                                // For other types, convert to string
-                                let key_str = key_value.to_string();
-                                format!("\"{}\" = '{}'", pk_col.name, key_str.replace("'", "''"))
-                            }
-                        };
-                        conditions.push(condition);
-                    }
-                }
-                KeyValue::Str(s) => {
-                    // Fallback: try to parse as JSON string for backward compatibility
-                    let key_obj: serde_json::Map<String, serde_json::Value> =
-                        serde_json::from_str(&s.to_string())?;
-                    for pk_col in &self.table_schema.primary_key_columns {
-                        if let Some(value) = key_obj.get(&pk_col.name) {
-                            let value_str = match value {
-                                serde_json::Value::String(s) => s.clone(),
-                                _ => value.to_string(),
-                            };
-                            conditions.push(format!(
-                                "\"{}\" = '{}'",
-                                pk_col.name,
-                                value_str.replace("'", "''")
-                            ));
-                        }
-                    }
-                }
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "Expected struct or string key for composite primary key, got {:?}",
-                        key
-                    ));
-                }
+        for (i, (pk_col, key_value)) in self
+            .table_schema
+            .primary_key_columns
+            .iter()
+            .zip(key_values.iter())
+            .enumerate()
+        {
+            if i > 0 {
+                qb.push(" AND ");
             }
+            qb.push("\"");
+            qb.push(pk_col.name.as_str());
+            qb.push("\" = ");
+            bind_key_field(&mut qb, key_value)?;
+        }
 
-            format!(
-                "SELECT {} FROM \"{}\" WHERE {}",
-                if value_columns.is_empty() {
-                    "1".to_string()
-                } else {
-                    value_columns.join(", ")
-                },
-                self.table_name,
-                conditions.join(" AND ")
-            )
-        };
-
-        let row_opt = sqlx::query(&simple_query)
-            .fetch_optional(&self.db_pool)
-            .await?;
+        let row_opt = qb.build().fetch_optional(&self.db_pool).await?;
 
         let ordinal = if options.include_ordinal {
             Some(Ordinal::unavailable())
@@ -390,31 +277,24 @@ impl SourceExecutor for Executor {
         let value = if options.include_value {
             match row_opt {
                 Some(row) => {
-                    // Return value columns as individual fields (like Google Drive)
-                    if value_columns.is_empty() {
-                        // If no value columns, just indicate existence
-                        Some(SourceValue::Existence(fields_value!(true)))
-                    } else {
-                        // Return each value column as a separate field
-                        let mut fields = Vec::new();
-                        for value_col in &self.table_schema.value_columns {
-                            // Find the column by name in the result row to get the correct index
-                            let col_index = row
-                                .columns()
-                                .iter()
-                                .position(|col| col.name() == value_col.name.as_str())
-                                .ok_or_else(|| {
-                                    anyhow::anyhow!(
-                                        "Column '{}' not found in result row",
-                                        value_col.name
-                                    )
-                                })?;
+                    let mut fields = Vec::new();
+                    for value_col in &self.table_schema.value_columns {
+                        // Find the column by name in the result row to get the correct index
+                        let col_index = row
+                            .columns()
+                            .iter()
+                            .position(|col| col.name() == value_col.name.as_str())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "Column '{}' not found in result row",
+                                    value_col.name
+                                )
+                            })?;
 
-                            let value = convert_pg_value_to_value(&row, value_col, col_index)?;
-                            fields.push(value);
-                        }
-                        Some(SourceValue::Existence(FieldValues { fields }))
+                        let value = convert_pg_value_to_value(&row, value_col, col_index)?;
+                        fields.push(value);
                     }
+                    Some(SourceValue::Existence(FieldValues { fields }))
                 }
                 None => Some(SourceValue::NonExistence),
             }
@@ -457,30 +337,15 @@ impl SourceFactoryBase for Factory {
         // This matches the KTable schema: KTable<KeyStruct, ValueStruct>
 
         if table_schema.primary_key_columns.len() == 1 {
-            // Single primary key - first field is the key
             let pk_col = &table_schema.primary_key_columns[0];
-            let cocoindex_type = pk_col.value_type.clone();
-            let field_type = if pk_col.is_nullable {
-                make_output_type(cocoindex_type).with_nullable(true)
-            } else {
-                make_output_type(cocoindex_type)
-            };
-
-            schema_builder.add_field(FieldSchema::new(&pk_col.name, field_type));
+            schema_builder.add_field(FieldSchema::new(&pk_col.name, pk_col.value_type.clone()));
         } else {
             // Composite primary key - first field is _key containing all PK columns
             let mut key_struct_schema = StructSchema::default();
             let mut key_builder = StructSchemaBuilder::new(&mut key_struct_schema);
 
             for pk_col in &table_schema.primary_key_columns {
-                let cocoindex_type = pk_col.value_type.clone();
-                let field_type = if pk_col.is_nullable {
-                    make_output_type(cocoindex_type).with_nullable(true)
-                } else {
-                    make_output_type(cocoindex_type)
-                };
-
-                key_builder.add_field(FieldSchema::new(&pk_col.name, field_type));
+                key_builder.add_field(FieldSchema::new(&pk_col.name, pk_col.value_type.clone()));
             }
 
             // Add _key field containing the composite primary key
@@ -490,16 +355,11 @@ impl SourceFactoryBase for Factory {
             ));
         }
 
-        // Add value columns as fields (these match what get_value() returns)
         for value_col in &table_schema.value_columns {
-            let cocoindex_type = value_col.value_type.clone();
-            let field_type = if value_col.is_nullable {
-                make_output_type(cocoindex_type).with_nullable(true)
-            } else {
-                make_output_type(cocoindex_type)
-            };
-
-            schema_builder.add_field(FieldSchema::new(&value_col.name, field_type));
+            schema_builder.add_field(FieldSchema::new(
+                &value_col.name,
+                value_col.value_type.clone(),
+            ));
         }
 
         // Log schema information for debugging
