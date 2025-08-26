@@ -205,32 +205,17 @@ impl SourceExecutor for Executor {
 
             let mut rows = sqlx::query(&query).fetch(&self.db_pool);
             while let Some(row) = rows.try_next().await? {
-                // Handle both single and composite primary keys
-                let key = if self.table_schema.primary_key_columns.len() == 1 {
-                    // Single primary key - extract directly
-                    let pk_col = &self.table_schema.primary_key_columns[0];
-                    let v = convert_pg_value_to_value(&row, pk_col, 0)?;
-                    if v.is_null() {
-                        Err(anyhow::anyhow!(
-                            "Primary key value is NULL for column `{}`",
-                            pk_col.name
-                        ))?;
-                    }
-                    v.into_key()?
-                } else {
-                    // Composite primary key - combine each part
-                    let parts = self
-                        .table_schema
-                        .primary_key_columns
-                        .iter()
-                        .enumerate()
-                        .map(|(i, pk_col)| convert_pg_value_to_value(&row, pk_col, i))
-                        .collect::<Result<Vec<_>>>()?;
-                    if parts.iter().any(|v| v.is_null()) {
-                        Err(anyhow::anyhow!("Composite primary key contains NULL component"))?;
-                    }
-                    KeyValue::from_values(parts.iter())?
-                };
+                let parts = self
+                    .table_schema
+                    .primary_key_columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, pk_col)| convert_pg_value_to_value(&row, pk_col, i))
+                    .collect::<Result<Vec<_>>>()?;
+                if parts.iter().any(|v| v.is_null()) {
+                    Err(anyhow::anyhow!("Composite primary key contains NULL component"))?;
+                }
+                let key = KeyValue::from_values(parts.iter())?;
 
                 yield vec![PartialSourceRowMetadata {
                     key,
