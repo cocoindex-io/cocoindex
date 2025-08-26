@@ -2,8 +2,8 @@ import cocoindex
 import os
 
 
-@cocoindex.flow_def(name="PostgresMessageEmbedding")
-def postgres_message_embedding_flow(
+@cocoindex.flow_def(name="PostgresMessageIndexing")
+def postgres_message_indexing_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
     """
@@ -42,7 +42,7 @@ def postgres_message_embedding_flow(
         )
 
     message_embeddings.export(
-        "message_embeddings",
+        "output",
         cocoindex.targets.Postgres(),
         primary_key_fields=["id"],
         vector_indexes=[
@@ -71,8 +71,8 @@ def make_full_description(
     return f"Category: {category}\nName: {name}\n\n{description}"
 
 
-@cocoindex.flow_def(name="PostgresProductEmbedding")
-def postgres_product_embedding_flow(
+@cocoindex.flow_def(name="PostgresProductIndexing")
+def postgres_product_indexing_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
     """
@@ -122,7 +122,7 @@ def postgres_product_embedding_flow(
         )
 
     product_embeddings.export(
-        "product_embeddings",
+        "output",
         cocoindex.targets.Postgres(),
         primary_key_fields=["product_category", "product_name"],
         vector_indexes=[

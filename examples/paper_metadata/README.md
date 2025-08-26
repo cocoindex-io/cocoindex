@@ -29,7 +29,7 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 1.  [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
 
-2.  dependencies:
+2.  Install dependencies:
 
     ```bash
     pip install -e .
