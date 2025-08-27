@@ -10,10 +10,9 @@ sidebar_custom_props:
 tags: [vector-index, metadata]
 ---
 
-import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';
+import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata"/>
-
 
 ## What we will achieve
 
@@ -27,18 +26,8 @@ to answer questions like "Give me all the papers by Jeff Dean."
 
 4. If you want to perform full PDF embedding for the paper, you can extend the flow.
 
-## Setup
-
-- [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
-  CocoIndex uses PostgreSQL internally for incremental processing.
-- [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).  
-  Alternatively, we have native support for Gemini, Ollama, LiteLLM. Check out the [guide](https://cocoindex.io/docs/ai/llm#ollama).
-  You can choose your favorite LLM provider and work completely on-premises.
-
-## Define Indexing Flow
-
-To better help you navigate what we will walk through, here is a flow diagram: 
-
+## Flow Overview
+![Flow Overview](/img/examples/academic_papers_index/flow.png)
 1. Import a list of papers in PDF.
 2. For each file:
     - Extract the first page of the paper.
@@ -50,9 +39,15 @@ To better help you navigate what we will walk through, here is a flow diagram:
     - Author-to-paper mapping, for author-based query.
     - Embeddings for titles and abstract chunks, for semantic search.
 
-Let’s zoom in on the steps.
+## Setup
 
-### Import the Papers
+- [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
+  CocoIndex uses PostgreSQL internally for incremental processing.
+- [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai). Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
+
+  <DocumentationButton href="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
+
+## Import the Papers
 
 ```python
 @cocoindex.flow_def(name="PaperMetadata")
@@ -65,12 +60,12 @@ def paper_metadata_flow(
     )
 ```
 
-`flow_builder.add_source` will create a table with sub fields (`filename`, `content`), 
-we can refer to the [documentation](https://cocoindex.io/docs/ops/sources) for more details.
+`flow_builder.add_source` will create a table with sub fields (`filename`, `content`).
+<DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
 
-### Extract and collect metadata
+## Extract and collect metadata
 
-#### Extract first page for basic info
+### Extract first page for basic info
 
 Define a custom function to extract the first page and number of pages of the PDF.
 
@@ -96,20 +91,19 @@ def extract_basic_info(content: bytes) -> PaperBasicInfo:
 
 ```
 
-Now, plug this into your flow.
-We extract metadata from the first page to minimize processing cost, since the entire PDF can be very large.
+Now plug this into the flow. We extract metadata from the first page to minimize processing cost, since the entire PDF can be very large.
 
 ```python
 with data_scope["documents"].row() as doc:
     doc["basic_info"] = doc["content"].transform(extract_basic_info)
 ```
+![Extract basic info](/img/examples/academic_papers_index/basic_info.png)
 
-After this step, you should have the basic info of each paper.
+After this step, we should have the basic info of each paper.
 
 ### Parse basic info
 
-We will convert the first page to Markdown using Marker. 
-Alternatively, you can easily plug in your favorite PDF parser, such as Docling.
+We will convert the first page to Markdown using Marker. Alternatively, you can easily plug in any PDF parser, such as Docling using CocoIndex's [custom function](https://cocoindex.io/docs/custom_ops/custom_functions).
 
 Define a marker converter function and cache it, since its initialization is resource-intensive. 
 This ensures that the same converter instance is reused for different input files.
@@ -140,18 +134,20 @@ def pdf_to_markdown(content: bytes) -> str:
 Pass it to your transform
 
 ```python
-with data_scope["documents"].row() as doc:      
+with data_scope["documents"].row() as doc:    
+    # ... process
     doc["first_page_md"] = doc["basic_info"]["first_page"].transform(
             pdf_to_markdown
         )
 ```
+![First page in Markdown](/img/examples/academic_papers_index/first_page.png)
 
 After this step, you should have the first page of each paper in Markdown format.
 
-#### Extract basic info with LLM
+### Extract basic info with LLM
 
 Define a schema for LLM extraction. CocoIndex natively supports LLM-structured extraction with complex and nested schemas.
-If you are interested in learning more about nested schemas, refer to [this article](https://cocoindex.io/blogs/patient-intake-form-extraction-with-llm).
+If you are interested in learning more about nested schemas, refer to [this example](https://cocoindex.io/docs/examples/patient_form_extraction).
 
 ```python
 @dataclasses.dataclass
@@ -163,7 +159,6 @@ class PaperMetadata:
     title: str
     authors: list[Author]
     abstract: str
-
 ```
 
 Plug it into the `ExtractByLlm` function. With a dataclass defined, CocoIndex will automatically parse the LLM response into the dataclass.
@@ -181,26 +176,27 @@ doc["metadata"] = doc["first_page_md"].transform(
 ```
 
 After this step, you should have the metadata of each paper.
+![Metadata](/img/examples/academic_papers_index/metadata.png)
 
-#### Collect paper metadata
+### Collect paper metadata
 
 ```python
-  paper_metadata = data_scope.add_collector()
-  with data_scope["documents"].row() as doc:
-    # ... process
-    # Collect metadata
-    paper_metadata.collect(
-        filename=doc["filename"],
-        title=doc["metadata"]["title"],
-        authors=doc["metadata"]["authors"],
-        abstract=doc["metadata"]["abstract"],
-        num_pages=doc["basic_info"]["num_pages"],
-    )
+paper_metadata = data_scope.add_collector()
+with data_scope["documents"].row() as doc:
+# ... process
+# Collect metadata
+paper_metadata.collect(
+    filename=doc["filename"],
+    title=doc["metadata"]["title"],
+    authors=doc["metadata"]["authors"],
+    abstract=doc["metadata"]["abstract"],
+    num_pages=doc["basic_info"]["num_pages"],
+)
 ```
 
 Just collect anything you need :)
 
-#### Collect `author` to `filename` information
+### Collect `author` to `filename` information
 We’ve already extracted author list. Here we want to collect Author → Papers in a separate table to build a look up functionality. 
 Simply collect by author.
 
@@ -216,9 +212,9 @@ with data_scope["documents"].row() as doc:
 ```
 
 
-### Compute and collect embeddings
+## Compute and collect embeddings
 
-#### Title
+### Title
 
 ```python
 doc["title_embedding"] = doc["metadata"]["title"].transform(
@@ -228,7 +224,7 @@ doc["title_embedding"] = doc["metadata"]["title"].transform(
 )
 ```
 
-#### Abstract
+### Abstract
 
 Split abstract into chunks, embed each chunk and collect their embeddings. 
 Sometimes the abstract could be very long. 
@@ -252,6 +248,8 @@ doc["abstract_chunks"] = doc["metadata"]["abstract"].transform(
 
 After this step, you should have the abstract chunks of each paper.
 
+![Abstract chunks](/img/examples/academic_papers_index/abstract_chunks.png)
+
 Embed each chunk and collect their embeddings.
 
 ```python
@@ -265,7 +263,9 @@ with doc["abstract_chunks"].row() as chunk:
 
 After this step, you should have the embeddings of the abstract chunks of each paper.
 
-#### Collect embeddings
+![Abstract chunks embeddings](/img/examples/academic_papers_index/chunk_embedding.png)
+
+### Collect embeddings
 
 ```python
 metadata_embeddings = data_scope.add_collector()
@@ -292,7 +292,7 @@ with data_scope["documents"].row() as doc:
         )
 ```
 
-### Export
+## Export
 Finally, we export the data to Postgres.
 
 ```python
@@ -319,14 +319,9 @@ metadata_embeddings.export(
 )
 ```
 
-In this example we use PGVector as embedding stores/
-With CocoIndex, you can do one line switch on other supported Vector databases like Qdrant, see this [guide](https://cocoindex.io/docs/ops/targets#entry-oriented-targets) for more details.
-We aim to standardize interfaces and make it like assembling building blocks.
+In this example we use PGVector as embedding store. With CocoIndex, you can do one line switch on other supported Vector databases.
 
-## View in CocoInsight step by step
-
-You can walk through the project step by step in [CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk) to see 
-exactly how each field is constructed and what happens behind the scenes.
+<DocumentationButton href="https://cocoindex.io/docs/ops/targets#entry-oriented-targets" text="Entry Oriented Targets" margin="0 0 16px 0" />
 
 ## Query the index
 
@@ -338,3 +333,14 @@ For now CocoIndex doesn't provide additional query interface. We can write SQL o
 - The query space has excellent solutions for querying, reranking, and other search-related functionality.
 
 If you need assist with writing the query, please feel free to reach out to us at [Discord](https://discord.com/invite/zpA9S2DR7s).
+
+## CocoInsight
+
+You can walk through the project step by step in [CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk) to see exactly how each field is constructed and what happens behind the scenes.
+
+
+```sh
+cocoindex server -ci main.py
+```
+
+Follow the url `https://cocoindex.io/cocoinsight`.  It connects to your local CocoIndex server, with zero pipeline data retention.

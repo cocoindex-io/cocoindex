@@ -35,8 +35,10 @@ and then build a knowledge graph.
 ## Setup
 *   [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing. 
 *   [Install Neo4j](https://cocoindex.io/docs/ops/targets#neo4j-dev-instance), a graph database.
-*   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai). Alternatively, you can switch to Ollama, which runs LLM models locally.
-    <DocumentationButton href="https://cocoindex.io/docs/ai/llm#ollama" text="Ollama" margin="0 0 16px 0" />
+*   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).  Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
+
+    <DocumentationButton href="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
+
 
 ## Documentation
 <DocumentationButton href="https://cocoindex.io/docs/ops/targets#property-graph-targets" text="Property Graph Targets" margin="0 0 16px 0" />
