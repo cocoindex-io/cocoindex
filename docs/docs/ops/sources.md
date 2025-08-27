@@ -282,3 +282,43 @@ The output is a [*KTable*](/docs/core/data_types#ktable) with the following sub 
 *   `filename` (*Str*): the filename of the file, without the path, e.g. `"file1.md"`
 *   `mime_type` (*Str*): the MIME type of the file.
 *   `content` (*Str* if `binary` is `False`, otherwise *Bytes*): the content of the file.
+
+
+## Postgres
+
+The `Postgres` source imports rows from a PostgreSQL table.
+
+### Setup for PostgreSQL
+
+*   Ensure the table exists and has a primary key. Tables without a primary key are not supported.
+*   Grant the connecting user read permissions on the target table (e.g. `SELECT`).
+*   Provide a database connection. You can:
+    *   Use CocoIndex's default database connection, or
+    *   Provide an explicit connection via a transient auth entry referencing a `DatabaseConnectionSpec` with a `url`, for example:
+
+        ```python
+        cocoindex.add_transient_auth_entry(
+            cocoindex.sources.DatabaseConnectionSpec(
+                url="postgres://user:password@host:5432/dbname?sslmode=require",
+            )
+        )
+        ```
+
+### Spec
+
+The spec takes the following fields:
+
+*   `table_name` (`str`): the PostgreSQL table to read from.
+*   `database` (`cocoindex.TransientAuthEntryReference[DatabaseConnectionSpec]`, optional): database connection reference. If not provided, the default CocoIndex database is used.
+*   `included_columns` (`list[str]`, optional): non-primary-key columns to include. If not specified, all non-PK columns are included.
+*   `ordinal_column` (`str`, optional): to specify a non-primary-key column used for change tracking and ordering, e.g. can be a modified timestamp or a monotonic version number. Supported types are integer-like (`bigint`/`integer`) and timestamps (`timestamp`, `timestamptz`).
+    `ordinal_column` must not be a primary key column.
+
+### Schema
+
+The output is a [*KTable*](/docs/core/data_types#ktable) with fields derived from the table schema:
+
+*   Key fields:
+    *   If the table has a single primary key column, that column appears as the key field with its name and type.
+    *   If the table has a composite primary key, a struct field named `_key` contains each PK component as a sub-field.
+*   Value fields: All non-primary-key columns included by `included_columns` (or all when not specified) appear as value fields.
