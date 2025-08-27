@@ -512,58 +512,22 @@ impl SourceFactoryBase for Factory {
         )
         .await?;
 
-        // Build fields: first key, then value columns
-        let mut fields: Vec<FieldSchema> = Vec::new();
-
-        if table_schema.primary_key_columns.len() == 1 {
-            let pk_col = &table_schema.primary_key_columns[0];
-            fields.push(FieldSchema::new(
-                &pk_col.schema.name,
-                pk_col.schema.value_type.clone(),
-            ));
-        } else {
-            // Composite primary key - put all PK columns into a nested struct `_key`
-            let key_fields: Vec<FieldSchema> = table_schema
-                .primary_key_columns
-                .iter()
-                .map(|pk_col| {
-                    FieldSchema::new(&pk_col.schema.name, pk_col.schema.value_type.clone())
-                })
-                .collect();
-            let key_struct_schema = StructSchema {
-                fields: Arc::new(key_fields),
-                description: None,
-            };
-            fields.push(FieldSchema::new(
-                "_key",
-                make_output_type(key_struct_schema),
-            ));
-        }
-
-        for value_col in &table_schema.value_columns {
-            fields.push(FieldSchema::new(
-                &value_col.schema.name,
-                value_col.schema.value_type.clone(),
-            ));
-        }
-
-        // Log schema information for debugging
-        if table_schema.primary_key_columns.len() > 1 {
-            info!(
-                "Composite primary key detected: {} columns",
-                table_schema.primary_key_columns.len()
-            );
-        }
-
-        let struct_schema = StructSchema {
-            fields: Arc::new(fields),
-            description: None,
-        };
         Ok(make_output_type(TableSchema::new(
             TableKind::KTable {
                 num_key_parts: table_schema.primary_key_columns.len(),
             },
-            struct_schema,
+            StructSchema {
+                fields: Arc::new(
+                    (table_schema.primary_key_columns.into_iter().map(|pk_col| {
+                        FieldSchema::new(&pk_col.schema.name, pk_col.schema.value_type)
+                    }))
+                    .chain(table_schema.value_columns.into_iter().map(|value_col| {
+                        FieldSchema::new(&value_col.schema.name, value_col.schema.value_type)
+                    }))
+                    .collect(),
+                ),
+                description: None,
+            },
         )))
     }
 
