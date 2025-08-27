@@ -1,0 +1,9 @@
+[project]
+name = "postgres-source"
+version = "0.1.0"
+description = "Demonstrate how to use Postgres tables as the source for CocoIndex."
+requires-python = ">=3.11"
+dependencies = ["cocoindex[embeddings]>=0.1.83"]
+
+[tool.setuptools]
+packages = []

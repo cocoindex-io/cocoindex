@@ -1,0 +1,60 @@
+# PostgreSQL Source Example 🗄️
+
+[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+
+This example demonstrates how to use Postgres tables as the source for CocoIndex.
+It reads structured data from existing PostgreSQL tables, performs calculations, generates embeddings, and stores them in a separate CocoIndex table.
+
+We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
+
+This example contains two flows:
+
+1. `postgres_message_indexing_flow`: Read from a simpler table `source_messages` (single primary key), and generate embeddings for the `message` column. 
+2. `postgres_product_indexing_flow`: Read from a more complex table `source_products` (composite primary key), compute additional fields and generates embeddings.
+
+
+## Prerequisites
+
+Before running the example, you need to:
+
+1.  Install dependencies:
+
+    ```bash
+    pip install -e .
+    ```
+
+2.  Follow the [CocoIndex PostgreSQL setup guide](https://cocoindex.io/docs/getting_started/quickstart) to install and configure PostgreSQL with pgvector extension.
+
+3.  Create source tables `source_messages` and `source_products` with sample data:
+
+    ```bash
+    $ psql "postgres://cocoindex:cocoindex@localhost/cocoindex" -f ./prepare_source_data.sql
+    ```
+
+    For simplicity, we use the same database for source and target. You can also setup a separate Postgres database to use as the source database.
+    Remember to update the `SOURCE_DATABASE_URL` in `.env` file if you use a separate database.
+
+## Run
+
+Update index, which will also setup the tables at the first time:
+
+```bash
+cocoindex update --setup main.py
+```
+
+## CocoInsight
+CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
+
+Run CocoInsight to understand your RAG data pipeline:
+
+```sh
+cocoindex server -ci main.py
+```
+
+You can also add a `-L` flag to make the server keep updating the index to reflect source changes at the same time:
+
+```sh
+cocoindex server -ci -L main.py
+```
+
+Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
