@@ -10,30 +10,103 @@ sidebar_custom_props:
 tags: [structured-data-extraction, data-mapping]
 ---
 
-import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';
+import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction"/>
 <YouTubeButton url="https://youtu.be/_mjlwVtnBn0?si=-TBImMyZbnKh-5FB" />
 
-## Prerequisites
-### Install Postgres
-If you don't have Postgres installed, please refer to the [installation guide](https://cocoindex.io/docs/getting_started/installation).
+## Overview
+With CocoIndex, you can easily define nested schema in Python dataclass and use LLM to extract structured data from unstructured data. This example shows how to extract structured data from patient intake forms.
 
 :::info
-The extraction quality is highly dependent on the OCR quality. You can use CocoIndex with any commercial parser (or open source ones) that is tailored for your domain for better results. For example, Document AI from Google Cloud and more. 
+The extraction quality is highly dependent on the OCR quality. You can use CocoIndex with any commercial parser or open source ones that is tailored for your domain for better results. For example, Document AI from Google Cloud and more. 
 :::
 
-### Google Drive as alternative source (optional)
-If you plan to load patient intake forms from Google Drive, you can refer to this [example](https://cocoindex.io/blogs/text-embedding-from-google-drive#enable-google-drive-access-by-service-account) for more details.
+## Flow Overview
+
+![Flow overview](/img/examples/patient_form_extraction/flow.png)
+
+The flow itself is fairly simple.
+1. Import a list o intake forms.
+2. For each file:
+    - Convert the file to Markdown.
+    - Extract structured data from the Markdown.
+3. Export selected fields to tables in Postgres with PGVector.
+
+## Setup
+- If you don't have Postgres installed, please refer to the [installation guide](https://cocoindex.io/docs/getting_started/installation).
+-  [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai). Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
+
+Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
+
+  <DocumentationButton href="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
 
 
-## Extract Structured Data from Google Drive
-### 1. Define output schema
+## Add source
+
+Add source from local files.
+
+```python
+@cocoindex.flow_def(name="PatientIntakeExtraction")
+def patient_intake_extraction_flow(
+    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
+):
+    """
+    Define a flow that extracts patient information from intake forms.
+    """
+    data_scope["documents"] = flow_builder.add_source(
+        cocoindex.sources.LocalFile(path="data/patient_forms", binary=True)
+    )
+```
+
+`flow_builder.add_source` will create a table with a few sub fields.
+
+<DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+
+
+##  Parse documents with different formats to Markdown
+
+Define a custom function to parse documents in any format to Markdown. Here we use [MarkItDown](https://github.com/microsoft/markitdown) to convert the file to Markdown. It also provides options to parse by LLM, like `gpt-4o`. At present, MarkItDown supports: PDF, Word, Excel, Images (EXIF metadata and OCR), etc. 
+
+```python
+class ToMarkdown(cocoindex.op.FunctionSpec):
+    """Convert a document to markdown."""
+
+@cocoindex.op.executor_class(gpu=True, cache=True, behavior_version=1)
+class ToMarkdownExecutor:
+    """Executor for ToMarkdown."""
+
+    spec: ToMarkdown
+    _converter: MarkItDown
+
+    def prepare(self):
+        client = OpenAI()
+        self._converter = MarkItDown(llm_client=client, llm_model="gpt-4o")
+
+    def __call__(self, content: bytes, filename: str) -> str:
+        suffix = os.path.splitext(filename)[1]
+        with tempfile.NamedTemporaryFile(delete=True, suffix=suffix) as temp_file:
+            temp_file.write(content)
+            temp_file.flush()
+            text = self._converter.convert(temp_file.name).text_content
+            return text
+```
+
+Next we plug it into the data flow.
+
+```python
+with data_scope["documents"].row() as doc:
+    doc["markdown"] = doc["content"].transform(ToMarkdown(), filename=doc["filename"])
+```
+
+![Markdown](/img/examples/patient_form_extraction/tomarkdown.png)
+
+## Define output schema 
 
 We are going to define the patient info schema for structured extraction. One of the best examples to define a patient info schema is probably following the [FHIR standard - Patient Resource](https://build.fhir.org/patient.html#resource).
 
 
-In this tutorial, we'll define a simplified schema for patient information extraction:
+In this tutorial, we'll define a simplified schema in nested dataclass for patient information extraction:
 
 ```python
 @dataclasses.dataclass
@@ -105,98 +178,73 @@ class Patient:
     consent_date: datetime.date | None
 ```
 
-### 2. Define CocoIndex Flow
-Let's define the CocoIndex flow to extract the structured data from patient intake forms.
+A simplified illustration of the nested fields and its definition:
 
-1.  Add Google Drive as a source
-    ```python
-    @cocoindex.flow_def(name="PatientIntakeExtraction")
-    def patient_intake_extraction_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-        """
-        Define a flow that extracts patient information from intake forms.
-        """
-        credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
-        root_folder_ids = os.environ["GOOGLE_DRIVE_ROOT_FOLDER_IDS"].split(",")
-        
-        data_scope["documents"] = flow_builder.add_source(
-            cocoindex.sources.GoogleDrive(
-                service_account_credential_path=credential_path,
-                root_folder_ids=root_folder_ids,
-                binary=True))
+![Patient Fields](/img/examples/patient_form_extraction/fields.png)
 
-        patients_index = data_scope.add_collector()
+## Extract structured data from Markdown
+CocoIndex provides built-in functions (e.g. `ExtractByLlm`) that process data using LLMs. With CocoIndex, you can directly pass the Python dataclass `Patient` to the function, and it will automatically parse the LLM response into the dataclass.
+
+```python
+with data_scope["documents"].row() as doc:
+    doc["patient_info"] = doc["markdown"].transform(
+        cocoindex.functions.ExtractByLlm(
+            llm_spec=cocoindex.LlmSpec(
+                api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
+            output_type=Patient,
+            instruction="Please extract patient information from the intake form."))
+    patients_index.collect(
+        filename=doc["filename"],
+        patient_info=doc["patient_info"],
+    )
+```
+
+<DocumentationButton href="https://cocoindex.io/docs/ops/functions#extractbyllm" text="ExtractByLlm" margin="0 0 16px 0" />
+
+![Extracted](/img/examples/patient_form_extraction/extraction.png)
+
+After the extraction, we collect all the fields for simplicity. You can also select any fields and also perform data mapping and field level transformation on the fields before the collection. If you have any questions, feel free to ask us in [Discord](https://discord.com/invite/zpA9S2DR7s).
+
+
+##  Export the extracted data to a table
+
+```python
+patients_index.export(
+    "patients",
+    cocoindex.storages.Postgres(table_name="patients_info"),
+    primary_key_fields=["filename"],
+)
+```
+
+## Run and Query
+### Install dependencies
+    ```bash
+    pip install -e .
     ```
 
-    `flow_builder.add_source` will create a table with a few sub fields. See [documentation](https://cocoindex.io/docs/ops/sources) here.
-
-2.  Parse documents with different formats to Markdown
-
-    Define a custom function to parse documents in any format to Markdown. Here we use [MarkItDown](https://github.com/microsoft/markitdown) to convert the file to Markdown. It also provides options to parse by LLM, like `gpt-4o`.
-    At present, MarkItDown supports: PDF, Word, Excel, Images (EXIF metadata and OCR), etc. You could find its documentation [here](https://github.com/microsoft/markitdown).
-
-
-    ```python
-    class ToMarkdown(cocoindex.op.FunctionSpec):
-        """Convert a document to markdown."""
-
-    @cocoindex.op.executor_class(gpu=True, cache=True, behavior_version=1)
-    class ToMarkdownExecutor:
-        """Executor for ToMarkdown."""
-
-        spec: ToMarkdown
-        _converter: MarkItDown
-
-        def prepare(self):
-            client = OpenAI()
-            self._converter = MarkItDown(llm_client=client, llm_model="gpt-4o")
-
-        def __call__(self, content: bytes, filename: str) -> str:
-            suffix = os.path.splitext(filename)[1]
-            with tempfile.NamedTemporaryFile(delete=True, suffix=suffix) as temp_file:
-                temp_file.write(content)
-                temp_file.flush()
-                text = self._converter.convert(temp_file.name).text_content
-                return text
+### Setup and update the index
+    ```sh
+    cocoindex update --setup main.py
     ```
+    You'll see the index updates state in the terminal
 
-    Next we plug it into the data flow.
+### Query the output table
+After the index is built, you have a table with the name `patients_info`. You can query it at any time, e.g., start a Postgres shell:
 
-    ```python
-        with data_scope["documents"].row() as doc:
-            doc["markdown"] = doc["content"].transform(ToMarkdown(), filename=doc["filename"])
-    ```
+```bash
+psql postgres://cocoindex:cocoindex@localhost/cocoindex
+```
 
-3.  Extract structured data from Markdown
-    CocoIndex provides built-in functions (e.g. `ExtractByLlm`) that process data using LLMs. In this example, we use `gpt-4o` from OpenAI to extract structured data from the Markdown. We also provide built-in support for Ollama, which allows you to run LLM models on your local machine easily. 
+The run:
 
-    ```python
-    with data_scope["documents"].row() as doc:
-        doc["patient_info"] = doc["markdown"].transform(
-            cocoindex.functions.ExtractByLlm(
-                llm_spec=cocoindex.LlmSpec(
-                    api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"),
-                output_type=Patient,
-                instruction="Please extract patient information from the intake form."))
-        patients_index.collect(
-            filename=doc["filename"],
-            patient_info=doc["patient_info"],
-        )
-    ```
+```sql
+select * from patients_info;
+```
 
-    After the extraction, we just need to cherrypick anything we like from the output by calling the collect method on the collector defined above.
-
-4.  Export the extracted data to a table.
-
-    ```python
-        patients_index.export(
-            "patients",
-            cocoindex.storages.Postgres(table_name="patients_info"),
-            primary_key_fields=["filename"],
-        )
-    ```
+You could see the patients_info table.
 
 ## Evaluate
-🎉 Now you are all set with the extraction! For mission-critical use cases, it is important to evaluate the quality of the extraction. CocoIndex supports a simple way to evaluate the extraction. There may be some fancier ways to evaluate the extraction, but for now, we'll use a simple approach.
+For mission-critical use cases, it is important to evaluate the quality of the extraction. CocoIndex supports a simple way to evaluate the extraction. More updates are coming soon.
 
 1.  Dump the extracted data to YAML files.
 
@@ -223,49 +271,26 @@ Let's define the CocoIndex flow to extract the structured data from patient inta
     And double click on any row to see file level diff. In my case, there's missing `condition` for `Patient_Intake_Form_Joe.pdf` file.
 
 
-### Troubleshooting
+## Troubleshooting
+If extraction is not ideal, this is how I troubleshoot. My original golden file for this record is [this one](https://github.com/cocoindex-io/patient-intake-extraction/blob/main/data/example_forms/Patient_Intake_Form_Joe_Artificial.pdf). 
 
-My original golden file for this record is [this one](https://github.com/cocoindex-io/patient-intake-extraction/blob/main/data/example_forms/Patient_Intake_Form_Joe_Artificial.pdf). 
-
-
-We will troubleshoot in two steps:
+We could troubleshoot in two steps:
 1. Convert to Markdown
 2. Extract structured data from Markdown
 
-In this tutorial, we'll show how to use CocoInsight to troubleshoot this issue. 
+I also use CocoInsight to help me troubleshoot.
 
 ```bash
 cocoindex server -ci main.py
 ```
 
-Go to https://cocoindex.io/cocoinsight. You could see an interactive UI to explore the data.
+Go to `https://cocoindex.io/cocoinsight`. You could see an interactive UI to explore the data.
 
 
-Click on the `markdown` column for `Patient_Intake_Form_Joe.pdf`, you could see the Markdown content.
+Click on the `markdown` column for `Patient_Intake_Form_Joe.pdf`, you could see the Markdown content. We could try a few different models with the Markdown converter/LLM to iterate and see if we can get better results, or needs manual correction.
 
 
-It is not well understood by LLM extraction. So here we could try a few different models with the Markdown converter/LLM to iterate and see if we can get better results, or needs manual correction.
+## Connect to other sources 
+CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
-
-## Query the extracted data
-
-Run following commands to setup and update the index.
-```
-cocoindex setup main.py
-cocoindex update main.py
-```
-You'll see the index updates state in the terminal.
-
-After the index is built, you have a table with the name `patients_info`. You can query it at any time, e.g., start a Postgres shell:
-
-```bash
-psql postgres://cocoindex:cocoindex@localhost/cocoindex
-```
-
-The run:
-
-```sql
-select * from patients_info;
-```
-
-You could see the patients_info table.
+<DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
