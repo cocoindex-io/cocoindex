@@ -49,7 +49,7 @@ impl<TZ: TimeZone> TryFrom<chrono::DateTime<TZ>> for Ordinal {
 }
 
 pub struct PartialSourceRowMetadata {
-    pub key: KeyValue,
+    pub key: FullKeyValue,
     /// Auxiliary information for the source row, to be used when reading the content.
     /// e.g. it can be used to uniquely identify version of the row.
     /// Use serde_json::Value::Null to represent no auxiliary information.
@@ -93,7 +93,7 @@ impl SourceValue {
 }
 
 pub struct SourceChange {
-    pub key: KeyValue,
+    pub key: FullKeyValue,
     /// Auxiliary information for the source row, to be used when reading the content.
     /// e.g. it can be used to uniquely identify version of the row.
     pub key_aux_info: serde_json::Value,
@@ -138,7 +138,7 @@ pub trait SourceExecutor: Send + Sync {
     // Get the value for the given key.
     async fn get_value(
         &self,
-        key: &KeyValue,
+        key: &FullKeyValue,
         key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData>;

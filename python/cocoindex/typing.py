@@ -330,35 +330,50 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
 
 def _encode_struct_schema(
     struct_type: type, key_type: type | None = None
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], int | None]:
     fields = []
 
-    def add_field(name: str, t: Any) -> None:
+    def add_field(name: str, analyzed_type: AnalyzedTypeInfo) -> None:
         try:
-            type_info = encode_enriched_type_info(analyze_type_info(t))
+            type_info = encode_enriched_type_info(analyzed_type)
         except ValueError as e:
             e.add_note(
                 f"Failed to encode annotation for field - "
-                f"{struct_type.__name__}.{name}: {t}"
+                f"{struct_type.__name__}.{name}: {analyzed_type.core_type}"
             )
             raise
         type_info["name"] = name
         fields.append(type_info)
 
+    def add_fields_from_struct(struct_type: type) -> None:
+        if dataclasses.is_dataclass(struct_type):
+            for field in dataclasses.fields(struct_type):
+                add_field(field.name, analyze_type_info(field.type))
+        elif is_namedtuple_type(struct_type):
+            for name, field_type in struct_type.__annotations__.items():
+                add_field(name, analyze_type_info(field_type))
+        else:
+            raise ValueError(f"Unsupported struct type: {struct_type}")
+
+    result: dict[str, Any] = {}
+    num_key_parts = None
     if key_type is not None:
-        add_field(KEY_FIELD_NAME, key_type)
+        key_type_info = analyze_type_info(key_type)
+        if isinstance(key_type_info.variant, AnalyzedBasicType):
+            add_field(KEY_FIELD_NAME, key_type_info)
+            num_key_parts = 1
+        elif isinstance(key_type_info.variant, AnalyzedStructType):
+            add_fields_from_struct(key_type_info.variant.struct_type)
+            num_key_parts = len(fields)
+        else:
+            raise ValueError(f"Unsupported key type: {key_type}")
 
-    if dataclasses.is_dataclass(struct_type):
-        for field in dataclasses.fields(struct_type):
-            add_field(field.name, field.type)
-    elif is_namedtuple_type(struct_type):
-        for name, field_type in struct_type.__annotations__.items():
-            add_field(name, field_type)
+    add_fields_from_struct(struct_type)
 
-    result: dict[str, Any] = {"fields": fields}
+    result["fields"] = fields
     if doc := inspect.getdoc(struct_type):
         result["description"] = doc
-    return result
+    return result, num_key_parts
 
 
 def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
@@ -374,7 +389,7 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         return {"kind": variant.kind}
 
     if isinstance(variant, AnalyzedStructType):
-        encoded_type = _encode_struct_schema(variant.struct_type)
+        encoded_type, _ = _encode_struct_schema(variant.struct_type)
         encoded_type["kind"] = "Struct"
         return encoded_type
 
@@ -384,10 +399,8 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         if isinstance(elem_type_info.variant, AnalyzedStructType):
             if variant.vector_info is not None:
                 raise ValueError("LTable type must not have a vector info")
-            return {
-                "kind": "LTable",
-                "row": _encode_struct_schema(elem_type_info.variant.struct_type),
-            }
+            row_type, _ = _encode_struct_schema(elem_type_info.variant.struct_type)
+            return {"kind": "LTable", "row": row_type}
         else:
             vector_info = variant.vector_info
             return {
@@ -402,12 +415,14 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
             raise ValueError(
                 f"KTable value must have a Struct type, got {value_type_info.core_type}"
             )
+        row_type, num_key_parts = _encode_struct_schema(
+            value_type_info.variant.struct_type,
+            variant.key_type,
+        )
         return {
             "kind": "KTable",
-            "row": _encode_struct_schema(
-                value_type_info.variant.struct_type,
-                variant.key_type,
-            ),
+            "row": row_type,
+            "num_key_parts": num_key_parts,
         }
 
     if isinstance(variant, AnalyzedUnionType):

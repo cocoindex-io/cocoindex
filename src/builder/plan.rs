@@ -1,3 +1,4 @@
+use crate::base::schema::FieldSchema;
 use crate::prelude::*;
 
 use crate::ops::interface::*;
@@ -54,7 +55,7 @@ pub struct AnalyzedImportOp {
     pub name: String,
     pub executor: Box<dyn SourceExecutor>,
     pub output: AnalyzedOpOutput,
-    pub primary_key_type: schema::ValueType,
+    pub primary_key_schema: Box<[FieldSchema]>,
     pub refresh_options: spec::SourceRefreshOptions,
 
     pub concurrency_controller: concur_control::CombinedConcurrencyController,

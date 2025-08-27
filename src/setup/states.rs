@@ -147,7 +147,13 @@ impl<State> StateChange<State> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SourceSetupState {
     pub source_id: i32,
-    pub key_schema: schema::ValueType,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys_schema: Option<Box<[schema::ValueType]>>,
+
+    /// DEPRECATED. For backward compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_schema: Option<schema::ValueType>,
 
     // Allow empty string during deserialization for backward compatibility.
     #[serde(default)]

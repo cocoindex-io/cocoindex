@@ -14,7 +14,6 @@ from typing import Any, Callable, Mapping, Type, get_origin
 import numpy as np
 
 from .typing import (
-    KEY_FIELD_NAME,
     TABLE_TYPES,
     AnalyzedAnyType,
     AnalyzedBasicType,
@@ -96,14 +95,24 @@ def make_engine_value_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], An
                 f"Value type for dict is required to be a struct (e.g. dataclass or NamedTuple), got {variant.value_type}. "
                 f"If you want a free-formed dict, use `cocoindex.Json` instead."
             )
+        value_encoder = make_engine_value_encoder(value_type_info)
 
-        key_encoder = make_engine_value_encoder(analyze_type_info(variant.key_type))
-        value_encoder = make_engine_value_encoder(analyze_type_info(variant.value_type))
+        key_type_info = analyze_type_info(variant.key_type)
+        key_encoder = make_engine_value_encoder(key_type_info)
+        if isinstance(key_type_info.variant, AnalyzedBasicType):
+
+            def encode_row(k: Any, v: Any) -> Any:
+                return [key_encoder(k)] + value_encoder(v)
+
+        else:
+
+            def encode_row(k: Any, v: Any) -> Any:
+                return key_encoder(k) + value_encoder(v)
 
         def encode_struct_dict(value: Any) -> Any:
             if not value:
                 return []
-            return [[key_encoder(k)] + value_encoder(v) for k, v in value.items()]
+            return [encode_row(k, v) for k, v in value.items()]
 
         return encode_struct_dict
 
@@ -234,25 +243,47 @@ def make_engine_value_decoder(
                         f"declared `{dst_type_info.core_type}`, a dict type expected"
                     )
 
-                key_field_schema = engine_fields_schema[0]
-                field_path.append(f".{key_field_schema.get('name', KEY_FIELD_NAME)}")
-                key_decoder = make_engine_value_decoder(
-                    field_path,
-                    key_field_schema["type"],
-                    analyze_type_info(key_type),
-                    for_key=True,
-                )
-                field_path.pop()
+                num_key_parts = src_type.get("num_key_parts", 1)
+                key_type_info = analyze_type_info(key_type)
+                key_decoder: Callable[..., Any] | None = None
+                if (
+                    isinstance(
+                        key_type_info.variant, (AnalyzedBasicType, AnalyzedAnyType)
+                    )
+                    and num_key_parts == 1
+                ):
+                    single_key_decoder = make_engine_value_decoder(
+                        field_path,
+                        engine_fields_schema[0]["type"],
+                        key_type_info,
+                        for_key=True,
+                    )
+
+                    def key_decoder(value: list[Any]) -> Any:
+                        return single_key_decoder(value[0])
+
+                else:
+                    key_decoder = make_engine_struct_decoder(
+                        field_path,
+                        engine_fields_schema[0:num_key_parts],
+                        key_type_info,
+                        for_key=True,
+                    )
                 value_decoder = make_engine_struct_decoder(
                     field_path,
-                    engine_fields_schema[1:],
+                    engine_fields_schema[num_key_parts:],
                     analyze_type_info(value_type),
                 )
 
                 def decode(value: Any) -> Any | None:
                     if value is None:
                         return None
-                    return {key_decoder(v[0]): value_decoder(v[1:]) for v in value}
+                    return {
+                        key_decoder(v[0:num_key_parts]): value_decoder(
+                            v[num_key_parts:]
+                        )
+                        for v in value
+                    }
 
         return decode
 

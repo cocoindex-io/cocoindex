@@ -136,23 +136,37 @@ impl std::fmt::Display for StructSchema {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind")]
 #[allow(clippy::enum_variant_names)]
 pub enum TableKind {
     /// An table with unordered rows, without key.
     UTable,
-    /// A table's first field is the key.
+    /// A table's first field is the key. The value is number of fields serving as the key
     #[serde(alias = "Table")]
-    KTable,
+    KTable {
+        // Omit the field if num_key_parts is 1 for backward compatibility.
+        #[serde(default = "default_num_key_parts", skip_serializing_if = "is_one")]
+        num_key_parts: usize,
+    },
+
     /// A table whose rows orders are preserved.
     #[serde(alias = "List")]
     LTable,
+}
+
+fn default_num_key_parts() -> usize {
+    1
+}
+
+fn is_one(value: &usize) -> bool {
+    *value == 1
 }
 
 impl std::fmt::Display for TableKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TableKind::UTable => write!(f, "Table"),
-            TableKind::KTable => write!(f, "KTable"),
+            TableKind::KTable { num_key_parts } => write!(f, "KTable({num_key_parts})"),
             TableKind::LTable => write!(f, "LTable"),
         }
     }
@@ -160,36 +174,10 @@ impl std::fmt::Display for TableKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TableSchema {
+    #[serde(flatten)]
     pub kind: TableKind,
+
     pub row: StructSchema,
-}
-
-impl TableSchema {
-    pub fn has_key(&self) -> bool {
-        match self.kind {
-            TableKind::KTable => true,
-            TableKind::UTable | TableKind::LTable => false,
-        }
-    }
-
-    pub fn key_type(&self) -> Option<&EnrichedValueType> {
-        match self.kind {
-            TableKind::KTable => self
-                .row
-                .fields
-                .first()
-                .as_ref()
-                .map(|field| &field.value_type),
-            TableKind::UTable | TableKind::LTable => None,
-        }
-    }
-
-    pub fn without_attrs(&self) -> Self {
-        Self {
-            kind: self.kind,
-            row: self.row.without_attrs(),
-        }
-    }
 }
 
 impl std::fmt::Display for TableSchema {
@@ -203,10 +191,21 @@ impl TableSchema {
         Self { kind, row }
     }
 
-    pub fn key_field(&self) -> Option<&FieldSchema> {
+    pub fn has_key(&self) -> bool {
+        !self.key_schema().is_empty()
+    }
+
+    pub fn without_attrs(&self) -> Self {
+        Self {
+            kind: self.kind,
+            row: self.row.without_attrs(),
+        }
+    }
+
+    pub fn key_schema(&self) -> &[FieldSchema] {
         match self.kind {
-            TableKind::KTable => Some(self.row.fields.first().unwrap()),
-            TableKind::UTable | TableKind::LTable => None,
+            TableKind::KTable { num_key_parts: n } => &self.row.fields[..n],
+            TableKind::UTable | TableKind::LTable => &[],
         }
     }
 }
@@ -224,11 +223,11 @@ pub enum ValueType {
 }
 
 impl ValueType {
-    pub fn key_type(&self) -> Option<&EnrichedValueType> {
+    pub fn key_schema(&self) -> &[FieldSchema] {
         match self {
-            ValueType::Basic(_) => None,
-            ValueType::Struct(_) => None,
-            ValueType::Table(c) => c.key_type(),
+            ValueType::Basic(_) => &[],
+            ValueType::Struct(_) => &[],
+            ValueType::Table(c) => c.key_schema(),
         }
     }
 

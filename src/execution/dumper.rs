@@ -47,7 +47,7 @@ impl Serialize for TargetExportData<'_> {
 
 #[derive(Serialize)]
 struct SourceOutputData<'a> {
-    key: value::TypedValue<'a>,
+    key: value::TypedFieldsValue<'a, std::slice::Iter<'a, value::Value>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     exports: Option<IndexMap<&'a str, TargetExportData<'a>>>,
@@ -69,7 +69,7 @@ impl<'a> Dumper<'a> {
         &'a self,
         import_op_idx: usize,
         import_op: &'a AnalyzedImportOp,
-        key: &value::KeyValue,
+        key: &value::FullKeyValue,
         key_aux_info: &serde_json::Value,
         collected_values_buffer: &'b mut Vec<Vec<value::FieldValues>>,
     ) -> Result<Option<IndexMap<&'b str, TargetExportData<'b>>>>
@@ -116,7 +116,7 @@ impl<'a> Dumper<'a> {
                         data: collected_values_buffer[collector_idx]
                             .iter()
                             .map(|v| -> Result<_> {
-                                let key = row_indexer::extract_primary_key(
+                                let key = row_indexer::extract_primary_key_for_export(
                                     &export_op.primary_key_def,
                                     v,
                                 )?;
@@ -135,7 +135,7 @@ impl<'a> Dumper<'a> {
         &self,
         import_op_idx: usize,
         import_op: &AnalyzedImportOp,
-        key: value::KeyValue,
+        key: value::FullKeyValue,
         key_aux_info: serde_json::Value,
         file_path: PathBuf,
     ) -> Result<()> {
@@ -157,11 +157,11 @@ impl<'a> Dumper<'a> {
             Ok(exports) => (exports, None),
             Err(e) => (None, Some(format!("{e:?}"))),
         };
-        let key_value = value::Value::from(key);
+        let key_values: Vec<value::Value> = key.into_iter().map(|v| v.into()).collect::<Vec<_>>();
         let file_data = SourceOutputData {
-            key: value::TypedValue {
-                t: &import_op.primary_key_type,
-                v: &key_value,
+            key: value::TypedFieldsValue {
+                schema: &import_op.primary_key_schema,
+                values_iter: key_values.iter(),
             },
             exports,
             error,
@@ -188,7 +188,7 @@ impl<'a> Dumper<'a> {
     ) -> Result<()> {
         let mut keys_by_filename_prefix: IndexMap<
             String,
-            Vec<(value::KeyValue, serde_json::Value)>,
+            Vec<(value::FullKeyValue, serde_json::Value)>,
         > = IndexMap::new();
 
         let mut rows_stream = import_op
@@ -202,7 +202,7 @@ impl<'a> Dumper<'a> {
             for row in rows?.into_iter() {
                 let mut s = row
                     .key
-                    .to_strs()
+                    .encode_to_strs()
                     .into_iter()
                     .map(|s| urlencoding::encode(&s).into_owned())
                     .join(":");

@@ -76,7 +76,7 @@ impl SourceExecutor for Executor {
                     if self.pattern_matcher.is_file_included(key) {
                         let ordinal = Some(datetime_to_ordinal(&blob.properties.last_modified));
                         batch.push(PartialSourceRowMetadata {
-                            key: KeyValue::Str(key.clone().into()),
+                            key: FullKeyValue::from_single_part(key.clone()),
                             key_aux_info: serde_json::Value::Null,
                             ordinal,
                             content_version_fp: None,
@@ -99,11 +99,11 @@ impl SourceExecutor for Executor {
 
     async fn get_value(
         &self,
-        key: &KeyValue,
+        key: &FullKeyValue,
         _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
-        let key_str = key.str_value()?;
+        let key_str = key.single_part()?.str_value()?;
         if !self.pattern_matcher.is_file_included(key_str) {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
@@ -199,7 +199,7 @@ impl SourceFactoryBase for Factory {
             ),
         ));
         Ok(make_output_type(TableSchema::new(
-            TableKind::KTable,
+            TableKind::KTable { num_key_parts: 1 },
             struct_schema,
         )))
     }

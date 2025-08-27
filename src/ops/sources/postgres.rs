@@ -1,6 +1,6 @@
 use crate::ops::sdk::*;
 
-use crate::ops::shared::postgres::{bind_key_field, get_db_pool, key_value_fields_iter};
+use crate::ops::shared::postgres::{bind_key_field, get_db_pool};
 use crate::settings::DatabaseConnectionSpec;
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgPool, Row};
@@ -345,14 +345,9 @@ impl SourceExecutor for Executor {
                     .primary_key_columns
                     .iter()
                     .enumerate()
-                    .map(|(i, info)| (info.decoder)(&row, i))
-                    .collect::<Result<Vec<_>>>()?;
-                if parts.iter().any(|v| v.is_null()) {
-                    Err(anyhow::anyhow!(
-                        "Composite primary key contains NULL component"
-                    ))?;
-                }
-                let key = KeyValue::from_values(parts.iter())?;
+                    .map(|(i, info)| (info.decoder)(&row, i)?.into_key())
+                    .collect::<Result<Box<[KeyValue]>>>()?;
+                let key = FullKeyValue(parts);
 
                 // Compute ordinal if requested
                 let ordinal = if options.include_ordinal {
@@ -385,7 +380,7 @@ impl SourceExecutor for Executor {
 
     async fn get_value(
         &self,
-        key: &KeyValue,
+        key: &FullKeyValue,
         _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
@@ -420,17 +415,10 @@ impl SourceExecutor for Executor {
         qb.push(&self.table_name);
         qb.push("\" WHERE ");
 
-        let key_values = key_value_fields_iter(
-            self.table_schema
-                .primary_key_columns
-                .iter()
-                .map(|i| &i.schema),
-            key,
-        )?;
-        if key_values.len() != self.table_schema.primary_key_columns.len() {
+        if key.len() != self.table_schema.primary_key_columns.len() {
             bail!(
                 "Composite key has {} values but table has {} primary key columns",
-                key_values.len(),
+                key.len(),
                 self.table_schema.primary_key_columns.len()
             );
         }
@@ -439,7 +427,7 @@ impl SourceExecutor for Executor {
             .table_schema
             .primary_key_columns
             .iter()
-            .zip(key_values.iter())
+            .zip(key.iter())
             .enumerate()
         {
             if i > 0 {
@@ -572,7 +560,9 @@ impl SourceFactoryBase for Factory {
             description: None,
         };
         Ok(make_output_type(TableSchema::new(
-            TableKind::KTable,
+            TableKind::KTable {
+                num_key_parts: table_schema.primary_key_columns.len(),
+            },
             struct_schema,
         )))
     }
@@ -597,11 +587,6 @@ impl SourceFactoryBase for Factory {
             db_pool,
             table_name: spec.table_name.clone(),
             table_schema,
-        };
-
-        let filter_info = match &spec.included_columns {
-            Some(cols) => format!(" (filtered to {} specified columns)", cols.len()),
-            None => " (all columns)".to_string(),
         };
 
         Ok(Box::new(executor))

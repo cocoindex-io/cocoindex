@@ -123,7 +123,7 @@ pub struct GraphElementInputFieldsIdx {
 
 impl GraphElementInputFieldsIdx {
     pub fn extract_key(&self, fields: &[value::Value]) -> Result<value::KeyValue> {
-        value::KeyValue::from_values(self.key.iter().map(|idx| &fields[*idx]))
+        value::KeyValue::from_values_for_export(self.key.iter().map(|idx| &fields[*idx]))
     }
 }
 

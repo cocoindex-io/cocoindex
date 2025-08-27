@@ -55,7 +55,7 @@ impl SourceExecutor for Executor {
                             None
                         };
                         yield vec![PartialSourceRowMetadata {
-                            key: KeyValue::Str(relative_path.into()),
+                            key: FullKeyValue::from_single_part(relative_path.to_string()),
                             key_aux_info: serde_json::Value::Null,
                             ordinal,
                             content_version_fp: None,
@@ -70,21 +70,19 @@ impl SourceExecutor for Executor {
 
     async fn get_value(
         &self,
-        key: &KeyValue,
+        key: &FullKeyValue,
         _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
-        if !self
-            .pattern_matcher
-            .is_file_included(key.str_value()?.as_ref())
-        {
+        let path = key.single_part()?.str_value()?.as_ref();
+        if !self.pattern_matcher.is_file_included(path) {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
                 ordinal: Some(Ordinal::unavailable()),
                 content_version_fp: None,
             });
         }
-        let path = self.root_path.join(key.str_value()?.as_ref());
+        let path = self.root_path.join(path);
         let ordinal = if options.include_ordinal {
             Some(path.metadata()?.modified()?.try_into()?)
         } else {
@@ -151,7 +149,7 @@ impl SourceFactoryBase for Factory {
         ));
 
         Ok(make_output_type(TableSchema::new(
-            TableKind::KTable,
+            TableKind::KTable { num_key_parts: 1 },
             struct_schema,
         )))
     }
