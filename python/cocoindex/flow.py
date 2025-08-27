@@ -105,18 +105,26 @@ def _spec_kind(spec: Any) -> str:
 
 def _transform_helper(
     flow_builder_state: _FlowBuilderState,
-    fn_spec: FunctionSpec,
+    fn_spec: FunctionSpec | Callable[..., Any],
     transform_args: list[tuple[Any, str | None]],
     name: str | None = None,
 ) -> DataSlice[Any]:
-    if not isinstance(fn_spec, FunctionSpec):
+    if isinstance(fn_spec, FunctionSpec):
+        kind = _spec_kind(fn_spec)
+        spec = fn_spec
+    elif callable(fn_spec) and (
+        op_kind := getattr(fn_spec, "__cocoindex_op_kind__", None)
+    ):
+        kind = op_kind
+        spec = op.EmptyFunctionSpec()
+    else:
         raise ValueError("transform() can only be called on a CocoIndex function")
 
     return _create_data_slice(
         flow_builder_state,
         lambda target_scope, name: flow_builder_state.engine_flow_builder.transform(
-            _spec_kind(fn_spec),
-            dump_engine_object(fn_spec),
+            kind,
+            dump_engine_object(spec),
             transform_args,
             target_scope,
             flow_builder_state.field_name_builder.build_name(
@@ -245,7 +253,7 @@ class DataSlice(Generic[T]):
             f(scope)
 
     def transform(
-        self, fn_spec: op.FunctionSpec, *args: Any, **kwargs: Any
+        self, fn_spec: op.FunctionSpec | Callable[..., Any], *args: Any, **kwargs: Any
     ) -> DataSlice[Any]:
         """
         Apply a function to the data slice.
@@ -513,7 +521,7 @@ class FlowBuilder:
         )
 
     def transform(
-        self, fn_spec: FunctionSpec, *args: Any, **kwargs: Any
+        self, fn_spec: FunctionSpec | Callable[..., Any], *args: Any, **kwargs: Any
     ) -> DataSlice[Any]:
         """
         Apply a function to inputs, returning a DataSlice.

@@ -388,53 +388,39 @@ def executor_class(**args: Any) -> Callable[[type], type]:
     return _inner
 
 
-class _EmptyFunctionSpec(FunctionSpec):
+class EmptyFunctionSpec(FunctionSpec):
     pass
 
 
 class _SimpleFunctionExecutor:
-    spec: Any
+    spec: Callable[..., Any]
 
     def prepare(self) -> None:
-        self.__call__ = self.spec.__call__
+        self.__call__ = staticmethod(self.spec)
 
 
-def function(**args: Any) -> Callable[[Callable[..., Any]], FunctionSpec]:
+def function(**args: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorate a function to provide a function for an op.
     """
     op_args = OpArgs(**args)
 
-    def _inner(fn: Callable[..., Any]) -> FunctionSpec:
+    def _inner(fn: Callable[..., Any]) -> Callable[..., Any]:
         # Convert snake case to camel case.
-        op_name = "".join(word.capitalize() for word in fn.__name__.split("_"))
+        op_kind = "".join(word.capitalize() for word in fn.__name__.split("_"))
         sig = inspect.signature(fn)
-        full_name = f"{fn.__module__}.{fn.__qualname__}"
-
-        # An object that is both callable and can act as a FunctionSpec.
-        class _CallableSpec(_EmptyFunctionSpec):
-            __call__ = staticmethod(fn)
-
-            def __reduce__(self) -> str | tuple[Any, ...]:
-                return full_name
-
-        _CallableSpec.__name__ = op_name
-        _CallableSpec.__doc__ = fn.__doc__
-        _CallableSpec.__qualname__ = fn.__qualname__
-        _CallableSpec.__module__ = fn.__module__
-        callable_spec = _CallableSpec()
-
+        fn.__cocoindex_op_kind__ = op_kind  # type: ignore
         _register_op_factory(
             category=OpCategory.FUNCTION,
             expected_args=list(sig.parameters.items()),
             expected_return=sig.return_annotation,
             executor_factory=_SimpleFunctionExecutor,
-            spec_loader=lambda: callable_spec,
-            op_kind=op_name,
+            spec_loader=lambda: fn,
+            op_kind=op_kind,
             op_args=op_args,
         )
 
-        return callable_spec
+        return fn
 
     return _inner
 
