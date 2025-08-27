@@ -28,7 +28,6 @@ from .typing import (
     encode_enriched_type,
     is_namedtuple_type,
     is_numpy_number_type,
-    is_struct_type,
 )
 
 
@@ -88,38 +87,25 @@ def make_engine_value_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], An
 
             return encode_struct_list
 
+        # Otherwise it's a vector, falling into basic type in the engine.
+
     if isinstance(variant, AnalyzedDictType):
-        if not variant.value_type:
-            return lambda value: value
-
         value_type_info = analyze_type_info(variant.value_type)
-        if isinstance(value_type_info.variant, AnalyzedStructType):
+        if not isinstance(value_type_info.variant, AnalyzedStructType):
+            raise ValueError(
+                f"Value type for dict is required to be a struct (e.g. dataclass or NamedTuple), got {variant.value_type}. "
+                f"If you want a free-formed dict, use `cocoindex.Json` instead."
+            )
 
-            def encode_struct_dict(value: Any) -> Any:
-                if not isinstance(value, dict):
-                    return value
-                if not value:
-                    return []
+        key_encoder = make_engine_value_encoder(analyze_type_info(variant.key_type))
+        value_encoder = make_engine_value_encoder(analyze_type_info(variant.value_type))
 
-                sample_key, sample_val = next(iter(value.items()))
-                key_type, val_type = type(sample_key), type(sample_val)
+        def encode_struct_dict(value: Any) -> Any:
+            if not value:
+                return []
+            return [[key_encoder(k)] + value_encoder(v) for k, v in value.items()]
 
-                # Handle KTable case
-                if value and is_struct_type(val_type):
-                    key_encoder = (
-                        make_engine_value_encoder(analyze_type_info(key_type))
-                        if is_struct_type(key_type)
-                        else make_engine_value_encoder(ANY_TYPE_INFO)
-                    )
-                    value_encoder = make_engine_value_encoder(
-                        analyze_type_info(val_type)
-                    )
-                    return [
-                        [key_encoder(k)] + value_encoder(v) for k, v in value.items()
-                    ]
-                return {key_encoder(k): value_encoder(v) for k, v in value.items()}
-
-            return encode_struct_dict
+        return encode_struct_dict
 
     if isinstance(variant, AnalyzedStructType):
         struct_type = variant.struct_type
@@ -132,8 +118,8 @@ def make_engine_value_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], An
             field_names = [f.name for f in fields]
 
             def encode_dataclass(value: Any) -> Any:
-                if not dataclasses.is_dataclass(value):
-                    return value
+                if value is None:
+                    return None
                 return [
                     encoder(getattr(value, name))
                     for encoder, name in zip(field_encoders, field_names)
@@ -154,8 +140,8 @@ def make_engine_value_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], An
             ]
 
             def encode_namedtuple(value: Any) -> Any:
-                if not is_namedtuple_type(type(value)):
-                    return value
+                if value is None:
+                    return None
                 return [
                     encoder(getattr(value, name))
                     for encoder, name in zip(field_encoders, field_names)

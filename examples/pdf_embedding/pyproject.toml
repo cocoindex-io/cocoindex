@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "cocoindex[embeddings]>=0.1.79",
     "python-dotenv>=1.0.1",
-    "marker-pdf>=1.5.2",
+    "marker-pdf>=1.8.5",
     "psycopg[binary,pool]",
     "jinja2>=3.1.6",
 ]
