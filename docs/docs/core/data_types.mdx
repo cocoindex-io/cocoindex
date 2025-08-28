@@ -148,21 +148,27 @@ We have two specific types of *Table* types: *KTable* and *LTable*.
 
 #### KTable
 
-*KTable* is a *Table* type whose first column serves as the key.
+*KTable* is a *Table* type whose one or more columns together serve as the key.
 The row order of a *KTable* is not preserved.
-Type of the first column (key column) must be a [key type](#key-types).
+Each key column must be a [key type](#key-types). When multiple key columns are present, they form a composite key.
 
-In Python, a *KTable* type is represented by `dict[K, V]`. 
-The `K` should be the type binding to a key type,
-and the `V` should be the type binding to a *Struct* type representing the value fields of each row.
-When the specific type annotation is not provided,
-the key type is bound to a tuple with its key parts when it's a *Struct* type, the value type is bound to `dict[str, Any]`.
+In Python, a *KTable* type is represented by `dict[K, V]`.
+`K` represents the key and `V` represents the value for each row:
+
+- `K` can be a Struct type (either a frozen dataclass or a `NamedTuple`) that contains all key parts as fields. This is the general way to model multi-part keys.
+- When there is only a single key part and it is a basic type (e.g. `str`, `int`), you may use that basic type directly as the dictionary key instead of wrapping it in a Struct.
+- `V` should be the type bound to a *Struct* representing the non-key value fields of each row.
+
+When a specific type annotation is not provided:
+- For composite keys (multiple key parts), the key binds to a Python tuple of the key parts, e.g. `tuple[str, str]`.
+- For a single basic key part, the key binds to that basic Python type.
+- The value binds to `dict[str, Any]`.
 
 
 For example, you can use `dict[str, Person]` or `dict[str, PersonTuple]` to represent a *KTable*, with 4 columns: key (*Str*), `first_name` (*Str*), `last_name` (*Str*), `dob` (*Date*).
 It's bound to `dict[str, dict[str, Any]]` if you don't annotate the function argument with a specific type.
 
-Note that if you want to use a *Struct* as the key, you need to ensure its value in Python is immutable. For `dataclass`, annotate it with `@dataclass(frozen=True)`. For `NamedTuple`, immutability is built-in. For example:
+Note that when using a Struct as the key, it must be immutable in Python. For a dataclass, annotate it with `@dataclass(frozen=True)`. For `NamedTuple`, immutability is built-in. For example:
 
 ```python
 @dataclass(frozen=True)
@@ -175,8 +181,8 @@ class PersonKeyTuple(NamedTuple):
     id: str
 ```
 
-Then you can use `dict[PersonKey, Person]` or `dict[PersonKeyTuple, PersonTuple]` to represent a KTable keyed by `PersonKey` or `PersonKeyTuple`.
-It's bound to `dict[(str, str), dict[str, Any]]` if you don't annotate the function argument with a specific type.
+Then you can use `dict[PersonKey, Person]` or `dict[PersonKeyTuple, PersonTuple]` to represent a KTable keyed by both `id_kind` and `id`.
+If you don't annotate the function argument with a specific type, it's bound to `dict[tuple[str, str], dict[str, Any]]`.
 
 
 #### LTable
