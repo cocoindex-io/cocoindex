@@ -10,7 +10,7 @@ sidebar_custom_props:
 tags: [vector-index, multi-modal]
 ---
 
-import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButton';
+import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing"/>
 
@@ -18,10 +18,12 @@ import { GitHubButton, YouTubeButton } from '../../../src/components/GitHubButto
 Do you have a messy collection of scanned documents, PDFs, academic papers, presentation slides, and standalone images — all mixed together with charts, tables, and figures — that you want to process into the same vector space for semantic search or to power an AI agent?
 
 In this example, we’ll walk through how to build a visual document indexing pipeline using ColPali for embedding both PDFs and images — and then query the index using natural language.  
+
 We’ll skip OCR entirely — ColPali can directly understand document layouts, tables, and figures from images, making it perfect for semantic search across visual-heavy content.
 
 
 ## Flow Overview
+![Flow](/img/examples/multi_format_index/flow.png)
 
 We’ll build a pipeline that:
 
@@ -37,12 +39,8 @@ Example queries:
 - *"architectural floor plan with annotations"*
 - *"pie chart of Q3 revenue"*
 
-Full code is open source and available [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing). 
-:rocket: Only ~70 lines of Python on the indexing path (super simple!)
 
-## Core Components
-
-### Image Ingestion
+## Image Ingestion
 
 We use CocoIndex’s `LocalFile` source to read PDFs and images:
 
@@ -51,9 +49,10 @@ data_scope["documents"] = flow_builder.add_source(
     cocoindex.sources.LocalFile(path="source_files", binary=True)
 )
 ```
+<DocumentationButton url="https://cocoindex.io/docs/ops/sources#localfile" text="LocalFile" margin="0 0 16px 0" />
 
 
-### Convert Files to Pages
+## Convert Files to Pages
 
 We classify files by MIME type and process accordingly. 
 
@@ -105,9 +104,10 @@ In the flow we convert all the files to pages. this makes each pages and all ima
         file_to_pages, filename=doc["filename"], content=doc["content"]
     )
 ```
+![Pages](/img/examples/multi_format_index/pages.png)
 
 
-### Generate Visual Embeddings
+## Generate Visual Embeddings
 
 We use ColPali to generate embeddings for images on each page. 
 
@@ -124,18 +124,21 @@ with doc["pages"].row() as page:
             )
 ```
 
+<DocumentationButton url="https://cocoindex.io/docs/ops/functions#colpaliembedimage" text="ColPaliEmbedImage" margin="0 0 16px 0" />
 
-ColPali Architecture fundamentally rethinks how documents, especially visually complex or image-rich ones, are represented and searched.
-Instead of reducing each image or page to a single dense vector (as in traditional bi-encoders), ColPali breaks an image into many smaller patches, preserving local spatial and semantic structure. 
+
+![Embedding](/img/examples/multi_format_index/embed.png)
+
+ColPali Architecture fundamentally rethinks how documents, especially visually complex or image-rich ones, are represented and searched. Instead of reducing each image or page to a single dense vector (as in traditional bi-encoders), ColPali breaks an image into many smaller patches, preserving local spatial and semantic structure. 
 
 Each patch receives its own embedding, which together form a multi-vector representation of the complete document.
 
+![ColPali](/img/examples/multi_format_index/colpali_architecture.png)
 
-For a detailed explanation of ColPali Architecture, please refer to [our previous blog](https://cocoindex.io/blogs/colpali) with image search examples.
+<DocumentationButton url="https://cocoindex.io/blogs/colpali" text="Colpali Architecture" margin="0 0 16px 0" />
 
 
-
-## Collect & Export to Qdrant
+## Export to Qdrant
 
 Note the way to embed image and query are different, as they’re two different types of data. 
 
@@ -151,6 +154,8 @@ def query_to_colpali_embedding(
     )
 ```
 
+<DocumentationButton url="https://cocoindex.io/docs/ops/functions#colpaliembedquery" text="ColPaliEmbedQuery" margin="0 0 16px 0" />
+
 We store metadata and embeddings in Qdrant:
 
 ```jsx
@@ -164,7 +169,7 @@ output_embeddings.export(
 )
 ```
 
-## Query the Index
+## Query the Index with Natural Language
 
 ColPali supports **text-to-visual embeddings**, so we can search using natural language:
 
@@ -180,25 +185,21 @@ search_results = client.query_points(
 )
 ```
 
-Checkout the full code [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing).
+## CocoInsight
 
-## Debugging with CocoInsight
+You can walk through the project step by step in [CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk) to see exactly how each field is constructed and what happens behind the scenes.
 
-Run CocoInsight locally:
 
-```bash
+```sh
 cocoindex server -ci main.py
 ```
 
-Open [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight) to:
+Follow the url `https://cocoindex.io/cocoinsight`.  It connects to your local CocoIndex server, with zero pipeline data retention. You can use it to view extracted pages, see embedding vectors and metadata.
 
-- View extracted pages
-- See embedding vectors and metadata
 
-## Support Us
+## Connect to other sources 
+CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
-We’re constantly adding more examples and improving our runtime.
+<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
 
-⭐ Star CocoIndex on [GitHub](https://github.com/cocoindex-io/cocoindex) and share the love :heart:!
 
-And let us know what are you building with CocoIndex — we’d love to feature them.

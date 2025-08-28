@@ -32,11 +32,11 @@ Product taxonomy is a way to organize product catalogs in a logical and hierarch
 
 Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
-<DocumentationButton href="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
 
 
 ## Documentation
-<DocumentationButton href="https://cocoindex.io/docs/ops/targets#property-graph-targets" text="Property Graph Targets" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/targets#property-graph-targets" text="Property Graph Targets" margin="0 0 16px 0" />
 
 ## Flow Overview
 
@@ -118,7 +118,7 @@ It performs the following transformations:
 
 1. The first `transform()` parses the JSON file.
 
-    <DocumentationButton href="https://cocoindex.io/docs/ops/functions#parsejson" text="ParseJson" margin="0 0 16px 0" />
+    <DocumentationButton url="https://cocoindex.io/docs/ops/functions#parsejson" text="ParseJson" margin="0 0 16px 0" />
     ![ParseJson](/img/examples/product_recommendation/parse_json.png)
 
 2.  The second `transform()` performs the defined data mapping.
@@ -187,7 +187,7 @@ taxonomy = data["detail"].transform(cocoindex.functions.ExtractByLlm(
                 output_type=ProductTaxonomyInfo))
 ```
 
-<DocumentationButton href="https://cocoindex.io/docs/ops/functions#extractbyllm" text="ExtractByLlm" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/functions#extractbyllm" text="ExtractByLlm" margin="0 0 16px 0" />
 
 
 For example, LLM takes the description of the *gel pen*, and extracts taxonomy to be *gel pen*.

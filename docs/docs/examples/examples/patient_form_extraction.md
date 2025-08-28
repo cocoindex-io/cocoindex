@@ -39,7 +39,7 @@ The flow itself is fairly simple.
 
 Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
-  <DocumentationButton href="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
+  <DocumentationButton url="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
 
 
 ## Add source
@@ -61,7 +61,7 @@ def patient_intake_extraction_flow(
 
 `flow_builder.add_source` will create a table with a few sub fields.
 
-<DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
 
 
 ##  Parse documents with different formats to Markdown
@@ -199,7 +199,7 @@ with data_scope["documents"].row() as doc:
     )
 ```
 
-<DocumentationButton href="https://cocoindex.io/docs/ops/functions#extractbyllm" text="ExtractByLlm" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/functions#extractbyllm" text="ExtractByLlm" margin="0 0 16px 0" />
 
 ![Extracted](/img/examples/patient_form_extraction/extraction.png)
 
@@ -293,4 +293,4 @@ Click on the `markdown` column for `Patient_Intake_Form_Joe.pdf`, you could see 
 ## Connect to other sources 
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
-<DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />

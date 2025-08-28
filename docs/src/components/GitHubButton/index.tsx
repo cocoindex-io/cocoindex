@@ -59,14 +59,14 @@ function YouTubeButton({ url, margin }: YouTubeButtonProps): ReactNode {
 }
 
 type DocumentationButtonProps = {
-    href: string;
+    url: string;
     text: string;
     margin?: string;
 };
 
-function DocumentationButton({ href, text, margin }: DocumentationButtonProps): ReactNode {
+function DocumentationButton({ url, text, margin }: DocumentationButtonProps): ReactNode {
     return (
-        <Button href={href} margin={margin}>
+        <Button href={url} margin={margin}>
             <MdMenuBook style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
             {text}
         </Button>

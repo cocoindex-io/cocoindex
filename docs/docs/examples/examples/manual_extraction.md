@@ -36,11 +36,11 @@ This example shows how to extract structured data from Python Manuals using Olla
     ollama pull llama3.2
     ```
 
-    <DocumentationButton href="https://cocoindex.io/docs/ai/llm#ollama" text="Ollama" margin="0 0 16px 0" />
+    <DocumentationButton url="https://cocoindex.io/docs/ai/llm#ollama" text="Ollama" margin="0 0 16px 0" />
 
     Alternatively, CocoIndex have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
-    <DocumentationButton href="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
+    <DocumentationButton url="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
 
 ## Add Source
 Let's add Python docs as a source.
@@ -64,7 +64,7 @@ def manual_extraction_flow(
 - `filename` (key, type: `str`): the filename of the file, e.g. `dir1/file1.md`
 - `content` (type: `str` if `binary` is `False`, otherwise `bytes`): the content of the file
 
-<DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="LocalFile" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="LocalFile" margin="0 0 16px 0" />
 
 ## Parse Markdown
 
@@ -97,7 +97,7 @@ class PdfToMarkdownExecutor:
 ```
 You may wonder why we want to define a spec + executor (instead of using a standalone function) here. The main reason is there're some heavy preparation work (initialize the parser) needs to be done before being ready to process real data.
 
-<DocumentationButton href="https://cocoindex.io/docs/custom_ops/custom_functions" text="Custom Function" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_functions" text="Custom Function" margin="0 0 16px 0" />
 
 Plug in the function to the flow.
 
@@ -160,7 +160,7 @@ with data_scope["documents"].row() as doc:
             instruction="Please extract Python module information from the manual."))
 ```
 
-<DocumentationButton href="https://cocoindex.io/docs/core/functions#extractbyllm" text="ExtractByLlm" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/core/functions#extractbyllm" text="ExtractByLlm" margin="0 0 16px 0" />
 
 ![ExtractByLlm](/img/examples/manual_extraction/extraction.png)
 
@@ -194,7 +194,7 @@ with data_scope["documents"].row() as doc:
     doc["module_summary"] = doc["module_info"].transform(summarize_module)
 ```
 
-<DocumentationButton href="https://cocoindex.io/docs/custom_ops/custom_functions" text="Custom Function" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_functions" text="Custom Function" margin="0 0 16px 0" />
 
 ![Summarize Module](/img/examples/manual_extraction/summary.png)
 

@@ -45,7 +45,7 @@ to answer questions like "Give me all the papers by Jeff Dean."
   CocoIndex uses PostgreSQL internally for incremental processing.
 - [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai). Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
-  <DocumentationButton href="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
+  <DocumentationButton url="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
 
 ## Import the Papers
 
@@ -61,7 +61,7 @@ def paper_metadata_flow(
 ```
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`).
-<DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
 
 ## Extract and collect metadata
 
@@ -321,7 +321,7 @@ metadata_embeddings.export(
 
 In this example we use PGVector as embedding store. With CocoIndex, you can do one line switch on other supported Vector databases.
 
-<DocumentationButton href="https://cocoindex.io/docs/ops/targets#entry-oriented-targets" text="Entry Oriented Targets" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/targets#entry-oriented-targets" text="Entry Oriented Targets" margin="0 0 16px 0" />
 
 ## Query the index
 

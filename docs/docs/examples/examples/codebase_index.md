@@ -67,7 +67,7 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 - Exclude files and directories starting `.`,  `target` in the root and `node_modules` under any directory.
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`). 
-<DocumentationButton href="https://cocoindex.io/docs/ops/sources" text="Sources" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" />
 
 
 ## Process each file and collect the information
@@ -84,7 +84,7 @@ def extract_extension(filename: str) -> str:
     return os.path.splitext(filename)[1]
 ```
 
-<DocumentationButton href="https://cocoindex.io/docs/custom_ops/custom_functions" text="Custom Function" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_functions" text="Custom Function" margin="0 0 16px 0" />
 
 ### Split the file into chunks
 We use the `SplitRecursively` function to split the file into chunks.  `SplitRecursively` is CocoIndex building block, with native integration with Tree-sitter. You need to pass in the language to the `language` parameter if you are processing code.
@@ -97,7 +97,7 @@ with data_scope["files"].row() as file:
           cocoindex.functions.SplitRecursively(),
           language=file["extension"], chunk_size=1000, chunk_overlap=300) 
 ```
-<DocumentationButton href="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" margin="0 0 16px 0" />
 
 ![SplitRecursively](/img/examples/codebase_index/chunk.png)
 
@@ -112,13 +112,13 @@ def code_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[lis
             model="sentence-transformers/all-MiniLM-L6-v2"))
 ```
 
-<DocumentationButton href="https://cocoindex.io/docs/ops/functions#sentencetransformerembed" text="SentenceTransformerEmbed" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/functions#sentencetransformerembed" text="SentenceTransformerEmbed" margin="0 0 16px 0" />
 
 :::tip
 `@cocoindex.transform_flow()` is needed to share the transformation across indexing and query. When building a vector index and querying against it, the embedding computation must remain consistent between indexing and querying.
 :::
 
-<DocumentationButton href="https://cocoindex.io/docs/query#transform-flow" text="Transform Flow" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/query#transform-flow" text="Transform Flow" margin="0 0 16px 0" />
 
 Then for each chunk, we will embed it using the `code_to_embedding` function, and collect the embeddings to the `code_embeddings` collector.
 
