@@ -316,9 +316,12 @@ The spec takes the following fields:
 
 ### Schema
 
-The output is a [*KTable*](/docs/core/data_types#ktable) with fields derived from the table schema:
+The output is a [*KTable*](/docs/core/data_types#ktable) with straightforward 1 to 1 mapping from Postgres table columns to CocoIndex table fields:
 
-*   Key fields:
-    *   If the table has a single primary key column, that column appears as the key field with its name and type.
-    *   If the table has a composite primary key, a struct field named `_key` contains each PK component as a sub-field.
-*   Value fields: All non-primary-key columns included by `included_columns` (or all when not specified) appear as value fields.
+*   Key fields: All primary key columns in the Postgres table will be included automatically as key fields.
+*   Value fields: All non-primary-key columns in the Postgres table (included by `included_columns` or all when not specified) appear as value fields.
+
+### Example
+
+You can find end-to-end example using Postgres source at:
+*   [examples/postgres_source](https://github.com/cocoindex-io/cocoindex/tree/main/examples/postgres_source)
