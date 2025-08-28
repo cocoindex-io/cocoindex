@@ -60,7 +60,7 @@ impl ScopeValueBuilder {
     }
 
     fn augmented_from(source: &value::ScopeValue, schema: &schema::TableSchema) -> Result<Self> {
-        let val_index_base = if schema.has_key() { 1 } else { 0 };
+        let val_index_base = schema.key_schema().len();
         let len = schema.row.fields.len() - val_index_base;
 
         let mut builder = Self::new(len);

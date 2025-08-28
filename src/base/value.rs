@@ -184,7 +184,11 @@ impl std::fmt::Display for KeyValue {
 }
 
 impl KeyValue {
-    pub fn from_json(value: serde_json::Value, fields_schema: &[FieldSchema]) -> Result<Self> {
+    /// For export purpose only for now. Will remove after switching export to using FullKeyValue.
+    pub fn from_json_for_export(
+        value: serde_json::Value,
+        fields_schema: &[FieldSchema],
+    ) -> Result<Self> {
         let value = if fields_schema.len() == 1 {
             Value::from_json(value, &fields_schema[0].value_type.typ)?
         } else {
@@ -464,18 +468,18 @@ impl FullKeyValue {
     }
 
     pub fn from_json(value: serde_json::Value, schema: &[FieldSchema]) -> Result<Self> {
-        let field_values =
-            if schema.len() == 1 && matches!(schema[0].value_type.typ, ValueType::Basic(_)) {
-                Box::from([KeyValue::from_json(value, schema)?])
-            } else {
-                match value {
-                    serde_json::Value::Array(arr) => arr
-                        .into_iter()
-                        .map(|v| KeyValue::from_json(v, schema))
-                        .collect::<Result<Box<[_]>>>()?,
-                    _ => anyhow::bail!("expected array value, but got {}", value),
-                }
-            };
+        let field_values = if schema.len() == 1
+            && matches!(schema[0].value_type.typ, ValueType::Basic(_))
+        {
+            Box::from([KeyValue::from_json_for_export(value, schema)?])
+        } else {
+            match value {
+                serde_json::Value::Array(arr) => std::iter::zip(arr.into_iter(), schema)
+                    .map(|(v, s)| Value::<ScopeValue>::from_json(v, &s.value_type.typ)?.into_key())
+                    .collect::<Result<Box<[_]>>>()?,
+                _ => anyhow::bail!("expected array value, but got {}", value),
+            }
+        };
         Ok(Self(field_values))
     }
 
@@ -836,9 +840,7 @@ impl<VS> Value<VS> {
                     .collect(),
             }),
             Value::UTable(v) => Value::UTable(v.into_iter().map(|v| v.into()).collect()),
-            Value::KTable(v) => {
-                Value::KTable(v.into_iter().map(|(k, v)| (k.clone(), v.into())).collect())
-            }
+            Value::KTable(v) => Value::KTable(v.into_iter().map(|(k, v)| (k, v.into())).collect()),
             Value::LTable(v) => Value::LTable(v.into_iter().map(|v| v.into()).collect()),
         }
     }

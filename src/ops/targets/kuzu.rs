@@ -975,11 +975,11 @@ impl TargetFactoryBase for Factory {
                             delete.additional_key
                         );
                     }
-                    let src_key = KeyValue::from_json(
+                    let src_key = KeyValue::from_json_for_export(
                         additional_keys[0].take(),
                         &rel.source.schema.key_fields,
                     )?;
-                    let tgt_key = KeyValue::from_json(
+                    let tgt_key = KeyValue::from_json_for_export(
                         additional_keys[1].take(),
                         &rel.target.schema.key_fields,
                     )?;
