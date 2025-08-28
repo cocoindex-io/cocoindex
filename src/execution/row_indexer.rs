@@ -369,12 +369,10 @@ impl<'a> RowIndexer<'a> {
 
         if let Some(existing_version) = existing_version {
             if output.is_some() {
-                if !source_version.ordinal.is_available()
-                    || source_version.ordinal != existing_version.ordinal
-                {
-                    self.update_stats.num_updates.inc(1);
-                } else {
+                if existing_version.kind == SourceVersionKind::DifferentLogic {
                     self.update_stats.num_reprocesses.inc(1);
+                } else {
+                    self.update_stats.num_updates.inc(1);
                 }
             } else {
                 self.update_stats.num_deletions.inc(1);

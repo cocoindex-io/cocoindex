@@ -115,8 +115,24 @@ impl std::fmt::Display for UpdateStats {
         let num_reprocesses = self.num_reprocesses.get();
         let num_source_rows = num_insertions + num_deletions + num_updates + num_reprocesses;
         if num_source_rows > 0 {
+            let mut sub_messages = Vec::new();
+            if num_insertions > 0 {
+                sub_messages.push(format!("{num_insertions} ADDED"));
+            }
+            if num_deletions > 0 {
+                sub_messages.push(format!("{num_deletions} REMOVED"));
+            }
+            if num_reprocesses > 0 {
+                sub_messages.push(format!(
+                    "{num_reprocesses} REPROCESSED due to flow or logic changes"
+                ));
+            }
+            if num_updates > 0 {
+                sub_messages.push(format!("{num_updates} UPDATED in source content"));
+            }
             messages.push(format!(
-                "{num_source_rows} source rows processed ({num_insertions} ADDED, {num_deletions} REMOVED, {num_updates} UPDATED, {num_reprocesses} REPROCESSED on flow or logic changes)",
+                "{num_source_rows} source rows processed ({})",
+                sub_messages.join(", "),
             ));
         }
 
