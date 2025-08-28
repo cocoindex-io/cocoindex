@@ -96,11 +96,11 @@ If not set, all flows are in a default unnamed namespace.
 
     :::
 
-*   `max_connections` (type: `int`, default: `64`): The maximum number of connections to keep in the pool.
+*   `max_connections` (type: `int`, default: `25`): The maximum number of connections to keep in the pool.
 
     *Environment variable* for `Settings.database.max_connections`: `COCOINDEX_DATABASE_MAX_CONNECTIONS`
 
-*   `min_connections` (type: `int`, default: `16`): The minimum number of connections to keep in the pool.
+*   `min_connections` (type: `int`, default: `5`): The minimum number of connections to keep in the pool.
 
     *Environment variable* for `Settings.database.min_connections`: `COCOINDEX_DATABASE_MIN_CONNECTIONS`
 
@@ -134,7 +134,7 @@ This is the list of environment variables, each of which has a corresponding fie
 | `COCOINDEX_DATABASE_URL` | `database.url` | Yes |
 | `COCOINDEX_DATABASE_USER` | `database.user` | No |
 | `COCOINDEX_DATABASE_PASSWORD` | `database.password` | No |
-| `COCOINDEX_DATABASE_MAX_CONNECTIONS` | `database.max_connections` | No (default: `64`) |
-| `COCOINDEX_DATABASE_MIN_CONNECTIONS` | `database.min_connections` | No (default: `16`) |
+| `COCOINDEX_DATABASE_MAX_CONNECTIONS` | `database.max_connections` | No (default: `25`) |
+| `COCOINDEX_DATABASE_MIN_CONNECTIONS` | `database.min_connections` | No (default: `5`) |
 | `COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS` | `global_execution_options.source_max_inflight_rows` | No (default: `1024`) |
 | `COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES` | `global_execution_options.source_max_inflight_bytes` | No |

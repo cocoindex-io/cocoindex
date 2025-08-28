@@ -44,8 +44,8 @@ class DatabaseConnectionSpec:
     url: str
     user: str | None = None
     password: str | None = None
-    max_connections: int = 64
-    min_connections: int = 16
+    max_connections: int = 25
+    min_connections: int = 5
 
 
 @dataclass
