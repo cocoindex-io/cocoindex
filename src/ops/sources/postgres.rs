@@ -513,9 +513,9 @@ impl SourceFactoryBase for Factory {
         .await?;
 
         Ok(make_output_type(TableSchema::new(
-            TableKind::KTable {
+            TableKind::KTable(KTableInfo {
                 num_key_parts: table_schema.primary_key_columns.len(),
-            },
+            }),
             StructSchema {
                 fields: Arc::new(
                     (table_schema.primary_key_columns.into_iter().map(|pk_col| {

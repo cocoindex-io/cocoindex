@@ -1314,7 +1314,8 @@ where
                             .collect::<Result<Vec<_>>>()?;
                         Value::LTable(rows)
                     }
-                    TableKind::KTable { num_key_parts } => {
+                    TableKind::KTable(info) => {
+                        let num_key_parts = info.num_key_parts;
                         let rows =
                         v.into_iter()
                             .map(|v| {

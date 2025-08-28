@@ -333,29 +333,32 @@ pub fn value_from_py_object<'py>(
                         value::Value::LTable(values.into_iter().map(|v| v.into()).collect())
                     }
 
-                    schema::TableKind::KTable { num_key_parts } => value::Value::KTable(
-                        values
-                            .into_iter()
-                            .map(|v| {
-                                let mut iter = v.fields.into_iter();
-                                if iter.len() < num_key_parts {
-                                    anyhow::bail!(
-                                        "Invalid KTable value: expect at least {} fields, got {}",
-                                        num_key_parts,
-                                        iter.len()
-                                    );
-                                }
-                                let keys: Box<[value::KeyValue]> = (0..num_key_parts)
-                                    .map(|_| iter.next().unwrap().into_key())
-                                    .collect::<Result<_>>()?;
-                                let values = value::FieldValues {
-                                    fields: iter.collect::<Vec<_>>(),
-                                };
-                                Ok((FullKeyValue(keys), values.into()))
-                            })
-                            .collect::<Result<BTreeMap<_, _>>>()
-                            .into_py_result()?,
-                    ),
+                    schema::TableKind::KTable(info) => {
+                        let num_key_parts = info.num_key_parts;
+                        value::Value::KTable(
+                            values
+                                .into_iter()
+                                .map(|v| {
+                                    let mut iter = v.fields.into_iter();
+                                    if iter.len() < num_key_parts {
+                                        anyhow::bail!(
+                                            "Invalid KTable value: expect at least {} fields, got {}",
+                                            num_key_parts,
+                                            iter.len()
+                                        );
+                                    }
+                                    let keys: Box<[value::KeyValue]> = (0..num_key_parts)
+                                        .map(|_| iter.next().unwrap().into_key())
+                                        .collect::<Result<_>>()?;
+                                    let values = value::FieldValues {
+                                        fields: iter.collect::<Vec<_>>(),
+                                    };
+                                    Ok((FullKeyValue(keys), values.into()))
+                                })
+                                .collect::<Result<BTreeMap<_, _>>>()
+                                .into_py_result()?,
+                        )
+                    }
                 }
             }
         }
@@ -524,7 +527,7 @@ mod tests {
 
         // KTable
         let ktable_schema = schema::TableSchema {
-            kind: schema::TableKind::KTable { num_key_parts: 1 },
+            kind: schema::TableKind::KTable(schema::KTableInfo { num_key_parts: 1 }),
             row: (*row_schema_struct).clone(),
         };
         let mut ktable_data = BTreeMap::new();

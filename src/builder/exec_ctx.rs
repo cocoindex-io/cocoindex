@@ -75,7 +75,29 @@ fn build_import_op_exec_ctx(
         import_op.name.clone(),
         setup::SourceSetupState {
             source_id,
-            key_schema: None,
+
+            // Keep this field for backward compatibility,
+            // so users can still swap back to older version if needed.
+            key_schema: Some(if keys_schema_no_attrs.len() == 1 {
+                keys_schema_no_attrs[0].clone()
+            } else {
+                schema::ValueType::Struct(schema::StructSchema {
+                    fields: Arc::new(
+                        import_op_output_type
+                            .typ
+                            .key_schema()
+                            .iter()
+                            .map(|field| {
+                                schema::FieldSchema::new(
+                                    field.name.clone(),
+                                    field.value_type.clone(),
+                                )
+                            })
+                            .collect(),
+                    ),
+                    description: None,
+                })
+            }),
             keys_schema: Some(keys_schema_no_attrs),
             source_kind: import_op.spec.source.kind.clone(),
         },

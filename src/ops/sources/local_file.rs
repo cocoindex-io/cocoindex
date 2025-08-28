@@ -149,7 +149,7 @@ impl SourceFactoryBase for Factory {
         ));
 
         Ok(make_output_type(TableSchema::new(
-            TableKind::KTable { num_key_parts: 1 },
+            TableKind::KTable(KTableInfo { num_key_parts: 1 }),
             struct_schema,
         )))
     }
