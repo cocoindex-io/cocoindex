@@ -36,18 +36,26 @@ fn build_import_op_exec_ctx(
     existing_source_states: Option<&Vec<&setup::SourceSetupState>>,
     metadata: &mut setup::FlowSetupMetadata,
 ) -> Result<ImportOpExecutionContext> {
-    let key_schema_no_attrs = import_op_output_type
+    let keys_schema_no_attrs = import_op_output_type
         .typ
-        .key_type()
-        .ok_or_else(|| api_error!("Source must produce a type with key"))?
-        .typ
-        .without_attrs();
+        .key_schema()
+        .iter()
+        .map(|field| field.value_type.typ.without_attrs())
+        .collect::<Box<[_]>>();
 
     let existing_source_ids = existing_source_states
         .iter()
         .flat_map(|v| v.iter())
         .filter_map(|state| {
-            if state.key_schema == key_schema_no_attrs {
+            let existing_keys_schema: &[schema::ValueType] =
+                if let Some(keys_schema) = &state.keys_schema {
+                    keys_schema
+                } else if let Some(key_schema) = &state.key_schema {
+                    std::slice::from_ref(key_schema)
+                } else {
+                    &[]
+                };
+            if existing_keys_schema == keys_schema_no_attrs.as_ref() {
                 Some(state.source_id)
             } else {
                 None
@@ -67,7 +75,30 @@ fn build_import_op_exec_ctx(
         import_op.name.clone(),
         setup::SourceSetupState {
             source_id,
-            key_schema: key_schema_no_attrs,
+
+            // Keep this field for backward compatibility,
+            // so users can still swap back to older version if needed.
+            key_schema: Some(if keys_schema_no_attrs.len() == 1 {
+                keys_schema_no_attrs[0].clone()
+            } else {
+                schema::ValueType::Struct(schema::StructSchema {
+                    fields: Arc::new(
+                        import_op_output_type
+                            .typ
+                            .key_schema()
+                            .iter()
+                            .map(|field| {
+                                schema::FieldSchema::new(
+                                    field.name.clone(),
+                                    field.value_type.clone(),
+                                )
+                            })
+                            .collect(),
+                    ),
+                    description: None,
+                })
+            }),
+            keys_schema: Some(keys_schema_no_attrs),
             source_kind: import_op.spec.source.kind.clone(),
         },
     );

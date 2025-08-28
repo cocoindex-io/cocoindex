@@ -932,7 +932,10 @@ impl SimpleFunctionExecutor for Executor {
                 let output_start = chunk_output.start_pos.output.unwrap();
                 let output_end = chunk_output.end_pos.output.unwrap();
                 (
-                    RangeValue::new(output_start.char_offset, output_end.char_offset).into(),
+                    FullKeyValue::from_single_part(RangeValue::new(
+                        output_start.char_offset,
+                        output_end.char_offset,
+                    )),
                     fields_value!(
                         Arc::<str>::from(chunk_output.text),
                         output_start.into_output(),
@@ -1022,11 +1025,14 @@ impl SimpleFunctionFactoryBase for Factory {
                 attrs: Default::default(),
             },
         ));
-        let output_schema = make_output_type(TableSchema::new(TableKind::KTable, struct_schema))
-            .with_attr(
-                field_attrs::CHUNK_BASE_TEXT,
-                serde_json::to_value(args_resolver.get_analyze_value(&args.text))?,
-            );
+        let output_schema = make_output_type(TableSchema::new(
+            TableKind::KTable(KTableInfo { num_key_parts: 1 }),
+            struct_schema,
+        ))
+        .with_attr(
+            field_attrs::CHUNK_BASE_TEXT,
+            serde_json::to_value(args_resolver.get_analyze_value(&args.text))?,
+        );
         Ok((args, output_schema))
     }
 
@@ -1073,12 +1079,12 @@ mod tests {
     }
 
     // Creates a default RecursiveChunker for testing, assuming no language-specific parsing.
-    fn create_test_chunker(
-        text: &str,
+    fn create_test_chunker<'a>(
+        text: &'a str,
         chunk_size: usize,
         min_chunk_size: usize,
         chunk_overlap: usize,
-    ) -> RecursiveChunker {
+    ) -> RecursiveChunker<'a> {
         RecursiveChunker {
             full_text: text,
             chunk_size,
@@ -1147,7 +1153,7 @@ mod tests {
                     ];
 
                     for (range, expected_text) in expected_chunks {
-                        let key: KeyValue = range.into();
+                        let key = FullKeyValue::from_single_part(range);
                         match table.get(&key) {
                             Some(scope_value_ref) => {
                                 let chunk_text =

@@ -267,8 +267,7 @@ fn value_to_bolt(value: &Value, schema: &schema::ValueType) -> Result<BoltType> 
                     .iter()
                     .map(|(k, v)| {
                         field_values_to_bolt(
-                            std::iter::once(&Into::<value::Value>::into(k.clone()))
-                                .chain(v.0.fields.iter()),
+                            k.to_values().iter().chain(v.0.fields.iter()),
                             t.row.fields.iter(),
                         )
                     })
@@ -458,7 +457,7 @@ impl ExportContext {
     ) -> Result<neo4rs::Query> {
         let mut query = query;
         for (i, val) in val
-            .fields_iter(self.analyzed_data_coll.schema.key_fields.len())?
+            .fields_iter_for_export(self.analyzed_data_coll.schema.key_fields.len())?
             .enumerate()
         {
             query = query.param(

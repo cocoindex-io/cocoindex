@@ -184,7 +184,11 @@ impl std::fmt::Display for KeyValue {
 }
 
 impl KeyValue {
-    pub fn from_json(value: serde_json::Value, fields_schema: &[FieldSchema]) -> Result<Self> {
+    /// For export purpose only for now. Will remove after switching export to using FullKeyValue.
+    pub fn from_json_for_export(
+        value: serde_json::Value,
+        fields_schema: &[FieldSchema],
+    ) -> Result<Self> {
         let value = if fields_schema.len() == 1 {
             Value::from_json(value, &fields_schema[0].value_type.typ)?
         } else {
@@ -194,7 +198,10 @@ impl KeyValue {
         value.as_key()
     }
 
-    pub fn from_values<'a>(values: impl ExactSizeIterator<Item = &'a Value>) -> Result<Self> {
+    /// For export purpose only for now. Will remove after switching export to using FullKeyValue.
+    pub fn from_values_for_export<'a>(
+        values: impl ExactSizeIterator<Item = &'a Value>,
+    ) -> Result<Self> {
         let key = if values.len() == 1 {
             let mut values = values;
             values.next().ok_or_else(invariance_violation)?.as_key()?
@@ -204,7 +211,11 @@ impl KeyValue {
         Ok(key)
     }
 
-    pub fn fields_iter(&self, num_fields: usize) -> Result<impl Iterator<Item = &KeyValue>> {
+    /// For export purpose only for now. Will remove after switching export to using FullKeyValue.
+    pub fn fields_iter_for_export(
+        &self,
+        num_fields: usize,
+    ) -> Result<impl Iterator<Item = &KeyValue>> {
         let slice = if num_fields == 1 {
             std::slice::from_ref(self)
         } else {
@@ -385,6 +396,126 @@ impl KeyValue {
             | KeyValue::Uuid(_)
             | KeyValue::Date(_) => 0,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FullKeyValue(pub Box<[KeyValue]>);
+
+impl<T: Into<Box<[KeyValue]>>> From<T> for FullKeyValue {
+    fn from(value: T) -> Self {
+        FullKeyValue(value.into())
+    }
+}
+
+impl IntoIterator for FullKeyValue {
+    type Item = KeyValue;
+    type IntoIter = std::vec::IntoIter<KeyValue>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a FullKeyValue {
+    type Item = &'a KeyValue;
+    type IntoIter = std::slice::Iter<'a, KeyValue>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl Deref for FullKeyValue {
+    type Target = [KeyValue];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for FullKeyValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{{{}}}",
+            self.0
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+impl Serialize for FullKeyValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.0.len() == 1 && !matches!(self.0[0], KeyValue::Struct(_)) {
+            self.0[0].serialize(serializer)
+        } else {
+            self.0.serialize(serializer)
+        }
+    }
+}
+
+impl FullKeyValue {
+    pub fn from_single_part<V: Into<KeyValue>>(value: V) -> Self {
+        Self(Box::new([value.into()]))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &KeyValue> {
+        self.0.iter()
+    }
+
+    pub fn from_json(value: serde_json::Value, schema: &[FieldSchema]) -> Result<Self> {
+        let field_values = if schema.len() == 1
+            && matches!(schema[0].value_type.typ, ValueType::Basic(_))
+        {
+            Box::from([KeyValue::from_json_for_export(value, schema)?])
+        } else {
+            match value {
+                serde_json::Value::Array(arr) => std::iter::zip(arr.into_iter(), schema)
+                    .map(|(v, s)| Value::<ScopeValue>::from_json(v, &s.value_type.typ)?.into_key())
+                    .collect::<Result<Box<[_]>>>()?,
+                _ => anyhow::bail!("expected array value, but got {}", value),
+            }
+        };
+        Ok(Self(field_values))
+    }
+
+    pub fn encode_to_strs(&self) -> Vec<String> {
+        let capacity = self.0.iter().map(|k| k.num_parts()).sum();
+        let mut output = Vec::with_capacity(capacity);
+        for part in self.0.iter() {
+            part.parts_to_strs(&mut output);
+        }
+        output
+    }
+
+    pub fn decode_from_strs(
+        value: impl IntoIterator<Item = String>,
+        schema: &[FieldSchema],
+    ) -> Result<Self> {
+        let mut values_iter = value.into_iter();
+        let keys: Box<[KeyValue]> = schema
+            .iter()
+            .map(|f| KeyValue::parts_from_str(&mut values_iter, &f.value_type.typ))
+            .collect::<Result<Box<[_]>>>()?;
+        if values_iter.next().is_some() {
+            api_bail!("Key parts more than expected");
+        }
+        Ok(Self(keys))
+    }
+
+    pub fn to_values(&self) -> Vec<Value> {
+        self.0.iter().map(|v| v.into()).collect()
+    }
+
+    pub fn single_part(&self) -> Result<&KeyValue> {
+        if self.0.len() != 1 {
+            api_bail!("expected single value, but got {}", self.0.len());
+        }
+        Ok(&self.0[0])
     }
 }
 
@@ -627,14 +758,14 @@ impl BasicValue {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub enum Value<VS = ScopeValue> {
     #[default]
     Null,
     Basic(BasicValue),
     Struct(FieldValues<VS>),
     UTable(Vec<VS>),
-    KTable(BTreeMap<KeyValue, VS>),
+    KTable(BTreeMap<FullKeyValue, VS>),
     LTable(Vec<VS>),
 }
 
@@ -709,9 +840,7 @@ impl<VS> Value<VS> {
                     .collect(),
             }),
             Value::UTable(v) => Value::UTable(v.into_iter().map(|v| v.into()).collect()),
-            Value::KTable(v) => {
-                Value::KTable(v.into_iter().map(|(k, v)| (k.clone(), v.into())).collect())
-            }
+            Value::KTable(v) => Value::KTable(v.into_iter().map(|(k, v)| (k, v.into())).collect()),
             Value::LTable(v) => Value::LTable(v.into_iter().map(|v| v.into()).collect()),
         }
     }
@@ -879,7 +1008,10 @@ impl<VS: EstimatedByteSize> Value<VS> {
                 Value::KTable(v) => {
                     v.iter()
                         .map(|(k, v)| {
-                            k.estimated_detached_byte_size() + v.estimated_detached_byte_size()
+                            k.iter()
+                                .map(|k| k.estimated_detached_byte_size())
+                                .sum::<usize>()
+                                + v.estimated_detached_byte_size()
                         })
                         .sum::<usize>()
                         + v.len() * std::mem::size_of::<(String, ScopeValue)>()
@@ -888,7 +1020,7 @@ impl<VS: EstimatedByteSize> Value<VS> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FieldValues<VS = ScopeValue> {
     pub fields: Vec<Value<VS>>,
 }
@@ -972,7 +1104,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ScopeValue(pub FieldValues);
 
 impl EstimatedByteSize for ScopeValue {
@@ -1127,7 +1259,7 @@ impl BasicValue {
     }
 }
 
-struct TableEntry<'a>(&'a KeyValue, &'a ScopeValue);
+struct TableEntry<'a>(&'a [KeyValue], &'a ScopeValue);
 
 impl serde::Serialize for Value<ScopeValue> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -1151,8 +1283,10 @@ impl serde::Serialize for Value<ScopeValue> {
 impl serde::Serialize for TableEntry<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let &TableEntry(key, value) = self;
-        let mut seq = serializer.serialize_seq(Some(value.0.fields.len() + 1))?;
-        seq.serialize_element(key)?;
+        let mut seq = serializer.serialize_seq(Some(key.len() + value.0.fields.len()))?;
+        for item in key.iter() {
+            seq.serialize_element(item)?;
+        }
         for item in value.0.fields.iter() {
             seq.serialize_element(item)?;
         }
@@ -1171,68 +1305,78 @@ where
             (v, ValueType::Struct(s)) => {
                 Value::<VS>::Struct(FieldValues::<VS>::from_json(v, &s.fields)?)
             }
-            (serde_json::Value::Array(v), ValueType::Table(s)) => match s.kind {
-                TableKind::UTable => {
-                    let rows = v
-                        .into_iter()
-                        .map(|v| Ok(FieldValues::from_json(v, &s.row.fields)?.into()))
-                        .collect::<Result<Vec<_>>>()?;
-                    Value::LTable(rows)
-                }
-                TableKind::KTable => {
-                    let rows = v
-                        .into_iter()
-                        .map(|v| {
-                            let mut fields_iter = s.row.fields.iter();
-                            let key_field = fields_iter
-                                .next()
-                                .ok_or_else(|| api_error!("Empty struct field values"))?;
+            (serde_json::Value::Array(v), ValueType::Table(s)) => {
+                match s.kind {
+                    TableKind::UTable => {
+                        let rows = v
+                            .into_iter()
+                            .map(|v| Ok(FieldValues::from_json(v, &s.row.fields)?.into()))
+                            .collect::<Result<Vec<_>>>()?;
+                        Value::LTable(rows)
+                    }
+                    TableKind::KTable(info) => {
+                        let num_key_parts = info.num_key_parts;
+                        let rows =
+                        v.into_iter()
+                            .map(|v| {
+                                if s.row.fields.len() < num_key_parts {
+                                    anyhow::bail!("Invalid KTable schema: expect at least {} fields, got {}", num_key_parts, s.row.fields.len());
+                                }
+                                let mut fields_iter = s.row.fields.iter();
+                                match v {
+                                    serde_json::Value::Array(v) => {
+                                        if v.len() != fields_iter.len() {
+                                            anyhow::bail!("Invalid KTable value: expect {} values, received {}", fields_iter.len(), v.len());
+                                        }
 
-                            match v {
-                                serde_json::Value::Array(v) => {
-                                    let mut field_vals_iter = v.into_iter();
-                                    let key = Self::from_json(
-                                        field_vals_iter.next().ok_or_else(|| {
-                                            api_error!("Empty struct field values")
-                                        })?,
-                                        &key_field.value_type.typ,
-                                    )?
-                                    .into_key()?;
-                                    let values = FieldValues::from_json_values(
-                                        fields_iter.zip(field_vals_iter),
-                                    )?;
-                                    Ok((key, values.into()))
+                                        let mut field_vals_iter = v.into_iter();
+                                        let keys: Box<[KeyValue]> = (0..num_key_parts)
+                                            .map(|_| {
+                                                Self::from_json(
+                                                    field_vals_iter.next().unwrap(),
+                                                    &fields_iter.next().unwrap().value_type.typ,
+                                                )?
+                                                .into_key()
+                                            })
+                                            .collect::<Result<_>>()?;
+
+                                        let values = FieldValues::from_json_values(
+                                            std::iter::zip(fields_iter, field_vals_iter),
+                                        )?;
+                                        Ok((FullKeyValue(keys), values.into()))
+                                    }
+                                    serde_json::Value::Object(mut v) => {
+                                        let keys: Box<[KeyValue]> = (0..num_key_parts).map(|_| {
+                                            let f = fields_iter.next().unwrap();
+                                            Self::from_json(
+                                                std::mem::take(v.get_mut(&f.name).ok_or_else(
+                                                || {
+                                                    api_error!(
+                                                        "key field `{}` doesn't exist in value",
+                                                        f.name
+                                                    )
+                                                },
+                                            )?),
+                                            &f.value_type.typ)?.into_key()
+                                        }).collect::<Result<_>>()?;
+                                        let values = FieldValues::from_json_object(v, fields_iter)?;
+                                        Ok((FullKeyValue(keys), values.into()))
+                                    }
+                                    _ => api_bail!("Table value must be a JSON array or object"),
                                 }
-                                serde_json::Value::Object(mut v) => {
-                                    let key = Self::from_json(
-                                        std::mem::take(v.get_mut(&key_field.name).ok_or_else(
-                                            || {
-                                                api_error!(
-                                                    "key field `{}` doesn't exist in value",
-                                                    key_field.name
-                                                )
-                                            },
-                                        )?),
-                                        &key_field.value_type.typ,
-                                    )?
-                                    .into_key()?;
-                                    let values = FieldValues::from_json_object(v, fields_iter)?;
-                                    Ok((key, values.into()))
-                                }
-                                _ => api_bail!("Table value must be a JSON array or object"),
-                            }
-                        })
-                        .collect::<Result<BTreeMap<_, _>>>()?;
-                    Value::KTable(rows)
+                            })
+                            .collect::<Result<BTreeMap<_, _>>>()?;
+                        Value::KTable(rows)
+                    }
+                    TableKind::LTable => {
+                        let rows = v
+                            .into_iter()
+                            .map(|v| Ok(FieldValues::from_json(v, &s.row.fields)?.into()))
+                            .collect::<Result<Vec<_>>>()?;
+                        Value::LTable(rows)
+                    }
                 }
-                TableKind::LTable => {
-                    let rows = v
-                        .into_iter()
-                        .map(|v| Ok(FieldValues::from_json(v, &s.row.fields)?.into()))
-                        .collect::<Result<Vec<_>>>()?;
-                    Value::LTable(rows)
-                }
-            },
+            }
             (v, t) => {
                 anyhow::bail!("Value and type not matched.\nTarget type {t:?}\nJSON value: {v}\n")
             }
@@ -1280,10 +1424,10 @@ impl Serialize for TypedValue<'_> {
             (ValueType::Table(c), Value::KTable(rows)) => {
                 let mut seq = serializer.serialize_seq(Some(rows.len()))?;
                 for (k, v) in rows {
+                    let keys: Box<[Value]> = k.iter().map(|k| Value::from(k.clone())).collect();
                     seq.serialize_element(&TypedFieldsValue {
                         schema: &c.row.fields,
-                        values_iter: std::iter::once(&Value::from(k.clone()))
-                            .chain(v.fields.iter()),
+                        values_iter: keys.iter().chain(v.fields.iter()),
                     })?;
                 }
                 seq.end()
@@ -1473,7 +1617,7 @@ mod tests {
     fn test_estimated_byte_size_ktable() {
         let mut map = BTreeMap::new();
         map.insert(
-            KeyValue::Str(Arc::from("key1")),
+            FullKeyValue(Box::from([KeyValue::Str(Arc::from("key1"))])),
             ScopeValue(FieldValues {
                 fields: vec![Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from(
                     "value1",
@@ -1481,7 +1625,7 @@ mod tests {
             }),
         );
         map.insert(
-            KeyValue::Str(Arc::from("key2")),
+            FullKeyValue(Box::from([KeyValue::Str(Arc::from("key2"))])),
             ScopeValue(FieldValues {
                 fields: vec![Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from(
                     "value2",

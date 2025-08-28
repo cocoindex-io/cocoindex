@@ -134,7 +134,7 @@ impl Executor {
             None
         } else if is_supported_file_type(&mime_type) {
             Some(PartialSourceRowMetadata {
-                key: KeyValue::Str(id),
+                key: FullKeyValue::from_single_part(id),
                 key_aux_info: serde_json::Value::Null,
                 ordinal: file.modified_time.map(|t| t.try_into()).transpose()?,
                 content_version_fp: None,
@@ -211,7 +211,7 @@ impl Executor {
                 let file_id = file.id.ok_or_else(|| anyhow!("File has no id"))?;
                 if self.is_file_covered(&file_id).await? {
                     changes.push(SourceChange {
-                        key: KeyValue::Str(Arc::from(file_id)),
+                        key: FullKeyValue::from_single_part(file_id),
                         key_aux_info: serde_json::Value::Null,
                         data: PartialSourceRowData::default(),
                     });
@@ -325,11 +325,11 @@ impl SourceExecutor for Executor {
 
     async fn get_value(
         &self,
-        key: &KeyValue,
+        key: &FullKeyValue,
         _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
-        let file_id = key.str_value()?;
+        let file_id = key.single_part()?.str_value()?;
         let fields = format!(
             "id,name,mimeType,trashed{}",
             optional_modified_time(options.include_ordinal)
@@ -480,7 +480,7 @@ impl SourceFactoryBase for Factory {
             ),
         ));
         Ok(make_output_type(TableSchema::new(
-            TableKind::KTable,
+            TableKind::KTable(KTableInfo { num_key_parts: 1 }),
             struct_schema,
         )))
     }

@@ -196,9 +196,9 @@ impl DbPools {
                 let pool_options = PgPoolOptions::new()
                     .max_connections(conn_spec.max_connections)
                     .min_connections(conn_spec.min_connections)
-                    .acquire_timeout(Duration::from_secs(5 * 60))
-                    .idle_timeout(Duration::from_secs(10 * 60))
-                    .max_lifetime(Duration::from_secs(60 * 60));
+                    .acquire_slow_level(log::LevelFilter::Info)
+                    .acquire_slow_threshold(Duration::from_secs(10))
+                    .acquire_timeout(Duration::from_secs(5 * 60));
                 let pool = pool_options
                     .connect_with(pg_options)
                     .await

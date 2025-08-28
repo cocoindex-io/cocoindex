@@ -1,3 +1,4 @@
+use crate::base::value::FullKeyValue;
 use crate::prelude::*;
 
 use bytes::Bytes;
@@ -108,10 +109,9 @@ pub fn value_to_py_object<'py>(py: Python<'py>, v: &value::Value) -> PyResult<Bo
             let rows = v
                 .iter()
                 .map(|(k, v)| {
-                    field_values_to_py_object(
-                        py,
-                        std::iter::once(&value::Value::from(k.clone())).chain(v.0.fields.iter()),
-                    )
+                    let k: Box<[value::Value]> =
+                        k.into_iter().map(|k| value::Value::from(k)).collect();
+                    field_values_to_py_object(py, k.iter().chain(v.0.fields.iter()))
                 })
                 .collect::<PyResult<Vec<_>>>()?;
             PyList::new(py, rows)?.into_any()
@@ -333,21 +333,32 @@ pub fn value_from_py_object<'py>(
                         value::Value::LTable(values.into_iter().map(|v| v.into()).collect())
                     }
 
-                    schema::TableKind::KTable => value::Value::KTable(
-                        values
-                            .into_iter()
-                            .map(|v| {
-                                let mut iter = v.fields.into_iter();
-                                let key = iter.next().unwrap().into_key().into_py_result()?;
-                                Ok((
-                                    key,
-                                    value::ScopeValue(value::FieldValues {
+                    schema::TableKind::KTable(info) => {
+                        let num_key_parts = info.num_key_parts;
+                        value::Value::KTable(
+                            values
+                                .into_iter()
+                                .map(|v| {
+                                    let mut iter = v.fields.into_iter();
+                                    if iter.len() < num_key_parts {
+                                        anyhow::bail!(
+                                            "Invalid KTable value: expect at least {} fields, got {}",
+                                            num_key_parts,
+                                            iter.len()
+                                        );
+                                    }
+                                    let keys: Box<[value::KeyValue]> = (0..num_key_parts)
+                                        .map(|_| iter.next().unwrap().into_key())
+                                        .collect::<Result<_>>()?;
+                                    let values = value::FieldValues {
                                         fields: iter.collect::<Vec<_>>(),
-                                    }),
-                                ))
-                            })
-                            .collect::<PyResult<BTreeMap<_, _>>>()?,
-                    ),
+                                    };
+                                    Ok((FullKeyValue(keys), values.into()))
+                                })
+                                .collect::<Result<BTreeMap<_, _>>>()
+                                .into_py_result()?,
+                        )
+                    }
                 }
             }
         }
@@ -516,7 +527,7 @@ mod tests {
 
         // KTable
         let ktable_schema = schema::TableSchema {
-            kind: schema::TableKind::KTable,
+            kind: schema::TableKind::KTable(schema::KTableInfo { num_key_parts: 1 }),
             row: (*row_schema_struct).clone(),
         };
         let mut ktable_data = BTreeMap::new();
@@ -547,8 +558,8 @@ mod tests {
             .into_key()
             .unwrap();
 
-        ktable_data.insert(key1, row1_scope_val.clone());
-        ktable_data.insert(key2, row2_scope_val.clone());
+        ktable_data.insert(FullKeyValue(Box::from([key1])), row1_scope_val.clone());
+        ktable_data.insert(FullKeyValue(Box::from([key2])), row2_scope_val.clone());
 
         let ktable_val = value::Value::KTable(ktable_data);
         let ktable_typ = schema::ValueType::Table(ktable_schema);

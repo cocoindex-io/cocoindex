@@ -60,8 +60,8 @@ pub struct GetKeysParam {
 
 #[derive(Serialize)]
 pub struct GetKeysResponse {
-    key_type: schema::EnrichedValueType,
-    keys: Vec<(value::KeyValue, serde_json::Value)>,
+    key_schema: Vec<schema::FieldSchema>,
+    keys: Vec<(value::FullKeyValue, serde_json::Value)>,
 }
 
 pub async fn get_keys(
@@ -82,16 +82,10 @@ pub async fn get_keys(
                 StatusCode::BAD_REQUEST,
             )
         })?;
-    let key_type = schema.fields[field_idx]
-        .value_type
-        .typ
-        .key_type()
-        .ok_or_else(|| {
-            ApiError::new(
-                &format!("field has no key: {}", query.field),
-                StatusCode::BAD_REQUEST,
-            )
-        })?;
+    let pk_schema = schema.fields[field_idx].value_type.typ.key_schema();
+    if pk_schema.is_empty() {
+        api_bail!("field has no key: {}", query.field);
+    }
 
     let execution_plan = flow_ctx.flow.get_execution_plan().await?;
     let import_op = execution_plan
@@ -117,7 +111,7 @@ pub async fn get_keys(
         keys.extend(rows?.into_iter().map(|row| (row.key, row.key_aux_info)));
     }
     Ok(Json(GetKeysResponse {
-        key_type: key_type.clone(),
+        key_schema: pk_schema.to_vec(),
         keys,
     }))
 }
@@ -139,7 +133,7 @@ struct SourceRowKeyContextHolder<'a> {
     plan: Arc<plan::ExecutionPlan>,
     import_op_idx: usize,
     schema: &'a FlowSchema,
-    key: value::KeyValue,
+    key: value::FullKeyValue,
     key_aux_info: serde_json::Value,
 }
 
@@ -165,10 +159,8 @@ impl<'a> SourceRowKeyContextHolder<'a> {
             schema::ValueType::Table(table) => table,
             _ => api_bail!("field is not a table: {}", source_row_key.field),
         };
-        let key_field = table_schema
-            .key_field()
-            .ok_or_else(|| api_error!("field {} does not have a key", source_row_key.field))?;
-        let key = value::KeyValue::from_strs(source_row_key.key, &key_field.value_type.typ)?;
+        let key_schema = table_schema.key_schema();
+        let key = value::FullKeyValue::decode_from_strs(source_row_key.key, key_schema)?;
         let key_aux_info = source_row_key
             .key_aux
             .map(|s| serde_json::from_str(&s))

@@ -663,12 +663,7 @@ impl AnalyzerContext {
             .await?;
 
         let op_name = import_op.name.clone();
-        let primary_key_type = output_type
-            .typ
-            .key_type()
-            .ok_or_else(|| api_error!("Source must produce a type with key: {op_name}"))?
-            .typ
-            .clone();
+        let primary_key_schema = Box::from(output_type.typ.key_schema());
         let output = op_scope.add_op_output(import_op.name, output_type)?;
 
         let concur_control_options = import_op
@@ -683,7 +678,7 @@ impl AnalyzerContext {
             Ok(AnalyzedImportOp {
                 executor,
                 output,
-                primary_key_type,
+                primary_key_schema,
                 name: op_name,
                 refresh_options: import_op.spec.refresh_options,
                 concurrency_controller: concur_control::CombinedConcurrencyController::new(

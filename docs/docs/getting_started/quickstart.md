@@ -105,7 +105,7 @@ Notes:
     *   `chunk`, representing each row of `chunks`.
 
 3.  A *data source* extracts data from an external source.
-    In this example, the `LocalFile` data source imports local files as a KTable (table with a key field, see [KTable](../core/data_types#ktable) for details), each row has `"filename"` and `"content"` fields.
+    In this example, the `LocalFile` data source imports local files as a KTable (table with key columns, see [KTable](../core/data_types#ktable) for details), each row has `"filename"` and `"content"` fields.
 
 4. After defining the KTable, we extend a new field `"chunks"` to each row by *transforming* the `"content"` field using `SplitRecursively`. The output of the `SplitRecursively` is also a KTable representing each chunk of the document, with `"location"` and `"text"` fields.
 

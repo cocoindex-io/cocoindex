@@ -21,13 +21,13 @@ use crate::ops::interface::{
 use crate::utils::db::WriteAction;
 use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 
-pub fn extract_primary_key(
+pub fn extract_primary_key_for_export(
     primary_key_def: &AnalyzedPrimaryKeyDef,
     record: &FieldValues,
 ) -> Result<KeyValue> {
     match primary_key_def {
         AnalyzedPrimaryKeyDef::Fields(fields) => {
-            KeyValue::from_values(fields.iter().map(|field| &record.fields[*field]))
+            KeyValue::from_values_for_export(fields.iter().map(|field| &record.fields[*field]))
         }
     }
 }
@@ -369,12 +369,10 @@ impl<'a> RowIndexer<'a> {
 
         if let Some(existing_version) = existing_version {
             if output.is_some() {
-                if !source_version.ordinal.is_available()
-                    || source_version.ordinal != existing_version.ordinal
-                {
-                    self.update_stats.num_updates.inc(1);
-                } else {
+                if existing_version.kind == SourceVersionKind::DifferentLogic {
                     self.update_stats.num_reprocesses.inc(1);
+                } else {
+                    self.update_stats.num_updates.inc(1);
                 }
             } else {
                 self.update_stats.num_deletions.inc(1);
@@ -582,7 +580,8 @@ impl<'a> RowIndexer<'a> {
                 let collected_values =
                     &data.evaluate_output.collected_values[export_op.input.collector_idx as usize];
                 for value in collected_values.iter() {
-                    let primary_key = extract_primary_key(&export_op.primary_key_def, value)?;
+                    let primary_key =
+                        extract_primary_key_for_export(&export_op.primary_key_def, value)?;
                     let primary_key_json = serde_json::to_value(&primary_key)?;
 
                     let mut field_values = FieldValues {

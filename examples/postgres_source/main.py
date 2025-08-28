@@ -97,8 +97,8 @@ def postgres_product_indexing_flow(
     with data_scope["products"].row() as product:
         product["full_description"] = flow_builder.transform(
             make_full_description,
-            product["_key"]["product_category"],
-            product["_key"]["product_name"],
+            product["product_category"],
+            product["product_name"],
             product["description"],
         )
         product["total_value"] = flow_builder.transform(
@@ -112,8 +112,8 @@ def postgres_product_indexing_flow(
             )
         )
         indexed_product.collect(
-            product_category=product["_key"]["product_category"],
-            product_name=product["_key"]["product_name"],
+            product_category=product["product_category"],
+            product_name=product["product_name"],
             description=product["description"],
             price=product["price"],
             amount=product["amount"],

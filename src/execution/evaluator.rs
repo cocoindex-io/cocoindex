@@ -60,7 +60,7 @@ impl ScopeValueBuilder {
     }
 
     fn augmented_from(source: &value::ScopeValue, schema: &schema::TableSchema) -> Result<Self> {
-        let val_index_base = if schema.has_key() { 1 } else { 0 };
+        let val_index_base = schema.key_schema().len();
         let len = schema.row.fields.len() - val_index_base;
 
         let mut builder = Self::new(len);
@@ -120,24 +120,26 @@ enum ScopeKey<'a> {
     /// For root struct and UTable.
     None,
     /// For KTable row.
-    MapKey(&'a value::KeyValue),
+    MapKey(&'a value::FullKeyValue),
     /// For LTable row.
     ListIndex(usize),
 }
 
 impl<'a> ScopeKey<'a> {
-    pub fn key(&self) -> Option<Cow<'a, value::KeyValue>> {
+    pub fn key(&self) -> Option<Cow<'a, value::FullKeyValue>> {
         match self {
             ScopeKey::None => None,
-            ScopeKey::MapKey(k) => Some(Cow::Borrowed(k)),
-            ScopeKey::ListIndex(i) => Some(Cow::Owned(value::KeyValue::Int64(*i as i64))),
+            ScopeKey::MapKey(k) => Some(Cow::Borrowed(&k)),
+            ScopeKey::ListIndex(i) => {
+                Some(Cow::Owned(value::FullKeyValue::from_single_part(*i as i64)))
+            }
         }
     }
 
-    pub fn value_field_index_base(&self) -> u32 {
+    pub fn value_field_index_base(&self) -> usize {
         match *self {
             ScopeKey::None => 0,
-            ScopeKey::MapKey(_) => 1,
+            ScopeKey::MapKey(v) => v.len(),
             ScopeKey::ListIndex(_) => 0,
         }
     }
@@ -147,7 +149,7 @@ impl std::fmt::Display for ScopeKey<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ScopeKey::None => write!(f, "()"),
-            ScopeKey::MapKey(k) => write!(f, "{{{k}}}"),
+            ScopeKey::MapKey(k) => write!(f, "{k}"),
             ScopeKey::ListIndex(i) => write!(f, "[{i}]"),
         }
     }
@@ -226,7 +228,7 @@ impl<'a> ScopeEntry<'a> {
         &self,
         field_ref: &AnalyzedLocalFieldReference,
     ) -> &value::Value<ScopeValueBuilder> {
-        let first_index = field_ref.fields_idx[0];
+        let first_index = field_ref.fields_idx[0] as usize;
         let index_base = self.key.value_field_index_base();
         let val = self.value.fields[(first_index - index_base) as usize]
             .get()
@@ -235,11 +237,12 @@ impl<'a> ScopeEntry<'a> {
     }
 
     fn get_field(&self, field_ref: &AnalyzedLocalFieldReference) -> value::Value {
-        let first_index = field_ref.fields_idx[0];
+        let first_index = field_ref.fields_idx[0] as usize;
         let index_base = self.key.value_field_index_base();
         if first_index < index_base {
-            let key_val = self.key.key().unwrap().into_owned();
-            let key_part = Self::get_local_key_field(&key_val, &field_ref.fields_idx[1..]);
+            let key_val = self.key.key().unwrap();
+            let key_part =
+                Self::get_local_key_field(&key_val[first_index], &field_ref.fields_idx[1..]);
             key_part.clone().into()
         } else {
             let val = self.value.fields[(first_index - index_base) as usize]
@@ -491,7 +494,7 @@ pub struct SourceRowEvaluationContext<'a> {
     pub plan: &'a ExecutionPlan,
     pub import_op: &'a AnalyzedImportOp,
     pub schema: &'a schema::FlowSchema,
-    pub key: &'a value::KeyValue,
+    pub key: &'a value::FullKeyValue,
     pub import_op_idx: usize,
 }
 

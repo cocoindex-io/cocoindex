@@ -1,6 +1,6 @@
 use crate::ops::sdk::*;
 
-use crate::ops::shared::postgres::{bind_key_field, get_db_pool, key_value_fields_iter};
+use crate::ops::shared::postgres::{bind_key_field, get_db_pool};
 use crate::settings::DatabaseConnectionSpec;
 use sqlx::postgres::types::PgInterval;
 use sqlx::{PgPool, Row};
@@ -345,14 +345,9 @@ impl SourceExecutor for Executor {
                     .primary_key_columns
                     .iter()
                     .enumerate()
-                    .map(|(i, info)| (info.decoder)(&row, i))
-                    .collect::<Result<Vec<_>>>()?;
-                if parts.iter().any(|v| v.is_null()) {
-                    Err(anyhow::anyhow!(
-                        "Composite primary key contains NULL component"
-                    ))?;
-                }
-                let key = KeyValue::from_values(parts.iter())?;
+                    .map(|(i, info)| (info.decoder)(&row, i)?.into_key())
+                    .collect::<Result<Box<[KeyValue]>>>()?;
+                let key = FullKeyValue(parts);
 
                 // Compute ordinal if requested
                 let ordinal = if options.include_ordinal {
@@ -385,7 +380,7 @@ impl SourceExecutor for Executor {
 
     async fn get_value(
         &self,
-        key: &KeyValue,
+        key: &FullKeyValue,
         _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {
@@ -420,17 +415,10 @@ impl SourceExecutor for Executor {
         qb.push(&self.table_name);
         qb.push("\" WHERE ");
 
-        let key_values = key_value_fields_iter(
-            self.table_schema
-                .primary_key_columns
-                .iter()
-                .map(|i| &i.schema),
-            key,
-        )?;
-        if key_values.len() != self.table_schema.primary_key_columns.len() {
+        if key.len() != self.table_schema.primary_key_columns.len() {
             bail!(
                 "Composite key has {} values but table has {} primary key columns",
-                key_values.len(),
+                key.len(),
                 self.table_schema.primary_key_columns.len()
             );
         }
@@ -439,7 +427,7 @@ impl SourceExecutor for Executor {
             .table_schema
             .primary_key_columns
             .iter()
-            .zip(key_values.iter())
+            .zip(key.iter())
             .enumerate()
         {
             if i > 0 {
@@ -524,56 +512,22 @@ impl SourceFactoryBase for Factory {
         )
         .await?;
 
-        // Build fields: first key, then value columns
-        let mut fields: Vec<FieldSchema> = Vec::new();
-
-        if table_schema.primary_key_columns.len() == 1 {
-            let pk_col = &table_schema.primary_key_columns[0];
-            fields.push(FieldSchema::new(
-                &pk_col.schema.name,
-                pk_col.schema.value_type.clone(),
-            ));
-        } else {
-            // Composite primary key - put all PK columns into a nested struct `_key`
-            let key_fields: Vec<FieldSchema> = table_schema
-                .primary_key_columns
-                .iter()
-                .map(|pk_col| {
-                    FieldSchema::new(&pk_col.schema.name, pk_col.schema.value_type.clone())
-                })
-                .collect();
-            let key_struct_schema = StructSchema {
-                fields: Arc::new(key_fields),
-                description: None,
-            };
-            fields.push(FieldSchema::new(
-                "_key",
-                make_output_type(key_struct_schema),
-            ));
-        }
-
-        for value_col in &table_schema.value_columns {
-            fields.push(FieldSchema::new(
-                &value_col.schema.name,
-                value_col.schema.value_type.clone(),
-            ));
-        }
-
-        // Log schema information for debugging
-        if table_schema.primary_key_columns.len() > 1 {
-            info!(
-                "Composite primary key detected: {} columns",
-                table_schema.primary_key_columns.len()
-            );
-        }
-
-        let struct_schema = StructSchema {
-            fields: Arc::new(fields),
-            description: None,
-        };
         Ok(make_output_type(TableSchema::new(
-            TableKind::KTable,
-            struct_schema,
+            TableKind::KTable(KTableInfo {
+                num_key_parts: table_schema.primary_key_columns.len(),
+            }),
+            StructSchema {
+                fields: Arc::new(
+                    (table_schema.primary_key_columns.into_iter().map(|pk_col| {
+                        FieldSchema::new(&pk_col.schema.name, pk_col.schema.value_type)
+                    }))
+                    .chain(table_schema.value_columns.into_iter().map(|value_col| {
+                        FieldSchema::new(&value_col.schema.name, value_col.schema.value_type)
+                    }))
+                    .collect(),
+                ),
+                description: None,
+            },
         )))
     }
 
@@ -597,11 +551,6 @@ impl SourceFactoryBase for Factory {
             db_pool,
             table_name: spec.table_name.clone(),
             table_schema,
-        };
-
-        let filter_info = match &spec.included_columns {
-            Some(cols) => format!(" (filtered to {} specified columns)", cols.len()),
-            None => " (all columns)".to_string(),
         };
 
         Ok(Box::new(executor))

@@ -23,7 +23,7 @@ Each piece of data has a **data type**, falling into one of the following catego
 
 *   *Basic type*.
 *   *Struct type*: a collection of **fields**, each with a name and a type.
-*   *Table type*: a collection of **rows**, each of which is a struct with specified schema. A table type can be a *KTable* (which has a key field) or a *LTable* (ordered but without key field).
+*   *Table type*: a collection of **rows**, each of which is a struct with specified schema. A table type can be a *KTable* (with key columns that uniquely identify each row) or a *LTable* (rows are ordered but without keys).
 
 An indexing flow always has a top-level struct, containing all data within and managed by the flow.
 
