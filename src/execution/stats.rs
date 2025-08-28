@@ -116,7 +116,7 @@ impl std::fmt::Display for UpdateStats {
         let num_source_rows = num_insertions + num_deletions + num_updates + num_reprocesses;
         if num_source_rows > 0 {
             messages.push(format!(
-                "{num_source_rows} source rows processed ({num_insertions} ADDED, {num_deletions} REMOVED, {num_updates} UPDATED, {num_reprocesses} REPROCESSED on flow change)",
+                "{num_source_rows} source rows processed ({num_insertions} ADDED, {num_deletions} REMOVED, {num_updates} UPDATED, {num_reprocesses} REPROCESSED on flow or logic changes)",
             ));
         }
 
