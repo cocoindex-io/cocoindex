@@ -50,7 +50,7 @@ import cocoindex
 
 ## Add Source
 
-```python
+```python title="main.py"
 @cocoindex.flow_def(name="TextEmbedding")
 def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     # add source
@@ -69,7 +69,7 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 
 ### Chunk each document
 
-```python
+```python title="main.py"
 with data_scope["documents"].row() as doc:
     doc["chunks"] = doc["content"].transform(
         cocoindex.functions.SplitRecursively(),
@@ -85,7 +85,7 @@ We extend a new field `chunks` to each row by *transforming* the `content` field
 
 ### Embed each chunk and collect the embeddings
 
-```python
+```python title="main.py"
 with doc["chunks"].row() as chunk:
     # embed 
     chunk["embedding"] = chunk["text"].transform(
@@ -110,7 +110,7 @@ This code embeds each chunk using the SentenceTransformer model and collects the
  
 ## Export the embeddings to Postgres
 
-```python
+```python title="main.py"
 doc_embeddings.export(
     "doc_embeddings",
     cocoindex.storages.Postgres(),
