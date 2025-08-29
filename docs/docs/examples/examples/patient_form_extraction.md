@@ -12,8 +12,10 @@ tags: [structured-data-extraction, data-mapping]
 
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction"/>
-<YouTubeButton url="https://youtu.be/_mjlwVtnBn0?si=-TBImMyZbnKh-5FB" />
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction" margin="0 0 24px 0" />
+<YouTubeButton url="https://youtu.be/_mjlwVtnBn0?si=-TBImMyZbnKh-5FB" margin="0 0 24px 0" />
+
+![Patient Form Extraction](/img/examples/patient_form_extraction/cover.png)
 
 ## Overview
 With CocoIndex, you can easily define nested schema in Python dataclass and use LLM to extract structured data from unstructured data. This example shows how to extract structured data from patient intake forms.

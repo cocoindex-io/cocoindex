@@ -12,8 +12,9 @@ tags: [vector-index]
 
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding"/>
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding" margin="0 0 24px 0" />
 
+![Simple Vector Index](/img/examples/simple_vector_index/cover.png)
 
 ## Overview
 In this tutorial, we will build index with text embeddings and query it with natural language. 

@@ -12,7 +12,9 @@ tags: [knowledge-graph]
 
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/product_recommendation"/>
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/product_recommendation" margin="0 0 24px 0" />
+
+![Product Recommendation](/img/examples/product_recommendation/cover.png)
 
 ## Overview
 

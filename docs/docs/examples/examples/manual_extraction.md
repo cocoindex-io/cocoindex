@@ -12,7 +12,9 @@ tags: [structured-data-extraction, data-mapping]
 
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/manuals_llm_extraction"/>
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/manuals_llm_extraction" margin="0 0 24px 0" />
+
+![Manual Extraction](/img/examples/manual_extraction/cover.png)
 
 ## Overview
 This example shows how to extract structured data from Python Manuals using Ollama.

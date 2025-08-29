@@ -12,7 +12,9 @@ tags: [vector-index, multi-modal]
 
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing"/>
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing" margin="0 0 24px 0" />
+
+![Multi Format Index](/img/examples/multi_format_index/cover.png)
 
 ## Overview
 Do you have a messy collection of scanned documents, PDFs, academic papers, presentation slides, and standalone images — all mixed together with charts, tables, and figures — that you want to process into the same vector space for semantic search or to power an AI agent?

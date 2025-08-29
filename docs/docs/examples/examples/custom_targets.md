@@ -11,7 +11,9 @@ tags: [custom-building-blocks]
 ---
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/custom_output_files"/>
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/custom_output_files" margin="0 0 24px 0" />
+
+![Custom Targets](/img/examples/custom_targets/cover.png)
 
 ## Overview
 

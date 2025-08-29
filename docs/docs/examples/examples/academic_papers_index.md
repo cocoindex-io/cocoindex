@@ -12,7 +12,9 @@ tags: [vector-index, metadata]
 
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata"/>
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata" margin="0 0 24px 0" />
+
+![Academic Papers Index](/img/examples/academic_papers_index/cover.png)
 
 ## What we will achieve
 

@@ -12,7 +12,9 @@ tags: [vector-index, multi-modal]
 
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search"/>
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search" margin="0 0 24px 0" />
+
+![Image Search](/img/examples/image_search/cover.png)
 
 ## Overview
 CocoIndex supports native integration with ColPali - with just a few lines of code, you embed and index images with ColPali’s late-interaction architecture. We also build a light weight image search application with FastAPI.

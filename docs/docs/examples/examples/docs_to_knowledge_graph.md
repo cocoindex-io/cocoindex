@@ -12,8 +12,10 @@ tags: [knowledge-graph, structured-data-extraction]
 
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph"/>
-<YouTubeButton url="https://youtu.be/2KVkpUGRtnk?si=MRalDweWrid-IFje" />
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph" margin="0 0 24px 0" />
+<YouTubeButton url="https://youtu.be/2KVkpUGRtnk?si=MRalDweWrid-IFje" margin="0 0 24px 0" />
+
+![Knowledge Graph for Docs](/img/examples/docs_to_knowledge_graph/cover.png)
 
 ## Overview
 [CocoIndex](https://github.com/cocoindex-io/cocoindex) makes it easy to build and maintain knowledge graphs with continuous source updates. In this tutorial, we will use LLM to extract relationships between the concepts in each document, and generate two kinds of relationships:

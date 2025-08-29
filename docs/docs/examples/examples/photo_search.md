@@ -12,7 +12,9 @@ tags: [vector-index, multi-modal]
 
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/face_recognition"/>
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/face_recognition" margin="0 0 24px 0" />
+
+![Photo Search](/img/examples/photo_search/cover.png)
 
 ## Overview
 We’ll walk through a comprehensive example of building a scalable face recognition pipeline. We’ll 

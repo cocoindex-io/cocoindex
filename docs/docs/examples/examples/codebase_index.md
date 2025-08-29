@@ -12,23 +12,23 @@ tags: [vector-index, codebase]
 
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/code_embedding"/>
-<YouTubeButton url="https://youtu.be/G3WstvhHO24?si=ndYfM0XRs03_hVPR" />
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/code_embedding" margin="0 0 24px 0" />
+<YouTubeButton url="https://youtu.be/G3WstvhHO24?si=ndYfM0XRs03_hVPR" margin="0 0 24px 0" />
+
+![Codebase Index](/img/examples/codebase_index/cover.png)
 
 ## Overview
 In this tutorial, we will build codebase index. [CocoIndex](https://github.com/cocoindex-io/cocoindex) provides built-in support for codebase chunking, with native Tree-sitter support. It works with large codebases, and can be updated in near real-time with incremental processing - only reprocess what's changed. 
 
 ## Use Cases
-A wide range of applications can be built with an effective codebase index that is always up-to-date. Some examples include:
-
-![Use case illustration](/img/examples/codebase_index/usecase.png)
+A wide range of applications can be built with an effective codebase index that is always up-to-date.
 
 - Semantic code context for AI coding agents like Claude, Codex, Gemini CLI.
 - MCP for code editors such as Cursor, Windsurf, and VSCode.
 - Context-aware code search applications—semantic code search, natural language code retrieval.
 - Context for code review agents—AI code review, automated code analysis, code quality checks, pull request summarization.
 - Automated code refactoring, large-scale code migration.
-- Enhance SRE workflows: enable rapid root cause analysis, incident response, and change impact assessment by indexing infrastructure-as-code, deployment scripts, and config files for semantic search and lineage tracking.
+- SRE workflows: enable rapid root cause analysis, incident response, and change impact assessment by indexing infrastructure-as-code, deployment scripts, and config files for semantic search and lineage tracking.
 - Automatically generate design documentation from code—keep design docs up-to-date.
 
 ## Flow Overview
@@ -223,3 +223,10 @@ To spin up, it is super easy.
 cocoindex server main.py -ci
 ```
 Follow the url from the terminal - `https://cocoindex.io/cocoinsight` to access the CocoInsight.
+
+
+## Supported Languages
+
+SplitRecursively has native support for all major programming languages.
+
+<DocumentationButton url="https://cocoindex.io/docs/ops/functions#supported-languages" text="Supported Languages" margin="0 0 16px 0" />
