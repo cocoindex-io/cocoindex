@@ -70,34 +70,21 @@ with data_scope["documents"].row() as doc:
 ### Embed each chunk 
 
 ```python
-@cocoindex.transform_flow()
-def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
-    """
-    Embed the text using a SentenceTransformer model.
-    This is a shared logic between indexing and querying, so extract it as a function.
-    """
-    return text.transform(
+with doc["chunks"].row() as chunk:
+    chunk["embedding"] = chunk["text"].transform(
         cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"))
+            model="sentence-transformers/all-MiniLM-L6-v2"
+        )
+    ) 
+    doc_embeddings.collect(filename=doc["filename"], location=chunk["location"],
+                            text=chunk["text"], embedding=chunk["embedding"])
 ```
-![Embedding](/img/examples/simple_vector_index/embed.png)
-
-This code defines a transformation function that converts text into vector embeddings using the SentenceTransformer model.
-`@cocoindex.transform_flow()` is needed to share the transformation across indexing and query.
-This decorator marks this as a reusable transformation flow that can be called on specific input data from user code using `eval()`, as shown in the search function below. 
 
 The `MiniLM-L6-v2` model is a good balance of speed and quality for text embeddings, though you can swap in other SentenceTransformer models as needed.
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/functions#sentencetransformerembed" text="SentenceTransformerEmbed" margin="0 0 16px 0" />
- 
-Plug in the `text_to_embedding` function and collect the embeddings.
 
-```python
-with doc["chunks"].row() as chunk:
-    chunk["embedding"] = text_to_embedding(chunk["text"])
-    doc_embeddings.collect(filename=doc["filename"], location=chunk["location"],
-                            text=chunk["text"], embedding=chunk["embedding"])
-```
+![Embedding](/img/examples/simple_vector_index/embed.png)
 
 ## Export the embeddings
 
@@ -118,9 +105,31 @@ CocoIndex supports other vector databases as well, with 1-line switch.
 
 ## Query the index
 
+### Define a shared flow for both indexing and querying
+
+```python
+@cocoindex.transform_flow()
+def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
+    """
+    Embed the text using a SentenceTransformer model.
+    This is a shared logic between indexing and querying, so extract it as a function.
+    """
+    return text.transform(
+        cocoindex.functions.SentenceTransformerEmbed(
+            model="sentence-transformers/all-MiniLM-L6-v2"))
+```
+
+This code defines a transformation function that converts text into vector embeddings using the SentenceTransformer model.
+`@cocoindex.transform_flow()` is needed to share the transformation across indexing and query.
+
+This decorator marks this as a reusable transformation flow that can be called on specific input data from user code using `eval()`, as shown in the search function below. 
+
+### Write query
+
 CocoIndex doesn't provide additional query interface at the moment. We can write SQL or rely on the query engine by the target storage, if any.
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/targets#postgres" text="Postgres" margin="0 0 16px 0" />
+
 
 ```python
 def search(pool: ConnectionPool, query: str, top_k: int = 5):
