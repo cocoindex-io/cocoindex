@@ -165,6 +165,19 @@ if __name__ == "__main__":
     _main()
 ```
 
+In the function above, most parts are standard query logic - you can use any libraries you like.
+There're two CocoIndex-specific logic:
+
+1.  Get the table name from the export target in the `text_embedding_flow` above.
+    Since the table name for the `Postgres` target is not explicitly specified in the `export()` call,
+    CocoIndex uses a default name.
+    `cocoindex.utils.get_target_default_name()` is a utility function to get the default table name for this case.
+
+2.  Evaluate the transform flow defined above with the input query, to get the embedding.
+    It's done by the `eval()` method of the transform flow `text_to_embedding`.
+    The return type of this method is `NDArray[np.float32]` as declared in the `text_to_embedding()` function (`cocoindex.DataSlice[NDArray[np.float32]]`).
+
+
 
 ## Time to have fun!
 - Run the following command to setup and update the index.
