@@ -22,7 +22,6 @@ We try to keep it minimalistic and focus on the gist of the indexing flow.
 
 
 ## Setup
-
 1.  Install CocoIndex:
 
     ```bash
@@ -31,31 +30,34 @@ We try to keep it minimalistic and focus on the gist of the indexing flow.
 
 2.  [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
 
-3.  Open the terminal and create a new directory for your project:
+3.  Create a new directory for your project:
 
     ```bash
     mkdir cocoindex-quickstart
     cd cocoindex-quickstart
     ```
+
 4.  Place input files in a directory `markdown_files`. You may download from [markdown_files.zip](markdown_files.zip).
 
-5.  Create a new file `quickstart.py` and import the `cocoindex` library:
 
-    ```python title="quickstart.py"
-    import cocoindex
-    ```
+## Create `main.py` 
+
+Create a new file `main.py` and import the `cocoindex` library:
+
+```python title="main.py"
+import cocoindex
+```
 
 ## Add Source
 
 ```python
 @cocoindex.flow_def(name="TextEmbedding")
 def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-    """
-    Define an example flow that embeds text into a vector database.
-    """
+    # add source
     data_scope["documents"] = flow_builder.add_source(
         cocoindex.sources.LocalFile(path="markdown_files"))
 
+    # add data collector
     doc_embeddings = data_scope.add_collector()
 ```
 
@@ -63,9 +65,9 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Source" />
 
-## Process each file and collect the embeddings
+## Process each document and collect the embeddings
 
-### Chunk the file
+### Chunk each document
 
 ```python
 with data_scope["documents"].row() as doc:
@@ -74,7 +76,7 @@ with data_scope["documents"].row() as doc:
         language="markdown", chunk_size=2000, chunk_overlap=500)
 ```
 
-We extend a new field `"chunks"` to each row by *transforming* the `"content"` field using `SplitRecursively`. The output of the `SplitRecursively` is also a KTable representing each chunk of the document.
+We extend a new field `chunks` to each row by *transforming* the `content` field using `SplitRecursively`. The output of the `SplitRecursively` is a KTable representing each chunk of the document.
 
 ![Chunking](/img/examples/simple_vector_index/chunk.png)
 
@@ -84,37 +86,29 @@ We extend a new field `"chunks"` to each row by *transforming* the `"content"` f
 ### Embed each chunk and collect the embeddings
 
 ```python
-@cocoindex.transform_flow()
-def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[list[float]]:
-    """
-    Embed the text using a SentenceTransformer model.
-    This is a shared logic between indexing and querying, so extract it as a function.
-    """
-    return text.transform(
+with doc["chunks"].row() as chunk:
+    # embed 
+    chunk["embedding"] = chunk["text"].transform(
         cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"))
+            model="sentence-transformers/all-MiniLM-L6-v2"
+        )
+    )
+
+    # collect
+    doc_embeddings.collect(
+        filename=doc["filename"],
+        location=chunk["location"],
+        text=chunk["text"],
+        embedding=chunk["embedding"],
+    )
 ```
 
-This code defines a transformation function that converts text into vector embeddings using the SentenceTransformer model.
-`@cocoindex.transform_flow()` is needed to share the transformation across indexing and query.
+This code embeds each chunk using the SentenceTransformer model and collects the results.
+![Embedding](/img/examples/simple_vector_index/embed.png)
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/functions#sentencetransformerembed" text="SentenceTransformerEmbed" margin="0 0 16px 0" />
  
-Plug in the `text_to_embedding` function and collect the embeddings.
-
-```python
-with doc["chunks"].row() as chunk:
-    chunk["embedding"] = text_to_embedding(chunk["text"])
-    doc_embeddings.collect(filename=doc["filename"], location=chunk["location"],
-                            text=chunk["text"], embedding=chunk["embedding"])
-```
-
-![Embedding](/img/examples/simple_vector_index/embed.png)
-
-
-## Export the embeddings
-
-Export the embeddings to a table in Postgres.
+## Export the embeddings to Postgres
 
 ```python
 doc_embeddings.export(
@@ -124,24 +118,29 @@ doc_embeddings.export(
     vector_indexes=[
         cocoindex.VectorIndexDef(
             field_name="embedding",
-            metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
+            metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+        )
+    ],
+)
 ```
 
 CocoIndex supports other vector databases as well, with 1-line switch.
+
 <DocumentationButton url="https://cocoindex.io/docs/ops/targets" text="Targets" />
+
 
 ## Run the indexing pipeline
 
-Specify the database URL by environment variable:
+### Specify the database URL by environment variable:
 
 ```bash
 export COCOINDEX_DATABASE_URL="postgresql://cocoindex:cocoindex@localhost:5432/cocoindex"
 ```
 
-Now we're ready to build the index:
+### Build the index:
 
 ```bash
-cocoindex update --setup quickstart.py
+cocoindex update --setup main.py
 ```
 
 CocoIndex will run for a few seconds and populate the target table with data as declared by the flow. It will output the following statistics:
@@ -156,7 +155,6 @@ That's it for the main indexing flow.
 ## End to end: Query the index (Optional)
 
 If you want to build a end to end query flow that also searches the index, you can follow the [simple_vector_index](https://cocoindex.io/docs/examples/simple_vector_index#query-the-index) example.
-
 
 
 ## Next Steps
