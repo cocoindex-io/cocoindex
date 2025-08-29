@@ -2,58 +2,6 @@ import cocoindex
 import os
 
 
-@cocoindex.flow_def(name="PostgresMessageIndexing")
-def postgres_message_indexing_flow(
-    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-) -> None:
-    """
-    Define a flow that reads data from a PostgreSQL table, generates embeddings,
-    and stores them in another PostgreSQL table with pgvector.
-    """
-
-    data_scope["messages"] = flow_builder.add_source(
-        cocoindex.sources.Postgres(
-            table_name="source_messages",
-            # Optional. Use the default CocoIndex database if not specified.
-            database=cocoindex.add_transient_auth_entry(
-                cocoindex.sources.DatabaseConnectionSpec(
-                    url=os.getenv("SOURCE_DATABASE_URL"),
-                )
-            ),
-            # Optional.
-            ordinal_column="created_at",
-        )
-    )
-
-    indexed_messages = data_scope.add_collector()
-    with data_scope["messages"].row() as message_row:
-        # Use the indexing column for embedding generation
-        message_row["embedding"] = message_row["message"].transform(
-            cocoindex.functions.SentenceTransformerEmbed(
-                model="sentence-transformers/all-MiniLM-L6-v2"
-            )
-        )
-        # Collect the data - include key columns and content
-        indexed_messages.collect(
-            id=message_row["id"],
-            author=message_row["author"],
-            message=message_row["message"],
-            embedding=message_row["embedding"],
-        )
-
-    indexed_messages.export(
-        "output",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["id"],
-        vector_indexes=[
-            cocoindex.VectorIndexDef(
-                field_name="embedding",
-                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-            )
-        ],
-    )
-
-
 @cocoindex.op.function()
 def calculate_total_value(
     price: float,
@@ -76,7 +24,7 @@ def postgres_product_indexing_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
     """
-    Define a flow that reads data from a PostgreSQL table, generates embeddings,
+    Define a flow that reads product data from a PostgreSQL table, generates embeddings,
     and stores them in another PostgreSQL table with pgvector.
     """
     data_scope["products"] = flow_builder.add_source(

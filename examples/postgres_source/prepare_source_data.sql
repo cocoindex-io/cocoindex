@@ -1,38 +1,7 @@
 -- Usage: run with psql from your shell, for example:
 -- $ psql "postgres://cocoindex:cocoindex@localhost/cocoindex" -f ./prepare_source_data.sql
 -- ========================================
--- Simple schema: source_messages (single primary key)
--- ========================================
-DROP TABLE IF EXISTS source_messages CASCADE;
-CREATE TABLE source_messages (
-    id uuid NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
-    author text NOT NULL,
-    message text NOT NULL,
-    created_at timestamp DEFAULT CURRENT_TIMESTAMP
-);
-INSERT INTO source_messages (author, message)
-VALUES (
-        'Jane Smith',
-        'Hello world! This is a test message.'
-    ),
-    (
-        'John Doe',
-        'PostgreSQL source integration is working great!'
-    ),
-    (
-        'Jane Smith',
-        'CocoIndex makes database processing so much easier.'
-    ),
-    (
-        'John Doe',
-        'Embeddings and vector search are powerful tools.'
-    ),
-    (
-        'John Doe',
-        'Natural language processing meets database technology.'
-    ) ON CONFLICT DO NOTHING;
--- ========================================
--- Multiple schema: source_products (composite primary key)
+-- Product schema: source_products (composite primary key)
 -- ========================================
 DROP TABLE IF EXISTS source_products CASCADE;
 CREATE TABLE source_products (

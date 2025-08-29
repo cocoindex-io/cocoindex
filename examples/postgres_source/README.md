@@ -3,14 +3,13 @@
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
 This example demonstrates how to use Postgres tables as the source for CocoIndex.
-It reads structured data from existing PostgreSQL tables, performs calculations, generates embeddings, and stores them in a separate CocoIndex table.
+It reads structured product data from existing PostgreSQL tables, performs calculations, generates embeddings, and stores them in a separate CocoIndex table.
 
 We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
-This example contains two flows:
+This example contains one flow:
 
-1. `postgres_message_indexing_flow`: Read from a simpler table `source_messages` (single primary key), and generate embeddings for the `message` column. 
-2. `postgres_product_indexing_flow`: Read from a more complex table `source_products` (composite primary key), compute additional fields and generates embeddings.
+`postgres_product_indexing_flow`: Read from a table `source_products` (composite primary key), compute additional fields like total value and full description, then generate embeddings for semantic search.
 
 
 ## Prerequisites
@@ -25,7 +24,7 @@ Before running the example, you need to:
 
 2.  Follow the [CocoIndex PostgreSQL setup guide](https://cocoindex.io/docs/getting_started/quickstart) to install and configure PostgreSQL with pgvector extension.
 
-3.  Create source tables `source_messages` and `source_products` with sample data:
+3.  Create source table `source_products` with sample data:
 
     ```bash
     $ psql "postgres://cocoindex:cocoindex@localhost/cocoindex" -f ./prepare_source_data.sql
