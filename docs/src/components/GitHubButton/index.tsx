@@ -35,7 +35,7 @@ type GitHubButtonProps = {
     margin?: string;
 };
 
-function GitHubButton({ url, margin }: GitHubButtonProps): ReactNode {
+function GitHubButton({ url, margin = '0' }: GitHubButtonProps): ReactNode {
     return (
         <Button href={url} margin={margin}>
             <FaGithub style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
@@ -49,7 +49,7 @@ type YouTubeButtonProps = {
     margin?: string;
 };
 
-function YouTubeButton({ url, margin }: YouTubeButtonProps): ReactNode {
+function YouTubeButton({ url, margin = '0' }: YouTubeButtonProps): ReactNode {
     return (
         <Button href={url} margin={margin}>
             <FaYoutube style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />

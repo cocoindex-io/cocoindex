@@ -115,7 +115,7 @@ const config: Config = {
         {
           label: 'Documentation',
           type: 'doc',
-          docId: 'getting_started/overview',
+          docId: 'getting_started/quickstart',
           position: 'left',
         },
         {
