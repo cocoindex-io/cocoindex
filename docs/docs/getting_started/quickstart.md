@@ -140,17 +140,17 @@ CocoIndex supports other vector databases as well, with 1-line switch.
 
 ## Run the indexing pipeline
 
-### Specify the database URL by environment variable:
+- Specify the database URL by environment variable:
 
-```bash
-export COCOINDEX_DATABASE_URL="postgresql://cocoindex:cocoindex@localhost:5432/cocoindex"
-```
+    ```bash
+    export COCOINDEX_DATABASE_URL="postgresql://cocoindex:cocoindex@localhost:5432/cocoindex"
+    ```
 
-### Build the index:
+- Build the index:
 
-```bash
-cocoindex update --setup main.py
-```
+    ```bash
+    cocoindex update --setup main.py
+    ```
 
 CocoIndex will run for a few seconds and populate the target table with data as declared by the flow. It will output the following statistics:
 
