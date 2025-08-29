@@ -40,40 +40,49 @@ We try to keep it minimalistic and focus on the gist of the indexing flow.
 4.  Place input files in a directory `markdown_files`. You may download from [markdown_files.zip](markdown_files.zip).
 
 
-## Create `main.py` 
+## Define a flow
 
-Create a new file `main.py` and import the `cocoindex` library:
+Create a new file `main.py` and define a flow.
 
 ```python title="main.py"
 import cocoindex
-```
 
-## Add Source
-
-```python title="main.py"
 @cocoindex.flow_def(name="TextEmbedding")
 def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-    # add source
-    data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="markdown_files"))
+    # ... See subsections below for function body
+```
 
-    # add data collector
-    doc_embeddings = data_scope.add_collector()
+###  Add Source and Collector
+
+```python title="main.py"
+# add source
+data_scope["documents"] = flow_builder.add_source(
+    cocoindex.sources.LocalFile(path="markdown_files"))
+
+# add data collector
+doc_embeddings = data_scope.add_collector()
 ```
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`)
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Source" />
 
-## Process each document and collect the embeddings
+### Process each document 
 
-### Chunk each document
+With CocoIndex, it is easy to process nested data structures.
 
 ```python title="main.py"
 with data_scope["documents"].row() as doc:
-    doc["chunks"] = doc["content"].transform(
-        cocoindex.functions.SplitRecursively(),
-        language="markdown", chunk_size=2000, chunk_overlap=500)
+    # ... See subsections below for function body
+```
+
+
+#### Chunk each document
+
+```python title="main.py"
+doc["chunks"] = doc["content"].transform(
+    cocoindex.functions.SplitRecursively(),
+    language="markdown", chunk_size=2000, chunk_overlap=500)
 ```
 
 We extend a new field `chunks` to each row by *transforming* the `content` field using `SplitRecursively`. The output of the `SplitRecursively` is a KTable representing each chunk of the document.
@@ -83,7 +92,7 @@ We extend a new field `chunks` to each row by *transforming* the `content` field
 <DocumentationButton url="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" />
 
 
-### Embed each chunk and collect the embeddings
+#### Embed each chunk and collect the embeddings
 
 ```python title="main.py"
 with doc["chunks"].row() as chunk:
