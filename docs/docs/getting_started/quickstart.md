@@ -164,4 +164,4 @@ If you want to build a end to end query flow that also searches the index, you c
 Next, you may want to:
 
 *   Learn about [CocoIndex Basics](../core/basics.md).
-*   Learn about other examples in the [examples](https://cocoindex.io/docs/examples) directory.
+*   Explore more of what you can build with CocoIndex in the [examples](https://cocoindex.io/docs/examples) directory. 
