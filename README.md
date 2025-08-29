@@ -55,7 +55,7 @@ CocoIndex makes it effortless to transform data with AI, and keep source data an
 </br>
 
 <p align="center">
-<img width="4187" height="1883" alt="CocoIndex Features" src="https://github.com/user-attachments/assets/6147673f-0daf-4313-a0c7-7c4205ba2e31" />
+<img alt="CocoIndex Features" src="https://cocoindex.io/images/venn2.svg" />
 </p>
 
 </br>
