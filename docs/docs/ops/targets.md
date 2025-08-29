@@ -39,6 +39,13 @@ For all other vector types, we map them to `jsonb` columns.
 
 :::
 
+:::info U+0000 (NUL) characters in strings
+
+U+0000 (NUL) is a valid character in Unicode, but Postgres has a limitation that strings (including `text`-like types and strings in `jsonb`) cannot contain them.
+CocoIndex automatically strips U+0000 (NUL) characters from strings before exporting to Postgres. For example, if you have a string `"Hello\0World"`, it will be exported as `"HelloWorld"`.
+
+:::
+
 #### Spec
 
 The spec takes the following fields:

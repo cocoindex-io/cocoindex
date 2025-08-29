@@ -43,7 +43,7 @@ fn bind_value_field<'arg>(
                 builder.push_bind(&**v);
             }
             BasicValue::Str(v) => {
-                builder.push_bind(&**v);
+                builder.push_bind(utils::str_sanitize::ZeroCodeStrippedEncode(v.as_ref()));
             }
             BasicValue::Bool(v) => {
                 builder.push_bind(v);
@@ -82,7 +82,9 @@ fn bind_value_field<'arg>(
                 builder.push_bind(v);
             }
             BasicValue::Json(v) => {
-                builder.push_bind(sqlx::types::Json(&**v));
+                builder.push_bind(sqlx::types::Json(
+                    utils::str_sanitize::ZeroCodeStrippedSerialize(&**v),
+                ));
             }
             BasicValue::Vector(v) => match &field_schema.value_type.typ {
                 ValueType::Basic(BasicValueType::Vector(vs)) if convertible_to_pgvector(vs) => {
@@ -104,20 +106,24 @@ fn bind_value_field<'arg>(
                 }
             },
             BasicValue::UnionVariant { .. } => {
-                builder.push_bind(sqlx::types::Json(TypedValue {
-                    t: &field_schema.value_type.typ,
-                    v: value,
-                }));
+                builder.push_bind(sqlx::types::Json(
+                    utils::str_sanitize::ZeroCodeStrippedSerialize(TypedValue {
+                        t: &field_schema.value_type.typ,
+                        v: value,
+                    }),
+                ));
             }
         },
         Value::Null => {
             builder.push("NULL");
         }
         v => {
-            builder.push_bind(sqlx::types::Json(TypedValue {
-                t: &field_schema.value_type.typ,
-                v,
-            }));
+            builder.push_bind(sqlx::types::Json(
+                utils::str_sanitize::ZeroCodeStrippedSerialize(TypedValue {
+                    t: &field_schema.value_type.typ,
+                    v,
+                }),
+            ));
         }
     };
     Ok(())
