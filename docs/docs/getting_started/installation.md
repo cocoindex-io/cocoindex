@@ -3,7 +3,14 @@ title: Installation
 description: Setup the CocoIndex environment in 0-3 min
 ---
 
-## 🐍 Python and Pip
+## 🖥️ System Requirements
+CocoIndex is supported on the following operating systems:
+
+- **macOS**: 10.12+ on x86_64, 11.0+ on arm64
+- **Linux**: x86_64 or arm64, glibc 2.28+ (e.g., Debian 10+, Ubuntu 18.10+, Fedora 29+, CentOS/RHEL 8+)
+- **Windows**: 10+ on x86_64
+
+## 🐍 Install Python and Pip
 To follow the steps in this guide, you'll need:
 
 1. Install [Python](https://wiki.python.org/moin/BeginnersGuide/Download/). We support Python 3.11 to 3.13.
