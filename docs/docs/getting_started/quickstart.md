@@ -8,8 +8,7 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../src/comp
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex-quickstart" margin="0 0 16px 0"/>
 <YouTubeButton url="https://www.youtube.com/watch?v=gv5R8nOXsWU" margin="0 0 16px 0"/>
 
-In this tutorial, we will build index with text embeddings and query it with natural language. 
-We try to keep it minimalistic and focus on the gist of the indexing flow.
+In this tutorial, we’ll build an index with text embeddings, keeping it minimal and focused on the core indexing flow.
 
 
 ## Flow Overview
