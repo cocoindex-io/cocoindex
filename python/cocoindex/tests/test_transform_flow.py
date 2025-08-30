@@ -166,6 +166,25 @@ class GpuAppendSuffixExecutor:
         return f"{text}{self.spec.suffix}"
 
 
+class GpuAppendSuffixWithAnalyzePrepare(cocoindex.op.FunctionSpec):
+    suffix: str
+
+
+@cocoindex.op.executor_class(gpu=True)
+class GpuAppendSuffixWithAnalyzePrepareExecutor:
+    spec: GpuAppendSuffixWithAnalyzePrepare
+    suffix: str
+
+    def analyze(self) -> Any:
+        return str
+
+    def prepare(self) -> None:
+        self.suffix = self.spec.suffix
+
+    def __call__(self, text: str) -> str:
+        return f"{text}{self.suffix}"
+
+
 def test_gpu_function() -> None:
     @cocoindex.transform_flow()
     def transform_flow(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[str]:
@@ -173,4 +192,16 @@ def test_gpu_function() -> None:
 
     result = transform_flow.eval("Hello")
     expected = "Hello world!"
+    assert result == expected, f"Expected {expected}, got {result}"
+
+    @cocoindex.transform_flow()
+    def transform_flow_with_analyze_prepare(
+        text: cocoindex.DataSlice[str],
+    ) -> cocoindex.DataSlice[str]:
+        return text.transform(gpu_append_world).transform(
+            GpuAppendSuffixWithAnalyzePrepare(suffix="!!")
+        )
+
+    result = transform_flow_with_analyze_prepare.eval("Hello")
+    expected = "Hello world!!"
     assert result == expected, f"Expected {expected}, got {result}"
