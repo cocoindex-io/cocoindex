@@ -72,7 +72,7 @@ jobs:
         with:
           python-version: ${{ matrix.py }}
       - run: python -V
-      - run: pip install --no-index --find-links=./ cocoindex
+      - run: pip install --find-links=./ cocoindex
       - run: python -c "import cocoindex, sys; print('import ok on', sys.version)"
 
 
