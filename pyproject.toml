@@ -18,6 +18,35 @@ dependencies = [
 ]
 license = "Apache-2.0"
 urls = { Homepage = "https://cocoindex.io/" }
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Indexing",
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    "Typing :: Typed",
+]
+keywords = [
+    "indexing",
+    "real-time",
+    "incremental",
+    "pipeline",
+    "search",
+    "ai",
+    "etl",
+    "rag",
+    "dataflow",
+    "context-engineering",
+]
 
 [project.scripts]
 cocoindex = "cocoindex.cli:cli"
