@@ -1,5 +1,5 @@
 use crate::{
-    execution::{source_indexer::ProcessSourceKeyInput, stats::UpdateStats},
+    execution::{source_indexer::ProcessSourceRowInput, stats::UpdateStats},
     prelude::*,
 };
 
@@ -192,18 +192,18 @@ impl SourceUpdateTask {
                                         .concurrency_controller
                                         .acquire(concur_control::BYTES_UNKNOWN_YET)
                                         .await?;
-                                    tokio::spawn(source_context.clone().process_source_key(
-                                        change.key,
+                                    tokio::spawn(source_context.clone().process_source_row(
+                                        ProcessSourceRowInput {
+                                            key: change.key,
+                                            key_aux_info: Some(change.key_aux_info),
+                                            data: change.data,
+                                        },
                                         update_stats.clone(),
                                         concur_permit,
                                         Some(move || async move {
                                             SharedAckFn::ack(&shared_ack_fn).await
                                         }),
                                         pool.clone(),
-                                        ProcessSourceKeyInput {
-                                            key_aux_info: Some(change.key_aux_info),
-                                            data: change.data,
-                                        },
                                     ));
                                 }
                             }

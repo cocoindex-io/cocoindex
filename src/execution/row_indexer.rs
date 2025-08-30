@@ -16,7 +16,7 @@ use super::stats;
 use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
 use crate::ops::interface::{
-    ExportTargetMutation, ExportTargetUpsertEntry, Ordinal, SourceExecutorGetOptions,
+    ExportTargetMutation, ExportTargetUpsertEntry, Ordinal, SourceExecutorReadOptions,
 };
 use crate::utils::db::WriteAction;
 use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
@@ -841,7 +841,7 @@ pub async fn evaluate_source_entry_with_memory(
         .get_value(
             src_eval_ctx.key,
             key_aux_info,
-            &SourceExecutorGetOptions {
+            &SourceExecutorReadOptions {
                 include_value: true,
                 include_ordinal: false,
                 include_content_version_fp: false,

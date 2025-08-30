@@ -48,13 +48,14 @@ impl<TZ: TimeZone> TryFrom<chrono::DateTime<TZ>> for Ordinal {
     }
 }
 
-pub struct PartialSourceRowMetadata {
-    pub key: FullKeyValue,
-    /// Auxiliary information for the source row, to be used when reading the content.
-    /// e.g. it can be used to uniquely identify version of the row.
-    /// Use serde_json::Value::Null to represent no auxiliary information.
-    pub key_aux_info: serde_json::Value,
+#[derive(Debug)]
+pub enum SourceValue {
+    Existence(FieldValues),
+    NonExistence,
+}
 
+#[derive(Debug, Default)]
+pub struct PartialSourceRowData {
     pub ordinal: Option<Ordinal>,
 
     /// A content version fingerprint can be anything that changes when the content of the row changes.
@@ -64,12 +65,18 @@ pub struct PartialSourceRowMetadata {
     /// It's optional. The source shouldn't use generic way to compute it, e.g. computing a hash of the content.
     /// The framework will do so. If there's no fast way to get it from the source, leave it as `None`.
     pub content_version_fp: Option<Vec<u8>>,
+
+    pub value: Option<SourceValue>,
 }
 
-#[derive(Debug)]
-pub enum SourceValue {
-    Existence(FieldValues),
-    NonExistence,
+pub struct PartialSourceRow {
+    pub key: FullKeyValue,
+    /// Auxiliary information for the source row, to be used when reading the content.
+    /// e.g. it can be used to uniquely identify version of the row.
+    /// Use serde_json::Value::Null to represent no auxiliary information.
+    pub key_aux_info: serde_json::Value,
+
+    pub data: PartialSourceRowData,
 }
 
 impl SourceValue {
@@ -108,23 +115,22 @@ pub struct SourceChangeMessage {
 }
 
 #[derive(Debug, Default)]
-pub struct SourceExecutorListOptions {
+pub struct SourceExecutorReadOptions {
+    /// When set to true, the implementation must return a non-None `ordinal`.
     pub include_ordinal: bool,
-    pub include_content_version_fp: bool,
-}
 
-#[derive(Debug, Default)]
-pub struct SourceExecutorGetOptions {
-    pub include_ordinal: bool,
+    /// When set to true, the implementation has the discretion to decide whether or not to return a non-None `content_version_fp`.
+    /// The guideline is to return it only if it's very efficient to get it.
+    /// If it's returned in `list()`, it must be returned in `get_value()`.
+    pub include_content_version_fp: bool,
+
+    /// For get calls, when set to true, the implementation must return a non-None `value`.
+    ///
+    /// For list calls, when set to true, the implementation has the discretion to decide whether or not to include it.
+    /// The guideline is to only include it if a single "list() with content" call is significantly more efficient than "list() without content + series of get_value()" calls.
+    ///
+    /// Even if `list()` already returns `value` when it's true, `get_value()` must still return `value` when it's true.
     pub include_value: bool,
-    pub include_content_version_fp: bool,
-}
-
-#[derive(Debug, Default)]
-pub struct PartialSourceRowData {
-    pub value: Option<SourceValue>,
-    pub ordinal: Option<Ordinal>,
-    pub content_version_fp: Option<Vec<u8>>,
 }
 
 #[async_trait]
@@ -132,15 +138,15 @@ pub trait SourceExecutor: Send + Sync {
     /// Get the list of keys for the source.
     async fn list(
         &self,
-        options: &SourceExecutorListOptions,
-    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRowMetadata>>>>;
+        options: &SourceExecutorReadOptions,
+    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRow>>>>;
 
     // Get the value for the given key.
     async fn get_value(
         &self,
         key: &FullKeyValue,
         key_aux_info: &serde_json::Value,
-        options: &SourceExecutorGetOptions,
+        options: &SourceExecutorReadOptions,
     ) -> Result<PartialSourceRowData>;
 
     async fn change_stream(

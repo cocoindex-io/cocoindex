@@ -63,8 +63,8 @@ fn datetime_to_ordinal(dt: &aws_sdk_s3::primitives::DateTime) -> Ordinal {
 impl SourceExecutor for Executor {
     async fn list(
         &self,
-        _options: &SourceExecutorListOptions,
-    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRowMetadata>>>> {
+        _options: &SourceExecutorReadOptions,
+    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRow>>>> {
         let stream = try_stream! {
             let mut continuation_token = None;
             loop {
@@ -85,11 +85,14 @@ impl SourceExecutor for Executor {
                             // Only include files (not folders)
                             if key.ends_with('/') { continue; }
                             if self.pattern_matcher.is_file_included(key) {
-                                batch.push(PartialSourceRowMetadata {
+                                batch.push(PartialSourceRow {
                                     key: FullKeyValue::from_single_part(key.to_string()),
                                     key_aux_info: serde_json::Value::Null,
-                                    ordinal: obj.last_modified().map(datetime_to_ordinal),
-                                    content_version_fp: None,
+                                    data: PartialSourceRowData {
+                                        ordinal: obj.last_modified().map(datetime_to_ordinal),
+                                        content_version_fp: None,
+                                        value: None,
+                                    },
                                 });
                             }
                         }
@@ -112,7 +115,7 @@ impl SourceExecutor for Executor {
         &self,
         key: &FullKeyValue,
         _key_aux_info: &serde_json::Value,
-        options: &SourceExecutorGetOptions,
+        options: &SourceExecutorReadOptions,
     ) -> Result<PartialSourceRowData> {
         let key_str = key.single_part()?.str_value()?;
         if !self.pattern_matcher.is_file_included(key_str) {

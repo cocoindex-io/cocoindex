@@ -12,7 +12,7 @@ use super::memoization::EvaluationMemoryOptions;
 use super::row_indexer;
 use crate::base::{schema, value};
 use crate::builder::plan::{AnalyzedImportOp, ExecutionPlan};
-use crate::ops::interface::SourceExecutorListOptions;
+use crate::ops::interface::SourceExecutorReadOptions;
 use crate::utils::yaml_ser::YamlSerializer;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -193,9 +193,10 @@ impl<'a> Dumper<'a> {
 
         let mut rows_stream = import_op
             .executor
-            .list(&SourceExecutorListOptions {
+            .list(&SourceExecutorReadOptions {
                 include_ordinal: false,
                 include_content_version_fp: false,
+                include_value: false,
             })
             .await?;
         while let Some(rows) = rows_stream.next().await {

@@ -306,8 +306,8 @@ fn value_to_ordinal(value: &Value) -> Ordinal {
 impl SourceExecutor for Executor {
     async fn list(
         &self,
-        options: &SourceExecutorListOptions,
-    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRowMetadata>>>> {
+        options: &SourceExecutorReadOptions,
+    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRow>>>> {
         let stream = try_stream! {
             // Build query to select primary key columns
             let pk_columns: Vec<String> = self
@@ -367,11 +367,14 @@ impl SourceExecutor for Executor {
                     None
                 };
 
-                yield vec![PartialSourceRowMetadata {
+                yield vec![PartialSourceRow {
                     key,
                     key_aux_info: serde_json::Value::Null,
-                    ordinal,
-                    content_version_fp: None,
+                    data: PartialSourceRowData {
+                        ordinal,
+                        content_version_fp: None,
+                        value: None,
+                    },
                 }];
             }
         };
@@ -382,7 +385,7 @@ impl SourceExecutor for Executor {
         &self,
         key: &FullKeyValue,
         _key_aux_info: &serde_json::Value,
-        options: &SourceExecutorGetOptions,
+        options: &SourceExecutorReadOptions,
     ) -> Result<PartialSourceRowData> {
         let mut qb = sqlx::QueryBuilder::new("SELECT ");
         let mut selected_columns: Vec<String> = Vec::new();

@@ -38,7 +38,7 @@ pub async fn get_source_row_indexing_status(
     let current_fut = src_eval_ctx.import_op.executor.get_value(
         src_eval_ctx.key,
         key_aux_info,
-        &interface::SourceExecutorGetOptions {
+        &interface::SourceExecutorReadOptions {
             include_value: false,
             include_ordinal: true,
             include_content_version_fp: false,
