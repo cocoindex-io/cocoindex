@@ -98,7 +98,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [create-versioned-toml, build, sdist]
+    needs: [create-versioned-toml, build, test-abi3, sdist]
     permissions:
       # Use to sign the release artifacts
       id-token: write
