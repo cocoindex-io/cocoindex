@@ -5,8 +5,8 @@ description: Get started with CocoIndex in 10 minutes
 
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex-quickstart" margin="0 0 16px 0"/>
-<YouTubeButton url="https://www.youtube.com/watch?v=gv5R8nOXsWU" margin="0 0 16px 0"/>
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex-quickstart" margin="0 0 24px 0"/>
+<YouTubeButton url="https://www.youtube.com/watch?v=gv5R8nOXsWU" margin="0 0 24px 0"/>
 
 In this tutorial, we’ll build an index with text embeddings, keeping it minimal and focused on the core indexing flow.
 
@@ -66,6 +66,8 @@ doc_embeddings = data_scope.add_collector()
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Source" />
 
+<DocumentationButton url="https://cocoindex.io/docs/core/flow_def#data-collector" text="Data Collector" />
+
 ### Process each document 
 
 With CocoIndex, it is easy to process nested data structures.
@@ -86,9 +88,10 @@ doc["chunks"] = doc["content"].transform(
 
 We extend a new field `chunks` to each row by *transforming* the `content` field using `SplitRecursively`. The output of the `SplitRecursively` is a KTable representing each chunk of the document.
 
+<DocumentationButton url="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" margin="0 0 16px 0" />
+
 ![Chunking](/img/examples/simple_vector_index/chunk.png)
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" />
 
 
 #### Embed each chunk and collect the embeddings
@@ -111,12 +114,13 @@ with doc["chunks"].row() as chunk:
     )
 ```
 
-This code embeds each chunk using the SentenceTransformer model and collects the results.
+This code embeds each chunk using the SentenceTransformer library and collects the results.
+
 ![Embedding](/img/examples/simple_vector_index/embed.png)
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/functions#sentencetransformerembed" text="SentenceTransformerEmbed" margin="0 0 16px 0" />
  
-## Export the embeddings to Postgres
+### Export the embeddings to Postgres
 
 ```python title="main.py"
 doc_embeddings.export(
