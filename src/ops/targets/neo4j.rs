@@ -145,7 +145,7 @@ fn json_value_to_bolt_value(value: &serde_json::Value) -> Result<BoltType> {
     Ok(bolt_value)
 }
 
-fn key_to_bolt(key: &KeyValue, schema: &schema::ValueType) -> Result<BoltType> {
+fn key_to_bolt(key: &KeyPart, schema: &schema::ValueType) -> Result<BoltType> {
     value_to_bolt(&key.into(), schema)
 }
 
@@ -453,7 +453,7 @@ impl ExportContext {
     fn bind_rel_key_field_params(
         &self,
         query: neo4rs::Query,
-        val: &KeyValue,
+        val: &KeyPart,
     ) -> Result<neo4rs::Query> {
         let mut query = query;
         for (i, val) in val
@@ -532,7 +532,7 @@ impl ExportContext {
 
     fn add_delete_queries(
         &self,
-        delete_key: &value::KeyValue,
+        delete_key: &value::KeyPart,
         queries: &mut Vec<neo4rs::Query>,
     ) -> Result<()> {
         queries

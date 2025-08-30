@@ -82,7 +82,7 @@ impl<'de> Deserialize<'de> for RangeValue {
 
 /// Value of key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
-pub enum KeyValue {
+pub enum KeyPart {
     Bytes(Bytes),
     Str(Arc<str>),
     Bool(bool),
@@ -90,86 +90,86 @@ pub enum KeyValue {
     Range(RangeValue),
     Uuid(uuid::Uuid),
     Date(chrono::NaiveDate),
-    Struct(Vec<KeyValue>),
+    Struct(Vec<KeyPart>),
 }
 
-impl From<Bytes> for KeyValue {
+impl From<Bytes> for KeyPart {
     fn from(value: Bytes) -> Self {
-        KeyValue::Bytes(value)
+        KeyPart::Bytes(value)
     }
 }
 
-impl From<Vec<u8>> for KeyValue {
+impl From<Vec<u8>> for KeyPart {
     fn from(value: Vec<u8>) -> Self {
-        KeyValue::Bytes(Bytes::from(value))
+        KeyPart::Bytes(Bytes::from(value))
     }
 }
 
-impl From<Arc<str>> for KeyValue {
+impl From<Arc<str>> for KeyPart {
     fn from(value: Arc<str>) -> Self {
-        KeyValue::Str(value)
+        KeyPart::Str(value)
     }
 }
 
-impl From<String> for KeyValue {
+impl From<String> for KeyPart {
     fn from(value: String) -> Self {
-        KeyValue::Str(Arc::from(value))
+        KeyPart::Str(Arc::from(value))
     }
 }
 
-impl From<bool> for KeyValue {
+impl From<bool> for KeyPart {
     fn from(value: bool) -> Self {
-        KeyValue::Bool(value)
+        KeyPart::Bool(value)
     }
 }
 
-impl From<i64> for KeyValue {
+impl From<i64> for KeyPart {
     fn from(value: i64) -> Self {
-        KeyValue::Int64(value)
+        KeyPart::Int64(value)
     }
 }
 
-impl From<RangeValue> for KeyValue {
+impl From<RangeValue> for KeyPart {
     fn from(value: RangeValue) -> Self {
-        KeyValue::Range(value)
+        KeyPart::Range(value)
     }
 }
 
-impl From<uuid::Uuid> for KeyValue {
+impl From<uuid::Uuid> for KeyPart {
     fn from(value: uuid::Uuid) -> Self {
-        KeyValue::Uuid(value)
+        KeyPart::Uuid(value)
     }
 }
 
-impl From<chrono::NaiveDate> for KeyValue {
+impl From<chrono::NaiveDate> for KeyPart {
     fn from(value: chrono::NaiveDate) -> Self {
-        KeyValue::Date(value)
+        KeyPart::Date(value)
     }
 }
 
-impl From<Vec<KeyValue>> for KeyValue {
-    fn from(value: Vec<KeyValue>) -> Self {
-        KeyValue::Struct(value)
+impl From<Vec<KeyPart>> for KeyPart {
+    fn from(value: Vec<KeyPart>) -> Self {
+        KeyPart::Struct(value)
     }
 }
 
-impl serde::Serialize for KeyValue {
+impl serde::Serialize for KeyPart {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         Value::from(self.clone()).serialize(serializer)
     }
 }
 
-impl std::fmt::Display for KeyValue {
+impl std::fmt::Display for KeyPart {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            KeyValue::Bytes(v) => write!(f, "{}", BASE64_STANDARD.encode(v)),
-            KeyValue::Str(v) => write!(f, "\"{}\"", v.escape_default()),
-            KeyValue::Bool(v) => write!(f, "{v}"),
-            KeyValue::Int64(v) => write!(f, "{v}"),
-            KeyValue::Range(v) => write!(f, "[{}, {})", v.start, v.end),
-            KeyValue::Uuid(v) => write!(f, "{v}"),
-            KeyValue::Date(v) => write!(f, "{v}"),
-            KeyValue::Struct(v) => {
+            KeyPart::Bytes(v) => write!(f, "{}", BASE64_STANDARD.encode(v)),
+            KeyPart::Str(v) => write!(f, "\"{}\"", v.escape_default()),
+            KeyPart::Bool(v) => write!(f, "{v}"),
+            KeyPart::Int64(v) => write!(f, "{v}"),
+            KeyPart::Range(v) => write!(f, "[{}, {})", v.start, v.end),
+            KeyPart::Uuid(v) => write!(f, "{v}"),
+            KeyPart::Date(v) => write!(f, "{v}"),
+            KeyPart::Struct(v) => {
                 write!(
                     f,
                     "[{}]",
@@ -183,7 +183,7 @@ impl std::fmt::Display for KeyValue {
     }
 }
 
-impl KeyValue {
+impl KeyPart {
     /// For export purpose only for now. Will remove after switching export to using FullKeyValue.
     pub fn from_json_for_export(
         value: serde_json::Value,
@@ -206,7 +206,7 @@ impl KeyValue {
             let mut values = values;
             values.next().ok_or_else(invariance_violation)?.as_key()?
         } else {
-            KeyValue::Struct(values.map(|v| v.as_key()).collect::<Result<Vec<_>>>()?)
+            KeyPart::Struct(values.map(|v| v.as_key()).collect::<Result<Vec<_>>>()?)
         };
         Ok(key)
     }
@@ -215,12 +215,12 @@ impl KeyValue {
     pub fn fields_iter_for_export(
         &self,
         num_fields: usize,
-    ) -> Result<impl Iterator<Item = &KeyValue>> {
+    ) -> Result<impl Iterator<Item = &KeyPart>> {
         let slice = if num_fields == 1 {
             std::slice::from_ref(self)
         } else {
             match self {
-                KeyValue::Struct(v) => v,
+                KeyPart::Struct(v) => v,
                 _ => api_bail!("Invalid key value type"),
             }
         };
@@ -238,29 +238,29 @@ impl KeyValue {
                     .ok_or_else(|| api_error!("Key parts less than expected"))?;
                 match basic_type {
                     BasicValueType::Bytes => {
-                        KeyValue::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
+                        KeyPart::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
                     }
-                    BasicValueType::Str => KeyValue::Str(Arc::from(v)),
-                    BasicValueType::Bool => KeyValue::Bool(v.parse()?),
-                    BasicValueType::Int64 => KeyValue::Int64(v.parse()?),
+                    BasicValueType::Str => KeyPart::Str(Arc::from(v)),
+                    BasicValueType::Bool => KeyPart::Bool(v.parse()?),
+                    BasicValueType::Int64 => KeyPart::Int64(v.parse()?),
                     BasicValueType::Range => {
                         let v2 = values_iter
                             .next()
                             .ok_or_else(|| api_error!("Key parts less than expected"))?;
-                        KeyValue::Range(RangeValue {
+                        KeyPart::Range(RangeValue {
                             start: v.parse()?,
                             end: v2.parse()?,
                         })
                     }
-                    BasicValueType::Uuid => KeyValue::Uuid(v.parse()?),
-                    BasicValueType::Date => KeyValue::Date(v.parse()?),
+                    BasicValueType::Uuid => KeyPart::Uuid(v.parse()?),
+                    BasicValueType::Date => KeyPart::Date(v.parse()?),
                     schema => api_bail!("Invalid key type {schema}"),
                 }
             }
-            ValueType::Struct(s) => KeyValue::Struct(
+            ValueType::Struct(s) => KeyPart::Struct(
                 s.fields
                     .iter()
-                    .map(|f| KeyValue::parts_from_str(values_iter, &f.value_type.typ))
+                    .map(|f| KeyPart::parts_from_str(values_iter, &f.value_type.typ))
                     .collect::<Result<Vec<_>>>()?,
             ),
             _ => api_bail!("Invalid key type {schema}"),
@@ -270,17 +270,17 @@ impl KeyValue {
 
     fn parts_to_strs(&self, output: &mut Vec<String>) {
         match self {
-            KeyValue::Bytes(v) => output.push(BASE64_STANDARD.encode(v)),
-            KeyValue::Str(v) => output.push(v.to_string()),
-            KeyValue::Bool(v) => output.push(v.to_string()),
-            KeyValue::Int64(v) => output.push(v.to_string()),
-            KeyValue::Range(v) => {
+            KeyPart::Bytes(v) => output.push(BASE64_STANDARD.encode(v)),
+            KeyPart::Str(v) => output.push(v.to_string()),
+            KeyPart::Bool(v) => output.push(v.to_string()),
+            KeyPart::Int64(v) => output.push(v.to_string()),
+            KeyPart::Range(v) => {
                 output.push(v.start.to_string());
                 output.push(v.end.to_string());
             }
-            KeyValue::Uuid(v) => output.push(v.to_string()),
-            KeyValue::Date(v) => output.push(v.to_string()),
-            KeyValue::Struct(v) => {
+            KeyPart::Uuid(v) => output.push(v.to_string()),
+            KeyPart::Date(v) => output.push(v.to_string()),
+            KeyPart::Struct(v) => {
                 for part in v {
                     part.parts_to_strs(output);
                 }
@@ -305,136 +305,136 @@ impl KeyValue {
 
     pub fn kind_str(&self) -> &'static str {
         match self {
-            KeyValue::Bytes(_) => "bytes",
-            KeyValue::Str(_) => "str",
-            KeyValue::Bool(_) => "bool",
-            KeyValue::Int64(_) => "int64",
-            KeyValue::Range { .. } => "range",
-            KeyValue::Uuid(_) => "uuid",
-            KeyValue::Date(_) => "date",
-            KeyValue::Struct(_) => "struct",
+            KeyPart::Bytes(_) => "bytes",
+            KeyPart::Str(_) => "str",
+            KeyPart::Bool(_) => "bool",
+            KeyPart::Int64(_) => "int64",
+            KeyPart::Range { .. } => "range",
+            KeyPart::Uuid(_) => "uuid",
+            KeyPart::Date(_) => "date",
+            KeyPart::Struct(_) => "struct",
         }
     }
 
     pub fn bytes_value(&self) -> Result<&Bytes> {
         match self {
-            KeyValue::Bytes(v) => Ok(v),
+            KeyPart::Bytes(v) => Ok(v),
             _ => anyhow::bail!("expected bytes value, but got {}", self.kind_str()),
         }
     }
 
     pub fn str_value(&self) -> Result<&Arc<str>> {
         match self {
-            KeyValue::Str(v) => Ok(v),
+            KeyPart::Str(v) => Ok(v),
             _ => anyhow::bail!("expected str value, but got {}", self.kind_str()),
         }
     }
 
     pub fn bool_value(&self) -> Result<bool> {
         match self {
-            KeyValue::Bool(v) => Ok(*v),
+            KeyPart::Bool(v) => Ok(*v),
             _ => anyhow::bail!("expected bool value, but got {}", self.kind_str()),
         }
     }
 
     pub fn int64_value(&self) -> Result<i64> {
         match self {
-            KeyValue::Int64(v) => Ok(*v),
+            KeyPart::Int64(v) => Ok(*v),
             _ => anyhow::bail!("expected int64 value, but got {}", self.kind_str()),
         }
     }
 
     pub fn range_value(&self) -> Result<RangeValue> {
         match self {
-            KeyValue::Range(v) => Ok(*v),
+            KeyPart::Range(v) => Ok(*v),
             _ => anyhow::bail!("expected range value, but got {}", self.kind_str()),
         }
     }
 
     pub fn uuid_value(&self) -> Result<uuid::Uuid> {
         match self {
-            KeyValue::Uuid(v) => Ok(*v),
+            KeyPart::Uuid(v) => Ok(*v),
             _ => anyhow::bail!("expected uuid value, but got {}", self.kind_str()),
         }
     }
 
     pub fn date_value(&self) -> Result<chrono::NaiveDate> {
         match self {
-            KeyValue::Date(v) => Ok(*v),
+            KeyPart::Date(v) => Ok(*v),
             _ => anyhow::bail!("expected date value, but got {}", self.kind_str()),
         }
     }
 
-    pub fn struct_value(&self) -> Result<&Vec<KeyValue>> {
+    pub fn struct_value(&self) -> Result<&Vec<KeyPart>> {
         match self {
-            KeyValue::Struct(v) => Ok(v),
+            KeyPart::Struct(v) => Ok(v),
             _ => anyhow::bail!("expected struct value, but got {}", self.kind_str()),
         }
     }
 
     pub fn num_parts(&self) -> usize {
         match self {
-            KeyValue::Range(_) => 2,
-            KeyValue::Struct(v) => v.iter().map(|v| v.num_parts()).sum(),
+            KeyPart::Range(_) => 2,
+            KeyPart::Struct(v) => v.iter().map(|v| v.num_parts()).sum(),
             _ => 1,
         }
     }
 
     fn estimated_detached_byte_size(&self) -> usize {
         match self {
-            KeyValue::Bytes(v) => v.len(),
-            KeyValue::Str(v) => v.len(),
-            KeyValue::Struct(v) => {
+            KeyPart::Bytes(v) => v.len(),
+            KeyPart::Str(v) => v.len(),
+            KeyPart::Struct(v) => {
                 v.iter()
-                    .map(KeyValue::estimated_detached_byte_size)
+                    .map(KeyPart::estimated_detached_byte_size)
                     .sum::<usize>()
-                    + v.len() * std::mem::size_of::<KeyValue>()
+                    + v.len() * std::mem::size_of::<KeyPart>()
             }
-            KeyValue::Bool(_)
-            | KeyValue::Int64(_)
-            | KeyValue::Range(_)
-            | KeyValue::Uuid(_)
-            | KeyValue::Date(_) => 0,
+            KeyPart::Bool(_)
+            | KeyPart::Int64(_)
+            | KeyPart::Range(_)
+            | KeyPart::Uuid(_)
+            | KeyPart::Date(_) => 0,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct FullKeyValue(pub Box<[KeyValue]>);
+pub struct KeyValue(pub Box<[KeyPart]>);
 
-impl<T: Into<Box<[KeyValue]>>> From<T> for FullKeyValue {
+impl<T: Into<Box<[KeyPart]>>> From<T> for KeyValue {
     fn from(value: T) -> Self {
-        FullKeyValue(value.into())
+        KeyValue(value.into())
     }
 }
 
-impl IntoIterator for FullKeyValue {
-    type Item = KeyValue;
-    type IntoIter = std::vec::IntoIter<KeyValue>;
+impl IntoIterator for KeyValue {
+    type Item = KeyPart;
+    type IntoIter = std::vec::IntoIter<KeyPart>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
     }
 }
 
-impl<'a> IntoIterator for &'a FullKeyValue {
-    type Item = &'a KeyValue;
-    type IntoIter = std::slice::Iter<'a, KeyValue>;
+impl<'a> IntoIterator for &'a KeyValue {
+    type Item = &'a KeyPart;
+    type IntoIter = std::slice::Iter<'a, KeyPart>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter()
     }
 }
 
-impl Deref for FullKeyValue {
-    type Target = [KeyValue];
+impl Deref for KeyValue {
+    type Target = [KeyPart];
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl std::fmt::Display for FullKeyValue {
+impl std::fmt::Display for KeyValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -448,9 +448,9 @@ impl std::fmt::Display for FullKeyValue {
     }
 }
 
-impl Serialize for FullKeyValue {
+impl Serialize for KeyValue {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.0.len() == 1 && !matches!(self.0[0], KeyValue::Struct(_)) {
+        if self.0.len() == 1 && !matches!(self.0[0], KeyPart::Struct(_)) {
             self.0[0].serialize(serializer)
         } else {
             self.0.serialize(serializer)
@@ -458,12 +458,12 @@ impl Serialize for FullKeyValue {
     }
 }
 
-impl FullKeyValue {
-    pub fn from_single_part<V: Into<KeyValue>>(value: V) -> Self {
+impl KeyValue {
+    pub fn from_single_part<V: Into<KeyPart>>(value: V) -> Self {
         Self(Box::new([value.into()]))
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &KeyValue> {
+    pub fn iter(&self) -> impl Iterator<Item = &KeyPart> {
         self.0.iter()
     }
 
@@ -471,7 +471,7 @@ impl FullKeyValue {
         let field_values = if schema.len() == 1
             && matches!(schema[0].value_type.typ, ValueType::Basic(_))
         {
-            Box::from([KeyValue::from_json_for_export(value, schema)?])
+            Box::from([KeyPart::from_json_for_export(value, schema)?])
         } else {
             match value {
                 serde_json::Value::Array(arr) => std::iter::zip(arr.into_iter(), schema)
@@ -497,9 +497,9 @@ impl FullKeyValue {
         schema: &[FieldSchema],
     ) -> Result<Self> {
         let mut values_iter = value.into_iter();
-        let keys: Box<[KeyValue]> = schema
+        let keys: Box<[KeyPart]> = schema
             .iter()
-            .map(|f| KeyValue::parts_from_str(&mut values_iter, &f.value_type.typ))
+            .map(|f| KeyPart::parts_from_str(&mut values_iter, &f.value_type.typ))
             .collect::<Result<Box<[_]>>>()?;
         if values_iter.next().is_some() {
             api_bail!("Key parts more than expected");
@@ -511,7 +511,7 @@ impl FullKeyValue {
         self.0.iter().map(|v| v.into()).collect()
     }
 
-    pub fn single_part(&self) -> Result<&KeyValue> {
+    pub fn single_part(&self) -> Result<&KeyPart> {
         if self.0.len() != 1 {
             api_bail!("expected single value, but got {}", self.0.len());
         }
@@ -641,15 +641,15 @@ impl<T: Into<BasicValue>> From<Vec<T>> for BasicValue {
 }
 
 impl BasicValue {
-    pub fn into_key(self) -> Result<KeyValue> {
+    pub fn into_key(self) -> Result<KeyPart> {
         let result = match self {
-            BasicValue::Bytes(v) => KeyValue::Bytes(v),
-            BasicValue::Str(v) => KeyValue::Str(v),
-            BasicValue::Bool(v) => KeyValue::Bool(v),
-            BasicValue::Int64(v) => KeyValue::Int64(v),
-            BasicValue::Range(v) => KeyValue::Range(v),
-            BasicValue::Uuid(v) => KeyValue::Uuid(v),
-            BasicValue::Date(v) => KeyValue::Date(v),
+            BasicValue::Bytes(v) => KeyPart::Bytes(v),
+            BasicValue::Str(v) => KeyPart::Str(v),
+            BasicValue::Bool(v) => KeyPart::Bool(v),
+            BasicValue::Int64(v) => KeyPart::Int64(v),
+            BasicValue::Range(v) => KeyPart::Range(v),
+            BasicValue::Uuid(v) => KeyPart::Uuid(v),
+            BasicValue::Date(v) => KeyPart::Date(v),
             BasicValue::Float32(_)
             | BasicValue::Float64(_)
             | BasicValue::Time(_)
@@ -663,15 +663,15 @@ impl BasicValue {
         Ok(result)
     }
 
-    pub fn as_key(&self) -> Result<KeyValue> {
+    pub fn as_key(&self) -> Result<KeyPart> {
         let result = match self {
-            BasicValue::Bytes(v) => KeyValue::Bytes(v.clone()),
-            BasicValue::Str(v) => KeyValue::Str(v.clone()),
-            BasicValue::Bool(v) => KeyValue::Bool(*v),
-            BasicValue::Int64(v) => KeyValue::Int64(*v),
-            BasicValue::Range(v) => KeyValue::Range(*v),
-            BasicValue::Uuid(v) => KeyValue::Uuid(*v),
-            BasicValue::Date(v) => KeyValue::Date(*v),
+            BasicValue::Bytes(v) => KeyPart::Bytes(v.clone()),
+            BasicValue::Str(v) => KeyPart::Str(v.clone()),
+            BasicValue::Bool(v) => KeyPart::Bool(*v),
+            BasicValue::Int64(v) => KeyPart::Int64(*v),
+            BasicValue::Range(v) => KeyPart::Range(*v),
+            BasicValue::Uuid(v) => KeyPart::Uuid(*v),
+            BasicValue::Date(v) => KeyPart::Date(*v),
             BasicValue::Float32(_)
             | BasicValue::Float64(_)
             | BasicValue::Time(_)
@@ -765,7 +765,7 @@ pub enum Value<VS = ScopeValue> {
     Basic(BasicValue),
     Struct(FieldValues<VS>),
     UTable(Vec<VS>),
-    KTable(BTreeMap<FullKeyValue, VS>),
+    KTable(BTreeMap<KeyValue, VS>),
     LTable(Vec<VS>),
 }
 
@@ -775,34 +775,34 @@ impl<T: Into<BasicValue>> From<T> for Value {
     }
 }
 
-impl From<KeyValue> for Value {
-    fn from(value: KeyValue) -> Self {
+impl From<KeyPart> for Value {
+    fn from(value: KeyPart) -> Self {
         match value {
-            KeyValue::Bytes(v) => Value::Basic(BasicValue::Bytes(v)),
-            KeyValue::Str(v) => Value::Basic(BasicValue::Str(v)),
-            KeyValue::Bool(v) => Value::Basic(BasicValue::Bool(v)),
-            KeyValue::Int64(v) => Value::Basic(BasicValue::Int64(v)),
-            KeyValue::Range(v) => Value::Basic(BasicValue::Range(v)),
-            KeyValue::Uuid(v) => Value::Basic(BasicValue::Uuid(v)),
-            KeyValue::Date(v) => Value::Basic(BasicValue::Date(v)),
-            KeyValue::Struct(v) => Value::Struct(FieldValues {
+            KeyPart::Bytes(v) => Value::Basic(BasicValue::Bytes(v)),
+            KeyPart::Str(v) => Value::Basic(BasicValue::Str(v)),
+            KeyPart::Bool(v) => Value::Basic(BasicValue::Bool(v)),
+            KeyPart::Int64(v) => Value::Basic(BasicValue::Int64(v)),
+            KeyPart::Range(v) => Value::Basic(BasicValue::Range(v)),
+            KeyPart::Uuid(v) => Value::Basic(BasicValue::Uuid(v)),
+            KeyPart::Date(v) => Value::Basic(BasicValue::Date(v)),
+            KeyPart::Struct(v) => Value::Struct(FieldValues {
                 fields: v.into_iter().map(Value::from).collect(),
             }),
         }
     }
 }
 
-impl From<&KeyValue> for Value {
-    fn from(value: &KeyValue) -> Self {
+impl From<&KeyPart> for Value {
+    fn from(value: &KeyPart) -> Self {
         match value {
-            KeyValue::Bytes(v) => Value::Basic(BasicValue::Bytes(v.clone())),
-            KeyValue::Str(v) => Value::Basic(BasicValue::Str(v.clone())),
-            KeyValue::Bool(v) => Value::Basic(BasicValue::Bool(*v)),
-            KeyValue::Int64(v) => Value::Basic(BasicValue::Int64(*v)),
-            KeyValue::Range(v) => Value::Basic(BasicValue::Range(*v)),
-            KeyValue::Uuid(v) => Value::Basic(BasicValue::Uuid(*v)),
-            KeyValue::Date(v) => Value::Basic(BasicValue::Date(*v)),
-            KeyValue::Struct(v) => Value::Struct(FieldValues {
+            KeyPart::Bytes(v) => Value::Basic(BasicValue::Bytes(v.clone())),
+            KeyPart::Str(v) => Value::Basic(BasicValue::Str(v.clone())),
+            KeyPart::Bool(v) => Value::Basic(BasicValue::Bool(*v)),
+            KeyPart::Int64(v) => Value::Basic(BasicValue::Int64(*v)),
+            KeyPart::Range(v) => Value::Basic(BasicValue::Range(*v)),
+            KeyPart::Uuid(v) => Value::Basic(BasicValue::Uuid(*v)),
+            KeyPart::Date(v) => Value::Basic(BasicValue::Date(*v)),
+            KeyPart::Struct(v) => Value::Struct(FieldValues {
                 fields: v.iter().map(Value::from).collect(),
             }),
         }
@@ -871,10 +871,10 @@ impl<VS> Value<VS> {
         matches!(self, Value::Null)
     }
 
-    pub fn into_key(self) -> Result<KeyValue> {
+    pub fn into_key(self) -> Result<KeyPart> {
         let result = match self {
             Value::Basic(v) => v.into_key()?,
-            Value::Struct(v) => KeyValue::Struct(
+            Value::Struct(v) => KeyPart::Struct(
                 v.fields
                     .into_iter()
                     .map(|v| v.into_key())
@@ -887,10 +887,10 @@ impl<VS> Value<VS> {
         Ok(result)
     }
 
-    pub fn as_key(&self) -> Result<KeyValue> {
+    pub fn as_key(&self) -> Result<KeyPart> {
         let result = match self {
             Value::Basic(v) => v.as_key()?,
-            Value::Struct(v) => KeyValue::Struct(
+            Value::Struct(v) => KeyPart::Struct(
                 v.fields
                     .iter()
                     .map(|v| v.as_key())
@@ -1259,7 +1259,7 @@ impl BasicValue {
     }
 }
 
-struct TableEntry<'a>(&'a [KeyValue], &'a ScopeValue);
+struct TableEntry<'a>(&'a [KeyPart], &'a ScopeValue);
 
 impl serde::Serialize for Value<ScopeValue> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -1330,7 +1330,7 @@ where
                                         }
 
                                         let mut field_vals_iter = v.into_iter();
-                                        let keys: Box<[KeyValue]> = (0..num_key_parts)
+                                        let keys: Box<[KeyPart]> = (0..num_key_parts)
                                             .map(|_| {
                                                 Self::from_json(
                                                     field_vals_iter.next().unwrap(),
@@ -1343,10 +1343,10 @@ where
                                         let values = FieldValues::from_json_values(
                                             std::iter::zip(fields_iter, field_vals_iter),
                                         )?;
-                                        Ok((FullKeyValue(keys), values.into()))
+                                        Ok((KeyValue(keys), values.into()))
                                     }
                                     serde_json::Value::Object(mut v) => {
-                                        let keys: Box<[KeyValue]> = (0..num_key_parts).map(|_| {
+                                        let keys: Box<[KeyPart]> = (0..num_key_parts).map(|_| {
                                             let f = fields_iter.next().unwrap();
                                             Self::from_json(
                                                 std::mem::take(v.get_mut(&f.name).ok_or_else(
@@ -1360,7 +1360,7 @@ where
                                             &f.value_type.typ)?.into_key()
                                         }).collect::<Result<_>>()?;
                                         let values = FieldValues::from_json_object(v, fields_iter)?;
-                                        Ok((FullKeyValue(keys), values.into()))
+                                        Ok((KeyValue(keys), values.into()))
                                     }
                                     _ => api_bail!("Table value must be a JSON array or object"),
                                 }
@@ -1617,7 +1617,7 @@ mod tests {
     fn test_estimated_byte_size_ktable() {
         let mut map = BTreeMap::new();
         map.insert(
-            FullKeyValue(Box::from([KeyValue::Str(Arc::from("key1"))])),
+            KeyValue(Box::from([KeyPart::Str(Arc::from("key1"))])),
             ScopeValue(FieldValues {
                 fields: vec![Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from(
                     "value1",
@@ -1625,7 +1625,7 @@ mod tests {
             }),
         );
         map.insert(
-            FullKeyValue(Box::from([KeyValue::Str(Arc::from("key2"))])),
+            KeyValue(Box::from([KeyPart::Str(Arc::from("key2"))])),
             ScopeValue(FieldValues {
                 fields: vec![Value::<ScopeValue>::Basic(BasicValue::Str(Arc::from(
                     "value2",

@@ -120,18 +120,18 @@ enum ScopeKey<'a> {
     /// For root struct and UTable.
     None,
     /// For KTable row.
-    MapKey(&'a value::FullKeyValue),
+    MapKey(&'a value::KeyValue),
     /// For LTable row.
     ListIndex(usize),
 }
 
 impl<'a> ScopeKey<'a> {
-    pub fn key(&self) -> Option<Cow<'a, value::FullKeyValue>> {
+    pub fn key(&self) -> Option<Cow<'a, value::KeyValue>> {
         match self {
             ScopeKey::None => None,
             ScopeKey::MapKey(k) => Some(Cow::Borrowed(&k)),
             ScopeKey::ListIndex(i) => {
-                Some(Cow::Owned(value::FullKeyValue::from_single_part(*i as i64)))
+                Some(Cow::Owned(value::KeyValue::from_single_part(*i as i64)))
             }
         }
     }
@@ -199,12 +199,12 @@ impl<'a> ScopeEntry<'a> {
     }
 
     fn get_local_key_field<'b>(
-        key_val: &'b value::KeyValue,
+        key_val: &'b value::KeyPart,
         indices: &'_ [u32],
-    ) -> &'b value::KeyValue {
+    ) -> &'b value::KeyPart {
         if indices.is_empty() {
             key_val
-        } else if let value::KeyValue::Struct(fields) = key_val {
+        } else if let value::KeyPart::Struct(fields) = key_val {
             Self::get_local_key_field(&fields[indices[0] as usize], &indices[1..])
         } else {
             panic!("Only struct can be accessed by sub field");
@@ -494,7 +494,7 @@ pub struct SourceRowEvaluationContext<'a> {
     pub plan: &'a ExecutionPlan,
     pub import_op: &'a AnalyzedImportOp,
     pub schema: &'a schema::FlowSchema,
-    pub key: &'a value::FullKeyValue,
+    pub key: &'a value::KeyValue,
     pub import_op_idx: usize,
 }
 

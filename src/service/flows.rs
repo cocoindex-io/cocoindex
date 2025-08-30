@@ -61,7 +61,7 @@ pub struct GetKeysParam {
 #[derive(Serialize)]
 pub struct GetKeysResponse {
     key_schema: Vec<schema::FieldSchema>,
-    keys: Vec<(value::FullKeyValue, serde_json::Value)>,
+    keys: Vec<(value::KeyValue, serde_json::Value)>,
 }
 
 pub async fn get_keys(
@@ -133,7 +133,7 @@ struct SourceRowKeyContextHolder<'a> {
     plan: Arc<plan::ExecutionPlan>,
     import_op_idx: usize,
     schema: &'a FlowSchema,
-    key: value::FullKeyValue,
+    key: value::KeyValue,
     key_aux_info: serde_json::Value,
 }
 
@@ -160,7 +160,7 @@ impl<'a> SourceRowKeyContextHolder<'a> {
             _ => api_bail!("field is not a table: {}", source_row_key.field),
         };
         let key_schema = table_schema.key_schema();
-        let key = value::FullKeyValue::decode_from_strs(source_row_key.key, key_schema)?;
+        let key = value::KeyValue::decode_from_strs(source_row_key.key, key_schema)?;
         let key_aux_info = source_row_key
             .key_aux
             .map(|s| serde_json::from_str(&s))

@@ -1,4 +1,4 @@
-use crate::base::value::FullKeyValue;
+use crate::base::value::KeyValue;
 use crate::prelude::*;
 
 use bytes::Bytes;
@@ -347,13 +347,13 @@ pub fn value_from_py_object<'py>(
                                             iter.len()
                                         );
                                     }
-                                    let keys: Box<[value::KeyValue]> = (0..num_key_parts)
+                                    let keys: Box<[value::KeyPart]> = (0..num_key_parts)
                                         .map(|_| iter.next().unwrap().into_key())
                                         .collect::<Result<_>>()?;
                                     let values = value::FieldValues {
                                         fields: iter.collect::<Vec<_>>(),
                                     };
-                                    Ok((FullKeyValue(keys), values.into()))
+                                    Ok((KeyValue(keys), values.into()))
                                 })
                                 .collect::<Result<BTreeMap<_, _>>>()
                                 .into_py_result()?,
@@ -558,8 +558,8 @@ mod tests {
             .into_key()
             .unwrap();
 
-        ktable_data.insert(FullKeyValue(Box::from([key1])), row1_scope_val.clone());
-        ktable_data.insert(FullKeyValue(Box::from([key2])), row2_scope_val.clone());
+        ktable_data.insert(KeyValue(Box::from([key1])), row1_scope_val.clone());
+        ktable_data.insert(KeyValue(Box::from([key2])), row2_scope_val.clone());
 
         let ktable_val = value::Value::KTable(ktable_data);
         let ktable_typ = schema::ValueType::Table(ktable_schema);

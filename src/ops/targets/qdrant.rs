@@ -289,11 +289,11 @@ impl ExportContext {
         Ok(())
     }
 }
-fn key_to_point_id(key_value: &KeyValue) -> Result<PointId> {
+fn key_to_point_id(key_value: &KeyPart) -> Result<PointId> {
     let point_id = match key_value {
-        KeyValue::Str(v) => PointId::from(v.to_string()),
-        KeyValue::Int64(v) => PointId::from(*v as u64),
-        KeyValue::Uuid(v) => PointId::from(v.to_string()),
+        KeyPart::Str(v) => PointId::from(v.to_string()),
+        KeyPart::Int64(v) => PointId::from(*v as u64),
+        KeyPart::Uuid(v) => PointId::from(v.to_string()),
         e => bail!("Invalid Qdrant point ID: {e}"),
     };
 

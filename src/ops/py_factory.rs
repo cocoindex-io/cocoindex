@@ -376,7 +376,7 @@ impl interface::TargetFactory for PyExportTargetFactory {
 
     fn extract_additional_key(
         &self,
-        _key: &value::KeyValue,
+        _key: &value::KeyPart,
         _value: &value::FieldValues,
         _export_context: &(dyn Any + Send + Sync),
     ) -> Result<serde_json::Value> {

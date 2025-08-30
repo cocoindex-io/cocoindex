@@ -55,7 +55,7 @@ impl SourceExecutor for Executor {
                             None
                         };
                         yield vec![PartialSourceRowMetadata {
-                            key: FullKeyValue::from_single_part(relative_path.to_string()),
+                            key: KeyValue::from_single_part(relative_path.to_string()),
                             key_aux_info: serde_json::Value::Null,
                             ordinal,
                             content_version_fp: None,
@@ -70,7 +70,7 @@ impl SourceExecutor for Executor {
 
     async fn get_value(
         &self,
-        key: &FullKeyValue,
+        key: &KeyValue,
         _key_aux_info: &serde_json::Value,
         options: &SourceExecutorGetOptions,
     ) -> Result<PartialSourceRowData> {

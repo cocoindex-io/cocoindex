@@ -627,7 +627,7 @@ fn append_upsert_rel(
 fn append_delete_node(
     cypher: &mut CypherBuilder,
     data_coll: &AnalyzedDataCollection,
-    key: &KeyValue,
+    key: &KeyPart,
 ) -> Result<()> {
     const NODE_VAR_NAME: &str = "n";
     let node_label = data_coll.schema.elem_type.label();
@@ -654,9 +654,9 @@ fn append_delete_node(
 fn append_delete_rel(
     cypher: &mut CypherBuilder,
     data_coll: &AnalyzedDataCollection,
-    key: &KeyValue,
-    src_node_key: &KeyValue,
-    tgt_node_key: &KeyValue,
+    key: &KeyPart,
+    src_node_key: &KeyPart,
+    tgt_node_key: &KeyPart,
 ) -> Result<()> {
     const REL_VAR_NAME: &str = "r";
 
@@ -707,7 +707,7 @@ fn append_delete_rel(
 fn append_maybe_gc_node(
     cypher: &mut CypherBuilder,
     schema: &GraphElementSchema,
-    key: &KeyValue,
+    key: &KeyPart,
 ) -> Result<()> {
     const NODE_VAR_NAME: &str = "n";
     let node_label = schema.elem_type.label();
@@ -897,7 +897,7 @@ impl TargetFactoryBase for Factory {
 
     fn extract_additional_key(
         &self,
-        _key: &KeyValue,
+        _key: &KeyPart,
         value: &FieldValues,
         export_context: &ExportContext,
     ) -> Result<serde_json::Value> {
@@ -934,12 +934,12 @@ impl TargetFactoryBase for Factory {
 
             struct NodeTableGcInfo {
                 schema: Arc<GraphElementSchema>,
-                keys: IndexSet<KeyValue>,
+                keys: IndexSet<KeyPart>,
             }
             fn register_gc_node(
                 map: &mut IndexMap<ElementType, NodeTableGcInfo>,
                 schema: &Arc<GraphElementSchema>,
-                key: KeyValue,
+                key: KeyPart,
             ) {
                 map.entry(schema.elem_type.clone())
                     .or_insert_with(|| NodeTableGcInfo {
@@ -952,7 +952,7 @@ impl TargetFactoryBase for Factory {
             fn resolve_gc_node(
                 map: &mut IndexMap<ElementType, NodeTableGcInfo>,
                 schema: &Arc<GraphElementSchema>,
-                key: &KeyValue,
+                key: &KeyPart,
             ) {
                 map.get_mut(&schema.elem_type)
                     .map(|info| info.keys.shift_remove(key));
@@ -975,11 +975,11 @@ impl TargetFactoryBase for Factory {
                             delete.additional_key
                         );
                     }
-                    let src_key = KeyValue::from_json_for_export(
+                    let src_key = KeyPart::from_json_for_export(
                         additional_keys[0].take(),
                         &rel.source.schema.key_fields,
                     )?;
-                    let tgt_key = KeyValue::from_json_for_export(
+                    let tgt_key = KeyPart::from_json_for_export(
                         additional_keys[1].take(),
                         &rel.target.schema.key_fields,
                     )?;

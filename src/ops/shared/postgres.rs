@@ -24,13 +24,13 @@ pub async fn get_db_pool(
 
 pub fn key_value_fields_iter<'a>(
     key_fields_schema: impl ExactSizeIterator<Item = &'a FieldSchema>,
-    key_value: &'a KeyValue,
-) -> Result<&'a [KeyValue]> {
+    key_value: &'a KeyPart,
+) -> Result<&'a [KeyPart]> {
     let slice = if key_fields_schema.into_iter().count() == 1 {
         std::slice::from_ref(key_value)
     } else {
         match key_value {
-            KeyValue::Struct(fields) => fields,
+            KeyPart::Struct(fields) => fields,
             _ => bail!("expect struct key value"),
         }
     };
@@ -39,34 +39,34 @@ pub fn key_value_fields_iter<'a>(
 
 pub fn bind_key_field<'arg>(
     builder: &mut sqlx::QueryBuilder<'arg, sqlx::Postgres>,
-    key_value: &'arg KeyValue,
+    key_value: &'arg KeyPart,
 ) -> Result<()> {
     match key_value {
-        KeyValue::Bytes(v) => {
+        KeyPart::Bytes(v) => {
             builder.push_bind(&**v);
         }
-        KeyValue::Str(v) => {
+        KeyPart::Str(v) => {
             builder.push_bind(&**v);
         }
-        KeyValue::Bool(v) => {
+        KeyPart::Bool(v) => {
             builder.push_bind(v);
         }
-        KeyValue::Int64(v) => {
+        KeyPart::Int64(v) => {
             builder.push_bind(v);
         }
-        KeyValue::Range(v) => {
+        KeyPart::Range(v) => {
             builder.push_bind(PgRange {
                 start: Bound::Included(v.start as i64),
                 end: Bound::Excluded(v.end as i64),
             });
         }
-        KeyValue::Uuid(v) => {
+        KeyPart::Uuid(v) => {
             builder.push_bind(v);
         }
-        KeyValue::Date(v) => {
+        KeyPart::Date(v) => {
             builder.push_bind(v);
         }
-        KeyValue::Struct(fields) => {
+        KeyPart::Struct(fields) => {
             builder.push_bind(sqlx::types::Json(fields));
         }
     }

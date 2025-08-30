@@ -13,7 +13,7 @@ use super::evaluator::{
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, StoredMemoizationInfo};
 use super::stats;
 
-use crate::base::value::{self, FieldValues, KeyValue};
+use crate::base::value::{self, FieldValues, KeyPart};
 use crate::builder::plan::*;
 use crate::ops::interface::{
     ExportTargetMutation, ExportTargetUpsertEntry, Ordinal, SourceExecutorGetOptions,
@@ -24,10 +24,10 @@ use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 pub fn extract_primary_key_for_export(
     primary_key_def: &AnalyzedPrimaryKeyDef,
     record: &FieldValues,
-) -> Result<KeyValue> {
+) -> Result<KeyPart> {
     match primary_key_def {
         AnalyzedPrimaryKeyDef::Fields(fields) => {
-            KeyValue::from_values_for_export(fields.iter().map(|field| &record.fields[*field]))
+            KeyPart::from_values_for_export(fields.iter().map(|field| &record.fields[*field]))
         }
     }
 }

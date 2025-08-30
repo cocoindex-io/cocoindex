@@ -932,7 +932,7 @@ impl SimpleFunctionExecutor for Executor {
                 let output_start = chunk_output.start_pos.output.unwrap();
                 let output_end = chunk_output.end_pos.output.unwrap();
                 (
-                    FullKeyValue::from_single_part(RangeValue::new(
+                    KeyValue::from_single_part(RangeValue::new(
                         output_start.char_offset,
                         output_end.char_offset,
                     )),
@@ -1153,7 +1153,7 @@ mod tests {
                     ];
 
                     for (range, expected_text) in expected_chunks {
-                        let key = FullKeyValue::from_single_part(range);
+                        let key = KeyValue::from_single_part(range);
                         match table.get(&key) {
                             Some(scope_value_ref) => {
                                 let chunk_text =

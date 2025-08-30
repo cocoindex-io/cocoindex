@@ -417,7 +417,7 @@ pub trait TargetFactoryBase: TargetFactory + Send + Sync + 'static {
 
     fn extract_additional_key(
         &self,
-        _key: &value::KeyValue,
+        _key: &value::KeyPart,
         _value: &value::FieldValues,
         _export_context: &Self::ExportContext,
     ) -> Result<serde_json::Value> {
@@ -549,7 +549,7 @@ impl<T: TargetFactoryBase> TargetFactory for T {
     /// This is useful for targets that need to use additional parts as key for the target (which is not considered as part of the key for cocoindex).
     fn extract_additional_key(
         &self,
-        key: &value::KeyValue,
+        key: &value::KeyPart,
         value: &value::FieldValues,
         export_context: &(dyn Any + Send + Sync),
     ) -> Result<serde_json::Value> {

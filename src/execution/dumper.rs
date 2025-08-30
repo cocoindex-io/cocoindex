@@ -26,7 +26,7 @@ const FILENAME_PREFIX_MAX_LENGTH: usize = 128;
 struct TargetExportData<'a> {
     schema: &'a Vec<schema::FieldSchema>,
     // The purpose is to make rows sorted by primary key.
-    data: BTreeMap<value::KeyValue, &'a value::FieldValues>,
+    data: BTreeMap<value::KeyPart, &'a value::FieldValues>,
 }
 
 impl Serialize for TargetExportData<'_> {
@@ -69,7 +69,7 @@ impl<'a> Dumper<'a> {
         &'a self,
         import_op_idx: usize,
         import_op: &'a AnalyzedImportOp,
-        key: &value::FullKeyValue,
+        key: &value::KeyValue,
         key_aux_info: &serde_json::Value,
         collected_values_buffer: &'b mut Vec<Vec<value::FieldValues>>,
     ) -> Result<Option<IndexMap<&'b str, TargetExportData<'b>>>>
@@ -135,7 +135,7 @@ impl<'a> Dumper<'a> {
         &self,
         import_op_idx: usize,
         import_op: &AnalyzedImportOp,
-        key: value::FullKeyValue,
+        key: value::KeyValue,
         key_aux_info: serde_json::Value,
         file_path: PathBuf,
     ) -> Result<()> {
@@ -188,7 +188,7 @@ impl<'a> Dumper<'a> {
     ) -> Result<()> {
         let mut keys_by_filename_prefix: IndexMap<
             String,
-            Vec<(value::FullKeyValue, serde_json::Value)>,
+            Vec<(value::KeyValue, serde_json::Value)>,
         > = IndexMap::new();
 
         let mut rows_stream = import_op
