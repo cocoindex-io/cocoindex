@@ -43,7 +43,7 @@ jobs:
           name: Cargo.toml
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.x
+          python-version: 3.13
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -57,6 +57,24 @@ jobs:
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
           path: dist
+
+  test-abi3:
+    runs-on: ubuntu-24.04
+    needs: build
+    strategy:
+      matrix:
+        py: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-linux-x86_64
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.py }}
+      - run: python -V
+      - run: pip install --no-index --find-links=./ cocoindex
+      - run: python -c "import cocoindex, sys; print('import ok on', sys.version)"
+
 
   sdist:
     runs-on: ubuntu-latest
