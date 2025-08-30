@@ -479,6 +479,10 @@ impl SourceExecutor for Executor {
 
         Ok(data)
     }
+
+    fn provides_ordinal(&self) -> bool {
+        self.table_schema.ordinal_field_schema.is_some()
+    }
 }
 
 pub struct Factory;

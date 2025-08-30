@@ -115,6 +115,10 @@ impl SourceExecutor for Executor {
             content_version_fp: None,
         })
     }
+
+    fn provides_ordinal(&self) -> bool {
+        true
+    }
 }
 
 pub struct Factory;

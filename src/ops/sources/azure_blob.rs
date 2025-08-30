@@ -166,6 +166,10 @@ impl SourceExecutor for Executor {
         // Azure Blob Storage doesn't have built-in change notifications like S3+SQS
         Ok(None)
     }
+
+    fn provides_ordinal(&self) -> bool {
+        true
+    }
 }
 
 pub struct Factory;

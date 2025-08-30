@@ -367,6 +367,7 @@ impl SourceIndexingContext {
         self: &Arc<Self>,
         pool: &PgPool,
         update_stats: &Arc<stats::UpdateStats>,
+        expect_little_diff: bool,
     ) -> Result<()> {
         let pending_update_fut = {
             let mut pending_update = self.pending_update.lock().unwrap();
@@ -383,7 +384,8 @@ impl SourceIndexingContext {
                             let mut pending_update = slf.pending_update.lock().unwrap();
                             *pending_update = None;
                         }
-                        slf.update_once(&pool, &update_stats).await?;
+                        slf.update_once(&pool, &update_stats, expect_little_diff)
+                            .await?;
                     }
                     anyhow::Ok(())
                 });
@@ -406,17 +408,18 @@ impl SourceIndexingContext {
         self: &Arc<Self>,
         pool: &PgPool,
         update_stats: &Arc<stats::UpdateStats>,
+        expect_little_diff: bool,
     ) -> Result<()> {
         let plan = self.flow.get_execution_plan().await?;
         let import_op = &plan.import_ops[self.source_idx];
-        let rows_stream = import_op
-            .executor
-            .list(&interface::SourceExecutorReadOptions {
-                include_ordinal: true,
-                include_content_version_fp: true,
-                include_value: true,
-            })
-            .await?;
+        let read_options = interface::SourceExecutorReadOptions {
+            include_ordinal: true,
+            include_content_version_fp: true,
+            // When only a little diff is expected and the source provides ordinal, we don't fetch values during `list()` by default,
+            // as there's a high chance that we don't need the values at all
+            include_value: !(expect_little_diff && import_op.executor.provides_ordinal()),
+        };
+        let rows_stream = import_op.executor.list(&read_options).await?;
         self.update_with_stream(import_op, rows_stream, pool, update_stats)
             .await
     }

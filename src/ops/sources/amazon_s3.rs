@@ -188,6 +188,10 @@ impl SourceExecutor for Executor {
         };
         Ok(Some(stream.boxed()))
     }
+
+    fn provides_ordinal(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Deserialize)]

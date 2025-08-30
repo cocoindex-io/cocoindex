@@ -154,6 +154,8 @@ pub trait SourceExecutor: Send + Sync {
     ) -> Result<Option<BoxStream<'async_trait, Result<SourceChangeMessage>>>> {
         Ok(None)
     }
+
+    fn provides_ordinal(&self) -> bool;
 }
 
 #[async_trait]

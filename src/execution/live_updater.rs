@@ -242,7 +242,9 @@ impl SourceUpdateTask {
             let live_mode = self.options.live_mode;
             async move {
                 let update_stats = Arc::new(stats::UpdateStats::default());
-                source_context.update(&pool, &update_stats).await?;
+                source_context
+                    .update(&pool, &update_stats, /*expect_little_diff=*/ false)
+                    .await?;
                 if update_stats.has_any_change() {
                     status_tx.send_modify(|update| {
                         update.source_updates_num[source_idx] += 1;
@@ -260,7 +262,9 @@ impl SourceUpdateTask {
                         interval.tick().await;
 
                         let update_stats = Arc::new(stats::UpdateStats::default());
-                        source_context.update(&pool, &update_stats).await?;
+                        source_context
+                            .update(&pool, &update_stats, /*expect_little_diff=*/ true)
+                            .await?;
                         if update_stats.has_any_change() {
                             status_tx.send_modify(|update| {
                                 update.source_updates_num[source_idx] += 1;
