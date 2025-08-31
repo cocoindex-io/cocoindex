@@ -16,6 +16,12 @@ jobs:
         steps:
         - uses: actions/checkout@v4
 
+        - uses: actions/setup-python@v5
+          id: setup_python
+          with:
+            python-version: ${{ matrix.python-version }}
+            cache: 'pip'
+
         - run: rustup toolchain install stable --profile minimal
         - name: Rust Cache
           uses: Swatinem/rust-cache@v2
@@ -26,11 +32,6 @@ jobs:
         - name: Rust tests
           run: cargo test --verbose
 
-        - uses: actions/setup-python@v5
-          id: setup_python
-          with:
-            python-version: ${{ matrix.python-version }}
-            cache: 'pip'
         - uses: actions/cache@v4
           with:
             path: .venv
