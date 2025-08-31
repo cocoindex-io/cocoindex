@@ -39,11 +39,11 @@ _logger = logging.getLogger(__name__)
 
 def _shutdown_pool_at_exit() -> None:
     """Best-effort shutdown of the global ProcessPoolExecutor on interpreter exit."""
-    global _pool
+    global _pool, _pool_cleanup_registered  # pylint: disable=global-statement
     with _pool_lock:
         if _pool is not None:
             try:
-                _pool.shutdown(cancel_futures=True)
+                _pool.shutdown(wait=True, cancel_futures=True)
             except Exception:
                 _logger.debug(
                     "Error during ProcessPoolExecutor shutdown at exit",
@@ -51,10 +51,11 @@ def _shutdown_pool_at_exit() -> None:
                 )
             finally:
                 _pool = None
+                _pool_cleanup_registered = False
 
 
 def _get_pool() -> ProcessPoolExecutor:
-    global _pool, _pool_cleanup_registered
+    global _pool, _pool_cleanup_registered  # pylint: disable=global-statement
     with _pool_lock:
         if _pool is None:
             if not _pool_cleanup_registered:
