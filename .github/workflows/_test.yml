@@ -10,9 +10,9 @@ jobs:
     build-test:
         strategy:
             matrix:
-                python-version: [3.11, 3.13]
-                platform: [ubuntu-latest, macos-latest]
-        runs-on: ${{ matrix.platform }}
+                python-version: [3.11]
+                runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13, windows-latest]
+        runs-on: ${{ matrix.runner }}
         steps:
         - uses: actions/checkout@v4
 
@@ -20,7 +20,7 @@ jobs:
         - name: Rust Cache
           uses: Swatinem/rust-cache@v2
           with:
-            key: ${{ runner.os }}-rust-${{ matrix.python-version }}
+            key: rust-${{ matrix.runner }}-${{ matrix.python-version }}
         - name: Rust build
           run: cargo build --verbose
         - name: Rust tests
@@ -34,9 +34,9 @@ jobs:
         - uses: actions/cache@v4
           with:
             path: .venv
-            key: ${{ runner.os }}-pyenv-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
+            key: pyenv-${{ matrix.runner }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
             restore-keys: |
-              ${{ runner.os }}-pyenv-${{ steps.setup_python.outputs.python-version }}-
+              pyenv-${{ matrix.runner }}-${{ steps.setup_python.outputs.python-version }}-
         - name: Setup venv
           run: |
             python -m venv .venv
