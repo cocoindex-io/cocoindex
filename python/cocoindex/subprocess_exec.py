@@ -238,11 +238,9 @@ def _sp_call(key_bytes: bytes, args: tuple[Any, ...], kwargs: dict[str, Any]) ->
 
 
 class _ExecutorStub:
-    _pool: ProcessPoolExecutor
     _key_bytes: bytes
 
     def __init__(self, executor_factory: type[Any], spec: Any) -> None:
-        self._pool = _get_pool()
         self._key_bytes = pickle.dumps(
             (executor_factory, spec), protocol=pickle.HIGHEST_PROTOCOL
         )
