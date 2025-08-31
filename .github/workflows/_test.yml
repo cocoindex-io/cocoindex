@@ -43,17 +43,17 @@ jobs:
             python -m venv .venv
         - name: Install Python toolchains
           run: |
-            source .venv/bin/activate
+            . .venv/bin/activate
             pip install maturin mypy pytest pytest-asyncio
         - name: Python build
           run: |
-            source .venv/bin/activate
+            . .venv/bin/activate
             maturin develop -E all
         - name: Python type check (mypy)
           run: |
-            source .venv/bin/activate
+            . .venv/bin/activate
             mypy python
         - name: Python tests
           run: |
-            source .venv/bin/activate
+            . .venv/bin/activate
             pytest python/cocoindex/tests
