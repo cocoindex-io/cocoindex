@@ -11,8 +11,13 @@ jobs:
         strategy:
             matrix:
                 python-version: [3.11]
-                runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13, windows-latest]
-        runs-on: ${{ matrix.runner }}
+                platform:
+                  - { runner: ubuntu-latest, python_exec: ".venv/bin/python" }
+                  - { runner: ubuntu-24.04-arm, python_exec: ".venv/bin/python" }
+                  - { runner: macos-latest, python_exec: ".venv/bin/python" }
+                  - { runner: macos-13, python_exec: ".venv/bin/python" }
+                  - { runner: windows-latest, python_exec: ".venv\\Scripts\\python" }
+        runs-on: ${{ matrix.platform.runner }}
         steps:
         - uses: actions/checkout@v4
 
@@ -26,7 +31,7 @@ jobs:
         - name: Rust Cache
           uses: Swatinem/rust-cache@v2
           with:
-            key: rust-${{ matrix.runner }}-${{ matrix.python-version }}
+            key: rust-${{ matrix.platform.runner }}-${{ matrix.python-version }}
         - name: Rust build
           run: cargo build --verbose
         - name: Rust tests
@@ -35,45 +40,22 @@ jobs:
         - uses: actions/cache@v4
           with:
             path: .venv
-            key: pyenv-${{ matrix.runner }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
+            key: pyenv-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
             restore-keys: |
-              pyenv-${{ matrix.runner }}-${{ steps.setup_python.outputs.python-version }}-
+              pyenv-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-
+
         - name: Setup venv
           run: |
             python -m venv .venv
-
         - name: Install Python toolchains
-          if: runner.os != 'Windows'
           run: |
-            .venv/bin/python -m pip install maturin mypy pytest pytest-asyncio
-        - name: Install Python toolchains (Windows)
-          if: runner.os == 'Windows'
-          run: |
-            .venv\Scripts\python -m pip install maturin mypy pytest pytest-asyncio
-
+            ${{ matrix.platform.python_exec }} -m pip install maturin mypy pytest pytest-asyncio
         - name: Python build
-          if: runner.os != 'Windows'
           run: |
-            .venv/bin/python -m maturin develop -E all
-        - name: Python build (Windows)
-          if: runner.os == 'Windows'
-          run: |
-            .venv\Scripts\python -m maturin develop -E all
-
+            ${{ matrix.platform.python_exec }} -m maturin develop -E all
         - name: Python type check (mypy)
-          if: runner.os != 'Windows'
           run: |
-            .venv/bin/python -m mypy python
-        - name: Python type check (mypy) (Windows)
-          if: runner.os == 'Windows'
-          run: |
-            .venv\Scripts\python -m mypy python
-
+            ${{ matrix.platform.python_exec }} -m mypy python
         - name: Python tests
-          if: runner.os != 'Windows'
           run: |
-            .venv/bin/python -m pytest python/cocoindex/tests
-        - name: Python tests (Windows)
-          if: runner.os == 'Windows'
-          run: |
-            .venv\Scripts\python -m pytest python/cocoindex/tests
+            ${{ matrix.platform.python_exec }} -m pytest python/cocoindex/tests
