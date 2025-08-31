@@ -45,7 +45,7 @@ def shutdown_pool_at_exit() -> None:
         if _pool is not None:
             try:
                 print("Before shutdown")
-                _pool.shutdown(cancel_futures=True)
+                _pool.shutdown(wait=True, cancel_futures=True)
                 print("After shutdown")
             except Exception as e:
                 _logger.error(
