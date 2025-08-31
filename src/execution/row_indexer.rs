@@ -13,7 +13,7 @@ use super::evaluator::{
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, StoredMemoizationInfo};
 use super::stats;
 
-use crate::base::value::{self, FieldValues, KeyPart};
+use crate::base::value::{self, FieldValues, KeyValue};
 use crate::builder::plan::*;
 use crate::ops::interface::{
     ExportTargetMutation, ExportTargetUpsertEntry, Ordinal, SourceExecutorGetOptions,
@@ -24,10 +24,14 @@ use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
 pub fn extract_primary_key_for_export(
     primary_key_def: &AnalyzedPrimaryKeyDef,
     record: &FieldValues,
-) -> Result<KeyPart> {
+) -> Result<KeyValue> {
     match primary_key_def {
         AnalyzedPrimaryKeyDef::Fields(fields) => {
-            KeyPart::from_values_for_export(fields.iter().map(|field| &record.fields[*field]))
+            let key_parts: Box<[value::KeyPart]> = fields
+                .iter()
+                .map(|field| record.fields[*field].as_key())
+                .collect::<Result<Box<[_]>>>()?;
+            Ok(KeyValue(key_parts))
         }
     }
 }
@@ -662,7 +666,7 @@ impl<'a> RowIndexer<'a> {
         let mut new_staging_target_keys = db_tracking::TrackedTargetKeyForSource::default();
         let mut target_mutations = HashMap::with_capacity(export_ops.len());
         for (target_id, target_tracking_info) in tracking_info_for_targets.into_iter() {
-            let legacy_keys: HashSet<TargetKeyPair> = target_tracking_info
+            let previous_keys: HashSet<TargetKeyPair> = target_tracking_info
                 .existing_keys_info
                 .into_keys()
                 .chain(target_tracking_info.existing_staging_keys_info.into_keys())
@@ -670,7 +674,7 @@ impl<'a> RowIndexer<'a> {
 
             let mut new_staging_keys_info = target_tracking_info.new_staging_keys_info;
             // add deletions
-            new_staging_keys_info.extend(legacy_keys.iter().map(|key| TrackedTargetKeyInfo {
+            new_staging_keys_info.extend(previous_keys.iter().map(|key| TrackedTargetKeyInfo {
                 key: key.key.clone(),
                 additional_key: key.additional_key.clone(),
                 process_ordinal,
@@ -680,16 +684,11 @@ impl<'a> RowIndexer<'a> {
 
             if let Some(export_op) = target_tracking_info.export_op {
                 let mut mutation = target_tracking_info.mutation;
-                mutation.deletes.reserve(legacy_keys.len());
-                for legacy_key in legacy_keys.into_iter() {
-                    let key = value::Value::<value::ScopeValue>::from_json(
-                        legacy_key.key,
-                        &export_op.primary_key_type,
-                    )?
-                    .as_key()?;
+                mutation.deletes.reserve(previous_keys.len());
+                for previous_key in previous_keys.into_iter() {
                     mutation.deletes.push(interface::ExportTargetDeleteEntry {
-                        key,
-                        additional_key: legacy_key.additional_key,
+                        key: KeyValue::from_json(previous_key.key, &export_op.primary_key_schema)?,
+                        additional_key: previous_key.additional_key,
                     });
                 }
                 target_mutations.insert(target_id, mutation);

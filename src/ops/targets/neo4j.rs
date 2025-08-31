@@ -453,13 +453,10 @@ impl ExportContext {
     fn bind_rel_key_field_params(
         &self,
         query: neo4rs::Query,
-        val: &KeyPart,
+        val: &KeyValue,
     ) -> Result<neo4rs::Query> {
         let mut query = query;
-        for (i, val) in val
-            .fields_iter_for_export(self.analyzed_data_coll.schema.key_fields.len())?
-            .enumerate()
-        {
+        for (i, val) in val.iter().enumerate() {
             query = query.param(
                 &self.key_field_params[i],
                 key_to_bolt(
@@ -532,7 +529,7 @@ impl ExportContext {
 
     fn add_delete_queries(
         &self,
-        delete_key: &value::KeyPart,
+        delete_key: &value::KeyValue,
         queries: &mut Vec<neo4rs::Query>,
     ) -> Result<()> {
         queries

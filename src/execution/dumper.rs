@@ -26,7 +26,7 @@ const FILENAME_PREFIX_MAX_LENGTH: usize = 128;
 struct TargetExportData<'a> {
     schema: &'a Vec<schema::FieldSchema>,
     // The purpose is to make rows sorted by primary key.
-    data: BTreeMap<value::KeyPart, &'a value::FieldValues>,
+    data: BTreeMap<value::KeyValue, &'a value::FieldValues>,
 }
 
 impl Serialize for TargetExportData<'_> {

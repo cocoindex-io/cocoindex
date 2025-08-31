@@ -289,8 +289,9 @@ impl ExportContext {
         Ok(())
     }
 }
-fn key_to_point_id(key_value: &KeyPart) -> Result<PointId> {
-    let point_id = match key_value {
+fn key_to_point_id(key_value: &KeyValue) -> Result<PointId> {
+    let key_part = key_value.single_part()?;
+    let point_id = match key_part {
         KeyPart::Str(v) => PointId::from(v.to_string()),
         KeyPart::Int64(v) => PointId::from(*v as u64),
         KeyPart::Uuid(v) => PointId::from(v.to_string()),
@@ -389,7 +390,7 @@ impl TargetFactoryBase for Factory {
             .map(|d| {
                 if d.key_fields_schema.len() != 1 {
                     api_bail!(
-                        "Expected one primary key field for the point ID. Got {}.",
+                        "Expected exactly one primary key field for the point ID. Got {}.",
                         d.key_fields_schema.len()
                     )
                 }

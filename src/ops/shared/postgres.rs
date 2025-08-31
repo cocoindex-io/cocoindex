@@ -22,21 +22,6 @@ pub async fn get_db_pool(
     Ok(db_pool)
 }
 
-pub fn key_value_fields_iter<'a>(
-    key_fields_schema: impl ExactSizeIterator<Item = &'a FieldSchema>,
-    key_value: &'a KeyPart,
-) -> Result<&'a [KeyPart]> {
-    let slice = if key_fields_schema.into_iter().count() == 1 {
-        std::slice::from_ref(key_value)
-    } else {
-        match key_value {
-            KeyPart::Struct(fields) => fields,
-            _ => bail!("expect struct key value"),
-        }
-    };
-    Ok(slice)
-}
-
 pub fn bind_key_field<'arg>(
     builder: &mut sqlx::QueryBuilder<'arg, sqlx::Postgres>,
     key_value: &'arg KeyPart,

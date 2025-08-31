@@ -376,7 +376,7 @@ impl interface::TargetFactory for PyExportTargetFactory {
 
     fn extract_additional_key(
         &self,
-        _key: &value::KeyPart,
+        _key: &value::KeyValue,
         _value: &value::FieldValues,
         _export_context: &(dyn Any + Send + Sync),
     ) -> Result<serde_json::Value> {
@@ -464,13 +464,13 @@ impl interface::TargetFactory for PyExportTargetFactory {
                 );
                 for upsert in mutation.mutation.upserts.into_iter() {
                     flattened_mutations.push((
-                        py::value_to_py_object(py, &upsert.key.into())?,
+                        py::key_to_py_object(py, &upsert.key)?,
                         py::field_values_to_py_object(py, upsert.value.fields.iter())?,
                     ));
                 }
                 for delete in mutation.mutation.deletes.into_iter() {
                     flattened_mutations.push((
-                        py::value_to_py_object(py, &delete.key.into())?,
+                        py::key_to_py_object(py, &delete.key)?,
                         py.None().into_bound(py),
                     ));
                 }

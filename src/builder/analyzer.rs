@@ -643,7 +643,7 @@ fn add_collector(
 struct ExportDataFieldsInfo {
     local_collector_ref: AnalyzedLocalCollectorReference,
     primary_key_def: AnalyzedPrimaryKeyDef,
-    primary_key_type: ValueType,
+    primary_key_schema: Vec<FieldSchema>,
     value_fields_idx: Vec<u32>,
     value_stable: bool,
 }
@@ -835,7 +835,7 @@ impl AnalyzerContext {
                 .lock()
                 .unwrap()
                 .consume_collector(&export_op.spec.collector_name)?;
-            let (key_fields_schema, value_fields_schema, data_collection_info) =
+            let (value_fields_schema, data_collection_info) =
                 match &export_op.spec.index_options.primary_key_fields {
                     Some(fields) => {
                         let pk_fields_idx = fields
@@ -849,18 +849,10 @@ impl AnalyzerContext {
                             })
                             .collect::<Result<Vec<_>>>()?;
 
-                        let key_fields_schema = pk_fields_idx
+                        let primary_key_schema = pk_fields_idx
                             .iter()
                             .map(|idx| collector_schema.fields[*idx].clone())
                             .collect::<Vec<_>>();
-                        let primary_key_type = if pk_fields_idx.len() == 1 {
-                            key_fields_schema[0].value_type.typ.clone()
-                        } else {
-                            ValueType::Struct(StructSchema {
-                                fields: Arc::from(key_fields_schema.clone()),
-                                description: None,
-                            })
-                        };
                         let mut value_fields_schema: Vec<FieldSchema> = vec![];
                         let mut value_fields_idx = vec![];
                         for (idx, field) in collector_schema.fields.iter().enumerate() {
@@ -875,12 +867,11 @@ impl AnalyzerContext {
                             .map(|uuid_idx| pk_fields_idx.contains(uuid_idx))
                             .unwrap_or(false);
                         (
-                            key_fields_schema,
                             value_fields_schema,
                             ExportDataFieldsInfo {
                                 local_collector_ref,
                                 primary_key_def: AnalyzedPrimaryKeyDef::Fields(pk_fields_idx),
-                                primary_key_type,
+                                primary_key_schema,
                                 value_fields_idx,
                                 value_stable,
                             },
@@ -894,7 +885,7 @@ impl AnalyzerContext {
             collection_specs.push(interface::ExportDataCollectionSpec {
                 name: export_op.name.clone(),
                 spec: serde_json::Value::Object(export_op.spec.target.spec.clone()),
-                key_fields_schema,
+                key_fields_schema: data_collection_info.primary_key_schema.clone(),
                 value_fields_schema,
                 index_options: export_op.spec.index_options.clone(),
             });
@@ -936,7 +927,7 @@ impl AnalyzerContext {
                         export_target_factory,
                         export_context,
                         primary_key_def: data_fields_info.primary_key_def,
-                        primary_key_type: data_fields_info.primary_key_type,
+                        primary_key_schema: data_fields_info.primary_key_schema,
                         value_fields: data_fields_info.value_fields_idx,
                         value_stable: data_fields_info.value_stable,
                     })

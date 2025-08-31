@@ -9,7 +9,7 @@ import datetime
 import inspect
 import warnings
 from enum import Enum
-from typing import Any, Callable, Mapping, Type, get_origin
+from typing import Any, Callable, Mapping, Sequence, Type, get_origin
 
 import numpy as np
 
@@ -170,6 +170,37 @@ def make_engine_value_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], An
     return encode_basic_value
 
 
+def make_engine_key_decoder(
+    field_path: list[str],
+    key_fields_schema: list[dict[str, Any]],
+    dst_type_info: AnalyzedTypeInfo,
+) -> Callable[[Any], Any]:
+    """
+    Create an encoder closure for a key type.
+    """
+    if len(key_fields_schema) == 1 and isinstance(
+        dst_type_info.variant, (AnalyzedBasicType, AnalyzedAnyType)
+    ):
+        single_key_decoder = make_engine_value_decoder(
+            field_path,
+            key_fields_schema[0]["type"],
+            dst_type_info,
+            for_key=True,
+        )
+
+        def key_decoder(value: list[Any]) -> Any:
+            return single_key_decoder(value[0])
+
+        return key_decoder
+
+    return make_engine_struct_decoder(
+        field_path,
+        key_fields_schema,
+        dst_type_info,
+        for_key=True,
+    )
+
+
 def make_engine_value_decoder(
     field_path: list[str],
     src_type: dict[str, Any],
@@ -244,31 +275,11 @@ def make_engine_value_decoder(
                     )
 
                 num_key_parts = src_type.get("num_key_parts", 1)
-                key_type_info = analyze_type_info(key_type)
-                key_decoder: Callable[..., Any] | None = None
-                if (
-                    isinstance(
-                        key_type_info.variant, (AnalyzedBasicType, AnalyzedAnyType)
-                    )
-                    and num_key_parts == 1
-                ):
-                    single_key_decoder = make_engine_value_decoder(
-                        field_path,
-                        engine_fields_schema[0]["type"],
-                        key_type_info,
-                        for_key=True,
-                    )
-
-                    def key_decoder(value: list[Any]) -> Any:
-                        return single_key_decoder(value[0])
-
-                else:
-                    key_decoder = make_engine_struct_decoder(
-                        field_path,
-                        engine_fields_schema[0:num_key_parts],
-                        key_type_info,
-                        for_key=True,
-                    )
+                key_decoder = make_engine_key_decoder(
+                    field_path,
+                    engine_fields_schema[0:num_key_parts],
+                    analyze_type_info(key_type),
+                )
                 value_decoder = make_engine_struct_decoder(
                     field_path,
                     engine_fields_schema[num_key_parts:],

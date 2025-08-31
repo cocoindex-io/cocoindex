@@ -122,8 +122,10 @@ pub struct GraphElementInputFieldsIdx {
 }
 
 impl GraphElementInputFieldsIdx {
-    pub fn extract_key(&self, fields: &[value::Value]) -> Result<value::KeyPart> {
-        value::KeyPart::from_values_for_export(self.key.iter().map(|idx| &fields[*idx]))
+    pub fn extract_key(&self, fields: &[value::Value]) -> Result<value::KeyValue> {
+        let key_parts: Result<Box<[value::KeyPart]>> =
+            self.key.iter().map(|idx| fields[*idx].as_key()).collect();
+        Ok(value::KeyValue(key_parts?))
     }
 }
 

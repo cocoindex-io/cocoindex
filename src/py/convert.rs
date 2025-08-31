@@ -93,6 +93,33 @@ pub fn field_values_to_py_object<'py, 'a>(
     Ok(PyTuple::new(py, fields)?.into_any())
 }
 
+pub fn key_to_py_object<'py, 'a>(
+    py: Python<'py>,
+    key: impl IntoIterator<Item = &'a value::KeyPart>,
+) -> PyResult<Bound<'py, PyAny>> {
+    fn key_part_to_py_object<'py>(
+        py: Python<'py>,
+        part: &value::KeyPart,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let result = match part {
+            value::KeyPart::Bytes(v) => v.into_bound_py_any(py)?,
+            value::KeyPart::Str(v) => v.into_bound_py_any(py)?,
+            value::KeyPart::Bool(v) => v.into_bound_py_any(py)?,
+            value::KeyPart::Int64(v) => v.into_bound_py_any(py)?,
+            value::KeyPart::Range(v) => pythonize(py, v).into_py_result()?,
+            value::KeyPart::Uuid(v) => v.into_bound_py_any(py)?,
+            value::KeyPart::Date(v) => v.into_bound_py_any(py)?,
+            value::KeyPart::Struct(v) => key_to_py_object(py, v)?,
+        };
+        Ok(result)
+    }
+    let fields = key
+        .into_iter()
+        .map(|part| key_part_to_py_object(py, part))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok(PyTuple::new(py, fields)?.into_any())
+}
+
 pub fn value_to_py_object<'py>(py: Python<'py>, v: &value::Value) -> PyResult<Bound<'py, PyAny>> {
     let result = match v {
         value::Value::Null => py.None().into_bound(py),

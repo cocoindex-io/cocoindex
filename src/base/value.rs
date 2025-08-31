@@ -1,6 +1,5 @@
 use super::schema::*;
 use crate::base::duration::parse_duration;
-use crate::prelude::invariance_violation;
 use crate::{api_bail, api_error};
 use anyhow::Result;
 use base64::prelude::*;
@@ -184,49 +183,6 @@ impl std::fmt::Display for KeyPart {
 }
 
 impl KeyPart {
-    /// For export purpose only for now. Will remove after switching export to using FullKeyValue.
-    pub fn from_json_for_export(
-        value: serde_json::Value,
-        fields_schema: &[FieldSchema],
-    ) -> Result<Self> {
-        let value = if fields_schema.len() == 1 {
-            Value::from_json(value, &fields_schema[0].value_type.typ)?
-        } else {
-            let field_values: FieldValues = FieldValues::from_json(value, fields_schema)?;
-            Value::Struct(field_values)
-        };
-        value.as_key()
-    }
-
-    /// For export purpose only for now. Will remove after switching export to using FullKeyValue.
-    pub fn from_values_for_export<'a>(
-        values: impl ExactSizeIterator<Item = &'a Value>,
-    ) -> Result<Self> {
-        let key = if values.len() == 1 {
-            let mut values = values;
-            values.next().ok_or_else(invariance_violation)?.as_key()?
-        } else {
-            KeyPart::Struct(values.map(|v| v.as_key()).collect::<Result<Vec<_>>>()?)
-        };
-        Ok(key)
-    }
-
-    /// For export purpose only for now. Will remove after switching export to using FullKeyValue.
-    pub fn fields_iter_for_export(
-        &self,
-        num_fields: usize,
-    ) -> Result<impl Iterator<Item = &KeyPart>> {
-        let slice = if num_fields == 1 {
-            std::slice::from_ref(self)
-        } else {
-            match self {
-                KeyPart::Struct(v) => v,
-                _ => api_bail!("Invalid key value type"),
-            }
-        };
-        Ok(slice.iter())
-    }
-
     fn parts_from_str(
         values_iter: &mut impl Iterator<Item = String>,
         schema: &ValueType,
@@ -471,7 +427,8 @@ impl KeyValue {
         let field_values = if schema.len() == 1
             && matches!(schema[0].value_type.typ, ValueType::Basic(_))
         {
-            Box::from([KeyPart::from_json_for_export(value, schema)?])
+            let val = Value::<ScopeValue>::from_json(value, &schema[0].value_type.typ)?;
+            Box::from([val.into_key()?])
         } else {
             match value {
                 serde_json::Value::Array(arr) => std::iter::zip(arr.into_iter(), schema)
@@ -507,7 +464,7 @@ impl KeyValue {
         Ok(Self(keys))
     }
 
-    pub fn to_values(&self) -> Vec<Value> {
+    pub fn to_values(&self) -> Box<[Value]> {
         self.0.iter().map(|v| v.into()).collect()
     }
 

@@ -4,7 +4,7 @@ use super::shared::table_columns::{
     TableColumnsSchema, TableMainSetupAction, TableUpsertionAction, check_table_compatibility,
 };
 use crate::base::spec::{self, *};
-use crate::ops::shared::postgres::{bind_key_field, get_db_pool, key_value_fields_iter};
+use crate::ops::shared::postgres::{bind_key_field, get_db_pool};
 use crate::settings::DatabaseConnectionSpec;
 use async_trait::async_trait;
 use indexmap::{IndexMap, IndexSet};
@@ -192,11 +192,7 @@ impl ExportContext {
                     query_builder.push(",");
                 }
                 query_builder.push(" (");
-                for (j, key_value) in
-                    key_value_fields_iter(self.key_fields_schema.iter(), &upsert.key)?
-                        .iter()
-                        .enumerate()
-                {
+                for (j, key_value) in upsert.key.iter().enumerate() {
                     if j > 0 {
                         query_builder.push(", ");
                     }
@@ -234,11 +230,8 @@ impl ExportContext {
         for deletion in deletions.iter() {
             let mut query_builder = sqlx::QueryBuilder::new("");
             query_builder.push(&self.delete_sql_prefix);
-            for (i, (schema, value)) in self
-                .key_fields_schema
-                .iter()
-                .zip(key_value_fields_iter(self.key_fields_schema.iter(), &deletion.key)?.iter())
-                .enumerate()
+            for (i, (schema, value)) in
+                std::iter::zip(&self.key_fields_schema, &deletion.key).enumerate()
             {
                 if i > 0 {
                     query_builder.push(" AND ");

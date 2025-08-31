@@ -193,14 +193,14 @@ pub trait SimpleFunctionFactory {
 
 #[derive(Debug)]
 pub struct ExportTargetUpsertEntry {
-    pub key: KeyPart,
+    pub key: KeyValue,
     pub additional_key: serde_json::Value,
     pub value: FieldValues,
 }
 
 #[derive(Debug)]
 pub struct ExportTargetDeleteEntry {
-    pub key: KeyPart,
+    pub key: KeyValue,
     pub additional_key: serde_json::Value,
 }
 
@@ -290,7 +290,7 @@ pub trait TargetFactory: Send + Sync {
 
     fn extract_additional_key(
         &self,
-        key: &KeyPart,
+        key: &KeyValue,
         value: &FieldValues,
         export_context: &(dyn Any + Send + Sync),
     ) -> Result<serde_json::Value>;
