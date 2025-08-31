@@ -19,7 +19,6 @@ import threading
 import asyncio
 import os
 import time
-import atexit
 from .user_app_loader import load_user_app
 from .runtime import execution_context
 import logging
@@ -63,10 +62,18 @@ def _get_pool() -> ProcessPoolExecutor:
     with _pool_lock:
         if _pool is None:
             if not _pool_cleanup_registered:
-                # Register the shutdown at exit at creation time (rather than at import time)
-                # to make sure it's executed earlier in the shutdown sequence.
-                atexit.register(_shutdown_pool_at_exit)
-                _pool_cleanup_registered = True
+                # CRITICAL: register with threading's early-exit list
+                reg = getattr(threading, "_register_atexit", None)
+                if callable(reg):
+                    reg(_shutdown_pool_at_exit)  # goes ahead of normal atexit
+                    _pool_cleanup_registered = True
+                else:
+                    # Fallback for odd Pythons: normal atexit (will run later)
+                    import atexit
+
+                    if not _pool_cleanup_registered:
+                        atexit.register(_shutdown_pool_at_exit)
+                        _pool_cleanup_registered = True
 
             # Single worker process as requested
             _pool = ProcessPoolExecutor(
