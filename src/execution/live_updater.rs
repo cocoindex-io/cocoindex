@@ -1,5 +1,5 @@
 use crate::{
-    execution::{source_indexer::ProcessSourceKeyInput, stats::UpdateStats},
+    execution::{source_indexer::ProcessSourceRowInput, stats::UpdateStats},
     prelude::*,
 };
 
@@ -192,18 +192,18 @@ impl SourceUpdateTask {
                                         .concurrency_controller
                                         .acquire(concur_control::BYTES_UNKNOWN_YET)
                                         .await?;
-                                    tokio::spawn(source_context.clone().process_source_key(
-                                        change.key,
+                                    tokio::spawn(source_context.clone().process_source_row(
+                                        ProcessSourceRowInput {
+                                            key: change.key,
+                                            key_aux_info: Some(change.key_aux_info),
+                                            data: change.data,
+                                        },
                                         update_stats.clone(),
                                         concur_permit,
                                         Some(move || async move {
                                             SharedAckFn::ack(&shared_ack_fn).await
                                         }),
                                         pool.clone(),
-                                        ProcessSourceKeyInput {
-                                            key_aux_info: Some(change.key_aux_info),
-                                            data: change.data,
-                                        },
                                     ));
                                 }
                             }
@@ -242,7 +242,9 @@ impl SourceUpdateTask {
             let live_mode = self.options.live_mode;
             async move {
                 let update_stats = Arc::new(stats::UpdateStats::default());
-                source_context.update(&pool, &update_stats).await?;
+                source_context
+                    .update(&pool, &update_stats, /*expect_little_diff=*/ false)
+                    .await?;
                 if update_stats.has_any_change() {
                     status_tx.send_modify(|update| {
                         update.source_updates_num[source_idx] += 1;
@@ -260,7 +262,9 @@ impl SourceUpdateTask {
                         interval.tick().await;
 
                         let update_stats = Arc::new(stats::UpdateStats::default());
-                        source_context.update(&pool, &update_stats).await?;
+                        source_context
+                            .update(&pool, &update_stats, /*expect_little_diff=*/ true)
+                            .await?;
                         if update_stats.has_any_change() {
                             status_tx.send_modify(|update| {
                                 update.source_updates_num[source_idx] += 1;

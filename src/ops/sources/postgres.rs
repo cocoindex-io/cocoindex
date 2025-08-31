@@ -39,6 +39,80 @@ struct Executor {
     table_schema: PostgresTableSchema,
 }
 
+impl Executor {
+    /// Append value and ordinal columns to the provided columns vector.
+    /// Returns the optional index of the ordinal column in the final selection.
+    fn build_selected_columns(
+        &self,
+        columns: &mut Vec<String>,
+        options: &SourceExecutorReadOptions,
+    ) -> Option<usize> {
+        let base_len = columns.len();
+        if options.include_value {
+            columns.extend(
+                self.table_schema
+                    .value_columns
+                    .iter()
+                    .map(|col| format!("\"{}\"", col.schema.name)),
+            );
+        }
+
+        if options.include_ordinal {
+            if let Some(ord_schema) = &self.table_schema.ordinal_field_schema {
+                if options.include_value {
+                    if let Some(val_idx) = self.table_schema.ordinal_field_idx {
+                        return Some(base_len + val_idx);
+                    }
+                }
+                columns.push(format!("\"{}\"", ord_schema.schema.name));
+                return Some(columns.len() - 1);
+            }
+        }
+
+        None
+    }
+
+    /// Decode all value columns from a row, starting at the given index offset.
+    fn decode_row_data(
+        &self,
+        row: &sqlx::postgres::PgRow,
+        options: &SourceExecutorReadOptions,
+        ordinal_col_index: Option<usize>,
+        value_start_idx: usize,
+    ) -> Result<PartialSourceRowData> {
+        let value = if options.include_value {
+            let mut fields = Vec::with_capacity(self.table_schema.value_columns.len());
+            for (i, info) in self.table_schema.value_columns.iter().enumerate() {
+                let value = (info.decoder)(row, value_start_idx + i)?;
+                fields.push(value);
+            }
+            Some(SourceValue::Existence(FieldValues { fields }))
+        } else {
+            None
+        };
+
+        let ordinal = if options.include_ordinal {
+            if let (Some(idx), Some(ord_schema)) = (
+                ordinal_col_index,
+                self.table_schema.ordinal_field_schema.as_ref(),
+            ) {
+                let val = (ord_schema.decoder)(row, idx)?;
+                Some(value_to_ordinal(&val))
+            } else {
+                Some(Ordinal::unavailable())
+            }
+        } else {
+            None
+        };
+
+        Ok(PartialSourceRowData {
+            value,
+            ordinal,
+            content_version_fp: None,
+        })
+    }
+}
+
 /// Map PostgreSQL data types to CocoIndex BasicValueType and a decoder function
 fn map_postgres_type_to_cocoindex_and_decoder(pg_type: &str) -> (BasicValueType, PgValueDecoder) {
     match pg_type {
@@ -306,32 +380,21 @@ fn value_to_ordinal(value: &Value) -> Ordinal {
 impl SourceExecutor for Executor {
     async fn list(
         &self,
-        options: &SourceExecutorListOptions,
-    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRowMetadata>>>> {
+        options: &SourceExecutorReadOptions,
+    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRow>>>> {
         let stream = try_stream! {
-            // Build query to select primary key columns
+            // Build selection including PKs (for keys), and optionally values and ordinal
             let pk_columns: Vec<String> = self
                 .table_schema
                 .primary_key_columns
                 .iter()
                 .map(|col| format!("\"{}\"", col.schema.name))
                 .collect();
+            let pk_count = pk_columns.len();
+            let mut select_parts = pk_columns;
+            let ordinal_col_index = self.build_selected_columns(&mut select_parts, options);
 
-            let mut select_parts = pk_columns.clone();
-            let mut ordinal_col_index: Option<usize> = None;
-            if options.include_ordinal
-                && let Some(ord_schema) = &self.table_schema.ordinal_field_schema
-            {
-                // Only append ordinal column if present.
-                select_parts.push(format!("\"{}\"", ord_schema.schema.name));
-                ordinal_col_index = Some(select_parts.len() - 1);
-            }
-
-            let mut query = format!(
-                "SELECT {} FROM \"{}\"",
-                select_parts.join(", "),
-                self.table_name
-            );
+            let mut query = format!("SELECT {} FROM \"{}\"", select_parts.join(", "), self.table_name);
 
             // Add ordering by ordinal column if specified
             if let Some(ord_schema) = &self.table_schema.ordinal_field_schema {
@@ -340,38 +403,21 @@ impl SourceExecutor for Executor {
 
             let mut rows = sqlx::query(&query).fetch(&self.db_pool);
             while let Some(row) = rows.try_next().await? {
-                let parts = self
-                    .table_schema
-                    .primary_key_columns
+                // Decode key from PKs (selected first)
+                let parts = self.table_schema.primary_key_columns
                     .iter()
                     .enumerate()
                     .map(|(i, info)| (info.decoder)(&row, i)?.into_key())
                     .collect::<Result<Box<[KeyPart]>>>()?;
                 let key = KeyValue(parts);
 
-                // Compute ordinal if requested
-                let ordinal = if options.include_ordinal {
-                    if let (Some(col_idx), Some(_ord_schema)) = (
-                        ordinal_col_index,
-                        self.table_schema.ordinal_field_schema.as_ref(),
-                    ) {
-                        let val = match self.table_schema.ordinal_field_idx {
-                            Some(idx) => (self.table_schema.value_columns[idx].decoder)(&row, col_idx)?,
-                            None => (self.table_schema.ordinal_field_schema.as_ref().unwrap().decoder)(&row, col_idx)?,
-                        };
-                        Some(value_to_ordinal(&val))
-                    } else {
-                        Some(Ordinal::unavailable())
-                    }
-                } else {
-                    None
-                };
+                // Decode value and ordinal
+                let data = self.decode_row_data(&row, options, ordinal_col_index, pk_count)?;
 
-                yield vec![PartialSourceRowMetadata {
+                yield vec![PartialSourceRow {
                     key,
                     key_aux_info: serde_json::Value::Null,
-                    ordinal,
-                    content_version_fp: None,
+                    data,
                 }];
             }
         };
@@ -382,29 +428,11 @@ impl SourceExecutor for Executor {
         &self,
         key: &KeyValue,
         _key_aux_info: &serde_json::Value,
-        options: &SourceExecutorGetOptions,
+        options: &SourceExecutorReadOptions,
     ) -> Result<PartialSourceRowData> {
         let mut qb = sqlx::QueryBuilder::new("SELECT ");
         let mut selected_columns: Vec<String> = Vec::new();
-
-        if options.include_value {
-            selected_columns.extend(
-                self.table_schema
-                    .value_columns
-                    .iter()
-                    .map(|col| format!("\"{}\"", col.schema.name)),
-            );
-        }
-
-        if options.include_ordinal {
-            if let Some(ord_schema) = &self.table_schema.ordinal_field_schema {
-                // Append ordinal column if not already provided by included value columns,
-                // or when value columns are not selected at all
-                if self.table_schema.ordinal_field_idx.is_none() || !options.include_value {
-                    selected_columns.push(format!("\"{}\"", ord_schema.schema.name));
-                }
-            }
-        }
+        let ordinal_col_index = self.build_selected_columns(&mut selected_columns, options);
 
         if selected_columns.is_empty() {
             qb.push("1");
@@ -440,50 +468,20 @@ impl SourceExecutor for Executor {
         }
 
         let row_opt = qb.build().fetch_optional(&self.db_pool).await?;
-
-        let value = if options.include_value {
-            match &row_opt {
-                Some(row) => {
-                    let mut fields = Vec::with_capacity(self.table_schema.value_columns.len());
-                    for (i, info) in self.table_schema.value_columns.iter().enumerate() {
-                        let value = (info.decoder)(&row, i)?;
-                        fields.push(value);
-                    }
-                    Some(SourceValue::Existence(FieldValues { fields }))
-                }
-                None => Some(SourceValue::NonExistence),
-            }
-        } else {
-            None
+        let data = match &row_opt {
+            Some(row) => self.decode_row_data(&row, options, ordinal_col_index, 0)?,
+            None => PartialSourceRowData {
+                value: Some(SourceValue::NonExistence),
+                ordinal: Some(Ordinal::unavailable()),
+                content_version_fp: None,
+            },
         };
 
-        let ordinal = if options.include_ordinal {
-            match (&row_opt, &self.table_schema.ordinal_field_schema) {
-                (Some(row), Some(ord_schema)) => {
-                    // Determine index without scanning the row metadata.
-                    let col_index = if options.include_value {
-                        match self.table_schema.ordinal_field_idx {
-                            Some(idx) => idx,
-                            None => self.table_schema.value_columns.len(),
-                        }
-                    } else {
-                        // Only ordinal was selected
-                        0
-                    };
-                    let val = (ord_schema.decoder)(&row, col_index)?;
-                    Some(value_to_ordinal(&val))
-                }
-                _ => Some(Ordinal::unavailable()),
-            }
-        } else {
-            None
-        };
+        Ok(data)
+    }
 
-        Ok(PartialSourceRowData {
-            value,
-            ordinal,
-            content_version_fp: None,
-        })
+    fn provides_ordinal(&self) -> bool {
+        self.table_schema.ordinal_field_schema.is_some()
     }
 }
 

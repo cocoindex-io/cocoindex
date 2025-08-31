@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use crate::execution::{evaluator, indexing_status, memoization, row_indexer, stats};
 use crate::lib_context::LibContext;
-use crate::{base::schema::FlowSchema, ops::interface::SourceExecutorListOptions};
+use crate::{base::schema::FlowSchema, ops::interface::SourceExecutorReadOptions};
 use axum::{
     Json,
     extract::{Path, State},
@@ -101,9 +101,10 @@ pub async fn get_keys(
 
     let mut rows_stream = import_op
         .executor
-        .list(&SourceExecutorListOptions {
+        .list(&SourceExecutorReadOptions {
             include_ordinal: false,
             include_content_version_fp: false,
+            include_value: false,
         })
         .await?;
     let mut keys = Vec::new();

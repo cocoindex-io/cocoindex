@@ -166,7 +166,8 @@ impl<'a> LocalSourceRowStateOperator<'a> {
     }
 }
 
-pub struct ProcessSourceKeyInput {
+pub struct ProcessSourceRowInput {
+    pub key: value::KeyValue,
     /// `key_aux_info` is not available for deletions. It must be provided if `data.value` is `None`.
     pub key_aux_info: Option<serde_json::Value>,
     pub data: interface::PartialSourceRowData,
@@ -224,17 +225,16 @@ impl SourceIndexingContext {
         })
     }
 
-    pub async fn process_source_key<
+    pub async fn process_source_row<
         AckFut: Future<Output = Result<()>> + Send + 'static,
         AckFn: FnOnce() -> AckFut,
     >(
         self: Arc<Self>,
-        key: value::KeyValue,
+        row_input: ProcessSourceRowInput,
         update_stats: Arc<stats::UpdateStats>,
         _concur_permit: concur_control::CombinedConcurrencyControllerPermit,
         ack_fn: Option<AckFn>,
         pool: PgPool,
-        inputs: ProcessSourceKeyInput,
     ) {
         let process = async {
             let plan = self.flow.get_execution_plan().await?;
@@ -245,7 +245,7 @@ impl SourceIndexingContext {
                 plan: &plan,
                 import_op,
                 schema,
-                key: &key,
+                key: &row_input.key,
                 import_op_idx: self.source_idx,
             };
             let mut row_indexer = row_indexer::RowIndexer::new(
@@ -256,9 +256,9 @@ impl SourceIndexingContext {
             )?;
 
             let mut row_state_operator =
-                LocalSourceRowStateOperator::new(&key, &self.state, &update_stats);
+                LocalSourceRowStateOperator::new(&row_input.key, &self.state, &update_stats);
 
-            let source_data = inputs.data;
+            let source_data = row_input.data;
             if let Some(ordinal) = source_data.ordinal
                 && let Some(content_version_fp) = &source_data.content_version_fp
             {
@@ -295,22 +295,22 @@ impl SourceIndexingContext {
                 }
             }
 
-            let (ordinal, value, content_version_fp) =
+            let (ordinal, content_version_fp, value) =
                 match (source_data.ordinal, source_data.value) {
                     (Some(ordinal), Some(value)) => {
-                        (ordinal, value, source_data.content_version_fp)
+                        (ordinal, source_data.content_version_fp, value)
                     }
                     _ => {
                         let data = import_op
                         .executor
                         .get_value(
-                            &key,
-                            inputs.key_aux_info.as_ref().ok_or_else(|| {
+                            &row_input.key,
+                            row_input.key_aux_info.as_ref().ok_or_else(|| {
                                 anyhow::anyhow!(
                                     "`key_aux_info` must be provided when there's no `source_data`"
                                 )
                             })?,
-                            &interface::SourceExecutorGetOptions {
+                            &interface::SourceExecutorReadOptions {
                                 include_value: true,
                                 include_ordinal: true,
                                 include_content_version_fp: true,
@@ -320,9 +320,9 @@ impl SourceIndexingContext {
                         (
                             data.ordinal
                                 .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
+                            data.content_version_fp,
                             data.value
                                 .ok_or_else(|| anyhow::anyhow!("value is not available"))?,
-                            data.content_version_fp,
                         )
                     }
                 };
@@ -356,7 +356,8 @@ impl SourceIndexingContext {
                 "{:?}",
                 e.context(format!(
                     "Error in processing row from source `{source}` with key: {key}",
-                    source = self.flow.flow_instance.import_ops[self.source_idx].name
+                    source = self.flow.flow_instance.import_ops[self.source_idx].name,
+                    key = row_input.key,
                 ))
             );
         }
@@ -366,6 +367,7 @@ impl SourceIndexingContext {
         self: &Arc<Self>,
         pool: &PgPool,
         update_stats: &Arc<stats::UpdateStats>,
+        expect_little_diff: bool,
     ) -> Result<()> {
         let pending_update_fut = {
             let mut pending_update = self.pending_update.lock().unwrap();
@@ -382,7 +384,8 @@ impl SourceIndexingContext {
                             let mut pending_update = slf.pending_update.lock().unwrap();
                             *pending_update = None;
                         }
-                        slf.update_once(&pool, &update_stats).await?;
+                        slf.update_once(&pool, &update_stats, expect_little_diff)
+                            .await?;
                     }
                     anyhow::Ok(())
                 });
@@ -405,16 +408,18 @@ impl SourceIndexingContext {
         self: &Arc<Self>,
         pool: &PgPool,
         update_stats: &Arc<stats::UpdateStats>,
+        expect_little_diff: bool,
     ) -> Result<()> {
         let plan = self.flow.get_execution_plan().await?;
         let import_op = &plan.import_ops[self.source_idx];
-        let rows_stream = import_op
-            .executor
-            .list(&interface::SourceExecutorListOptions {
-                include_ordinal: true,
-                include_content_version_fp: true,
-            })
-            .await?;
+        let read_options = interface::SourceExecutorReadOptions {
+            include_ordinal: true,
+            include_content_version_fp: true,
+            // When only a little diff is expected and the source provides ordinal, we don't fetch values during `list()` by default,
+            // as there's a high chance that we don't need the values at all
+            include_value: !(expect_little_diff && import_op.executor.provides_ordinal()),
+        };
+        let rows_stream = import_op.executor.list(&read_options).await?;
         self.update_with_stream(import_op, rows_stream, pool, update_stats)
             .await
     }
@@ -422,7 +427,7 @@ impl SourceIndexingContext {
     async fn update_with_stream(
         self: &Arc<Self>,
         import_op: &plan::AnalyzedImportOp,
-        mut rows_stream: BoxStream<'_, Result<Vec<interface::PartialSourceRowMetadata>>>,
+        mut rows_stream: BoxStream<'_, Result<Vec<interface::PartialSourceRow>>>,
         pool: &PgPool,
         update_stats: &Arc<stats::UpdateStats>,
     ) -> Result<()> {
@@ -435,7 +440,8 @@ impl SourceIndexingContext {
         while let Some(row) = rows_stream.next().await {
             for row in row? {
                 let source_version = SourceVersion::from_current_with_ordinal(
-                    row.ordinal
+                    row.data
+                        .ordinal
                         .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
                 );
                 {
@@ -454,20 +460,16 @@ impl SourceIndexingContext {
                     .concurrency_controller
                     .acquire(concur_control::BYTES_UNKNOWN_YET)
                     .await?;
-                join_set.spawn(self.clone().process_source_key(
-                    row.key,
+                join_set.spawn(self.clone().process_source_row(
+                    ProcessSourceRowInput {
+                        key: row.key,
+                        key_aux_info: Some(row.key_aux_info),
+                        data: row.data,
+                    },
                     update_stats.clone(),
                     concur_permit,
                     NO_ACK,
                     pool.clone(),
-                    ProcessSourceKeyInput {
-                        key_aux_info: Some(row.key_aux_info),
-                        data: interface::PartialSourceRowData {
-                            value: None,
-                            ordinal: Some(source_version.ordinal),
-                            content_version_fp: row.content_version_fp,
-                        },
-                    },
                 ));
             }
         }
@@ -491,20 +493,20 @@ impl SourceIndexingContext {
         };
         for (key, source_ordinal) in deleted_key_versions {
             let concur_permit = import_op.concurrency_controller.acquire(Some(|| 0)).await?;
-            join_set.spawn(self.clone().process_source_key(
-                key,
+            join_set.spawn(self.clone().process_source_row(
+                ProcessSourceRowInput {
+                    key,
+                    key_aux_info: None,
+                    data: interface::PartialSourceRowData {
+                        ordinal: Some(source_ordinal),
+                        content_version_fp: None,
+                        value: Some(interface::SourceValue::NonExistence),
+                    },
+                },
                 update_stats.clone(),
                 concur_permit,
                 NO_ACK,
                 pool.clone(),
-                ProcessSourceKeyInput {
-                    key_aux_info: None,
-                    data: interface::PartialSourceRowData {
-                        value: Some(interface::SourceValue::NonExistence),
-                        ordinal: Some(source_ordinal),
-                        content_version_fp: None,
-                    },
-                },
             ));
         }
         while let Some(result) = join_set.join_next().await {

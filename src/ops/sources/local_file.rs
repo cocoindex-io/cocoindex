@@ -25,8 +25,8 @@ struct Executor {
 impl SourceExecutor for Executor {
     async fn list(
         &self,
-        options: &SourceExecutorListOptions,
-    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRowMetadata>>>> {
+        options: &SourceExecutorReadOptions,
+    ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRow>>>> {
         let root_component_size = self.root_path.components().count();
         let mut dirs = Vec::new();
         dirs.push(Cow::Borrowed(&self.root_path));
@@ -54,11 +54,14 @@ impl SourceExecutor for Executor {
                         } else {
                             None
                         };
-                        yield vec![PartialSourceRowMetadata {
+                        yield vec![PartialSourceRow {
                             key: KeyValue::from_single_part(relative_path.to_string()),
                             key_aux_info: serde_json::Value::Null,
-                            ordinal,
-                            content_version_fp: None,
+                            data: PartialSourceRowData {
+                                ordinal,
+                                content_version_fp: None,
+                                value: None,
+                            },
                         }];
                     }
                 }
@@ -72,7 +75,7 @@ impl SourceExecutor for Executor {
         &self,
         key: &KeyValue,
         _key_aux_info: &serde_json::Value,
-        options: &SourceExecutorGetOptions,
+        options: &SourceExecutorReadOptions,
     ) -> Result<PartialSourceRowData> {
         let path = key.single_part()?.str_value()?.as_ref();
         if !self.pattern_matcher.is_file_included(path) {
@@ -111,6 +114,10 @@ impl SourceExecutor for Executor {
             ordinal,
             content_version_fp: None,
         })
+    }
+
+    fn provides_ordinal(&self) -> bool {
+        true
     }
 }
 
