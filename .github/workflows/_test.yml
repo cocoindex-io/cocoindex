@@ -58,4 +58,4 @@ jobs:
             ${{ matrix.platform.python_exec }} -m mypy python
         - name: Python tests
           run: |
-            ${{ matrix.platform.python_exec }} -m pytest python/cocoindex/tests
+            ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests
