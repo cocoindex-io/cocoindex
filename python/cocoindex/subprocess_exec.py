@@ -19,6 +19,7 @@ import threading
 import asyncio
 import os
 import time
+import atexit
 from .user_app_loader import load_user_app
 from .runtime import execution_context
 import logging
@@ -33,6 +34,25 @@ _pool_lock = threading.Lock()
 _pool: ProcessPoolExecutor | None = None
 _user_apps: list[str] = []
 _logger = logging.getLogger(__name__)
+
+
+def _shutdown_pool_at_exit() -> None:
+    """Best-effort shutdown of the global ProcessPoolExecutor on interpreter exit."""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            try:
+                _pool.shutdown(cancel_futures=True)
+            except Exception:
+                _logger.debug(
+                    "Error during ProcessPoolExecutor shutdown at exit",
+                    exc_info=True,
+                )
+            finally:
+                _pool = None
+
+
+atexit.register(_shutdown_pool_at_exit)
 
 
 def _get_pool() -> ProcessPoolExecutor:
