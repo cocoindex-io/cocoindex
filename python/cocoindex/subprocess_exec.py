@@ -37,7 +37,7 @@ _user_apps: list[str] = []
 _logger = logging.getLogger(__name__)
 
 
-def _shutdown_pool_at_exit() -> None:
+def shutdown_pool_at_exit() -> None:
     """Best-effort shutdown of the global ProcessPoolExecutor on interpreter exit."""
     global _pool, _pool_cleanup_registered  # pylint: disable=global-statement
     print("Shutting down pool at exit")
@@ -65,7 +65,7 @@ def _get_pool() -> ProcessPoolExecutor:
             if not _pool_cleanup_registered:
                 # Register the shutdown at exit at creation time (rather than at import time)
                 # to make sure it's executed earlier in the shutdown sequence.
-                atexit.register(_shutdown_pool_at_exit)
+                atexit.register(shutdown_pool_at_exit)
                 _pool_cleanup_registered = True
 
             # Single worker process as requested
