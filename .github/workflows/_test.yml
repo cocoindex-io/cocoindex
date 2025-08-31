@@ -41,19 +41,39 @@ jobs:
         - name: Setup venv
           run: |
             python -m venv .venv
+
         - name: Install Python toolchains
+          if: runner.os != 'Windows'
           run: |
-            . .venv/bin/activate
-            pip install maturin mypy pytest pytest-asyncio
+            .venv/bin/python -m pip install maturin mypy pytest pytest-asyncio
+        - name: Install Python toolchains (Windows)
+          if: runner.os == 'Windows'
+          run: |
+            .venv\Scripts\python -m pip install maturin mypy pytest pytest-asyncio
+
         - name: Python build
+          if: runner.os != 'Windows'
           run: |
-            . .venv/bin/activate
-            maturin develop -E all
+            .venv/bin/python -m maturin develop -E all
+        - name: Python build (Windows)
+          if: runner.os == 'Windows'
+          run: |
+            .venv\Scripts\python -m maturin develop -E all
+
         - name: Python type check (mypy)
+          if: runner.os != 'Windows'
           run: |
-            . .venv/bin/activate
-            mypy python
+            .venv/bin/python -m mypy python
+        - name: Python type check (mypy) (Windows)
+          if: runner.os == 'Windows'
+          run: |
+            .venv\Scripts\python -m mypy python
+
         - name: Python tests
+          if: runner.os != 'Windows'
           run: |
-            . .venv/bin/activate
-            pytest python/cocoindex/tests
+            .venv/bin/python -m pytest python/cocoindex/tests
+        - name: Python tests (Windows)
+          if: runner.os == 'Windows'
+          run: |
+            .venv\Scripts\python -m pytest python/cocoindex/tests
