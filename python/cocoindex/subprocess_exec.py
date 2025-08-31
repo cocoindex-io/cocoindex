@@ -32,6 +32,7 @@ WATCHDOG_INTERVAL_SECONDS = 10.0
 # ---------------------------------------------
 _pool_lock = threading.Lock()
 _pool: ProcessPoolExecutor | None = None
+_pool_cleanup_registered = False
 _user_apps: list[str] = []
 _logger = logging.getLogger(__name__)
 
@@ -52,13 +53,16 @@ def _shutdown_pool_at_exit() -> None:
                 _pool = None
 
 
-atexit.register(_shutdown_pool_at_exit)
-
-
 def _get_pool() -> ProcessPoolExecutor:
-    global _pool
+    global _pool, _pool_cleanup_registered
     with _pool_lock:
         if _pool is None:
+            if not _pool_cleanup_registered:
+                # Register the shutdown at exit at creation time (rather than at import time)
+                # to make sure it's executed earlier in the shutdown sequence.
+                atexit.register(_shutdown_pool_at_exit)
+                _pool_cleanup_registered = True
+
             # Single worker process as requested
             _pool = ProcessPoolExecutor(
                 max_workers=1,
