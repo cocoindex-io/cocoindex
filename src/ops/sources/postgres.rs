@@ -789,9 +789,9 @@ impl SourceFactoryBase for Factory {
         .await?;
 
         let notification_ctx = spec.notification.map(|spec| {
-            let channel_name = spec
-                .channel_name
-                .unwrap_or_else(|| format!("coco_{}__{}", context.flow_instance_name, source_name));
+            let channel_name = spec.channel_name.unwrap_or_else(|| {
+                format!("{}__{}__cocoindex", context.flow_instance_name, source_name)
+            });
             NotificationContext {
                 function_name: format!("{channel_name}_n"),
                 trigger_name: format!("{channel_name}_t"),
