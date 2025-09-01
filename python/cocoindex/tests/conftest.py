@@ -11,19 +11,12 @@ def _cocoindex_windows_env_fixture(
 ) -> typing.Generator[None, None, None]:
     """Shutdown the subprocess pool at exit on Windows."""
 
-    print("Platform: ", sys.platform)
-
     yield
 
-    print("Test done.")
-    sys.stdout.flush()
     if not sys.platform.startswith("win"):
         return
 
     try:
-        print("Shutdown the subprocess pool at exit in hook.")
-        sys.stdout.flush()
-
         import cocoindex.subprocess_exec
 
         original_sigint_handler = signal.getsignal(signal.SIGINT)
@@ -33,10 +26,7 @@ def _cocoindex_windows_env_fixture(
 
             # If any test failed, let pytest exit normally with nonzero code
             if request.session.testsfailed == 0:
-                print("Exit with success.")
-                sys.stdout.flush()
-
-                sys.exit(0)
+                os._exit(0)  # immediate success exit (skips atexit/teardown)
 
         finally:
             try:
