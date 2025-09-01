@@ -32,8 +32,6 @@ jobs:
           uses: Swatinem/rust-cache@v2
           with:
             key: rust-${{ matrix.platform.runner }}-${{ matrix.python-version }}
-        - name: Rust build
-          run: cargo build --verbose
         - name: Rust tests
           run: cargo test --verbose
 
@@ -53,9 +51,9 @@ jobs:
         - name: Python build
           run: |
             ${{ matrix.platform.python_exec }} -m maturin develop -E all
-        - name: Python type check (mypy)
-          run: |
-            ${{ matrix.platform.python_exec }} -m mypy python
         - name: Python tests
           run: |
             ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests
+        - name: Python type check (mypy)
+          run: |
+            ${{ matrix.platform.python_exec }} -m mypy python
