@@ -14,6 +14,11 @@ struct FieldSchemaInfo {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct NotificationSpec {
+    notify_function_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Spec {
     /// Table name to read from (required)
     table_name: String,
@@ -23,6 +28,8 @@ pub struct Spec {
     included_columns: Option<Vec<String>>,
     /// Optional: ordinal column for tracking changes
     ordinal_column: Option<String>,
+    /// Optional: notification for change capture
+    notification: Option<NotificationSpec>,
 }
 
 #[derive(Clone)]

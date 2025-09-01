@@ -70,6 +70,14 @@ class AzureBlob(op.SourceSpec):
     account_access_key: TransientAuthEntryReference[str] | None = None
 
 
+class PostgresNotification:
+    """Notification for a PostgreSQL table."""
+
+    # Optional: name of the PostgreSQL notify function to use.
+    # If not provided, the default notify function will be used.
+    notify_function_name: str | None = None
+
+
 class Postgres(op.SourceSpec):
     """Import data from a PostgreSQL table."""
 
@@ -87,3 +95,6 @@ class Postgres(op.SourceSpec):
     # Optional: column name to use for ordinal tracking (for incremental updates)
     # Should be a timestamp, serial, or other incrementing column
     ordinal_column: str | None = None
+
+    # Optional: when set, supports change capture from PostgreSQL notification.
+    notification: PostgresNotification | None = None
