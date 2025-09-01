@@ -51,7 +51,13 @@ jobs:
         - name: Python build
           run: |
             ${{ matrix.platform.python_exec }} -m maturin develop -E all
-        - name: Python tests
+        - name: Python tests (non-Windows)
+          if: ${{ !startsWith(matrix.platform.runner, 'windows') }}
+          run: |
+            ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests
+        - name: Python tests (Windows)
+          if: ${{ startsWith(matrix.platform.runner, 'windows') }}
+          # shell: cmd
           run: |
             ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests
         - name: Python type check (mypy)

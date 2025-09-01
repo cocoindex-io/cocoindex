@@ -36,7 +36,7 @@ def _cocoindex_windows_env_fixture(
                 print("Exit with success.")
                 sys.stdout.flush()
 
-                os._exit(0)  # immediate success exit (skips atexit/teardown)
+                sys.exit(0)
 
         finally:
             try:
