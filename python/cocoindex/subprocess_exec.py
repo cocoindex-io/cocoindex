@@ -19,6 +19,7 @@ import threading
 import asyncio
 import os
 import time
+import atexit
 from .user_app_loader import load_user_app
 from .runtime import execution_context
 import logging
@@ -31,14 +32,39 @@ WATCHDOG_INTERVAL_SECONDS = 10.0
 # ---------------------------------------------
 _pool_lock = threading.Lock()
 _pool: ProcessPoolExecutor | None = None
+_pool_cleanup_registered = False
 _user_apps: list[str] = []
 _logger = logging.getLogger(__name__)
 
 
+def shutdown_pool_at_exit() -> None:
+    """Best-effort shutdown of the global ProcessPoolExecutor on interpreter exit."""
+    global _pool, _pool_cleanup_registered  # pylint: disable=global-statement
+    with _pool_lock:
+        if _pool is not None:
+            try:
+                _pool.shutdown(wait=True, cancel_futures=True)
+            except Exception as e:
+                _logger.error(
+                    "Error during ProcessPoolExecutor shutdown at exit: %s",
+                    e,
+                    exc_info=True,
+                )
+            finally:
+                _pool = None
+                _pool_cleanup_registered = False
+
+
 def _get_pool() -> ProcessPoolExecutor:
-    global _pool
+    global _pool, _pool_cleanup_registered  # pylint: disable=global-statement
     with _pool_lock:
         if _pool is None:
+            if not _pool_cleanup_registered:
+                # Register the shutdown at exit at creation time (rather than at import time)
+                # to make sure it's executed earlier in the shutdown sequence.
+                atexit.register(shutdown_pool_at_exit)
+                _pool_cleanup_registered = True
+
             # Single worker process as requested
             _pool = ProcessPoolExecutor(
                 max_workers=1,
@@ -213,11 +239,9 @@ def _sp_call(key_bytes: bytes, args: tuple[Any, ...], kwargs: dict[str, Any]) ->
 
 
 class _ExecutorStub:
-    _pool: ProcessPoolExecutor
     _key_bytes: bytes
 
     def __init__(self, executor_factory: type[Any], spec: Any) -> None:
-        self._pool = _get_pool()
         self._key_bytes = pickle.dumps(
             (executor_factory, spec), protocol=pickle.HIGHEST_PROTOCOL
         )
