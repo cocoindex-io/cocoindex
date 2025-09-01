@@ -218,6 +218,7 @@ pub trait SourceFactoryBase: SourceFactory + Send + Sync + 'static {
 
     async fn build_executor(
         self: Arc<Self>,
+        source_name: &str,
         spec: Self::Spec,
         context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SourceExecutor>>;
@@ -237,6 +238,7 @@ pub trait SourceFactoryBase: SourceFactory + Send + Sync + 'static {
 impl<T: SourceFactoryBase> SourceFactory for T {
     async fn build(
         self: Arc<Self>,
+        source_name: &str,
         spec: serde_json::Value,
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
@@ -245,8 +247,9 @@ impl<T: SourceFactoryBase> SourceFactory for T {
     )> {
         let spec: T::Spec = serde_json::from_value(spec)?;
         let output_schema = self.get_output_schema(&spec, &context).await?;
-        let executor = self.build_executor(spec, context);
-        Ok((output_schema, executor))
+        let source_name = source_name.to_string();
+        let executor = async move { self.build_executor(&source_name, spec, context).await };
+        Ok((output_schema, Box::pin(executor)))
     }
 }
 

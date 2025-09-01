@@ -162,6 +162,7 @@ pub trait SourceExecutor: Send + Sync {
 pub trait SourceFactory {
     async fn build(
         self: Arc<Self>,
+        source_name: &str,
         spec: serde_json::Value,
         context: Arc<FlowInstanceContext>,
     ) -> Result<(

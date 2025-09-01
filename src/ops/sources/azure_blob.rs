@@ -213,6 +213,7 @@ impl SourceFactoryBase for Factory {
 
     async fn build_executor(
         self: Arc<Self>,
+        _source_name: &str,
         spec: Spec,
         context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SourceExecutor>> {

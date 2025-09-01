@@ -657,14 +657,15 @@ impl AnalyzerContext {
         let source_factory = get_source_factory(&import_op.spec.source.kind)?;
         let (output_type, executor) = source_factory
             .build(
+                &import_op.name,
                 serde_json::Value::Object(import_op.spec.source.spec),
                 self.flow_ctx.clone(),
             )
             .await?;
 
-        let op_name = import_op.name.clone();
+        let op_name = import_op.name;
         let primary_key_schema = Box::from(output_type.typ.key_schema());
-        let output = op_scope.add_op_output(import_op.name, output_type)?;
+        let output = op_scope.add_op_output(op_name.clone(), output_type)?;
 
         let concur_control_options = import_op
             .spec
