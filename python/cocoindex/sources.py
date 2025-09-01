@@ -3,6 +3,7 @@
 from . import op
 from .auth_registry import TransientAuthEntryReference
 from .setting import DatabaseConnectionSpec
+from dataclasses import dataclass
 import datetime
 
 
@@ -70,12 +71,13 @@ class AzureBlob(op.SourceSpec):
     account_access_key: TransientAuthEntryReference[str] | None = None
 
 
+@dataclass
 class PostgresNotification:
     """Notification for a PostgreSQL table."""
 
-    # Optional: name of the PostgreSQL notify function to use.
-    # If not provided, the default notify function will be used.
-    notify_function_name: str | None = None
+    # Optional: name of the PostgreSQL channel to use.
+    # If not provided, will generate a default channel name.
+    channel_name: str | None = None
 
 
 class Postgres(op.SourceSpec):
