@@ -63,8 +63,8 @@ def postgres_product_indexing_flow(
             ),
             # Optional.
             ordinal_column="modified_time",
+            notification=cocoindex.sources.PostgresNotification(),
         ),
-        refresh_interval=datetime.timedelta(seconds=30),
     )
 
     indexed_product = data_scope.add_collector()
