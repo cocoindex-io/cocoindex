@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Simple example for cocoindex: build embedding index based on local PDF files."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[colpali]>=0.2.1",
+    "cocoindex[colpali]>=0.2.3",
     "python-dotenv>=1.0.1",
     "pdf2image>=1.17.0",
     "qdrant-client>=1.15.0",

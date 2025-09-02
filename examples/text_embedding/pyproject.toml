@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Simple example for cocoindex: build embedding index based on local text files."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[embeddings]>=0.2.1",
+    "cocoindex[embeddings]>=0.2.3",
     "python-dotenv>=1.0.1",
     "pgvector>=0.4.1",
     "psycopg[binary,pool]",

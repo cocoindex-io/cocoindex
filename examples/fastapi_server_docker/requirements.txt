@@ -1,4 +1,4 @@
-cocoindex[embeddings]>=0.2.1
+cocoindex[embeddings]>=0.2.3
 python-dotenv>=1.0.1
 fastapi==0.115.12
 fastapi-cli==0.0.7
