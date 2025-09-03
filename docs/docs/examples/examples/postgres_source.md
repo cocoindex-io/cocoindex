@@ -292,8 +292,10 @@ This [example](https://cocoindex.io/docs/examples/image_search#fast-api-applicat
 
 ## Why One Framework for Structured + Unstructured?
 
-- One mental model: Treat files, APIs, and databases uniformly; AI steps are ordinary ops.
-- Incremental by default: Use an ordinal column to sync only changes; no fragile glue jobs.
-- Consistency: Embeddings are always derived from the exact transformed row state.
-- Operational simplicity: One deployment, one lineage view, fewer moving parts.
+- Unified workflow: All data— files, APIs, or databases—is processed through a single, consistent system, and AI operations are handled alongside standard data transformations.
 
+- True incremental processing with live updates: Out-of-box incremental support from the framework, process only what’s changed, avoiding redundant computation and ensuring faster updates to downstream indexes.
+
+- Reliable consistency: Embeddings and derived data always reflect the accurate, transformed state of each row, ensuring results are dependable and current in a single flow.
+
+- Streamlined operations: A single deployment manages everything, providing clear data lineage and reducing the complexity of the data stack.
