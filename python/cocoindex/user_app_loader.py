@@ -1,8 +1,15 @@
 import os
 import sys
 import importlib
-import click
 import types
+
+
+class Error(Exception):
+    """
+    Exception raised when a user app target is invalid or cannot be loaded.
+    """
+
+    pass
 
 
 def load_user_app(app_target: str) -> types.ModuleType:
@@ -10,14 +17,11 @@ def load_user_app(app_target: str) -> types.ModuleType:
     Loads the user's application, which can be a file path or an installed module name.
     Exits on failure.
     """
-    if not app_target:
-        raise click.ClickException("Application target not provided.")
-
     looks_like_path = os.sep in app_target or app_target.lower().endswith(".py")
 
     if looks_like_path:
         if not os.path.isfile(app_target):
-            raise click.ClickException(f"Application file path not found: {app_target}")
+            raise Error(f"Application file path not found: {app_target}")
         app_path = os.path.abspath(app_target)
         app_dir = os.path.dirname(app_path)
         module_name = os.path.splitext(os.path.basename(app_path))[0]
@@ -35,7 +39,7 @@ def load_user_app(app_target: str) -> types.ModuleType:
             spec.loader.exec_module(module)
             return module
         except (ImportError, FileNotFoundError, PermissionError) as e:
-            raise click.ClickException(f"Failed importing file '{app_path}': {e}")
+            raise Error(f"Failed importing file '{app_path}': {e}") from e
         finally:
             if app_dir in sys.path and sys.path[0] == app_dir:
                 sys.path.pop(0)
@@ -44,8 +48,6 @@ def load_user_app(app_target: str) -> types.ModuleType:
     try:
         return importlib.import_module(app_target)
     except ImportError as e:
-        raise click.ClickException(f"Failed to load module '{app_target}': {e}")
+        raise Error(f"Failed to load module '{app_target}': {e}") from e
     except Exception as e:
-        raise click.ClickException(
-            f"Unexpected error importing module '{app_target}': {e}"
-        )
+        raise Error(f"Unexpected error importing module '{app_target}': {e}") from e
