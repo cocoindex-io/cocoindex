@@ -149,3 +149,8 @@ For a step-by-step walkthrough of each indexing stage and the query path, check 
 
 <ExampleButton href="https://cocoindex.io/docs/examples/simple_vector_index" text="Simple Vector Index" margin="0 0 16px 0" />
 
+## Other sources
+
+CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more with native incremental processing out of box - when new or updated files are detected, the pipeline will capture the changes and only process what's changed.
+
+<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
