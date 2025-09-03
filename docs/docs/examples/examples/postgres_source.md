@@ -53,9 +53,10 @@ This step adds source data from PostgreSQL table `source_products` to the flow a
 
 ![Add PostgreSQL Source](/img/examples/postgres_source/source.png)
 
-- Incremental Sync: When new or updated rows are found, only those rows are run through the pipeline, so downstream indexes and search results reflect the latest data while unchanged rows are untouched.
-- `ordinal_column` is recommended for change detection so the pipeline processes what's changed.
-- `notification`: when present, enable change capture based on Postgres LISTEN/NOTIFY. 
+CocoIndex incrementally sync data from Postgres. When new or updated rows are found, only those rows run through the pipeline, so downstream indexes and search results reflect the latest data while unchanged rows are untouched. The following two arguments (both are optional) make this more efficient:
+
+- `notification` enables change capture based on Postgres LISTEN/NOTIFY. Each change triggers an incremental processing on the specific row immediately.
+- Regardless if `notification` is provided or not, CocoIndex still needs to scan the full table to detect changes in some scenarios (e.g. between two `update` invocation), and the `ordinal_column` provides a field that CocoIndex can use to quickly detect which row has changed without reading value columns. 
 
 Check [Postgres source](https://cocoindex.io/docs/ops/sources#postgres) for more details. 
 
