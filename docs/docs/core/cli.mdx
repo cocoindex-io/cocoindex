@@ -22,11 +22,11 @@ The `APP_TARGET` can be:
 
 2.  A **path to a Python file** defining your flows (e.g., `main.py`, `path/to/my_flows.py`).
 
-    The file will be loaded as a top-level Python module, e.g. relative imports will not work as its parent package is not defined (similar to how `python main.py` works).
+    The file will be loaded as a top-level Python module, e.g. relative imports will not work as its parent package is not defined (similar to how `python main.py` resolves imports).
 
 3.  For commands that operate on a *specific flow* (like `show`, `update`, `evaluate`), you can combine the application reference with a flow name:
-    * `path/to/my_flows.py:MyFlow`
     * `my_package.flows:MyFlow`
+    * `path/to/my_flows.py:MyFlow`
 
 ### Environment Variables
 
