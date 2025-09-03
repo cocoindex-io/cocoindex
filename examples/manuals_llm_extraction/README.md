@@ -65,7 +65,7 @@ CocoInsight is a tool to help you understand your data pipeline and data index. 
 Run CocoInsight to understand your RAG data pipeline:
 
 ```
-cocoindex server -ci main.py
+cocoindex server -ci main
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight). It connects to your local CocoIndex server with zero data retention.

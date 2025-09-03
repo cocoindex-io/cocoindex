@@ -69,13 +69,13 @@ I used CocoInsight (Free beta now) to troubleshoot the index generation and unde
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
 ```sh
-cocoindex server -ci main.py
+cocoindex server -ci main
 ```
 
 You can also add a `-L` flag to make the server keep updating the index to reflect source changes at the same time:
 
 ```sh
-cocoindex server -ci -L main.py
+cocoindex server -ci -L main
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).

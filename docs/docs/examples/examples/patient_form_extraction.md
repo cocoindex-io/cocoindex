@@ -283,7 +283,7 @@ We could troubleshoot in two steps:
 I also use CocoInsight to help me troubleshoot.
 
 ```bash
-cocoindex server -ci main.py
+cocoindex server -ci main
 ```
 
 Go to `https://cocoindex.io/cocoinsight`. You could see an interactive UI to explore the data.

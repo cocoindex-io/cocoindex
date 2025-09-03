@@ -393,7 +393,7 @@ MATCH p=()-->() RETURN p
 I used CocoInsight to troubleshoot the index generation and understand the data lineage of the pipeline. It is in free beta now, you can give it a try. Run following command to start CocoInsight:
 
 ```
-cocoindex server -ci main.py
+cocoindex server -ci main
 ```
 
 And then open the url `https://cocoindex.io/cocoinsight`.  It just connects to your local CocoIndex server, with Zero pipeline data retention.

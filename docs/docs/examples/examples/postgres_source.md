@@ -201,7 +201,7 @@ For example, the following image shows the lineage of the `embedding` field, you
 4. Run CocoInsight:
     
     ```bash
-    cocoindex server -ci main.py
+    cocoindex server -ci main
     ```
     You can walk through the project step by step in CocoInsight to see exactly how each field is constructed and what happens behind the scenes. It connects to your local CocoIndex server, with zero pipeline data retention.
 
@@ -211,7 +211,7 @@ For example, the following image shows the lineage of the `embedding` field, you
 For continuous updating when the source changes, add `-L`:
 
 ```bash
-cocoindex server -ci -L main.py
+cocoindex server -ci -L main
 ```
 Check [live updates](https://cocoindex.io/docs/tutorials/live_updates) for more details.
 

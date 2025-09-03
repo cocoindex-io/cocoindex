@@ -345,7 +345,7 @@ It creates relationships by:
 I used CocoInsight to troubleshoot the index generation and understand the data lineage of the pipeline.  It is in free beta now, you can give it a try. 
 
 ```sh
-cocoindex server -ci main.py
+cocoindex server -ci main
 ```
 
 And then open the url `https://cocoindex.io/cocoinsight`.  It just connects to your local CocoIndex server, with zero pipeline data retention.

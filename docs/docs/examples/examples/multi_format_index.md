@@ -193,7 +193,7 @@ You can walk through the project step by step in [CocoInsight](https://www.youtu
 
 
 ```sh
-cocoindex server -ci main.py
+cocoindex server -ci main
 ```
 
 Follow the url `https://cocoindex.io/cocoinsight`.  It connects to your local CocoIndex server, with zero pipeline data retention. You can use it to view extracted pages, see embedding vectors and metadata.

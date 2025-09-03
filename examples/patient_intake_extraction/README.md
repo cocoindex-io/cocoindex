@@ -49,7 +49,7 @@ python main.py
 
 Run with CocoInsight:
 ```bash
-cocoindex server -ci main.py
+cocoindex server -ci main
 ```
 <img width="1405" alt="Screenshot 2025-07-02 at 11 59 24 AM" src="https://github.com/user-attachments/assets/6f5154cd-8a53-4baa-b914-cd60ffecf3d4" />
 
