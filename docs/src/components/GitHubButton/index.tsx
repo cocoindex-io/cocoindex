@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { FaGithub, FaYoutube } from 'react-icons/fa';
-import { MdMenuBook } from 'react-icons/md';
+import { MdMenuBook, MdDriveEta } from 'react-icons/md';
 
 type ButtonProps = {
     href: string;
@@ -73,4 +73,20 @@ function DocumentationButton({ url, text, margin }: DocumentationButtonProps): R
     );
 }
 
-export { GitHubButton, YouTubeButton, DocumentationButton };
+// ExampleButton as requested
+type ExampleButtonProps = {
+    href: string;
+    text: string;
+    margin?: string;
+};
+
+function ExampleButton({ href, text, margin }: ExampleButtonProps): ReactNode {
+    return (
+        <Button href={href} margin={margin}>
+            <MdDriveEta style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
+            {text}
+        </Button>
+    );
+}
+
+export { GitHubButton, YouTubeButton, DocumentationButton, ExampleButton };
