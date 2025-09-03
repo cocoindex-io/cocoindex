@@ -5,6 +5,7 @@ import importlib.util
 import os
 import signal
 import threading
+import sys
 from types import FrameType
 from typing import Any, Iterable
 
@@ -19,9 +20,8 @@ from . import flow, lib, setting
 from .setup import flow_names_with_setup
 from .runtime import execution_context
 from .subprocess_exec import add_user_app
-from .user_app_loader import load_user_app
+from .user_app_loader import load_user_app, Error as UserAppLoaderError
 
-# Create ServerSettings lazily upon first call, as environment variables may be loaded from files, etc.
 COCOINDEX_HOST = "https://cocoindex.io"
 
 
@@ -77,7 +77,16 @@ def _get_app_ref_from_specifier(
 
 
 def _load_user_app(app_target: str) -> None:
-    load_user_app(app_target)
+    if not app_target:
+        raise click.ClickException("Application target not provided.")
+
+    try:
+        load_user_app(app_target)
+    except UserAppLoaderError as e:
+        raise click.ClickException(
+            f"Failed to load APP_TARGET '{app_target}': {e}"
+        ) from e
+
     add_user_app(app_target)
 
 
@@ -99,7 +108,13 @@ def _initialize_cocoindex_in_process() -> None:
     default=None,
     show_default=False,
 )
-def cli(env_file: str | None = None) -> None:
+@click.option(
+    "--app-dir",
+    help="Load apps from the specified directory. Default to the current directory.",
+    default="",
+    show_default=True,
+)
+def cli(env_file: str | None = None, app_dir: str | None = "") -> None:
     """
     CLI for Cocoindex.
     """
@@ -108,6 +123,9 @@ def cli(env_file: str | None = None) -> None:
     if load_dotenv(dotenv_path=dotenv_path):
         loaded_env_path = os.path.abspath(dotenv_path)
         click.echo(f"Loaded environment variables from: {loaded_env_path}\n", err=True)
+
+    if app_dir is not None:
+        sys.path.insert(0, app_dir)
 
     try:
         _initialize_cocoindex_in_process()
