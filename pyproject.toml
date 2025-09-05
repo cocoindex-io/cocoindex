@@ -57,6 +57,7 @@ bindings = "pyo3"
 python-source = "python"
 module-name = "cocoindex._engine"
 features = ["pyo3/extension-module"]
+include = ["THIRD_PARTY_NOTICES.html"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "pre-commit"]
