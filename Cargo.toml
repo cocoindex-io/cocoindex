@@ -43,6 +43,7 @@ sqlx = { version = "0.8.6", features = [
     "postgres",
     "runtime-tokio",
     "uuid",
+    "tls-rustls-aws-lc-rs",
 ] }
 tokio = { version = "1.47.1", features = [
     "macros",
