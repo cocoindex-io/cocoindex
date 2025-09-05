@@ -63,3 +63,24 @@ jobs:
           shell: cmd  # Use `cmd` to run test for Windows, as PowerShell doesn't detect exit code by `os._exit(0)` correctly.
           run: |
             ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests
+
+    validate-3p-notices:
+        runs-on: ubuntu-latest
+        steps:
+        - uses: actions/checkout@v4
+        - name: Rust Cache
+          uses: Swatinem/rust-cache@v2
+        - name: Install Rust toolchain
+          uses: dtolnay/rust-toolchain@stable
+        - name: Install cargo-about
+          run: cargo install --locked cargo-about
+        - name: Validate third-party notices (dry-run)
+          shell: bash
+          run: |
+            set +e
+            cargo about generate about.hbs > /dev/null
+            status=$?
+            if [ $status -ne 0 ]; then
+              echo "::error::Third-party notices validation failed. Please update `/about.toml` and rerun."
+              exit $status
+            fi
