@@ -17,6 +17,7 @@ dependencies = [
     "numpy>=1.23.2",
 ]
 license = "Apache-2.0"
+license-files = ["THIRD_PARTY_NOTICES.html"]
 urls = { Homepage = "https://cocoindex.io/" }
 classifiers = [
     "Development Status :: 3 - Alpha",

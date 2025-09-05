@@ -5,6 +5,7 @@ name = "cocoindex"
 version = "999.0.0"
 edition = "2024"
 rust-version = "1.88"
+license = "Apache-2.0"
 
 [profile.release]
 codegen-units = 1
