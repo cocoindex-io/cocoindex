@@ -81,6 +81,6 @@ jobs:
             cargo about generate about.hbs > /dev/null
             status=$?
             if [ $status -ne 0 ]; then
-              echo "::error::Third-party notices validation failed. Please update `/about.toml` and rerun."
+              echo "::error::Third-party notices validation failed. Please update /about.toml and rerun."
               exit $status
             fi
