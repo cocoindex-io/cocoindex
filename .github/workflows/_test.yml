@@ -68,12 +68,13 @@ jobs:
         runs-on: ubuntu-latest
         steps:
         - uses: actions/checkout@v4
-        - name: Rust Cache
-          uses: Swatinem/rust-cache@v2
         - name: Install Rust toolchain
           uses: dtolnay/rust-toolchain@stable
+        - uses: taiki-e/install-action@v2
+          with:
+            tool: cargo-binstall
         - name: Install cargo-about
-          run: cargo install --locked cargo-about
+          run: cargo binstall -y cargo-about
         - name: Validate third-party notices (dry-run)
           shell: bash
           run: |
