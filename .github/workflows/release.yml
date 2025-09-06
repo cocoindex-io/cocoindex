@@ -26,8 +26,12 @@ jobs:
 
   generate-3p-notices:
     runs-on: ubuntu-latest
+    needs: [create-versioned-toml]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Cargo.toml
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
       - name: Install Rust toolchain
