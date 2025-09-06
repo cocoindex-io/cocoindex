@@ -3,7 +3,7 @@
 #
 #    maturin generate-ci github
 #
-name: format check
+name: Format Check
 
 on:
   pull_request:

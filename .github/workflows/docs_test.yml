@@ -1,19 +1,14 @@
-name: docs
+name: Test Docs
 
 on:
   pull_request:
     branches: [main]
     paths:
       - docs/**
-      - ".github/workflows/docs.yml"
-  workflow_dispatch:
-
-permissions:
-  contents: write
+      - ".github/workflows/docs_test.yml"
 
 jobs:
   test-deploy:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,9 +20,3 @@ jobs:
         run: yarn --cwd docs install --frozen-lockfile
       - name: Test build website
         run: yarn --cwd docs build
-
-  deploy:
-    name: Release Docs
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    uses: ./.github/workflows/_doc_release.yml
-    secrets: inherit

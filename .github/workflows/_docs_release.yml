@@ -1,4 +1,4 @@
-name: Release Docs
+name: Release Docs (INTERNAL)
 
 on:
   workflow_call:

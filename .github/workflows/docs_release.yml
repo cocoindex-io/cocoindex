@@ -1,0 +1,13 @@
+name: Release Docs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    name: Release Docs
+    uses: ./.github/workflows/_docs_release.yml
+    secrets: inherit

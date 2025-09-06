@@ -2,7 +2,7 @@
 #
 # - When triggered on tags push, it will build and publishes a new version including docs.
 # - When triggered manually, it's a dry-run: only build, without publishing anything.
-name: release
+name: Release CocoIndex
 
 on:
   push:
@@ -161,5 +161,5 @@ jobs:
     name: Release Docs
     needs: [release]
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
-    uses: ./.github/workflows/_doc_release.yml
+    uses: ./.github/workflows/_docs_release.yml
     secrets: inherit
