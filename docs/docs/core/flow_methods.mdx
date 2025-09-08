@@ -108,9 +108,9 @@ If you want to remove the flow from the current process, you can call `demo_flow
 
 :::
 
-## Build / update target data
+## Build/update target data
 
-The major goal of a flow is to perform the transformations on source data and build / update data in the target.
+The major goal of a flow is to perform the transformations on source data and build/update data in the target.
 This action has two modes:
 
 *   **One time update.**
@@ -119,7 +119,7 @@ This action has two modes:
     It fits into situations that you need to access the fresh target data at certain time points.
 
 *   **Live update.**
-    It continuously captures changes from the source data and updates the target data accordingly.
+    During live update, a one time update is performed first, then it continuously captures changes from the source data and updates the target data accordingly.
     It's long-running and only stops when being aborted explicitly.
     It fits into situations that you need to access the fresh target data continuously in most of the time.
 
@@ -131,6 +131,12 @@ This is to achieve best efficiency.
 
 :::
 
+Besides major update modes, CocoIndex also support the following options:
+
+*   **Reexport targets**.
+    When this is enabled, even if both of the source data and flow definition are not changed, CocoIndex will still reprocess and reexport the targets.
+    It's helpful when you want to reload the target data, e.g. after some data loss.
+    Note that when this is enabled on live update mode, reexport only happens for the initial one time update.
 
 ### One time update
 
@@ -148,6 +154,12 @@ With a `--setup` option, it will also setup the flow first if needed.
 
 ```sh
 cocoindex update --setup main.py
+```
+
+With a `--reexport` option, it will reexport the targets even if there's no change.
+
+```sh
+cocoindex update --reexport main.py
 ```
 
 #### Library API
@@ -179,6 +191,14 @@ It's quite cheap to do so, as CocoIndex will automatically combine multiple call
 
 :::
 
+Both `update()` and `update_async()` can take a `reexport_targets` option to enable reexporting the targets even if there's no change.
+
+```python
+demo_flow.update(reexport_targets=True)
+...
+await demo_flow.update_async(reexport_targets=True)
+...
+```
 
 </TabItem>
 </Tabs>
@@ -206,11 +226,7 @@ cocoindex update main.py -L
 If there's at least one data source with change capture mechanism enabled, it will keep running until aborted (e.g. by `Ctrl-C`).
 Otherwise, it falls back to the same behavior as one time update, and will finish after a one-time update is done.
 
-With a `--setup` option, it will also setup the flow first if needed.
-
-```sh
-cocoindex update main.py -L --setup
-```
+`--setup` and `--reexport` options are also available for live update mode.
 
 #### Library API
 
@@ -225,6 +241,8 @@ It takes an optional `cocoindex.FlowLiveUpdaterOptions` option, with the followi
      It has no effect for data sources without any change capture mechanism.
 
 *   `print_stats` (type: `bool`, default: `False`): Whether to print stats during update.
+
+*   `reexport_targets` (type: `bool`, default: `False`): Whether to reexport the targets even if there's no change.
 
 Note that `cocoindex.FlowLiveUpdater` provides a unified interface for both one-time update and live update.
 It only performs live update when `live_mode` is `True`, and only for sources with change capture mechanisms enabled.
