@@ -10,6 +10,7 @@ use crate::server::{self, ServerSettings};
 use crate::settings::Settings;
 use crate::setup::{self};
 use pyo3::IntoPyObjectExt;
+use pyo3::types::{PyDict, PyModule, PyString};
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::fmt::Write;
@@ -37,10 +38,31 @@ impl<T> ToResultWithPyTrace<T> for Result<T, PyErr> {
         match self {
             Ok(value) => Ok(value),
             Err(err) => {
-                let mut err_str = format!("Error calling Python function: {err}");
-                if let Some(tb) = err.traceback(py) {
-                    write!(&mut err_str, "\n{}", tb.format()?)?;
-                }
+                // Attempt to render a full Python-style traceback including cause/context chain
+                let full_trace: PyResult<String> = (|| {
+                    let exc = err.value(py);
+                    let traceback = PyModule::import(py, "traceback")?;
+                    let tbe_class = traceback.getattr("TracebackException")?;
+                    let tbe = tbe_class.call_method1("from_exception", (exc,))?;
+                    let kwargs = PyDict::new(py);
+                    kwargs.set_item("chain", true)?;
+                    let lines = tbe.call_method("format", (), Some(&kwargs))?;
+                    let joined = PyString::new(py, "").call_method1("join", (lines,))?;
+                    joined.extract::<String>()
+                })();
+
+                let err_str = match full_trace {
+                    Ok(trace) => format!("Error calling Python function:\n{trace}"),
+                    Err(_) => {
+                        // Fallback: include the PyErr display and available traceback formatting
+                        let mut s = format!("Error calling Python function: {err}");
+                        if let Some(tb) = err.traceback(py) {
+                            write!(&mut s, "\n{}", tb.format()?).ok();
+                        }
+                        s
+                    }
+                };
+
                 Err(anyhow::anyhow!(err_str))
             }
         }

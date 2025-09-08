@@ -152,6 +152,16 @@ def _start_parent_watchdog(
 
 
 def _subprocess_init(user_apps: list[str], parent_pid: int) -> None:
+    import signal
+    import faulthandler
+
+    faulthandler.enable()
+    # Ignore SIGINT in the subprocess on best-effort basis.
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except Exception:
+        pass
+
     _start_parent_watchdog(parent_pid)
 
     # In case any user app is already in this subprocess, e.g. the subprocess is forked, we need to avoid loading it again.
@@ -193,10 +203,15 @@ _SUBPROC_EXECUTORS: dict[bytes, _ExecutorEntry] = {}
 
 def _call_method(method: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """Run an awaitable/coroutine to completion synchronously, otherwise return as-is."""
-    if asyncio.iscoroutinefunction(method):
-        return asyncio.run(method(*args, **kwargs))
-    else:
-        return method(*args, **kwargs)
+    try:
+        if asyncio.iscoroutinefunction(method):
+            return asyncio.run(method(*args, **kwargs))
+        else:
+            return method(*args, **kwargs)
+    except Exception as e:
+        raise RuntimeError(
+            f"Error calling method `{method.__name__}` from subprocess"
+        ) from e
 
 
 def _get_or_create_entry(key_bytes: bytes) -> _ExecutorEntry:
