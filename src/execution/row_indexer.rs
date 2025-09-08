@@ -181,6 +181,7 @@ struct PrecommitOutput {
 pub struct RowIndexer<'a> {
     src_eval_ctx: &'a SourceRowEvaluationContext<'a>,
     setup_execution_ctx: &'a exec_ctx::FlowSetupExecutionContext,
+    mode: super::source_indexer::UpdateMode,
     update_stats: &'a stats::UpdateStats,
     pool: &'a PgPool,
 
@@ -197,8 +198,9 @@ impl<'a> RowIndexer<'a> {
     pub fn new(
         src_eval_ctx: &'a SourceRowEvaluationContext<'_>,
         setup_execution_ctx: &'a exec_ctx::FlowSetupExecutionContext,
-        pool: &'a PgPool,
+        mode: super::source_indexer::UpdateMode,
         update_stats: &'a stats::UpdateStats,
+        pool: &'a PgPool,
     ) -> Result<Self> {
         Ok(Self {
             source_id: setup_execution_ctx.import_ops[src_eval_ctx.import_op_idx].source_id,
@@ -207,8 +209,9 @@ impl<'a> RowIndexer<'a> {
 
             src_eval_ctx,
             setup_execution_ctx,
-            pool,
+            mode,
             update_stats,
+            pool,
         })
     }
 
@@ -236,7 +239,9 @@ impl<'a> RowIndexer<'a> {
                 );
 
                 // First check ordinal-based skipping
-                if existing_version.should_skip(source_version, Some(self.update_stats)) {
+                if self.mode == super::source_indexer::UpdateMode::Normal
+                    && existing_version.should_skip(source_version, Some(self.update_stats))
+                {
                     return Ok(SkippedOr::Skipped(
                         existing_version,
                         info.processed_source_fp.clone(),
@@ -260,7 +265,9 @@ impl<'a> RowIndexer<'a> {
             (None, interface::SourceValue::NonExistence) => None,
         };
 
-        if let Some(content_version_fp) = &content_version_fp {
+        if self.mode == super::source_indexer::UpdateMode::Normal
+            && let Some(content_version_fp) = &content_version_fp
+        {
             let baseline = if tracking_setup_state.has_fast_fingerprint_column {
                 existing_tracking_info
                     .as_ref()
@@ -373,7 +380,9 @@ impl<'a> RowIndexer<'a> {
 
         if let Some(existing_version) = existing_version {
             if output.is_some() {
-                if existing_version.kind == SourceVersionKind::DifferentLogic {
+                if existing_version.kind == SourceVersionKind::DifferentLogic
+                    || self.mode == super::source_indexer::UpdateMode::ReexportTargets
+                {
                     self.update_stats.num_reprocesses.inc(1);
                 } else {
                     self.update_stats.num_updates.inc(1);
@@ -398,7 +407,9 @@ impl<'a> RowIndexer<'a> {
         let tracking_table_setup = &self.setup_execution_ctx.setup_state.tracking_table;
 
         // Check if we can use content hash optimization
-        if existing_version.kind != SourceVersionKind::CurrentLogic {
+        if self.mode != super::source_indexer::UpdateMode::Normal
+            || existing_version.kind != SourceVersionKind::CurrentLogic
+        {
             return Ok(None);
         }
 
@@ -509,7 +520,9 @@ impl<'a> RowIndexer<'a> {
             &mut *txn,
         )
         .await?;
-        if let Some(tracking_info) = &tracking_info {
+        if self.mode == super::source_indexer::UpdateMode::Normal
+            && let Some(tracking_info) = &tracking_info
+        {
             let existing_source_version =
                 SourceVersion::from_stored_precommit_info(&tracking_info, logic_fp);
             if existing_source_version.should_skip(source_version, Some(self.update_stats)) {
@@ -620,13 +633,12 @@ impl<'a> RowIndexer<'a> {
                     } else {
                         None
                     };
-                    if existing_target_keys
-                        .as_ref()
-                        .map(|keys| !keys.is_empty() && keys.iter().all(|(_, fp)| fp == &curr_fp))
-                        .unwrap_or(false)
+                    if self.mode == super::source_indexer::UpdateMode::Normal
+                        && existing_target_keys.as_ref().map_or(false, |keys| {
+                            !keys.is_empty() && keys.iter().all(|(_, fp)| fp == &curr_fp)
+                        })
                         && existing_staging_target_keys
-                            .map(|keys| keys.iter().all(|(_, fp)| fp == &curr_fp))
-                            .unwrap_or(true)
+                            .map_or(true, |keys| keys.iter().all(|(_, fp)| fp == &curr_fp))
                     {
                         // carry over existing target keys info
                         let (existing_ordinal, existing_fp) = existing_target_keys

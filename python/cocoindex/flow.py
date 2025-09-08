@@ -563,9 +563,14 @@ class FlowBuilder:
 class FlowLiveUpdaterOptions:
     """
     Options for live updating a flow.
+
+    - live_mode: Whether to perform live update for data sources with change capture mechanisms.
+    - reexport_targets: Whether to reexport to targets even if there's no change.
+    - print_stats: Whether to print stats during update.
     """
 
     live_mode: bool = True
+    reexport_targets: bool = False
     print_stats: bool = False
 
 
@@ -759,20 +764,25 @@ class Flow:
         """
         return self._full_name
 
-    def update(self) -> _engine.IndexUpdateInfo:
+    def update(self, /, *, reexport_targets: bool = False) -> _engine.IndexUpdateInfo:
         """
         Update the index defined by the flow.
         Once the function returns, the index is fresh up to the moment when the function is called.
         """
-        return execution_context.run(self.update_async())
+        return execution_context.run(
+            self.update_async(reexport_targets=reexport_targets)
+        )
 
-    async def update_async(self) -> _engine.IndexUpdateInfo:
+    async def update_async(
+        self, /, *, reexport_targets: bool = False
+    ) -> _engine.IndexUpdateInfo:
         """
         Update the index defined by the flow.
         Once the function returns, the index is fresh up to the moment when the function is called.
         """
         async with FlowLiveUpdater(
-            self, FlowLiveUpdaterOptions(live_mode=False)
+            self,
+            FlowLiveUpdaterOptions(live_mode=False, reexport_targets=reexport_targets),
         ) as updater:
             await updater.wait_async()
         return updater.update_stats()

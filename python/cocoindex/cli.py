@@ -364,6 +364,13 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
     help="Continuously watch changes from data sources and apply to the target index.",
 )
 @click.option(
+    "--reexport",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Reexport to targets even if there's no change.",
+)
+@click.option(
     "--setup",
     is_flag=True,
     show_default=True,
@@ -389,6 +396,7 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
 def update(
     app_flow_specifier: str,
     live: bool,
+    reexport: bool,
     setup: bool,  # pylint: disable=redefined-outer-name
     force: bool,
     quiet: bool,
@@ -408,7 +416,11 @@ def update(
             fg="yellow",
         )
 
-    options = flow.FlowLiveUpdaterOptions(live_mode=live, print_stats=not quiet)
+    options = flow.FlowLiveUpdaterOptions(
+        live_mode=live,
+        reexport_targets=reexport,
+        print_stats=not quiet,
+    )
     if flow_name is None:
         if setup:
             _setup_flows(

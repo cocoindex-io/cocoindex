@@ -92,6 +92,7 @@ impl<'a> LocalSourceRowStateOperator<'a> {
         &mut self,
         source_version: SourceVersion,
         content_version_fp: Option<&Vec<u8>>,
+        force_reload: bool,
     ) -> Result<RowStateAdvanceOutcome> {
         let (sem, outcome) = {
             let mut state = self.indexing_state.lock().unwrap();
@@ -104,10 +105,11 @@ impl<'a> LocalSourceRowStateOperator<'a> {
 
             match state.rows.entry(self.key.clone()) {
                 hash_map::Entry::Occupied(mut entry) => {
-                    if entry
-                        .get()
-                        .source_version
-                        .should_skip(&source_version, Some(self.update_stats.as_ref()))
+                    if !force_reload
+                        && entry
+                            .get()
+                            .source_version
+                            .should_skip(&source_version, Some(self.update_stats.as_ref()))
                     {
                         return Ok(RowStateAdvanceOutcome::Skipped);
                     }
@@ -164,6 +166,18 @@ impl<'a> LocalSourceRowStateOperator<'a> {
         }
         Ok(outcome)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpdateMode {
+    #[default]
+    Normal,
+    ReexportTargets,
+}
+
+pub struct UpdateOptions {
+    pub expect_little_diff: bool,
+    pub mode: UpdateMode,
 }
 
 pub struct ProcessSourceRowInput {
@@ -231,6 +245,7 @@ impl SourceIndexingContext {
     >(
         self: Arc<Self>,
         row_input: ProcessSourceRowInput,
+        mode: UpdateMode,
         update_stats: Arc<stats::UpdateStats>,
         _concur_permit: concur_control::CombinedConcurrencyControllerPermit,
         ack_fn: Option<AckFn>,
@@ -251,8 +266,9 @@ impl SourceIndexingContext {
             let mut row_indexer = row_indexer::RowIndexer::new(
                 &eval_ctx,
                 &self.setup_execution_ctx,
-                &pool,
+                mode,
                 &update_stats,
+                &pool,
             )?;
 
             let mut row_state_operator =
@@ -264,7 +280,11 @@ impl SourceIndexingContext {
             {
                 let version = SourceVersion::from_current_with_ordinal(ordinal);
                 match row_state_operator
-                    .advance(version, Some(content_version_fp))
+                    .advance(
+                        version,
+                        Some(content_version_fp),
+                        /*force_reload=*/ mode == UpdateMode::ReexportTargets,
+                    )
                     .await?
                 {
                     RowStateAdvanceOutcome::Skipped => {
@@ -276,17 +296,18 @@ impl SourceIndexingContext {
                     } => {
                         // Fast path optimization: may collapse the row based on source version fingerprint.
                         // Still need to update the tracking table as the processed ordinal advanced.
-                        if row_indexer
-                            .try_collapse(
-                                &version,
-                                content_version_fp.as_slice(),
-                                &prev_source_version,
-                                ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint(
-                                    &prev_content_version_fp,
-                                ),
-                            )
-                            .await?
-                            .is_some()
+                        if mode == UpdateMode::Normal
+                            && row_indexer
+                                .try_collapse(
+                                    &version,
+                                    content_version_fp.as_slice(),
+                                    &prev_source_version,
+                                    ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint(
+                                        &prev_content_version_fp,
+                                    ),
+                                )
+                                .await?
+                                .is_some()
                         {
                             return Ok(());
                         }
@@ -329,7 +350,11 @@ impl SourceIndexingContext {
 
             let source_version = SourceVersion::from_current_data(ordinal, &value);
             if let RowStateAdvanceOutcome::Skipped = row_state_operator
-                .advance(source_version, content_version_fp.as_ref())
+                .advance(
+                    source_version,
+                    content_version_fp.as_ref(),
+                    /*force_reload=*/ mode == UpdateMode::ReexportTargets,
+                )
                 .await?
             {
                 return Ok(());
@@ -339,7 +364,9 @@ impl SourceIndexingContext {
                 .update_source_row(&source_version, value, content_version_fp.clone())
                 .await?;
             if let SkippedOr::Skipped(version, fp) = result {
-                row_state_operator.advance(version, fp.as_ref()).await?;
+                row_state_operator
+                    .advance(version, fp.as_ref(), /*force_reload=*/ false)
+                    .await?;
             }
             Ok(())
         };
@@ -367,7 +394,7 @@ impl SourceIndexingContext {
         self: &Arc<Self>,
         pool: &PgPool,
         update_stats: &Arc<stats::UpdateStats>,
-        expect_little_diff: bool,
+        update_options: UpdateOptions,
     ) -> Result<()> {
         let pending_update_fut = {
             let mut pending_update = self.pending_update.lock().unwrap();
@@ -384,7 +411,7 @@ impl SourceIndexingContext {
                             let mut pending_update = slf.pending_update.lock().unwrap();
                             *pending_update = None;
                         }
-                        slf.update_once(&pool, &update_stats, expect_little_diff)
+                        slf.update_once(&pool, &update_stats, &update_options)
                             .await?;
                     }
                     anyhow::Ok(())
@@ -408,7 +435,7 @@ impl SourceIndexingContext {
         self: &Arc<Self>,
         pool: &PgPool,
         update_stats: &Arc<stats::UpdateStats>,
-        expect_little_diff: bool,
+        update_options: &UpdateOptions,
     ) -> Result<()> {
         let plan = self.flow.get_execution_plan().await?;
         let import_op = &plan.import_ops[self.source_idx];
@@ -417,10 +444,11 @@ impl SourceIndexingContext {
             include_content_version_fp: true,
             // When only a little diff is expected and the source provides ordinal, we don't fetch values during `list()` by default,
             // as there's a high chance that we don't need the values at all
-            include_value: !(expect_little_diff && import_op.executor.provides_ordinal()),
+            include_value: !(update_options.expect_little_diff
+                && import_op.executor.provides_ordinal()),
         };
         let rows_stream = import_op.executor.list(&read_options).await?;
-        self.update_with_stream(import_op, rows_stream, pool, update_stats)
+        self.update_with_stream(import_op, rows_stream, pool, update_stats, update_options)
             .await
     }
 
@@ -430,6 +458,7 @@ impl SourceIndexingContext {
         mut rows_stream: BoxStream<'_, Result<Vec<interface::PartialSourceRow>>>,
         pool: &PgPool,
         update_stats: &Arc<stats::UpdateStats>,
+        update_options: &UpdateOptions,
     ) -> Result<()> {
         let mut join_set = JoinSet::new();
         let scan_generation = {
@@ -449,9 +478,10 @@ impl SourceIndexingContext {
                     let scan_generation = state.scan_generation;
                     let row_state = state.rows.entry(row.key.clone()).or_default();
                     row_state.touched_generation = scan_generation;
-                    if row_state
-                        .source_version
-                        .should_skip(&source_version, Some(update_stats.as_ref()))
+                    if update_options.mode == UpdateMode::Normal
+                        && row_state
+                            .source_version
+                            .should_skip(&source_version, Some(update_stats.as_ref()))
                     {
                         continue;
                     }
@@ -466,6 +496,7 @@ impl SourceIndexingContext {
                         key_aux_info: Some(row.key_aux_info),
                         data: row.data,
                     },
+                    update_options.mode,
                     update_stats.clone(),
                     concur_permit,
                     NO_ACK,
@@ -503,6 +534,7 @@ impl SourceIndexingContext {
                         value: Some(interface::SourceValue::NonExistence),
                     },
                 },
+                update_options.mode,
                 update_stats.clone(),
                 concur_permit,
                 NO_ACK,

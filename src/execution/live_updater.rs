@@ -41,6 +41,9 @@ pub struct FlowLiveUpdaterOptions {
     /// Otherwise, it will only apply changes from the source up to the current time.
     pub live_mode: bool,
 
+    /// If true, the updater will reexport the targets even if there's no change.
+    pub reexport_targets: bool,
+
     /// If true, stats will be printed to the console.
     pub print_stats: bool,
 }
@@ -198,6 +201,7 @@ impl SourceUpdateTask {
                                             key_aux_info: Some(change.key_aux_info),
                                             data: change.data,
                                         },
+                                        super::source_indexer::UpdateMode::Normal,
                                         update_stats.clone(),
                                         concur_permit,
                                         Some(move || async move {
@@ -243,7 +247,18 @@ impl SourceUpdateTask {
             async move {
                 let update_stats = Arc::new(stats::UpdateStats::default());
                 source_context
-                    .update(&pool, &update_stats, /*expect_little_diff=*/ false)
+                    .update(
+                        &pool,
+                        &update_stats,
+                        super::source_indexer::UpdateOptions {
+                            expect_little_diff: false,
+                            mode: if self.options.reexport_targets {
+                                super::source_indexer::UpdateMode::ReexportTargets
+                            } else {
+                                super::source_indexer::UpdateMode::Normal
+                            },
+                        },
+                    )
                     .await?;
                 if update_stats.has_any_change() {
                     status_tx.send_modify(|update| {
@@ -263,7 +278,14 @@ impl SourceUpdateTask {
 
                         let update_stats = Arc::new(stats::UpdateStats::default());
                         source_context
-                            .update(&pool, &update_stats, /*expect_little_diff=*/ true)
+                            .update(
+                                &pool,
+                                &update_stats,
+                                super::source_indexer::UpdateOptions {
+                                    expect_little_diff: true,
+                                    mode: super::source_indexer::UpdateMode::Normal,
+                                },
+                            )
                             .await?;
                         if update_stats.has_any_change() {
                             status_tx.send_modify(|update| {

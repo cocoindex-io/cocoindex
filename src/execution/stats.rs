@@ -124,11 +124,11 @@ impl std::fmt::Display for UpdateStats {
             }
             if num_reprocesses > 0 {
                 sub_messages.push(format!(
-                    "{num_reprocesses} REPROCESSED due to flow or logic changes"
+                    "{num_reprocesses} REPROCESSED on flow/logic changes or reexport"
                 ));
             }
             if num_updates > 0 {
-                sub_messages.push(format!("{num_updates} UPDATED in source content"));
+                sub_messages.push(format!("{num_updates} UPDATED in source content only"));
             }
             messages.push(format!(
                 "{num_source_rows} source rows processed ({})",
