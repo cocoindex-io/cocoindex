@@ -57,7 +57,7 @@ After it's called, `demo_flow` becomes an invalid object, and you should not cal
 :::note
 
 This only removes states of the flow from the current process, and it won't affect the persistent states.
-See [Setup / drop flow](/docs/core/flow_methods#setup--drop-flow) if you want to clean up the persistent states.
+See [Setup / drop flow](/docs/core/flow_methods#setupdrop-flow) if you want to clean up the persistent states.
 
 :::
 
@@ -271,7 +271,7 @@ Export must happen at the top level of a flow, i.e. not within any child scopes 
 *   `target_spec`: the target spec as the export target.
 *   `setup_by_user` (optional):
      whether the export target is setup by user.
-     By default, CocoIndex is managing the target setup (see [Setup / drop flow](/docs/core/flow_methods#setup--drop-flow)), e.g. create related tables/collections/etc. with compatible schema, and update them upon change.
+     By default, CocoIndex is managing the target setup (see [Setup / drop flow](/docs/core/flow_methods#setupdrop-flow)), e.g. create related tables/collections/etc. with compatible schema, and update them upon change.
      If `True`, the export target will be managed by users, and users are responsible for creating the target and updating it upon change.
 *   Fields to configure [storage indexes](#storage-indexes). `primary_key_fields` is required, and all others are optional.
 
@@ -293,7 +293,7 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 </TabItem>
 </Tabs>
 
-The target is managed by CocoIndex, i.e. it'll be created or dropped when [setup / drop flow](/docs/core/flow_methods#setup--drop-flow), and the data will be automatically updated (including stale data removal) when updating the index.
+The target is managed by CocoIndex, i.e. it'll be created or dropped when [setup / drop flow](/docs/core/flow_methods#setupdrop-flow), and the data will be automatically updated (including stale data removal) when updating the index.
 The `name` for the same target should remain stable across different runs.
 If it changes, CocoIndex will treat it as an old target removed and a new one created, and perform setup changes and reindexing accordingly.
 
@@ -441,7 +441,7 @@ Operation spec is the default way to configure sources, functions and targets. B
 
 *   The spec isn't supposed to contain secret information, and it's frequently shown in various places, e.g. `cocoindex show`.
 *   For targets, once an operation is removed after flow definition code change, the spec is also gone.
-    But we still need to be able to drop the persistent backend (e.g. a table) when [setup / drop flow](/docs/core/flow_methods#setup--drop-flow).
+    But we still need to be able to drop the persistent backend (e.g. a table) when [setup / drop flow](/docs/core/flow_methods#setupdrop-flow).
 
 Auth registry is introduced to solve the problems above.
 

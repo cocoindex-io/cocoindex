@@ -72,7 +72,7 @@ An indexing flow, once set up, maintains a long-lived relationship between data 
     *   **One time update**: Once triggered, CocoIndex updates the target data to reflect the version of source data up to the current moment.
     *   **Live update**: CocoIndex continuously reacts to changes of source data and updates the target data accordingly, based on various **change capture mechanisms** for the source.
 
-    See more details in the [build / update target data](flow_methods#build--update-target-data) section.
+    See more details in the [build / update target data](flow_methods#buildupdate-target-data) section.
 
 3.  CocoIndex intelligently reprocesses to propagate source changes to target by:
 
@@ -101,4 +101,4 @@ As an indexing flow is long-lived, it needs to store intermediate data to keep t
 CocoIndex uses internal storage for this purpose.
 
 Currently, CocoIndex uses Postgres database as the internal storage.
-See [Settings](settings#databaseconnectionspec) for configuring its location. The internal storage is managed by CocoIndex, see [Setup / drop flow](/docs/core/flow_methods#setup--drop-flow) for more details.
+See [Settings](settings#databaseconnectionspec) for configuring its location. The internal storage is managed by CocoIndex, see [Setup / drop flow](/docs/core/flow_methods#setupdrop-flow) for more details.
