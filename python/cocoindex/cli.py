@@ -532,6 +532,13 @@ def evaluate(
     help="Automatically setup backends for the flow if it's not setup yet.",
 )
 @click.option(
+    "--reexport",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Reexport to targets even if there's no change.",
+)
+@click.option(
     "-f",
     "--force",
     is_flag=True,
@@ -560,6 +567,7 @@ def server(
     address: str | None,
     live_update: bool,
     setup: bool,  # pylint: disable=redefined-outer-name
+    reexport: bool,
     force: bool,
     quiet: bool,
     cors_origin: str | None,
@@ -583,6 +591,7 @@ def server(
         cors_local,
         live_update,
         setup,
+        reexport,
         force,
         quiet,
     )
@@ -631,6 +640,7 @@ def _run_server(
     cors_local: int | None = None,
     live_update: bool = False,
     run_setup: bool = False,
+    reexport: bool = False,
     force: bool = False,
     quiet: bool = False,
 ) -> None:
@@ -664,8 +674,12 @@ def _run_server(
 
     click.secho("Press Ctrl+C to stop the server.", fg="yellow")
 
-    if live_update:
-        options = flow.FlowLiveUpdaterOptions(live_mode=True, print_stats=not quiet)
+    if live_update or reexport:
+        options = flow.FlowLiveUpdaterOptions(
+            live_mode=live_update,
+            reexport_targets=reexport,
+            print_stats=not quiet,
+        )
         asyncio.run_coroutine_threadsafe(
             _update_all_flows_with_hint_async(options), execution_context.event_loop
         )
