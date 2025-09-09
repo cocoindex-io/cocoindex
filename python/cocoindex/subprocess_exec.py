@@ -134,18 +134,27 @@ def _start_parent_watchdog(
     This runs in a background daemon thread so it never blocks pool work.
     """
 
+    import psutil  # type: ignore
+
+    if parent_pid is None:
+        parent_pid = os.getppid()
+
+    try:
+        p = psutil.Process(parent_pid)
+        # Cache create_time to defeat PID reuse.
+        created = p.create_time()
+    except psutil.Error:
+        # Parent already gone or not accessible
+        os._exit(1)
+
     def _watch() -> None:
         while True:
-            # If PPID changed (parent died and we were reparented), exit.
-            if os.getppid() != parent_pid:
-                os._exit(1)
-
-            # Best-effort liveness probe in case PPID was reused.
             try:
-                os.kill(parent_pid, 0)
-            except OSError:
+                # is_running() + same create_time => same process and still alive
+                if not (p.is_running() and p.create_time() == created):
+                    os._exit(1)
+            except psutil.NoSuchProcess:
                 os._exit(1)
-
             time.sleep(interval_seconds)
 
     threading.Thread(target=_watch, name="parent-watchdog", daemon=True).start()

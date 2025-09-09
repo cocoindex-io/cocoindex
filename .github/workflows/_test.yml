@@ -55,12 +55,6 @@ jobs:
           run: |
             ${{ matrix.platform.python_exec }} -m mypy python
         - name: Python tests
-          if: ${{ !startsWith(matrix.platform.runner, 'windows') }}
-          run: |
-            ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests
-        - name: Python tests (Windows cmd)
-          if: ${{ startsWith(matrix.platform.runner, 'windows') }}
-          shell: cmd  # Use `cmd` to run test for Windows, as PowerShell doesn't detect exit code by `os._exit(0)` correctly.
           run: |
             ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests
 
