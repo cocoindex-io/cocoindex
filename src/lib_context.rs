@@ -250,7 +250,7 @@ impl LibContext {
     pub fn require_persistence_ctx(&self) -> Result<&PersistenceContext> {
         self.persistence_ctx
             .as_ref()
-            .ok_or_else(|| anyhow!("Database is required for this operation. Please set COCOINDEX_DATABASE_URL environment variable and call cocoindex.init() with database settings."))
+            .ok_or_else(|| anyhow!("Database is required for this operation. Please set COCOINDEX_DATABASE_URL environment variable OR call `cocoindex.init()` with database settings."))
     }
 
     pub fn require_builtin_db_pool(&self) -> Result<&PgPool> {

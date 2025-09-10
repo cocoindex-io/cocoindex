@@ -94,8 +94,7 @@ class Settings:
 
         database_url = os.getenv("COCOINDEX_DATABASE_URL")
         if database_url is not None:
-            db_kwargs: dict[str, Any] = dict()
-            _load_field(db_kwargs, "url", "COCOINDEX_DATABASE_URL", required=True)
+            db_kwargs: dict[str, Any] = {"url": database_url}
             _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
             _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
             _load_field(
