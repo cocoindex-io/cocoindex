@@ -1,16 +1,15 @@
-name: cocoindex-neo4j
+name: cocoindex-neo4j-community
 services:
   neo4j:
-    image: neo4j:5-enterprise
+    image: neo4j:2025.08-community-ubi9
     volumes:
-        - /$HOME/neo4j/logs:/logs
-        - /$HOME/neo4j/config:/config
-        - /$HOME/neo4j/data:/data
-        - /$HOME/neo4j/plugins:/plugins
+        - /$HOME/neo4j/community/logs:/logs
+        - /$HOME/neo4j/community/config:/config
+        - /$HOME/neo4j/community/data:/data
+        - /$HOME/neo4j/community/plugins:/plugins
     environment:
         - NEO4J_AUTH=neo4j/cocoindex
         - NEO4J_PLUGINS='["graph-data-science"]'
-        - NEO4J_ACCEPT_LICENSE_AGREEMENT=eval
 
         # Uncomment to enable query logging
         # - NEO4J_db_logs_query_enabled=VERBOSE

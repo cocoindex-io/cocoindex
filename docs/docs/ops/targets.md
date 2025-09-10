@@ -442,15 +442,6 @@ docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoi
 This will bring up a Neo4j instance, which can be accessed by username `neo4j` and password `cocoindex`.
 You can access the Neo4j browser at [http://localhost:7474](http://localhost:7474).
 
-:::warning
-
-The docker compose config above will start a Neo4j Enterprise instance under the [Evaluation License](https://neo4j.com/terms/enterprise_us/),
-with 30 days trial period.
-Please read and agree the license before starting the instance.
-
-:::
-
-
 ### Kuzu
 
 #### Spec

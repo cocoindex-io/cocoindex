@@ -739,12 +739,8 @@ impl components::SetupOperator for SetupComponentOperator {
         let matcher = state.object_label.matcher(qualifier);
         let query = neo4rs::query(&match &state.index_def {
             IndexDef::KeyConstraint { field_names } => {
-                let key_type = match &state.object_label {
-                    ElementType::Node(_) => "NODE",
-                    ElementType::Relationship(_) => "RELATIONSHIP",
-                };
                 format!(
-                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR {matcher} REQUIRE {field_names} IS {key_type} KEY",
+                    "CREATE CONSTRAINT {name} IF NOT EXISTS FOR {matcher} REQUIRE {field_names} IS UNIQUE",
                     name = key.name,
                     field_names = build_composite_field_names(qualifier, field_names),
                 )
