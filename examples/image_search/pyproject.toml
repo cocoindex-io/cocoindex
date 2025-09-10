@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Image search examples for cocoindex: CLIP and ColPali-based embedding."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[colpali]>=0.2.4",
+    "cocoindex[colpali]>=0.2.8",
     "python-dotenv>=1.0.1",
     "fastapi>=0.100.0",
     "torch>=2.0.0",
