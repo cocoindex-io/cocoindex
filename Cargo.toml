@@ -145,3 +145,6 @@ azure_storage_blobs = { version = "0.21.0", default-features = false, features =
     "hmac_rust",
 ] }
 serde_path_to_error = "0.1.17"
+lancedb = { version = "0.22.0", default-features = false }
+arrow-array = "55.2.0"
+arrow-schema = "55.2.0"
