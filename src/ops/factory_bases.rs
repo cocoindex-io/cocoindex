@@ -245,7 +245,8 @@ impl<T: SourceFactoryBase> SourceFactory for T {
         EnrichedValueType,
         BoxFuture<'static, Result<Box<dyn SourceExecutor>>>,
     )> {
-        let spec: T::Spec = serde_json::from_value(spec)?;
+        let spec: T::Spec = serde_json::from_value(spec)
+            .with_context(|| format!("Failed in parsing spec for source `{source_name}`"))?;
         let output_schema = self.get_output_schema(&spec, &context).await?;
         let source_name = source_name.to_string();
         let executor = async move { self.build_executor(&source_name, spec, context).await };
@@ -323,7 +324,8 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
         EnrichedValueType,
         BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
     )> {
-        let spec: T::Spec = serde_json::from_value(spec)?;
+        let spec: T::Spec = serde_json::from_value(spec)
+            .with_context(|| format!("Failed in parsing spec for function `{}`", self.name()))?;
         let mut nonnull_args_idx = vec![];
         let mut may_nullify_output = false;
         let mut args_resolver = OpArgsResolver::new(
@@ -466,8 +468,10 @@ impl<T: TargetFactoryBase> TargetFactory for T {
                 .into_iter()
                 .map(|d| {
                     anyhow::Ok(TypedExportDataCollectionSpec {
+                        spec: serde_json::from_value(d.spec).with_context(|| {
+                            format!("Failed in parsing spec for target `{}`", d.name)
+                        })?,
                         name: d.name,
-                        spec: serde_json::from_value(d.spec)?,
                         key_fields_schema: d.key_fields_schema,
                         value_fields_schema: d.value_fields_schema,
                         index_options: d.index_options,

@@ -674,7 +674,9 @@ impl AnalyzerContext {
         let global_concurrency_controller = self.lib_ctx.global_concurrency_controller.clone();
         let result_fut = async move {
             trace!("Start building executor for source op `{op_name}`");
-            let executor = executor.await?;
+            let executor = executor
+                .await
+                .with_context(|| format!("Preparing for source op: {op_name}"))?;
             trace!("Finished building executor for source op `{op_name}`");
             Ok(AnalyzedImportOp {
                 executor,
@@ -700,10 +702,7 @@ impl AnalyzerContext {
             ReactiveOpSpec::Transform(op) => {
                 let input_field_schemas =
                     analyze_input_fields(&op.inputs, op_scope).with_context(|| {
-                        format!(
-                            "Failed to analyze inputs for transform op: {}",
-                            reactive_op.name
-                        )
+                        format!("Preparing inputs for transform op: {}", reactive_op.name)
                     })?;
                 let spec = serde_json::Value::Object(op.op.spec.clone());
 
@@ -725,7 +724,7 @@ impl AnalyzerContext {
                 async move {
                             trace!("Start building executor for transform op `{op_name}`");
                             let executor = executor.await.with_context(|| {
-                                format!("Failed to build executor for transform op: {op_name}")
+                                format!("Preparing for transform op: {op_name}")
                             })?;
                             let enable_cache = executor.enable_cache();
                             let behavior_version = executor.behavior_version();
@@ -784,7 +783,7 @@ impl AnalyzerContext {
                         local_field_ref,
                         op_scope: analyzed_op_scope_fut
                             .await
-                            .with_context(|| format!("Analyzing foreach op: {op_name}"))?,
+                            .with_context(|| format!("Preparing for foreach op: {op_name}"))?,
                         name: op_name,
                         concurrency_controller: concur_control::ConcurrencyController::new(
                             &concur_control_options,
@@ -920,7 +919,7 @@ impl AnalyzerContext {
                     let export_context = data_coll_output
                         .export_context
                         .await
-                        .with_context(|| format!("Analyzing export op: {op_name}"))?;
+                        .with_context(|| format!("Preparing for export op: {op_name}"))?;
                     trace!("Finished building executor for export op `{op_name}`");
                     Ok(AnalyzedExportOp {
                         name: op_name,
@@ -1006,7 +1005,8 @@ pub async fn analyze_flow(
         import_ops_futs.push(
             analyzer_ctx
                 .analyze_import_op(&root_op_scope, import_op.clone())
-                .await?,
+                .await
+                .with_context(|| format!("Preparing for import op: {}", import_op.name))?,
         );
     }
     let op_scope_fut = analyzer_ctx
@@ -1059,7 +1059,8 @@ pub async fn analyze_flow(
                     &mut targets_analyzed_ss,
                     &mut declarations_analyzed_ss,
                 )
-                .await?,
+                .await
+                .with_context(|| format!("Analyzing export ops for target `{target_kind}`"))?,
         );
         analyzed_target_op_groups.push(analyzed_target_op_group);
     }
