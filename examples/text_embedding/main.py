@@ -63,9 +63,7 @@ def text_embedding_flow(
 
     doc_embeddings.export(
         "doc_embeddings",
-        cocoindex.targets.Postgres(
-            database=cocoindex.setting.DatabaseConnectionSpec(url="123"),
-        ),
+        cocoindex.targets.Postgres(),
         primary_key_fields=["filename", "location"],
         vector_indexes=[
             cocoindex.VectorIndexDef(
