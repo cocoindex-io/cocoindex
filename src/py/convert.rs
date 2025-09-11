@@ -12,7 +12,7 @@ use pythonize::{depythonize, pythonize};
 use serde::de::DeserializeOwned;
 use std::ops::Deref;
 
-use super::IntoPyResult;
+use super::{AnyhowIntoPyResult, IntoPyResult};
 
 #[derive(Debug)]
 pub struct Pythonized<T>(pub T);

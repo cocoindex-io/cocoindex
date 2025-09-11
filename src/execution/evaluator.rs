@@ -5,7 +5,7 @@ use futures::future::try_join_all;
 
 use crate::base::value::EstimatedByteSize;
 use crate::builder::{AnalyzedTransientFlow, plan::*};
-use crate::py::IntoPyResult;
+use crate::py::AnyhowIntoPyResult;
 use crate::{
     base::{schema, value},
     utils::immutable::RefList,
@@ -73,6 +73,7 @@ impl ScopeValueBuilder {
             .zip(&mut builder.fields)
         {
             r.set(augmented_value(v, &t.value_type.typ)?)
+                .map_err(|_| anyhow!("Value of field `{}` is already set", t.name))
                 .into_py_result()?;
         }
         Ok(builder)

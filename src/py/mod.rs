@@ -72,7 +72,20 @@ pub trait IntoPyResult<T> {
     fn into_py_result(self) -> PyResult<T>;
 }
 
-impl<T, E: std::fmt::Debug> IntoPyResult<T> for Result<T, E> {
+impl<T, E: std::error::Error> IntoPyResult<T> for Result<T, E> {
+    fn into_py_result(self) -> PyResult<T> {
+        match self {
+            Ok(value) => Ok(value),
+            Err(err) => Err(PyException::new_err(format!("{err:?}"))),
+        }
+    }
+}
+
+pub trait AnyhowIntoPyResult<T> {
+    fn into_py_result(self) -> PyResult<T>;
+}
+
+impl<T> AnyhowIntoPyResult<T> for anyhow::Result<T> {
     fn into_py_result(self) -> PyResult<T> {
         match self {
             Ok(value) => Ok(value),
