@@ -144,3 +144,4 @@ azure_storage_blobs = { version = "0.21.0", default-features = false, features =
     "enable_reqwest_rustls",
     "hmac_rust",
 ] }
+serde_path_to_error = "0.1.17"

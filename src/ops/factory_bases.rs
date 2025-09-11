@@ -245,7 +245,7 @@ impl<T: SourceFactoryBase> SourceFactory for T {
         EnrichedValueType,
         BoxFuture<'static, Result<Box<dyn SourceExecutor>>>,
     )> {
-        let spec: T::Spec = serde_json::from_value(spec)
+        let spec: T::Spec = utils::deser::from_json_value(spec)
             .with_context(|| format!("Failed in parsing spec for source `{source_name}`"))?;
         let output_schema = self.get_output_schema(&spec, &context).await?;
         let source_name = source_name.to_string();
@@ -324,7 +324,7 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
         EnrichedValueType,
         BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
     )> {
-        let spec: T::Spec = serde_json::from_value(spec)
+        let spec: T::Spec = utils::deser::from_json_value(spec)
             .with_context(|| format!("Failed in parsing spec for function `{}`", self.name()))?;
         let mut nonnull_args_idx = vec![];
         let mut may_nullify_output = false;
@@ -399,7 +399,7 @@ pub trait TargetFactoryBase: TargetFactory + Send + Sync + 'static {
     /// Deserialize the setup key from a JSON value.
     /// You can override this method to provide a custom deserialization logic, e.g. to perform backward compatible deserialization.
     fn deserialize_setup_key(key: serde_json::Value) -> Result<Self::SetupKey> {
-        Ok(serde_json::from_value(key)?)
+        Ok(utils::deser::from_json_value(key)?)
     }
 
     /// Will not be called if it's setup by user.
@@ -468,7 +468,7 @@ impl<T: TargetFactoryBase> TargetFactory for T {
                 .into_iter()
                 .map(|d| {
                     anyhow::Ok(TypedExportDataCollectionSpec {
-                        spec: serde_json::from_value(d.spec).with_context(|| {
+                        spec: utils::deser::from_json_value(d.spec).with_context(|| {
                             format!("Failed in parsing spec for target `{}`", d.name)
                         })?,
                         name: d.name,
@@ -480,7 +480,7 @@ impl<T: TargetFactoryBase> TargetFactory for T {
                 .collect::<Result<Vec<_>>>()?,
             declarations
                 .into_iter()
-                .map(|d| anyhow::Ok(serde_json::from_value(d)?))
+                .map(|d| anyhow::Ok(utils::deser::from_json_value(d)?))
                 .collect::<Result<Vec<_>>>()?,
             context,
         )
@@ -515,7 +515,7 @@ impl<T: TargetFactoryBase> TargetFactory for T {
     ) -> Result<Box<dyn setup::ResourceSetupChange>> {
         let key: T::SetupKey = Self::deserialize_setup_key(key.clone())?;
         let desired_state: Option<T::SetupState> = desired_state
-            .map(|v| serde_json::from_value(v.clone()))
+            .map(|v| utils::deser::from_json_value(v.clone()))
             .transpose()?;
         let existing_states = from_json_combined_state(existing_states)?;
         let setup_change = TargetFactoryBase::diff_setup_states(
@@ -546,8 +546,8 @@ impl<T: TargetFactoryBase> TargetFactory for T {
     ) -> Result<SetupStateCompatibility> {
         let result = TargetFactoryBase::check_state_compatibility(
             self,
-            &serde_json::from_value(desired_state.clone())?,
-            &serde_json::from_value(existing_state.clone())?,
+            &utils::deser::from_json_value(desired_state.clone())?,
+            &utils::deser::from_json_value(existing_state.clone())?,
         )?;
         Ok(result)
     }
@@ -600,7 +600,7 @@ impl<T: TargetFactoryBase> TargetFactory for T {
                 .into_iter()
                 .map(|item| -> anyhow::Result<_> {
                     Ok(TypedResourceSetupChangeItem {
-                        key: serde_json::from_value(item.key.clone())?,
+                        key: utils::deser::from_json_value(item.key.clone())?,
                         setup_change: (item.setup_change as &dyn Any)
                             .downcast_ref::<T::SetupChange>()
                             .ok_or_else(invariance_violation)?,
@@ -618,7 +618,7 @@ fn from_json_combined_state<T: Debug + Clone + Serialize + DeserializeOwned>(
     Ok(setup::CombinedState {
         current: existing_states
             .current
-            .map(|v| serde_json::from_value(v))
+            .map(|v| utils::deser::from_json_value(v))
             .transpose()?,
         staging: existing_states
             .staging
@@ -626,7 +626,7 @@ fn from_json_combined_state<T: Debug + Clone + Serialize + DeserializeOwned>(
             .map(|v| {
                 anyhow::Ok(match v {
                     setup::StateChange::Upsert(v) => {
-                        setup::StateChange::Upsert(serde_json::from_value(v)?)
+                        setup::StateChange::Upsert(utils::deser::from_json_value(v)?)
                     }
                     setup::StateChange::Delete => setup::StateChange::Delete,
                 })

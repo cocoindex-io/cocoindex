@@ -63,11 +63,11 @@ fn from_metadata_record<S: DeserializeOwned + Debug + Clone>(
     staging_changes: sqlx::types::Json<Vec<StateChange<serde_json::Value>>>,
     legacy_state_key: Option<serde_json::Value>,
 ) -> Result<CombinedState<S>> {
-    let current: Option<S> = state.map(serde_json::from_value).transpose()?;
+    let current: Option<S> = state.map(utils::deser::from_json_value).transpose()?;
     let staging: Vec<StateChange<S>> = (staging_changes.0.into_iter())
         .map(|sc| -> Result<_> {
             Ok(match sc {
-                StateChange::Upsert(v) => StateChange::Upsert(serde_json::from_value(v)?),
+                StateChange::Upsert(v) => StateChange::Upsert(utils::deser::from_json_value(v)?),
                 StateChange::Delete => StateChange::Delete,
             })
         })

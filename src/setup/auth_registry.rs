@@ -35,7 +35,7 @@ impl AuthRegistry {
     pub fn get<T: DeserializeOwned>(&self, entry_ref: &spec::AuthEntryReference<T>) -> Result<T> {
         let entries = self.entries.read().unwrap();
         match entries.get(&entry_ref.key) {
-            Some(value) => Ok(serde_json::from_value(value.clone())?),
+            Some(value) => Ok(utils::deser::from_json_value(value.clone())?),
             None => api_bail!(
                 "Auth entry `{key}` not found.\n\
                 Hint: If you're not referencing `{key}` in your flow, it will likely be caused by a previously persisted target using it. \

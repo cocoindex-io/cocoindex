@@ -1,13 +1,12 @@
+use crate::prelude::*;
+
 use super::schema::*;
 use crate::base::duration::parse_duration;
-use crate::{api_bail, api_error};
-use anyhow::Result;
 use base64::prelude::*;
 use bytes::Bytes;
 use chrono::Offset;
 use log::warn;
 use serde::{
-    Deserialize, Serialize,
     de::{SeqAccess, Visitor},
     ser::{SerializeMap, SerializeSeq, SerializeTuple},
 };
@@ -1014,7 +1013,8 @@ where
         Ok(Self {
             fields: fields
                 .map(|(s, v)| {
-                    let value = Value::<VS>::from_json(v, &s.value_type.typ)?;
+                    let value = Value::<VS>::from_json(v, &s.value_type.typ)
+                        .with_context(|| format!("while deserializing field `{}`", s.name))?;
                     if value.is_null() && !s.value_type.nullable {
                         api_bail!("expected non-null value for `{}`", s.name);
                     }
@@ -1033,9 +1033,10 @@ where
             fields: fields_schema
                 .map(|field| {
                     let value = match values.get_mut(&field.name) {
-                        Some(v) => {
-                            Value::<VS>::from_json(std::mem::take(v), &field.value_type.typ)?
-                        }
+                        Some(v) => Value::<VS>::from_json(std::mem::take(v), &field.value_type.typ)
+                            .with_context(|| {
+                                format!("while deserializing field `{}`", field.name)
+                            })?,
                         None => Value::<VS>::default(),
                     };
                     if value.is_null() && !field.value_type.nullable {
@@ -1137,7 +1138,7 @@ impl BasicValue {
                 v.as_f64()
                     .ok_or_else(|| anyhow::anyhow!("invalid fp64 value {v}"))?,
             ),
-            (v, BasicValueType::Range) => BasicValue::Range(serde_json::from_value(v)?),
+            (v, BasicValueType::Range) => BasicValue::Range(utils::deser::from_json_value(v)?),
             (serde_json::Value::String(v), BasicValueType::Uuid) => BasicValue::Uuid(v.parse()?),
             (serde_json::Value::String(v), BasicValueType::Date) => BasicValue::Date(v.parse()?),
             (serde_json::Value::String(v), BasicValueType::Time) => BasicValue::Time(v.parse()?),
@@ -1170,7 +1171,11 @@ impl BasicValue {
             ) => {
                 let vec = v
                     .into_iter()
-                    .map(|v| BasicValue::from_json(v, element_type))
+                    .enumerate()
+                    .map(|(i, v)| {
+                        BasicValue::from_json(v, element_type)
+                            .with_context(|| format!("while deserializing Vector element #{i}"))
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 BasicValue::Vector(Arc::from(vec))
             }
@@ -1267,7 +1272,11 @@ where
                     TableKind::UTable => {
                         let rows = v
                             .into_iter()
-                            .map(|v| Ok(FieldValues::from_json(v, &s.row.fields)?.into()))
+                            .map(|v| {
+                                Ok(FieldValues::from_json(v, &s.row.fields)
+                                    .with_context(|| format!("while deserializing UTable row"))?
+                                    .into())
+                            })
                             .collect::<Result<Vec<_>>>()?;
                         Value::LTable(rows)
                     }
@@ -1289,10 +1298,13 @@ where
                                         let mut field_vals_iter = v.into_iter();
                                         let keys: Box<[KeyPart]> = (0..num_key_parts)
                                             .map(|_| {
+                                                let field_schema = fields_iter.next().unwrap();
                                                 Self::from_json(
                                                     field_vals_iter.next().unwrap(),
-                                                    &fields_iter.next().unwrap().value_type.typ,
-                                                )?
+                                                    &field_schema.value_type.typ,
+                                                ).with_context(|| {
+                                                    format!("while deserializing key part `{}`", field_schema.name)
+                                                })?
                                                 .into_key()
                                             })
                                             .collect::<Result<_>>()?;
@@ -1328,7 +1340,14 @@ where
                     TableKind::LTable => {
                         let rows = v
                             .into_iter()
-                            .map(|v| Ok(FieldValues::from_json(v, &s.row.fields)?.into()))
+                            .enumerate()
+                            .map(|(i, v)| {
+                                Ok(FieldValues::from_json(v, &s.row.fields)
+                                    .with_context(|| {
+                                        format!("while deserializing LTable row #{i}")
+                                    })?
+                                    .into())
+                            })
                             .collect::<Result<Vec<_>>>()?;
                         Value::LTable(rows)
                     }

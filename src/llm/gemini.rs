@@ -276,7 +276,7 @@ impl LlmGenerationClient for VertexAiClient {
             generation_config = Some(
                 GenerationConfig::new()
                     .set_response_mime_type("application/json".to_string())
-                    .set_response_schema(serde_json::from_value::<Schema>(schema_json)?),
+                    .set_response_schema(utils::deser::from_json_value::<Schema>(schema_json)?),
             );
         }
 
@@ -358,7 +358,7 @@ impl LlmEmbeddingClient for VertexAiClient {
             .next()
             .and_then(|mut e| e.get_mut("embeddings").map(|v| v.take()))
             .ok_or_else(|| anyhow::anyhow!("No embeddings in response"))?;
-        let embedding: ContentEmbedding = serde_json::from_value(embeddings)?;
+        let embedding: ContentEmbedding = utils::deser::from_json_value(embeddings)?;
         Ok(super::LlmEmbeddingResponse {
             embedding: embedding.values,
         })

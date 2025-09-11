@@ -164,7 +164,7 @@ impl<'a> SourceRowKeyContextHolder<'a> {
         let key = value::KeyValue::decode_from_strs(source_row_key.key, key_schema)?;
         let key_aux_info = source_row_key
             .key_aux
-            .map(|s| serde_json::from_str(&s))
+            .map(|s| utils::deser::from_json_str(&s))
             .transpose()?
             .unwrap_or_default();
         Ok(Self {

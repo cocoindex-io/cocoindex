@@ -481,7 +481,7 @@ impl TargetFactoryBase for Factory {
                     connection: None,
                 }
             }
-            _ => serde_json::from_value(key)?,
+            _ => utils::deser::from_json_value(key)?,
         })
     }
 

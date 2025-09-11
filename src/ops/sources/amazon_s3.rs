@@ -241,7 +241,7 @@ impl Executor {
         let mut change_messages = vec![];
         for message in messages.into_iter() {
             if let Some(body) = message.body {
-                let notification: S3EventNotification = serde_json::from_str(&body)?;
+                let notification: S3EventNotification = utils::deser::from_json_str(&body)?;
                 let mut changes = vec![];
                 for record in notification.records {
                     let s3 = if let Some(s3) = record.s3 {

@@ -1337,6 +1337,7 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "serde_with",
  "sqlx",
  "time",

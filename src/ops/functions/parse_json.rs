@@ -29,7 +29,7 @@ fn add_language(
 }
 
 fn parse_json(text: &str) -> Result<serde_json::Value> {
-    Ok(serde_json::from_str(text)?)
+    Ok(utils::deser::from_json_str(text)?)
 }
 
 static PARSE_FN_BY_LANG: LazyLock<HashMap<UniCase<&'static str>, Arc<LanguageConfig>>> =

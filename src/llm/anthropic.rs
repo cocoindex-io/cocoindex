@@ -138,7 +138,7 @@ impl LlmGenerationClient for Client {
             match &mut resp_json["content"][0]["text"] {
                 serde_json::Value::String(s) => {
                     // Try strict JSON parsing first
-                    match serde_json::from_str::<serde_json::Value>(s) {
+                    match utils::deser::from_json_str::<serde_json::Value>(s) {
                         Ok(_) => std::mem::take(s),
                         Err(e) => {
                             // Try permissive json5 parsing as fallback

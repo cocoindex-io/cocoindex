@@ -600,7 +600,7 @@ impl PostgresSourceExecutor {
     }
 
     fn parse_notification_payload(&self, notification: &PgNotification) -> Result<SourceChange> {
-        let mut payload: serde_json::Value = serde_json::from_str(notification.payload())?;
+        let mut payload: serde_json::Value = utils::deser::from_json_str(notification.payload())?;
         let payload = payload
             .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("'fields' field is not an object"))?;
