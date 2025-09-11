@@ -20,7 +20,9 @@ impl AnalyzedFlow {
         flow_instance_ctx: Arc<FlowInstanceContext>,
     ) -> Result<Self> {
         let (data_schema, setup_state, execution_plan_fut) =
-            analyzer::analyze_flow(&flow_instance, flow_instance_ctx.clone()).await?;
+            analyzer::analyze_flow(&flow_instance, flow_instance_ctx.clone())
+                .await
+                .with_context(|| format!("analyzing flow `{}`", flow_instance.name))?;
         let execution_plan = async move {
             shared_ok(Arc::new(
                 execution_plan_fut.await.map_err(SharedError::new)?,

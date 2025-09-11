@@ -382,7 +382,8 @@ impl SourceIndexingContext {
             error!(
                 "{:?}",
                 e.context(format!(
-                    "Error in processing row from source `{source}` with key: {key}",
+                    "Error in processing row from flow `{flow}` source `{source}` with key: {key}",
+                    flow = self.flow.flow_instance.name,
                     source = self.flow.flow_instance.import_ops[self.source_idx].name,
                     key = row_input.key,
                 ))
