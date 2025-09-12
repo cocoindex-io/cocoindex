@@ -267,7 +267,7 @@ pub fn get_auth_registry() -> &'static Arc<AuthRegistry> {
 }
 
 static LIB_INIT: OnceLock<()> = OnceLock::new();
-pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
+pub async fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
     LIB_INIT.get_or_init(|| {
         let _ = env_logger::try_init();
 
@@ -278,11 +278,8 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
 
     let db_pools = DbPools::default();
     let persistence_ctx = if let Some(database_spec) = &settings.database {
-        let (pool, all_setup_states) = get_runtime().block_on(async {
-            let pool = db_pools.get_pool(database_spec).await?;
-            let existing_ss = setup::get_existing_setup_state(&pool).await?;
-            anyhow::Ok((pool, existing_ss))
-        })?;
+        let pool = db_pools.get_pool(database_spec).await?;
+        let all_setup_states = setup::get_existing_setup_state(&pool).await?;
         Some(PersistenceContext {
             builtin_db_pool: pool,
             setup_ctx: tokio::sync::RwLock::new(LibSetupContext {
@@ -308,16 +305,18 @@ pub fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
     })
 }
 
-pub static LIB_CONTEXT: RwLock<Option<Arc<LibContext>>> = RwLock::new(None);
+static GET_SETTINGS_FN: Mutex<Option<Box<dyn Fn() -> settings::Settings + Send + Sync>>> =
+    Mutex::new(None);
+static LIB_CONTEXT: Mutex<Option<Arc<LibContext>>> = Mutex::new(None);
 
-pub(crate) fn init_lib_context(settings: settings::Settings) -> Result<()> {
-    let mut lib_context_locked = LIB_CONTEXT.write().unwrap();
-    *lib_context_locked = Some(Arc::new(create_lib_context(settings)?));
+pub(crate) async fn init_lib_context(settings: settings::Settings) -> Result<()> {
+    let mut lib_context_locked = LIB_CONTEXT.lock().unwrap();
+    *lib_context_locked = Some(Arc::new(create_lib_context(settings).await?));
     Ok(())
 }
 
-pub(crate) fn get_lib_context() -> Result<Arc<LibContext>> {
-    let lib_context_locked = LIB_CONTEXT.read().unwrap();
+pub(crate) async fn get_lib_context() -> Result<Arc<LibContext>> {
+    let lib_context_locked = LIB_CONTEXT.lock().unwrap();
     lib_context_locked
         .as_ref()
         .cloned()
@@ -325,7 +324,7 @@ pub(crate) fn get_lib_context() -> Result<Arc<LibContext>> {
 }
 
 pub(crate) fn clear_lib_context() {
-    let mut lib_context_locked = LIB_CONTEXT.write().unwrap();
+    let mut lib_context_locked = LIB_CONTEXT.lock().unwrap();
     *lib_context_locked = None;
 }
 
@@ -339,15 +338,17 @@ mod tests {
         assert!(db_pools.pools.lock().unwrap().is_empty());
     }
 
-    #[test]
-    fn test_lib_context_without_database() {
-        let lib_context = create_lib_context(settings::Settings::default()).unwrap();
+    #[tokio::test]
+    async fn test_lib_context_without_database() {
+        let lib_context = create_lib_context(settings::Settings::default())
+            .await
+            .unwrap();
         assert!(lib_context.persistence_ctx.is_none());
         assert!(lib_context.require_builtin_db_pool().is_err());
     }
 
-    #[test]
-    fn test_persistence_context_type_safety() {
+    #[tokio::test]
+    async fn test_persistence_context_type_safety() {
         // This test ensures that PersistenceContext groups related fields together
         let settings = settings::Settings {
             database: Some(settings::DatabaseConnectionSpec {
@@ -361,7 +362,7 @@ mod tests {
         };
 
         // This would fail at runtime due to invalid connection, but we're testing the structure
-        let result = create_lib_context(settings);
+        let result = create_lib_context(settings).await;
         // We expect this to fail due to invalid connection, but the structure should be correct
         assert!(result.is_err());
     }

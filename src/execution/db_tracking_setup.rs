@@ -252,7 +252,7 @@ impl ResourceSetupChange for TrackingTableSetupChange {
 
 impl TrackingTableSetupChange {
     pub async fn apply_change(&self) -> Result<()> {
-        let lib_context = get_lib_context()?;
+        let lib_context = get_lib_context().await?;
         let pool = lib_context.require_builtin_db_pool()?;
         if let Some(desired) = &self.desired_state {
             for lagacy_name in self.legacy_tracking_table_names.iter() {

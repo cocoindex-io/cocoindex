@@ -10,7 +10,7 @@ pub async fn get_db_pool(
     db_ref: Option<&spec::AuthEntryReference<DatabaseConnectionSpec>>,
     auth_registry: &AuthRegistry,
 ) -> Result<PgPool> {
-    let lib_context = get_lib_context()?;
+    let lib_context = get_lib_context().await?;
     let db_conn_spec = db_ref
         .as_ref()
         .map(|db_ref| auth_registry.get(db_ref))

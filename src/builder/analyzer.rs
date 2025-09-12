@@ -995,7 +995,7 @@ pub async fn analyze_flow(
     impl Future<Output = Result<ExecutionPlan>> + Send + use<>,
 )> {
     let analyzer_ctx = AnalyzerContext {
-        lib_ctx: get_lib_context()?,
+        lib_ctx: get_lib_context().await?,
         flow_ctx,
     };
     let root_data_scope = Arc::new(Mutex::new(DataScopeBuilder::new()));
@@ -1109,7 +1109,7 @@ pub async fn analyze_transient_flow<'a>(
 )> {
     let mut root_data_scope = DataScopeBuilder::new();
     let analyzer_ctx = AnalyzerContext {
-        lib_ctx: get_lib_context()?,
+        lib_ctx: get_lib_context().await?,
         flow_ctx,
     };
     let mut input_fields = vec![];
