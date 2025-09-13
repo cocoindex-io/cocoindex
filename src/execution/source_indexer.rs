@@ -48,6 +48,12 @@ impl Default for SourceRowIndexingState {
 struct SourceIndexingState {
     rows: HashMap<value::KeyValue, SourceRowIndexingState>,
     scan_generation: usize,
+
+    // Set of rows to retry.
+    // It's for sources that we don't proactively scan all input rows during refresh.
+    // We need to maintain a list of row keys failed in last processing, to retry them later.
+    // It's `None` if we don't need this mechanism for failure retry.
+    rows_to_retry: Option<HashSet<value::KeyValue>>,
 }
 
 pub struct SourceIndexingContext {
@@ -112,6 +118,10 @@ impl<'a> LocalSourceRowStateOperator<'a> {
         let (sem, outcome) = {
             let mut state = self.indexing_state.lock().unwrap();
             let touched_generation = state.scan_generation;
+
+            if let Some(rows_to_retry) = &mut state.rows_to_retry {
+                rows_to_retry.remove(self.key);
+            }
 
             if self.last_source_version == Some(source_version) {
                 return Ok(RowStateAdvanceOutcome::Noop);
@@ -211,6 +221,9 @@ impl<'a> LocalSourceRowStateOperator<'a> {
         } else {
             indexing_state.rows.remove(self.key);
         }
+        if let Some(rows_to_retry) = &mut indexing_state.rows_to_retry {
+            rows_to_retry.insert(self.key.clone());
+        }
     }
 }
 
@@ -244,6 +257,7 @@ impl SourceIndexingContext {
         let import_op = &plan.import_ops[source_idx];
         let mut list_state = db_tracking::ListTrackedSourceKeyMetadataState::new();
         let mut rows = HashMap::new();
+        let mut rows_to_retry: Option<HashSet<value::KeyValue>> = None;
         let scan_generation = 0;
         {
             let mut key_metadata_stream = list_state.list(
@@ -257,6 +271,11 @@ impl SourceIndexingContext {
                     key_metadata.source_key,
                     &import_op.primary_key_schema,
                 )?;
+                if let Some(rows_to_retry) = &mut rows_to_retry {
+                    if key_metadata.max_process_ordinal > key_metadata.process_ordinal {
+                        rows_to_retry.insert(source_pk.clone());
+                    }
+                }
                 rows.insert(
                     source_pk,
                     SourceRowIndexingState {
@@ -280,6 +299,7 @@ impl SourceIndexingContext {
             state: Mutex::new(SourceIndexingState {
                 rows,
                 scan_generation,
+                rows_to_retry,
             }),
             pending_update: Mutex::new(None),
             update_sem: Semaphore::new(1),

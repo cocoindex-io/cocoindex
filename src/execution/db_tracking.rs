@@ -294,6 +294,8 @@ pub struct TrackedSourceKeyMetadata {
     pub processed_source_ordinal: Option<i64>,
     pub processed_source_fp: Option<Vec<u8>>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
+    pub max_process_ordinal: Option<i64>,
+    pub process_ordinal: Option<i64>,
 }
 
 pub struct ListTrackedSourceKeyMetadataState {
@@ -314,7 +316,9 @@ impl ListTrackedSourceKeyMetadataState {
         pool: &'a PgPool,
     ) -> impl Stream<Item = Result<TrackedSourceKeyMetadata, sqlx::Error>> + 'a {
         self.query_str = format!(
-            "SELECT source_key, processed_source_ordinal, {}, process_logic_fingerprint FROM {} WHERE source_id = $1",
+            "SELECT \
+            source_key, processed_source_ordinal, {}, process_logic_fingerprint, max_process_ordinal, process_ordinal \
+            FROM {} WHERE source_id = $1",
             if db_setup.has_fast_fingerprint_column {
                 "processed_source_fp"
             } else {
