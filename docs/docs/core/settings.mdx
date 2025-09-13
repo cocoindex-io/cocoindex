@@ -10,49 +10,82 @@ import TabItem from '@theme/TabItem';
 
 Certain settings need to be provided for CocoIndex to work, e.g. database connections, app namespace, etc.
 
-## Launch CocoIndex
+## Configure CocoIndex Settings
 
-You have two ways to launch CocoIndex:
+Note that in general, you have two ways to launch CocoIndex:
 
+*   Call CocoIndex APIs from your own Python application or library.
 *   Use [Cocoindex CLI](cli). It's handy for most routine indexing building and management tasks.
-    It will load settings from environment variables, either already set in your environment, or specified in `.env` file.
-    See [CLI](cli#environment-variables) for more details.
 
-*   Call CocoIndex functionality from your own Python application or library.
-    It's needed when you want to leverage CocoIndex support for query, or have your custom logic to trigger indexing, etc.
 
-    <Tabs>
-    <TabItem value="python" label="Python" default>
+CocoIndex exposes process-level settings specified by `cocoindex.Settings` dataclass.
+Settings can be configured in three different ways.
+In the following sections, the later ones will override the earlier ones.
 
-    You need to explicitly call `cocoindex.init()` before doing anything with CocoIndex, and settings will be loaded during the call.
+### Environment Variables
 
-    *   If it's called without any argument, it will load settings from environment variables.
-        Only existing environment variables already set in your environment will be used.
-        If you want to load environment variables from a specific `.env` file, consider call `load_dotenv()` provided by the [`python-dotenv`](https://github.com/theskumar/python-dotenv) package.
+The simplest approach is to set corresponding environment variables.
+See [List of Environment Variables](#list-of-environment-variables) for specific environment variables.
 
-        ```py
-        from dotenv import load_dotenv
-        import cocoindex
+:::tip
 
-        load_dotenv()
-        cocoindex.init()
-        ```
+You can consider place a `.env` file in your directory.
+The [CLI](cli#environment-variables) will load environment variables from the `.env` file (see [CLI](cli#environment-variables) for more details).
+From your own main module, you can also load environment variables with a package like [`python-dotenv`](https://github.com/theskumar/python-dotenv).
 
-    *   It takes an optional `cocoindex.Settings` dataclass object as argument, so you can also construct settings explicitly and pass to it:
+:::
 
-        ```py
-        import cocoindex
+### Setting Function
 
-        cocoindex.init(
-            cocoindex.Settings(
-                database=cocoindex.DatabaseConnectionSpec(
-                    url="postgres://cocoindex:cocoindex@localhost/cocoindex"
-                )
-            )
+A more flexible approach is to provide a setting function that returns a `cocoindex.Settings` dataclass object.
+The setting function can have any name, and needs to be decorated with the `@cocoindex.settings` decorator, for example:
+
+```py
+@cocoindex.settings
+def cocoindex_settings() -> cocoindex.Settings:
+    return cocoindex.Settings(
+        database=cocoindex.DatabaseConnectionSpec(
+            url="postgres://cocoindex:cocoindex@localhost/cocoindex"
         )
-        ```
-    </TabItem>
-    </Tabs>
+    )
+```
+
+This setting function will be called once when CocoIndex is initialized.
+Once the settings function is provided, environment variables will be ignored.
+
+### `cocoindex.init()` function
+
+You can also call `cocoindex.init()` with a `cocoindex.Settings` dataclass object as argument, for example:
+
+```py
+cocoindex.init(
+    cocoindex.Settings(
+        database=cocoindex.DatabaseConnectionSpec(
+            url="postgres://cocoindex:cocoindex@localhost/cocoindex"
+        )
+    )
+)
+```
+
+For example, you can call it in the main function of your application.
+Once the `cocoindex.init()` is called with a `cocoindex.Settings` dataclass object as argument, the `@cocoindex.settings` function and environment variables will be ignored.
+
+This is more flexible, as you can more easily construct `cocoindex.Settings` based on other stuffs you loaded earlier.
+But be careful that if you call `cocoindex.init()` only under the path of main (e.g. within `if __name__ == "__main__":` guard), it won't be executed when you're using CocoIndex CLI, as it won't execute your main logic.
+
+:::info
+
+`cocoindex.init()` is optional:
+
+-   You can call `cocoindex.init()` with a `cocoindex.Settings` dataclass object as argument, or without any argument.
+    When without argument, the settings will be loaded from the `@cocoindex.settings` function or environment variables.
+
+-   You don't have to explicitly call `cocoindex.init()`.
+    CocoIndex will be automatically initialized when needed, e.g. when any method of any flow is called the first time.
+    But calling `cocoindex.init()` explicitly (usually at startup time, e.g. in the main function of your application) has the benefit of making sure CocoIndex library is initialized and any potential exceptions are raised earlier before proceeding with the application.
+    If you need this clarity, you can call it explicitly even if you don't want to provide settings by the `cocoindex.init()` call.
+
+:::
 
 ## List of Settings
 

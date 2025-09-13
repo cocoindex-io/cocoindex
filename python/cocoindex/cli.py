@@ -91,8 +91,6 @@ def _load_user_app(app_target: str) -> None:
 
 
 def _initialize_cocoindex_in_process() -> None:
-    settings = setting.Settings.from_env()
-    lib.init(settings)
     atexit.register(lib.stop)
 
 

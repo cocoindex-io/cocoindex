@@ -6,16 +6,15 @@ import os
 
 from typing import Callable, Self, Any, overload
 from dataclasses import dataclass
-from .validation import validate_app_namespace_name
-
-_app_namespace: str = ""
+from . import _engine  # type: ignore
 
 
 def get_app_namespace(*, trailing_delimiter: str | None = None) -> str:
     """Get the application namespace. Append the `trailing_delimiter` if not empty."""
-    if _app_namespace == "" or trailing_delimiter is None:
-        return _app_namespace
-    return f"{_app_namespace}{trailing_delimiter}"
+    app_namespace: str = _engine.get_app_namespace()
+    if app_namespace == "" or trailing_delimiter is None:
+        return app_namespace
+    return f"{app_namespace}{trailing_delimiter}"
 
 
 def split_app_namespace(full_name: str, delimiter: str) -> tuple[str, str]:
@@ -24,14 +23,6 @@ def split_app_namespace(full_name: str, delimiter: str) -> tuple[str, str]:
     if len(parts) == 1:
         return "", parts[0]
     return (parts[0], parts[1])
-
-
-def set_app_namespace(app_namespace: str) -> None:
-    """Set the application namespace."""
-    if app_namespace:
-        validate_app_namespace_name(app_namespace)
-    global _app_namespace  # pylint: disable=global-statement
-    _app_namespace = app_namespace
 
 
 @dataclass

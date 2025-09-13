@@ -223,6 +223,7 @@ pub struct LibContext {
     pub db_pools: DbPools,
     pub persistence_ctx: Option<PersistenceContext>,
     pub flows: Mutex<BTreeMap<String, Arc<FlowContext>>>,
+    pub app_namespace: String,
 
     pub global_concurrency_controller: Arc<concur_control::ConcurrencyController>,
 }
@@ -248,9 +249,13 @@ impl LibContext {
     }
 
     pub fn require_persistence_ctx(&self) -> Result<&PersistenceContext> {
-        self.persistence_ctx
-            .as_ref()
-            .ok_or_else(|| anyhow!("Database is required for this operation. Please set COCOINDEX_DATABASE_URL environment variable OR call `cocoindex.init()` with database settings."))
+        self.persistence_ctx.as_ref().ok_or_else(|| {
+            anyhow!(
+                "Database is required for this operation. \
+                         The easiest way is to set COCOINDEX_DATABASE_URL environment variable. \
+                         Please see https://cocoindex.io/docs/core/settings for more details."
+            )
+        })
     }
 
     pub fn require_builtin_db_pool(&self) -> Result<&PgPool> {
@@ -296,6 +301,7 @@ pub async fn create_lib_context(settings: settings::Settings) -> Result<LibConte
         db_pools,
         persistence_ctx,
         flows: Mutex::new(BTreeMap::new()),
+        app_namespace: settings.app_namespace,
         global_concurrency_controller: Arc::new(concur_control::ConcurrencyController::new(
             &concur_control::Options {
                 max_inflight_rows: settings.global_execution_options.source_max_inflight_rows,
@@ -305,26 +311,57 @@ pub async fn create_lib_context(settings: settings::Settings) -> Result<LibConte
     })
 }
 
-static GET_SETTINGS_FN: Mutex<Option<Box<dyn Fn() -> settings::Settings + Send + Sync>>> =
+static GET_SETTINGS_FN: Mutex<Option<Box<dyn Fn() -> Result<settings::Settings> + Send + Sync>>> =
     Mutex::new(None);
-static LIB_CONTEXT: Mutex<Option<Arc<LibContext>>> = Mutex::new(None);
+fn get_settings() -> Result<settings::Settings> {
+    let get_settings_fn = GET_SETTINGS_FN.lock().unwrap();
+    let settings = if let Some(get_settings_fn) = &*get_settings_fn {
+        get_settings_fn()?
+    } else {
+        bail!("CocoIndex setting function is not provided");
+    };
+    Ok(settings)
+}
 
-pub(crate) async fn init_lib_context(settings: settings::Settings) -> Result<()> {
-    let mut lib_context_locked = LIB_CONTEXT.lock().unwrap();
+pub(crate) fn set_settings_fn(
+    get_settings_fn: Box<dyn Fn() -> Result<settings::Settings> + Send + Sync>,
+) {
+    let mut get_settings_fn_locked = GET_SETTINGS_FN.lock().unwrap();
+    *get_settings_fn_locked = Some(get_settings_fn);
+}
+
+static LIB_CONTEXT: LazyLock<tokio::sync::Mutex<Option<Arc<LibContext>>>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(None));
+
+pub(crate) async fn init_lib_context(settings: Option<settings::Settings>) -> Result<()> {
+    error!("Init lib context");
+    let settings = match settings {
+        Some(settings) => settings,
+        None => get_settings()?,
+    };
+    error!("Init lib context with settings: {:?}", settings);
+    let mut lib_context_locked = LIB_CONTEXT.lock().await;
     *lib_context_locked = Some(Arc::new(create_lib_context(settings).await?));
     Ok(())
 }
 
 pub(crate) async fn get_lib_context() -> Result<Arc<LibContext>> {
-    let lib_context_locked = LIB_CONTEXT.lock().unwrap();
-    lib_context_locked
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| anyhow!("CocoIndex library is not initialized or already stopped"))
+    debug!("Get lib context");
+    let mut lib_context_locked = LIB_CONTEXT.lock().await;
+    let lib_context = if let Some(lib_context) = &*lib_context_locked {
+        lib_context.clone()
+    } else {
+        debug!("Get lib context: no lib context found, creating new one");
+        let setting = get_settings()?;
+        let lib_context = Arc::new(create_lib_context(setting).await?);
+        *lib_context_locked = Some(lib_context.clone());
+        lib_context
+    };
+    Ok(lib_context)
 }
 
-pub(crate) fn clear_lib_context() {
-    let mut lib_context_locked = LIB_CONTEXT.lock().unwrap();
+pub(crate) async fn clear_lib_context() {
+    let mut lib_context_locked = LIB_CONTEXT.lock().await;
     *lib_context_locked = None;
 }
 

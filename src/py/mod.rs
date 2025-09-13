@@ -95,7 +95,25 @@ impl<T> AnyhowIntoPyResult<T> for anyhow::Result<T> {
 }
 
 #[pyfunction]
-fn init(py: Python<'_>, settings: Pythonized<Settings>) -> PyResult<()> {
+fn set_settings_fn(get_settings_fn: Py<PyAny>) -> PyResult<()> {
+    let get_settings_closure = move || {
+        Python::with_gil(|py| {
+            let obj = get_settings_fn
+                .bind(py)
+                .call0()
+                .to_result_with_py_trace(py)?;
+            let py_settings = obj
+                .extract::<Pythonized<Settings>>()
+                .to_result_with_py_trace(py)?;
+            anyhow::Ok(py_settings.into_inner())
+        })
+    };
+    crate::lib_context::set_settings_fn(Box::new(get_settings_closure));
+    Ok(())
+}
+
+#[pyfunction]
+fn init(py: Python<'_>, settings: Pythonized<Option<Settings>>) -> PyResult<()> {
     py.allow_threads(|| -> anyhow::Result<()> {
         get_runtime().block_on(async move { init_lib_context(settings.into_inner()).await })
     })
@@ -116,7 +134,7 @@ fn start_server(py: Python<'_>, settings: Pythonized<ServerSettings>) -> PyResul
 
 #[pyfunction]
 fn stop(py: Python<'_>) -> PyResult<()> {
-    py.allow_threads(clear_lib_context);
+    py.allow_threads(|| get_runtime().block_on(clear_lib_context()));
     Ok(())
 }
 
@@ -542,6 +560,19 @@ fn add_auth_entry(key: String, value: Pythonized<serde_json::Value>) -> PyResult
 }
 
 #[pyfunction]
+fn get_app_namespace(py: Python<'_>) -> PyResult<String> {
+    let app_namespace = py
+        .allow_threads(|| -> anyhow::Result<_> {
+            get_runtime().block_on(async move {
+                let lib_context = get_lib_context().await?;
+                Ok(lib_context.app_namespace.clone())
+            })
+        })
+        .into_py_result()?;
+    Ok(app_namespace)
+}
+
+#[pyfunction]
 fn seder_roundtrip<'py>(
     py: Python<'py>,
     value: Bound<'py, PyAny>,
@@ -558,6 +589,7 @@ fn seder_roundtrip<'py>(
 #[pyo3(name = "_engine")]
 fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(init, m)?)?;
+    m.add_function(wrap_pyfunction!(set_settings_fn, m)?)?;
     m.add_function(wrap_pyfunction!(start_server, m)?)?;
     m.add_function(wrap_pyfunction!(stop, m)?)?;
     m.add_function(wrap_pyfunction!(register_function_factory, m)?)?;
@@ -567,6 +599,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(make_drop_bundle, m)?)?;
     m.add_function(wrap_pyfunction!(remove_flow_context, m)?)?;
     m.add_function(wrap_pyfunction!(add_auth_entry, m)?)?;
+    m.add_function(wrap_pyfunction!(get_app_namespace, m)?)?;
 
     m.add_class::<builder::flow_builder::FlowBuilder>()?;
     m.add_class::<builder::flow_builder::DataCollector>()?;

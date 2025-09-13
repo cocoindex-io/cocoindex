@@ -694,16 +694,11 @@ class Flow:
     """
 
     _name: str
-    _full_name: str
     _lazy_engine_flow: Callable[[], _engine.Flow] | None
 
-    def __init__(
-        self, name: str, full_name: str, engine_flow_creator: Callable[[], _engine.Flow]
-    ):
+    def __init__(self, name: str, engine_flow_creator: Callable[[], _engine.Flow]):
         validate_flow_name(name)
-        validate_full_flow_name(full_name)
         self._name = name
-        self._full_name = full_name
         engine_flow = None
         lock = Lock()
 
@@ -762,7 +757,7 @@ class Flow:
         """
         Get the full name of the flow.
         """
-        return self._full_name
+        return get_flow_full_name(self._name)
 
     def update(self, /, *, reexport_targets: bool = False) -> _engine.IndexUpdateInfo:
         """
@@ -861,9 +856,10 @@ def _create_lazy_flow(
     The flow will be built the first time when it's really needed.
     """
     flow_name = _flow_name_builder.build_name(name, prefix="_flow_")
-    flow_full_name = get_flow_full_name(flow_name)
 
     def _create_engine_flow() -> _engine.Flow:
+        flow_full_name = get_flow_full_name(flow_name)
+        validate_full_flow_name(flow_full_name)
         flow_builder_state = _FlowBuilderState(flow_full_name)
         root_scope = DataScope(
             flow_builder_state, flow_builder_state.engine_flow_builder.root_scope()
@@ -873,7 +869,7 @@ def _create_lazy_flow(
             execution_context.event_loop
         )
 
-    return Flow(flow_name, flow_full_name, _create_engine_flow)
+    return Flow(flow_name, _create_engine_flow)
 
 
 _flows_lock = Lock()
