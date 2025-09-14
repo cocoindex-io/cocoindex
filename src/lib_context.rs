@@ -346,12 +346,10 @@ pub(crate) async fn init_lib_context(settings: Option<settings::Settings>) -> Re
 }
 
 pub(crate) async fn get_lib_context() -> Result<Arc<LibContext>> {
-    debug!("Get lib context");
     let mut lib_context_locked = LIB_CONTEXT.lock().await;
     let lib_context = if let Some(lib_context) = &*lib_context_locked {
         lib_context.clone()
     } else {
-        debug!("Get lib context: no lib context found, creating new one");
         let setting = get_settings()?;
         let lib_context = Arc::new(create_lib_context(setting).await?);
         *lib_context_locked = Some(lib_context.clone());
