@@ -102,6 +102,7 @@ Currently, `SplitRecursively` supports the following languages:
 | Ruby | | `.rb` |
 | Rust | RS | `.rs` |
 | Scala | | `.scala` |
+| Solidity | | `.sol` |
 | SQL | | `.sql` |
 | Swift | | `.swift` |
 | TOML | | `.toml` |

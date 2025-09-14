@@ -234,6 +234,13 @@ static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<
         tree_sitter_yaml::LANGUAGE,
         [],
     );
+    add_treesitter_language(
+        &mut map,
+        "Solidity",
+        [".sol"],
+        tree_sitter_solidity::LANGUAGE,
+        [],
+    );
     map
 });
 

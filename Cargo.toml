@@ -98,6 +98,7 @@ tree-sitter-toml-ng = "0.7.0"
 tree-sitter-typescript = "0.23.2"
 tree-sitter-xml = "0.7.0"
 tree-sitter-yaml = "0.7.1"
+tree-sitter-solidity = "1.2.13"
 
 globset = "0.4.16"
 unicase = "2.8.1"
