@@ -184,6 +184,30 @@ pub async fn precommit_source_tracking_info(
     Ok(())
 }
 
+pub async fn touch_max_process_ordinal(
+    source_id: i32,
+    source_key_json: &serde_json::Value,
+    process_ordinal: i64,
+    db_setup: &TrackingTableSetupState,
+    db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
+) -> Result<()> {
+    let query_str = format!(
+        "INSERT INTO {} AS t (source_id, source_key, max_process_ordinal, staging_target_keys) \
+         VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (source_id, source_key) DO UPDATE SET \
+           max_process_ordinal = GREATEST(t.max_process_ordinal + 1, EXCLUDED.max_process_ordinal)",
+        db_setup.table_name,
+    );
+    sqlx::query(&query_str)
+        .bind(source_id)
+        .bind(source_key_json)
+        .bind(process_ordinal)
+        .bind(sqlx::types::Json(TrackedTargetKeyForSource::default()))
+        .execute(db_executor)
+        .await?;
+    Ok(())
+}
+
 #[derive(sqlx::FromRow, Debug)]
 pub struct SourceTrackingInfoForCommit {
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,

@@ -199,12 +199,13 @@ impl<'a> RowIndexer<'a> {
         src_eval_ctx: &'a SourceRowEvaluationContext<'_>,
         setup_execution_ctx: &'a exec_ctx::FlowSetupExecutionContext,
         mode: super::source_indexer::UpdateMode,
+        process_time: chrono::DateTime<chrono::Utc>,
         update_stats: &'a stats::UpdateStats,
         pool: &'a PgPool,
     ) -> Result<Self> {
         Ok(Self {
             source_id: setup_execution_ctx.import_ops[src_eval_ctx.import_op_idx].source_id,
-            process_time: chrono::Utc::now(),
+            process_time,
             source_key_json: serde_json::to_value(src_eval_ctx.key)?,
 
             src_eval_ctx,
@@ -216,10 +217,11 @@ impl<'a> RowIndexer<'a> {
     }
 
     pub async fn update_source_row(
-        &mut self,
+        &self,
         source_version: &SourceVersion,
         source_value: interface::SourceValue,
         source_version_fp: Option<Vec<u8>>,
+        ordinal_touched: &mut bool,
     ) -> Result<SkippedOr<()>> {
         let tracking_setup_state = &self.setup_execution_ctx.setup_state.tracking_table;
         // Phase 1: Check existing tracking info and apply optimizations
@@ -335,6 +337,7 @@ impl<'a> RowIndexer<'a> {
                 }),
             )
             .await?;
+        *ordinal_touched = true;
         let precommit_output = match precommit_output {
             SkippedOr::Normal(output) => output,
             SkippedOr::Skipped(v, fp) => return Ok(SkippedOr::Skipped(v, fp)),
@@ -398,7 +401,7 @@ impl<'a> RowIndexer<'a> {
     }
 
     pub async fn try_collapse(
-        &mut self,
+        &self,
         source_version: &SourceVersion,
         content_version_fp: &[u8],
         existing_version: &SourceVersion,
@@ -538,7 +541,7 @@ impl<'a> RowIndexer<'a> {
             .map(|info| info.max_process_ordinal)
             .unwrap_or(0)
             + 1)
-        .max(self.process_time.timestamp_millis());
+        .max(Self::process_ordinal_from_time(self.process_time));
         let existing_process_ordinal = tracking_info.as_ref().and_then(|info| info.process_ordinal);
 
         let mut tracking_info_for_targets = HashMap::<i32, TrackingInfoForTarget>::new();
@@ -819,6 +822,10 @@ impl<'a> RowIndexer<'a> {
         txn.commit().await?;
 
         Ok(())
+    }
+
+    pub fn process_ordinal_from_time(process_time: chrono::DateTime<chrono::Utc>) -> i64 {
+        process_time.timestamp_millis()
     }
 }
 

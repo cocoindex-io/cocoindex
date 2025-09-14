@@ -63,6 +63,7 @@ pub struct SourceIndexingContext {
     update_sem: Semaphore,
     state: Mutex<SourceIndexingState>,
     setup_execution_ctx: Arc<exec_ctx::FlowSetupExecutionContext>,
+    needs_to_track_rows_to_retry: bool,
 }
 
 pub const NO_ACK: Option<fn() -> Ready<Result<()>>> = None;
@@ -296,6 +297,7 @@ impl SourceIndexingContext {
         Ok(Self {
             flow,
             source_idx,
+            needs_to_track_rows_to_retry: rows_to_retry.is_some(),
             state: Mutex::new(SourceIndexingState {
                 rows,
                 scan_generation,
@@ -331,10 +333,12 @@ impl SourceIndexingContext {
                 key: &row_input.key,
                 import_op_idx: self.source_idx,
             };
-            let mut row_indexer = row_indexer::RowIndexer::new(
+            let process_time = chrono::Utc::now();
+            let row_indexer = row_indexer::RowIndexer::new(
                 &eval_ctx,
                 &self.setup_execution_ctx,
                 mode,
+                process_time,
                 &update_stats,
                 &pool,
             )?;
@@ -342,6 +346,7 @@ impl SourceIndexingContext {
             let source_data = row_input.data;
             let mut row_state_operator =
                 LocalSourceRowStateOperator::new(&row_input.key, &self.state, &update_stats);
+            let mut ordinal_touched = false;
             let result = {
                 let row_state_operator = &mut row_state_operator;
                 let row_key = &row_input.key;
@@ -434,7 +439,12 @@ impl SourceIndexingContext {
                     }
 
                     let result = row_indexer
-                        .update_source_row(&source_version, value, content_version_fp.clone())
+                        .update_source_row(
+                            &source_version,
+                            value,
+                            content_version_fp.clone(),
+                            &mut ordinal_touched,
+                        )
                         .await?;
                     if let SkippedOr::Skipped(version, fp) = result {
                         row_state_operator
@@ -449,6 +459,17 @@ impl SourceIndexingContext {
                 row_state_operator.commit();
             } else {
                 row_state_operator.rollback();
+                if !ordinal_touched && self.needs_to_track_rows_to_retry {
+                    let source_key_json = serde_json::to_value(&row_input.key)?;
+                    db_tracking::touch_max_process_ordinal(
+                        self.setup_execution_ctx.import_ops[self.source_idx].source_id,
+                        &source_key_json,
+                        row_indexer::RowIndexer::process_ordinal_from_time(process_time),
+                        &self.setup_execution_ctx.setup_state.tracking_table,
+                        &pool,
+                    )
+                    .await?;
+                }
             }
             result
         };
