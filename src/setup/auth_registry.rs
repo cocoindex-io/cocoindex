@@ -32,6 +32,23 @@ impl AuthRegistry {
         Ok(())
     }
 
+    pub fn add_transient(&self, value: serde_json::Value) -> Result<String> {
+        let key = format!(
+            "__transient_{}",
+            utils::fingerprint::Fingerprinter::default()
+                .with("cocoindex_auth")? // salt
+                .with(&value)?
+                .into_fingerprint()
+                .to_base64()
+        );
+        self.entries
+            .write()
+            .unwrap()
+            .entry(key.clone())
+            .or_insert(value);
+        Ok(key)
+    }
+
     pub fn get<T: DeserializeOwned>(&self, entry_ref: &spec::AuthEntryReference<T>) -> Result<T> {
         let entries = self.entries.read().unwrap();
         match entries.get(&entry_ref.key) {

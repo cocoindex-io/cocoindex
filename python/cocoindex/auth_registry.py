@@ -11,18 +11,6 @@ from .convert import dump_engine_object
 
 T = TypeVar("T")
 
-# Global atomic counter for generating unique auth entry keys
-_counter_lock = threading.Lock()
-_auth_key_counter = 0
-
-
-def _generate_auth_key() -> str:
-    """Generate a unique auth entry key using a global atomic counter."""
-    global _auth_key_counter  # pylint: disable=global-statement
-    with _counter_lock:
-        _auth_key_counter += 1
-        return f"__auth_{_auth_key_counter}"
-
 
 @dataclass
 class TransientAuthEntryReference(Generic[T]):
@@ -37,7 +25,8 @@ class AuthEntryReference(TransientAuthEntryReference[T]):
 
 def add_transient_auth_entry(value: T) -> TransientAuthEntryReference[T]:
     """Add an auth entry to the registry. Returns its reference."""
-    return add_auth_entry(_generate_auth_key(), value)
+    key = _engine.add_transient_auth_entry(dump_engine_object(value))
+    return TransientAuthEntryReference(key)
 
 
 def add_auth_entry(key: str, value: T) -> AuthEntryReference[T]:

@@ -560,6 +560,13 @@ fn add_auth_entry(key: String, value: Pythonized<serde_json::Value>) -> PyResult
 }
 
 #[pyfunction]
+fn add_transient_auth_entry(value: Pythonized<serde_json::Value>) -> PyResult<String> {
+    get_auth_registry()
+        .add_transient(value.into_inner())
+        .into_py_result()
+}
+
+#[pyfunction]
 fn get_app_namespace(py: Python<'_>) -> PyResult<String> {
     let app_namespace = py
         .allow_threads(|| -> anyhow::Result<_> {
@@ -599,6 +606,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(make_drop_bundle, m)?)?;
     m.add_function(wrap_pyfunction!(remove_flow_context, m)?)?;
     m.add_function(wrap_pyfunction!(add_auth_entry, m)?)?;
+    m.add_function(wrap_pyfunction!(add_transient_auth_entry, m)?)?;
     m.add_function(wrap_pyfunction!(get_app_namespace, m)?)?;
 
     m.add_class::<builder::flow_builder::FlowBuilder>()?;
