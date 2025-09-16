@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  pages: write
 
 jobs:
   create-versioned-toml:
