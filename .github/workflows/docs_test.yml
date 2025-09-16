@@ -7,6 +7,9 @@ on:
       - docs/**
       - ".github/workflows/docs_test.yml"
 
+permissions:
+  contents: read
+
 jobs:
   test-deploy:
     runs-on: ubuntu-latest

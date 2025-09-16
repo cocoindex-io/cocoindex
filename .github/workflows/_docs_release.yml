@@ -3,6 +3,10 @@ name: Release Docs (INTERNAL)
 on:
   workflow_call:
 
+permissions:
+  contents: read
+  pages: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
