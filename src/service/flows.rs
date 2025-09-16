@@ -2,6 +2,7 @@ use crate::prelude::*;
 
 use crate::execution::{evaluator, indexing_status, memoization, row_indexer, stats};
 use crate::lib_context::LibContext;
+use crate::service::query_handler::{QueryHandlerInfo, QueryInput, QueryOutput};
 use crate::{base::schema::FlowSchema, ops::interface::SourceExecutorReadOptions};
 use axum::{
     Json,
@@ -254,4 +255,43 @@ pub async fn get_row_indexing_status(
     )
     .await?;
     Ok(Json(indexing_status))
+}
+
+pub async fn get_query_handlers(
+    Path(flow_name): Path<String>,
+    State(lib_context): State<Arc<LibContext>>,
+) -> Result<Json<HashMap<String, Arc<QueryHandlerInfo>>>, ApiError> {
+    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
+    let query_handlers = flow_ctx.query_handlers.read().unwrap();
+    Ok(Json(
+        query_handlers
+            .iter()
+            .map(|(name, handler)| (name.clone(), handler.info.clone()))
+            .collect(),
+    ))
+}
+
+pub async fn query(
+    Path((flow_name, query_handler_name)): Path<(String, String)>,
+    Query(query): Query<QueryInput>,
+    State(lib_context): State<Arc<LibContext>>,
+) -> Result<Json<QueryOutput>, ApiError> {
+    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
+    let query_handler = {
+        let query_handlers = flow_ctx.query_handlers.read().unwrap();
+        query_handlers
+            .get(&query_handler_name)
+            .ok_or_else(|| {
+                ApiError::new(
+                    &format!("query handler not found: {query_handler_name}"),
+                    StatusCode::BAD_REQUEST,
+                )
+            })?
+            .handler
+            .clone()
+    };
+    let query_output = query_handler
+        .query(query.into(), &flow_ctx.flow.flow_instance_ctx)
+        .await?;
+    Ok(Json(query_output))
 }

@@ -3,10 +3,13 @@ use crate::prelude::*;
 
 use crate::base::schema::{FieldSchema, ValueType};
 use crate::base::spec::{NamedSpec, OutputMode, ReactiveOpSpec, SpecFormatter};
-use crate::lib_context::{clear_lib_context, get_auth_registry, init_lib_context};
+use crate::lib_context::{
+    QueryHandlerContext, clear_lib_context, get_auth_registry, init_lib_context,
+};
 use crate::ops::py_factory::{PyExportTargetFactory, PyOpArgSchema};
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
 use crate::server::{self, ServerSettings};
+use crate::service::query_handler::QueryHandlerInfo;
 use crate::settings::Settings;
 use crate::setup::{self};
 use pyo3::IntoPyObjectExt;
@@ -429,6 +432,62 @@ impl Flow {
             flow_names: vec![self.name().to_string()],
         };
         SetupChangeBundle(Arc::new(bundle))
+    }
+
+    pub fn add_query_handler(&self, name: String, handler: Py<PyAny>) -> PyResult<()> {
+        struct PyQueryHandler {
+            handler: Py<PyAny>,
+        }
+
+        #[async_trait]
+        impl crate::service::query_handler::QueryHandler for PyQueryHandler {
+            async fn query(
+                &self,
+                input: crate::service::query_handler::QueryInput,
+                flow_ctx: &interface::FlowInstanceContext,
+            ) -> Result<crate::service::query_handler::QueryOutput> {
+                // Call the Python async function on the flow's event loop
+                let result_fut = Python::with_gil(|py| -> Result<_> {
+                    let handler = self.handler.clone_ref(py);
+                    // Build args: pass a dict with the query input
+                    let args = pyo3::types::PyTuple::new(py, [input.query])?;
+                    let result_coro = handler.call(py, args, None).to_result_with_py_trace(py)?;
+
+                    let py_exec_ctx = flow_ctx
+                        .py_exec_ctx
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("Python execution context is missing"))?;
+                    let task_locals = pyo3_async_runtimes::TaskLocals::new(
+                        py_exec_ctx.event_loop.bind(py).clone(),
+                    );
+                    Ok(pyo3_async_runtimes::into_future_with_locals(
+                        &task_locals,
+                        result_coro.into_bound(py),
+                    )?)
+                })?;
+
+                let py_obj = result_fut.await;
+                // Convert Python result to Rust type with proper traceback handling
+                let output = Python::with_gil(|py| -> Result<_> {
+                    let output_any = py_obj.to_result_with_py_trace(py)?;
+                    let output: crate::py::Pythonized<crate::service::query_handler::QueryOutput> =
+                        output_any.extract(py)?;
+                    Ok(output.into_inner())
+                })?;
+
+                Ok(output)
+            }
+        }
+
+        let mut handlers = self.0.query_handlers.write().unwrap();
+        handlers.insert(
+            name,
+            QueryHandlerContext {
+                info: Arc::new(QueryHandlerInfo {}),
+                handler: Arc::new(PyQueryHandler { handler }),
+            },
+        );
+        Ok(())
     }
 }
 
