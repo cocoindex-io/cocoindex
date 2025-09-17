@@ -62,10 +62,6 @@ pub async fn init_server(
                     routing::get(service::flows::evaluate_data),
                 )
                 .route(
-                    "/flows/{flowInstName}/queryHandlers",
-                    routing::get(service::flows::get_query_handlers),
-                )
-                .route(
                     "/flows/{flowInstName}/queryHandlers/{queryHandlerName}",
                     routing::get(service::flows::query),
                 )

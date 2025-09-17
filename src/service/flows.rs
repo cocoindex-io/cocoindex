@@ -28,9 +28,16 @@ pub async fn get_flow_schema(
 }
 
 #[derive(Serialize)]
-pub struct GetFlowResponse {
+pub struct GetFlowResponseData {
     flow_spec: spec::FlowInstanceSpec,
     data_schema: FlowSchema,
+    query_handlers_spec: HashMap<String, Arc<QueryHandlerInfo>>,
+}
+
+#[derive(Serialize)]
+pub struct GetFlowResponse {
+    #[serde(flatten)]
+    data: GetFlowResponseData,
     fingerprint: utils::fingerprint::Fingerprint,
 }
 
@@ -41,17 +48,23 @@ pub async fn get_flow(
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let flow_spec = flow_ctx.flow.flow_instance.clone();
     let data_schema = flow_ctx.flow.data_schema.clone();
-    let fingerprint = utils::fingerprint::Fingerprinter::default()
-        .with(&flow_spec)
-        .map_err(|e| api_error!("failed to fingerprint flow spec: {e}"))?
-        .with(&data_schema)
-        .map_err(|e| api_error!("failed to fingerprint data schema: {e}"))?
-        .into_fingerprint();
-    Ok(Json(GetFlowResponse {
+    let query_handlers_spec: HashMap<_, _> = {
+        let query_handlers = flow_ctx.query_handlers.read().unwrap();
+        query_handlers
+            .iter()
+            .map(|(name, handler)| (name.clone(), handler.info.clone()))
+            .collect()
+    };
+    let data = GetFlowResponseData {
         flow_spec,
         data_schema,
-        fingerprint,
-    }))
+        query_handlers_spec,
+    };
+    let fingerprint = utils::fingerprint::Fingerprinter::default()
+        .with(&data)
+        .map_err(|e| api_error!("failed to fingerprint flow response: {e}"))?
+        .into_fingerprint();
+    Ok(Json(GetFlowResponse { data, fingerprint }))
 }
 
 #[derive(Deserialize)]
@@ -255,20 +268,6 @@ pub async fn get_row_indexing_status(
     )
     .await?;
     Ok(Json(indexing_status))
-}
-
-pub async fn get_query_handlers(
-    Path(flow_name): Path<String>,
-    State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<HashMap<String, Arc<QueryHandlerInfo>>>, ApiError> {
-    let flow_ctx = lib_context.get_flow_context(&flow_name)?;
-    let query_handlers = flow_ctx.query_handlers.read().unwrap();
-    Ok(Json(
-        query_handlers
-            .iter()
-            .map(|(name, handler)| (name.clone(), handler.info.clone()))
-            .collect(),
-    ))
 }
 
 pub async fn query(
