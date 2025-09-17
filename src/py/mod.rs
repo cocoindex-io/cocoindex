@@ -434,7 +434,12 @@ impl Flow {
         SetupChangeBundle(Arc::new(bundle))
     }
 
-    pub fn add_query_handler(&self, name: String, handler: Py<PyAny>) -> PyResult<()> {
+    pub fn add_query_handler(
+        &self,
+        name: String,
+        handler: Py<PyAny>,
+        handler_info: Pythonized<Option<QueryHandlerInfo>>,
+    ) -> PyResult<()> {
         struct PyQueryHandler {
             handler: Py<PyAny>,
         }
@@ -483,7 +488,7 @@ impl Flow {
         handlers.insert(
             name,
             QueryHandlerContext {
-                info: Arc::new(QueryHandlerInfo {}),
+                info: Arc::new(handler_info.into_inner().unwrap_or_default()),
                 handler: Arc::new(PyQueryHandler { handler }),
             },
         );

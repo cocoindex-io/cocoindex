@@ -38,9 +38,10 @@ from .convert import (
     make_engine_value_encoder,
 )
 from .op import FunctionSpec
-from .runtime import execution_context
+from .runtime import execution_context, to_async_call
 from .setup import SetupChangeBundle
 from .typing import analyze_type_info, encode_enriched_type
+from .query_handler import QueryHandlerInfo, QueryHandlerResultFields
 from .validation import (
     validate_flow_name,
     validate_full_flow_name,
@@ -697,6 +698,7 @@ class Flow:
     _engine_flow_creator: Callable[[], _engine.Flow]
 
     _lazy_flow_lock: Lock
+    _lazy_query_handler_args: list[tuple[Any, ...]]
     _lazy_engine_flow: _engine.Flow | None = None
 
     def __init__(self, name: str, engine_flow_creator: Callable[[], _engine.Flow]):
@@ -704,6 +706,7 @@ class Flow:
         self._name = name
         self._engine_flow_creator = engine_flow_creator
         self._lazy_flow_lock = Lock()
+        self._lazy_query_handler_args = []
 
     def _render_spec(self, verbose: bool = False) -> Tree:
         """
@@ -809,6 +812,9 @@ class Flow:
 
             engine_flow = self._engine_flow_creator()
             self._lazy_engine_flow = engine_flow
+            for args in self._lazy_query_handler_args:
+                engine_flow.add_query_handler(*args)
+            self._lazy_query_handler_args = []
 
             return engine_flow
 
@@ -854,6 +860,43 @@ class Flow:
         self._lazy_engine_flow = None
         with _flows_lock:
             del _flows[self.name]
+
+    def add_query_handler(
+        self,
+        name: str,
+        handler: Callable[[str], Any],
+        /,
+        *,
+        result_fields: QueryHandlerResultFields | None = None,
+    ) -> None:
+        async_handler = to_async_call(handler)
+
+        async def _handler(query: str) -> dict[str, Any]:
+            handler_result = await async_handler(query)
+            return {
+                "results": dump_engine_object(handler_result.results),
+                "query_info": dump_engine_object(handler_result.query_info),
+            }
+
+        handler_info = dump_engine_object(QueryHandlerInfo(result_fields=result_fields))
+        with self._lazy_flow_lock:
+            if self._lazy_engine_flow is not None:
+                self._lazy_engine_flow.add_query_handler(name, _handler, handler_info)
+            else:
+                self._lazy_query_handler_args.append((name, _handler, handler_info))
+
+    def query_handler(
+        self,
+        name: str | None = None,
+        result_fields: QueryHandlerResultFields | None = None,
+    ) -> Callable[[Callable[[str], Any]], Callable[[str], Any]]:
+        def _inner(handler: Callable[[str], Any]) -> Callable[[str], Any]:
+            self.add_query_handler(
+                name or handler.__name__, handler, result_fields=result_fields
+            )
+            return handler
+
+        return _inner
 
 
 def _create_lazy_flow(

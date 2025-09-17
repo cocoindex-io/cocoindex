@@ -1,7 +1,16 @@
 use crate::prelude::*;
 
-#[derive(Serialize)]
-pub struct QueryHandlerInfo {}
+#[derive(Serialize, Deserialize, Default)]
+pub struct QueryHandlerResultFields {
+    embedding: Vec<String>,
+    score: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct QueryHandlerInfo {
+    #[serde(default)]
+    result_fields: QueryHandlerResultFields,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct QueryInput {
@@ -15,7 +24,7 @@ pub struct QueryInfo {
 
 #[derive(Serialize, Deserialize)]
 pub struct QueryOutput {
-    pub results: Vec<IndexMap<String, serde_json::Value>>,
+    pub results: Vec<HashMap<String, serde_json::Value>>,
     pub query_info: QueryInfo,
 }
 

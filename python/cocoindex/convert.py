@@ -616,6 +616,8 @@ def dump_engine_object(v: Any) -> Any:
         return s
     elif isinstance(v, (list, tuple)):
         return [dump_engine_object(item) for item in v]
+    elif isinstance(v, np.ndarray):
+        return v.tolist()
     elif isinstance(v, dict):
         return {k: dump_engine_object(v) for k, v in v.items()}
     return v

@@ -2,7 +2,6 @@
 Facilities for defining cocoindex operations.
 """
 
-import asyncio
 import dataclasses
 import inspect
 from enum import Enum
@@ -32,6 +31,7 @@ from .typing import (
     AnalyzedAnyType,
     AnalyzedDictType,
 )
+from .runtime import to_async_call
 
 
 class OpCategory(Enum):
@@ -148,12 +148,6 @@ class OpArgs:
     cache: bool = False
     behavior_version: int | None = None
     arg_relationship: tuple[ArgRelationship, str] | None = None
-
-
-def _to_async_call(call: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
-    if inspect.iscoroutinefunction(call):
-        return call
-    return lambda *args, **kwargs: asyncio.to_thread(lambda: call(*args, **kwargs))
 
 
 @dataclasses.dataclass
@@ -319,8 +313,8 @@ def _register_op_factory(
             """
             prepare_method = getattr(self._executor, "prepare", None)
             if prepare_method is not None:
-                await _to_async_call(prepare_method)()
-            self._acall = _to_async_call(self._executor.__call__)
+                await to_async_call(prepare_method)()
+            self._acall = to_async_call(self._executor.__call__)
 
         async def __call__(self, *args: Any, **kwargs: Any) -> Any:
             decoded_args = []
@@ -461,12 +455,12 @@ class _TargetConnector:
         self._get_persistent_key_fn = _get_required_method(
             connector_cls, "get_persistent_key"
         )
-        self._apply_setup_change_async_fn = _to_async_call(
+        self._apply_setup_change_async_fn = to_async_call(
             _get_required_method(connector_cls, "apply_setup_change")
         )
 
         mutate_fn = _get_required_method(connector_cls, "mutate")
-        self._mutate_async_fn = _to_async_call(mutate_fn)
+        self._mutate_async_fn = to_async_call(mutate_fn)
 
         # Store the type annotation for later use
         self._mutatation_type = self._analyze_mutate_mutation_type(

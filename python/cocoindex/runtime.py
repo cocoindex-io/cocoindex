@@ -5,7 +5,8 @@ manner.
 
 import threading
 import asyncio
-from typing import Any, Coroutine, TypeVar
+import inspect
+from typing import Any, Callable, Coroutine, TypeVar, Awaitable
 
 
 T = TypeVar("T")
@@ -35,3 +36,9 @@ class _ExecutionContext:
 
 
 execution_context = _ExecutionContext()
+
+
+def to_async_call(call: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
+    if inspect.iscoroutinefunction(call):
+        return call
+    return lambda *args, **kwargs: asyncio.to_thread(lambda: call(*args, **kwargs))

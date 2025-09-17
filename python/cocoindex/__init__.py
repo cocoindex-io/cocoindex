@@ -24,6 +24,7 @@ from .llm import LlmSpec, LlmApiType
 from .index import VectorSimilarityMetric, VectorIndexDef, IndexOptions
 from .setting import DatabaseConnectionSpec, Settings, ServerSettings
 from .setting import get_app_namespace
+from .query_handler import QueryHandlerResultFields, QueryInfo, QueryOutput
 from .typing import (
     Int64,
     Float32,
@@ -95,4 +96,8 @@ __all__ = [
     "Range",
     "Vector",
     "Json",
+    # Query handler
+    "QueryHandlerResultFields",
+    "QueryInfo",
+    "QueryOutput",
 ]
