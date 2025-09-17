@@ -7,6 +7,7 @@ canonicalUrl: '/examples/custom_targets'
 sidebar_custom_props:
   image: /img/examples/custom_targets/cover.png
   tags: [custom-building-blocks]
+image: /img/examples/custom_targets/cover.png
 tags: [custom-building-blocks]
 ---
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';

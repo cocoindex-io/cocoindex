@@ -7,6 +7,7 @@ canonicalUrl: '/examples/multi_format_index'
 sidebar_custom_props:
   image: /img/examples/multi_format_index/cover.png
   tags: [vector-index, multi-modal]
+image: /img/examples/multi_format_index/cover.png
 tags: [vector-index, multi-modal]
 ---
 

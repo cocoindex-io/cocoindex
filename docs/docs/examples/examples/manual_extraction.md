@@ -7,6 +7,7 @@ canonicalUrl: '/examples/manual_extraction'
 sidebar_custom_props:
   image: /img/examples/manual_extraction/cover.png
   tags: [structured-data-extraction, data-mapping]
+image: /img/examples/manual_extraction/cover.png
 tags: [structured-data-extraction, data-mapping]
 ---
 

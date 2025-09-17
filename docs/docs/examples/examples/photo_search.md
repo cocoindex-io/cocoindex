@@ -7,6 +7,7 @@ canonicalUrl: '/examples/photo_search'
 sidebar_custom_props:
   image: /img/examples/photo_search/cover.png
   tags: [vector-index, multi-modal]
+image: /img/examples/photo_search/cover.png
 tags: [vector-index, multi-modal]
 ---
 

@@ -7,6 +7,7 @@ canonicalUrl: '/examples/product_recommendation'
 sidebar_custom_props:
   image: /img/examples/product_recommendation/cover.png
   tags: [knowledge-graph ]
+image: /img/examples/product_recommendation/cover.png
 tags: [knowledge-graph]
 ---
 

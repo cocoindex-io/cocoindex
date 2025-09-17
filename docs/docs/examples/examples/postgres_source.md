@@ -7,6 +7,7 @@ canonicalUrl: '/examples/postgres_source'
 sidebar_custom_props:
   image: /img/examples/postgres_source/cover.png
   tags: [data-mapping, vector-index, postgres]
+image: /img/examples/postgres_source/cover.png
 tags: [data-mapping, vector-index, postgres]
 ---
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';

@@ -7,6 +7,7 @@ canonicalUrl: '/examples/code_index'
 sidebar_custom_props:
   image: /img/examples/codebase_index/cover.png
   tags: [vector-index, codebase]
+image: /img/examples/codebase_index/cover.png
 tags: [vector-index, codebase]
 ---
 

@@ -7,6 +7,7 @@ canonicalUrl: '/examples/patient_form_extraction'
 sidebar_custom_props:
   image: /img/examples/patient_form_extraction/cover.png
   tags: [structured-data-extraction, data-mapping ]
+image: /img/examples/patient_form_extraction/cover.png
 tags: [structured-data-extraction, data-mapping]
 ---
 

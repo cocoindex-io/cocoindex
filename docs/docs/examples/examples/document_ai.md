@@ -7,6 +7,7 @@ canonicalUrl: '/examples/document_ai'
 sidebar_custom_props:
   image: /img/examples/document_ai/cover.png
   tags: [vector-index, custom-building-block]
+image: /img/examples/document_ai/cover.png
 tags: [vector-index, custom-building-block]
 ---
 import { GitHubButton, DocumentationButton, ExampleButton } from '../../../src/components/GitHubButton';

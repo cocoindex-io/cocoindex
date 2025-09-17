@@ -7,6 +7,7 @@ canonicalUrl: '/examples/knowledge-graph-for-docs'
 sidebar_custom_props:
   image: /img/examples/docs_to_knowledge_graph/cover.png
   tags: [knowledge-graph, structured-data-extraction]
+image: /img/examples/docs_to_knowledge_graph/cover.png
 tags: [knowledge-graph, structured-data-extraction]
 ---
 
