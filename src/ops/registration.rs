@@ -18,6 +18,7 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
     functions::split_recursively::register(registry)?;
     functions::extract_by_llm::Factory.register(registry)?;
     functions::embed_text::register(registry)?;
+    functions::split_by_separators::register(registry)?;
 
     targets::postgres::Factory::default().register(registry)?;
     targets::qdrant::register(registry)?;
