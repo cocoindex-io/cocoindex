@@ -8,7 +8,8 @@ from .index import VectorSimilarityMetric
 @dataclasses.dataclass
 class QueryHandlerResultFields:
     """
-    Specify field names in the returned query handler.
+    Specify field names in query results returned by the query handler.
+    This provides metadata for tools like CocoInsight to recognize structure of the query results.
     """
 
     embedding: list[str] = dataclasses.field(default_factory=list)
@@ -47,4 +48,4 @@ class QueryOutput(Generic[R]):
     """
 
     results: list[R]
-    query_info: QueryInfo | None = None
+    query_info: QueryInfo = dataclasses.field(default_factory=QueryInfo)

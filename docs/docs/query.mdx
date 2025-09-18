@@ -12,7 +12,10 @@ The main functionality of CocoIndex is indexing.
 The goal of indexing is to enable efficient querying against your data.
 You can use any libraries or frameworks of your choice to perform queries.
 At the same time, CocoIndex provides seamless integration between indexing and querying workflows.
-For example, you can share transformations between indexing and querying, and easily retrieve table names when using CocoIndex's default naming conventions.
+
+*   You can share transformations between indexing and querying.
+*   You can define query handlers, so that you can easily run queries in tools like CocoInsight.
+*   You can easily retrieve table names when using CocoIndex's default naming conventions.
 
 ## Transform Flow
 
@@ -75,6 +78,115 @@ print(await text_to_embedding.eval_async("Hello, world!"))
 
 </TabItem>
 </Tabs>
+
+## Query Handler
+
+Query handlers let you expose a simple function that takes a query string and returns structured results. They are discoverable by tools like CocoInsight so you can query your indexes without writing extra glue code.
+
+- **What you write**: a plain Python function `def search(query: str) -> cocoindex.QueryOutput`.
+- **How you register**: decorate it with `@<your_flow>.query_handler(...)` or call `flow.add_query_handler(...)` directly.
+- **What you return**: a `cocoindex.QueryOutput(results=[...], query_info=...)`.
+- **Optional metadata**: `QueryHandlerResultFields` tells tools which fields contain the embedding vector and score.
+
+### Minimum Query Handler
+
+A minimum query handler looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+```python
+@my_flow.query_handler(name="run_query")  # Name is optional, use the function name by default
+def run_query(query: str) -> cocoindex.QueryOutput:
+    # 1) Perform your query against the input `query`
+    ...
+
+    # 2) Return structured results
+    return cocoindex.QueryOutput(results=[{"filename": "...", "text": "..."}])
+```
+
+</TabItem>
+</Tabs>
+
+Notes about the decorator:
+
+- The handler can be sync or async.
+- The decorator registers the handler as a query handler for the flow. It doesn't change the function signature: you can still call the function directly.
+
+Your function returns a `cocoindex.QueryOutput`, with a `results` field, which is a list of dicts (or dataclass instances) representing query results.
+Each element is a query result. All data types convertible to JSON are supported. Embeddings can be `list[float]` or numpy array.
+
+A simple query handler like this will enable CocoInsight to display the query results for you to view easily.
+
+### Query Handler with Additional Information
+
+You can provide additional information by extra fields like this:
+
+<Tabs>
+<TabItem value="python" label="Python">
+
+```python
+@my_flow.query_handler(
+    name="run_query",  # Name is optional, use the function name by default
+    result_fields=cocoindex.QueryHandlerResultFields(
+        embedding=["embedding"],  # path to the vector field in each result
+        score="score",            # numeric similarity score (higher is better)
+    )
+)
+def run_query(query: str) -> cocoindex.QueryOutput:
+    # 1) Compute embedding for the input query (often via a transform flow)
+    query_vector = text_to_embedding.eval(query)
+
+    # 2) Run your database/vector store query
+    ...
+
+    # 3) Return structured results plus optional query_info
+    return cocoindex.QueryOutput(
+        results=[{"text": "...", "embedding": some_vec, "score": 0.92}],
+        query_info=cocoindex.QueryInfo(
+            embedding=query_vector,
+            similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+        ),
+    )
+```
+
+</TabItem>
+</Tabs>
+
+- `result_fields` within `query_handler` specifies field names in the query results returned by the query handler. This provides metadata for tools like CocoInsight to recognize structure of the query results, as specified by the following fields (all optional):
+    - `embedding` is a list of keys that navigates to the embedding in each result (use multiple in case of multiple embeddings, e.g. using different models).
+    - `score` should point to a numeric field where larger means more relevant.
+
+- `QueryOutput.query_info` specifies information for the query itself, with the following fields (all optional):
+    - `embedding` is the embedding of the query.
+    - `similarity_metric` is the similarity metric used to query the index.
+
+
+### Directly Register without Decorator
+
+The above example can be written without decorator like this:
+
+```python
+def my_search(query: str) -> cocoindex.QueryOutput:
+    ...
+
+my_flow.add_query_handler(
+    name="run_query",
+    handler=my_search,
+    result_fields=cocoindex.QueryHandlerResultFields(embedding=["embedding"], score="score"),
+)
+```
+
+Sometimes this provides more flexibility.
+
+### Examples
+
+You can see our following examples:
+
+- [Text Embedding (PostgreSQL)](https://github.com/cocoindex-io/cocoindex/blob/main/examples/text_embedding/main.py)
+- [Text Embedding (Qdrant)](https://github.com/cocoindex-io/cocoindex/blob/main/examples/text_embedding_qdrant/main.py)
+- [Code Embedding](https://github.com/cocoindex-io/cocoindex/blob/main/examples/code_embedding/main.py)
+
 
 ## Get Target Native Names
 

@@ -869,6 +869,9 @@ class Flow:
         *,
         result_fields: QueryHandlerResultFields | None = None,
     ) -> None:
+        """
+        Add a query handler to the flow.
+        """
         async_handler = to_async_call(handler)
 
         async def _handler(query: str) -> dict[str, Any]:
@@ -893,9 +896,13 @@ class Flow:
         name: str | None = None,
         result_fields: QueryHandlerResultFields | None = None,
     ) -> Callable[[Callable[[str], Any]], Callable[[str], Any]]:
+        """
+        A decorator to declare a query handler.
+        """
+
         def _inner(handler: Callable[[str], Any]) -> Callable[[str], Any]:
             self.add_query_handler(
-                name or handler.__name__, handler, result_fields=result_fields
+                name or handler.__qualname__, handler, result_fields=result_fields
             )
             return handler
 
