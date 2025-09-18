@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 from pgvector.psycopg import register_vector
 from typing import Any
+import functools
 import cocoindex
 import os
 from numpy.typing import NDArray
@@ -84,7 +85,24 @@ def code_embedding_flow(
     )
 
 
-def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+@functools.cache
+def connection_pool() -> ConnectionPool:
+    """
+    Get a connection pool to the database.
+    """
+    return ConnectionPool(os.environ["COCOINDEX_DATABASE_URL"])
+
+
+TOP_K = 5
+
+
+# Declaring it ss a query handler, so that you can easily run queries in CocoInsight.
+@code_embedding_flow.query_handler(
+    result_fields=cocoindex.QueryHandlerResultFields(
+        embedding=["embedding"], score="score"
+    )
+)
+def search(query: str) -> cocoindex.QueryOutput:
     # Get the table name, for the export target in the code_embedding_flow above.
     table_name = cocoindex.utils.get_target_default_name(
         code_embedding_flow, "code_embeddings"
@@ -92,26 +110,33 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
     # Evaluate the transform flow defined above with the input query, to get the embedding.
     query_vector = code_to_embedding.eval(query)
     # Run the query and get the results.
-    with pool.connection() as conn:
+    with connection_pool().connection() as conn:
         register_vector(conn)
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT filename, code, embedding <=> %s AS distance, start, "end"
+                SELECT filename, code, embedding, embedding <=> %s AS distance, start, "end"
                 FROM {table_name} ORDER BY distance LIMIT %s
             """,
-                (query_vector, top_k),
+                (query_vector, TOP_K),
             )
-            return [
-                {
-                    "filename": row[0],
-                    "code": row[1],
-                    "score": 1.0 - row[2],
-                    "start": row[3],
-                    "end": row[4],
-                }
-                for row in cur.fetchall()
-            ]
+            return cocoindex.QueryOutput(
+                query_info=cocoindex.QueryInfo(
+                    embedding=query_vector,
+                    similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+                ),
+                results=[
+                    {
+                        "filename": row[0],
+                        "code": row[1],
+                        "embedding": row[2],
+                        "score": 1.0 - row[3],
+                        "start": row[4],
+                        "end": row[5],
+                    }
+                    for row in cur.fetchall()
+                ],
+            )
 
 
 def _main() -> None:
@@ -119,17 +144,15 @@ def _main() -> None:
     stats = code_embedding_flow.update()
     print("Updated index: ", stats)
 
-    # Initialize the database connection pool.
-    pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         query = input("Enter search query (or Enter to quit): ")
         if query == "":
             break
         # Run the query function with the database connection pool and the query.
-        results = search(pool, query)
+        query_output = search(query)
         print("\nSearch results:")
-        for result in results:
+        for result in query_output.results:
             print(
                 f"[{result['score']:.3f}] {result['filename']} (L{result['start']['line']}-L{result['end']['line']})"
             )

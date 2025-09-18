@@ -1,3 +1,4 @@
+import functools
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 import cocoindex
@@ -61,32 +62,58 @@ def text_embedding_flow(
     )
 
 
-def _main() -> None:
-    # Initialize Qdrant client
-    client = QdrantClient(url=QDRANT_URL, prefer_grpc=True)
+@functools.cache
+def get_qdrant_client() -> QdrantClient:
+    return QdrantClient(url=QDRANT_URL, prefer_grpc=True)
 
+
+@text_embedding_flow.query_handler(
+    result_fields=cocoindex.QueryHandlerResultFields(
+        embedding=["embedding"],
+        score="score",
+    ),
+)
+def search(query: str) -> cocoindex.QueryOutput:
+    client = get_qdrant_client()
+
+    # Get the embedding for the query
+    query_embedding = text_to_embedding.eval(query)
+
+    search_results = client.search(
+        collection_name=QDRANT_COLLECTION,
+        query_vector=("text_embedding", query_embedding),
+        limit=10,
+    )
+    return cocoindex.QueryOutput(
+        results=[
+            {
+                "filename": result.payload["filename"],
+                "text": result.payload["text"],
+                "embedding": result.vector,
+                "score": result.score,
+            }
+            for result in search_results
+        ],
+        query_info=cocoindex.QueryInfo(
+            embedding=query_embedding,
+            similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+        ),
+    )
+
+
+def _main() -> None:
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         query = input("Enter search query (or Enter to quit): ")
         if query == "":
             break
 
-        # Get the embedding for the query
-        query_embedding = text_to_embedding.eval(query)
-
-        search_results = client.search(
-            collection_name=QDRANT_COLLECTION,
-            query_vector=("text_embedding", query_embedding),
-            limit=10,
-        )
+        # Run the query function with the database connection pool and the query.
+        query_output = search(query)
         print("\nSearch results:")
-        for result in search_results:
-            score = result.score
-            payload = result.payload
-            if payload is None:
-                continue
-            print(f"[{score:.3f}] {payload['filename']}")
-            print(f"    {payload['text']}")
+        for result in query_output.results:
+            print(f"[{result['score']:.3f}] {result['filename']}")
+            print(f"    {result['text']}")
             print("---")
         print()
 
