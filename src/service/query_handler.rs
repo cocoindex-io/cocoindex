@@ -1,4 +1,7 @@
-use crate::prelude::*;
+use crate::{
+    base::spec::{FieldName, VectorSimilarityMetric},
+    prelude::*,
+};
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct QueryHandlerResultFields {
@@ -7,7 +10,7 @@ pub struct QueryHandlerResultFields {
 }
 
 #[derive(Serialize, Deserialize, Default)]
-pub struct QueryHandlerInfo {
+pub struct QueryHandlerSpec {
     #[serde(default)]
     result_fields: QueryHandlerResultFields,
 }
@@ -20,11 +23,12 @@ pub struct QueryInput {
 #[derive(Serialize, Deserialize, Default)]
 pub struct QueryInfo {
     pub embedding: Option<serde_json::Value>,
+    pub similarity_metric: Option<VectorSimilarityMetric>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct QueryOutput {
-    pub results: Vec<HashMap<String, serde_json::Value>>,
+    pub results: Vec<Vec<(FieldName, serde_json::Value)>>,
     pub query_info: QueryInfo,
 }
 

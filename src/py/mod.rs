@@ -9,7 +9,7 @@ use crate::lib_context::{
 use crate::ops::py_factory::{PyExportTargetFactory, PyOpArgSchema};
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
 use crate::server::{self, ServerSettings};
-use crate::service::query_handler::QueryHandlerInfo;
+use crate::service::query_handler::QueryHandlerSpec;
 use crate::settings::Settings;
 use crate::setup::{self};
 use pyo3::IntoPyObjectExt;
@@ -438,7 +438,7 @@ impl Flow {
         &self,
         name: String,
         handler: Py<PyAny>,
-        handler_info: Pythonized<Option<QueryHandlerInfo>>,
+        handler_info: Pythonized<Option<QueryHandlerSpec>>,
     ) -> PyResult<()> {
         struct PyQueryHandler {
             handler: Py<PyAny>,

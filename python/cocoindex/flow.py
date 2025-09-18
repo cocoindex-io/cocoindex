@@ -874,7 +874,10 @@ class Flow:
         async def _handler(query: str) -> dict[str, Any]:
             handler_result = await async_handler(query)
             return {
-                "results": dump_engine_object(handler_result.results),
+                "results": [
+                    [(k, dump_engine_object(v)) for (k, v) in result.items()]
+                    for result in handler_result.results
+                ],
                 "query_info": dump_engine_object(handler_result.query_info),
             }
 

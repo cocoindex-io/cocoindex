@@ -2,6 +2,7 @@ import dataclasses
 import numpy as np
 from numpy import typing as npt
 from typing import Generic, TypeVar
+from .index import VectorSimilarityMetric
 
 
 @dataclasses.dataclass
@@ -30,6 +31,7 @@ class QueryInfo:
     """
 
     embedding: list[float] | npt.NDArray[np.float32] | None = None
+    similarity_metric: VectorSimilarityMetric | None = None
 
 
 R = TypeVar("R")

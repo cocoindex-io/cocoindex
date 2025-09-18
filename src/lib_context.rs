@@ -5,7 +5,7 @@ use crate::prelude::*;
 use crate::builder::AnalyzedFlow;
 use crate::execution::source_indexer::SourceIndexingContext;
 use crate::service::error::ApiError;
-use crate::service::query_handler::{QueryHandler, QueryHandlerInfo};
+use crate::service::query_handler::{QueryHandler, QueryHandlerSpec};
 use crate::settings;
 use crate::setup::ObjectSetupChange;
 use axum::http::StatusCode;
@@ -99,7 +99,7 @@ impl FlowExecutionContext {
 }
 
 pub struct QueryHandlerContext {
-    pub info: Arc<QueryHandlerInfo>,
+    pub info: Arc<QueryHandlerSpec>,
     pub handler: Arc<dyn QueryHandler>,
 }
 

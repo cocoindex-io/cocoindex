@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use crate::execution::{evaluator, indexing_status, memoization, row_indexer, stats};
 use crate::lib_context::LibContext;
-use crate::service::query_handler::{QueryHandlerInfo, QueryInput, QueryOutput};
+use crate::service::query_handler::{QueryHandlerSpec, QueryInput, QueryOutput};
 use crate::{base::schema::FlowSchema, ops::interface::SourceExecutorReadOptions};
 use axum::{
     Json,
@@ -31,7 +31,7 @@ pub async fn get_flow_schema(
 pub struct GetFlowResponseData {
     flow_spec: spec::FlowInstanceSpec,
     data_schema: FlowSchema,
-    query_handlers_spec: HashMap<String, Arc<QueryHandlerInfo>>,
+    query_handlers_spec: HashMap<String, Arc<QueryHandlerSpec>>,
 }
 
 #[derive(Serialize)]
