@@ -2,13 +2,13 @@
 
 import dataclasses
 import functools
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
 
 from . import llm, op
-from .typing import TypeAttr, Vector
+from .typing import Vector
 
 
 class ParseJson(op.FunctionSpec):
@@ -38,6 +38,24 @@ class SplitRecursively(op.FunctionSpec):
     """Split a document (in string) recursively."""
 
     custom_languages: list[CustomLanguageSpec] = dataclasses.field(default_factory=list)
+
+
+class SplitBySeparators(op.FunctionSpec):
+    """
+    Split text by specified regex separators only.
+    Output schema matches SplitRecursively for drop-in compatibility:
+        KTable rows with fields: location (Range), text (Str), start, end.
+    Args:
+        separators_regex: list[str]  # e.g., [r"\\n\\n+"]
+        keep_separator: Literal["NONE", "LEFT", "RIGHT"] = "NONE"
+        include_empty: bool = False
+        trim: bool = True
+    """
+
+    separators_regex: list[str] = dataclasses.field(default_factory=list)
+    keep_separator: Literal["NONE", "LEFT", "RIGHT"] = "NONE"
+    include_empty: bool = False
+    trim: bool = True
 
 
 class EmbedText(op.FunctionSpec):
