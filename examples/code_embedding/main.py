@@ -96,7 +96,7 @@ def connection_pool() -> ConnectionPool:
 TOP_K = 5
 
 
-# Declaring it ss a query handler, so that you can easily run queries in CocoInsight.
+# Declaring it as a query handler, so that you can easily run queries in CocoInsight.
 @code_embedding_flow.query_handler(
     result_fields=cocoindex.QueryHandlerResultFields(
         embedding=["embedding"], score="score"
