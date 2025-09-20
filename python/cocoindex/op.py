@@ -30,6 +30,8 @@ from .typing import (
     analyze_type_info,
     AnalyzedAnyType,
     AnalyzedDictType,
+    EnrichedValueType,
+    decode_engine_field_schemas,
 )
 from .runtime import to_async_call
 
@@ -212,8 +214,9 @@ def _register_op_factory(
                             TypeAttr(related_attr.value, actual_arg.analyzed_value)
                         )
                 type_info = analyze_type_info(arg_param.annotation)
+                enriched = EnrichedValueType.decode(actual_arg.value_type)
                 decoder = make_engine_value_decoder(
-                    [arg_name], actual_arg.value_type["type"], type_info
+                    [arg_name], enriched.type, type_info
                 )
                 is_required = not type_info.nullable
                 if is_required and actual_arg.value_type.get("nullable", False):
@@ -527,10 +530,14 @@ class _TargetConnector:
         )
 
         key_decoder = make_engine_key_decoder(
-            ["(key)"], key_fields_schema, analyze_type_info(key_annotation)
+            ["(key)"],
+            decode_engine_field_schemas(key_fields_schema),
+            analyze_type_info(key_annotation),
         )
         value_decoder = make_engine_struct_decoder(
-            ["(value)"], value_fields_schema, analyze_type_info(value_annotation)
+            ["(value)"],
+            decode_engine_field_schemas(value_fields_schema),
+            analyze_type_info(value_annotation),
         )
 
         loaded_spec = _load_spec_from_engine(self._spec_cls, spec)

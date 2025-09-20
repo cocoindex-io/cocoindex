@@ -21,6 +21,7 @@ from cocoindex.typing import (
     Vector,
     analyze_type_info,
     encode_enriched_type,
+    decode_engine_value_type,
 )
 
 
@@ -86,7 +87,9 @@ def build_engine_value_decoder(
     """
     engine_type = encode_enriched_type(engine_type_in_py)["type"]
     return make_engine_value_decoder(
-        [], engine_type, analyze_type_info(python_type or engine_type_in_py)
+        [],
+        decode_engine_value_type(engine_type),
+        analyze_type_info(python_type or engine_type_in_py),
     )
 
 
@@ -116,7 +119,9 @@ def validate_full_roundtrip_to(
 
     for other_value, other_type in decoded_values:
         decoder = make_engine_value_decoder(
-            [], encoded_output_type, analyze_type_info(other_type)
+            [],
+            decode_engine_value_type(encoded_output_type),
+            analyze_type_info(other_type),
         )
         other_decoded_value = decoder(value_from_engine)
         assert eq(other_decoded_value, other_value), (
@@ -383,9 +388,19 @@ def test_roundtrip_json() -> None:
 
 def test_decode_scalar_numpy_values() -> None:
     test_cases = [
-        ({"kind": "Int64"}, np.int64, 42, np.int64(42)),
-        ({"kind": "Float32"}, np.float32, 3.14, np.float32(3.14)),
-        ({"kind": "Float64"}, np.float64, 2.718, np.float64(2.718)),
+        (decode_engine_value_type({"kind": "Int64"}), np.int64, 42, np.int64(42)),
+        (
+            decode_engine_value_type({"kind": "Float32"}),
+            np.float32,
+            3.14,
+            np.float32(3.14),
+        ),
+        (
+            decode_engine_value_type({"kind": "Float64"}),
+            np.float64,
+            2.718,
+            np.float64(2.718),
+        ),
     ]
     for src_type, dst_type, input_value, expected in test_cases:
         decoder = make_engine_value_decoder(
@@ -398,11 +413,13 @@ def test_decode_scalar_numpy_values() -> None:
 
 def test_non_ndarray_vector_decoding() -> None:
     # Test list[np.float64]
-    src_type = {
-        "kind": "Vector",
-        "element_type": {"kind": "Float64"},
-        "dimension": None,
-    }
+    src_type = decode_engine_value_type(
+        {
+            "kind": "Vector",
+            "element_type": {"kind": "Float64"},
+            "dimension": None,
+        }
+    )
     dst_type_float = list[np.float64]
     decoder = make_engine_value_decoder(
         ["field"], src_type, analyze_type_info(dst_type_float)
@@ -414,7 +431,9 @@ def test_non_ndarray_vector_decoding() -> None:
     assert result == [np.float64(1.0), np.float64(2.0), np.float64(3.0)]
 
     # Test list[Uuid]
-    src_type = {"kind": "Vector", "element_type": {"kind": "Uuid"}, "dimension": None}
+    src_type = decode_engine_value_type(
+        {"kind": "Vector", "element_type": {"kind": "Uuid"}, "dimension": None}
+    )
     dst_type_uuid = list[uuid.UUID]
     decoder = make_engine_value_decoder(
         ["field"], src_type, analyze_type_info(dst_type_uuid)
@@ -895,11 +914,13 @@ def test_encode_complex_structure_with_ndarray() -> None:
 
 def test_decode_nullable_ndarray_none_or_value_input() -> None:
     """Test decoding a nullable NDArray with None or value inputs."""
-    src_type_dict = {
-        "kind": "Vector",
-        "element_type": {"kind": "Float32"},
-        "dimension": None,
-    }
+    src_type_dict = decode_engine_value_type(
+        {
+            "kind": "Vector",
+            "element_type": {"kind": "Float32"},
+            "dimension": None,
+        }
+    )
     dst_annotation = NDArrayFloat32Type | None
     decoder = make_engine_value_decoder(
         [], src_type_dict, analyze_type_info(dst_annotation)
@@ -921,11 +942,13 @@ def test_decode_nullable_ndarray_none_or_value_input() -> None:
 
 def test_decode_vector_string() -> None:
     """Test decoding a vector of strings works for Python native list type."""
-    src_type_dict = {
-        "kind": "Vector",
-        "element_type": {"kind": "Str"},
-        "dimension": None,
-    }
+    src_type_dict = decode_engine_value_type(
+        {
+            "kind": "Vector",
+            "element_type": {"kind": "Str"},
+            "dimension": None,
+        }
+    )
     decoder = make_engine_value_decoder(
         [], src_type_dict, analyze_type_info(Vector[str])
     )
@@ -934,11 +957,13 @@ def test_decode_vector_string() -> None:
 
 def test_decode_error_non_nullable_or_non_list_vector() -> None:
     """Test decoding errors for non-nullable vectors or non-list inputs."""
-    src_type_dict = {
-        "kind": "Vector",
-        "element_type": {"kind": "Float32"},
-        "dimension": None,
-    }
+    src_type_dict = decode_engine_value_type(
+        {
+            "kind": "Vector",
+            "element_type": {"kind": "Float32"},
+            "dimension": None,
+        }
+    )
     decoder = make_engine_value_decoder(
         [], src_type_dict, analyze_type_info(NDArrayFloat32Type)
     )
