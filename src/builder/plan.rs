@@ -105,7 +105,7 @@ pub struct AnalyzedExportOp {
     pub export_target_factory: Arc<dyn TargetFactory + Send + Sync>,
     pub export_context: Arc<dyn Any + Send + Sync>,
     pub primary_key_def: AnalyzedPrimaryKeyDef,
-    pub primary_key_schema: Vec<FieldSchema>,
+    pub primary_key_schema: Arc<[FieldSchema]>,
     /// idx for value fields - excluding the primary key field.
     pub value_fields: Vec<u32>,
     /// If true, value is never changed on the same primary key.

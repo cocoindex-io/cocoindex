@@ -632,7 +632,7 @@ impl TargetFactoryBase for Factory {
                         db_ref,
                         db_pool.clone(),
                         table_name,
-                        d.key_fields_schema,
+                        d.key_fields_schema.iter().cloned().collect(),
                         d.value_fields_schema,
                     )?);
                     Ok(export_context)

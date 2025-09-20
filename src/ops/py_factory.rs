@@ -356,11 +356,14 @@ impl interface::TargetFactory for PyExportTargetFactory {
 
     fn check_state_compatibility(
         &self,
-        _desired_state: &serde_json::Value,
-        _existing_state: &serde_json::Value,
+        desired_state: &serde_json::Value,
+        existing_state: &serde_json::Value,
     ) -> Result<SetupStateCompatibility> {
-        // The Python target connector doesn't support state update yet.
-        Ok(SetupStateCompatibility::Compatible)
+        Ok(if desired_state == existing_state {
+            SetupStateCompatibility::Compatible
+        } else {
+            SetupStateCompatibility::PartialCompatible
+        })
     }
 
     fn describe_resource(&self, key: &serde_json::Value) -> Result<String> {

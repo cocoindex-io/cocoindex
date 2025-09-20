@@ -643,7 +643,7 @@ fn add_collector(
 struct ExportDataFieldsInfo {
     local_collector_ref: AnalyzedLocalCollectorReference,
     primary_key_def: AnalyzedPrimaryKeyDef,
-    primary_key_schema: Vec<FieldSchema>,
+    primary_key_schema: Arc<[FieldSchema]>,
     value_fields_idx: Vec<u32>,
     value_stable: bool,
 }
@@ -851,8 +851,8 @@ impl AnalyzerContext {
 
                         let primary_key_schema = pk_fields_idx
                             .iter()
-                            .map(|idx| collector_schema.fields[*idx].clone())
-                            .collect::<Vec<_>>();
+                            .map(|idx| collector_schema.fields[*idx].without_attrs())
+                            .collect::<Arc<[_]>>();
                         let mut value_fields_schema: Vec<FieldSchema> = vec![];
                         let mut value_fields_idx = vec![];
                         for (idx, field) in collector_schema.fields.iter().enumerate() {
@@ -911,6 +911,7 @@ impl AnalyzerContext {
                     setup_key: data_coll_output.setup_key,
                     desired_setup_state: data_coll_output.desired_setup_state,
                     setup_by_user: export_op.spec.setup_by_user,
+                    key_schema: Some(data_fields_info.primary_key_schema.clone()),
                 };
                 targets_analyzed_ss[*idx] = Some(export_op_ss);
 
@@ -940,6 +941,7 @@ impl AnalyzerContext {
                 setup_key,
                 desired_setup_state,
                 setup_by_user: false,
+                key_schema: None,
             };
             declarations_analyzed_ss.push(decl_ss);
         }

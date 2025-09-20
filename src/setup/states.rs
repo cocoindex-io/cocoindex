@@ -180,6 +180,8 @@ pub struct TargetSetupStateCommon {
     pub max_schema_version_id: i32,
     #[serde(default)]
     pub setup_by_user: bool,
+    #[serde(default)]
+    pub key_schema: Option<Arc<[schema::FieldSchema]>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
