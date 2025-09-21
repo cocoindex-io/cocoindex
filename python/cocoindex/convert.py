@@ -9,7 +9,7 @@ import datetime
 import inspect
 import warnings
 from enum import Enum
-from typing import Any, Callable, Mapping, get_origin
+from typing import Any, Callable, Mapping, get_origin, TypeVar, overload
 
 import numpy as np
 
@@ -26,12 +26,16 @@ from .typing import (
     encode_enriched_type,
     is_namedtuple_type,
     is_numpy_number_type,
+    extract_ndarray_elem_dtype,
     ValueType,
     FieldSchema,
     BasicValueType,
     StructType,
     TableType,
 )
+
+
+T = TypeVar("T")
 
 
 class ChildFieldPath:
@@ -616,7 +620,7 @@ def dump_engine_object(v: Any) -> Any:
         secs = int(total_secs)
         nanos = int((total_secs - secs) * 1e9)
         return {"secs": secs, "nanos": nanos}
-    elif hasattr(v, "__dict__"):
+    elif hasattr(v, "__dict__"):  # for dataclass-like objects
         s = {}
         for k, val in v.__dict__.items():
             if val is None:
@@ -632,4 +636,129 @@ def dump_engine_object(v: Any) -> Any:
         return v.tolist()
     elif isinstance(v, dict):
         return {k: dump_engine_object(v) for k, v in v.items()}
+    return v
+
+
+@overload
+def load_engine_object(expected_type: type[T], v: Any) -> T: ...
+@overload
+def load_engine_object(expected_type: Any, v: Any) -> Any: ...
+def load_engine_object(expected_type: Any, v: Any) -> Any:
+    """Recursively load an object that was produced by dump_engine_object().
+
+    Args:
+        expected_type: The Python type annotation to reconstruct to.
+        v: The engine-facing Pythonized object (e.g., dict/list/primitive) to convert.
+
+    Returns:
+        A Python object matching the expected_type where possible.
+    """
+    # Fast path
+    if v is None:
+        return None
+
+    type_info = analyze_type_info(expected_type)
+    variant = type_info.variant
+
+    # Any or unknown → return as-is
+    if isinstance(variant, AnalyzedAnyType) or type_info.base_type is Any:
+        return v
+
+    # Enum handling
+    if isinstance(expected_type, type) and issubclass(expected_type, Enum):
+        return expected_type(v)
+
+    # TimeDelta special form {secs, nanos}
+    if isinstance(variant, AnalyzedBasicType) and variant.kind == "TimeDelta":
+        if isinstance(v, Mapping) and "secs" in v and "nanos" in v:
+            secs = int(v["secs"])  # type: ignore[index]
+            nanos = int(v["nanos"])  # type: ignore[index]
+            return datetime.timedelta(seconds=secs, microseconds=nanos / 1_000)
+        return v
+
+    # List, NDArray (Vector-ish), or general sequences
+    if isinstance(variant, AnalyzedListType):
+        elem_type = variant.elem_type if variant.elem_type else Any
+        if type_info.base_type is np.ndarray:
+            # Reconstruct NDArray with appropriate dtype if available
+            try:
+                dtype = extract_ndarray_elem_dtype(type_info.core_type)
+            except (TypeError, ValueError, AttributeError):
+                dtype = None
+            return np.array(v, dtype=dtype)
+        # Regular Python list
+        return [load_engine_object(elem_type, item) for item in v]
+
+    # Dict / Mapping
+    if isinstance(variant, AnalyzedDictType):
+        key_t = variant.key_type
+        val_t = variant.value_type
+        return {
+            load_engine_object(key_t, k): load_engine_object(val_t, val)
+            for k, val in v.items()
+        }
+
+    # Structs (dataclass or NamedTuple)
+    if isinstance(variant, AnalyzedStructType):
+        struct_type = variant.struct_type
+        if dataclasses.is_dataclass(struct_type):
+            # Drop auxiliary discriminator "kind" if present
+            src = dict(v) if isinstance(v, Mapping) else v
+            if isinstance(src, Mapping):
+                init_kwargs: dict[str, Any] = {}
+                field_types = {f.name: f.type for f in dataclasses.fields(struct_type)}
+                for name, f_type in field_types.items():
+                    if name in src:
+                        init_kwargs[name] = load_engine_object(f_type, src[name])
+                # Construct with defaults for missing fields
+                return struct_type(**init_kwargs)
+        elif is_namedtuple_type(struct_type):
+            # NamedTuple is dumped as list/tuple of items
+            annotations = getattr(struct_type, "__annotations__", {})
+            field_names = list(getattr(struct_type, "_fields", ()))
+            values: list[Any] = []
+            for name in field_names:
+                f_type = annotations.get(name, Any)
+                # Assume v is a sequence aligned with fields
+                if isinstance(v, (list, tuple)):
+                    idx = field_names.index(name)
+                    values.append(load_engine_object(f_type, v[idx]))
+                elif isinstance(v, Mapping):
+                    values.append(load_engine_object(f_type, v.get(name)))
+                else:
+                    values.append(v)
+            return struct_type(*values)
+        return v
+
+    # Union with discriminator support via "kind"
+    if isinstance(variant, AnalyzedUnionType):
+        if isinstance(v, Mapping) and "kind" in v:
+            discriminator = v["kind"]
+            for typ in variant.variant_types:
+                t_info = analyze_type_info(typ)
+                if isinstance(t_info.variant, AnalyzedStructType):
+                    t_struct = t_info.variant.struct_type
+                    candidate_kind = getattr(t_struct, "kind", None)
+                    if candidate_kind == discriminator:
+                        # Remove discriminator for constructor
+                        v_wo_kind = dict(v)
+                        v_wo_kind.pop("kind", None)
+                        return load_engine_object(t_struct, v_wo_kind)
+        # Fallback: try each variant until one succeeds
+        for typ in variant.variant_types:
+            try:
+                return load_engine_object(typ, v)
+            except (TypeError, ValueError):
+                continue
+        return v
+
+    # Basic types and everything else: handle numpy scalars and passthrough
+    if isinstance(v, np.ndarray) and type_info.base_type is list:
+        return v.tolist()
+    if isinstance(v, (list, tuple)) and type_info.base_type not in (list, tuple):
+        # If a non-sequence basic type expected, attempt direct cast
+        try:
+            return type_info.core_type(v)
+        except (TypeError, ValueError):
+            return v
     return v

@@ -19,6 +19,7 @@ from . import _engine  # type: ignore
 from .subprocess_exec import executor_stub
 from .convert import (
     dump_engine_object,
+    load_engine_object,
     make_engine_value_encoder,
     make_engine_value_decoder,
     make_engine_key_decoder,
@@ -90,15 +91,6 @@ class Executor(Protocol):
     op_category: OpCategory
 
 
-def _load_spec_from_engine(
-    spec_loader: Callable[..., Any], spec: dict[str, Any]
-) -> Any:
-    """
-    Load a spec from the engine.
-    """
-    return spec_loader(**spec)
-
-
 def _get_required_method(cls: type, name: str) -> Callable[..., Any]:
     method = getattr(cls, name, None)
     if method is None:
@@ -109,7 +101,7 @@ def _get_required_method(cls: type, name: str) -> Callable[..., Any]:
 
 
 class _EngineFunctionExecutorFactory:
-    _spec_loader: Callable[..., Any]
+    _spec_loader: Callable[[Any], Any]
     _executor_cls: type
 
     def __init__(self, spec_loader: Callable[..., Any], executor_cls: type):
@@ -117,9 +109,9 @@ class _EngineFunctionExecutorFactory:
         self._executor_cls = executor_cls
 
     def __call__(
-        self, spec: dict[str, Any], *args: Any, **kwargs: Any
+        self, raw_spec: dict[str, Any], *args: Any, **kwargs: Any
     ) -> tuple[dict[str, Any], Executor]:
-        spec = _load_spec_from_engine(self._spec_loader, spec)
+        spec = self._spec_loader(raw_spec)
         executor = self._executor_cls(spec)
         result_type = executor.analyze_schema(*args, **kwargs)
         return (result_type, executor)
@@ -378,7 +370,7 @@ def executor_class(**args: Any) -> Callable[[type], type]:
             expected_args=list(sig.parameters.items())[1:],  # First argument is `self`
             expected_return=sig.return_annotation,
             executor_factory=cls,
-            spec_loader=spec_cls,
+            spec_loader=lambda v: load_engine_object(spec_cls, v),
             op_kind=spec_cls.__name__,
             op_args=op_args,
         )
@@ -414,7 +406,7 @@ def function(**args: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             expected_args=list(sig.parameters.items()),
             expected_return=sig.return_annotation,
             executor_factory=_SimpleFunctionExecutor,
-            spec_loader=lambda: fn,
+            spec_loader=lambda _: fn,
             op_kind=op_kind,
             op_args=op_args,
         )
@@ -469,9 +461,9 @@ class _TargetConnector:
     The connector class passed to the engine.
     """
 
-    _spec_cls: type
-    _state_cls: type
-    _connector_cls: type
+    _spec_cls: type[Any]
+    _state_cls: type[Any]
+    _connector_cls: type[Any]
 
     _get_persistent_key_fn: Callable[[_TargetConnectorContext, str], Any]
     _apply_setup_change_async_fn: Callable[
@@ -480,7 +472,9 @@ class _TargetConnector:
     _mutate_async_fn: Callable[..., Awaitable[None]]
     _mutatation_type: AnalyzedDictType | None
 
-    def __init__(self, spec_cls: type, state_cls: type, connector_cls: type):
+    def __init__(
+        self, spec_cls: type[Any], state_cls: type[Any], connector_cls: type[Any]
+    ):
         self._spec_cls = spec_cls
         self._state_cls = state_cls
         self._connector_cls = connector_cls
@@ -546,7 +540,7 @@ class _TargetConnector:
     def create_export_context(
         self,
         name: str,
-        spec: dict[str, Any],
+        raw_spec: dict[str, Any],
         raw_key_fields_schema: list[Any],
         raw_value_fields_schema: list[Any],
     ) -> _TargetConnectorContext:
@@ -568,10 +562,10 @@ class _TargetConnector:
             ["<value>"], value_fields_schema, analyze_type_info(value_annotation)
         )
 
-        loaded_spec = _load_spec_from_engine(self._spec_cls, spec)
+        spec = load_engine_object(self._spec_cls, raw_spec)
         return _TargetConnectorContext(
             target_name=name,
-            spec=loaded_spec,
+            spec=spec,
             prepared_spec=None,
             key_fields_schema=key_fields_schema,
             key_decoder=key_decoder,
@@ -638,13 +632,11 @@ class _TargetConnector:
     ) -> None:
         for key, previous, current in changes:
             prev_specs = [
-                _load_spec_from_engine(self._state_cls, spec)
-                if spec is not None
-                else None
+                load_engine_object(self._state_cls, spec) if spec is not None else None
                 for spec in previous
             ]
             curr_spec = (
-                _load_spec_from_engine(self._state_cls, current)
+                load_engine_object(self._state_cls, current)
                 if current is not None
                 else None
             )
@@ -678,7 +670,7 @@ class _TargetConnector:
 
 
 def target_connector(
-    spec_cls: type, state_cls: type | None = None
+    spec_cls: type[Any], state_cls: type[Any] | None = None
 ) -> Callable[[type], type]:
     """
     Decorate a class to provide a target connector for an op.
