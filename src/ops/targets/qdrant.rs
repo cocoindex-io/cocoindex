@@ -1,8 +1,6 @@
 use crate::ops::sdk::*;
 use crate::prelude::*;
 
-use std::fmt::Display;
-
 use crate::ops::registry::ExecutorFactoryRegistry;
 use crate::setup;
 use qdrant_client::Qdrant;
@@ -349,18 +347,6 @@ fn values_to_payload(
 #[derive(Default)]
 struct Factory {
     qdrant_clients: Mutex<HashMap<Option<spec::AuthEntryReference<ConnectionSpec>>, Arc<Qdrant>>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-struct CollectionId {
-    collection_name: String,
-}
-
-impl Display for CollectionId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.collection_name)?;
-        Ok(())
-    }
 }
 
 #[async_trait]

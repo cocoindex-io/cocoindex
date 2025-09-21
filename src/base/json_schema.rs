@@ -225,7 +225,7 @@ impl JsonSchemaBuilder {
             required: struct_schema
                 .fields
                 .iter()
-                .filter(|&f| (self.options.fields_always_required || !f.value_type.nullable))
+                .filter(|&f| self.options.fields_always_required || !f.value_type.nullable)
                 .map(|f| f.name.to_string())
                 .collect(),
             additional_properties: Some(Schema::Bool(false).into()),

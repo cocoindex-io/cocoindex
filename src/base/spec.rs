@@ -124,12 +124,6 @@ impl fmt::Display for ConstantMapping {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CollectionMapping {
-    pub field: FieldMapping,
-    pub scope_name: ScopeName,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructMapping {
     pub fields: Vec<NamedSpec<ValueMapping>>,
 }
@@ -520,15 +514,6 @@ pub struct TransientFlowSpec {
     pub input_fields: Vec<FieldSchema>,
     pub reactive_ops: Vec<NamedSpec<ReactiveOpSpec>>,
     pub output_value: ValueMapping,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SimpleSemanticsQueryHandlerSpec {
-    pub name: String,
-    pub flow_instance_name: String,
-    pub export_target_name: String,
-    pub query_transform_flow: TransientFlowSpec,
-    pub default_similarity_metric: VectorSimilarityMetric,
 }
 
 pub struct AuthEntryReference<T> {
