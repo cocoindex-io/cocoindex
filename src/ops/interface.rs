@@ -258,7 +258,7 @@ pub struct ExportDataCollectionBuildOutput {
 pub struct ExportDataCollectionSpec {
     pub name: String,
     pub spec: serde_json::Value,
-    pub key_fields_schema: Arc<[FieldSchema]>,
+    pub key_fields_schema: Box<[FieldSchema]>,
     pub value_fields_schema: Vec<FieldSchema>,
     pub index_options: IndexOptions,
 }

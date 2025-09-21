@@ -112,7 +112,7 @@ impl<AuthEntry> std::fmt::Display for GraphElementType<AuthEntry> {
 
 pub struct GraphElementSchema {
     pub elem_type: ElementType,
-    pub key_fields: Arc<[schema::FieldSchema]>,
+    pub key_fields: Box<[schema::FieldSchema]>,
     pub value_fields: Vec<schema::FieldSchema>,
 }
 
@@ -349,7 +349,7 @@ pub struct DataCollectionGraphMappingInput<'a, AuthEntry> {
     pub mapping: &'a GraphElementMapping,
     pub index_options: &'a spec::IndexOptions,
 
-    pub key_fields_schema: Arc<[FieldSchema]>,
+    pub key_fields_schema: Box<[FieldSchema]>,
     pub value_fields_schema: Vec<FieldSchema>,
 }
 
@@ -435,7 +435,6 @@ pub fn analyze_graph_mappings<'a, AuthEntry: 'a>(
                                 .key_fields_schema
                                 .into_iter()
                                 .enumerate()
-                                .map(|(idx, f)| (idx, f.clone()))
                                 .collect(),
                             data_coll_input
                                 .value_fields_schema

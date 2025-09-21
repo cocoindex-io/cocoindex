@@ -132,7 +132,7 @@ fn bind_value_field<'arg>(
 pub struct ExportContext {
     db_ref: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
     db_pool: PgPool,
-    key_fields_schema: Vec<FieldSchema>,
+    key_fields_schema: Box<[FieldSchema]>,
     value_fields_schema: Vec<FieldSchema>,
     upsert_sql_prefix: String,
     upsert_sql_suffix: String,
@@ -144,7 +144,7 @@ impl ExportContext {
         db_ref: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
         db_pool: PgPool,
         table_name: String,
-        key_fields_schema: Vec<FieldSchema>,
+        key_fields_schema: Box<[FieldSchema]>,
         value_fields_schema: Vec<FieldSchema>,
     ) -> Result<Self> {
         let key_fields = key_fields_schema
@@ -632,7 +632,7 @@ impl TargetFactoryBase for Factory {
                         db_ref,
                         db_pool.clone(),
                         table_name,
-                        d.key_fields_schema.iter().cloned().collect(),
+                        d.key_fields_schema,
                         d.value_fields_schema,
                     )?);
                     Ok(export_context)

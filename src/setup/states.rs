@@ -181,7 +181,7 @@ pub struct TargetSetupStateCommon {
     #[serde(default)]
     pub setup_by_user: bool,
     #[serde(default)]
-    pub key_schema: Option<Arc<[schema::FieldSchema]>>,
+    pub key_type: Option<Box<[schema::ValueType]>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -363,7 +363,7 @@ pub struct TypedExportDataCollectionBuildOutput<F: TargetFactoryBase + ?Sized> {
 pub struct TypedExportDataCollectionSpec<F: TargetFactoryBase + ?Sized> {
     pub name: String,
     pub spec: F::Spec,
-    pub key_fields_schema: Arc<[FieldSchema]>,
+    pub key_fields_schema: Box<[FieldSchema]>,
     pub value_fields_schema: Vec<FieldSchema>,
     pub index_options: IndexOptions,
 }

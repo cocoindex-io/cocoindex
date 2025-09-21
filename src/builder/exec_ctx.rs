@@ -24,7 +24,7 @@ pub struct AnalyzedTargetSetupState {
     pub desired_setup_state: serde_json::Value,
     pub setup_by_user: bool,
     /// None for declarations.
-    pub key_schema: Option<Arc<[schema::FieldSchema]>>,
+    pub key_type: Option<Box<[schema::ValueType]>>,
 }
 
 pub struct AnalyzedSetupState {
@@ -123,9 +123,9 @@ fn build_target_id(
     let mut compatible_target_ids = HashSet::<Option<i32>>::new();
     let mut reusable_schema_version_ids = HashSet::<Option<i32>>::new();
     for existing_state in existing_target_states.iter().flat_map(|v| v.iter()) {
-        let compatibility = if let Some(key_schema) = &analyzed_target_ss.key_schema
-            && let Some(existing_key_schema) = &existing_state.common.key_schema
-            && key_schema != existing_key_schema
+        let compatibility = if let Some(key_type) = &analyzed_target_ss.key_type
+            && let Some(existing_key_type) = &existing_state.common.key_type
+            && key_type != existing_key_type
         {
             SetupStateCompatibility::NotCompatible
         } else if analyzed_target_ss.setup_by_user != existing_state.common.setup_by_user {
@@ -190,7 +190,7 @@ fn build_target_id(
                     schema_version_id,
                     max_schema_version_id: max_schema_version_id.max(schema_version_id),
                     setup_by_user: analyzed_target_ss.setup_by_user,
-                    key_schema: analyzed_target_ss.key_schema.clone(),
+                    key_type: analyzed_target_ss.key_type.clone(),
                 },
                 state: analyzed_target_ss.desired_setup_state.clone(),
             });
