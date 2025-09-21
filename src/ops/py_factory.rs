@@ -295,6 +295,7 @@ impl interface::TargetFactory for PyExportTargetFactory {
                             pythonize(py, &data_collection.spec)?,
                             pythonize(py, &data_collection.key_fields_schema)?,
                             pythonize(py, &data_collection.value_fields_schema)?,
+                            pythonize(py, &data_collection.index_options)?,
                         ),
                         None,
                     )

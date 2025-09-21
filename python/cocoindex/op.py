@@ -37,6 +37,7 @@ from .typing import (
     FieldSchema,
 )
 from .runtime import to_async_call
+from .index import IndexOptions
 
 
 class OpCategory(Enum):
@@ -430,6 +431,7 @@ class _TargetConnectorContext:
     key_decoder: Callable[[Any], Any]
     value_fields_schema: list[FieldSchema]
     value_decoder: Callable[[Any], Any]
+    index_options: IndexOptions
 
 
 def _build_args(
@@ -543,6 +545,7 @@ class _TargetConnector:
         raw_spec: dict[str, Any],
         raw_key_fields_schema: list[Any],
         raw_value_fields_schema: list[Any],
+        raw_index_options: dict[str, Any],
     ) -> _TargetConnectorContext:
         key_annotation, value_annotation = (
             (
@@ -563,6 +566,7 @@ class _TargetConnector:
         )
 
         spec = load_engine_object(self._spec_cls, raw_spec)
+        index_options = load_engine_object(IndexOptions, raw_index_options)
         return _TargetConnectorContext(
             target_name=name,
             spec=spec,
@@ -571,6 +575,7 @@ class _TargetConnector:
             key_decoder=key_decoder,
             value_fields_schema=value_fields_schema,
             value_decoder=value_decoder,
+            index_options=index_options,
         )
 
     def get_persistent_key(self, export_context: _TargetConnectorContext) -> Any:
@@ -597,6 +602,7 @@ class _TargetConnector:
                 spec=export_context.spec,
                 key_fields_schema=export_context.key_fields_schema,
                 value_fields_schema=export_context.value_fields_schema,
+                index_options=export_context.index_options,
             )
             state = get_persistent_state_fn(*args)
             if not isinstance(state, self._state_cls):
