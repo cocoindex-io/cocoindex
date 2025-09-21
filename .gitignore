@@ -21,3 +21,6 @@ examples/**/eval_*
 
 /.vscode
 /*.session.sql
+
+# mypy daemon environment
+.dmypy.json
