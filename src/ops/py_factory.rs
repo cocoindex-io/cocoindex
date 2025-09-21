@@ -283,43 +283,65 @@ impl interface::TargetFactory for PyExportTargetFactory {
             .ok_or_else(|| anyhow!("Python execution context is missing"))?
             .clone();
         for data_collection in data_collections.into_iter() {
-            let (py_export_ctx, persistent_key) =
-                Python::with_gil(|py| -> Result<(Py<PyAny>, serde_json::Value)> {
-                    // Deserialize the spec to Python object.
-                    let py_export_ctx = self
-                        .py_target_connector
-                        .call_method(
-                            py,
-                            "create_export_context",
-                            (
-                                &data_collection.name,
-                                pythonize(py, &data_collection.spec)?,
-                                pythonize(py, &data_collection.key_fields_schema)?,
-                                pythonize(py, &data_collection.value_fields_schema)?,
-                            ),
-                            None,
-                        )
-                        .to_result_with_py_trace(py)?;
+            let (py_export_ctx, persistent_key, setup_state) = Python::with_gil(|py| {
+                // Deserialize the spec to Python object.
+                let py_export_ctx = self
+                    .py_target_connector
+                    .call_method(
+                        py,
+                        "create_export_context",
+                        (
+                            &data_collection.name,
+                            pythonize(py, &data_collection.spec)?,
+                            pythonize(py, &data_collection.key_fields_schema)?,
+                            pythonize(py, &data_collection.value_fields_schema)?,
+                        ),
+                        None,
+                    )
+                    .to_result_with_py_trace(py)?;
 
-                    // Call the `get_persistent_key` method to get the persistent key.
-                    let persistent_key = self
-                        .py_target_connector
-                        .call_method(py, "get_persistent_key", (&py_export_ctx,), None)
-                        .to_result_with_py_trace(py)?;
-                    let persistent_key = depythonize(&persistent_key.into_bound(py))?;
-                    Ok((py_export_ctx, persistent_key))
-                })?;
+                // Call the `get_persistent_key` method to get the persistent key.
+                let persistent_key = self
+                    .py_target_connector
+                    .call_method(py, "get_persistent_key", (&py_export_ctx,), None)
+                    .to_result_with_py_trace(py)?;
+                let persistent_key: serde_json::Value =
+                    depythonize(&persistent_key.into_bound(py))?;
 
+                let setup_state = self
+                    .py_target_connector
+                    .call_method(py, "get_setup_state", (&py_export_ctx,), None)
+                    .to_result_with_py_trace(py)?;
+                let setup_state: serde_json::Value = depythonize(&setup_state.into_bound(py))?;
+
+                anyhow::Ok((py_export_ctx, persistent_key, setup_state))
+            })?;
+
+            let factory = self.clone();
             let py_exec_ctx = py_exec_ctx.clone();
             let build_output = interface::ExportDataCollectionBuildOutput {
                 export_context: Box::pin(async move {
-                    Ok(Arc::new(PyTargetExecutorContext {
+                    Python::with_gil(|py| {
+                        let prepare_coro = factory
+                            .py_target_connector
+                            .call_method(py, "prepare_async", (&py_export_ctx,), None)
+                            .to_result_with_py_trace(py)?;
+                        let task_locals = pyo3_async_runtimes::TaskLocals::new(
+                            py_exec_ctx.event_loop.bind(py).clone(),
+                        );
+                        anyhow::Ok(pyo3_async_runtimes::into_future_with_locals(
+                            &task_locals,
+                            prepare_coro.into_bound(py),
+                        )?)
+                    })?
+                    .await?;
+                    anyhow::Ok(Arc::new(PyTargetExecutorContext {
                         py_export_ctx,
                         py_exec_ctx,
                     }) as Arc<dyn Any + Send + Sync>)
                 }),
                 setup_key: persistent_key,
-                desired_setup_state: data_collection.spec,
+                desired_setup_state: setup_state,
             };
             build_outputs.push(build_output);
         }
