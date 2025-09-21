@@ -4,7 +4,7 @@ name = "cocoindex"
 # Will be overridden for specific release versions.
 version = "999.0.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.90"
 license = "Apache-2.0"
 
 [profile.release]
