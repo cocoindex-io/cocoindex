@@ -3,10 +3,10 @@
 from dataclasses import dataclass
 from typing import Sequence
 
-from . import op
-from . import index
-from .auth_registry import AuthEntryReference
-from .setting import DatabaseConnectionSpec
+from .. import op
+from .. import index
+from ..auth_registry import AuthEntryReference
+from ..setting import DatabaseConnectionSpec
 
 
 class Postgres(op.TargetSpec):
