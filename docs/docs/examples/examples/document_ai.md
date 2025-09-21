@@ -21,7 +21,7 @@ CocoIndex is a flexible ETL framework with incremental processing.  We don’t b
 
 ## Set up
 - [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
-- Configure Project and Processor ID for Document AI API 
+- Configure Project and Processor ID for Document AI API
     - [Official Google document AI API](https://cloud.google.com/document-ai/docs/try-docai) with free live demo.
     - Sign in to [Google Cloud Console](https://console.cloud.google.com/), create or open a project, and enable Document AI API.
       - ![image.png](/img/examples/document_ai/document_ai.png)

@@ -36,7 +36,7 @@ and then build a knowledge graph.
 - CocoIndex can direct map the collected data to Neo4j nodes and relationships.
 
 ## Setup
-*   [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing. 
+*   [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
 *   [Install Neo4j](https://cocoindex.io/docs/ops/targets#neo4j-dev-instance), a graph database.
 *   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).  Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
@@ -51,7 +51,7 @@ and then build a knowledge graph.
 
 ### Add documents as source
 
-We will process CocoIndex documentation markdown files (`.md`, `.mdx`) from the `docs/core` directory ([markdown files](https://github.com/cocoindex-io/cocoindex/tree/main/docs/docs/core), [deployed docs](https://cocoindex.io/docs/core/basics)). 
+We will process CocoIndex documentation markdown files (`.md`, `.mdx`) from the `docs/core` directory ([markdown files](https://github.com/cocoindex-io/cocoindex/tree/main/docs/docs/core), [deployed docs](https://cocoindex.io/docs/core/basics)).
 
 ```python
 @cocoindex.flow_def(name="DocsToKG")
@@ -141,7 +141,7 @@ Next, we will use `cocoindex.functions.ExtractByLlm` to extract the relationship
 doc["relationships"] = doc["content"].transform(
     cocoindex.functions.ExtractByLlm(
         llm_spec=cocoindex.LlmSpec(
-            api_type=cocoindex.LlmApiType.OPENAI, 
+            api_type=cocoindex.LlmApiType.OPENAI,
             model="gpt-4o"
         ),
         output_type=list[Relationship],
@@ -187,7 +187,7 @@ with doc["relationships"].row() as relationship:
 
 
 ### Build knowledge graph
- 
+
 #### Basic concepts
 All nodes for Neo4j need two things:
 1. Label: The type of the node. E.g., `Document`, `Entity`.
@@ -236,10 +236,10 @@ This exports Neo4j nodes with label `Document` from the `document_node` collecto
 
 #### Export `RELATIONSHIP` and `Entity` nodes to Neo4j
 
-We don't have explicit collector for `Entity` nodes. 
+We don't have explicit collector for `Entity` nodes.
 They are part of the `entity_relationship` collector and fields are collected during the relationship extraction.
 
-To export them as Neo4j nodes, we need to first declare `Entity` nodes. 
+To export them as Neo4j nodes, we need to first declare `Entity` nodes.
 
 ```python
 flow_builder.declare(
@@ -289,7 +289,7 @@ In a relationship, there's:
 2.  A relationship connecting the source and target.
 Note that different relationships may share the same source and target nodes.
 
-`NodeFromFields` takes the fields from the `entity_relationship` collector and creates `Entity` nodes. 
+`NodeFromFields` takes the fields from the `entity_relationship` collector and creates `Entity` nodes.
 
 #### Export the `entity_mention` to Neo4j.
 
@@ -334,7 +334,7 @@ It creates relationships by:
     ```sh
     cocoindex update --setup main.py
     ```
-    
+
     You'll see the index updates state in the terminal. For example,
 
     ```
@@ -343,7 +343,7 @@ It creates relationships by:
 
 ## CocoInsight
 
-I used CocoInsight to troubleshoot the index generation and understand the data lineage of the pipeline.  It is in free beta now, you can give it a try. 
+I used CocoInsight to troubleshoot the index generation and understand the data lineage of the pipeline.  It is in free beta now, you can give it a try.
 
 ```sh
 cocoindex server -ci main
@@ -369,7 +369,7 @@ MATCH p=()-->() RETURN p
 ## Kuzu
 Cocoindex natively supports Kuzu - a high performant, embedded open source graph database.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets#kuzu" text="Kuzu" margin="0 0 16px 0" /> 
+<DocumentationButton url="https://cocoindex.io/docs/ops/targets#kuzu" text="Kuzu" margin="0 0 16px 0" />
 
 The GraphDB interface in CocoIndex is standardized, you just need to **switch the configuration** without any additional code changes. CocoIndex supports exporting to Kuzu through its API server. You can bring up a Kuzu API server locally by running:
 
@@ -391,4 +391,3 @@ kuzu_conn_spec = cocoindex.add_auth_entry(
 ```
 
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/blob/30761f8ab674903d742c8ab2e18d4c588df6d46f/examples/docs_to_knowledge_graph/main.py#L33-L37"  margin="0 0 16px 0" />
-

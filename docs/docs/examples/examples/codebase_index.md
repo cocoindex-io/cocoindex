@@ -19,7 +19,7 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 ![Codebase Index](/img/examples/codebase_index/cover.png)
 
 ## Overview
-In this tutorial, we will build codebase index. [CocoIndex](https://github.com/cocoindex-io/cocoindex) provides built-in support for codebase chunking, with native Tree-sitter support. It works with large codebases, and can be updated in near real-time with incremental processing - only reprocess what's changed. 
+In this tutorial, we will build codebase index. [CocoIndex](https://github.com/cocoindex-io/cocoindex) provides built-in support for codebase chunking, with native Tree-sitter support. It works with large codebases, and can be updated in near real-time with incremental processing - only reprocess what's changed.
 
 ## Use Cases
 A wide range of applications can be built with an effective codebase index that is always up-to-date.
@@ -44,14 +44,14 @@ The flow is composed of the following steps:
 - Generate embeddings for each chunk
 - Store in a vector database for retrieval
 
-## Setup 
+## Setup
 - Install Postgres, follow [installation guide](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
 - Install CocoIndex
   ```bash
   pip install -U cocoindex
   ```
 
-## Add the codebase as a source. 
+## Add the codebase as a source.
 We will index the CocoIndex codebase. Here we use the `LocalFile` source to ingest files from the CocoIndex codebase root directory.
 
 ```python
@@ -67,7 +67,7 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 - Include files with the extensions of `.py`, `.rs`, `.toml`, `.md`, `.mdx`
 - Exclude files and directories starting `.`,  `target` in the root and `node_modules` under any directory.
 
-`flow_builder.add_source` will create a table with sub fields (`filename`, `content`). 
+`flow_builder.add_source` will create a table with sub fields (`filename`, `content`).
 <DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" />
 
 
@@ -96,14 +96,14 @@ with data_scope["files"].row() as file:
     file["extension"] = file["filename"].transform(extract_extension)
     file["chunks"] = file["content"].transform(
           cocoindex.functions.SplitRecursively(),
-          language=file["extension"], chunk_size=1000, chunk_overlap=300) 
+          language=file["extension"], chunk_size=1000, chunk_overlap=300)
 ```
 <DocumentationButton url="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" margin="0 0 16px 0" />
 
 ![SplitRecursively](/img/examples/codebase_index/chunk.png)
 
 ### Embed the chunks
-We use `SentenceTransformerEmbed` to embed the chunks. 
+We use `SentenceTransformerEmbed` to embed the chunks.
 
 ```python
 @cocoindex.transform_flow()
@@ -141,7 +141,7 @@ code_embeddings.export(
     vector_indexes=[cocoindex.VectorIndex("embedding", cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 ```
 
-We use [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity) to measure the similarity between the query and the indexed data. 
+We use [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity) to measure the similarity between the query and the indexed data.
 
 ## Query the index
 We match against user-provided text by a SQL query, reusing the embedding operation in the indexing flow.

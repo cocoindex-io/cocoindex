@@ -1,5 +1,5 @@
 ---
-title: Index PDFs, Images, Slides without OCR 
+title: Index PDFs, Images, Slides without OCR
 description: Build a visual document indexing pipeline using ColPali to index scanned documents, PDFs, academic papers, presentation slides, and standalone images — all mixed together with charts, tables, and figures - into the same vector space.
 sidebar_class_name: hidden
 slug: /examples/multi_format_index
@@ -20,7 +20,7 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 ## Overview
 Do you have a messy collection of scanned documents, PDFs, academic papers, presentation slides, and standalone images — all mixed together with charts, tables, and figures — that you want to process into the same vector space for semantic search or to power an AI agent?
 
-In this example, we’ll walk through how to build a visual document indexing pipeline using ColPali for embedding both PDFs and images — and then query the index using natural language.  
+In this example, we’ll walk through how to build a visual document indexing pipeline using ColPali for embedding both PDFs and images — and then query the index using natural language.
 
 We’ll skip OCR entirely — ColPali can directly understand document layouts, tables, and figures from images, making it perfect for semantic search across visual-heavy content.
 
@@ -57,7 +57,7 @@ data_scope["documents"] = flow_builder.add_source(
 
 ## Convert Files to Pages
 
-We classify files by MIME type and process accordingly. 
+We classify files by MIME type and process accordingly.
 
 Define a dataclass:
 
@@ -112,7 +112,7 @@ In the flow we convert all the files to pages. this makes each pages and all ima
 
 ## Generate Visual Embeddings
 
-We use ColPali to generate embeddings for images on each page. 
+We use ColPali to generate embeddings for images on each page.
 
 ```python
 with doc["pages"].row() as page:
@@ -132,7 +132,7 @@ with doc["pages"].row() as page:
 
 ![Embedding](/img/examples/multi_format_index/embed.png)
 
-ColPali Architecture fundamentally rethinks how documents, especially visually complex or image-rich ones, are represented and searched. Instead of reducing each image or page to a single dense vector (as in traditional bi-encoders), ColPali breaks an image into many smaller patches, preserving local spatial and semantic structure. 
+ColPali Architecture fundamentally rethinks how documents, especially visually complex or image-rich ones, are represented and searched. Instead of reducing each image or page to a single dense vector (as in traditional bi-encoders), ColPali breaks an image into many smaller patches, preserving local spatial and semantic structure.
 
 Each patch receives its own embedding, which together form a multi-vector representation of the complete document.
 
@@ -143,7 +143,7 @@ Each patch receives its own embedding, which together form a multi-vector repres
 
 ## Export to Qdrant
 
-Note the way to embed image and query are different, as they’re two different types of data. 
+Note the way to embed image and query are different, as they’re two different types of data.
 
 Create a function to embed query:
 
@@ -200,9 +200,7 @@ cocoindex server -ci main
 Follow the url `https://cocoindex.io/cocoinsight`.  It connects to your local CocoIndex server, with zero pipeline data retention. You can use it to view extracted pages, see embedding vectors and metadata.
 
 
-## Connect to other sources 
+## Connect to other sources
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
-
-

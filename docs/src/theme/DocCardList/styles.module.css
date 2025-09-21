@@ -39,7 +39,7 @@
   white-space: nowrap;
   min-height: 28px;
   text-align: center;
-  transition: 
+  transition:
     background 0.15s,
     border-color 0.15s,
     color 0.15s,
@@ -85,7 +85,7 @@
   user-select: none;
   min-height: 28px;
   text-align: center;
-  transition: 
+  transition:
     background 0.15s,
     border-color 0.15s,
     color 0.15s,
@@ -122,18 +122,18 @@
     padding: 0.25rem 0;
     margin-bottom: 1rem;
   }
-  
+
   .tagSelectorGrid {
     gap: 0.4rem;
   }
-  
+
   .tagLabel,
   .allTagsLabel {
     padding: 0.15rem 0.6rem;
     font-size: 0.75rem;
     min-height: 24px;
   }
-  
+
   .tagSelectorTitle {
     font-size: 1rem;
     margin-bottom: 0.75rem;
@@ -144,11 +144,11 @@
   .tagSelectorContainer {
     padding: 0.1rem 0;
   }
-  
+
   .tagSelectorGrid {
     gap: 0.25rem;
   }
-  
+
   .tagLabel,
   .allTagsLabel {
     padding: 0.12rem 0.5rem;

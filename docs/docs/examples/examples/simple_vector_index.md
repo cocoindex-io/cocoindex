@@ -18,7 +18,7 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 ![Simple Vector Index](/img/examples/simple_vector_index/cover.png)
 
 ## Overview
-In this tutorial, we will build index with text embeddings and query it with natural language. 
+In this tutorial, we will build index with text embeddings and query it with natural language.
 We try to keep it minimalistic and focus on the gist of the indexing flow.
 
 
@@ -33,7 +33,7 @@ We try to keep it minimalistic and focus on the gist of the indexing flow.
 ## Prerequisites
 
 - [Install Postgres](https://cocoindex.io/docs/getting_started/installation).
-CocoIndex uses Postgres to keep track of data lineage for incremental processing. 
+CocoIndex uses Postgres to keep track of data lineage for incremental processing.
 
 
 ## Add Source
@@ -69,7 +69,7 @@ with data_scope["documents"].row() as doc:
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" />
 
-### Embed each chunk 
+### Embed each chunk
 
 ```python
 with doc["chunks"].row() as chunk:
@@ -77,7 +77,7 @@ with doc["chunks"].row() as chunk:
         cocoindex.functions.SentenceTransformerEmbed(
             model="sentence-transformers/all-MiniLM-L6-v2"
         )
-    ) 
+    )
     doc_embeddings.collect(filename=doc["filename"], location=chunk["location"],
                             text=chunk["text"], embedding=chunk["embedding"])
 ```
@@ -124,7 +124,7 @@ def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[lis
 This code defines a transformation function that converts text into vector embeddings using the SentenceTransformer model.
 `@cocoindex.transform_flow()` is needed to share the transformation across indexing and query.
 
-This decorator marks this as a reusable transformation flow that can be called on specific input data from user code using `eval()`, as shown in the search function below. 
+This decorator marks this as a reusable transformation flow that can be called on specific input data from user code using `eval()`, as shown in the search function below.
 
 ### Write query
 

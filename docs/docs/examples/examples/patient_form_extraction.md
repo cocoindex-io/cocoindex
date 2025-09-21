@@ -22,7 +22,7 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 With CocoIndex, you can easily define nested schema in Python dataclass and use LLM to extract structured data from unstructured data. This example shows how to extract structured data from patient intake forms.
 
 :::info
-The extraction quality is highly dependent on the OCR quality. You can use CocoIndex with any commercial parser or open source ones that is tailored for your domain for better results. For example, Document AI from Google Cloud and more. 
+The extraction quality is highly dependent on the OCR quality. You can use CocoIndex with any commercial parser or open source ones that is tailored for your domain for better results. For example, Document AI from Google Cloud and more.
 :::
 
 ## Flow Overview
@@ -69,7 +69,7 @@ def patient_intake_extraction_flow(
 
 ##  Parse documents with different formats to Markdown
 
-Define a custom function to parse documents in any format to Markdown. Here we use [MarkItDown](https://github.com/microsoft/markitdown) to convert the file to Markdown. It also provides options to parse by LLM, like `gpt-4o`. At present, MarkItDown supports: PDF, Word, Excel, Images (EXIF metadata and OCR), etc. 
+Define a custom function to parse documents in any format to Markdown. Here we use [MarkItDown](https://github.com/microsoft/markitdown) to convert the file to Markdown. It also provides options to parse by LLM, like `gpt-4o`. At present, MarkItDown supports: PDF, Word, Excel, Images (EXIF metadata and OCR), etc.
 
 ```python
 class ToMarkdown(cocoindex.op.FunctionSpec):
@@ -104,7 +104,7 @@ with data_scope["documents"].row() as doc:
 
 ![Markdown](/img/examples/patient_form_extraction/tomarkdown.png)
 
-## Define output schema 
+## Define output schema
 
 We are going to define the patient info schema for structured extraction. One of the best examples to define a patient info schema is probably following the [FHIR standard - Patient Resource](https://build.fhir.org/patient.html#resource).
 
@@ -275,7 +275,7 @@ For mission-critical use cases, it is important to evaluate the quality of the e
 
 
 ## Troubleshooting
-If extraction is not ideal, this is how I troubleshoot. My original golden file for this record is [this one](https://github.com/cocoindex-io/patient-intake-extraction/blob/main/data/example_forms/Patient_Intake_Form_Joe_Artificial.pdf). 
+If extraction is not ideal, this is how I troubleshoot. My original golden file for this record is [this one](https://github.com/cocoindex-io/patient-intake-extraction/blob/main/data/example_forms/Patient_Intake_Form_Joe_Artificial.pdf).
 
 We could troubleshoot in two steps:
 1. Convert to Markdown
@@ -293,7 +293,7 @@ Go to `https://cocoindex.io/cocoinsight`. You could see an interactive UI to exp
 Click on the `markdown` column for `Patient_Intake_Form_Joe.pdf`, you could see the Markdown content. We could try a few different models with the Markdown converter/LLM to iterate and see if we can get better results, or needs manual correction.
 
 
-## Connect to other sources 
+## Connect to other sources
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />

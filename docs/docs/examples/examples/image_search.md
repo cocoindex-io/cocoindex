@@ -21,7 +21,7 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 CocoIndex supports native integration with ColPali - with just a few lines of code, you embed and index images with ColPali’s late-interaction architecture. We also build a light weight image search application with FastAPI.
 
 
-## ColPali 
+## ColPali
 
 **ColPali (Contextual Late-interaction over Patches)** is a powerful model for multimodal retrieval.
 

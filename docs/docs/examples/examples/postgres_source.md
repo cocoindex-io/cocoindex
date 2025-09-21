@@ -34,7 +34,7 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 ```python
 @cocoindex.flow_def(name="PostgresProductIndexing")
 def postgres_product_indexing_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope) -> None:
-  
+
     data_scope["products"] = flow_builder.add_source(
         cocoindex.sources.Postgres(
             table_name="source_products",
@@ -57,16 +57,16 @@ This step adds source data from PostgreSQL table `source_products` to the flow a
 CocoIndex incrementally sync data from Postgres. When new or updated rows are found, only those rows run through the pipeline, so downstream indexes and search results reflect the latest data while unchanged rows are untouched. The following two arguments (both are optional) make this more efficient:
 
 - `notification` enables change capture based on Postgres LISTEN/NOTIFY. Each change triggers an incremental processing on the specific row immediately.
-- Regardless if `notification` is provided or not, CocoIndex still needs to scan the full table to detect changes in some scenarios (e.g. between two `update` invocation), and the `ordinal_column` provides a field that CocoIndex can use to quickly detect which row has changed without reading value columns. 
+- Regardless if `notification` is provided or not, CocoIndex still needs to scan the full table to detect changes in some scenarios (e.g. between two `update` invocation), and the `ordinal_column` provides a field that CocoIndex can use to quickly detect which row has changed without reading value columns.
 
-Check [Postgres source](https://cocoindex.io/docs/ops/sources#postgres) for more details. 
+Check [Postgres source](https://cocoindex.io/docs/ops/sources#postgres) for more details.
 
 If you use the Postgres database hosted by Supabase, please click Connect on your project dashboard and find the URL there. Check [DatabaseConnectionSpec](https://cocoindex.io/docs/core/settings#databaseconnectionspec)
 for more details.
 
 ## Simple Data Mapping / Transformation
 
-Create a simple transformation to calculate the total price. 
+Create a simple transformation to calculate the total price.
 
 ```python
 @cocoindex.op.function()
@@ -116,15 +116,15 @@ with data_scope["products"].row() as product:
         product["product_name"],
         product["description"],
     )
-    
+
     # Generate embeddings
     product["embedding"] = product["full_description"].transform(
         cocoindex.functions.SentenceTransformerEmbed(
             model="sentence-transformers/all-MiniLM-L6-v2"
         )
     )
-    
-    # Collect data 
+
+    # Collect data
     indexed_product.collect(
         product_category=product["product_category"],
         product_name=product["product_name"],
@@ -138,7 +138,7 @@ with data_scope["products"].row() as product:
 
 This takes each product row, and does the following:
 
-1. builds a rich description. 
+1. builds a rich description.
 
     ![Make Full Description](/img/examples/postgres_source/description.png)
 
@@ -182,25 +182,25 @@ For example, the following image shows the lineage of the `embedding` field, you
 ## Running the Pipeline
 
 1. Set up dependencies:
-    
+
     ```bash
     pip install -e .
     ```
-    
+
 2. Create the source table with sample data:
-    
+
     ```bash
     psql "postgres://cocoindex:cocoindex@localhost/cocoindex" -f ./prepare_source_data.sql
     ```
-    
+
 3. Setup tables and update the index:
-    
+
     ```bash
     cocoindex update --setup main.py
     ```
-    
+
 4. Run CocoInsight:
-    
+
     ```bash
     cocoindex server -ci main
     ```

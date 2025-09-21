@@ -20,7 +20,7 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 ## Overview
 
 We will build a real-time product recommendation engine with LLM and graph database. In particular, we will:
-- Use LLM to understand the category (taxonomy) of a product. 
+- Use LLM to understand the category (taxonomy) of a product.
 - Use LLM to enumerate the complementary products - users are likely to buy together with the current product (pencil and notebook).
 - Use Graph to explore the relationships between products that can be further used for product recommendations or labeling.
 
@@ -29,7 +29,7 @@ Product taxonomy is a way to organize product catalogs in a logical and hierarch
 
 
 ## Prerequisites
-*   [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing. 
+*   [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
 *   [Install Neo4j](https://cocoindex.io/docs/ops/storages#Neo4j), a graph database.
 *   -  [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai). Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
 
@@ -47,11 +47,11 @@ The core flow is about [~100 lines of python code](https://github.com/cocoindex-
 
 We are going to declare a data flow
 1.  ingest products (in JSON)
-2.  for each product, 
+2.  for each product,
     - parse JSON
-    - map & clean up data 
+    - map & clean up data
     - extract taxonomy from the mapped data
-3.  collect data 
+3.  collect data
 4.  export data to neo4j
 
 
@@ -83,7 +83,7 @@ product_complementary_taxonomy = data_scope.add_collector()
 
 ## Process each product
 
-We will parse the JSON file for each product, and transform the data to the format that we need for downstream processing. 
+We will parse the JSON file for each product, and transform the data to the format that we need for downstream processing.
 
 ### Data mapping
 
@@ -99,7 +99,7 @@ def extract_product_info(product: cocoindex.typing.Json, filename: str) -> Produ
     )
 ```
 
-Here we define a function for data mapping, e.g., 
+Here we define a function for data mapping, e.g.,
 - clean up the `id` field
 - map `title` -> `title`
 - clean up the `price` field
@@ -131,7 +131,7 @@ It performs the following transformations:
 
 
 
-## Extract taxonomy and complementary taxonomy 
+## Extract taxonomy and complementary taxonomy
 
 ![Product Taxonomy Info](/img/examples/product_recommendation/taxonomy.png)
 
@@ -144,7 +144,7 @@ Since we are using LLM to extract product taxonomy, we need to provide a detaile
 class ProductTaxonomy:
     """
     Taxonomy for the product.
-    
+
     A taxonomy is a concise noun (or short noun phrase), based on its core functionality, without specific details such as branding, style, etc.
 
     Always use the most common words in US English.
@@ -175,7 +175,7 @@ class ProductTaxonomyInfo:
 ```
 
 
-For each product, we want some insight about its taxonomy and complementary taxonomy and we could use that as bridge to find related product using knowledge graph. 
+For each product, we want some insight about its taxonomy and complementary taxonomy and we could use that as bridge to find related product using knowledge graph.
 
 
 
@@ -210,7 +210,7 @@ with taxonomy['complementary_taxonomies'].row() as t:
 
 
 ## Build knowledge graph
- 
+
 ### Basic concepts
 All nodes for Neo4j need two things:
 1. Label: The type of the node. E.g., `Product`, `Taxonomy`.
@@ -222,7 +222,7 @@ CocoIndex uses the primary key field to match the nodes and deduplicate them. If
 
 There are two ways to map nodes:
 1. When you have a collector just for the node, you can directly export it to Neo4j. For example `Product`. We've collected each product explicitly.
-2. When you have a collector for relationships connecting to the node, you can map nodes from selected fields in the relationship collector. You must declare a node label and primary key field.  
+2. When you have a collector for relationships connecting to the node, you can map nodes from selected fields in the relationship collector. You must declare a node label and primary key field.
 
 For example,
 
@@ -267,10 +267,10 @@ This exports Neo4j nodes with label `Product` from the `product_node` collector.
 
 ### Export `Taxonomy` nodes to Neo4j
 
-We don't have explicit collector for `Taxonomy` nodes. 
+We don't have explicit collector for `Taxonomy` nodes.
 They are part of the `product_taxonomy` and `product_complementary_taxonomy` collectors and fields are collected during the taxonomy extraction.
 
-To export them as Neo4j nodes, we need to first declare `Taxonomy` nodes. 
+To export them as Neo4j nodes, we need to first declare `Taxonomy` nodes.
 
 ```python
 flow_builder.declare(
@@ -352,7 +352,7 @@ In a relationship, there's:
 2.  A relationship connecting the source and target.
 Note that different relationships may share the same source and target nodes.
 
-`NodeFromFields` takes the fields from the `entity_relationship` collector and creates `Taxonomy` nodes. 
+`NodeFromFields` takes the fields from the `entity_relationship` collector and creates `Taxonomy` nodes.
 
 
 ## Run the flow
@@ -366,7 +366,7 @@ Note that different relationships may share the same source and target nodes.
     ```sh
     cocoindex update --setup main.py
     ```
-    
+
     You'll see the index updates state in the terminal. For example, you'll see the following output:
 
     ```
@@ -398,4 +398,3 @@ cocoindex server -ci main
 ```
 
 And then open the url `https://cocoindex.io/cocoinsight`.  It just connects to your local CocoIndex server, with Zero pipeline data retention.
-

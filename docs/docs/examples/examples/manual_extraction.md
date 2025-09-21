@@ -188,7 +188,7 @@ def summarize_module(module_info: ModuleInfo) -> ModuleSummary:
         num_classes=len(module_info.classes),
         num_methods=len(module_info.methods),
     )
-``` 
+```
 
 ### Plug in the function into the flow
 ```python
@@ -249,4 +249,3 @@ SELECT filename, module_info->'title' AS title, module_summary FROM modules_info
 cocoindex server -ci main
 ```
 CocoInsight dashboard is here `https://cocoindex.io/cocoinsight`.  It connects to your local CocoIndex server with zero data retention.
-

@@ -68,7 +68,7 @@ doc_embeddings = data_scope.add_collector()
 
 <DocumentationButton url="https://cocoindex.io/docs/core/flow_def#data-collector" text="Data Collector" />
 
-### Process each document 
+### Process each document
 
 With CocoIndex, it is easy to process nested data structures.
 
@@ -98,7 +98,7 @@ We extend a new field `chunks` to each row by *transforming* the `content` field
 
 ```python title="main.py"
 with doc["chunks"].row() as chunk:
-    # embed 
+    # embed
     chunk["embedding"] = chunk["text"].transform(
         cocoindex.functions.SentenceTransformerEmbed(
             model="sentence-transformers/all-MiniLM-L6-v2"
@@ -119,7 +119,7 @@ This code embeds each chunk using the SentenceTransformer library and collects t
 ![Embedding](/img/examples/simple_vector_index/embed.png)
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/functions#sentencetransformerembed" text="SentenceTransformerEmbed" margin="0 0 16px 0" />
- 
+
 ### Export the embeddings to Postgres
 
 ```python title="main.py"
@@ -174,4 +174,4 @@ If you want to build a end to end query flow that also searches the index, you c
 Next, you may want to:
 
 *   Learn about [CocoIndex Basics](../core/basics.md).
-*   Explore more of what you can build with CocoIndex in the [examples](https://cocoindex.io/docs/examples) directory. 
+*   Explore more of what you can build with CocoIndex in the [examples](https://cocoindex.io/docs/examples) directory.

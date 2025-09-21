@@ -35,7 +35,7 @@ flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 		refresh_interval=timedelta(seconds=5),
 	)
 ```
-This ingestion creates a table with `filename` and `content` fields. 
+This ingestion creates a table with `filename` and `content` fields.
 <DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" />
 
 ## Process each file and collect
@@ -92,7 +92,7 @@ class LocalFileTargetConnector:
 
 ```
 
-The `describe()` method returns a human-readable string that describes the target, which is displayed in the CLI logs. 
+The `describe()` method returns a human-readable string that describes the target, which is displayed in the CLI logs.
 For example, it prints:
 
 `Target: Local directory ./data/output`
@@ -104,10 +104,10 @@ def describe(key: str) -> str:
     return f"Local directory {key}"
 ```
 
-`apply_setup_change()` applies setup changes to the backend. The previous and current specs are passed as arguments, 
+`apply_setup_change()` applies setup changes to the backend. The previous and current specs are passed as arguments,
 and the method is expected to update the backend setup to match the current state.
 
-A `None` spec indicates non-existence, so when `previous` is `None`, we need to create it, 
+A `None` spec indicates non-existence, so when `previous` is `None`, we need to create it,
 and when `current` is `None`, we need to delete it.
 
 
@@ -135,8 +135,8 @@ def apply_setup_change(
             os.rmdir(previous.directory)
 ```
 
-The `mutate()` method is called by CocoIndex to apply data changes to the target, 
-batching mutations to potentially multiple targets of the same type. 
+The `mutate()` method is called by CocoIndex to apply data changes to the target,
+batching mutations to potentially multiple targets of the same type.
 This allows the target connector flexibility in implementation (e.g., atomic commits, or processing items with dependencies in a specific order).
 
 Each element in the batch corresponds to a specific target and is represented by a tuple containing:
@@ -151,8 +151,8 @@ class LocalFileTargetValues:
     html: str
 ```
 
-The value type of the `dict` is `LocalFileTargetValues | None`, 
-where a non-`None` value means an upsert and `None` value means a delete. Similar to `apply_setup_changes()`, 
+The value type of the `dict` is `LocalFileTargetValues | None`,
+where a non-`None` value means an upsert and `None` value means a delete. Similar to `apply_setup_changes()`,
 idempotency is expected here.
 
 ```python
@@ -217,7 +217,5 @@ This keeps your knowledge graph continuously synchronized with your document sou
 Sometimes there may be an internal/homegrown tool or API (e.g. within a company) that's not publicly available.
 These can only be connected through custom targets.
 
-### Faster adoption of new export logic 
+### Faster adoption of new export logic
 When a new tool, database, or API joins your stack, simply define a Target Spec and Target Connector — start exporting right away, with no pipeline refactoring required.
-
-

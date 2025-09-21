@@ -1,7 +1,7 @@
 ---
 description: Learn to implement real-world solutions with CocoIndex through practical
   examples
-title: Featured Examples 
+title: Featured Examples
 canonicalUrl: '/examples'
 slug: '/examples'
 ---

@@ -21,10 +21,10 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 
 1. Extract the paper metadata, including file name, title, author information, abstract, and number of pages.
 
-2. Build vector embeddings for the metadata, such as the title and abstract, for semantic search. 
+2. Build vector embeddings for the metadata, such as the title and abstract, for semantic search.
 This enables better metadata-driven semantic search results. For example, you can match text queries against titles and abstracts.
 
-3. Build an index of authors and all the file names associated with each author 
+3. Build an index of authors and all the file names associated with each author
 to answer questions like "Give me all the papers by Jeff Dean."
 
 4. If you want to perform full PDF embedding for the paper, you can extend the flow.
@@ -108,7 +108,7 @@ After this step, we should have the basic info of each paper.
 
 We will convert the first page to Markdown using Marker. Alternatively, you can easily plug in any PDF parser, such as Docling using CocoIndex's [custom function](https://cocoindex.io/docs/custom_ops/custom_functions).
 
-Define a marker converter function and cache it, since its initialization is resource-intensive. 
+Define a marker converter function and cache it, since its initialization is resource-intensive.
 This ensures that the same converter instance is reused for different input files.
 
 ```python
@@ -137,7 +137,7 @@ def pdf_to_markdown(content: bytes) -> str:
 Pass it to your transform
 
 ```python
-with data_scope["documents"].row() as doc:    
+with data_scope["documents"].row() as doc:
     # ... process
     doc["first_page_md"] = doc["basic_info"]["first_page"].transform(
             pdf_to_markdown
@@ -200,7 +200,7 @@ paper_metadata.collect(
 Just collect anything you need :)
 
 ### Collect `author` to `filename` information
-We’ve already extracted author list. Here we want to collect Author → Papers in a separate table to build a look up functionality. 
+We’ve already extracted author list. Here we want to collect Author → Papers in a separate table to build a look up functionality.
 Simply collect by author.
 
 ```python
@@ -229,8 +229,8 @@ doc["title_embedding"] = doc["metadata"]["title"].transform(
 
 ### Abstract
 
-Split abstract into chunks, embed each chunk and collect their embeddings. 
-Sometimes the abstract could be very long. 
+Split abstract into chunks, embed each chunk and collect their embeddings.
+Sometimes the abstract could be very long.
 
 ```python
 doc["abstract_chunks"] = doc["metadata"]["abstract"].transform(
@@ -308,7 +308,7 @@ author_papers.export(
     "author_papers",
     cocoindex.targets.Postgres(),
     primary_key_fields=["author_name", "filename"],
-)    
+)
 metadata_embeddings.export(
     "metadata_embeddings",
     cocoindex.targets.Postgres(),
@@ -328,9 +328,9 @@ In this example we use PGVector as embedding store. With CocoIndex, you can do o
 
 ## Query the index
 
-You can refer to this section of [Text Embeddings](https://cocoindex.io/blogs/text-embeddings-101#3-query-the-index) about 
-how to build query against embeddings. 
-For now CocoIndex doesn't provide additional query interface. We can write SQL or rely on the query engine by the target storage. 
+You can refer to this section of [Text Embeddings](https://cocoindex.io/blogs/text-embeddings-101#3-query-the-index) about
+how to build query against embeddings.
+For now CocoIndex doesn't provide additional query interface. We can write SQL or rely on the query engine by the target storage.
 
 - Many databases already have optimized query implementations with their own best practices
 - The query space has excellent solutions for querying, reranking, and other search-related functionality.
