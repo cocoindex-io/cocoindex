@@ -236,7 +236,7 @@ pub struct ResourceSetupChangeItem<'a> {
     pub setup_change: &'a dyn setup::ResourceSetupChange,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum SetupStateCompatibility {
     /// The resource is fully compatible with the desired state.
     /// This means the resource can be updated to the desired state without any loss of data.

@@ -382,11 +382,23 @@ impl interface::TargetFactory for PyExportTargetFactory {
         desired_state: &serde_json::Value,
         existing_state: &serde_json::Value,
     ) -> Result<SetupStateCompatibility> {
-        Ok(if desired_state == existing_state {
-            SetupStateCompatibility::Compatible
-        } else {
-            SetupStateCompatibility::PartialCompatible
-        })
+        let compatibility = Python::with_gil(|py| -> Result<_> {
+            let result = self
+                .py_target_connector
+                .call_method(
+                    py,
+                    "check_state_compatibility",
+                    (
+                        pythonize(py, desired_state)?,
+                        pythonize(py, existing_state)?,
+                    ),
+                    None,
+                )
+                .to_result_with_py_trace(py)?;
+            let compatibility: SetupStateCompatibility = depythonize(&result.into_bound(py))?;
+            Ok(compatibility)
+        })?;
+        Ok(compatibility)
     }
 
     fn describe_resource(&self, key: &serde_json::Value) -> Result<String> {
