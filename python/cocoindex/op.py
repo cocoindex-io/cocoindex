@@ -432,6 +432,7 @@ class _TargetConnectorContext:
     value_fields_schema: list[FieldSchema]
     value_decoder: Callable[[Any], Any]
     index_options: IndexOptions
+    setup_state: Any
 
 
 def _build_args(
@@ -472,7 +473,7 @@ class _TargetConnector:
     """
 
     _spec_cls: type[Any]
-    _setup_key_type: Any
+    _persistent_key_type: Any
     _setup_state_cls: type[Any]
     _connector_cls: type[Any]
 
@@ -486,12 +487,12 @@ class _TargetConnector:
     def __init__(
         self,
         spec_cls: type[Any],
-        setup_key_type: Any,
+        persistent_key_type: Any,
         setup_state_cls: type[Any],
         connector_cls: type[Any],
     ):
         self._spec_cls = spec_cls
-        self._setup_key_type = setup_key_type
+        self._persistent_key_type = persistent_key_type
         self._setup_state_cls = setup_state_cls
         self._connector_cls = connector_cls
 
@@ -550,7 +551,7 @@ class _TargetConnector:
         raise ValueError(
             f"Method {connector_cls.__name__}.mutate(*args) parameter must be a tuple with "
             f"2 elements (tuple[SpecType, dict[str, ValueStruct]], spec and mutation in dict), "
-            "got {args_type}"
+            f"got {analyzed_args_type.core_type}"
         )
 
     def create_export_context(
@@ -590,6 +591,7 @@ class _TargetConnector:
             value_fields_schema=value_fields_schema,
             value_decoder=value_decoder,
             index_options=index_options,
+            setup_state=None,
         )
 
     def get_persistent_key(self, export_context: _TargetConnectorContext) -> Any:
@@ -602,8 +604,8 @@ class _TargetConnector:
         return dump_engine_object(self._get_persistent_key_fn(*args))
 
     def get_setup_state(self, export_context: _TargetConnectorContext) -> Any:
-        get_persistent_state_fn = getattr(self._connector_cls, "get_setup_state", None)
-        if get_persistent_state_fn is None:
+        get_setup_state_fn = getattr(self._connector_cls, "get_setup_state", None)
+        if get_setup_state_fn is None:
             state = export_context.spec
             if not isinstance(state, self._setup_state_cls):
                 raise ValueError(
@@ -611,18 +613,19 @@ class _TargetConnector:
                 )
         else:
             args = _build_args(
-                get_persistent_state_fn,
+                get_setup_state_fn,
                 1,
                 spec=export_context.spec,
                 key_fields_schema=export_context.key_fields_schema,
                 value_fields_schema=export_context.value_fields_schema,
                 index_options=export_context.index_options,
             )
-            state = get_persistent_state_fn(*args)
+            state = get_setup_state_fn(*args)
             if not isinstance(state, self._setup_state_cls):
                 raise ValueError(
-                    f"Method {get_persistent_state_fn.__name__} must return an instance of {self._setup_state_cls}, got {type(state)}"
+                    f"Method {get_setup_state_fn.__name__} must return an instance of {self._setup_state_cls}, got {type(state)}"
                 )
+        export_context.setup_state = state
         return dump_engine_object(state)
 
     def check_state_compatibility(
@@ -644,7 +647,10 @@ class _TargetConnector:
             )
         return dump_engine_object(compatibility)
 
-    async def prepare_async(self, export_context: _TargetConnectorContext) -> None:
+    async def prepare_async(
+        self,
+        export_context: _TargetConnectorContext,
+    ) -> None:
         prepare_fn = getattr(self._connector_cls, "prepare", None)
         if prepare_fn is None:
             export_context.prepared_spec = export_context.spec
@@ -653,6 +659,7 @@ class _TargetConnector:
             prepare_fn,
             1,
             spec=export_context.spec,
+            setup_state=export_context.setup_state,
             key_fields_schema=export_context.key_fields_schema,
             value_fields_schema=export_context.value_fields_schema,
         )
@@ -660,7 +667,7 @@ class _TargetConnector:
         export_context.prepared_spec = await async_prepare_fn(*args)
 
     def describe_resource(self, raw_key: Any) -> str:
-        key = load_engine_object(self._setup_key_type, raw_key)
+        key = load_engine_object(self._persistent_key_type, raw_key)
         describe_fn = getattr(self._connector_cls, "describe", None)
         if describe_fn is None:
             return str(key)
@@ -671,7 +678,7 @@ class _TargetConnector:
         changes: list[tuple[Any, list[dict[str, Any] | None], dict[str, Any] | None]],
     ) -> None:
         for raw_key, previous, current in changes:
-            key = load_engine_object(self._setup_key_type, raw_key)
+            key = load_engine_object(self._persistent_key_type, raw_key)
             prev_specs = [
                 load_engine_object(self._setup_state_cls, spec)
                 if spec is not None
@@ -715,7 +722,7 @@ class _TargetConnector:
 def target_connector(
     *,
     spec_cls: type[Any],
-    setup_key_type: Any = Any,
+    persistent_key_type: Any = Any,
     setup_state_cls: type[Any] | None = None,
 ) -> Callable[[type], type]:
     """
@@ -729,7 +736,7 @@ def target_connector(
     # Register the target connector.
     def _inner(connector_cls: type) -> type:
         connector = _TargetConnector(
-            spec_cls, setup_key_type, setup_state_cls or spec_cls, connector_cls
+            spec_cls, persistent_key_type, setup_state_cls or spec_cls, connector_cls
         )
         _engine.register_target_connector(spec_cls.__name__, connector)
         return connector_cls
