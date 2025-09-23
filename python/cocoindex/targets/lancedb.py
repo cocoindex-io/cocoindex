@@ -121,7 +121,6 @@ def _convert_basic_type_to_pa_type(basic_type: BasicValueType) -> pa.DataType:
         "OffsetDateTime": pa.timestamp("us", tz="UTC"),
         "TimeDelta": pa.duration("us"),
         "Json": pa.json_(),
-        "Union": pa.json_(),
     }
 
     if kind in type_mapping:
@@ -142,7 +141,7 @@ def _convert_basic_type_to_pa_type(basic_type: BasicValueType) -> pa.DataType:
         # Range as a struct with start and end
         return pa.struct([pa.field("start", pa.int64()), pa.field("end", pa.int64())])
 
-    assert False, f"Unsupported type kind: {kind}"
+    assert False, f"Unsupported type kind for LanceDB: {kind}"
 
 
 def _convert_key_value_to_sql(v: Any) -> str:
@@ -174,16 +173,19 @@ def _convert_fields_to_pyarrow(fields: list[FieldSchema], v: Any) -> Any:
         return {field.name: _convert_value_for_pyarrow(field.value_type.type, v)}
 
 
-def _convert_value_for_pyarrow(t: ValueType | None, v: Any) -> Any:
-    if t is None or isinstance(t, BasicValueType):
+def _convert_value_for_pyarrow(t: ValueType, v: Any) -> Any:
+    if v is None:
+        return None
+
+    if isinstance(t, BasicValueType):
         if isinstance(v, uuid.UUID):
             return v.bytes
 
-        if isinstance(v, tuple) and len(v) == 2:
+        if t.kind == "Range":
             return {"start": v[0], "end": v[1]}
 
-        if isinstance(v, list):
-            return [_convert_value_for_pyarrow(None, value) for value in v]
+        if t.vector is not None:
+            return [_convert_value_for_pyarrow(t.vector.element_type, e) for e in v]
 
         return v
 
