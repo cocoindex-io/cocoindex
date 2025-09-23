@@ -857,7 +857,7 @@ impl AnalyzerContext {
                         let mut value_fields_idx = vec![];
                         for (idx, field) in collector_schema.fields.iter().enumerate() {
                             if !pk_fields_idx.contains(&idx) {
-                                value_fields_schema.push(field.clone());
+                                value_fields_schema.push(field.without_attrs());
                                 value_fields_idx.push(idx as u32);
                             }
                         }
