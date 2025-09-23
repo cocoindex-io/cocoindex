@@ -90,23 +90,7 @@ def _convert_value_type_to_pa_type(value_type: EnrichedValueType) -> pa.DataType
         # Handle basic types
         return _convert_basic_type_to_pa_type(base_type)
     elif isinstance(base_type, TableType):
-        if base_type.kind == "LTable":
-            return pa.list_(_convert_struct_fields_to_pa_type(base_type.row.fields))
-        elif base_type.kind == "KTable":
-            if base_type.num_key_parts == 1 and isinstance(
-                base_type.row.fields[0].value_type.type, BasicValueType
-            ):
-                key_type = _convert_basic_type_to_pa_type(
-                    base_type.row.fields[0].value_type.type
-                )
-            else:
-                key_type = _convert_struct_fields_to_pa_type(
-                    base_type.row.fields[: base_type.num_key_parts]
-                )
-            value_type = _convert_struct_fields_to_pa_type(
-                base_type.row.fields[base_type.num_key_parts :]
-            )
-            return pa.map_(key_type, value_type)
+        return pa.list_(_convert_struct_fields_to_pa_type(base_type.row.fields))
 
     assert False, f"Unhandled value type: {value_type}"
 
@@ -156,7 +140,7 @@ def _convert_basic_type_to_pa_type(basic_type: BasicValueType) -> pa.DataType:
         # Range as a struct with start and end
         return pa.struct([pa.field("start", pa.int64()), pa.field("end", pa.int64())])
 
-    raise ValueError(f"Unsupported type kind: {kind}")
+    assert False, f"Unsupported type kind: {kind}"
 
 
 def _convert_key_value_to_sql(v: Any) -> str:
@@ -170,16 +154,60 @@ def _convert_key_value_to_sql(v: Any) -> str:
     return str(v)
 
 
-def _convert_value_for_pyarrow(v: Any) -> Any:
-    if isinstance(v, uuid.UUID):
-        return v.bytes
-    return v
+def _convert_fields_to_pyarrow(fields: list[FieldSchema], v: Any) -> Any:
+    if isinstance(v, dict):
+        return {
+            field.name: _convert_value_for_pyarrow(
+                field.value_type.type, v.get(field.name)
+            )
+            for field in fields
+        }
+    elif isinstance(v, tuple):
+        return {
+            field.name: _convert_value_for_pyarrow(field.value_type.type, value)
+            for field, value in zip(fields, v)
+        }
+    else:
+        field = fields[0]
+        return {field.name: _convert_value_for_pyarrow(field.value_type.type, v)}
+
+
+def _convert_value_for_pyarrow(t: ValueType | None, v: Any) -> Any:
+    if t is None or isinstance(t, BasicValueType):
+        if isinstance(v, uuid.UUID):
+            return v.bytes
+
+        if isinstance(v, tuple) and len(v) == 2:
+            return {"start": v[0], "end": v[1]}
+
+        if isinstance(v, list):
+            return [_convert_value_for_pyarrow(None, value) for value in v]
+
+        return v
+
+    elif isinstance(t, StructType):
+        return _convert_fields_to_pyarrow(t.fields, v)
+
+    elif isinstance(t, TableType):
+        if isinstance(v, list):
+            return [_convert_fields_to_pyarrow(t.row.fields, value) for value in v]
+        else:
+            key_fields = t.row.fields[: t.num_key_parts]
+            value_fields = t.row.fields[t.num_key_parts :]
+            return [
+                _convert_fields_to_pyarrow(key_fields, value[0 : t.num_key_parts])
+                | _convert_fields_to_pyarrow(value_fields, value[t.num_key_parts :])
+                for value in v
+            ]
+
+    assert False, f"Unsupported value type: {t}"
 
 
 @dataclasses.dataclass
 class _MutateContext:
     table: lancedb.AsyncTable
     key_field_schema: FieldSchema
+    value_fields_type: list[ValueType]
     pa_schema: pa.Schema
 
 
@@ -264,6 +292,9 @@ class _Connector:
         return _MutateContext(
             table=table,
             key_field_schema=setup_state.key_field_schema,
+            value_fields_type=[
+                field.value_type.type for field in setup_state.value_fields_schema
+            ],
             pa_schema=make_pa_schema(
                 setup_state.key_field_schema, setup_state.value_fields_schema
             ),
@@ -275,15 +306,21 @@ class _Connector:
     ) -> None:
         for context, mutations in all_mutations:
             key_name = context.key_field_schema.name
+            value_types = context.value_fields_type
+
             rows_to_upserts = []
             keys_sql_to_deletes = []
             for key, value in mutations.items():
                 if value is None:
                     keys_sql_to_deletes.append(_convert_key_value_to_sql(key))
                 else:
-                    fields = {key_name: _convert_value_for_pyarrow(key)}
-                    for name, value in value.items():
-                        fields[name] = _convert_value_for_pyarrow(value)
+                    fields = {
+                        key_name: _convert_value_for_pyarrow(
+                            context.key_field_schema.value_type.type, key
+                        )
+                    }
+                    for (name, value), value_type in zip(value.items(), value_types):
+                        fields[name] = _convert_value_for_pyarrow(value_type, value)
                     rows_to_upserts.append(fields)
             record_batch = pa.RecordBatch.from_pylist(
                 rows_to_upserts, context.pa_schema
