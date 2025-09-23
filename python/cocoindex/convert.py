@@ -625,6 +625,16 @@ def dump_engine_object(v: Any) -> Any:
         secs = int(total_secs)
         nanos = int((total_secs - secs) * 1e9)
         return {"secs": secs, "nanos": nanos}
+    elif is_namedtuple_type(type(v)):
+        # Handle NamedTuple objects specifically to use dict format
+        field_names = list(getattr(type(v), "_fields", ()))
+        result = {}
+        for name in field_names:
+            val = getattr(v, name)
+            result[name] = dump_engine_object(val)  # Include all values, including None
+        if hasattr(v, "kind") and "kind" not in result:
+            result["kind"] = v.kind
+        return result
     elif hasattr(v, "__dict__"):  # for dataclass-like objects
         s = {}
         for k, val in v.__dict__.items():
@@ -712,32 +722,27 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
     if isinstance(variant, AnalyzedStructType):
         struct_type = variant.struct_type
         if dataclasses.is_dataclass(struct_type):
+            if not isinstance(v, Mapping):
+                raise ValueError(f"Expected dict for dataclass, got {type(v)}")
             # Drop auxiliary discriminator "kind" if present
-            src = dict(v) if isinstance(v, Mapping) else v
-            if isinstance(src, Mapping):
-                init_kwargs: dict[str, Any] = {}
-                field_types = {f.name: f.type for f in dataclasses.fields(struct_type)}
-                for name, f_type in field_types.items():
-                    if name in src:
-                        init_kwargs[name] = load_engine_object(f_type, src[name])
-                # Construct with defaults for missing fields
-                return struct_type(**init_kwargs)
+            dc_init_kwargs: dict[str, Any] = {}
+            field_types = {f.name: f.type for f in dataclasses.fields(struct_type)}
+            for name, f_type in field_types.items():
+                if name in v:
+                    dc_init_kwargs[name] = load_engine_object(f_type, v[name])
+            return struct_type(**dc_init_kwargs)
         elif is_namedtuple_type(struct_type):
-            # NamedTuple is dumped as list/tuple of items
+            if not isinstance(v, Mapping):
+                raise ValueError(f"Expected dict for NamedTuple, got {type(v)}")
+            # Dict format (from dump/load functions)
             annotations = getattr(struct_type, "__annotations__", {})
             field_names = list(getattr(struct_type, "_fields", ()))
-            values: list[Any] = []
+            nt_init_kwargs: dict[str, Any] = {}
             for name in field_names:
                 f_type = annotations.get(name, Any)
-                # Assume v is a sequence aligned with fields
-                if isinstance(v, (list, tuple)):
-                    idx = field_names.index(name)
-                    values.append(load_engine_object(f_type, v[idx]))
-                elif isinstance(v, Mapping):
-                    values.append(load_engine_object(f_type, v.get(name)))
-                else:
-                    values.append(v)
-            return struct_type(*values)
+                if name in v:
+                    nt_init_kwargs[name] = load_engine_object(f_type, v[name])
+            return struct_type(**nt_init_kwargs)
         return v
 
     # Union with discriminator support via "kind"

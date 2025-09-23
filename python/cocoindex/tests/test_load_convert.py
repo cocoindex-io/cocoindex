@@ -112,7 +112,7 @@ def test_typed_dict_roundtrip_via_dump_load() -> None:
 def test_namedtuple_roundtrip_via_dump_load() -> None:
     p = LocalPoint(1, 2)
     dumped = dump_engine_object(p)
-    assert dumped == [1, 2]
+    assert dumped == {"x": 1, "y": 2}
     loaded = load_engine_object(LocalPoint, dumped)
     assert isinstance(loaded, LocalPoint)
     assert loaded == p
