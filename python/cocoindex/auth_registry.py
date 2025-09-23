@@ -4,10 +4,9 @@ Auth registry is used to register and reference auth entries.
 
 from dataclasses import dataclass
 from typing import Generic, TypeVar
-import threading
 
 from . import _engine  # type: ignore
-from .convert import dump_engine_object
+from .convert import dump_engine_object, load_engine_object
 
 T = TypeVar("T")
 
@@ -38,3 +37,8 @@ def add_auth_entry(key: str, value: T) -> AuthEntryReference[T]:
 def ref_auth_entry(key: str) -> AuthEntryReference[T]:
     """Reference an auth entry by its key."""
     return AuthEntryReference(key)
+
+
+def get_auth_entry(cls: type[T], ref: TransientAuthEntryReference[T]) -> T:
+    """Get an auth entry by its key."""
+    return load_engine_object(cls, _engine.get_auth_entry(ref.key))
