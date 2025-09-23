@@ -489,6 +489,12 @@ class VectorTypeSchema:
             dimension=obj.get("dimension"),
         )
 
+    def encode(self) -> dict[str, Any]:
+        return {
+            "element_type": self.element_type.encode(),
+            "dimension": self.dimension,
+        }
+
 
 @dataclasses.dataclass
 class UnionTypeSchema:
@@ -499,6 +505,9 @@ class UnionTypeSchema:
         return UnionTypeSchema(
             variants=[BasicValueType.decode(t) for t in obj["types"]]
         )
+
+    def encode(self) -> dict[str, Any]:
+        return {"types": [variant.encode() for variant in self.variants]}
 
 
 @dataclasses.dataclass
@@ -545,6 +554,14 @@ class BasicValueType:
             )
         return BasicValueType(kind=kind)  # type: ignore[arg-type]
 
+    def encode(self) -> dict[str, Any]:
+        result = {"kind": self.kind}
+        if self.kind == "Vector" and self.vector is not None:
+            result.update(self.vector.encode())
+        elif self.kind == "Union" and self.union is not None:
+            result.update(self.union.encode())
+        return result
+
 
 @dataclasses.dataclass
 class EnrichedValueType:
@@ -560,6 +577,14 @@ class EnrichedValueType:
             attrs=obj.get("attrs"),
         )
 
+    def encode(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"type": self.type.encode()}
+        if self.nullable:
+            result["nullable"] = True
+        if self.attrs is not None:
+            result["attrs"] = self.attrs
+        return result
+
 
 @dataclasses.dataclass
 class FieldSchema:
@@ -569,6 +594,11 @@ class FieldSchema:
     @staticmethod
     def decode(obj: dict[str, Any]) -> "FieldSchema":
         return FieldSchema(name=obj["name"], value_type=EnrichedValueType.decode(obj))
+
+    def encode(self) -> dict[str, Any]:
+        result = self.value_type.encode()
+        result["name"] = self.name
+        return result
 
 
 @dataclasses.dataclass
@@ -583,10 +613,21 @@ class StructSchema:
             description=obj.get("description"),
         )
 
+    def encode(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"fields": [field.encode() for field in self.fields]}
+        if self.description is not None:
+            result["description"] = self.description
+        return result
+
 
 @dataclasses.dataclass
 class StructType(StructSchema):
     kind: Literal["Struct"] = "Struct"
+
+    def encode(self) -> dict[str, Any]:
+        result = super().encode()
+        result["kind"] = self.kind
+        return result
 
 
 @dataclasses.dataclass
@@ -608,6 +649,12 @@ class TableType:
             num_key_parts=obj.get("num_key_parts"),
         )
 
+    def encode(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"kind": self.kind, "row": self.row.encode()}
+        if self.num_key_parts is not None:
+            result["num_key_parts"] = self.num_key_parts
+        return result
+
 
 ValueType = BasicValueType | StructType | TableType
 
@@ -626,3 +673,8 @@ def decode_engine_value_type(obj: dict[str, Any]) -> ValueType:
 
     # Otherwise it's a basic value
     return BasicValueType.decode(obj)
+
+
+def encode_engine_value_type(value_type: ValueType) -> dict[str, Any]:
+    """Encode a ValueType to its dictionary representation."""
+    return value_type.encode()

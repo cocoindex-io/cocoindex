@@ -22,6 +22,7 @@ from .typing import (
     AnalyzedTypeInfo,
     AnalyzedUnionType,
     AnalyzedUnknownType,
+    EnrichedValueType,
     analyze_type_info,
     encode_enriched_type,
     is_namedtuple_type,
@@ -611,6 +612,10 @@ def dump_engine_object(v: Any) -> Any:
     """Recursively dump an object for engine. Engine side uses `Pythonized` to catch."""
     if v is None:
         return None
+    elif isinstance(v, EnrichedValueType):
+        return v.encode()
+    elif isinstance(v, FieldSchema):
+        return v.encode()
     elif isinstance(v, type) or get_origin(v) is not None:
         return encode_enriched_type(v)
     elif isinstance(v, Enum):
@@ -659,6 +664,11 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
 
     type_info = analyze_type_info(expected_type)
     variant = type_info.variant
+
+    if type_info.core_type is EnrichedValueType:
+        return EnrichedValueType.decode(v)
+    if type_info.core_type is FieldSchema:
+        return FieldSchema.decode(v)
 
     # Any or unknown → return as-is
     if isinstance(variant, AnalyzedAnyType) or type_info.base_type is Any:
