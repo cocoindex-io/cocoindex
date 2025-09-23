@@ -133,8 +133,10 @@ def _convert_basic_type_to_pa_type(basic_type: BasicValueType) -> pa.DataType:
             raise ValueError("Vector type missing vector schema")
         element_type = _convert_basic_type_to_pa_type(vector_schema.element_type)
 
-        # Create list type with the element type
-        return pa.list_(element_type)
+        if vector_schema.dimension is not None:
+            return pa.list_(element_type, vector_schema.dimension)
+        else:
+            return pa.list_(element_type)
 
     if kind == "Range":
         # Range as a struct with start and end
