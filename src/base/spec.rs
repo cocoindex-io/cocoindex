@@ -516,14 +516,6 @@ pub struct TransientFlowSpec {
     pub output_value: ValueMapping,
 }
 
-impl<T> AuthEntryReference<T> {
-    pub fn new(key: String) -> Self {
-        Self {
-            key,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
 pub struct AuthEntryReference<T> {
     pub key: String,
     _phantom: std::marker::PhantomData<T>,
@@ -543,7 +535,10 @@ impl<T> fmt::Display for AuthEntryReference<T> {
 
 impl<T> Clone for AuthEntryReference<T> {
     fn clone(&self) -> Self {
-        Self::new(self.key.clone())
+        Self {
+            key: self.key.clone(),
+            _phantom: std::marker::PhantomData,
+        }
     }
 }
 
@@ -567,7 +562,10 @@ impl<'de, T> Deserialize<'de> for AuthEntryReference<T> {
         D: serde::Deserializer<'de>,
     {
         let untyped_ref = UntypedAuthEntryReference::<String>::deserialize(deserializer)?;
-        Ok(AuthEntryReference::new(untyped_ref.key))
+        Ok(AuthEntryReference {
+            key: untyped_ref.key,
+            _phantom: std::marker::PhantomData,
+        })
     }
 }
 

@@ -2,7 +2,7 @@ use crate::execution::evaluator::evaluate_transient_flow;
 use crate::prelude::*;
 
 use crate::base::schema::{FieldSchema, ValueType};
-use crate::base::spec::{AuthEntryReference, NamedSpec, OutputMode, ReactiveOpSpec, SpecFormatter};
+use crate::base::spec::{NamedSpec, OutputMode, ReactiveOpSpec, SpecFormatter};
 use crate::lib_context::{
     QueryHandlerContext, clear_lib_context, get_auth_registry, init_lib_context,
 };
@@ -631,13 +631,6 @@ fn add_transient_auth_entry(value: Pythonized<serde_json::Value>) -> PyResult<St
 }
 
 #[pyfunction]
-fn get_auth_entry(key: String) -> PyResult<Pythonized<serde_json::Value>> {
-    let auth_ref = AuthEntryReference::new(key);
-    let json_value: serde_json::Value = get_auth_registry().get(&auth_ref).into_py_result()?;
-    Ok(Pythonized(json_value))
-}
-
-#[pyfunction]
 fn get_app_namespace(py: Python<'_>) -> PyResult<String> {
     let app_namespace = py
         .allow_threads(|| -> anyhow::Result<_> {
@@ -678,7 +671,6 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(remove_flow_context, m)?)?;
     m.add_function(wrap_pyfunction!(add_auth_entry, m)?)?;
     m.add_function(wrap_pyfunction!(add_transient_auth_entry, m)?)?;
-    m.add_function(wrap_pyfunction!(get_auth_entry, m)?)?;
     m.add_function(wrap_pyfunction!(get_app_namespace, m)?)?;
 
     m.add_class::<builder::flow_builder::FlowBuilder>()?;
