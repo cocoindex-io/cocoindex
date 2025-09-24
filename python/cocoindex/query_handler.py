@@ -1,8 +1,14 @@
 import dataclasses
 import numpy as np
 from numpy import typing as npt
-from typing import Generic, TypeVar
+from typing import Generic, Any
 from .index import VectorSimilarityMetric
+import sys
+
+if sys.version_info >= (3, 13):
+    from typing import TypeVar
+else:
+    from typing_extensions import TypeVar  # PEP 696 backport
 
 
 @dataclasses.dataclass
@@ -35,7 +41,7 @@ class QueryInfo:
     similarity_metric: VectorSimilarityMetric | None = None
 
 
-R = TypeVar("R")
+R = TypeVar("R", default=Any)
 
 
 @dataclasses.dataclass
