@@ -385,13 +385,22 @@ class _Connector:
             if index.name in unseen_prev_vector_indexes:
                 unseen_prev_vector_indexes.remove(index.name)
             else:
-                await table.create_index(
-                    index.field_name,
-                    name=index.name,
-                    config=lancedb.index.HnswPq(
-                        distance_type=_LANCEDB_VECTOR_METRIC[index.metric]
-                    ),
-                )
+                try:
+                    await table.create_index(
+                        index.field_name,
+                        name=index.name,
+                        config=lancedb.index.HnswPq(
+                            distance_type=_LANCEDB_VECTOR_METRIC[index.metric]
+                        ),
+                    )
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    raise RuntimeError(
+                        f"Exception in creating index on field {index.field_name}. "
+                        f"This may be caused by a limitation of LanceDB, "
+                        f"which requires data existing in the table to train the index. "
+                        f"See: https://github.com/lancedb/lance/issues/4034",
+                        index.name,
+                    ) from e
 
         for vector_index_name in unseen_prev_vector_indexes:
             if vector_index_name in existing_vector_indexes:
