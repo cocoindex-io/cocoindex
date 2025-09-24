@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 import threading
 import uuid
 import weakref
@@ -19,10 +20,17 @@ from ..typing import (
     VectorTypeSchema,
     TableType,
 )
-from ..index import IndexOptions
+from ..index import VectorIndexDef, IndexOptions, VectorSimilarityMetric
+
+_logger = logging.getLogger(__name__)
+
+_LANCEDB_VECTOR_METRIC: dict[VectorSimilarityMetric, str] = {
+    VectorSimilarityMetric.COSINE_SIMILARITY: "cosine",
+    VectorSimilarityMetric.L2_DISTANCE: "l2",
+    VectorSimilarityMetric.INNER_PRODUCT: "dot",
+}
 
 
-@dataclasses.dataclass
 class DatabaseOptions:
     storage_options: dict[str, Any] | None = None
 
@@ -34,10 +42,17 @@ class LanceDB(op.TargetSpec):
 
 
 @dataclasses.dataclass
+class _VectorIndex:
+    name: str
+    field_name: str
+    metric: VectorSimilarityMetric
+
+
+@dataclasses.dataclass
 class _State:
     key_field_schema: FieldSchema
     value_fields_schema: list[FieldSchema]
-    index_options: IndexOptions
+    vector_indexes: list[_VectorIndex] | None = None
     db_options: DatabaseOptions | None = None
 
 
@@ -233,6 +248,37 @@ class _MutateContext:
     pa_schema: pa.Schema
 
 
+# Not used for now, because of https://github.com/lancedb/lance/issues/3443
+#
+# async def _update_table_schema(
+#     table: lancedb.AsyncTable,
+#     expected_schema: pa.Schema,
+# ) -> None:
+#     existing_schema = await table.schema()
+#     unseen_existing_field_names = {field.name: field for field in existing_schema}
+#     new_columns = []
+#     updated_columns = []
+#     for field in expected_schema:
+#         existing_field = unseen_existing_field_names.pop(field.name, None)
+#         if existing_field is None:
+#             new_columns.append(field)
+#         else:
+#             if field.type != existing_field.type:
+#                 updated_columns.append(
+#                     {
+#                         "path": field.name,
+#                         "data_type": field.type,
+#                         "nullable": field.nullable,
+#                     }
+#                 )
+#     if new_columns:
+#         table.add_columns(new_columns)
+#     if updated_columns:
+#         table.alter_columns(*updated_columns)
+#     if unseen_existing_field_names:
+#         table.drop_columns(unseen_existing_field_names.keys())
+
+
 @op.target_connector(
     spec_cls=LanceDB, persistent_key_type=_TableKey, setup_state_cls=_State
 )
@@ -254,7 +300,18 @@ class _Connector:
             key_field_schema=key_fields_schema[0],
             value_fields_schema=value_fields_schema,
             db_options=spec.db_options,
-            index_options=index_options,
+            vector_indexes=(
+                [
+                    _VectorIndex(
+                        name=f"__{index.field_name}__{_LANCEDB_VECTOR_METRIC[index.metric]}__idx",
+                        field_name=index.field_name,
+                        metric=index.metric,
+                    )
+                    for index in index_options.vector_indexes
+                ]
+                if index_options.vector_indexes is not None
+                else None
+            ),
         )
 
     @staticmethod
@@ -292,17 +349,53 @@ class _Connector:
             if not reuse_table:
                 await db_conn.drop_table(key.table_name, ignore_missing=True)
 
-        if current is not None:
-            if not reuse_table:
-                await db_conn.create_table(
+        if current is None:
+            return
+
+        table: lancedb.AsyncTable | None = None
+        if reuse_table:
+            try:
+                table = await db_conn.open_table(key.table_name)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                _logger.warning(
+                    "Exception in opening table %s, creating it",
                     key.table_name,
-                    schema=make_pa_schema(
-                        current.key_field_schema, current.value_fields_schema
+                    exc_info=e,
+                )
+                table = None
+
+        if table is None:
+            table = await db_conn.create_table(
+                key.table_name,
+                schema=make_pa_schema(
+                    current.key_field_schema, current.value_fields_schema
+                ),
+                mode="overwrite",
+            )
+            await table.create_index(
+                current.key_field_schema.name, config=lancedb.index.BTree()
+            )
+
+        unseen_prev_vector_indexes = {
+            index.name for index in (previous and previous.vector_indexes) or []
+        }
+        existing_vector_indexes = {index.name for index in await table.list_indices()}
+
+        for index in current.vector_indexes or []:
+            if index.name in unseen_prev_vector_indexes:
+                unseen_prev_vector_indexes.remove(index.name)
+            else:
+                await table.create_index(
+                    index.field_name,
+                    name=index.name,
+                    config=lancedb.index.HnswPq(
+                        distance_type=_LANCEDB_VECTOR_METRIC[index.metric]
                     ),
-                    exist_ok=True,
                 )
 
-            # TODO: deal with the index options
+        for vector_index_name in unseen_prev_vector_indexes:
+            if vector_index_name in existing_vector_indexes:
+                await table.drop_index(vector_index_name)
 
     @staticmethod
     async def prepare(
