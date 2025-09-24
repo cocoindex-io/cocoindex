@@ -1,0 +1,13 @@
+[project]
+name = "text-embedding-lancedb"
+version = "0.1.0"
+description = "Simple example for cocoindex: build embedding index based on local text files."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[embeddings,lancedb]>=0.2.12",
+    "python-dotenv>=1.0.1",
+    "lancedb>=0.5.0",
+]
+
+[tool.setuptools]
+packages = []
