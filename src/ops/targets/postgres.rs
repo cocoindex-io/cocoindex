@@ -461,21 +461,51 @@ fn to_vector_similarity_metric_sql(metric: VectorSimilarityMetric) -> &'static s
 }
 
 fn to_index_spec_sql(index_spec: &VectorIndexDef) -> Cow<'static, str> {
+    let method = match &index_spec.method {
+        spec::VectorIndexMethod::Hnsw { .. } => "hnsw",
+        spec::VectorIndexMethod::IvfFlat { .. } => "ivfflat",
+    };
+    let options = match &index_spec.method {
+        spec::VectorIndexMethod::Hnsw { m, ef_construction } => {
+            let mut opts = Vec::new();
+            if let Some(m) = m {
+                opts.push(format!("m = {}", m));
+            }
+            if let Some(ef) = ef_construction {
+                opts.push(format!("ef_construction = {}", ef));
+            }
+            opts
+        }
+        spec::VectorIndexMethod::IvfFlat { lists } => lists
+            .map(|lists| vec![format!("lists = {}", lists)])
+            .unwrap_or_default(),
+    };
+    let with_clause = if options.is_empty() {
+        String::new()
+    } else {
+        format!(" WITH ({})", options.join(", "))
+    };
     format!(
-        "USING hnsw ({} {})",
+        "USING {method} ({} {}){}",
         index_spec.field_name,
-        to_vector_similarity_metric_sql(index_spec.metric)
+        to_vector_similarity_metric_sql(index_spec.metric),
+        with_clause
     )
     .into()
 }
 
 fn to_vector_index_name(table_name: &str, vector_index_def: &spec::VectorIndexDef) -> String {
-    format!(
+    let mut name = format!(
         "{}__{}__{}",
         table_name,
         vector_index_def.field_name,
         to_vector_similarity_metric_sql(vector_index_def.metric)
-    )
+    );
+    if !vector_index_def.method.is_default() {
+        name.push_str("__");
+        name.push_str(vector_index_def.method.kind());
+    }
+    name
 }
 
 fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String {

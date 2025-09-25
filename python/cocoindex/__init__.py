@@ -21,7 +21,13 @@ from .flow import add_flow_def, remove_flow  # DEPRECATED
 from .flow import update_all_flows_async, setup_all_flows, drop_all_flows
 from .lib import settings, init, start_server, stop
 from .llm import LlmSpec, LlmApiType
-from .index import VectorSimilarityMetric, VectorIndexDef, IndexOptions
+from .index import (
+    VectorSimilarityMetric,
+    VectorIndexDef,
+    IndexOptions,
+    HnswVectorIndexMethod,
+    IvfFlatVectorIndexMethod,
+)
 from .setting import DatabaseConnectionSpec, Settings, ServerSettings
 from .setting import get_app_namespace
 from .query_handler import QueryHandlerResultFields, QueryInfo, QueryOutput
@@ -82,6 +88,8 @@ __all__ = [
     "VectorSimilarityMetric",
     "VectorIndexDef",
     "IndexOptions",
+    "HnswVectorIndexMethod",
+    "IvfFlatVectorIndexMethod",
     # Settings
     "DatabaseConnectionSpec",
     "Settings",

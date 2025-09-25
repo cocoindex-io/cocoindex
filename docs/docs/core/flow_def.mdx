@@ -313,6 +313,7 @@ Types of the fields must be key types. See [Key Types](data_types#key-types) for
 
     *   `field_name`: the field to create vector index.
     *   `metric`: the similarity metric to use.
+    *   `method`: the index algorithm and optional tuning parameters. Defaults to HNSW. Use `cocoindex.HnswVectorIndexMethod()` or `cocoindex.IvfFlatVectorIndexMethod()` to customize the method and its parameters.
 
 #### Similarity Metrics
 

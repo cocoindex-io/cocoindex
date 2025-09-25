@@ -105,6 +105,16 @@ doc_embeddings.export(
 CocoIndex supports other vector databases as well, with 1-line switch.
 <DocumentationButton url="https://cocoindex.io/docs/ops/targets" text="Targets" />
 
+Need IVFFlat or custom HNSW parameters? Pass a method, for example:
+
+```python
+cocoindex.VectorIndexDef(
+    field_name="embedding",
+    metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+    method=cocoindex.IvfFlatVectorIndexMethod(lists=200),
+)
+```
+
 ## Query the index
 
 ### Define a shared flow for both indexing and querying
