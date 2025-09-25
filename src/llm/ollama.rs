@@ -102,22 +102,18 @@ impl LlmGenerationClient for Client {
             stream: Some(false),
         };
         let res = retryable::run(
-            || {
+            || async {
                 self.reqwest_client
                     .post(self.generate_url.as_str())
                     .json(&req)
                     .send()
+                    .await?
+                    .error_for_status()
             },
             &retryable::HEAVY_LOADED_OPTIONS,
         )
-        .await?;
-        if !res.status().is_success() {
-            bail!(
-                "Ollama API error: {:?}\n{}\n",
-                res.status(),
-                res.text().await?
-            );
-        }
+        .await
+        .context("Ollama API error")?;
         let json: OllamaResponse = res.json().await?;
         Ok(super::LlmGenerateResponse {
             text: json.response,
@@ -145,22 +141,18 @@ impl LlmEmbeddingClient for Client {
             input: request.text.as_ref(),
         };
         let resp = retryable::run(
-            || {
+            || async {
                 self.reqwest_client
                     .post(self.embed_url.as_str())
                     .json(&req)
                     .send()
+                    .await?
+                    .error_for_status()
             },
             &retryable::HEAVY_LOADED_OPTIONS,
         )
-        .await?;
-        if !resp.status().is_success() {
-            bail!(
-                "Ollama API error: {:?}\n{}\n",
-                resp.status(),
-                resp.text().await?
-            );
-        }
+        .await
+        .context("Ollama API error")?;
         let embedding_resp: OllamaEmbeddingResponse = resp.json().await.context("Invalid JSON")?;
         Ok(super::LlmEmbeddingResponse {
             embedding: embedding_resp.embedding,

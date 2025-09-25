@@ -76,24 +76,19 @@ impl LlmEmbeddingClient for Client {
         }
 
         let resp = retryable::run(
-            || {
+            || async {
                 self.client
                     .post(url)
                     .header("Authorization", format!("Bearer {}", self.api_key))
                     .json(&payload)
                     .send()
+                    .await?
+                    .error_for_status()
             },
             &retryable::HEAVY_LOADED_OPTIONS,
         )
-        .await?;
-
-        if !resp.status().is_success() {
-            bail!(
-                "Voyage AI API error: {:?}\n{}\n",
-                resp.status(),
-                resp.text().await?
-            );
-        }
+        .await
+        .context("Voyage AI API error")?;
 
         let embedding_resp: EmbedResponse = resp.json().await.context("Invalid JSON")?;
 

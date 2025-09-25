@@ -80,18 +80,12 @@ impl KuzuThinClient {
         let query = json!({
             "query": cyper_builder.query
         });
-        let response = self
-            .reqwest_client
+        self.reqwest_client
             .post(&self.query_url)
             .json(&query)
             .send()
-            .await?;
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Failed to run cypher: {}",
-                response.text().await?
-            ));
-        }
+            .await?
+            .error_for_status()?;
         Ok(())
     }
 }
