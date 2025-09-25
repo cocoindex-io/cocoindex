@@ -74,6 +74,30 @@ impl AiStudioClient {
     }
 }
 
+fn build_embed_payload(
+    model: &str,
+    text: &str,
+    task_type: Option<&str>,
+    output_dimension: Option<u32>,
+) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "model": model,
+        "content": { "parts": [{ "text": text }] },
+    });
+    if let Some(task_type) = task_type {
+        payload["taskType"] = serde_json::Value::String(task_type.to_string());
+    }
+    if let Some(output_dimension) = output_dimension {
+        payload["outputDimensionality"] = serde_json::json!(output_dimension);
+        if model.starts_with("gemini-embedding-") {
+            payload["config"] = serde_json::json!({
+                "outputDimensionality": output_dimension,
+            });
+        }
+    }
+    payload
+}
+
 #[async_trait]
 impl LlmGenerationClient for AiStudioClient {
     async fn generate<'req>(
@@ -174,16 +198,12 @@ impl LlmEmbeddingClient for AiStudioClient {
         request: super::LlmEmbeddingRequest<'req>,
     ) -> Result<super::LlmEmbeddingResponse> {
         let url = self.get_api_url(request.model, "embedContent");
-        let mut payload = serde_json::json!({
-            "model": request.model,
-            "content": { "parts": [{ "text": request.text }] },
-        });
-        if let Some(task_type) = request.task_type {
-            payload["taskType"] = serde_json::Value::String(task_type.into());
-        }
-        if let Some(output_dimension) = request.output_dimension {
-            payload["outputDimensionality"] = serde_json::Value::Number(output_dimension.into());
-        }
+        let payload = build_embed_payload(
+            request.model,
+            request.text.as_ref(),
+            request.task_type.as_deref(),
+            request.output_dimension,
+        );
         let resp = retryable::run(
             || async {
                 self.client
