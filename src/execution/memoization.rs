@@ -247,7 +247,7 @@ where
                 async move { fut.await.map_err(SharedError::new) }
             })
             .await
-            .std_result()?,
+            .anyhow_result()?,
         ),
         None => Cow::Owned(compute().await?),
     };

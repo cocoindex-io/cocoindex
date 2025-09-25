@@ -531,7 +531,7 @@ impl SourceIndexingContext {
                 pending_update_fut
             }
         };
-        pending_update_fut.await.std_result()?;
+        pending_update_fut.await.anyhow_result()?;
         Ok(())
     }
 

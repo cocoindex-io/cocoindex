@@ -41,7 +41,7 @@ impl AnalyzedFlow {
     }
 
     pub async fn get_execution_plan(&self) -> Result<Arc<plan::ExecutionPlan>> {
-        let execution_plan = self.execution_plan.clone().await.std_result()?;
+        let execution_plan = self.execution_plan.clone().await.anyhow_result()?;
         Ok(execution_plan)
     }
 }
