@@ -417,7 +417,13 @@ impl VectorIndexMethod {
     }
 
     pub fn is_default(&self) -> bool {
-        matches!(self, Self::Hnsw { m: None, ef_construction: None })
+        matches!(
+            self,
+            Self::Hnsw {
+                m: None,
+                ef_construction: None,
+            }
+        )
     }
 }
 
