@@ -1,5 +1,5 @@
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Sequence, Union
 
 
@@ -13,7 +13,7 @@ class VectorSimilarityMetric(Enum):
 class HnswVectorIndexMethod:
     """HNSW vector index parameters."""
 
-    type: str = field(init=False, default="hnsw")
+    kind: str = "Hnsw"
     m: int | None = None
     ef_construction: int | None = None
 
@@ -22,7 +22,7 @@ class HnswVectorIndexMethod:
 class IvfFlatVectorIndexMethod:
     """IVFFlat vector index parameters."""
 
-    type: str = field(init=False, default="ivfflat")
+    kind: str = "IvfFlat"
     lists: int | None = None
 
 
@@ -37,7 +37,7 @@ class VectorIndexDef:
 
     field_name: str
     metric: VectorSimilarityMetric
-    method: VectorIndexMethod = field(default_factory=HnswVectorIndexMethod)
+    method: VectorIndexMethod | None = None
 
 
 @dataclass

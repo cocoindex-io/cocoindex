@@ -385,7 +385,7 @@ impl fmt::Display for VectorSimilarityMetric {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "kind")]
 pub enum VectorIndexMethod {
     Hnsw {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -399,20 +399,11 @@ pub enum VectorIndexMethod {
     },
 }
 
-impl Default for VectorIndexMethod {
-    fn default() -> Self {
-        Self::Hnsw {
-            m: None,
-            ef_construction: None,
-        }
-    }
-}
-
 impl VectorIndexMethod {
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Hnsw { .. } => "hnsw",
-            Self::IvfFlat { .. } => "ivfflat",
+            Self::Hnsw { .. } => "Hnsw",
+            Self::IvfFlat { .. } => "IvfFlat",
         }
     }
 
@@ -439,16 +430,16 @@ impl fmt::Display for VectorIndexMethod {
                     parts.push(format!("ef_construction={}", ef));
                 }
                 if parts.is_empty() {
-                    write!(f, "hnsw")
+                    write!(f, "Hnsw")
                 } else {
-                    write!(f, "hnsw({})", parts.join(","))
+                    write!(f, "Hnsw({})", parts.join(","))
                 }
             }
             Self::IvfFlat { lists } => {
                 if let Some(lists) = lists {
-                    write!(f, "ivfflat(lists={lists})")
+                    write!(f, "IvfFlat(lists={lists})")
                 } else {
-                    write!(f, "ivfflat")
+                    write!(f, "IvfFlat")
                 }
             }
         }
@@ -459,16 +450,18 @@ impl fmt::Display for VectorIndexMethod {
 pub struct VectorIndexDef {
     pub field_name: FieldName,
     pub metric: VectorSimilarityMetric,
-    #[serde(default)]
-    pub method: VectorIndexMethod,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<VectorIndexMethod>,
 }
 
 impl fmt::Display for VectorIndexDef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.method.is_default() {
-            write!(f, "{}:{}", self.field_name, self.metric)
-        } else {
-            write!(f, "{}:{}:{}", self.field_name, self.metric, self.method)
+        match &self.method {
+            None => write!(f, "{}:{}", self.field_name, self.metric),
+            Some(method) if method.is_default() => {
+                write!(f, "{}:{}", self.field_name, self.metric)
+            }
+            Some(method) => write!(f, "{}:{}:{}", self.field_name, self.metric, method),
         }
     }
 }
