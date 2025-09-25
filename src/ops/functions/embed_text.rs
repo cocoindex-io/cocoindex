@@ -18,6 +18,7 @@ struct Spec {
 struct Args {
     client: Box<dyn LlmEmbeddingClient>,
     text: ResolvedOpArg,
+    expected_output_dimension: usize,
 }
 
 struct Executor {
@@ -48,6 +49,23 @@ impl SimpleFunctionExecutor for Executor {
                 .map(|s| Cow::Borrowed(s.as_str())),
         };
         let embedding = self.args.client.embed_text(req).await?;
+        if embedding.embedding.len() != self.args.expected_output_dimension {
+            if self.spec.output_dimension.is_some() {
+                api_bail!(
+                    "Expected output dimension {expected} but got {actual} from the embedding API. \
+                     Consider setting `output_dimension` to {actual} or leave it unset to use the default.",
+                    expected = self.args.expected_output_dimension,
+                    actual = embedding.embedding.len()
+                );
+            } else {
+                bail!(
+                    "Expected output dimension {expected} but got {actual} from the embedding API. \
+                     Consider setting `output_dimension` to {actual} as a workaround.",
+                    expected = self.args.expected_output_dimension,
+                    actual = embedding.embedding.len()
+                )
+            }
+        }
         Ok(embedding.embedding.into())
     }
 }
@@ -87,7 +105,14 @@ impl SimpleFunctionFactoryBase for Factory {
             dimension: Some(output_dimension as usize),
             element_type: Box::new(BasicValueType::Float32),
         }));
-        Ok((Args { client, text }, output_schema))
+        Ok((
+            Args {
+                client,
+                text,
+                expected_output_dimension: output_dimension as usize,
+            },
+            output_schema,
+        ))
     }
 
     async fn build_executor(
