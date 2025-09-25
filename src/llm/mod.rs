@@ -99,6 +99,10 @@ pub trait LlmEmbeddingClient: Send + Sync {
     ) -> Result<LlmEmbeddingResponse>;
 
     fn get_default_embedding_dimension(&self, model: &str) -> Option<u32>;
+
+    fn behavior_version(&self) -> Option<u32> {
+        Some(1)
+    }
 }
 
 mod anthropic;

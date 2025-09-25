@@ -181,18 +181,22 @@ impl LlmEmbeddingClient for AiStudioClient {
         if let Some(task_type) = request.task_type {
             payload["taskType"] = serde_json::Value::String(task_type.into());
         }
+        if let Some(output_dimension) = request.output_dimension {
+            payload["outputDimensionality"] = serde_json::Value::Number(output_dimension.into());
+        }
         let resp = retryable::run(
-            || self.client.post(&url).json(&payload).send(),
+            || async {
+                self.client
+                    .post(&url)
+                    .json(&payload)
+                    .send()
+                    .await?
+                    .error_for_status()
+            },
             &retryable::HEAVY_LOADED_OPTIONS,
         )
-        .await?;
-        if !resp.status().is_success() {
-            bail!(
-                "Gemini API error: {:?}\n{}\n",
-                resp.status(),
-                resp.text().await?
-            );
-        }
+        .await
+        .context("Gemini API error")?;
         let embedding_resp: EmbedContentResponse = resp.json().await.context("Invalid JSON")?;
         Ok(super::LlmEmbeddingResponse {
             embedding: embedding_resp.embedding.values,
@@ -201,6 +205,10 @@ impl LlmEmbeddingClient for AiStudioClient {
 
     fn get_default_embedding_dimension(&self, model: &str) -> Option<u32> {
         get_embedding_dimension(model)
+    }
+
+    fn behavior_version(&self) -> Option<u32> {
+        Some(2)
     }
 }
 

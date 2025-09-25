@@ -28,7 +28,7 @@ struct Executor {
 #[async_trait]
 impl SimpleFunctionExecutor for Executor {
     fn behavior_version(&self) -> Option<u32> {
-        Some(1)
+        self.args.client.behavior_version()
     }
 
     fn enable_cache(&self) -> bool {
