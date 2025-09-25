@@ -107,6 +107,8 @@ For text embedding, a spec for OpenAI looks like this:
 cocoindex.functions.EmbedText(
     api_type=cocoindex.LlmApiType.OPENAI,
     model="text-embedding-3-small",
+    # Optional, use the default output dimension if not specified
+    output_dimension=1536,
 )
 ```
 
@@ -199,7 +201,10 @@ For text embedding, a spec looks like this:
 cocoindex.functions.EmbedText(
     api_type=cocoindex.LlmApiType.GEMINI,
     model="text-embedding-004",
+    # Optional, use the default task type if not specified
     task_type="SEMANTICS_SIMILARITY",
+    # Optional, use the default output dimension if not specified
+    output_dimension=1536,
 )
 ```
 
@@ -260,7 +265,10 @@ For text embedding, a spec for Vertex AI looks like this:
 cocoindex.functions.EmbedText(
     api_type=cocoindex.LlmApiType.VERTEX_AI,
     model="text-embedding-005",
+    # Optional, use the default task type if not specified
     task_type="SEMANTICS_SIMILARITY",
+    # Optional, use the default output dimension if not specified
+    output_dimension=1536,
     api_config=cocoindex.llm.VertexAiConfig(project="your-project-id"),
 )
 ```
