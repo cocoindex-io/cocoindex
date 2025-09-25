@@ -406,16 +406,6 @@ impl VectorIndexMethod {
             Self::IvfFlat { .. } => "IvfFlat",
         }
     }
-
-    pub fn is_default(&self) -> bool {
-        matches!(
-            self,
-            Self::Hnsw {
-                m: None,
-                ef_construction: None,
-            }
-        )
-    }
 }
 
 impl fmt::Display for VectorIndexMethod {
@@ -458,9 +448,6 @@ impl fmt::Display for VectorIndexDef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.method {
             None => write!(f, "{}:{}", self.field_name, self.metric),
-            Some(method) if method.is_default() => {
-                write!(f, "{}:{}", self.field_name, self.metric)
-            }
             Some(method) => write!(f, "{}:{}:{}", self.field_name, self.metric, method),
         }
     }

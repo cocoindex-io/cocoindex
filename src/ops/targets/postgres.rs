@@ -501,7 +501,7 @@ fn to_vector_index_name(table_name: &str, vector_index_def: &spec::VectorIndexDe
         vector_index_def.field_name,
         to_vector_similarity_metric_sql(vector_index_def.metric)
     );
-    if let Some(method) = vector_index_def.method.as_ref().filter(|m| !m.is_default()) {
+    if let Some(method) = vector_index_def.method.as_ref() {
         name.push_str("__");
         name.push_str(&method.kind().to_ascii_lowercase());
     }
