@@ -568,6 +568,9 @@ impl SetupState {
             .map(|f| (f.name.as_str(), &f.value_type.typ))
             .collect::<HashMap<_, _>>();
         for index_def in index_options.vector_indexes.iter() {
+            if index_def.method.is_some() {
+                api_bail!("Vector index method is not configurable for Neo4j yet");
+            }
             sub_components.push(ComponentState {
                 object_label: schema.elem_type.clone(),
                 index_def: IndexDef::from_vector_index_def(

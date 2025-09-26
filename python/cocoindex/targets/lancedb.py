@@ -296,6 +296,12 @@ class _Connector:
     ) -> _State:
         if len(key_fields_schema) != 1:
             raise ValueError("LanceDB only supports a single key field")
+        if index_options.vector_indexes is not None:
+            for vector_index in index_options.vector_indexes:
+                if vector_index.method is not None:
+                    raise ValueError(
+                        "Vector index method is not configurable for LanceDB yet"
+                    )
         return _State(
             key_field_schema=key_fields_schema[0],
             value_fields_schema=value_fields_schema,

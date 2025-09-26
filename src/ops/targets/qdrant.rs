@@ -422,6 +422,9 @@ impl TargetFactoryBase for Factory {
                             } else {
                                 api_bail!("Field `{}` specified more than once in vector index definition", vector_index.field_name);
                             }
+                            if vector_index.method.is_some() {
+                                api_bail!("Vector index method is not configurable for Qdrant yet");
+                            }
                         }
                         None => {
                             if let Some(field) = d.value_fields_schema.iter().find(|f| f.name == vector_index.field_name) {
