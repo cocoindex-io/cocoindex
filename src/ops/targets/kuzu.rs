@@ -772,7 +772,7 @@ impl TargetFactoryBase for Factory {
         let data_coll_outputs: Vec<TypedExportDataCollectionBuildOutput<Self>> =
             std::iter::zip(data_collections, analyzed_data_colls.into_iter())
                 .map(|(data_coll, analyzed)| {
-                    if data_coll.index_options.vector_indexes.len() > 0 {
+                    if !data_coll.index_options.vector_indexes.is_empty() {
                         api_bail!("Vector indexes are not supported for Kuzu yet");
                     }
                     fn to_dep_table(
