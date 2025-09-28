@@ -89,8 +89,6 @@ async def search(query: str) -> cocoindex.QueryOutput:
     search = await table.search(query_embedding, vector_column_name="text_embedding")
     search_results = await search.limit(5).to_list()
 
-    print(search_results)
-
     return cocoindex.QueryOutput(
         results=[
             {
