@@ -17,7 +17,6 @@ from typing import (
     Callable,
     Generic,
     Iterable,
-    NamedTuple,
     Sequence,
     TypeVar,
     cast,
@@ -575,7 +574,8 @@ class FlowLiveUpdaterOptions:
     print_stats: bool = False
 
 
-class FlowUpdaterStatusUpdates(NamedTuple):
+@dataclass
+class FlowUpdaterStatusUpdates:
     """
     Status updates for a flow updater.
     """
@@ -1060,12 +1060,14 @@ def _get_data_slice_annotation_type(
 _transform_flow_name_builder = _NameBuilder()
 
 
-class TransformFlowInfo(NamedTuple):
+@dataclass
+class TransformFlowInfo(Generic[T]):
     engine_flow: _engine.TransientFlow
     result_decoder: Callable[[Any], T]
 
 
-class FlowArgInfo(NamedTuple):
+@dataclass
+class FlowArgInfo:
     name: str
     type_hint: Any
     encoder: Callable[[Any], Any]
@@ -1081,7 +1083,7 @@ class TransformFlow(Generic[T]):
     _args_info: list[FlowArgInfo]
 
     _lazy_lock: asyncio.Lock
-    _lazy_flow_info: TransformFlowInfo | None = None
+    _lazy_flow_info: TransformFlowInfo[T] | None = None
 
     def __init__(
         self,
@@ -1123,12 +1125,12 @@ class TransformFlow(Generic[T]):
         return self._flow_fn(*args, **kwargs)
 
     @property
-    def _flow_info(self) -> TransformFlowInfo:
+    def _flow_info(self) -> TransformFlowInfo[T]:
         if self._lazy_flow_info is not None:
             return self._lazy_flow_info
         return execution_context.run(self._flow_info_async())
 
-    async def _flow_info_async(self) -> TransformFlowInfo:
+    async def _flow_info_async(self) -> TransformFlowInfo[T]:
         if self._lazy_flow_info is not None:
             return self._lazy_flow_info
         async with self._lazy_lock:
@@ -1136,7 +1138,7 @@ class TransformFlow(Generic[T]):
                 self._lazy_flow_info = await self._build_flow_info_async()
             return self._lazy_flow_info
 
-    async def _build_flow_info_async(self) -> TransformFlowInfo:
+    async def _build_flow_info_async(self) -> TransformFlowInfo[T]:
         flow_builder_state = _FlowBuilderState(self._flow_name)
         kwargs: dict[str, DataSlice[T]] = {}
         for arg_info in self._args_info:
