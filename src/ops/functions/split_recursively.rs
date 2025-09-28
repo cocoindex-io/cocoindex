@@ -6,8 +6,7 @@ use std::sync::LazyLock;
 use std::{collections::HashMap, sync::Arc};
 use unicase::UniCase;
 
-use crate::base::field_attrs;
-use crate::ops::registry::ExecutorFactoryRegistry;
+use crate::ops::shared::split::{Position, set_output_positions};
 use crate::{fields_value, ops::sdk::*};
 
 #[derive(Serialize, Deserialize)]
@@ -479,36 +478,6 @@ impl<'s> AtomChunksCollector<'s> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OutputPosition {
-    char_offset: usize,
-    line: u32,
-    column: u32,
-}
-
-impl OutputPosition {
-    fn into_output(self) -> value::Value {
-        value::Value::Struct(fields_value!(
-            self.char_offset as i64,
-            self.line as i64,
-            self.column as i64
-        ))
-    }
-}
-struct Position {
-    byte_offset: usize,
-    output: Option<OutputPosition>,
-}
-
-impl Position {
-    fn new(byte_offset: usize) -> Self {
-        Self {
-            byte_offset,
-            output: None,
-        }
-    }
-}
-
 struct ChunkOutput<'s> {
     start_pos: Position,
     end_pos: Position,
@@ -826,55 +795,6 @@ impl Executor {
     }
 }
 
-fn set_output_positions<'a>(text: &str, positions: impl Iterator<Item = &'a mut Position>) {
-    let mut positions = positions.collect::<Vec<_>>();
-    positions.sort_by_key(|o| o.byte_offset);
-
-    let mut positions_iter = positions.iter_mut();
-    let Some(mut next_position) = positions_iter.next() else {
-        return;
-    };
-
-    let mut char_offset = 0;
-    let mut line = 1;
-    let mut column = 1;
-    for (byte_offset, ch) in text.char_indices() {
-        while next_position.byte_offset == byte_offset {
-            next_position.output = Some(OutputPosition {
-                char_offset,
-                line,
-                column,
-            });
-            if let Some(position) = positions_iter.next() {
-                next_position = position;
-            } else {
-                return;
-            }
-        }
-        char_offset += 1;
-        if ch == '\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
-        }
-    }
-
-    // Offsets after the last char.
-    loop {
-        next_position.output = Some(OutputPosition {
-            char_offset,
-            line,
-            column,
-        });
-        if let Some(position) = positions_iter.next() {
-            next_position = position;
-        } else {
-            return;
-        }
-    }
-}
-
 #[async_trait]
 impl SimpleFunctionExecutor for Executor {
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
@@ -997,49 +917,8 @@ impl SimpleFunctionFactoryBase for Factory {
                 .optional(),
         };
 
-        let pos_struct = schema::ValueType::Struct(schema::StructSchema {
-            fields: Arc::new(vec![
-                schema::FieldSchema::new("offset", make_output_type(BasicValueType::Int64)),
-                schema::FieldSchema::new("line", make_output_type(BasicValueType::Int64)),
-                schema::FieldSchema::new("column", make_output_type(BasicValueType::Int64)),
-            ]),
-            description: None,
-        });
-
-        let mut struct_schema = StructSchema::default();
-        let mut schema_builder = StructSchemaBuilder::new(&mut struct_schema);
-        schema_builder.add_field(FieldSchema::new(
-            "location",
-            make_output_type(BasicValueType::Range),
-        ));
-        schema_builder.add_field(FieldSchema::new(
-            "text",
-            make_output_type(BasicValueType::Str),
-        ));
-        schema_builder.add_field(FieldSchema::new(
-            "start",
-            schema::EnrichedValueType {
-                typ: pos_struct.clone(),
-                nullable: false,
-                attrs: Default::default(),
-            },
-        ));
-        schema_builder.add_field(FieldSchema::new(
-            "end",
-            schema::EnrichedValueType {
-                typ: pos_struct,
-                nullable: false,
-                attrs: Default::default(),
-            },
-        ));
-        let output_schema = make_output_type(TableSchema::new(
-            TableKind::KTable(KTableInfo { num_key_parts: 1 }),
-            struct_schema,
-        ))
-        .with_attr(
-            field_attrs::CHUNK_BASE_TEXT,
-            serde_json::to_value(args_resolver.get_analyze_value(&args.text))?,
-        );
+        let output_schema =
+            crate::ops::shared::split::make_common_chunk_schema(args_resolver, &args.text)?;
         Ok((args, output_schema))
     }
 
@@ -1060,7 +939,7 @@ pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::functions::test_utils::test_flow_function;
+    use crate::ops::{functions::test_utils::test_flow_function, shared::split::OutputPosition};
 
     // Helper function to assert chunk text and its consistency with the range within the original text.
     fn assert_chunk_text_consistency(

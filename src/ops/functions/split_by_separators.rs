@@ -2,24 +2,22 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use std::sync::Arc;
 
-use crate::base::field_attrs;
 use crate::ops::registry::ExecutorFactoryRegistry;
-use crate::ops::shared::split::{Position, set_output_positions};
+use crate::ops::shared::split::{Position, make_common_chunk_schema, set_output_positions};
 use crate::{fields_value, ops::sdk::*};
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "UPPERCASE")]
 enum KeepSep {
-    NONE,
-    LEFT,
-    RIGHT,
+    Left,
+    Right,
 }
 
 #[derive(Serialize, Deserialize)]
 struct Spec {
     // Python SDK provides defaults/values.
     separators_regex: Vec<String>,
-    keep_separator: KeepSep,
+    keep_separator: Option<KeepSep>,
     include_empty: bool,
     trim: bool,
 }
@@ -90,13 +88,13 @@ impl SimpleFunctionExecutor for Executor {
             let mut start = 0usize;
             for m in re.find_iter(full_text) {
                 let end = match self.spec.keep_separator {
-                    KeepSep::LEFT => m.end(),
-                    KeepSep::NONE | KeepSep::RIGHT => m.start(),
+                    Some(KeepSep::Left) => m.end(),
+                    Some(KeepSep::Right) | None => m.start(),
                 };
                 add_range(start, end);
                 start = match self.spec.keep_separator {
-                    KeepSep::RIGHT => m.start(),
-                    KeepSep::NONE | KeepSep::LEFT => m.end(),
+                    Some(KeepSep::Right) => m.start(),
+                    _ => m.end(),
                 };
             }
             add_range(start, full_text.len());
@@ -154,50 +152,7 @@ impl SimpleFunctionFactoryBase for Factory {
                 .required()?,
         };
 
-        // start/end structs exactly like SplitRecursively
-        let pos_struct = schema::ValueType::Struct(schema::StructSchema {
-            fields: Arc::new(vec![
-                schema::FieldSchema::new("offset", make_output_type(BasicValueType::Int64)),
-                schema::FieldSchema::new("line", make_output_type(BasicValueType::Int64)),
-                schema::FieldSchema::new("column", make_output_type(BasicValueType::Int64)),
-            ]),
-            description: None,
-        });
-
-        let mut struct_schema = StructSchema::default();
-        let mut sb = StructSchemaBuilder::new(&mut struct_schema);
-        sb.add_field(FieldSchema::new(
-            "location",
-            make_output_type(BasicValueType::Range),
-        ));
-        sb.add_field(FieldSchema::new(
-            "text",
-            make_output_type(BasicValueType::Str),
-        ));
-        sb.add_field(FieldSchema::new(
-            "start",
-            schema::EnrichedValueType {
-                typ: pos_struct.clone(),
-                nullable: false,
-                attrs: Default::default(),
-            },
-        ));
-        sb.add_field(FieldSchema::new(
-            "end",
-            schema::EnrichedValueType {
-                typ: pos_struct,
-                nullable: false,
-                attrs: Default::default(),
-            },
-        ));
-        let output_schema = make_output_type(TableSchema::new(
-            TableKind::KTable(KTableInfo { num_key_parts: 1 }),
-            struct_schema,
-        ))
-        .with_attr(
-            field_attrs::CHUNK_BASE_TEXT,
-            serde_json::to_value(args_resolver.get_analyze_value(&args.text))?,
-        );
+        let output_schema = make_common_chunk_schema(args_resolver, &args.text)?;
         Ok((args, output_schema))
     }
 
@@ -224,7 +179,7 @@ mod tests {
     async fn test_split_by_separators_paragraphs() {
         let spec = Spec {
             separators_regex: vec![r"\n\n+".to_string()],
-            keep_separator: KeepSep::NONE,
+            keep_separator: None,
             include_empty: false,
             trim: true,
         };
@@ -268,7 +223,7 @@ mod tests {
     async fn test_split_by_separators_keep_right() {
         let spec = Spec {
             separators_regex: vec![r"\.".to_string()],
-            keep_separator: KeepSep::RIGHT,
+            keep_separator: Some(KeepSep::Right),
             include_empty: false,
             trim: true,
         };
