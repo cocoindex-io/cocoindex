@@ -116,6 +116,11 @@ fn set_settings_fn(get_settings_fn: Py<PyAny>) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn init_pyo3_runtime() {
+    pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).unwrap();
+}
+
+#[pyfunction]
 fn init(py: Python<'_>, settings: Pythonized<Option<Settings>>) -> PyResult<()> {
     py.allow_threads(|| -> anyhow::Result<()> {
         get_runtime().block_on(async move { init_lib_context(settings.into_inner()).await })
@@ -666,6 +671,7 @@ fn seder_roundtrip<'py>(
 #[pymodule]
 #[pyo3(name = "_engine")]
 fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(init_pyo3_runtime, m)?)?;
     m.add_function(wrap_pyfunction!(init, m)?)?;
     m.add_function(wrap_pyfunction!(set_settings_fn, m)?)?;
     m.add_function(wrap_pyfunction!(start_server, m)?)?;

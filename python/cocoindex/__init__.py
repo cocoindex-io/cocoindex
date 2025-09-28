@@ -2,6 +2,7 @@
 Cocoindex is a framework for building and running indexing pipelines.
 """
 
+from . import _engine  # type: ignore
 from . import functions, sources, targets, cli, utils
 
 from . import targets as storages  # Deprecated: Use targets instead
@@ -41,6 +42,8 @@ from .typing import (
     Vector,
     Json,
 )
+
+_engine.init_pyo3_runtime()
 
 __all__ = [
     # Submodules

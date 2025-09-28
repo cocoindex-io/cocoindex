@@ -162,6 +162,13 @@ impl FlowContext {
 static TOKIO_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| Runtime::new().unwrap());
 static AUTH_REGISTRY: LazyLock<Arc<AuthRegistry>> = LazyLock::new(|| Arc::new(AuthRegistry::new()));
 
+pub fn get_runtime() -> &'static Runtime {
+    &TOKIO_RUNTIME
+}
+pub fn get_auth_registry() -> &'static Arc<AuthRegistry> {
+    &AUTH_REGISTRY
+}
+
 type PoolKey = (String, Option<String>);
 type PoolValue = Arc<tokio::sync::OnceCell<PgPool>>;
 
@@ -271,21 +278,10 @@ impl LibContext {
     }
 }
 
-pub fn get_runtime() -> &'static Runtime {
-    &TOKIO_RUNTIME
-}
-
-pub fn get_auth_registry() -> &'static Arc<AuthRegistry> {
-    &AUTH_REGISTRY
-}
-
 static LIB_INIT: OnceLock<()> = OnceLock::new();
 pub async fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
     LIB_INIT.get_or_init(|| {
         let _ = env_logger::try_init();
-
-        pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).unwrap();
-
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     });
 
