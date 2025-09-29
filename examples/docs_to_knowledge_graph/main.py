@@ -67,7 +67,8 @@ def docs_to_kg_flow(
     """
     data_scope["documents"] = flow_builder.add_source(
         cocoindex.sources.LocalFile(
-            path=os.path.join('..', '..','docs','docs','core'), included_patterns=["*.md", "*.mdx"]
+            path=os.path.join("..", "..", "docs", "docs", "core"),
+            included_patterns=["*.md", "*.mdx"],
         )
     )
 

@@ -118,7 +118,9 @@ def patient_intake_extraction_flow(
     Define a flow that extracts patient information from intake forms.
     """
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path=os.path.join('data', 'patient_forms'), binary=True)
+        cocoindex.sources.LocalFile(
+            path=os.path.join("data", "patient_forms"), binary=True
+        )
     )
 
     patients_index = data_scope.add_collector()
