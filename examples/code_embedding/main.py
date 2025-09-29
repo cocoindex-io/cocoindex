@@ -45,7 +45,7 @@ def code_embedding_flow(
     """
     data_scope["files"] = flow_builder.add_source(
         cocoindex.sources.LocalFile(
-            path="../..",
+            path=os.path.join('..', '..'),
             included_patterns=["*.py", "*.rs", "*.toml", "*.md", "*.mdx"],
             excluded_patterns=["**/.*", "target", "**/node_modules"],
         )

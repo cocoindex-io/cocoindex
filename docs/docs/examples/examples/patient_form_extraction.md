@@ -50,6 +50,8 @@ Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choos
 Add source from local files.
 
 ```python
+import os
+
 @cocoindex.flow_def(name="PatientIntakeExtraction")
 def patient_intake_extraction_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
@@ -58,7 +60,7 @@ def patient_intake_extraction_flow(
     Define a flow that extracts patient information from intake forms.
     """
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="data/patient_forms", binary=True)
+        cocoindex.sources.LocalFile(path=os.path.join('data', 'patient_forms'), binary=True)
     )
 ```
 

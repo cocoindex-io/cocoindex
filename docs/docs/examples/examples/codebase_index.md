@@ -55,10 +55,12 @@ The flow is composed of the following steps:
 We will index the CocoIndex codebase. Here we use the `LocalFile` source to ingest files from the CocoIndex codebase root directory.
 
 ```python
+import os
+
 @cocoindex.flow_def(name="CodeEmbedding")
 def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     data_scope["files"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="../..",
+        cocoindex.sources.LocalFile(path=os.path.join('..', '..'),
                                     included_patterns=["*.py", "*.rs", "*.toml", "*.md", "*.mdx"],
                                     excluded_patterns=[".*", "target", "**/node_modules"]))
     code_embeddings = data_scope.add_collector()

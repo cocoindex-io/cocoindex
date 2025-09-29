@@ -54,10 +54,12 @@ and then build a knowledge graph.
 We will process CocoIndex documentation markdown files (`.md`, `.mdx`) from the `docs/core` directory ([markdown files](https://github.com/cocoindex-io/cocoindex/tree/main/docs/docs/core), [deployed docs](https://cocoindex.io/docs/core/basics)).
 
 ```python
+import os
+
 @cocoindex.flow_def(name="DocsToKG")
 def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="../../docs/docs/core",
+        cocoindex.sources.LocalFile(path=os.path.join('..', '..', 'docs', 'docs', 'core'),
                                     included_patterns=["*.md", "*.mdx"]))
 ```
 
