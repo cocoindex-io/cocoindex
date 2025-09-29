@@ -599,6 +599,10 @@ impl<'a> RowIndexer<'a> {
                 let mut keys_info = Vec::new();
                 let collected_values =
                     &data.evaluate_output.collected_values[export_op.input.collector_idx as usize];
+                let value_fingerprinter = export_op
+                    .output_value_fingerprinter
+                    .clone()
+                    .with(&export_op_exec_ctx.schema_version_id)?;
                 for value in collected_values.iter() {
                     let primary_key =
                         extract_primary_key_for_export(&export_op.primary_key_def, value)?;
@@ -629,7 +633,8 @@ impl<'a> RowIndexer<'a> {
 
                     let curr_fp = if !export_op.value_stable {
                         Some(
-                            Fingerprinter::default()
+                            value_fingerprinter
+                                .clone()
                                 .with(&field_values)?
                                 .into_fingerprint(),
                         )

@@ -646,6 +646,7 @@ struct ExportDataFieldsInfo {
     primary_key_schema: Box<[FieldSchema]>,
     value_fields_idx: Vec<u32>,
     value_stable: bool,
+    output_value_fingerprinter: Fingerprinter,
 }
 
 impl AnalyzerContext {
@@ -866,6 +867,8 @@ impl AnalyzerContext {
                             .as_ref()
                             .map(|uuid_idx| pk_fields_idx.contains(uuid_idx))
                             .unwrap_or(false);
+                        let output_value_fingerprinter =
+                            Fingerprinter::default().with(&value_fields_schema)?;
                         (
                             value_fields_schema,
                             ExportDataFieldsInfo {
@@ -874,6 +877,7 @@ impl AnalyzerContext {
                                 primary_key_schema,
                                 value_fields_idx,
                                 value_stable,
+                                output_value_fingerprinter,
                             },
                         )
                     }
@@ -937,6 +941,7 @@ impl AnalyzerContext {
                         primary_key_schema: data_fields_info.primary_key_schema,
                         value_fields: data_fields_info.value_fields_idx,
                         value_stable: data_fields_info.value_stable,
+                        output_value_fingerprinter: data_fields_info.output_value_fingerprinter,
                     })
                 })
             })

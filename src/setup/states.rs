@@ -176,8 +176,8 @@ impl Display for ResourceIdentifier {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TargetSetupStateCommon {
     pub target_id: i32,
-    pub schema_version_id: i32,
-    pub max_schema_version_id: i32,
+    pub schema_version_id: usize,
+    pub max_schema_version_id: usize,
     #[serde(default)]
     pub setup_by_user: bool,
     #[serde(default)]

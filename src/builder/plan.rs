@@ -111,6 +111,8 @@ pub struct AnalyzedExportOp {
     /// If true, value is never changed on the same primary key.
     /// This is guaranteed if the primary key contains auto-generated UUIDs.
     pub value_stable: bool,
+    /// Fingerprinter of the output value.
+    pub output_value_fingerprinter: Fingerprinter,
 }
 
 pub struct AnalyzedExportTargetOpGroup {

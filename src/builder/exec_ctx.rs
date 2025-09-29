@@ -10,6 +10,7 @@ pub struct ImportOpExecutionContext {
 
 pub struct ExportOpExecutionContext {
     pub target_id: i32,
+    pub schema_version_id: usize,
 }
 
 pub struct FlowSetupExecutionContext {
@@ -107,12 +108,12 @@ fn build_import_op_exec_ctx(
     Ok(ImportOpExecutionContext { source_id })
 }
 
-fn build_target_id(
+fn build_export_op_exec_ctx(
     analyzed_target_ss: &AnalyzedTargetSetupState,
     existing_target_states: &HashMap<&setup::ResourceIdentifier, Vec<&setup::TargetSetupState>>,
     metadata: &mut setup::FlowSetupMetadata,
     target_states: &mut IndexMap<setup::ResourceIdentifier, setup::TargetSetupState>,
-) -> Result<i32> {
+) -> Result<ExportOpExecutionContext> {
     let target_factory = get_target_factory(&analyzed_target_ss.target_kind)?;
 
     let resource_id = setup::ResourceIdentifier {
@@ -121,7 +122,7 @@ fn build_target_id(
     };
     let existing_target_states = existing_target_states.get(&resource_id);
     let mut compatible_target_ids = HashSet::<Option<i32>>::new();
-    let mut reusable_schema_version_ids = HashSet::<Option<i32>>::new();
+    let mut reusable_schema_version_ids = HashSet::<Option<usize>>::new();
     for existing_state in existing_target_states.iter().flat_map(|v| v.iter()) {
         let compatibility = if let Some(key_type) = &analyzed_target_ss.key_type
             && let Some(existing_key_type) = &existing_state.common.key_type
@@ -196,7 +197,10 @@ fn build_target_id(
             });
         }
     }
-    Ok(target_id)
+    Ok(ExportOpExecutionContext {
+        target_id,
+        schema_version_id,
+    })
 }
 
 pub fn build_flow_setup_execution_context(
@@ -276,18 +280,17 @@ pub fn build_flow_setup_execution_context(
         .targets
         .iter()
         .map(|analyzed_target_ss| {
-            let target_id = build_target_id(
+            build_export_op_exec_ctx(
                 analyzed_target_ss,
                 &target_states_by_name_type,
                 &mut metadata,
                 &mut target_states,
-            )?;
-            Ok(ExportOpExecutionContext { target_id })
+            )
         })
         .collect::<Result<Vec<_>>>()?;
 
     for analyzed_target_ss in analyzed_ss.declarations.iter() {
-        build_target_id(
+        build_export_op_exec_ctx(
             analyzed_target_ss,
             &target_states_by_name_type,
             &mut metadata,
