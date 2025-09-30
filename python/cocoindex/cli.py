@@ -645,6 +645,25 @@ def _run_server(
     """Helper function to run the server with specified settings."""
     _load_user_app(app_ref)
 
+    # Check if any flows are registered
+    if not flow.flow_names():
+        click.secho(
+            f"\nError: No flows registered in '{app_ref}'.\n",
+            fg="red",
+            bold=True,
+            err=True,
+        )
+        click.secho(
+            "To use CocoIndex server, you need to define at least one flow.",
+            err=True,
+        )
+        click.secho(
+            "See https://cocoindex.io/docs for more information.\n",
+            fg="cyan",
+            err=True,
+        )
+        raise click.Abort()
+
     server_settings = setting.ServerSettings.from_env()
     cors_origins: set[str] = set(server_settings.cors_origins or [])
     if cors_origin is not None:
