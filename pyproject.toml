@@ -70,7 +70,12 @@ lancedb = ["lancedb>=0.25.0"]
 
 # We need to repeat the dependency above to make it available for the `all` feature.
 # Indirect dependencies such as "cocoindex[embeddings]" will not work for local development.
-all = ["sentence-transformers>=3.3.1", "colpali-engine", "lancedb>=0.25.0"]
+all = [
+    "sentence-transformers>=3.3.1",
+    "colpali-engine",
+    "lancedb>=0.25.0",
+    "pydantic>=2.11.9",
+]
 
 [tool.mypy]
 python_version = "3.11"

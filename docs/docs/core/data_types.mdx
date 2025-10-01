@@ -113,12 +113,14 @@ These options define a structured type with named fields, but they differ slight
 - **Dataclass**: A flexible class-based structure, mutable by default, defined using the `@dataclass` decorator.
 - **NamedTuple**: An immutable tuple-based structure, defined using `typing.NamedTuple`.
 - **Pydantic model**: A modern data validation and parsing structure, defined by inheriting from `pydantic.BaseModel`.
+  Make sure you installed the `pydantic` package when using Pydantic model.
 
 For example:
 
 ```python
 from dataclasses import dataclass
 from typing import NamedTuple
+from pydantic import BaseModel
 import datetime
 
 # Using dataclass
@@ -134,17 +136,11 @@ class PersonTuple(NamedTuple):
     last_name: str
     dob: datetime.date
 
-# Using Pydantic (optional dependency)
-try:
-    from pydantic import BaseModel
-    
-    class PersonModel(BaseModel):
-        first_name: str
-        last_name: str
-        dob: datetime.date
-except ImportError:
-    # Pydantic is optional
-    pass
+# Using Pydantic
+class PersonModel(BaseModel):
+    first_name: str
+    last_name: str
+    dob: datetime.date
 ```
 
 All three examples (`Person`, `PersonTuple`, and `PersonModel`) are valid Struct types in CocoIndex, with identical schemas (three fields: `first_name` (Str), `last_name` (Str), `dob` (Date)).
