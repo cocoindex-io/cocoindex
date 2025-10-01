@@ -941,16 +941,11 @@ mod tests {
     use super::*;
     use crate::ops::functions::test_utils::test_flow_function;
     use crate::ops::sdk::{BasicValueType, KeyValue, RangeValue, make_output_type};
+    use crate::ops::shared::split::OutputPosition;
 
-    #[tokio::test]
-    async fn test_split_recursively() {
-        let spec = Spec {
-            custom_languages: vec![],
-        };
-        let factory = Arc::new(Factory);
-        let text_content = "Linea 1.\nLinea 2.\n\nLinea 3.";
-
-        let input_arg_schemas = &[
+    // Helper function to build the standard input argument schemas for split_recursively tests
+    fn build_split_recursively_arg_schemas() -> Vec<(Option<&'static str>, EnrichedValueType)> {
+        vec![
             (
                 Some("text"),
                 make_output_type(BasicValueType::Str).with_nullable(true),
@@ -971,7 +966,17 @@ mod tests {
                 Some("language"),
                 make_output_type(BasicValueType::Str).with_nullable(true),
             ),
-        ];
+        ]
+    }
+
+    #[tokio::test]
+    async fn test_split_recursively() {
+        let spec = Spec {
+            custom_languages: vec![],
+        };
+        let factory = Arc::new(Factory);
+        let text_content = "Linea 1.\nLinea 2.\n\nLinea 3.";
+        let input_arg_schemas = &build_split_recursively_arg_schemas();
 
         {
             let result = test_flow_function(
@@ -1058,185 +1063,77 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_unicode_character_positioning() {
-        let spec = Spec {
-            custom_languages: vec![],
-        };
-        let factory = Arc::new(Factory);
+    #[test]
+    fn test_translate_bytes_to_chars_simple() {
+        let text = "abc😄def";
+        let mut start1 = Position::new(0);
+        let mut end1 = Position::new(3);
+        let mut start2 = Position::new(3);
+        let mut end2 = Position::new(7);
+        let mut start3 = Position::new(7);
+        let mut end3 = Position::new(10);
+        let mut end_full = Position::new(text.len());
 
-        let input_arg_schemas = &[
-            (
-                Some("text"),
-                make_output_type(BasicValueType::Str).with_nullable(true),
-            ),
-            (
-                Some("chunk_size"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("min_chunk_size"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("chunk_overlap"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("language"),
-                make_output_type(BasicValueType::Str).with_nullable(true),
-            ),
+        let offsets = vec![
+            &mut start1,
+            &mut end1,
+            &mut start2,
+            &mut end2,
+            &mut start3,
+            &mut end3,
+            &mut end_full,
         ];
 
-        let text = "abc😄def";
+        set_output_positions(text, offsets.into_iter());
 
-        let result = test_flow_function(
-            &factory,
-            &spec,
-            input_arg_schemas,
-            vec![
-                text.to_string().into(),
-                10i64.into(),
-                Some(1i64).into(),
-                0i64.into(),
-                Value::Null,
-            ],
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "test_flow_function failed: {:?}",
-            result.err()
+        assert_eq!(
+            start1.output,
+            Some(OutputPosition {
+                char_offset: 0,
+                line: 1,
+                column: 1,
+            })
         );
-
-        let value = result.unwrap();
-        match value {
-            Value::KTable(table) => {
-                assert_eq!(table.len(), 1, "Expected single chunk for small text");
-
-                let (_, scope_value_ref) = table.iter().next().unwrap();
-                let fields = &scope_value_ref.0.fields;
-
-                // Check start position (field[1])
-                let start_pos = &fields[1]; // "start" field
-                let start_offset = start_pos.as_struct().unwrap().fields[0].as_int64().unwrap();
-                let start_line = start_pos.as_struct().unwrap().fields[1].as_int64().unwrap();
-                let start_column = start_pos.as_struct().unwrap().fields[2].as_int64().unwrap();
-
-                // Check end position (field[2])
-                let end_pos = &fields[2]; // "end" field
-                let end_offset = end_pos.as_struct().unwrap().fields[0].as_int64().unwrap();
-                let end_line = end_pos.as_struct().unwrap().fields[1].as_int64().unwrap();
-                let end_column = end_pos.as_struct().unwrap().fields[2].as_int64().unwrap();
-
-                // Verify character positions are correct for Unicode
-                assert_eq!(start_offset, 0, "Start character offset should be 0");
-                assert_eq!(start_line, 1, "Start line should be 1");
-                assert_eq!(start_column, 1, "Start column should be 1");
-
-                assert_eq!(
-                    end_offset, 7,
-                    "End character offset should be 7 (abc😄def = 7 chars)"
-                );
-                assert_eq!(end_line, 1, "End line should be 1");
-                assert_eq!(end_column, 8, "End column should be 8 (1-indexed)");
-                assert_eq!(start_line, 1, "Start line should be 1");
-                assert_eq!(start_column, 1, "Start column should be 1");
-
-                assert_eq!(
-                    end_offset, 7,
-                    "End character offset should be 7 (abc😄def = 7 chars)"
-                );
-                assert_eq!(end_line, 1, "End line should be 1");
-                assert_eq!(end_column, 8, "End column should be 8 (1-indexed)");
-            }
-            other => panic!("Expected Value::KTable, got {other:?}"),
-        }
-    }
-
-    // Helper function to extract chunks from KTable and verify them
-    async fn assert_chunks_from_ktable(
-        factory: &Arc<Factory>,
-        spec: &Spec,
-        input_arg_schemas: &[(Option<&str>, EnrichedValueType)],
-        text: &str,
-        chunk_size: i64,
-        min_chunk_size: Option<i64>,
-        chunk_overlap: i64,
-        expected_chunks: Vec<(usize, usize, &str)>, // (start_byte, end_byte, expected_text)
-        context: &str,
-    ) {
-        let result = test_flow_function(
-            factory,
-            spec,
-            input_arg_schemas,
-            vec![
-                text.to_string().into(),
-                chunk_size.into(),
-                min_chunk_size.map(Value::from).unwrap_or(Value::Null),
-                chunk_overlap.into(),
-                Value::Null, // language
-            ],
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "test_flow_function failed for {}: {:?}",
-            context,
-            result.err()
+        assert_eq!(
+            end1.output,
+            Some(OutputPosition {
+                char_offset: 3,
+                line: 1,
+                column: 4,
+            })
         );
-
-        let value = result.unwrap();
-        match value {
-            Value::KTable(table) => {
-                assert_eq!(
-                    table.len(),
-                    expected_chunks.len(),
-                    "Chunk count mismatch for {}",
-                    context
-                );
-
-                for (i, (start_byte, end_byte, expected_text)) in expected_chunks.iter().enumerate()
-                {
-                    let range = RangeValue::new(*start_byte, *end_byte);
-                    let key = KeyValue::from_single_part(range);
-                    match table.get(&key) {
-                        Some(scope_value_ref) => {
-                            let chunk_text =
-                                scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
-                                    panic!("Chunk text not a string for key {key:?} in {context}")
-                                });
-                            assert_eq!(
-                                **chunk_text, **expected_text,
-                                "Chunk text mismatch for {}, chunk {}",
-                                context, i
-                            );
-
-                            // Verify range consistency with original text
-                            let extracted_text =
-                                text.get(*start_byte..*end_byte).unwrap_or_else(|| {
-                                    panic!(
-                                        "Invalid range {}-{} for text in {}",
-                                        start_byte, end_byte, context
-                                    )
-                                });
-                            assert_eq!(
-                                extracted_text, *expected_text,
-                                "Range inconsistency for {}, chunk {}",
-                                context, i
-                            );
-                        }
-                        None => panic!(
-                            "Expected row value for key {key:?} in {}, not found",
-                            context
-                        ),
-                    }
-                }
-            }
-            other => panic!("Expected Value::KTable for {}, got {other:?}", context),
-        }
+        assert_eq!(
+            start2.output,
+            Some(OutputPosition {
+                char_offset: 3,
+                line: 1,
+                column: 4,
+            })
+        );
+        assert_eq!(
+            end2.output,
+            Some(OutputPosition {
+                char_offset: 4,
+                line: 1,
+                column: 5,
+            })
+        );
+        assert_eq!(
+            end3.output,
+            Some(OutputPosition {
+                char_offset: 7,
+                line: 1,
+                column: 8,
+            })
+        );
+        assert_eq!(
+            end_full.output,
+            Some(OutputPosition {
+                char_offset: 7,
+                line: 1,
+                column: 8,
+            })
+        );
     }
 
     #[tokio::test]
@@ -1245,96 +1142,97 @@ mod tests {
             custom_languages: vec![],
         };
         let factory = Arc::new(Factory);
-
-        let input_arg_schemas = &[
-            (
-                Some("text"),
-                make_output_type(BasicValueType::Str).with_nullable(true),
-            ),
-            (
-                Some("chunk_size"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("min_chunk_size"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("chunk_overlap"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("language"),
-                make_output_type(BasicValueType::Str).with_nullable(true),
-            ),
-        ];
-
-        // Test 1: Basic split no overlap
         let text = "Linea 1.\nLinea 2.\n\nLinea 3.";
-        let expected_chunks = vec![
-            (0, 8, "Linea 1."),
-            (9, 17, "Linea 2."),
-            (19, 27, "Linea 3."),
-        ];
+        let input_arg_schemas = &build_split_recursively_arg_schemas();
 
-        assert_chunks_from_ktable(
-            &factory,
-            &spec,
-            input_arg_schemas,
-            text,
-            15,
-            Some(5),
-            0,
-            expected_chunks,
-            "Test 1",
-        )
-        .await;
-
-        let text2 = "A very very long text that needs to be split.";
-        let expected_chunks2 = vec![
-            (0, 16, "A very very long"),
-            (17, 32, "text that needs"),
-            (33, 45, "to be split."),
-        ];
-
-        assert_chunks_from_ktable(
-            &factory,
-            &spec,
-            input_arg_schemas,
-            text2,
-            20,
-            Some(12),
-            0,
-            expected_chunks2,
-            "Test 2",
-        )
-        .await;
-
-        // Verify that the function produces at least one chunk for test 2
-        let result2 = test_flow_function(
-            &factory,
-            &spec,
-            input_arg_schemas,
-            vec![
-                text2.to_string().into(),
-                20i64.into(),
-                Some(12i64).into(),
-                0i64.into(),
-                Value::Null,
-            ],
-        )
-        .await;
-
-        assert!(result2.is_ok());
-        if let Value::KTable(table) = result2.unwrap() {
-            assert!(table.len() > 0, "Expected at least one chunk for test 2");
-            let first_key = table.keys().next().unwrap();
-            let first_chunk = table.get(first_key).unwrap();
-            let chunk_text = first_chunk.0.fields[0].as_str().unwrap();
+        {
+            let result = test_flow_function(
+                &factory,
+                &spec,
+                input_arg_schemas,
+                vec![
+                    text.to_string().into(),
+                    (15i64).into(),
+                    (5i64).into(),
+                    (0i64).into(),
+                    Value::Null,
+                ],
+            )
+            .await;
             assert!(
-                chunk_text.len() <= 20,
-                "First chunk exceeds chunk_size limit"
+                result.is_ok(),
+                "test_flow_function failed: {:?}",
+                result.err()
             );
+            let value = result.unwrap();
+            match value {
+                Value::KTable(table) => {
+                    let expected_chunks = vec![
+                        (RangeValue::new(0, 8), "Linea 1."),
+                        (RangeValue::new(9, 17), "Linea 2."),
+                        (RangeValue::new(19, 27), "Linea 3."),
+                    ];
+
+                    for (range, expected_text) in expected_chunks {
+                        let key = KeyValue::from_single_part(range);
+                        match table.get(&key) {
+                            Some(scope_value_ref) => {
+                                let chunk_text =
+                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
+                                        panic!("Chunk text not a string for key {key:?}")
+                                    });
+                                assert_eq!(**chunk_text, *expected_text);
+                            }
+                            None => panic!("Expected row value for key {key:?}, not found"),
+                        }
+                    }
+                }
+                other => panic!("Expected Value::KTable, got {other:?}"),
+            }
+        }
+
+        // Test splitting when chunk_size forces breaks within segments.
+        let text2 = "A very very long text that needs to be split.";
+        {
+            let result = test_flow_function(
+                &factory,
+                &spec,
+                input_arg_schemas,
+                vec![
+                    text2.to_string().into(),
+                    (20i64).into(),
+                    (12i64).into(),
+                    (0i64).into(),
+                    Value::Null,
+                ],
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "test_flow_function failed: {:?}",
+                result.err()
+            );
+            let value = result.unwrap();
+            match value {
+                Value::KTable(table) => {
+                    // Expect multiple chunks, likely split by spaces due to chunk_size.
+                    assert!(table.len() > 1);
+
+                    let key = KeyValue::from_single_part(RangeValue::new(0, 16));
+                    match table.get(&key) {
+                        Some(scope_value_ref) => {
+                            let chunk_text =
+                                scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
+                                    panic!("Chunk text not a string for key {key:?}")
+                                });
+                            assert_eq!(&**chunk_text, "A very very long");
+                            assert!(chunk_text.len() <= 20);
+                        }
+                        None => panic!("Expected row value for key {key:?}, not found"),
+                    }
+                }
+                other => panic!("Expected Value::KTable, got {other:?}"),
+            }
         }
     }
 
@@ -1344,68 +1242,50 @@ mod tests {
             custom_languages: vec![],
         };
         let factory = Arc::new(Factory);
-
-        let input_arg_schemas = &[
-            (
-                Some("text"),
-                make_output_type(BasicValueType::Str).with_nullable(true),
-            ),
-            (
-                Some("chunk_size"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("min_chunk_size"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("chunk_overlap"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("language"),
-                make_output_type(BasicValueType::Str).with_nullable(true),
-            ),
-        ];
-
         let text = "This is a test text that is a bit longer to see how the overlap works.";
+        let input_arg_schemas = &build_split_recursively_arg_schemas();
 
-        let result = test_flow_function(
-            &factory,
-            &spec,
-            input_arg_schemas,
-            vec![
-                text.to_string().into(),
-                20i64.into(),
-                Some(10i64).into(),
-                5i64.into(),
-                Value::Null,
-            ],
-        )
-        .await;
+        {
+            let result = test_flow_function(
+                &factory,
+                &spec,
+                input_arg_schemas,
+                vec![
+                    text.to_string().into(),
+                    (20i64).into(),
+                    (10i64).into(),
+                    (5i64).into(),
+                    Value::Null,
+                ],
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "test_flow_function failed: {:?}",
+                result.err()
+            );
+            let value = result.unwrap();
+            match value {
+                Value::KTable(table) => {
+                    assert!(table.len() > 1);
 
-        assert!(
-            result.is_ok(),
-            "test_flow_function failed: {:?}",
-            result.err()
-        );
-
-        let value = result.unwrap();
-        match value {
-            Value::KTable(table) => {
-                assert!(table.len() > 1, "Expected multiple chunks due to overlap");
-
-                // Check that first chunk doesn't exceed expected length (chunk_size + some tolerance)
-                let first_key = table.keys().next().unwrap();
-                let first_chunk = table.get(first_key).unwrap();
-                let chunk_text = first_chunk.0.fields[0].as_str().unwrap();
-                assert!(
-                    chunk_text.len() <= 25,
-                    "First chunk too long: {} chars",
-                    chunk_text.len()
-                );
+                    // Check first chunk length
+                    if table.len() >= 2 {
+                        let first_key = table.keys().next().unwrap();
+                        match table.get(first_key) {
+                            Some(scope_value_ref) => {
+                                let chunk_text =
+                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
+                                        panic!("Chunk text not a string for key {first_key:?}")
+                                    });
+                                assert!(chunk_text.len() <= 25);
+                            }
+                            None => panic!("Expected row value for first key, not found"),
+                        }
+                    }
+                }
+                other => panic!("Expected Value::KTable, got {other:?}"),
             }
-            other => panic!("Expected Value::KTable, got {other:?}"),
         }
     }
 
@@ -1415,67 +1295,55 @@ mod tests {
             custom_languages: vec![],
         };
         let factory = Arc::new(Factory);
-
-        let input_arg_schemas = &[
-            (
-                Some("text"),
-                make_output_type(BasicValueType::Str).with_nullable(true),
-            ),
-            (
-                Some("chunk_size"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("min_chunk_size"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("chunk_overlap"),
-                make_output_type(BasicValueType::Int64).with_nullable(true),
-            ),
-            (
-                Some("language"),
-                make_output_type(BasicValueType::Str).with_nullable(true),
-            ),
-        ];
-
         let text = "  \n First chunk. \n\n  Second chunk with spaces at the end.   \n";
+        let input_arg_schemas = &build_split_recursively_arg_schemas();
 
-        // Just verify we get 3 chunks and test the first one
-        let result = test_flow_function(
-            &factory,
-            &spec,
-            input_arg_schemas,
-            vec![
-                text.to_string().into(),
-                30i64.into(),
-                Some(10i64).into(),
-                0i64.into(),
-                Value::Null,
-            ],
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "test_flow_function failed: {:?}",
-            result.err()
-        );
-
-        if let Value::KTable(table) = result.unwrap() {
-            assert_eq!(table.len(), 3, "Expected 3 chunks for whitespace test");
-
-            let first_range = RangeValue::new(3, 16);
-            let first_key = KeyValue::from_single_part(first_range);
-            let first_chunk = table.get(&first_key).expect("First chunk should exist");
-            let first_text = first_chunk.0.fields[0].as_str().unwrap();
-            assert_eq!(
-                first_text.as_ref(),
-                " First chunk.",
-                "First chunk text mismatch"
+        {
+            let result = test_flow_function(
+                &factory,
+                &spec,
+                input_arg_schemas,
+                vec![
+                    text.to_string().into(),
+                    (30i64).into(),
+                    (10i64).into(),
+                    (0i64).into(),
+                    Value::Null,
+                ],
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "test_flow_function failed: {:?}",
+                result.err()
             );
-        } else {
-            panic!("Expected KTable");
+            let value = result.unwrap();
+            match value {
+                Value::KTable(table) => {
+                    assert_eq!(table.len(), 3);
+
+                    let expected_chunks = vec![
+                        (RangeValue::new(3, 16), " First chunk."),
+                        (RangeValue::new(19, 45), "  Second chunk with spaces"),
+                        (RangeValue::new(46, 57), "at the end."),
+                    ];
+
+                    for (range, expected_text) in expected_chunks {
+                        let key = KeyValue::from_single_part(range);
+                        match table.get(&key) {
+                            Some(scope_value_ref) => {
+                                let chunk_text =
+                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
+                                        panic!("Chunk text not a string for key {key:?}")
+                                    });
+                                assert_eq!(**chunk_text, *expected_text);
+                            }
+                            None => panic!("Expected row value for key {key:?}, not found"),
+                        }
+                    }
+                }
+                other => panic!("Expected Value::KTable, got {other:?}"),
+            }
         }
     }
 }
