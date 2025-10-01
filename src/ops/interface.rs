@@ -316,9 +316,42 @@ pub trait TargetFactory: Send + Sync {
     ) -> Result<()>;
 }
 
+pub struct TargetAttachmentState {
+    pub setup_key: serde_json::Value,
+    pub setup_state: serde_json::Value,
+}
+
+#[async_trait]
+pub trait TargetAttachmentFactory: Send + Sync {
+    /// Normalize the key. e.g. the JSON format may change (after code change, e.g. new optional field or field ordering), even if the underlying value is not changed.
+    /// This should always return the canonical serialized form.
+    fn normalize_setup_key(&self, key: &serde_json::Value) -> Result<serde_json::Value>;
+
+    fn get_state(
+        &self,
+        target_name: &str,
+        target_spec: &spec::OpSpec,
+        attachment_spec: serde_json::Value,
+    ) -> Result<TargetAttachmentState>;
+
+    fn describe(&self, key: &serde_json::Value, state: &serde_json::Value) -> Result<String>;
+
+    fn has_update(&self, old: &serde_json::Value, new: &serde_json::Value) -> bool {
+        old != new
+    }
+
+    async fn apply_setup_change(
+        &self,
+        key: &serde_json::Value,
+        old: Option<serde_json::Value>,
+        new: Option<serde_json::Value>,
+    ) -> Result<()>;
+}
+
 #[derive(Clone)]
 pub enum ExecutorFactory {
     Source(Arc<dyn SourceFactory + Send + Sync>),
     SimpleFunction(Arc<dyn SimpleFunctionFactory + Send + Sync>),
     ExportTarget(Arc<dyn TargetFactory + Send + Sync>),
+    TargetAttachment(Arc<dyn TargetAttachmentFactory + Send + Sync>),
 }

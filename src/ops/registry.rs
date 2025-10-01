@@ -8,6 +8,8 @@ pub struct ExecutorFactoryRegistry {
     function_factories:
         HashMap<String, Arc<dyn super::interface::SimpleFunctionFactory + Send + Sync>>,
     target_factories: HashMap<String, Arc<dyn super::interface::TargetFactory + Send + Sync>>,
+    target_attachment_factories:
+        HashMap<String, Arc<dyn super::interface::TargetAttachmentFactory + Send + Sync>>,
 }
 
 impl Default for ExecutorFactoryRegistry {
@@ -22,6 +24,7 @@ impl ExecutorFactoryRegistry {
             source_factories: HashMap::new(),
             function_factories: HashMap::new(),
             target_factories: HashMap::new(),
+            target_attachment_factories: HashMap::new(),
         }
     }
 
@@ -57,6 +60,18 @@ impl ExecutorFactoryRegistry {
                     )),
                     std::collections::hash_map::Entry::Vacant(entry) => {
                         entry.insert(target_factory);
+                        Ok(())
+                    }
+                }
+            }
+            ExecutorFactory::TargetAttachment(target_attachment_factory) => {
+                match self.target_attachment_factories.entry(name) {
+                    std::collections::hash_map::Entry::Occupied(entry) => Err(anyhow::anyhow!(
+                        "Target attachment factory with name already exists: {}",
+                        entry.key()
+                    )),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(target_attachment_factory);
                         Ok(())
                     }
                 }

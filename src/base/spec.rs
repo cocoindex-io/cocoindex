@@ -493,6 +493,10 @@ impl fmt::Display for IndexOptions {
 pub struct ExportOpSpec {
     pub collector_name: FieldName,
     pub target: OpSpec,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<OpSpec>,
+
     pub index_options: IndexOptions,
     pub setup_by_user: bool,
 }
