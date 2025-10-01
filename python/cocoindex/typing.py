@@ -21,6 +21,21 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 
+# Optional Pydantic support
+try:
+    import pydantic
+
+    PYDANTIC_AVAILABLE = True
+except ImportError:
+    pydantic = None  # type: ignore[assignment]
+    PYDANTIC_AVAILABLE = False
+
+if TYPE_CHECKING:
+    if PYDANTIC_AVAILABLE:
+        from pydantic import BaseModel
+    else:
+        BaseModel = object  # type: ignore[misc,assignment]
+
 
 class VectorInfo(NamedTuple):
     dim: int | None
@@ -108,9 +123,19 @@ def is_namedtuple_type(t: type) -> bool:
     return isinstance(t, type) and issubclass(t, tuple) and hasattr(t, "_fields")
 
 
+def is_pydantic_model(t: Any) -> bool:
+    """Check if a type is a Pydantic model."""
+    if not PYDANTIC_AVAILABLE or not isinstance(t, type):
+        return False
+    try:
+        return issubclass(t, pydantic.BaseModel)
+    except TypeError:
+        return False
+
+
 def is_struct_type(t: Any) -> bool:
     return isinstance(t, type) and (
-        dataclasses.is_dataclass(t) or is_namedtuple_type(t)
+        dataclasses.is_dataclass(t) or is_namedtuple_type(t) or is_pydantic_model(t)
     )
 
 
@@ -353,6 +378,15 @@ def _encode_struct_schema(
         elif is_namedtuple_type(struct_type):
             for name, field_type in struct_type.__annotations__.items():
                 add_field(name, analyze_type_info(field_type))
+        elif is_pydantic_model(struct_type):
+            # Type guard: ensure we have pydantic available and struct_type has model_fields
+            if hasattr(struct_type, "model_fields"):
+                for name, field_info in struct_type.model_fields.items():  # type: ignore[attr-defined]
+                    # Get the annotation from the field info
+                    field_type = field_info.annotation
+                    add_field(name, analyze_type_info(field_type))
+            else:
+                raise ValueError(f"Invalid Pydantic model: {struct_type}")
         else:
             raise ValueError(f"Unsupported struct type: {struct_type}")
 

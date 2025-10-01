@@ -8,6 +8,16 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+# Optional Pydantic support for testing
+try:
+    from pydantic import BaseModel, Field
+
+    PYDANTIC_AVAILABLE = True
+except ImportError:
+    BaseModel = None  # type: ignore[misc,assignment]
+    Field = None  # type: ignore[misc,assignment]
+    PYDANTIC_AVAILABLE = False
+
 import cocoindex
 from cocoindex.convert import (
     dump_engine_object,
@@ -68,6 +78,29 @@ class CustomerNamedTuple(NamedTuple):
     name: str
     order: OrderNamedTuple
     tags: list[Tag] | None = None
+
+
+# Pydantic model definitions (if available)
+if PYDANTIC_AVAILABLE:
+
+    class OrderPydantic(BaseModel):
+        order_id: str
+        name: str
+        price: float
+        extra_field: str = "default_extra"
+
+    class TagPydantic(BaseModel):
+        name: str
+
+    class CustomerPydantic(BaseModel):
+        name: str
+        order: OrderPydantic
+        tags: list[TagPydantic] | None = None
+
+    class NestedStructPydantic(BaseModel):
+        customer: CustomerPydantic
+        orders: list[OrderPydantic]
+        count: int = 0
 
 
 def encode_engine_value(value: Any, type_hint: Type[Any] | str) -> Any:
@@ -1566,3 +1599,119 @@ def test_auto_default_for_supported_and_unsupported_types() -> None:
         match=r"Field 'b' \(type <class 'int'>\) without default value is missing in input: ",
     ):
         build_engine_value_decoder(Base, UnsupportedField)
+
+
+# Pydantic model tests
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_pydantic_simple_struct() -> None:
+    """Test basic Pydantic model encoding and decoding."""
+    order = OrderPydantic(order_id="O1", name="item1", price=10.0)
+    validate_full_roundtrip(order, OrderPydantic)
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_pydantic_struct_with_defaults() -> None:
+    """Test Pydantic model with default values."""
+    order = OrderPydantic(order_id="O1", name="item1", price=10.0)
+    assert order.extra_field == "default_extra"
+    validate_full_roundtrip(order, OrderPydantic)
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_pydantic_nested_struct() -> None:
+    """Test nested Pydantic models."""
+    order = OrderPydantic(order_id="O1", name="item1", price=10.0)
+    customer = CustomerPydantic(name="Alice", order=order)
+    validate_full_roundtrip(customer, CustomerPydantic)
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_pydantic_struct_with_list() -> None:
+    """Test Pydantic model with list fields."""
+    order = OrderPydantic(order_id="O1", name="item1", price=10.0)
+    tags = [TagPydantic(name="vip"), TagPydantic(name="premium")]
+    customer = CustomerPydantic(name="Alice", order=order, tags=tags)
+    validate_full_roundtrip(customer, CustomerPydantic)
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_pydantic_complex_nested_struct() -> None:
+    """Test complex nested Pydantic structure."""
+    order1 = OrderPydantic(order_id="O1", name="item1", price=10.0)
+    order2 = OrderPydantic(order_id="O2", name="item2", price=20.0)
+    customer = CustomerPydantic(
+        name="Alice", order=order1, tags=[TagPydantic(name="vip")]
+    )
+    nested = NestedStructPydantic(customer=customer, orders=[order1, order2], count=2)
+    validate_full_roundtrip(nested, NestedStructPydantic)
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_pydantic_struct_to_dict_binding() -> None:
+    """Test Pydantic model -> dict binding."""
+    order = OrderPydantic(order_id="O1", name="item1", price=10.0, extra_field="custom")
+    expected_dict = {
+        "order_id": "O1",
+        "name": "item1",
+        "price": 10.0,
+        "extra_field": "custom",
+    }
+
+    validate_full_roundtrip(
+        order,
+        OrderPydantic,
+        (expected_dict, Any),
+        (expected_dict, dict),
+        (expected_dict, dict[Any, Any]),
+        (expected_dict, dict[str, Any]),
+    )
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_make_engine_value_decoder_pydantic_struct() -> None:
+    """Test engine value decoder for Pydantic models."""
+    engine_val = ["O1", "item1", 10.0, "default_extra"]
+    decoder = build_engine_value_decoder(OrderPydantic)
+    result = decoder(engine_val)
+
+    assert isinstance(result, OrderPydantic)
+    assert result.order_id == "O1"
+    assert result.name == "item1"
+    assert result.price == 10.0
+    assert result.extra_field == "default_extra"
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_make_engine_value_decoder_pydantic_nested() -> None:
+    """Test engine value decoder for nested Pydantic models."""
+    engine_val = [
+        "Alice",
+        ["O1", "item1", 10.0, "default_extra"],
+        [["vip"]],
+    ]
+    decoder = build_engine_value_decoder(CustomerPydantic)
+    result = decoder(engine_val)
+
+    assert isinstance(result, CustomerPydantic)
+    assert result.name == "Alice"
+    assert isinstance(result.order, OrderPydantic)
+    assert result.order.order_id == "O1"
+    assert result.tags is not None
+    assert len(result.tags) == 1
+    assert isinstance(result.tags[0], TagPydantic)
+    assert result.tags[0].name == "vip"
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_pydantic_mixed_with_dataclass() -> None:
+    """Test mixing Pydantic models with dataclasses."""
+
+    # Create a dataclass that uses a Pydantic model
+    @dataclass
+    class MixedStruct:
+        name: str
+        pydantic_order: OrderPydantic
+
+    order = OrderPydantic(order_id="O1", name="item1", price=10.0)
+    mixed = MixedStruct(name="test", pydantic_order=order)
+    validate_full_roundtrip(mixed, MixedStruct)

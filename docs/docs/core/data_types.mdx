@@ -105,12 +105,14 @@ The Python type is `T1 | T2 | ...`, e.g. `cocoindex.Int64 | cocoindex.Float32 | 
 
 A *Struct* has a bunch of fields, each with a name and a type.
 
-In Python, a *Struct* type is represented by either a [dataclass](https://docs.python.org/3/library/dataclasses.html)
-or a [NamedTuple](https://docs.python.org/3/library/typing.html#typing.NamedTuple), with all fields annotated with a specific type.
-Both options define a structured type with named fields, but they differ slightly:
+In Python, a *Struct* type is represented by either a [dataclass](https://docs.python.org/3/library/dataclasses.html),
+a [NamedTuple](https://docs.python.org/3/library/typing.html#typing.NamedTuple), or a [Pydantic model](https://pydantic.dev/),
+with all fields annotated with a specific type.
+These options define a structured type with named fields, but they differ slightly:
 
 - **Dataclass**: A flexible class-based structure, mutable by default, defined using the `@dataclass` decorator.
 - **NamedTuple**: An immutable tuple-based structure, defined using `typing.NamedTuple`.
+- **Pydantic model**: A modern data validation and parsing structure, defined by inheriting from `pydantic.BaseModel`.
 
 For example:
 
@@ -131,10 +133,22 @@ class PersonTuple(NamedTuple):
     first_name: str
     last_name: str
     dob: datetime.date
+
+# Using Pydantic (optional dependency)
+try:
+    from pydantic import BaseModel
+    
+    class PersonModel(BaseModel):
+        first_name: str
+        last_name: str
+        dob: datetime.date
+except ImportError:
+    # Pydantic is optional
+    pass
 ```
 
-Both `Person` and `PersonTuple` are valid Struct types in CocoIndex, with identical schemas (three fields: `first_name` (Str), `last_name` (Str), `dob` (Date)).
-Choose `dataclass` for mutable objects or when you need additional methods, and `NamedTuple` for immutable, lightweight structures.
+All three examples (`Person`, `PersonTuple`, and `PersonModel`) are valid Struct types in CocoIndex, with identical schemas (three fields: `first_name` (Str), `last_name` (Str), `dob` (Date)).
+Choose `dataclass` for mutable objects, `NamedTuple` for immutable lightweight structures, or `Pydantic` for data validation and serialization features.
 
 Besides, for arguments of custom functions, CocoIndex also supports using dictionaries (`dict[str, Any]`) to represent a *Struct* type.
 It's the default Python type if you don't annotate the function argument with a specific type.
@@ -165,10 +179,10 @@ When a specific type annotation is not provided:
 - The value binds to `dict[str, Any]`.
 
 
-For example, you can use `dict[str, Person]` or `dict[str, PersonTuple]` to represent a *KTable*, with 4 columns: key (*Str*), `first_name` (*Str*), `last_name` (*Str*), `dob` (*Date*).
+For example, you can use `dict[str, Person]`, `dict[str, PersonTuple]`, or `dict[str, PersonModel]` to represent a *KTable*, with 4 columns: key (*Str*), `first_name` (*Str*), `last_name` (*Str*), `dob` (*Date*).
 It's bound to `dict[str, dict[str, Any]]` if you don't annotate the function argument with a specific type.
 
-Note that when using a Struct as the key, it must be immutable in Python. For a dataclass, annotate it with `@dataclass(frozen=True)`. For `NamedTuple`, immutability is built-in. For example:
+Note that when using a Struct as the key, it must be immutable in Python. For a dataclass, annotate it with `@dataclass(frozen=True)`. For `NamedTuple`, immutability is built-in. For Pydantic models, use `frozen=True` in the model configuration. For example:
 
 ```python
 @dataclass(frozen=True)
@@ -179,9 +193,20 @@ class PersonKey:
 class PersonKeyTuple(NamedTuple):
     id_kind: str
     id: str
+
+# Pydantic frozen model (if available)
+try:
+    from pydantic import BaseModel
+    
+    class PersonKeyModel(BaseModel):
+        model_config = {"frozen": True}
+        id_kind: str
+        id: str
+except ImportError:
+    pass
 ```
 
-Then you can use `dict[PersonKey, Person]` or `dict[PersonKeyTuple, PersonTuple]` to represent a KTable keyed by both `id_kind` and `id`.
+Then you can use `dict[PersonKey, Person]`, `dict[PersonKeyTuple, PersonTuple]`, or `dict[PersonKeyModel, PersonModel]` to represent a KTable keyed by both `id_kind` and `id`.
 If you don't annotate the function argument with a specific type, it's bound to `dict[tuple[str, str], dict[str, Any]]`.
 
 
@@ -190,7 +215,7 @@ If you don't annotate the function argument with a specific type, it's bound to 
 *LTable* is a *Table* type whose row order is preserved. *LTable* has no key column.
 
 In Python, a *LTable* type is represented by `list[R]`, where `R` is the type binding to the *Struct* type representing the value fields of each row.
-For example, you can use `list[Person]` to represent a *LTable* with 3 columns: `first_name` (*Str*), `last_name` (*Str*), `dob` (*Date*).
+For example, you can use `list[Person]`, `list[PersonTuple]`, or `list[PersonModel]` to represent a *LTable* with 3 columns: `first_name` (*Str*), `last_name` (*Str*), `dob` (*Date*).
 It's bound to `list[dict[str, Any]]` if you don't annotate the function argument with a specific type.
 
 ## Key Types

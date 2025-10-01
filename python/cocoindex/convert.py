@@ -26,6 +26,7 @@ from .typing import (
     analyze_type_info,
     encode_enriched_type,
     is_namedtuple_type,
+    is_pydantic_model,
     is_numpy_number_type,
     extract_ndarray_elem_dtype,
     ValueType,
@@ -166,6 +167,29 @@ def make_engine_value_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], An
                 ]
 
             return encode_namedtuple
+
+        elif is_pydantic_model(struct_type):
+            # Type guard: ensure we have model_fields attribute
+            if hasattr(struct_type, "model_fields"):
+                field_names = list(struct_type.model_fields.keys())  # type: ignore[attr-defined]
+                field_encoders = [
+                    make_engine_value_encoder(
+                        analyze_type_info(struct_type.model_fields[name].annotation)  # type: ignore[attr-defined]
+                    )
+                    for name in field_names
+                ]
+            else:
+                raise ValueError(f"Invalid Pydantic model: {struct_type}")
+
+            def encode_pydantic(value: Any) -> Any:
+                if value is None:
+                    return None
+                return [
+                    encoder(getattr(value, name))
+                    for encoder, name in zip(field_encoders, field_names)
+                ]
+
+            return encode_pydantic
 
     def encode_basic_value(value: Any) -> Any:
         if isinstance(value, np.number):
@@ -472,7 +496,7 @@ def make_engine_struct_decoder(
     if not isinstance(dst_type_variant, AnalyzedStructType):
         raise ValueError(
             f"Type mismatch for `{''.join(field_path)}`: "
-            f"declared `{dst_type_info.core_type}`, a dataclass, NamedTuple or dict[str, Any] expected"
+            f"declared `{dst_type_info.core_type}`, a dataclass, NamedTuple, Pydantic model or dict[str, Any] expected"
         )
 
     src_name_to_idx = {f.name: i for i, f in enumerate(src_fields)}
@@ -495,6 +519,26 @@ def make_engine_struct_decoder(
             )
             for name in fields
         }
+    elif is_pydantic_model(dst_struct_type):
+        # For Pydantic models, we can use model_fields to get field information
+        parameters = {}
+        # Type guard: ensure we have model_fields attribute
+        if hasattr(dst_struct_type, "model_fields"):
+            model_fields = dst_struct_type.model_fields  # type: ignore[attr-defined]
+        else:
+            model_fields = {}
+        for name, field_info in model_fields.items():
+            default_value = (
+                field_info.default
+                if field_info.default is not ...
+                else inspect.Parameter.empty
+            )
+            parameters[name] = inspect.Parameter(
+                name=name,
+                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=default_value,
+                annotation=field_info.annotation,
+            )
     else:
         raise ValueError(f"Unsupported struct type: {dst_struct_type}")
 
@@ -536,9 +580,21 @@ def make_engine_struct_decoder(
         make_closure_for_field(name, param) for (name, param) in parameters.items()
     ]
 
-    return lambda values: dst_struct_type(
-        *(decoder(values) for decoder in field_value_decoder)
-    )
+    # Different construction for different struct types
+    if is_pydantic_model(dst_struct_type):
+        # Pydantic models prefer keyword arguments
+        field_names = list(parameters.keys())
+        return lambda values: dst_struct_type(
+            **{
+                field_names[i]: decoder(values)
+                for i, decoder in enumerate(field_value_decoder)
+            }
+        )
+    else:
+        # Dataclasses and NamedTuples can use positional arguments
+        return lambda values: dst_struct_type(
+            *(decoder(values) for decoder in field_value_decoder)
+        )
 
 
 def _make_engine_struct_to_dict_decoder(
@@ -718,7 +774,7 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
             for k, val in v.items()
         }
 
-    # Structs (dataclass or NamedTuple)
+    # Structs (dataclass, NamedTuple, or Pydantic)
     if isinstance(variant, AnalyzedStructType):
         struct_type = variant.struct_type
         if dataclasses.is_dataclass(struct_type):
@@ -743,6 +799,23 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
                 if name in v:
                     nt_init_kwargs[name] = load_engine_object(f_type, v[name])
             return struct_type(**nt_init_kwargs)
+        elif is_pydantic_model(struct_type):
+            if not isinstance(v, Mapping):
+                raise ValueError(f"Expected dict for Pydantic model, got {type(v)}")
+            # Drop auxiliary discriminator "kind" if present
+            pydantic_init_kwargs: dict[str, Any] = {}
+            # Type guard: ensure we have model_fields attribute
+            if hasattr(struct_type, "model_fields"):
+                model_fields = struct_type.model_fields  # type: ignore[attr-defined]
+            else:
+                model_fields = {}
+            field_types = {
+                name: field.annotation for name, field in model_fields.items()
+            }
+            for name, f_type in field_types.items():
+                if name in v:
+                    pydantic_init_kwargs[name] = load_engine_object(f_type, v[name])
+            return struct_type(**pydantic_init_kwargs)
         return v
 
     # Union with discriminator support via "kind"
