@@ -219,6 +219,10 @@ impl JsonSchemaBuilder {
                             *instance_type = SingleOrVec::Vec(types);
                         }
                     }
+                    // Set field description if available
+                    if let Some(description) = &f.description {
+                        self.set_description(&mut schema, description, field_path.prepend(&f.name));
+                    }
                     (f.name.to_string(), schema.into())
                 })
                 .collect(),

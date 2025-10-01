@@ -1715,3 +1715,81 @@ def test_pydantic_mixed_with_dataclass() -> None:
     order = OrderPydantic(order_id="O1", name="item1", price=10.0)
     mixed = MixedStruct(name="test", pydantic_order=order)
     validate_full_roundtrip(mixed, MixedStruct)
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_pydantic_field_descriptions() -> None:
+    """Test that Pydantic field descriptions are extracted and included in schema."""
+    from pydantic import BaseModel, Field
+
+    class UserWithDescriptions(BaseModel):
+        """A user model with field descriptions."""
+        name: str = Field(description="The user's full name")
+        age: int = Field(description="The user's age in years", ge=0, le=150)
+        email: str = Field(description="The user's email address")
+        is_active: bool = Field(description="Whether the user account is active", default=True)
+
+    # Test that field descriptions are extracted
+    encoded_schema = dump_engine_object(UserWithDescriptions)
+    
+    # Check that the schema contains field descriptions
+    assert "fields" in encoded_schema["type"]
+    fields = encoded_schema["type"]["fields"]
+    
+    # Find fields by name and check descriptions
+    field_descriptions = {field["name"]: field.get("description") for field in fields}
+    
+    assert field_descriptions["name"] == "The user's full name"
+    assert field_descriptions["age"] == "The user's age in years"
+    assert field_descriptions["email"] == "The user's email address"
+    assert field_descriptions["is_active"] == "Whether the user account is active"
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_pydantic_field_descriptions_without_field() -> None:
+    """Test that Pydantic models without field descriptions work correctly."""
+    from pydantic import BaseModel
+
+    class UserWithoutDescriptions(BaseModel):
+        """A user model without field descriptions."""
+        name: str
+        age: int
+        email: str
+
+    # Test that the schema works without descriptions
+    encoded_schema = dump_engine_object(UserWithoutDescriptions)
+    
+    # Check that the schema contains fields but no descriptions
+    assert "fields" in encoded_schema["type"]
+    fields = encoded_schema["type"]["fields"]
+    
+    # Verify no descriptions are present
+    for field in fields:
+        assert "description" not in field or field["description"] is None
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_pydantic_mixed_descriptions() -> None:
+    """Test Pydantic model with some fields having descriptions and others not."""
+    from pydantic import BaseModel, Field
+
+    class MixedDescriptions(BaseModel):
+        """A model with mixed field descriptions."""
+        name: str = Field(description="The name field")
+        age: int  # No description
+        email: str = Field(description="The email field")
+        active: bool  # No description
+
+    # Test that only fields with descriptions have them in the schema
+    encoded_schema = dump_engine_object(MixedDescriptions)
+    
+    assert "fields" in encoded_schema["type"]
+    fields = encoded_schema["type"]["fields"]
+    
+    # Find fields by name and check descriptions
+    field_descriptions = {field["name"]: field.get("description") for field in fields}
+    
+    assert field_descriptions["name"] == "The name field"
+    assert field_descriptions["age"] is None
+    assert field_descriptions["email"] == "The email field"
+    assert field_descriptions["active"] is None

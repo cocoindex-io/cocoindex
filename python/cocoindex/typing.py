@@ -359,7 +359,7 @@ def _encode_struct_schema(
 ) -> tuple[dict[str, Any], int | None]:
     fields = []
 
-    def add_field(name: str, analyzed_type: AnalyzedTypeInfo) -> None:
+    def add_field(name: str, analyzed_type: AnalyzedTypeInfo, description: str | None = None) -> None:
         try:
             type_info = encode_enriched_type_info(analyzed_type)
         except ValueError as e:
@@ -369,6 +369,8 @@ def _encode_struct_schema(
             )
             raise
         type_info["name"] = name
+        if description is not None:
+            type_info["description"] = description
         fields.append(type_info)
 
     def add_fields_from_struct(struct_type: type) -> None:
@@ -384,7 +386,9 @@ def _encode_struct_schema(
                 for name, field_info in struct_type.model_fields.items():  # type: ignore[attr-defined]
                     # Get the annotation from the field info
                     field_type = field_info.annotation
-                    add_field(name, analyze_type_info(field_type))
+                    # Extract description from Pydantic field info
+                    description = getattr(field_info, 'description', None)
+                    add_field(name, analyze_type_info(field_type), description)
             else:
                 raise ValueError(f"Invalid Pydantic model: {struct_type}")
         else:
@@ -624,14 +628,21 @@ class EnrichedValueType:
 class FieldSchema:
     name: str
     value_type: EnrichedValueType
+    description: str | None = None
 
     @staticmethod
     def decode(obj: dict[str, Any]) -> "FieldSchema":
-        return FieldSchema(name=obj["name"], value_type=EnrichedValueType.decode(obj))
+        return FieldSchema(
+            name=obj["name"], 
+            value_type=EnrichedValueType.decode(obj),
+            description=obj.get("description")
+        )
 
     def encode(self) -> dict[str, Any]:
         result = self.value_type.encode()
         result["name"] = self.name
+        if self.description is not None:
+            result["description"] = self.description
         return result
 
 
