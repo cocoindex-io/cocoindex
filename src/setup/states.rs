@@ -176,8 +176,15 @@ impl Display for ResourceIdentifier {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TargetSetupStateCommon {
     pub target_id: i32,
+
+    /// schema_version_id indicates if a previous exported target row (as tracked by the tracking table)
+    /// is possible to be reused without re-exporting the row, on the exported values don't change.
+    ///
+    /// Note that sometimes even if exported values don't change, the target row may still need to be re-exported,
+    /// for example, a column is dropped then added back (which has data loss in between).
     pub schema_version_id: usize,
     pub max_schema_version_id: usize,
+
     #[serde(default)]
     pub setup_by_user: bool,
     #[serde(default)]
