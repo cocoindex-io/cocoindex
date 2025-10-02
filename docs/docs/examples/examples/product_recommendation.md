@@ -39,7 +39,7 @@ Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choos
 
 
 ## Documentation
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets#property-graph-targets" text="Property Graph Targets" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/targets#property-graph-targets" text="Property Graph Targets" margin="0 0 16px 0" />
 
 ## Flow Overview
 

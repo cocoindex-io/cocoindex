@@ -140,7 +140,7 @@ This decorator marks this as a reusable transformation flow that can be called o
 
 CocoIndex doesn't provide additional query interface at the moment. We can write SQL or rely on the query engine by the target storage, if any.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets#postgres" text="Postgres" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/targets/postgres" text="Postgres" margin="0 0 16px 0" />
 
 
 ```python
