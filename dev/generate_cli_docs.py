@@ -194,6 +194,11 @@ def generate_command_docs(cmd: click.Group) -> str:
 
     markdown_content = []
 
+    # Disable lint warnings for about "first line in file should be a top level heading"
+    # We intentionally start with a level 2 heading below, as this file is imported into another file.
+    markdown_content.append("<!-- markdownlint-disable MD041 -->")
+    markdown_content.append("")
+
     # Add top-level heading to satisfy MD041 linting rule
     markdown_content.append("## Subcommands Reference")
     markdown_content.append("")
