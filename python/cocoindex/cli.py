@@ -220,6 +220,29 @@ def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
     console.print(table)
 
 
+def _drop_flows(flows: Iterable[flow.Flow], force: bool = False) -> None:
+    """
+    Helper function to drop flows without user interaction.
+    Used internally by --reset flag
+
+    Args:
+        flows: Iterable of Flow objects to drop
+        force: If True, skip confirmation prompts
+    """
+    flows_list = list(flows)
+    if not flows_list:
+        return
+
+    setup_bundle = flow.make_drop_bundle(flows_list)
+    description, is_up_to_date = setup_bundle.describe()
+
+    if is_up_to_date:
+        return
+
+    click.echo(description)
+    setup_bundle.apply(report_to_stdout=True)
+
+
 def _setup_flows(
     flow_iter: Iterable[flow.Flow],
     *,
@@ -269,7 +292,14 @@ async def _update_all_flows_with_hint_async(
     default=False,
     help="Force setup without confirmation prompts.",
 )
-def setup(app_target: str, force: bool) -> None:
+@click.option(
+    "--reset",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Drop existing setup before running setup (equivalent to running 'cocoindex drop' first).",
+)
+def setup(app_target: str, force: bool, reset: bool) -> None:
     """
     Check and apply backend setup changes for flows, including the internal storage and target (to export to).
 
@@ -277,6 +307,11 @@ def setup(app_target: str, force: bool) -> None:
     """
     app_ref = _get_app_ref_from_specifier(app_target)
     _load_user_app(app_ref)
+
+    # If --reset is specified, drop existing setup first
+    if reset:
+        _drop_flows(flow.flows().values(), force=force)
+
     _setup_flows(flow.flows().values(), force=force, always_show_setup=True)
 
 
@@ -376,6 +411,13 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
     help="Automatically setup backends for the flow if it's not setup yet.",
 )
 @click.option(
+    "--reset",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Drop existing setup before updating (equivalent to running 'cocoindex drop' first).",
+)
+@click.option(
     "-f",
     "--force",
     is_flag=True,
@@ -396,6 +438,7 @@ def update(
     live: bool,
     reexport: bool,
     setup: bool,  # pylint: disable=redefined-outer-name
+    reset: bool,
     force: bool,
     quiet: bool,
 ) -> None:
@@ -407,6 +450,15 @@ def update(
     """
     app_ref, flow_name = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
+
+    # If --reset is specified, drop existing setup first
+    if reset:
+        if flow_name:
+            # Reset specific flow only
+            _drop_flows([flow.flow_by_name(flow_name)], force=force)
+        else:
+            # Reset all flows
+            _drop_flows(flow.flows().values(), force=force)
 
     if live:
         click.secho(
@@ -530,6 +582,13 @@ def evaluate(
     help="Automatically setup backends for the flow if it's not setup yet.",
 )
 @click.option(
+    "--reset",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Drop existing setup before starting server (equivalent to running 'cocoindex drop' first).",
+)
+@click.option(
     "--reexport",
     is_flag=True,
     show_default=True,
@@ -565,6 +624,7 @@ def server(
     address: str | None,
     live_update: bool,
     setup: bool,  # pylint: disable=redefined-outer-name
+    reset: bool,
     reexport: bool,
     force: bool,
     quiet: bool,
@@ -589,6 +649,7 @@ def server(
         cors_local,
         live_update,
         setup,
+        reset,
         reexport,
         force,
         quiet,
@@ -638,6 +699,7 @@ def _run_server(
     cors_local: int | None = None,
     live_update: bool = False,
     run_setup: bool = False,
+    run_reset: bool = False,
     reexport: bool = False,
     force: bool = False,
     quiet: bool = False,
@@ -663,6 +725,10 @@ def _run_server(
             err=True,
         )
         raise click.Abort()
+
+    # If --reset is specified, drop existing setup first
+    if run_reset:
+        _drop_flows(flow.flows().values(), force=force)
 
     server_settings = setting.ServerSettings.from_env()
     cors_origins: set[str] = set(server_settings.cors_origins or [])
