@@ -147,7 +147,7 @@ The `cocoindex update` subcommand creates/updates data in the target.
 Once it's done, the target data is fresh up to the moment when the command is called.
 
 ```sh
-cocoindex update main.py
+cocoindex update main
 ```
 
 With a `--setup` option, it will also setup the flow first if needed.
@@ -220,7 +220,7 @@ Change capture mechanisms enable CocoIndex to continuously capture changes from 
 To perform live update, run the `cocoindex update` subcommand with `-L` option:
 
 ```sh
-cocoindex update main.py -L
+cocoindex update main -L
 ```
 
 If there's at least one data source with change capture mechanism enabled, it will keep running until aborted (e.g. by `Ctrl-C`).

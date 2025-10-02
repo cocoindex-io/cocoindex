@@ -51,7 +51,7 @@ Before running the example, you need to:
 - Setup:
 
     ```sh
-    cocoindex setup main.py
+    cocoindex setup main
     ```
 
 - Run:
