@@ -1312,11 +1312,11 @@ mod tests {
         assert!(validate_vector_index_method(&None).is_ok());
     }
 
-    #[test] 
+    #[test]
     fn test_validate_vector_index_method_rejects_ivfflat() {
         let ivfflat = Some(VectorIndexMethod::IvfFlat { lists: Some(100) });
         let result = validate_vector_index_method(&ivfflat);
-        
+
         assert!(result.is_err());
         let error_msg = format!("{}", result.unwrap_err());
         assert!(error_msg.contains("IVFFlat vector index method is not supported by Kuzu"));
@@ -1336,7 +1336,9 @@ mod tests {
         assert!(result.is_ok());
 
         let query = cypher.query;
-        assert!(query.contains("CALL CREATE_VECTOR_INDEX('documents', 'documents_embedding_vector_idx', 'embedding'"));
+        assert!(query.contains(
+            "CALL CREATE_VECTOR_INDEX('documents', 'documents_embedding_vector_idx', 'embedding'"
+        ));
         assert!(query.contains("metric := 'cosine'"));
         assert!(query.ends_with(");\n"));
     }
@@ -1380,19 +1382,26 @@ mod tests {
             };
 
             append_create_vector_index(&mut cypher, "test_table", &index_def).unwrap();
-            assert!(cypher.query.contains(&format!("metric := '{}'", expected_kuzu_metric)));
+            assert!(
+                cypher
+                    .query
+                    .contains(&format!("metric := '{}'", expected_kuzu_metric))
+            );
         }
     }
 
     #[test]
     fn test_append_drop_vector_index() {
         let mut cypher = CypherBuilder::new();
-        
+
         let result = append_drop_vector_index(&mut cypher, "documents", "embedding");
         assert!(result.is_ok());
 
         let query = cypher.query;
-        assert_eq!(query, "CALL DROP_VECTOR_INDEX('documents', 'documents_embedding_vector_idx');\n");
+        assert_eq!(
+            query,
+            "CALL DROP_VECTOR_INDEX('documents', 'documents_embedding_vector_idx');\n"
+        );
     }
 
     #[test]
@@ -1400,19 +1409,28 @@ mod tests {
         let state1 = VectorIndexState {
             field_name: "embedding".to_string(),
             metric: VectorSimilarityMetric::CosineSimilarity,
-            method: Some(VectorIndexMethod::Hnsw { m: Some(16), ef_construction: Some(200) }),
+            method: Some(VectorIndexMethod::Hnsw {
+                m: Some(16),
+                ef_construction: Some(200),
+            }),
         };
 
         let state2 = VectorIndexState {
             field_name: "embedding".to_string(),
             metric: VectorSimilarityMetric::CosineSimilarity,
-            method: Some(VectorIndexMethod::Hnsw { m: Some(16), ef_construction: Some(200) }),
+            method: Some(VectorIndexMethod::Hnsw {
+                m: Some(16),
+                ef_construction: Some(200),
+            }),
         };
 
         let state3 = VectorIndexState {
             field_name: "embedding".to_string(),
             metric: VectorSimilarityMetric::L2Distance, // Different metric
-            method: Some(VectorIndexMethod::Hnsw { m: Some(16), ef_construction: Some(200) }),
+            method: Some(VectorIndexMethod::Hnsw {
+                m: Some(16),
+                ef_construction: Some(200),
+            }),
         };
 
         assert_eq!(state1, state2);
@@ -1424,7 +1442,10 @@ mod tests {
         let state = VectorIndexState {
             field_name: "embedding".to_string(),
             metric: VectorSimilarityMetric::CosineSimilarity,
-            method: Some(VectorIndexMethod::Hnsw { m: Some(16), ef_construction: Some(200) }),
+            method: Some(VectorIndexMethod::Hnsw {
+                m: Some(16),
+                ef_construction: Some(200),
+            }),
         };
 
         // Test serialization
@@ -1475,8 +1496,16 @@ mod tests {
     #[test]
     fn test_index_naming_consistency() {
         let test_cases = vec![
-            ("users", "profile_embedding", "users_profile_embedding_vector_idx"),
-            ("documents", "content_vector", "documents_content_vector_vector_idx"),
+            (
+                "users",
+                "profile_embedding",
+                "users_profile_embedding_vector_idx",
+            ),
+            (
+                "documents",
+                "content_vector",
+                "documents_content_vector_vector_idx",
+            ),
             ("items", "embedding", "items_embedding_vector_idx"),
         ];
 
