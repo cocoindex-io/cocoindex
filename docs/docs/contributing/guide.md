@@ -24,7 +24,7 @@ To submit your code:
 1. Fork the [CocoIndex repository](https://github.com/cocoindex-io/cocoindex)
 2. [Create a new branch](https://docs.github.com/en/desktop/making-changes-in-a-branch/managing-branches-in-github-desktop) on your fork
 3. Make your changes
-4. Run the pre-commit checks (automatically triggered on `git commit`)
+4. Run the pre-commit checks. It will be automatically triggered on `git commit` after you install the pre-commit hooks by `pre-commit install` (see [Setup Development Environment](setup_dev_environment.md)).
 
     :::tip
     To run them manually (same as CI):
