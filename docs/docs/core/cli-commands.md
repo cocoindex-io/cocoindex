@@ -1,6 +1,6 @@
-# CLI Commands
+## Subcommands Reference
 
-## `drop`
+### `drop`
 
 Drop the backend setup for flows.
 
@@ -25,7 +25,7 @@ cocoindex drop [OPTIONS] [APP_TARGET] [FLOW_NAME]...
 
 ---
 
-## `evaluate`
+### `evaluate`
 
 Evaluate the flow and dump flow outputs to files.
 
@@ -65,7 +65,7 @@ cocoindex evaluate [OPTIONS] APP_FLOW_SPECIFIER
 
 ---
 
-## `ls`
+### `ls`
 
 List all flows.
 
@@ -91,7 +91,7 @@ cocoindex ls [OPTIONS] [APP_TARGET]
 
 ---
 
-## `server`
+### `server`
 
 Start a HTTP server providing REST APIs.
 
@@ -123,7 +123,7 @@ cocoindex server [OPTIONS] APP_TARGET
 
 ---
 
-## `setup`
+### `setup`
 
 Check and apply backend setup changes for flows, including the internal
 
@@ -146,7 +146,7 @@ cocoindex setup [OPTIONS] APP_TARGET
 
 ---
 
-## `show`
+### `show`
 
 Show the flow spec and schema.
 
@@ -182,7 +182,7 @@ cocoindex show [OPTIONS] APP_FLOW_SPECIFIER
 
 ---
 
-## `update`
+### `update`
 
 Update the index to reflect the latest data from data sources.
 

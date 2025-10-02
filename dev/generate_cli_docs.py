@@ -7,23 +7,15 @@ documentation that's suitable for inclusion in the CocoIndex documentation site.
 """
 
 import sys
-import os
 from pathlib import Path
 import re
-from typing import Dict, List, Any
+import click
+from cocoindex.cli import cli
 
 # Add the cocoindex python directory to the path
 project_root = Path(__file__).parent.parent
 python_path = project_root / "python"
 sys.path.insert(0, str(python_path))
-
-try:
-    import md_click
-    from cocoindex.cli import cli
-except ImportError as e:
-    print(f"Error importing required modules: {e}")
-    print("Make sure to run this script from the project root and install dependencies")
-    sys.exit(1)
 
 
 def clean_usage_line(usage: str) -> str:
@@ -197,34 +189,26 @@ def extract_description(help_text: str) -> str:
     return escape_html_tags(description)  # Escape HTML tags for MDX compatibility
 
 
-def generate_command_docs(docs: List[Dict[str, Any]]) -> str:
+def generate_command_docs(cmd: click.Group) -> str:
     """Generate markdown documentation for all commands."""
-
-    # Separate main CLI from subcommands
-    main_cli = None
-    subcommands = []
-
-    for doc in docs:
-        parent = doc.get("parent", "")
-        if not parent:
-            main_cli = doc
-        else:
-            subcommands.append(doc)
 
     markdown_content = []
 
     # Add top-level heading to satisfy MD041 linting rule
-    markdown_content.append("# CLI Commands")
+    markdown_content.append("## Subcommands Reference")
     markdown_content.append("")
 
+    ctx = click.core.Context(cmd, info_name=cmd.name)
+    subcommands = list(cmd.commands.values())
     # Generate only the command details section (remove redundant headers)
-    for doc in sorted(subcommands, key=lambda x: x["command"].name):
-        command_name = doc["command"].name
-        help_text = doc["help"]
-        usage = clean_usage_line(doc["usage"])
+    for sub_cmd in sorted(subcommands, key=lambda x: x.name or ""):
+        sub_ctx = click.core.Context(sub_cmd, info_name=sub_cmd.name, parent=ctx)
+        command_name = sub_cmd.name
+        help_text = sub_cmd.get_help(sub_ctx)
+        usage = clean_usage_line(sub_cmd.get_usage(sub_ctx))
         description = extract_description(help_text)
 
-        markdown_content.append(f"## `{command_name}`")
+        markdown_content.append(f"### `{command_name}`")
         markdown_content.append("")
 
         if description:
@@ -252,19 +236,13 @@ def generate_command_docs(docs: List[Dict[str, Any]]) -> str:
     return "\n".join(markdown_content)
 
 
-def main():
+def main() -> None:
     """Generate CLI documentation and save to file."""
     print("Generating CocoIndex CLI documentation...")
 
     try:
-        # Generate documentation using md-click
-        docs_generator = md_click.main.recursive_help(cli)
-        docs = list(docs_generator)
-
-        print(f"Found {len(docs)} CLI commands to document")
-
         # Generate markdown content
-        markdown_content = generate_command_docs(docs)
+        markdown_content = generate_command_docs(cli)
 
         # Determine output path
         docs_dir = project_root / "docs" / "docs" / "core"
