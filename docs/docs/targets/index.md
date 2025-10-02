@@ -10,21 +10,15 @@ import { ExampleButton } from '../../src/components/GitHubButton';
 For each target, data are exported from a data collector, containing data of multiple entries, each with multiple fields.
 The way to map data from a data collector to a target depends on data model of the target.
 
+## Targets Overview
 
-| Documentation    | Type                    |
+| Documentation    | See Also                    |
 |------------------|-------------------------|
-| [Postgres](./targets/postgres) | Entry-oriented Targets        |
-| [Qdrant](./targets/qdrant)     | Entry-oriented Targets        |
-| [LanceDB](./targets/lancedb)   | Entry-oriented Targets        |
-| [Neo4j](./targets/neo4j)       | [Property graph Targets](#property-graph-targets)        |
-| [Kuzu](./targets/kuzu)         | [Property graph Targets](#property-graph-targets)        |
-
-
-## Entry-Oriented Targets
-
-An entry-oriented target organizes data into independent entries, such as rows, key-value pairs, or documents.
-Each entry is self-contained and does not explicitly link to others.
-There is usually a straightforward mapping from data collector rows to entries.
+| [Postgres](/docs/targets/postgres) | Relational Database, Vector Search (PGVector)   |
+| [Qdrant](/docs/targets/qdrant)     | Vector Database, Keyword Search       |
+| [LanceDB](/docs/targets/lancedb)   | Vector Database, Keyword Search         |
+| [Neo4j](/docs/targets/neo4j)       | [Property graph](#property-graph-targets)        |
+| [Kuzu](/docs/targets/kuzu)         | [Property graph](#property-graph-targets)        |
 
 
 ## Property Graph Targets
