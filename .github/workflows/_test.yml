@@ -56,7 +56,7 @@ jobs:
             ${{ matrix.platform.python_exec }} -m maturin develop -E all
         - name: Python type check (mypy)
           run: |
-            ${{ matrix.platform.python_exec }} -m mypy python
+            ${{ matrix.platform.python_exec }} -m mypy python examples
         - name: Python tests
           run: |
             ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests
