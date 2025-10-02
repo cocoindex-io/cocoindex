@@ -204,7 +204,7 @@ There're two CocoIndex-specific logic:
 - Run the following command to setup and update the index.
 
     ```sh
-    cocoindex update --setup main.py
+    cocoindex update --setup main
     ```
 
 - Start the interactive query in terminal.

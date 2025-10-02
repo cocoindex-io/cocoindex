@@ -152,7 +152,7 @@ CocoIndex supports other vector databases as well, with 1-line switch.
 - Build the index:
 
     ```bash
-    cocoindex update --setup main.py
+    cocoindex update --setup main
     ```
 
 CocoIndex will run for a few seconds and populate the target table with data as declared by the flow. It will output the following statistics:

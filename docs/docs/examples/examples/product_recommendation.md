@@ -364,7 +364,7 @@ Note that different relationships may share the same source and target nodes.
 
 2.  Run the following command to setup and update the index.
     ```sh
-    cocoindex update --setup main.py
+    cocoindex update --setup main
     ```
 
     You'll see the index updates state in the terminal. For example, you'll see the following output:

@@ -229,7 +229,7 @@ patients_index.export(
 
 ### Setup and update the index
     ```sh
-    cocoindex update --setup main.py
+    cocoindex update --setup main
     ```
     You'll see the index updates state in the terminal
 
