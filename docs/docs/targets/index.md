@@ -14,7 +14,7 @@ The way to map data from a data collector to a target depends on data model of t
 | Target   | Documentation | Type                    |
 |----------|---------------|-------------------------|
 | Postgres | [Postgres](./targets/postgres) | Entry-oriented Targets        |
-| Qdrant   | [Qdrant](./qdrant)     | Entry-oriented Targets        |
+| Qdrant   | [Qdrant](./targets/qdrant)     | Entry-oriented Targets        |
 | LanceDB  | [LanceDB](./targets/lancedb)   | Entry-oriented Targets        |
 | Neo4j    | [Neo4j](./targets/neo4j)       | [Property graph Targets](#property-graph-targets)        |
 | Kuzu     | [Kuzu](./targets/kuzu)         | [Property graph Targets](#property-graph-targets)        |
@@ -121,13 +121,13 @@ graph TD
 
 ### Declare Extra Node Labels
 
-If a node label needs to appear as source or target of a relationship, but not exported as a node, you need to [declare](../core/flow_def#target-declarations) the label with necessary configuration.
+If a node label needs to appear as source or target of a relationship, but not exported as a node, you need to [declare](/docs/core/flow_def#target-declarations) the label with necessary configuration.
 
 The dataclass to describe the declaration is specific to each target (e.g. `cocoindex.targets.Neo4jDeclarations`),
 while they share the following common fields:
 
 *   `nodes_label` (required): The label of the node.
-*   Options for [storage indexes](../core/flow_def#storage-indexes).
+*   Options for [storage indexes](/docs/core/flow_def#storage-indexes).
     *   `primary_key_fields` (required)
     *   `vector_indexes` (optional)
 
