@@ -11,13 +11,13 @@ For each target, data are exported from a data collector, containing data of mul
 The way to map data from a data collector to a target depends on data model of the target.
 
 
-| Target   | Documentation | Type                    |
-|----------|---------------|-------------------------|
-| Postgres | [Postgres](./targets/postgres) | Entry-oriented Targets        |
-| Qdrant   | [Qdrant](./targets/qdrant)     | Entry-oriented Targets        |
-| LanceDB  | [LanceDB](./targets/lancedb)   | Entry-oriented Targets        |
-| Neo4j    | [Neo4j](./targets/neo4j)       | [Property graph Targets](#property-graph-targets)        |
-| Kuzu     | [Kuzu](./targets/kuzu)         | [Property graph Targets](#property-graph-targets)        |
+| Documentation    | Type                    |
+|------------------|-------------------------|
+| [Postgres](./targets/postgres) | Entry-oriented Targets        |
+| [Qdrant](./targets/qdrant)     | Entry-oriented Targets        |
+| [LanceDB](./targets/lancedb)   | Entry-oriented Targets        |
+| [Neo4j](./targets/neo4j)       | [Property graph Targets](#property-graph-targets)        |
+| [Kuzu](./targets/kuzu)         | [Property graph Targets](#property-graph-targets)        |
 
 
 ## Entry-Oriented Targets
