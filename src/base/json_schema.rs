@@ -36,49 +36,40 @@ impl JsonSchemaBuilder {
         }
     }
 
-    fn set_description(
+    fn add_description(
         &mut self,
         schema: &mut SchemaObject,
-        description: impl ToString,
+        description: &str,
         field_path: RefList<'_, &'_ spec::FieldName>,
     ) {
-        if self.options.extract_descriptions {
+        let mut_description = if self.options.extract_descriptions {
             let mut fields: Vec<_> = field_path.iter().map(|f| f.as_str()).collect();
             fields.reverse();
             let field_path_str = fields.join(".");
 
-            // Check if we already have a description for this field
-            if let Some(existing_description) =
-                self.extra_instructions_per_field.get(&field_path_str)
-            {
-                // Concatenate descriptions with newline separator
-                let combined_description =
-                    format!("{}\n{}", existing_description, description.to_string());
-                self.extra_instructions_per_field
-                    .insert(field_path_str, combined_description);
-            } else {
-                self.extra_instructions_per_field
-                    .insert(field_path_str, description.to_string());
-            }
+            self.extra_instructions_per_field
+                .entry(field_path_str)
+                .or_default()
         } else {
-            let metadata = schema.metadata.get_or_insert_default();
-            if let Some(existing_description) = &metadata.description {
-                // Concatenate descriptions with newline separator
-                let combined_description =
-                    format!("{}\n{}", existing_description, description.to_string());
-                metadata.description = Some(combined_description);
-            } else {
-                metadata.description = Some(description.to_string());
-            }
+            schema
+                .metadata
+                .get_or_insert_default()
+                .description
+                .get_or_insert_default()
+        };
+        if !mut_description.is_empty() {
+            mut_description.push_str("\n\n");
         }
+        mut_description.push_str(description);
     }
 
     fn for_basic_value_type(
         &mut self,
+        schema_base: SchemaObject,
         basic_type: &schema::BasicValueType,
         field_path: RefList<'_, &'_ spec::FieldName>,
     ) -> SchemaObject {
-        let mut schema = SchemaObject::default();
+        let mut schema = schema_base;
         match basic_type {
             schema::BasicValueType::Str => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
@@ -111,7 +102,7 @@ impl JsonSchemaBuilder {
                     max_items: Some(2),
                     ..Default::default()
                 }));
-                self.set_description(
+                self.add_description(
                     &mut schema,
                     "A range represented by a list of two positions, start pos (inclusive), end pos (exclusive).",
                     field_path,
@@ -122,7 +113,7 @@ impl JsonSchemaBuilder {
                 if self.options.supports_format {
                     schema.format = Some("uuid".to_string());
                 }
-                self.set_description(
+                self.add_description(
                     &mut schema,
                     "A UUID, e.g. 123e4567-e89b-12d3-a456-426614174000",
                     field_path,
@@ -133,7 +124,7 @@ impl JsonSchemaBuilder {
                 if self.options.supports_format {
                     schema.format = Some("date".to_string());
                 }
-                self.set_description(
+                self.add_description(
                     &mut schema,
                     "A date in YYYY-MM-DD format, e.g. 2025-03-27",
                     field_path,
@@ -144,7 +135,7 @@ impl JsonSchemaBuilder {
                 if self.options.supports_format {
                     schema.format = Some("time".to_string());
                 }
-                self.set_description(
+                self.add_description(
                     &mut schema,
                     "A time in HH:MM:SS format, e.g. 13:32:12",
                     field_path,
@@ -155,7 +146,7 @@ impl JsonSchemaBuilder {
                 if self.options.supports_format {
                     schema.format = Some("date-time".to_string());
                 }
-                self.set_description(
+                self.add_description(
                     &mut schema,
                     "Date time without timezone offset in YYYY-MM-DDTHH:MM:SS format, e.g. 2025-03-27T13:32:12",
                     field_path,
@@ -166,7 +157,7 @@ impl JsonSchemaBuilder {
                 if self.options.supports_format {
                     schema.format = Some("date-time".to_string());
                 }
-                self.set_description(
+                self.add_description(
                     &mut schema,
                     "Date time with timezone offset in RFC3339, e.g. 2025-03-27T13:32:12Z, 2025-03-27T07:32:12.313-06:00",
                     field_path,
@@ -177,7 +168,7 @@ impl JsonSchemaBuilder {
                 if self.options.supports_format {
                     schema.format = Some("duration".to_string());
                 }
-                self.set_description(
+                self.add_description(
                     &mut schema,
                     "A duration, e.g. 'PT1H2M3S' (ISO 8601) or '1 day 2 hours 3 seconds'",
                     field_path,
@@ -190,8 +181,12 @@ impl JsonSchemaBuilder {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::Array)));
                 schema.array = Some(Box::new(ArrayValidation {
                     items: Some(SingleOrVec::Single(Box::new(
-                        self.for_basic_value_type(&s.element_type, field_path)
-                            .into(),
+                        self.for_basic_value_type(
+                            SchemaObject::default(),
+                            &s.element_type,
+                            field_path,
+                        )
+                        .into(),
                     ))),
                     min_items: s.dimension.and_then(|d| u32::try_from(d).ok()),
                     max_items: s.dimension.and_then(|d| u32::try_from(d).ok()),
@@ -203,7 +198,13 @@ impl JsonSchemaBuilder {
                     one_of: Some(
                         s.types
                             .iter()
-                            .map(|t| Schema::Object(self.for_basic_value_type(t, field_path)))
+                            .map(|t| {
+                                Schema::Object(self.for_basic_value_type(
+                                    SchemaObject::default(),
+                                    t,
+                                    field_path,
+                                ))
+                            })
                             .collect(),
                     ),
                     ..Default::default()
@@ -215,12 +216,13 @@ impl JsonSchemaBuilder {
 
     fn for_struct_schema(
         &mut self,
+        schema_base: SchemaObject,
         struct_schema: &schema::StructSchema,
         field_path: RefList<'_, &'_ spec::FieldName>,
     ) -> SchemaObject {
-        let mut schema = SchemaObject::default();
+        let mut schema = schema_base;
         if let Some(description) = &struct_schema.description {
-            self.set_description(&mut schema, description, field_path);
+            self.add_description(&mut schema, description, field_path);
         }
         schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::Object)));
         schema.object = Some(Box::new(ObjectValidation {
@@ -228,10 +230,22 @@ impl JsonSchemaBuilder {
                 .fields
                 .iter()
                 .map(|f| {
-                    let mut schema =
-                        self.for_enriched_value_type(&f.value_type, field_path.prepend(&f.name));
+                    let mut field_schema_base = SchemaObject::default();
+                    // Set field description if available
+                    if let Some(description) = &f.description {
+                        self.add_description(
+                            &mut field_schema_base,
+                            description,
+                            field_path.prepend(&f.name),
+                        );
+                    }
+                    let mut field_schema = self.for_enriched_value_type(
+                        field_schema_base,
+                        &f.value_type,
+                        field_path.prepend(&f.name),
+                    );
                     if self.options.fields_always_required && f.value_type.nullable {
-                        if let Some(instance_type) = &mut schema.instance_type {
+                        if let Some(instance_type) = &mut field_schema.instance_type {
                             let mut types = match instance_type {
                                 SingleOrVec::Single(t) => vec![**t],
                                 SingleOrVec::Vec(t) => std::mem::take(t),
@@ -240,11 +254,7 @@ impl JsonSchemaBuilder {
                             *instance_type = SingleOrVec::Vec(types);
                         }
                     }
-                    // Set field description if available
-                    if let Some(description) = &f.description {
-                        self.set_description(&mut schema, description, field_path.prepend(&f.name));
-                    }
-                    (f.name.to_string(), schema.into())
+                    (f.name.to_string(), field_schema.into())
                 })
                 .collect(),
             required: struct_schema
@@ -261,31 +271,34 @@ impl JsonSchemaBuilder {
 
     fn for_value_type(
         &mut self,
+        schema_base: SchemaObject,
         value_type: &schema::ValueType,
         field_path: RefList<'_, &'_ spec::FieldName>,
     ) -> SchemaObject {
         match value_type {
-            schema::ValueType::Basic(b) => self.for_basic_value_type(b, field_path),
-            schema::ValueType::Struct(s) => self.for_struct_schema(s, field_path),
+            schema::ValueType::Basic(b) => self.for_basic_value_type(schema_base, b, field_path),
+            schema::ValueType::Struct(s) => self.for_struct_schema(schema_base, s, field_path),
             schema::ValueType::Table(c) => SchemaObject {
                 instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Array))),
                 array: Some(Box::new(ArrayValidation {
                     items: Some(SingleOrVec::Single(Box::new(
-                        self.for_struct_schema(&c.row, field_path).into(),
+                        self.for_struct_schema(SchemaObject::default(), &c.row, field_path)
+                            .into(),
                     ))),
                     ..Default::default()
                 })),
-                ..Default::default()
+                ..schema_base
             },
         }
     }
 
     fn for_enriched_value_type(
         &mut self,
+        schema_base: SchemaObject,
         enriched_value_type: &schema::EnrichedValueType,
         field_path: RefList<'_, &'_ spec::FieldName>,
     ) -> SchemaObject {
-        self.for_value_type(&enriched_value_type.typ, field_path)
+        self.for_value_type(schema_base, &enriched_value_type.typ, field_path)
     }
 
     fn build_extra_instructions(&self) -> Result<Option<String>> {
@@ -360,12 +373,12 @@ pub fn build_json_schema(
             description: None,
         };
         (
-            builder.for_struct_schema(&wrapper_struct, RefList::Nil),
+            builder.for_struct_schema(SchemaObject::default(), &wrapper_struct, RefList::Nil),
             Some(object_wrapper_field_name),
         )
     } else {
         (
-            builder.for_enriched_value_type(&value_type, RefList::Nil),
+            builder.for_enriched_value_type(SchemaObject::default(), &value_type, RefList::Nil),
             None,
         )
     };
@@ -419,44 +432,20 @@ mod tests {
         let result = build_json_schema(enriched_value_type, options).unwrap();
 
         // Check if the description contains both field and type descriptions
-        if let Some(properties) = &result.schema.object {
-            if let Some(uuid_field_schema) = properties.properties.get("uuid_field") {
-                if let Schema::Object(schema_object) = uuid_field_schema {
-                    if let Some(description) = &schema_object
-                        .metadata
-                        .as_ref()
-                        .and_then(|m| m.description.as_ref())
-                    {
-                        // Check if both descriptions are present
-                        assert!(
-                            description.contains("This is a field-level description for UUID"),
-                            "Field-level description not found in: {}",
-                            description
-                        );
-                        assert!(
-                            description
-                                .contains("A UUID, e.g. 123e4567-e89b-12d3-a456-426614174000"),
-                            "Type-level description not found in: {}",
-                            description
-                        );
-
-                        // Check that they are separated by a newline
-                        assert!(
-                            description.contains("\n"),
-                            "Descriptions should be separated by newline: {}",
-                            description
-                        );
-                    } else {
-                        panic!("No description found in the schema");
-                    }
-                } else {
-                    panic!("uuid_field schema is not a SchemaObject");
-                }
-            } else {
-                panic!("uuid_field not found in properties");
-            }
+        if let Some(properties) = &result.schema.object
+            && let Some(uuid_field_schema) = properties.properties.get("uuid_field")
+            && let Schema::Object(schema_object) = uuid_field_schema
+            && let Some(description) = &schema_object
+                .metadata
+                .as_ref()
+                .and_then(|m| m.description.as_ref())
+        {
+            assert_eq!(
+                description.as_str(),
+                "This is a field-level description for UUID\n\nA UUID, e.g. 123e4567-e89b-12d3-a456-426614174000"
+            );
         } else {
-            panic!("No object properties found in schema");
+            panic!("No description found in the schema");
         }
     }
 }
