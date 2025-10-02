@@ -16,7 +16,7 @@ Read [Property Graph Targets](../property-graph/index.md) for more information t
 
 The `Neo4j` target spec takes the following fields:
 
-*   `connection` ([auth reference](../core/flow_def#auth-registry) to `Neo4jConnectionSpec`): The connection to the Neo4j database. `Neo4jConnectionSpec` has the following fields:
+*   `connection` ([auth reference](../../core/flow_def#auth-registry) to `Neo4jConnectionSpec`): The connection to the Neo4j database. `Neo4jConnectionSpec` has the following fields:
     *   `url` (`str`): The URI of the Neo4j database to use as the internal storage, e.g. `bolt://localhost:7687`.
     *   `user` (`str`): Username for the Neo4j database.
     *   `password` (`str`): Password for the Neo4j database.

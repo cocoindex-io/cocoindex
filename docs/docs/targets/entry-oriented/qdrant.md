@@ -38,7 +38,7 @@ For all other vector types, we map to Qdrant payload as JSON arrays.
 
 The spec takes the following fields:
 
-*   `connection` ([auth reference](../core/flow_def#auth-registry) to `QdrantConnection`, optional): The connection to the Qdrant instance. `QdrantConnection` has the following fields:
+*   `connection` ([auth reference](../../core/flow_def#auth-registry) to `QdrantConnection`, optional): The connection to the Qdrant instance. `QdrantConnection` has the following fields:
     *   `grpc_url` (`str`): The [gRPC URL](https://qdrant.tech/documentation/interfaces/#grpc-interface) of the Qdrant instance, e.g. `http://localhost:6334/`.
     *   `api_key` (`str`, optional). API key to authenticate requests with.
 
