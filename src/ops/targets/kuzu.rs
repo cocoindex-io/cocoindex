@@ -1031,8 +1031,6 @@ impl TargetFactoryBase for Factory {
         Ok(
             if desired.referenced_node_tables != existing.referenced_node_tables {
                 SetupStateCompatibility::NotCompatible
-            } else if desired.vector_indexes != existing.vector_indexes {
-                SetupStateCompatibility::Compatible
             } else {
                 check_table_compatibility(&desired.schema, &existing.schema)
             },
