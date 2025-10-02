@@ -185,9 +185,10 @@ def ls(app_target: str | None) -> None:
 def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
     """
     Show the flow spec and schema.
-
+    
     `APP_FLOW_SPECIFIER`: Specifies the application and optionally the target flow.
     Can be one of the following formats:
+    \b
     - `path/to/your_app.py`
     - `an_installed.module_name`
     - `path/to/your_app.py:SpecificFlowName`
@@ -323,7 +324,7 @@ def setup(app_target: str, force: bool, reset: bool) -> None:
 def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> None:
     """
     Drop the backend setup for flows.
-
+    \b
     Modes of operation:
     1. Drop all flows defined in an app: `cocoindex drop <APP_TARGET>`
     2. Drop specific named flows: `cocoindex drop <APP_TARGET> [FLOW_NAME...]`
@@ -505,7 +506,7 @@ def evaluate(
 
     Instead of updating the index, it dumps what should be indexed to files.
     Mainly used for evaluation purpose.
-
+    \b
     `APP_FLOW_SPECIFIER`: Specifies the application and optionally the target flow.
     Can be one of the following formats:
     - `path/to/your_app.py`
