@@ -317,14 +317,30 @@ impl SourceIndexingContext {
         row_input: ProcessSourceRowInput,
         mode: UpdateMode,
         update_stats: Arc<stats::UpdateStats>,
+        operation_in_process_stats: Option<Arc<stats::OperationInProcessStats>>,
         _concur_permit: concur_control::CombinedConcurrencyControllerPermit,
         ack_fn: Option<AckFn>,
         pool: PgPool,
     ) {
+        // Store operation name for tracking cleanup
+        let operation_name = {
+            let plan_result = self.flow.get_execution_plan().await;
+            match plan_result {
+                Ok(plan) => plan.import_ops[self.source_idx].name.clone(),
+                Err(_) => "unknown".to_string(),
+            }
+        };
+
         let process = async {
             let plan = self.flow.get_execution_plan().await?;
             let import_op = &plan.import_ops[self.source_idx];
             let schema = &self.flow.data_schema;
+
+            // Track that we're starting to process this row
+            update_stats.start_processing(1);
+            if let Some(ref op_stats) = operation_in_process_stats {
+                op_stats.start_processing(&import_op.name, 1);
+            }
 
             let eval_ctx = SourceRowEvaluationContext {
                 plan: &plan,
@@ -474,7 +490,15 @@ impl SourceIndexingContext {
             result
         };
         let process_and_ack = async {
-            process.await?;
+            let result = process.await;
+
+            // Track that we're finishing processing this row (regardless of success/failure)
+            update_stats.finish_processing(1);
+            if let Some(ref op_stats) = operation_in_process_stats {
+                op_stats.finish_processing(&operation_name, 1);
+            }
+
+            result?;
             if let Some(ack_fn) = ack_fn {
                 ack_fn().await?;
             }
@@ -603,6 +627,7 @@ impl SourceIndexingContext {
                     },
                     update_options.mode,
                     update_stats.clone(),
+                    None, // operation_in_process_stats
                     concur_permit,
                     NO_ACK,
                     pool.clone(),
@@ -642,6 +667,7 @@ impl SourceIndexingContext {
                 },
                 update_options.mode,
                 update_stats.clone(),
+                None, // operation_in_process_stats
                 concur_permit,
                 NO_ACK,
                 pool.clone(),

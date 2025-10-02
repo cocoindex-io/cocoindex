@@ -27,6 +27,8 @@ pub struct FlowLiveUpdater {
     flow_ctx: Arc<FlowContext>,
     join_set: Mutex<Option<JoinSet<Result<()>>>>,
     stats_per_task: Vec<Arc<stats::UpdateStats>>,
+    /// Global tracking of in-process rows per operation
+    operation_in_process_stats: Arc<stats::OperationInProcessStats>,
     recv_state: tokio::sync::Mutex<UpdateReceiveState>,
     num_remaining_tasks_rx: watch::Receiver<usize>,
 
@@ -83,6 +85,7 @@ struct SourceUpdateTask {
     plan: Arc<plan::ExecutionPlan>,
     execution_ctx: Arc<tokio::sync::OwnedRwLockReadGuard<crate::lib_context::FlowExecutionContext>>,
     source_update_stats: Arc<stats::UpdateStats>,
+    operation_in_process_stats: Arc<stats::OperationInProcessStats>,
     pool: PgPool,
     options: FlowLiveUpdaterOptions,
 
@@ -137,6 +140,7 @@ impl SourceUpdateTask {
                         let change_stream_stats = change_stream_stats.clone();
                         let pool = self.pool.clone();
                         let status_tx = self.status_tx.clone();
+                        let operation_in_process_stats = self.operation_in_process_stats.clone();
                         async move {
                             let mut change_stream = change_stream;
                             let retry_options = retryable::RetryOptions {
@@ -203,6 +207,7 @@ impl SourceUpdateTask {
                                         },
                                         super::source_indexer::UpdateMode::Normal,
                                         update_stats.clone(),
+                                        Some(operation_in_process_stats.clone()),
                                         concur_permit,
                                         Some(move || async move {
                                             SharedAckFn::ack(&shared_ack_fn).await
@@ -328,6 +333,7 @@ impl FlowLiveUpdater {
 
         let mut join_set = JoinSet::new();
         let mut stats_per_task = Vec::new();
+        let operation_in_process_stats = Arc::new(stats::OperationInProcessStats::default());
 
         for source_idx in 0..plan.import_ops.len() {
             let source_update_stats = Arc::new(stats::UpdateStats::default());
@@ -337,6 +343,7 @@ impl FlowLiveUpdater {
                 plan: plan.clone(),
                 execution_ctx: execution_ctx.clone(),
                 source_update_stats: source_update_stats.clone(),
+                operation_in_process_stats: operation_in_process_stats.clone(),
                 pool: pool.clone(),
                 options: options.clone(),
                 status_tx: status_tx.clone(),
@@ -345,10 +352,12 @@ impl FlowLiveUpdater {
             join_set.spawn(source_update_task.run());
             stats_per_task.push(source_update_stats);
         }
+
         Ok(Self {
             flow_ctx,
             join_set: Mutex::new(Some(join_set)),
             stats_per_task,
+            operation_in_process_stats,
             recv_state: tokio::sync::Mutex::new(UpdateReceiveState {
                 status_rx,
                 last_num_source_updates: vec![0; plan.import_ops.len()],
@@ -404,6 +413,23 @@ impl FlowLiveUpdater {
             })
             .collect(),
         }
+    }
+
+    /// Get the total number of rows currently being processed across all operations.
+    pub fn get_total_in_process_count(&self) -> i64 {
+        self.operation_in_process_stats.get_total_in_process_count()
+    }
+
+    /// Get the number of rows currently being processed for a specific operation.
+    pub fn get_operation_in_process_count(&self, operation_name: &str) -> i64 {
+        self.operation_in_process_stats
+            .get_operation_in_process_count(operation_name)
+    }
+
+    /// Get a snapshot of all operation in-process counts.
+    pub fn get_all_operations_in_process(&self) -> std::collections::HashMap<String, i64> {
+        self.operation_in_process_stats
+            .get_all_operations_in_process()
     }
 
     pub async fn next_status_updates(&self) -> Result<FlowLiveUpdaterUpdates> {
