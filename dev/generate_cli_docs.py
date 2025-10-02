@@ -57,7 +57,6 @@ def escape_html_tags(text: str) -> str:
 
     return "".join(result)
 
-
 def format_options_section(help_text: str) -> str:
     """Extract and format the options section."""
     lines = help_text.split("\n")
@@ -185,7 +184,9 @@ def extract_description(help_text: str) -> str:
         elif in_description and line.strip():
             description_lines.append(line.strip())
 
-    description = "\n\n".join(description_lines) if description_lines else ""
+    # Collapse multiple blank lines into a single blank line
+    description = "\n".join(description_lines) if description_lines else ""
+    description = re.sub(r"\n{3,}", "\n\n", description)
     return escape_html_tags(description)  # Escape HTML tags for MDX compatibility
 
 
