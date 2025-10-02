@@ -41,8 +41,8 @@ CocoIndex automatically strips U+0000 (NUL) characters from strings before expor
 
 The spec takes the following fields:
 
-*   `database` ([auth reference](../../core/flow_def#auth-registry) to `DatabaseConnectionSpec`, optional): The connection to the Postgres database.
-    See [DatabaseConnectionSpec](../../core/settings#databaseconnectionspec) for its specific fields.
+*   `database` ([auth reference](/docs/core/flow_def#auth-registry) to `DatabaseConnectionSpec`, optional): The connection to the Postgres database.
+    See [DatabaseConnectionSpec](/docs/core/settings#databaseconnectionspec) for its specific fields.
     If not provided, will use the same database as the [internal storage](/docs/core/basics#internal-storage).
 
 *   `table_name` (`str`, optional): The name of the table to store to. If unspecified, will use the table name `[${AppNamespace}__]${FlowName}__${TargetName}`, e.g. `DemoFlow__doc_embeddings` or `Staging__DemoFlow__doc_embeddings`.

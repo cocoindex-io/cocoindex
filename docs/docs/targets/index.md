@@ -13,11 +13,11 @@ The way to map data from a data collector to a target depends on data model of t
 
 | Target   | Documentation | Type                    |
 |----------|---------------|-------------------------|
-| Postgres | [Postgres](./targets/entry-oriented/postgres) | Entry-oriented        |
-| Qdrant   | [Qdrant](./targets/entry-oriented/qdrant)     | Entry-oriented        |
-| LanceDB  | [LanceDB](./targets/entry-oriented/lancedb)   | Entry-oriented        |
-| Neo4j    | [Neo4j](./targets/property-graph/neo4j)       | Property graph        |
-| Kuzu     | [Kuzu](./targets/property-graph/kuzu)         | Property graph        |
+| Postgres | [Postgres](./targets/entry-oriented/postgres) | Entry-oriented Targets        |
+| Qdrant   | [Qdrant](./targets/entry-oriented/qdrant)     | Entry-oriented Targets        |
+| LanceDB  | [LanceDB](./targets/entry-oriented/lancedb)   | Entry-oriented Targets        |
+| Neo4j    | [Neo4j](./targets/neo4j)       | [Property graph Targets](#property-graph-targets)        |
+| Kuzu     | [Kuzu](./targets/kuzu)         | [Property graph Targets](#property-graph-targets)        |
 
 
 ## Entry-Oriented Targets
