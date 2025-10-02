@@ -45,10 +45,27 @@ impl JsonSchemaBuilder {
         if self.options.extract_descriptions {
             let mut fields: Vec<_> = field_path.iter().map(|f| f.as_str()).collect();
             fields.reverse();
-            self.extra_instructions_per_field
-                .insert(fields.join("."), description.to_string());
+            let field_path_str = fields.join(".");
+            
+            // Check if we already have a description for this field
+            if let Some(existing_description) = self.extra_instructions_per_field.get(&field_path_str) {
+                // Concatenate descriptions with newline separator
+                let combined_description = format!("{}\n{}", existing_description, description.to_string());
+                self.extra_instructions_per_field
+                    .insert(field_path_str, combined_description);
+            } else {
+                self.extra_instructions_per_field
+                    .insert(field_path_str, description.to_string());
+            }
         } else {
-            schema.metadata.get_or_insert_default().description = Some(description.to_string());
+            let metadata = schema.metadata.get_or_insert_default();
+            if let Some(existing_description) = &metadata.description {
+                // Concatenate descriptions with newline separator
+                let combined_description = format!("{}\n{}", existing_description, description.to_string());
+                metadata.description = Some(combined_description);
+            } else {
+                metadata.description = Some(description.to_string());
+            }
         }
     }
 
@@ -334,6 +351,7 @@ pub fn build_json_schema(
             fields: Arc::new(vec![schema::FieldSchema {
                 name: object_wrapper_field_name.clone(),
                 value_type: value_type.clone(),
+                description: None,
             }]),
             description: None,
         };
@@ -355,4 +373,72 @@ pub fn build_json_schema(
             object_wrapper_field_name,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::base::schema::{BasicValueType, EnrichedValueType, FieldSchema, StructSchema, ValueType};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_description_concatenation() {
+        // Create a struct with a field that has both field-level and type-level descriptions
+        let struct_schema = StructSchema {
+            description: Some(Arc::from("Test struct description")),
+            fields: Arc::new(vec![
+                FieldSchema {
+                    name: "uuid_field".to_string(),
+                    value_type: EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Uuid),
+                        nullable: false,
+                        attrs: Default::default(),
+                    },
+                    description: Some(Arc::from("This is a field-level description for UUID")),
+                },
+            ]),
+        };
+
+        let enriched_value_type = EnrichedValueType {
+            typ: ValueType::Struct(struct_schema),
+            nullable: false,
+            attrs: Default::default(),
+        };
+
+        let options = ToJsonSchemaOptions {
+            fields_always_required: false,
+            supports_format: true,
+            extract_descriptions: false, // We want to see the description in the schema
+            top_level_must_be_object: false,
+        };
+
+        let result = build_json_schema(enriched_value_type, options).unwrap();
+        
+        // Check if the description contains both field and type descriptions
+        if let Some(properties) = &result.schema.object {
+            if let Some(uuid_field_schema) = properties.properties.get("uuid_field") {
+                if let Schema::Object(schema_object) = uuid_field_schema {
+                    if let Some(description) = &schema_object.metadata.as_ref().and_then(|m| m.description.as_ref()) {
+                        // Check if both descriptions are present
+                        assert!(description.contains("This is a field-level description for UUID"), 
+                            "Field-level description not found in: {}", description);
+                        assert!(description.contains("A UUID, e.g. 123e4567-e89b-12d3-a456-426614174000"), 
+                            "Type-level description not found in: {}", description);
+                        
+                        // Check that they are separated by a newline
+                        assert!(description.contains("\n"), 
+                            "Descriptions should be separated by newline: {}", description);
+                    } else {
+                        panic!("No description found in the schema");
+                    }
+                } else {
+                    panic!("uuid_field schema is not a SchemaObject");
+                }
+            } else {
+                panic!("uuid_field not found in properties");
+            }
+        } else {
+            panic!("No object properties found in schema");
+        }
+    }
 }
