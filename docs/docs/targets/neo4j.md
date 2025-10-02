@@ -3,20 +3,22 @@ title: Neo4j
 description: CocoIndex Neo4j Target
 toc_max_heading_level: 4
 ---
+import { ExampleButton } from '../../src/components/GitHubButton';
+
+# Neo4j
 
 **Exports data to a [Neo4j](https://neo4j.com/) graph database.**
 
 
 ## Get Started
-Read [Property Graph Targets](../property-graph/index.md) for more information to get started on how it works. 
-
+Read [Property Graph Targets](./targets/index.md#property-graph-targets) for more information to get started on how it works in CocoIndex. 
 
 
 ## Spec
 
 The `Neo4j` target spec takes the following fields:
 
-*   `connection` ([auth reference](../../core/flow_def#auth-registry) to `Neo4jConnectionSpec`): The connection to the Neo4j database. `Neo4jConnectionSpec` has the following fields:
+*   `connection` ([auth reference](../core/flow_def#auth-registry) to `Neo4jConnectionSpec`): The connection to the Neo4j database. `Neo4jConnectionSpec` has the following fields:
     *   `url` (`str`): The URI of the Neo4j database to use as the internal storage, e.g. `bolt://localhost:7687`.
     *   `user` (`str`): Username for the Neo4j database.
     *   `password` (`str`): Password for the Neo4j database.
@@ -41,3 +43,10 @@ docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoi
 
 This will bring up a Neo4j instance, which can be accessed by username `neo4j` and password `cocoindex`.
 You can access the Neo4j browser at [http://localhost:7474](http://localhost:7474).
+
+## Example
+<ExampleButton
+  href="https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph"
+  text="Docs to Knowledge Graph"
+  margin="16px 0 24px 0"
+/>

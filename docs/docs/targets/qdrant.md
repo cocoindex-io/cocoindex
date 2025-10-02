@@ -4,7 +4,7 @@ description: CocoIndex Qdrant Target
 toc_max_heading_level: 4
 ---
 
-import { ExampleButton } from '../../../src/components/GitHubButton';
+import { ExampleButton } from '../../src/components/GitHubButton';
 
 # Qdrant
 

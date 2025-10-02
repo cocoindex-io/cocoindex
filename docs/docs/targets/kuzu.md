@@ -3,12 +3,15 @@ title: Kuzu
 description: CocoIndex Kuzu Target
 toc_max_heading_level: 4
 ---
+import { ExampleButton } from '../../src/components/GitHubButton';
+
+# Kuzu
 
 Exports data to a [Kuzu](https://kuzu.com/) graph database.
 
 ## Get Started
 
-Read [Property Graph Targets](../property-graph/index.md) for more information to get started on how it works. 
+Read [Property Graph Targets](./targets/index.md#property-graph-targets) for more information to get started on how it works in CocoIndex. 
 
 ## Spec
 
@@ -16,7 +19,7 @@ CocoIndex supports talking to Kuzu through its [API server](https://github.com/k
 
 The `Kuzu` target spec takes the following fields:
 
-*   `connection` ([auth reference](../../core/flow_def#auth-registry) to `KuzuConnectionSpec`): The connection to the Kuzu database. `KuzuConnectionSpec` has the following fields:
+*   `connection` ([auth reference](../core/flow_def#auth-registry) to `KuzuConnectionSpec`): The connection to the Kuzu database. `KuzuConnectionSpec` has the following fields:
     *   `api_server_url` (`str`): The URL of the Kuzu API server, e.g. `http://localhost:8123`.
 *   `mapping` (`Nodes | Relationships`): The mapping from collected row to nodes or relationships of the graph. For either [nodes to export](#nodes-to-export) or [relationships to export](#relationships-to-export).
 
@@ -48,3 +51,10 @@ docker run -d --name kuzu-explorer -p ${KUZU_EXPLORER_PORT}:8000  -v ${KUZU_DB_D
 ```
 
 You can then access the explorer at [http://localhost:8124](http://localhost:8124).
+
+## Example
+<ExampleButton
+  href="https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph"
+  text="Docs to Knowledge Graph"
+  margin="16px 0 24px 0"
+/>
