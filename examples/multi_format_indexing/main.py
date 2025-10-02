@@ -1,6 +1,7 @@
 import cocoindex
 import os
 import mimetypes
+from typing import List, Optional, Any, Dict
 
 from dotenv import load_dotenv
 from dataclasses import dataclass
@@ -16,12 +17,12 @@ COLPALI_MODEL_NAME = os.getenv("COLPALI_MODEL", "vidore/colpali-v1.2")
 
 @dataclass
 class Page:
-    page_number: int | None
+    page_number: Optional[int]
     image: bytes
 
 
 @cocoindex.op.function()
-def file_to_pages(filename: str, content: bytes) -> list[Page]:
+def file_to_pages(filename: str, content: bytes) -> List[Page]:
     """
     Classify file content based on MIME type detection.
     Returns ClassifiedFileContent with appropriate field populated based on file type.
@@ -31,7 +32,7 @@ def file_to_pages(filename: str, content: bytes) -> list[Page]:
 
     if mime_type == "application/pdf":
         images = convert_from_bytes(content, dpi=300)
-        pages = []
+        pages: List[Page] = []
         for i, image in enumerate(images):
             with BytesIO() as buffer:
                 image.save(buffer, format="PNG")
@@ -54,46 +55,38 @@ def multi_format_indexing_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
     """
-    Define an example flow that embeds files into a vector database.
+    Define an example flow that extracts manual information from a Markdown.
     """
     data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="source_files", binary=True)
+        cocoindex.sources.LocalFile(path="data", binary=True)
     )
 
-    output_embeddings = data_scope.add_collector()
+    embeddings_index = data_scope.add_collector()
 
     with data_scope["documents"].row() as doc:
-        doc["pages"] = flow_builder.transform(
-            file_to_pages, filename=doc["filename"], content=doc["content"]
-        )
+        doc["pages"] = doc.transform(file_to_pages, filename=doc["filename"], content=doc["content"])
         with doc["pages"].row() as page:
             page["embedding"] = page["image"].transform(
-                cocoindex.functions.ColPaliEmbedImage(model=COLPALI_MODEL_NAME)
+                cocoindex.functions.ColPali(model_name=COLPALI_MODEL_NAME)
             )
-            output_embeddings.collect(
-                id=cocoindex.GeneratedField.UUID,
+            embeddings_index.collect(
                 filename=doc["filename"],
                 page=page["page_number"],
                 embedding=page["embedding"],
             )
 
-    output_embeddings.export(
-        "multi_format_indexings",
+    embeddings_index.export(
+        "output",
         cocoindex.targets.Qdrant(
             connection=qdrant_connection,
             collection_name=QDRANT_COLLECTION,
+            vector_field_name="embedding",
         ),
-        primary_key_fields=["id"],
+        primary_key_fields=["filename", "page"],
     )
 
 
-@cocoindex.transform_flow()
-def query_to_colpali_embedding(
-    text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[list[list[float]]]:
-    return text.transform(
-        cocoindex.functions.ColPaliEmbedQuery(model=COLPALI_MODEL_NAME)
-    )
+query_to_colpali_embedding = cocoindex.functions.ColPali(model_name=COLPALI_MODEL_NAME)
 
 
 def _main() -> None:
@@ -122,7 +115,7 @@ def _main() -> None:
             payload = result.payload
             if payload is None:
                 continue
-            page_number = payload["page"]
+            page_number: Optional[int] = payload.get("page")
             page_number_str = f"Page:{page_number}" if page_number is not None else ""
             print(f"[{score:.3f}] {payload['filename']} {page_number_str}")
             print("---")
