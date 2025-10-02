@@ -27,9 +27,13 @@ except ImportError as e:
 
 
 def clean_usage_line(usage: str) -> str:
-    """Clean up the usage line to remove 'cli' and make it generic."""
-    # Replace 'cli' with 'cocoindex' in usage lines
-    return usage.replace("Usage: cli ", "Usage: cocoindex ")
+    """Clean up the usage line to remove 'cli' and make it generic, and remove the 'Usage:' prefix."""
+    # Replace 'cli' with 'cocoindex' in usage lines and remove 'Usage:' prefix
+    cleaned = usage.replace("Usage: cli ", "cocoindex ")
+    # Handle case where it might be "Usage: cocoindex" already
+    if cleaned.startswith("Usage: cocoindex "):
+        cleaned = cleaned.replace("Usage: cocoindex ", "cocoindex ")
+    return cleaned
 
 
 def escape_html_tags(text: str) -> str:
@@ -39,6 +43,12 @@ def escape_html_tags(text: str) -> str:
     # Handle special cases where URLs with placeholders should be wrapped in code blocks
     text = re.sub(r"http://localhost:<([^>]+)>", r"`http://localhost:<\1>`", text)
     text = re.sub(r"https://([^<\s]+)<([^>]+)>", r"`https://\1<\2>`", text)
+
+    # Handle comma-separated URL examples specifically (e.g., "https://site1.com,http://localhost:3000")
+    text = re.sub(r"(?<!`)(\bhttps?://[^\s,`]+,https?://[^\s`]+)(?!`)", r"`\1`", text)
+
+    # Handle standalone URLs that aren't already wrapped in backticks
+    text = re.sub(r"(?<!`)(?<!,)(\bhttps?://[^\s,`]+)(?!`)(?!,)", r"`\1`", text)
 
     # Split text into code blocks and regular text
     # Pattern matches: `code content` (inline code blocks)
@@ -203,60 +213,18 @@ def generate_command_docs(docs: List[Dict[str, Any]]) -> str:
 
     markdown_content = []
 
-    if main_cli:
-        # Generate main CLI documentation
-        help_text = main_cli["help"]
-        usage = clean_usage_line(main_cli["usage"])
-        description = extract_description(help_text)
-
-        markdown_content.append("# CLI Commands Reference")
-        markdown_content.append("")
-        markdown_content.append(
-            "This page contains the detailed help information for all CocoIndex CLI commands."
-        )
-        markdown_content.append("")
-
-        if description:
-            markdown_content.append(f"## Overview")
-            markdown_content.append("")
-            markdown_content.append(description)
-            markdown_content.append("")
-
-        # Add usage
-        markdown_content.append("## Usage")
-        markdown_content.append("")
-        markdown_content.append(f"```sh")
-        markdown_content.append(usage)
-        markdown_content.append("```")
-        markdown_content.append("")
-
-        # Add global options
-        options_section = format_options_section(help_text)
-        if options_section:
-            markdown_content.append("## Global Options")
-            markdown_content.append("")
-            markdown_content.append(options_section)
-            markdown_content.append("")
-
-        # Add commands overview
-        commands_section = format_commands_section(help_text)
-        if commands_section:
-            markdown_content.append("## Commands")
-            markdown_content.append("")
-            markdown_content.append(commands_section)
-            markdown_content.append("")
-
-    # Generate subcommand documentation
-    markdown_content.append("## Command Details")
+    # Add top-level heading to satisfy MD041 linting rule
+    markdown_content.append("# CLI Commands")
     markdown_content.append("")
 
+    # Generate only the command details section (remove redundant headers)
     for doc in sorted(subcommands, key=lambda x: x["command"].name):
         command_name = doc["command"].name
         help_text = doc["help"]
         usage = clean_usage_line(doc["usage"])
         description = extract_description(help_text)
 
-        markdown_content.append(f"### `{command_name}`")
+        markdown_content.append(f"## `{command_name}`")
         markdown_content.append("")
 
         if description:
@@ -274,11 +242,9 @@ def generate_command_docs(docs: List[Dict[str, Any]]) -> str:
         # Add options if any
         options_section = format_options_section(help_text)
         if options_section:
-            # Remove the "## Options" header since it's a subsection
             markdown_content.append("**Options:**")
             markdown_content.append("")
             markdown_content.append(options_section)
-            markdown_content.append("")
 
         markdown_content.append("---")
         markdown_content.append("")
@@ -302,7 +268,7 @@ def main():
 
         # Determine output path
         docs_dir = project_root / "docs" / "docs" / "core"
-        output_file = docs_dir / "cli-reference.md"
+        output_file = docs_dir / "cli-commands.md"
 
         # Ensure directory exists
         docs_dir.mkdir(parents=True, exist_ok=True)

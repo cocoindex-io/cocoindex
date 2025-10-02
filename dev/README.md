@@ -18,13 +18,16 @@ python dev/generate_cli_docs.py
 
 - Extracts help messages from all Click commands in `python/cocoindex/cli.py`
 - Generates comprehensive Markdown documentation with properly formatted tables
-- Saves the output to `docs/docs/core/cli-reference.md`
+- Saves the output to `docs/docs/core/cli-commands.md` for direct import into CLI documentation
 - Only updates the file if content has changed (avoids unnecessary git diffs)
+- Automatically escapes HTML-like tags to prevent MDX parsing issues
+- Wraps URLs with placeholders in code blocks for proper rendering
 
 **Integration:**
 
 - Runs automatically as a pre-commit hook when `python/cocoindex/cli.py` is modified
-- The generated documentation is imported into `docs/docs/core/cli.mdx` via MDX import
+- The generated documentation is directly imported into `docs/docs/core/cli.mdx` via MDX import
+- Provides seamless single-page CLI documentation experience without separate reference pages
 
 **Dependencies:**
 

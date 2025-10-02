@@ -1,43 +1,6 @@
-# CLI Commands Reference
+# CLI Commands
 
-This page contains the detailed help information for all CocoIndex CLI commands.
-
-## Overview
-
-CLI for Cocoindex.
-
-## Usage
-
-```sh
-Usage: cocoindex [OPTIONS] COMMAND [ARGS]...
-```
-
-## Global Options
-
-| Option | Description |
-|--------|-------------|
-| `--version` | Show the version and exit. |
-| `--env-file FILE` | Path to a .env file to load environment variables from. If not provided, attempts to load '.env' from the current directory. |
-| `--app-dir TEXT` | Load apps from the specified directory. Default to the current directory.  [default: ""] |
-| `--help` | Show this message and exit. |
-
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `drop` | Drop the backend setup for flows. |
-| `evaluate` | Evaluate the flow and dump flow outputs to files. |
-| `ls` | List all flows. |
-| `server` | Start a HTTP server providing REST APIs. |
-| `setup` | Check and apply backend setup changes for flows, including... |
-| `show` | Show the flow spec and schema. |
-| `update` | Update the index to reflect the latest data from data sources. |
-
-
-## Command Details
-
-### `drop`
+## `drop`
 
 Drop the backend setup for flows.
 
@@ -50,7 +13,7 @@ Modes of operation:
 **Usage:**
 
 ```bash
-Usage: cocoindex drop [OPTIONS] [APP_TARGET] [FLOW_NAME]...
+cocoindex drop [OPTIONS] [APP_TARGET] [FLOW_NAME]...
 ```
 
 **Options:**
@@ -60,10 +23,9 @@ Usage: cocoindex drop [OPTIONS] [APP_TARGET] [FLOW_NAME]...
 | `-f, --force` | Force drop without confirmation prompts. |
 | `--help` | Show this message and exit. |
 
-
 ---
 
-### `evaluate`
+## `evaluate`
 
 Evaluate the flow and dump flow outputs to files.
 
@@ -90,7 +52,7 @@ flow.
 **Usage:**
 
 ```bash
-Usage: cocoindex evaluate [OPTIONS] APP_FLOW_SPECIFIER
+cocoindex evaluate [OPTIONS] APP_FLOW_SPECIFIER
 ```
 
 **Options:**
@@ -101,10 +63,9 @@ Usage: cocoindex evaluate [OPTIONS] APP_FLOW_SPECIFIER
 | `--cache / --no-cache` | Use already-cached intermediate data if available. [default: cache] |
 | `--help` | Show this message and exit. |
 
-
 ---
 
-### `ls`
+## `ls`
 
 List all flows.
 
@@ -119,7 +80,7 @@ backend.
 **Usage:**
 
 ```bash
-Usage: cocoindex ls [OPTIONS] [APP_TARGET]
+cocoindex ls [OPTIONS] [APP_TARGET]
 ```
 
 **Options:**
@@ -128,10 +89,9 @@ Usage: cocoindex ls [OPTIONS] [APP_TARGET]
 |--------|-------------|
 | `--help` | Show this message and exit. |
 
-
 ---
 
-### `server`
+## `server`
 
 Start a HTTP server providing REST APIs.
 
@@ -142,7 +102,7 @@ APP_TARGET: path/to/app.py or installed_module.
 **Usage:**
 
 ```bash
-Usage: cocoindex server [OPTIONS] APP_TARGET
+cocoindex server [OPTIONS] APP_TARGET
 ```
 
 **Options:**
@@ -151,7 +111,7 @@ Usage: cocoindex server [OPTIONS] APP_TARGET
 |--------|-------------|
 | `-a, --address TEXT` | The address to bind the server to, in the format of IP:PORT. If unspecified, the address specified in COCOINDEX_SERVER_ADDRESS will be used. |
 | `-c, --cors-origin TEXT` | The origins of the clients (e.g. CocoInsight UI) to allow CORS from. Multiple origins can be specified as a comma-separated list. e.g. `https://cocoindex.io,http://localhost:3000`. Origins specified in COCOINDEX_SERVER_CORS_ORIGINS will also be included. |
-| `-ci, --cors-cocoindex` | Allow https://cocoindex.io to access the server. |
+| `-ci, --cors-cocoindex` | Allow `https://cocoindex.io` to access the server. |
 | `-cl, --cors-local INTEGER` | Allow `http://localhost:<port>` to access the server. |
 | `-L, --live-update` | Continuously watch changes from data sources and apply to the target index. |
 | `--setup` | Automatically setup backends for the flow if it's not setup yet. |
@@ -161,10 +121,9 @@ Usage: cocoindex server [OPTIONS] APP_TARGET
 | `-r, --reload` | Enable auto-reload on code changes. |
 | `--help` | Show this message and exit. |
 
-
 ---
 
-### `setup`
+## `setup`
 
 Check and apply backend setup changes for flows, including the internal
 
@@ -175,7 +134,7 @@ APP_TARGET: path/to/app.py or installed_module.
 **Usage:**
 
 ```bash
-Usage: cocoindex setup [OPTIONS] APP_TARGET
+cocoindex setup [OPTIONS] APP_TARGET
 ```
 
 **Options:**
@@ -185,10 +144,9 @@ Usage: cocoindex setup [OPTIONS] APP_TARGET
 | `-f, --force` | Force setup without confirmation prompts. |
 | `--help` | Show this message and exit. |
 
-
 ---
 
-### `show`
+## `show`
 
 Show the flow spec and schema.
 
@@ -211,7 +169,7 @@ flow.
 **Usage:**
 
 ```bash
-Usage: cocoindex show [OPTIONS] APP_FLOW_SPECIFIER
+cocoindex show [OPTIONS] APP_FLOW_SPECIFIER
 ```
 
 **Options:**
@@ -222,10 +180,9 @@ Usage: cocoindex show [OPTIONS] APP_FLOW_SPECIFIER
 | `--verbose` | Show verbose output with full details. |
 | `--help` | Show this message and exit. |
 
-
 ---
 
-### `update`
+## `update`
 
 Update the index to reflect the latest data from data sources.
 
@@ -236,7 +193,7 @@ module:FlowName. If :FlowName is omitted, updates all flows.
 **Usage:**
 
 ```bash
-Usage: cocoindex update [OPTIONS] APP_FLOW_SPECIFIER
+cocoindex update [OPTIONS] APP_FLOW_SPECIFIER
 ```
 
 **Options:**
@@ -249,6 +206,5 @@ Usage: cocoindex update [OPTIONS] APP_FLOW_SPECIFIER
 | `-f, --force` | Force setup without confirmation prompts. |
 | `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |
 | `--help` | Show this message and exit. |
-
 
 ---
