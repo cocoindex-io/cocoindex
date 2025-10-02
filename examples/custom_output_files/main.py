@@ -1,6 +1,7 @@
 from datetime import timedelta
 import os
 import dataclasses
+from typing import Optional, Dict, Tuple, Any
 
 import cocoindex
 from markdown_it import MarkdownIt
@@ -8,6 +9,7 @@ from markdown_it import MarkdownIt
 _markdown_it = MarkdownIt("gfm-like")
 
 
+@dataclasses.dataclass
 class LocalFileTarget(cocoindex.op.TargetSpec):
     """Represents the custom target spec."""
 
@@ -36,7 +38,9 @@ class LocalFileTargetConnector:
 
     @staticmethod
     def apply_setup_change(
-        key: str, previous: LocalFileTarget | None, current: LocalFileTarget | None
+        key: str, 
+        previous: Optional[LocalFileTarget], 
+        current: Optional[LocalFileTarget]
     ) -> None:
         """
         Apply setup changes to the target.
@@ -68,7 +72,7 @@ class LocalFileTargetConnector:
 
     @staticmethod
     def mutate(
-        *all_mutations: tuple[LocalFileTarget, dict[str, LocalFileTargetValues | None]],
+        *all_mutations: Tuple[LocalFileTarget, Dict[str, Optional[LocalFileTargetValues]]],
     ) -> None:
         """
         Mutate the target.
@@ -90,7 +94,7 @@ class LocalFileTargetConnector:
                     except FileNotFoundError:
                         pass
                 else:
-                    with open(full_path, "w") as f:
+                    with open(full_path, "w", encoding="utf-8") as f:
                         f.write(mutation.html)
 
 
