@@ -783,9 +783,27 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
             # Drop auxiliary discriminator "kind" if present
             dc_init_kwargs: dict[str, Any] = {}
             field_types = {f.name: f.type for f in dataclasses.fields(struct_type)}
+            dataclass_fields = {f.name: f for f in dataclasses.fields(struct_type)}
+            
             for name, f_type in field_types.items():
                 if name in v:
                     dc_init_kwargs[name] = load_engine_object(f_type, v[name])
+                else:
+                    # Field is missing from input, check if it has a default or can use auto-default
+                    field = dataclass_fields[name]
+                    if field.default is not dataclasses.MISSING:
+                        # Field has an explicit default value
+                        dc_init_kwargs[name] = field.default
+                    elif field.default_factory is not dataclasses.MISSING:
+                        # Field has a default factory
+                        dc_init_kwargs[name] = field.default_factory()
+                    else:
+                        # No explicit default, try to get auto-default
+                        type_info = analyze_type_info(f_type)
+                        auto_default, is_supported = _get_auto_default_for_type(type_info)
+                        if is_supported:
+                            dc_init_kwargs[name] = auto_default
+                        # If not supported, skip the field (let dataclass constructor handle the error)
             return struct_type(**dc_init_kwargs)
         elif is_namedtuple_type(struct_type):
             if not isinstance(v, Mapping):
@@ -793,11 +811,25 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
             # Dict format (from dump/load functions)
             annotations = getattr(struct_type, "__annotations__", {})
             field_names = list(getattr(struct_type, "_fields", ()))
+            field_defaults = getattr(struct_type, "_field_defaults", {})
             nt_init_kwargs: dict[str, Any] = {}
+            
             for name in field_names:
                 f_type = annotations.get(name, Any)
                 if name in v:
                     nt_init_kwargs[name] = load_engine_object(f_type, v[name])
+                else:
+                    # Field is missing from input, check if it has a default or can use auto-default
+                    if name in field_defaults:
+                        # Field has an explicit default value
+                        nt_init_kwargs[name] = field_defaults[name]
+                    else:
+                        # No explicit default, try to get auto-default
+                        type_info = analyze_type_info(f_type)
+                        auto_default, is_supported = _get_auto_default_for_type(type_info)
+                        if is_supported:
+                            nt_init_kwargs[name] = auto_default
+                        # If not supported, skip the field (let NamedTuple constructor handle the error)
             return struct_type(**nt_init_kwargs)
         elif is_pydantic_model(struct_type):
             if not isinstance(v, Mapping):
@@ -812,9 +844,26 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
             field_types = {
                 name: field.annotation for name, field in model_fields.items()
             }
+            
             for name, f_type in field_types.items():
                 if name in v:
                     pydantic_init_kwargs[name] = load_engine_object(f_type, v[name])
+                else:
+                    # Field is missing from input, check if it has a default or can use auto-default
+                    field = model_fields[name]
+                    if hasattr(field, "default") and field.default is not ...:  # ... is Pydantic's sentinel for no default
+                        # Field has an explicit default value
+                        pydantic_init_kwargs[name] = field.default
+                    elif hasattr(field, "default_factory") and field.default_factory is not None:
+                        # Field has a default factory
+                        pydantic_init_kwargs[name] = field.default_factory()
+                    else:
+                        # No explicit default, try to get auto-default
+                        type_info = analyze_type_info(f_type)
+                        auto_default, is_supported = _get_auto_default_for_type(type_info)
+                        if is_supported:
+                            pydantic_init_kwargs[name] = auto_default
+                        # If not supported, skip the field (let Pydantic constructor handle the error)
             return struct_type(**pydantic_init_kwargs)
         return v
 

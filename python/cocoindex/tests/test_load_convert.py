@@ -116,3 +116,68 @@ def test_namedtuple_roundtrip_via_dump_load() -> None:
     loaded = load_engine_object(LocalPoint, dumped)
     assert isinstance(loaded, LocalPoint)
     assert loaded == p
+
+
+def test_dataclass_missing_fields_with_auto_defaults() -> None:
+    """Test that missing fields are automatically assigned safe default values."""
+    
+    @dataclasses.dataclass
+    class TestClass:
+        required_field: str
+        optional_field: str | None  # Should get None
+        list_field: list[str]       # Should get []
+        dict_field: dict[str, int]  # Should get {}
+        explicit_default: str = "default"  # Should use explicit default
+    
+    # Input missing optional_field, list_field, dict_field (but has explicit_default via class definition)
+    input_data = {"required_field": "test_value"}
+    
+    loaded = load_engine_object(TestClass, input_data)
+    
+    assert isinstance(loaded, TestClass)
+    assert loaded.required_field == "test_value"
+    assert loaded.optional_field is None       # Auto-default for Optional
+    assert loaded.list_field == []             # Auto-default for list
+    assert loaded.dict_field == {}             # Auto-default for dict
+    assert loaded.explicit_default == "default"  # Explicit default from class
+
+
+def test_namedtuple_missing_fields_with_auto_defaults() -> None:
+    """Test that missing fields in NamedTuple are automatically assigned safe default values."""
+    from typing import NamedTuple
+    
+    class TestTuple(NamedTuple):
+        required_field: str
+        optional_field: str | None  # Should get None
+        list_field: list[str]       # Should get []
+        dict_field: dict[str, int]  # Should get {}
+    
+    # Input missing optional_field, list_field, dict_field
+    input_data = {"required_field": "test_value"}
+    
+    loaded = load_engine_object(TestTuple, input_data)
+    
+    assert isinstance(loaded, TestTuple)
+    assert loaded.required_field == "test_value"
+    assert loaded.optional_field is None       # Auto-default for Optional
+    assert loaded.list_field == []             # Auto-default for list
+    assert loaded.dict_field == {}             # Auto-default for dict
+
+
+def test_dataclass_unsupported_type_still_fails() -> None:
+    """Test that fields with unsupported types still cause errors when missing."""
+    
+    @dataclasses.dataclass
+    class TestClass:
+        required_field1: str
+        required_field2: int  # No auto-default for int
+    
+    # Input missing required_field2 which has no safe auto-default
+    input_data = {"required_field1": "test_value"}
+    
+    # Should still raise an error because int has no safe auto-default
+    try:
+        load_engine_object(TestClass, input_data)
+        assert False, "Expected TypeError to be raised"
+    except TypeError:
+        pass  # Expected behavior
