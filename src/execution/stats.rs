@@ -55,6 +55,55 @@ impl std::fmt::Debug for Counter {
 }
 
 #[derive(Debug, Serialize, Default, Clone)]
+pub struct ProcessingCounters {
+    /// Total number of processing operations started.
+    pub num_starts: Counter,
+    /// Total number of processing operations ended.
+    pub num_ends: Counter,
+}
+
+impl ProcessingCounters {
+    /// Start processing the specified number of items.
+    pub fn start(&self, count: i64) {
+        self.num_starts.inc(count);
+    }
+
+    /// End processing the specified number of items.
+    pub fn end(&self, count: i64) {
+        self.num_ends.inc(count);
+    }
+
+    /// Get the current number of items being processed (starts - ends).
+    pub fn get_in_process(&self) -> i64 {
+        self.num_starts.get() - self.num_ends.get()
+    }
+
+    /// Get the total number of processing operations started.
+    pub fn get_total_starts(&self) -> i64 {
+        self.num_starts.get()
+    }
+
+    /// Get the total number of processing operations ended.
+    pub fn get_total_ends(&self) -> i64 {
+        self.num_ends.get()
+    }
+
+    /// Calculate the delta between this and a base ProcessingCounters.
+    pub fn delta(&self, base: &Self) -> Self {
+        ProcessingCounters {
+            num_starts: self.num_starts.delta(&base.num_starts),
+            num_ends: self.num_ends.delta(&base.num_ends),
+        }
+    }
+
+    /// Merge a delta into this ProcessingCounters.
+    pub fn merge(&self, delta: &Self) {
+        self.num_starts.merge(&delta.num_starts);
+        self.num_ends.merge(&delta.num_ends);
+    }
+}
+
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct UpdateStats {
     pub num_no_change: Counter,
     pub num_insertions: Counter,
@@ -64,8 +113,8 @@ pub struct UpdateStats {
     /// Number of source rows that were reprocessed because of logic change.
     pub num_reprocesses: Counter,
     pub num_errors: Counter,
-    /// Number of source rows currently being processed.
-    pub num_in_process: Counter,
+    /// Processing counters for tracking in-process rows.
+    pub processing: ProcessingCounters,
 }
 
 impl UpdateStats {
@@ -77,7 +126,7 @@ impl UpdateStats {
             num_updates: self.num_updates.delta(&base.num_updates),
             num_reprocesses: self.num_reprocesses.delta(&base.num_reprocesses),
             num_errors: self.num_errors.delta(&base.num_errors),
-            num_in_process: self.num_in_process.delta(&base.num_in_process),
+            processing: self.processing.delta(&base.processing),
         }
     }
 
@@ -88,7 +137,7 @@ impl UpdateStats {
         self.num_updates.merge(&delta.num_updates);
         self.num_reprocesses.merge(&delta.num_reprocesses);
         self.num_errors.merge(&delta.num_errors);
-        self.num_in_process.merge(&delta.num_in_process);
+        self.processing.merge(&delta.processing);
     }
 
     pub fn has_any_change(&self) -> bool {
@@ -100,28 +149,28 @@ impl UpdateStats {
     }
 
     /// Start processing the specified number of rows.
-    /// Increments the in-process counter and is called when beginning row processing.
+    /// Increments the processing start counter.
     pub fn start_processing(&self, count: i64) {
-        self.num_in_process.inc(count);
+        self.processing.start(count);
     }
 
     /// Finish processing the specified number of rows.
-    /// Decrements the in-process counter and is called when row processing completes.
+    /// Increments the processing end counter.
     pub fn finish_processing(&self, count: i64) {
-        self.num_in_process.inc(-count);
+        self.processing.end(count);
     }
 
     /// Get the current number of rows being processed.
     pub fn get_in_process_count(&self) -> i64 {
-        self.num_in_process.get()
+        self.processing.get_in_process()
     }
 }
 
 /// Per-operation tracking of in-process row counts.
 #[derive(Debug, Default)]
 pub struct OperationInProcessStats {
-    /// Maps operation names to their current in-process row counts.
-    operation_counters: std::sync::RwLock<std::collections::HashMap<String, Counter>>,
+    /// Maps operation names to their processing counters.
+    operation_counters: std::sync::RwLock<std::collections::HashMap<String, ProcessingCounters>>,
 }
 
 impl OperationInProcessStats {
@@ -129,14 +178,14 @@ impl OperationInProcessStats {
     pub fn start_processing(&self, operation_name: &str, count: i64) {
         let mut counters = self.operation_counters.write().unwrap();
         let counter = counters.entry(operation_name.to_string()).or_default();
-        counter.inc(count);
+        counter.start(count);
     }
 
     /// Finish processing rows for the specified operation.
     pub fn finish_processing(&self, operation_name: &str, count: i64) {
         let counters = self.operation_counters.write().unwrap();
         if let Some(counter) = counters.get(operation_name) {
-            counter.inc(-count);
+            counter.end(count);
         }
     }
 
@@ -145,7 +194,7 @@ impl OperationInProcessStats {
         let counters = self.operation_counters.read().unwrap();
         counters
             .get(operation_name)
-            .map_or(0, |counter| counter.get())
+            .map_or(0, |counter| counter.get_in_process())
     }
 
     /// Get a snapshot of all operation in-process counts.
@@ -153,14 +202,17 @@ impl OperationInProcessStats {
         let counters = self.operation_counters.read().unwrap();
         counters
             .iter()
-            .map(|(name, counter)| (name.clone(), counter.get()))
+            .map(|(name, counter)| (name.clone(), counter.get_in_process()))
             .collect()
     }
 
     /// Get the total in-process count across all operations.
     pub fn get_total_in_process_count(&self) -> i64 {
         let counters = self.operation_counters.read().unwrap();
-        counters.values().map(|counter| counter.get()).sum()
+        counters
+            .values()
+            .map(|counter| counter.get_in_process())
+            .sum()
     }
 }
 
@@ -204,7 +256,7 @@ impl std::fmt::Display for UpdateStats {
             ));
         }
 
-        let num_in_process = self.num_in_process.get();
+        let num_in_process = self.processing.get_in_process();
         if num_in_process > 0 {
             messages.push(format!("{num_in_process} source rows IN PROCESS"));
         }
@@ -250,6 +302,69 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::thread;
+
+    #[test]
+    fn test_processing_counters() {
+        let counters = ProcessingCounters::default();
+
+        // Initially should be zero
+        assert_eq!(counters.get_in_process(), 0);
+        assert_eq!(counters.get_total_starts(), 0);
+        assert_eq!(counters.get_total_ends(), 0);
+
+        // Start processing some items
+        counters.start(5);
+        assert_eq!(counters.get_in_process(), 5);
+        assert_eq!(counters.get_total_starts(), 5);
+        assert_eq!(counters.get_total_ends(), 0);
+
+        // Start processing more items
+        counters.start(3);
+        assert_eq!(counters.get_in_process(), 8);
+        assert_eq!(counters.get_total_starts(), 8);
+        assert_eq!(counters.get_total_ends(), 0);
+
+        // End processing some items
+        counters.end(2);
+        assert_eq!(counters.get_in_process(), 6);
+        assert_eq!(counters.get_total_starts(), 8);
+        assert_eq!(counters.get_total_ends(), 2);
+
+        // End processing remaining items
+        counters.end(6);
+        assert_eq!(counters.get_in_process(), 0);
+        assert_eq!(counters.get_total_starts(), 8);
+        assert_eq!(counters.get_total_ends(), 8);
+    }
+
+    #[test]
+    fn test_processing_counters_delta_and_merge() {
+        let base = ProcessingCounters::default();
+        let current = ProcessingCounters::default();
+
+        // Set up base state
+        base.start(5);
+        base.end(2);
+
+        // Set up current state
+        current.start(12);
+        current.end(4);
+
+        // Calculate delta
+        let delta = current.delta(&base);
+        assert_eq!(delta.get_total_starts(), 7); // 12 - 5
+        assert_eq!(delta.get_total_ends(), 2); // 4 - 2
+        assert_eq!(delta.get_in_process(), 5); // 7 - 2
+
+        // Test merge
+        let merged = ProcessingCounters::default();
+        merged.start(10);
+        merged.end(3);
+        merged.merge(&delta);
+        assert_eq!(merged.get_total_starts(), 17); // 10 + 7
+        assert_eq!(merged.get_total_ends(), 5); // 3 + 2
+        assert_eq!(merged.get_in_process(), 12); // 17 - 5
+    }
 
     #[test]
     fn test_update_stats_in_process_tracking() {
