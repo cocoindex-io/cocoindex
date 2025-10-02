@@ -322,6 +322,7 @@ async fn evaluate_child_op_scope(
     child_scope_entry: ScopeEntry<'_>,
     concurrency_controller: &concur_control::ConcurrencyController,
     memory: &EvaluationMemory,
+    operation_in_process_stats: Option<&crate::execution::stats::OperationInProcessStats>,
 ) -> Result<()> {
     let _permit = concurrency_controller
         .acquire(Some(|| {
@@ -333,32 +334,44 @@ async fn evaluate_child_op_scope(
                 .sum()
         }))
         .await?;
-    evaluate_op_scope(op_scope, scoped_entries.prepend(&child_scope_entry), memory)
-        .await
-        .with_context(|| {
-            format!(
-                "Evaluating in scope with key {}",
-                match child_scope_entry.key.key() {
-                    Some(k) => k.to_string(),
-                    None => "()".to_string(),
-                }
-            )
-        })
+    evaluate_op_scope(
+        op_scope,
+        scoped_entries.prepend(&child_scope_entry),
+        memory,
+        operation_in_process_stats,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "Evaluating in scope with key {}",
+            match child_scope_entry.key.key() {
+                Some(k) => k.to_string(),
+                None => "()".to_string(),
+            }
+        )
+    })
 }
 
 async fn evaluate_op_scope(
     op_scope: &AnalyzedOpScope,
     scoped_entries: RefList<'_, &ScopeEntry<'_>>,
     memory: &EvaluationMemory,
+    operation_in_process_stats: Option<&crate::execution::stats::OperationInProcessStats>,
 ) -> Result<()> {
     let head_scope = *scoped_entries.head().unwrap();
     for reactive_op in op_scope.reactive_ops.iter() {
         match reactive_op {
             AnalyzedReactiveOp::Transform(op) => {
+                // Track transform operation start
+                if let Some(ref op_stats) = operation_in_process_stats {
+                    op_stats.start_processing(&op.name, 1);
+                }
+
                 let mut input_values = Vec::with_capacity(op.inputs.len());
                 input_values
                     .extend(assemble_input_values(&op.inputs, scoped_entries).collect::<Vec<_>>());
-                if op.function_exec_info.enable_cache {
+
+                let result = if op.function_exec_info.enable_cache {
                     let output_value_cell = memory.get_cache_entry(
                         || {
                             Ok(op
@@ -382,7 +395,14 @@ async fn evaluate_op_scope(
                         .await
                         .and_then(|v| head_scope.define_field(&op.output, &v))
                 }
-                .with_context(|| format!("Evaluating Transform op `{}`", op.name,))?
+                .with_context(|| format!("Evaluating Transform op `{}`", op.name,));
+
+                // Track transform operation completion
+                if let Some(ref op_stats) = operation_in_process_stats {
+                    op_stats.finish_processing(&op.name, 1);
+                }
+
+                result?
             }
 
             AnalyzedReactiveOp::ForEach(op) => {
@@ -408,6 +428,7 @@ async fn evaluate_op_scope(
                                 ),
                                 &op.concurrency_controller,
                                 memory,
+                                operation_in_process_stats,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -425,6 +446,7 @@ async fn evaluate_op_scope(
                                 ),
                                 &op.concurrency_controller,
                                 memory,
+                                operation_in_process_stats,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -443,6 +465,7 @@ async fn evaluate_op_scope(
                                 ),
                                 &op.concurrency_controller,
                                 memory,
+                                operation_in_process_stats,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -509,6 +532,7 @@ pub async fn evaluate_source_entry(
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
     source_value: value::FieldValues,
     memory: &EvaluationMemory,
+    operation_in_process_stats: Option<&crate::execution::stats::OperationInProcessStats>,
 ) -> Result<EvaluateSourceEntryOutput> {
     let _permit = src_eval_ctx
         .import_op
@@ -556,6 +580,7 @@ pub async fn evaluate_source_entry(
         &src_eval_ctx.plan.op_scope,
         RefList::Nil.prepend(&root_scope_entry),
         memory,
+        operation_in_process_stats,
     )
     .await?;
     let collected_values = root_scope_entry
@@ -604,6 +629,7 @@ pub async fn evaluate_transient_flow(
         &flow.execution_plan.op_scope,
         RefList::Nil.prepend(&root_scope_entry),
         &eval_memory,
+        None, // No operation stats for transient flows
     )
     .await?;
     let output_value = assemble_value(

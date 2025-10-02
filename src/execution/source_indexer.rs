@@ -337,7 +337,7 @@ impl SourceIndexingContext {
             let schema = &self.flow.data_schema;
 
             // Track that we're starting to process this row
-            update_stats.start_processing(1);
+            update_stats.processing.start(1);
             if let Some(ref op_stats) = operation_in_process_stats {
                 op_stats.start_processing(&import_op.name, 1);
             }
@@ -356,6 +356,7 @@ impl SourceIndexingContext {
                 mode,
                 process_time,
                 &update_stats,
+                operation_in_process_stats.as_ref().map(|s| s.as_ref()),
                 &pool,
             )?;
 
@@ -493,7 +494,7 @@ impl SourceIndexingContext {
             let result = process.await;
 
             // Track that we're finishing processing this row (regardless of success/failure)
-            update_stats.finish_processing(1);
+            update_stats.processing.end(1);
             if let Some(ref op_stats) = operation_in_process_stats {
                 op_stats.finish_processing(&operation_name, 1);
             }

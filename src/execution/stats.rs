@@ -75,17 +75,9 @@ impl ProcessingCounters {
 
     /// Get the current number of items being processed (starts - ends).
     pub fn get_in_process(&self) -> i64 {
-        self.num_starts.get() - self.num_ends.get()
-    }
-
-    /// Get the total number of processing operations started.
-    pub fn get_total_starts(&self) -> i64 {
-        self.num_starts.get()
-    }
-
-    /// Get the total number of processing operations ended.
-    pub fn get_total_ends(&self) -> i64 {
-        self.num_ends.get()
+        let ends = self.num_ends.get();
+        let starts = self.num_starts.get();
+        starts - ends
     }
 
     /// Calculate the delta between this and a base ProcessingCounters.
@@ -146,23 +138,6 @@ impl UpdateStats {
             || self.num_updates.get() > 0
             || self.num_reprocesses.get() > 0
             || self.num_errors.get() > 0
-    }
-
-    /// Start processing the specified number of rows.
-    /// Increments the processing start counter.
-    pub fn start_processing(&self, count: i64) {
-        self.processing.start(count);
-    }
-
-    /// Finish processing the specified number of rows.
-    /// Increments the processing end counter.
-    pub fn finish_processing(&self, count: i64) {
-        self.processing.end(count);
-    }
-
-    /// Get the current number of rows being processed.
-    pub fn get_in_process_count(&self) -> i64 {
-        self.processing.get_in_process()
     }
 }
 
@@ -309,32 +284,32 @@ mod tests {
 
         // Initially should be zero
         assert_eq!(counters.get_in_process(), 0);
-        assert_eq!(counters.get_total_starts(), 0);
-        assert_eq!(counters.get_total_ends(), 0);
+        assert_eq!(counters.num_starts.get(), 0);
+        assert_eq!(counters.num_ends.get(), 0);
 
         // Start processing some items
         counters.start(5);
         assert_eq!(counters.get_in_process(), 5);
-        assert_eq!(counters.get_total_starts(), 5);
-        assert_eq!(counters.get_total_ends(), 0);
+        assert_eq!(counters.num_starts.get(), 5);
+        assert_eq!(counters.num_ends.get(), 0);
 
         // Start processing more items
         counters.start(3);
         assert_eq!(counters.get_in_process(), 8);
-        assert_eq!(counters.get_total_starts(), 8);
-        assert_eq!(counters.get_total_ends(), 0);
+        assert_eq!(counters.num_starts.get(), 8);
+        assert_eq!(counters.num_ends.get(), 0);
 
         // End processing some items
         counters.end(2);
         assert_eq!(counters.get_in_process(), 6);
-        assert_eq!(counters.get_total_starts(), 8);
-        assert_eq!(counters.get_total_ends(), 2);
+        assert_eq!(counters.num_starts.get(), 8);
+        assert_eq!(counters.num_ends.get(), 2);
 
         // End processing remaining items
         counters.end(6);
         assert_eq!(counters.get_in_process(), 0);
-        assert_eq!(counters.get_total_starts(), 8);
-        assert_eq!(counters.get_total_ends(), 8);
+        assert_eq!(counters.num_starts.get(), 8);
+        assert_eq!(counters.num_ends.get(), 8);
     }
 
     #[test]
@@ -352,8 +327,8 @@ mod tests {
 
         // Calculate delta
         let delta = current.delta(&base);
-        assert_eq!(delta.get_total_starts(), 7); // 12 - 5
-        assert_eq!(delta.get_total_ends(), 2); // 4 - 2
+        assert_eq!(delta.num_starts.get(), 7); // 12 - 5
+        assert_eq!(delta.num_ends.get(), 2); // 4 - 2
         assert_eq!(delta.get_in_process(), 5); // 7 - 2
 
         // Test merge
@@ -361,8 +336,8 @@ mod tests {
         merged.start(10);
         merged.end(3);
         merged.merge(&delta);
-        assert_eq!(merged.get_total_starts(), 17); // 10 + 7
-        assert_eq!(merged.get_total_ends(), 5); // 3 + 2
+        assert_eq!(merged.num_starts.get(), 17); // 10 + 7
+        assert_eq!(merged.num_ends.get(), 5); // 3 + 2
         assert_eq!(merged.get_in_process(), 12); // 17 - 5
     }
 
@@ -371,23 +346,23 @@ mod tests {
         let stats = UpdateStats::default();
 
         // Initially should be zero
-        assert_eq!(stats.get_in_process_count(), 0);
+        assert_eq!(stats.processing.get_in_process(), 0);
 
         // Start processing some rows
-        stats.start_processing(5);
-        assert_eq!(stats.get_in_process_count(), 5);
+        stats.processing.start(5);
+        assert_eq!(stats.processing.get_in_process(), 5);
 
         // Start processing more rows
-        stats.start_processing(3);
-        assert_eq!(stats.get_in_process_count(), 8);
+        stats.processing.start(3);
+        assert_eq!(stats.processing.get_in_process(), 8);
 
         // Finish processing some rows
-        stats.finish_processing(2);
-        assert_eq!(stats.get_in_process_count(), 6);
+        stats.processing.end(2);
+        assert_eq!(stats.processing.get_in_process(), 6);
 
         // Finish processing remaining rows
-        stats.finish_processing(6);
-        assert_eq!(stats.get_in_process_count(), 0);
+        stats.processing.end(6);
+        assert_eq!(stats.processing.get_in_process(), 0);
     }
 
     #[test]
@@ -400,13 +375,13 @@ mod tests {
             let stats_clone = Arc::clone(&stats);
             let handle = thread::spawn(move || {
                 // Each thread processes 100 rows
-                stats_clone.start_processing(100);
+                stats_clone.processing.start(100);
 
                 // Simulate some work
                 thread::sleep(std::time::Duration::from_millis(i * 10));
 
                 // Finish processing
-                stats_clone.finish_processing(100);
+                stats_clone.processing.end(100);
             });
             handles.push(handle);
         }
@@ -417,7 +392,7 @@ mod tests {
         }
 
         // Should be back to zero
-        assert_eq!(stats.get_in_process_count(), 0);
+        assert_eq!(stats.processing.get_in_process(), 0);
     }
 
     #[test]
@@ -491,17 +466,17 @@ mod tests {
         let stats2 = UpdateStats::default();
 
         // Set up different counts
-        stats1.start_processing(10);
+        stats1.processing.start(10);
         stats1.num_insertions.inc(5);
 
-        stats2.start_processing(15);
+        stats2.processing.start(15);
         stats2.num_updates.inc(3);
 
         // Merge stats2 into stats1
         stats1.merge(&stats2);
 
         // Check that all counters were merged correctly
-        assert_eq!(stats1.get_in_process_count(), 25); // 10 + 15
+        assert_eq!(stats1.processing.get_in_process(), 25); // 10 + 15
         assert_eq!(stats1.num_insertions.get(), 5);
         assert_eq!(stats1.num_updates.get(), 3);
     }
@@ -512,11 +487,11 @@ mod tests {
         let current = UpdateStats::default();
 
         // Set up base state
-        base.start_processing(5);
+        base.processing.start(5);
         base.num_insertions.inc(2);
 
         // Set up current state
-        current.start_processing(12);
+        current.processing.start(12);
         current.num_insertions.inc(7);
         current.num_updates.inc(3);
 
@@ -524,7 +499,7 @@ mod tests {
         let delta = current.delta(&base);
 
         // Check that delta contains the differences
-        assert_eq!(delta.get_in_process_count(), 7); // 12 - 5
+        assert_eq!(delta.processing.get_in_process(), 7); // 12 - 5
         assert_eq!(delta.num_insertions.get(), 5); // 7 - 2
         assert_eq!(delta.num_updates.get(), 3); // 3 - 0
     }
@@ -537,7 +512,7 @@ mod tests {
         assert_eq!(format!("{}", stats), "No changes");
 
         // Test with in-process rows
-        stats.start_processing(5);
+        stats.processing.start(5);
         assert!(format!("{}", stats).contains("5 source rows IN PROCESS"));
 
         // Test with mixed activity
@@ -547,5 +522,139 @@ mod tests {
         assert!(display.contains("1 source rows FAILED"));
         assert!(display.contains("3 source rows processed"));
         assert!(display.contains("5 source rows IN PROCESS"));
+    }
+
+    #[test]
+    fn test_granular_operation_tracking_integration() {
+        let op_stats = OperationInProcessStats::default();
+
+        // Simulate import operations
+        op_stats.start_processing("import_users", 5);
+        op_stats.start_processing("import_orders", 3);
+
+        // Simulate transform operations
+        op_stats.start_processing("transform_user_data", 4);
+        op_stats.start_processing("transform_order_data", 2);
+
+        // Simulate export operations
+        op_stats.start_processing("export_to_postgres", 3);
+        op_stats.start_processing("export_to_elasticsearch", 2);
+
+        // Check individual operation counts
+        assert_eq!(op_stats.get_operation_in_process_count("import_users"), 5);
+        assert_eq!(
+            op_stats.get_operation_in_process_count("transform_user_data"),
+            4
+        );
+        assert_eq!(
+            op_stats.get_operation_in_process_count("export_to_postgres"),
+            3
+        );
+
+        // Check total count across all operations
+        assert_eq!(op_stats.get_total_in_process_count(), 19); // 5+3+4+2+3+2
+
+        // Check snapshot of all operations
+        let all_ops = op_stats.get_all_operations_in_process();
+        assert_eq!(all_ops.len(), 6);
+        assert_eq!(all_ops.get("import_users"), Some(&5));
+        assert_eq!(all_ops.get("transform_user_data"), Some(&4));
+        assert_eq!(all_ops.get("export_to_postgres"), Some(&3));
+
+        // Finish some operations
+        op_stats.finish_processing("import_users", 2);
+        op_stats.finish_processing("transform_user_data", 4);
+        op_stats.finish_processing("export_to_postgres", 1);
+
+        // Verify counts after completion
+        assert_eq!(op_stats.get_operation_in_process_count("import_users"), 3); // 5-2
+        assert_eq!(
+            op_stats.get_operation_in_process_count("transform_user_data"),
+            0
+        ); // 4-4
+        assert_eq!(
+            op_stats.get_operation_in_process_count("export_to_postgres"),
+            2
+        ); // 3-1
+        assert_eq!(op_stats.get_total_in_process_count(), 12); // 3+3+0+2+2+2
+    }
+
+    #[test]
+    fn test_operation_tracking_with_realistic_pipeline() {
+        let op_stats = OperationInProcessStats::default();
+
+        // Simulate a realistic processing pipeline scenario
+        // Import phase: Start processing 100 rows
+        op_stats.start_processing("users_import", 100);
+        assert_eq!(op_stats.get_total_in_process_count(), 100);
+
+        // Transform phase: As import finishes, transform starts
+        for i in 0..100 {
+            // Each imported row triggers a transform
+            if i % 10 == 0 {
+                // Complete import batch every 10 items
+                op_stats.finish_processing("users_import", 10);
+            }
+
+            // Start transform for each item
+            op_stats.start_processing("user_transform", 1);
+
+            // Some transforms complete quickly
+            if i % 5 == 0 {
+                op_stats.finish_processing("user_transform", 1);
+            }
+        }
+
+        // Verify intermediate state
+        assert_eq!(op_stats.get_operation_in_process_count("users_import"), 0); // All imports finished
+        assert_eq!(
+            op_stats.get_operation_in_process_count("user_transform"),
+            80
+        ); // 100 started - 20 finished
+
+        // Export phase: As transforms finish, exports start
+        for i in 0..80 {
+            op_stats.finish_processing("user_transform", 1);
+            op_stats.start_processing("user_export", 1);
+
+            // Some exports complete
+            if i % 3 == 0 {
+                op_stats.finish_processing("user_export", 1);
+            }
+        }
+
+        // Final verification
+        assert_eq!(op_stats.get_operation_in_process_count("users_import"), 0);
+        assert_eq!(op_stats.get_operation_in_process_count("user_transform"), 0);
+        assert_eq!(op_stats.get_operation_in_process_count("user_export"), 53); // 80 - 27 (80/3 rounded down)
+        assert_eq!(op_stats.get_total_in_process_count(), 53);
+    }
+
+    #[test]
+    fn test_operation_tracking_cumulative_behavior() {
+        let op_stats = OperationInProcessStats::default();
+
+        // Test that operation tracking maintains cumulative behavior for delta calculations
+        let snapshot1 = OperationInProcessStats::default();
+
+        // Initial state
+        op_stats.start_processing("test_op", 10);
+        op_stats.finish_processing("test_op", 3);
+
+        // Simulate taking a snapshot (in real code, this would involve cloning counters)
+        // For testing, will manually create the "previous" state
+        snapshot1.start_processing("test_op", 10);
+        snapshot1.finish_processing("test_op", 3);
+
+        // Continue processing
+        op_stats.start_processing("test_op", 5);
+        op_stats.finish_processing("test_op", 2);
+
+        // Verify cumulative nature
+        // op_stats should have: starts=15, ends=5, in_process=10
+        // snapshot1 should have: starts=10, ends=3, in_process=7
+        // Delta would be: starts=5, ends=2, net_change=3
+
+        assert_eq!(op_stats.get_operation_in_process_count("test_op"), 10); // 15-5
     }
 }
