@@ -59,7 +59,7 @@ def _get_app_ref_from_specifier(
     specifier: str,
 ) -> str:
     """
-    Parses the APP_TARGET to get the application reference (path or module).
+    Parses the `APP_TARGET` to get the application reference (path or module).
     Issues a warning if a flow name component is also provided in it.
     """
     app_ref, flow_ref = _parse_app_flow_specifier(specifier)
@@ -84,7 +84,7 @@ def _load_user_app(app_target: str) -> None:
         load_user_app(app_target)
     except UserAppLoaderError as e:
         raise click.ClickException(
-            f"Failed to load APP_TARGET '{app_target}': {e}"
+            f"Failed to load `APP_TARGET` '{app_target}': {e}"
         ) from e
 
     add_user_app(app_target)
@@ -137,11 +137,8 @@ def ls(app_target: str | None) -> None:
     """
     List all flows.
 
-    If APP_TARGET (path/to/app.py or a module) is provided, lists flows
-    defined in the app and their backend setup status.
-
-    If APP_TARGET is omitted, lists all flows that have a persisted
-    setup in the backend.
+    If `APP_TARGET` (`path/to/app.py` or a module) is provided, lists flows defined in the app and their backend setup status.
+    If `APP_TARGET` is omitted, lists all flows that have a persisted setup in the backend.
     """
     persisted_flow_names = flow_names_with_setup()
     if app_target:
@@ -189,16 +186,13 @@ def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
     """
     Show the flow spec and schema.
 
-    APP_FLOW_SPECIFIER: Specifies the application and optionally the target flow.
+    `APP_FLOW_SPECIFIER`: Specifies the application and optionally the target flow.
     Can be one of the following formats:
-
-    \b
-      - path/to/your_app.py
-      - an_installed.module_name
-      - path/to/your_app.py:SpecificFlowName
-      - an_installed.module_name:SpecificFlowName
-
-    :SpecificFlowName can be omitted only if the application defines a single flow.
+    - `path/to/your_app.py`
+    - `an_installed.module_name`
+    - `path/to/your_app.py:SpecificFlowName`
+    - `an_installed.module_name:SpecificFlowName`
+    `:SpecificFlowName` can be omitted only if the application defines a single flow.
     """
     app_ref, flow_ref = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
@@ -223,7 +217,7 @@ def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
 def _drop_flows(flows: Iterable[flow.Flow], force: bool = False) -> None:
     """
     Helper function to drop flows without user interaction.
-    Used internally by --reset flag
+    Used internally by `--reset` flag.
 
     Args:
         flows: Iterable of Flow objects to drop
@@ -297,18 +291,18 @@ async def _update_all_flows_with_hint_async(
     is_flag=True,
     show_default=True,
     default=False,
-    help="Drop existing setup before running setup (equivalent to running 'cocoindex drop' first).",
+    help="Drop existing setup before running setup (equivalent to running `cocoindex drop` first).",
 )
 def setup(app_target: str, force: bool, reset: bool) -> None:
     """
     Check and apply backend setup changes for flows, including the internal storage and target (to export to).
 
-    APP_TARGET: path/to/app.py or installed_module.
+    `APP_TARGET`: `path/to/app.py` or `installed_module`.
     """
     app_ref = _get_app_ref_from_specifier(app_target)
     _load_user_app(app_ref)
 
-    # If --reset is specified, drop existing setup first
+    # If `--reset` is specified, drop existing setup first
     if reset:
         _drop_flows(flow.flows().values(), force=force)
 
@@ -330,7 +324,6 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
     """
     Drop the backend setup for flows.
 
-    \b
     Modes of operation:
     1. Drop all flows defined in an app: `cocoindex drop <APP_TARGET>`
     2. Drop specific named flows: `cocoindex drop <APP_TARGET> [FLOW_NAME...]`
@@ -339,8 +332,7 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
 
     if not app_target:
         raise click.UsageError(
-            "Missing arguments. You must either provide an APP_TARGET (to target app-specific flows) "
-            "or use the --all flag."
+            "Missing arguments. You must either provide an `APP_TARGET` (to target app-specific flows) or use the `--all` flag."
         )
 
     app_ref = _get_app_ref_from_specifier(app_target)
@@ -415,7 +407,7 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
     is_flag=True,
     show_default=True,
     default=False,
-    help="Drop existing setup before updating (equivalent to running 'cocoindex drop' first).",
+    help="Drop existing setup before updating (equivalent to running `cocoindex drop` first).",
 )
 @click.option(
     "-f",
@@ -445,13 +437,13 @@ def update(
     """
     Update the index to reflect the latest data from data sources.
 
-    APP_FLOW_SPECIFIER: path/to/app.py, module, path/to/app.py:FlowName, or module:FlowName.
-    If :FlowName is omitted, updates all flows.
+    `APP_FLOW_SPECIFIER`: `path/to/app.py`, `module`, `path/to/app.py:FlowName`, or `module:FlowName`.
+    If `:FlowName` is omitted, updates all flows.
     """
     app_ref, flow_name = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
 
-    # If --reset is specified, drop existing setup first
+    # If `--reset` is specified, drop existing setup first
     if reset:
         if flow_name:
             # Reset specific flow only
@@ -514,15 +506,13 @@ def evaluate(
     Instead of updating the index, it dumps what should be indexed to files.
     Mainly used for evaluation purpose.
 
-    \b
-    APP_FLOW_SPECIFIER: Specifies the application and optionally the target flow.
+    `APP_FLOW_SPECIFIER`: Specifies the application and optionally the target flow.
     Can be one of the following formats:
-      - path/to/your_app.py
-      - an_installed.module_name
-      - path/to/your_app.py:SpecificFlowName
-      - an_installed.module_name:SpecificFlowName
-
-    :SpecificFlowName can be omitted only if the application defines a single flow.
+    - `path/to/your_app.py`
+    - `an_installed.module_name`
+    - `path/to/your_app.py:SpecificFlowName`
+    - `an_installed.module_name:SpecificFlowName`
+    `:SpecificFlowName` can be omitted only if the application defines a single flow.
     """
     app_ref, flow_ref = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
@@ -541,7 +531,7 @@ def evaluate(
     "--address",
     type=str,
     help="The address to bind the server to, in the format of IP:PORT. "
-    "If unspecified, the address specified in COCOINDEX_SERVER_ADDRESS will be used.",
+    "If unspecified, the address specified in `COCOINDEX_SERVER_ADDRESS` will be used.",
 )
 @click.option(
     "-c",
@@ -550,7 +540,7 @@ def evaluate(
     help="The origins of the clients (e.g. CocoInsight UI) to allow CORS from. "
     "Multiple origins can be specified as a comma-separated list. "
     "e.g. `https://cocoindex.io,http://localhost:3000`. "
-    "Origins specified in COCOINDEX_SERVER_CORS_ORIGINS will also be included.",
+    "Origins specified in `COCOINDEX_SERVER_CORS_ORIGINS` will also be included.",
 )
 @click.option(
     "-ci",
@@ -564,7 +554,7 @@ def evaluate(
     "-cl",
     "--cors-local",
     type=int,
-    help="Allow http://localhost:<port> to access the server.",
+    help="Allow `http://localhost:<port>` to access the server.",
 )
 @click.option(
     "-L",
@@ -586,7 +576,7 @@ def evaluate(
     is_flag=True,
     show_default=True,
     default=False,
-    help="Drop existing setup before starting server (equivalent to running 'cocoindex drop' first).",
+    help="Drop existing setup before starting server (equivalent to running `cocoindex drop` first).",
 )
 @click.option(
     "--reexport",
@@ -638,7 +628,7 @@ def server(
 
     It will allow tools like CocoInsight to access the server.
 
-    APP_TARGET: path/to/app.py or installed_module.
+    `APP_TARGET`: `path/to/app.py` or `installed_module`.
     """
     app_ref = _get_app_ref_from_specifier(app_target)
     args = (
@@ -726,7 +716,7 @@ def _run_server(
         )
         raise click.Abort()
 
-    # If --reset is specified, drop existing setup first
+    # If `--reset` is specified, drop existing setup first
     if run_reset:
         _drop_flows(flow.flows().values(), force=force)
 

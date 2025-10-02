@@ -58,6 +58,22 @@ def escape_html_tags(text: str) -> str:
     return "".join(result)
 
 
+def backquote_terms(text: str) -> str:
+    """
+    Wrap code-style terms (ALL_CAPS, example module names, file paths, angle brackets, .Name) in backticks.
+    """
+    # Backquote ALL_CAPS terms
+    text = re.sub(r"\b([A-Z_]{2,})\b", r"`\1`", text)
+    # Backquote example modules and paths (simple heuristics)
+    text = re.sub(r"\b([a-zA-Z0-9_\.]+\.py)\b", r"`\1`", text)
+    text = re.sub(r"\b([a-zA-Z0-9_]+\.[a-zA-Z0-9_]+)\b", r"`\1`", text)
+    # Backquote things like :SpecificFlowName, :AnythingName
+    text = re.sub(r"(:[a-zA-Z0-9_]+Name\b)", r"`\1`", text)
+    # Backquote things in angle brackets (e.g., <APP_TARGET>)
+    text = re.sub(r"(<[A-Z_]+>)", r"`\1`", text)
+    return text
+
+
 def format_options_section(help_text: str) -> str:
     """Extract and format the options section."""
     lines = help_text.split("\n")
@@ -92,6 +108,7 @@ def format_options_section(help_text: str) -> str:
             # Save previous option if exists
             if current_option is not None:
                 desc = " ".join(current_description).strip()
+                desc = backquote_terms(desc)
                 desc = escape_html_tags(desc)  # Escape HTML tags for MDX compatibility
                 formatted_options.append(f"| `{current_option}` | {desc} |")
 
@@ -118,6 +135,7 @@ def format_options_section(help_text: str) -> str:
     # Add last option
     if current_option is not None:
         desc = " ".join(current_description).strip()
+        desc = backquote_terms(desc)
         desc = escape_html_tags(desc)  # Escape HTML tags for MDX compatibility
         formatted_options.append(f"| `{current_option}` | {desc} |")
 
@@ -156,6 +174,7 @@ def format_commands_section(help_text: str) -> str:
         if match:
             command = match.group(1)
             description = match.group(2).strip()
+            description = backquote_terms(description)
             # Truncate long descriptions
             if len(description) > 80:
                 description = description[:77] + "..."
@@ -185,7 +204,10 @@ def extract_description(help_text: str) -> str:
         elif in_description and line.strip():
             description_lines.append(line.strip())
 
-    description = "\n\n".join(description_lines) if description_lines else ""
+    # Collapse multiple blank lines into a single blank line
+    description = "\n".join(description_lines) if description_lines else ""
+    description = re.sub(r"\n{2,}", "\n", description)
+    description = backquote_terms(description)
     return escape_html_tags(description)  # Escape HTML tags for MDX compatibility
 
 
