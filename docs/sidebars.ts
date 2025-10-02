@@ -41,7 +41,34 @@ const sidebars: SidebarsConfig = {
       items: [
         'ops/sources',
         'ops/functions',
-        'ops/targets',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Built-in Targets',
+      link: { type: 'doc', id: 'targets/index' },
+      collapsed: false,
+      items: [
+        {
+          type: 'category',
+          label: 'Entry-Oriented Targets',
+          collapsed: true,
+          items: [
+            'targets/entry-oriented/postgres',
+            'targets/entry-oriented/qdrant',
+            'targets/entry-oriented/lancedb',
+          ],
+        },
+        {
+          type: 'category',
+          label: 'Property Graph Targets',
+          link: { type: 'doc', id: 'targets/property-graph/index' },
+          collapsed: true,
+          items: [
+            'targets/property-graph/neo4j',
+            'targets/property-graph/kuzu',
+          ],
+        },
       ],
     },
     {

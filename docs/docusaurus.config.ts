@@ -69,6 +69,10 @@ const config: Config = {
             from: '/about/contributing',
             to: '/contributing/guide',
           },
+          {
+            from: '/ops/targets',
+            to: '/targets',
+          },
         ],
       },
     ],
