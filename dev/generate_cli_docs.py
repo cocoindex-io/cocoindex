@@ -32,6 +32,30 @@ def clean_usage_line(usage: str) -> str:
     return usage.replace("Usage: cli ", "Usage: cocoindex ")
 
 
+def escape_html_tags(text: str) -> str:
+    """Escape HTML-like tags in text to prevent MDX parsing issues, but preserve them in code blocks."""
+    import re
+
+    # Handle special cases where URLs with placeholders should be wrapped in code blocks
+    text = re.sub(r"http://localhost:<([^>]+)>", r"`http://localhost:<\1>`", text)
+    text = re.sub(r"https://([^<\s]+)<([^>]+)>", r"`https://\1<\2>`", text)
+
+    # Split text into code blocks and regular text
+    # Pattern matches: `code content` (inline code blocks)
+    parts = re.split(r"(`[^`]*`)", text)
+
+    result = []
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            # Even indices are regular text, escape HTML tags
+            result.append(part.replace("<", "&lt;").replace(">", "&gt;"))
+        else:
+            # Odd indices are code blocks, preserve as-is
+            result.append(part)
+
+    return "".join(result)
+
+
 def format_options_section(help_text: str) -> str:
     """Extract and format the options section."""
     lines = help_text.split("\n")
@@ -66,6 +90,7 @@ def format_options_section(help_text: str) -> str:
             # Save previous option if exists
             if current_option is not None:
                 desc = " ".join(current_description).strip()
+                desc = escape_html_tags(desc)  # Escape HTML tags for MDX compatibility
                 formatted_options.append(f"| `{current_option}` | {desc} |")
 
             # Remove the leading 2 spaces
@@ -91,6 +116,7 @@ def format_options_section(help_text: str) -> str:
     # Add last option
     if current_option is not None:
         desc = " ".join(current_description).strip()
+        desc = escape_html_tags(desc)  # Escape HTML tags for MDX compatibility
         formatted_options.append(f"| `{current_option}` | {desc} |")
 
     if formatted_options:
@@ -157,7 +183,8 @@ def extract_description(help_text: str) -> str:
         elif in_description and line.strip():
             description_lines.append(line.strip())
 
-    return "\n\n".join(description_lines) if description_lines else ""
+    description = "\n\n".join(description_lines) if description_lines else ""
+    return escape_html_tags(description)  # Escape HTML tags for MDX compatibility
 
 
 def generate_command_docs(docs: List[Dict[str, Any]]) -> str:

@@ -152,7 +152,7 @@ Usage: cocoindex server [OPTIONS] APP_TARGET
 | `-a, --address TEXT` | The address to bind the server to, in the format of IP:PORT. If unspecified, the address specified in COCOINDEX_SERVER_ADDRESS will be used. |
 | `-c, --cors-origin TEXT` | The origins of the clients (e.g. CocoInsight UI) to allow CORS from. Multiple origins can be specified as a comma-separated list. e.g. `https://cocoindex.io,http://localhost:3000`. Origins specified in COCOINDEX_SERVER_CORS_ORIGINS will also be included. |
 | `-ci, --cors-cocoindex` | Allow https://cocoindex.io to access the server. |
-| `-cl, --cors-local INTEGER` | Allow http://localhost:<port> to access the server. |
+| `-cl, --cors-local INTEGER` | Allow `http://localhost:<port>` to access the server. |
 | `-L, --live-update` | Continuously watch changes from data sources and apply to the target index. |
 | `--setup` | Automatically setup backends for the flow if it's not setup yet. |
 | `--reexport` | Reexport to targets even if there's no change. |
