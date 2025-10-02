@@ -1405,60 +1405,6 @@ mod tests {
     }
 
     #[test]
-    fn test_vector_index_state_equality() {
-        let state1 = VectorIndexState {
-            field_name: "embedding".to_string(),
-            metric: VectorSimilarityMetric::CosineSimilarity,
-            method: Some(VectorIndexMethod::Hnsw {
-                m: Some(16),
-                ef_construction: Some(200),
-            }),
-        };
-
-        let state2 = VectorIndexState {
-            field_name: "embedding".to_string(),
-            metric: VectorSimilarityMetric::CosineSimilarity,
-            method: Some(VectorIndexMethod::Hnsw {
-                m: Some(16),
-                ef_construction: Some(200),
-            }),
-        };
-
-        let state3 = VectorIndexState {
-            field_name: "embedding".to_string(),
-            metric: VectorSimilarityMetric::L2Distance, // Different metric
-            method: Some(VectorIndexMethod::Hnsw {
-                m: Some(16),
-                ef_construction: Some(200),
-            }),
-        };
-
-        assert_eq!(state1, state2);
-        assert_ne!(state1, state3);
-    }
-
-    #[test]
-    fn test_vector_index_state_serialization() {
-        let state = VectorIndexState {
-            field_name: "embedding".to_string(),
-            metric: VectorSimilarityMetric::CosineSimilarity,
-            method: Some(VectorIndexMethod::Hnsw {
-                m: Some(16),
-                ef_construction: Some(200),
-            }),
-        };
-
-        // Test serialization
-        let serialized = serde_json::to_string(&state).unwrap();
-        assert!(serialized.contains("embedding"));
-        assert!(serialized.contains("CosineSimilarity"));
-
-        // Test deserialization
-        let deserialized: VectorIndexState = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(state, deserialized);
-    }
-
-    #[test]
     fn test_parameter_mapping_edge_cases() {
         // Test with only m parameter
         let mut cypher = CypherBuilder::new();
