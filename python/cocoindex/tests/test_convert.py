@@ -1724,21 +1724,24 @@ def test_pydantic_field_descriptions() -> None:
 
     class UserWithDescriptions(BaseModel):
         """A user model with field descriptions."""
+
         name: str = Field(description="The user's full name")
         age: int = Field(description="The user's age in years", ge=0, le=150)
         email: str = Field(description="The user's email address")
-        is_active: bool = Field(description="Whether the user account is active", default=True)
+        is_active: bool = Field(
+            description="Whether the user account is active", default=True
+        )
 
     # Test that field descriptions are extracted
     encoded_schema = dump_engine_object(UserWithDescriptions)
-    
+
     # Check that the schema contains field descriptions
     assert "fields" in encoded_schema["type"]
     fields = encoded_schema["type"]["fields"]
-    
+
     # Find fields by name and check descriptions
     field_descriptions = {field["name"]: field.get("description") for field in fields}
-    
+
     assert field_descriptions["name"] == "The user's full name"
     assert field_descriptions["age"] == "The user's age in years"
     assert field_descriptions["email"] == "The user's email address"
@@ -1752,17 +1755,18 @@ def test_pydantic_field_descriptions_without_field() -> None:
 
     class UserWithoutDescriptions(BaseModel):
         """A user model without field descriptions."""
+
         name: str
         age: int
         email: str
 
     # Test that the schema works without descriptions
     encoded_schema = dump_engine_object(UserWithoutDescriptions)
-    
+
     # Check that the schema contains fields but no descriptions
     assert "fields" in encoded_schema["type"]
     fields = encoded_schema["type"]["fields"]
-    
+
     # Verify no descriptions are present
     for field in fields:
         assert "description" not in field or field["description"] is None
@@ -1775,6 +1779,7 @@ def test_pydantic_mixed_descriptions() -> None:
 
     class MixedDescriptions(BaseModel):
         """A model with mixed field descriptions."""
+
         name: str = Field(description="The name field")
         age: int  # No description
         email: str = Field(description="The email field")
@@ -1782,13 +1787,13 @@ def test_pydantic_mixed_descriptions() -> None:
 
     # Test that only fields with descriptions have them in the schema
     encoded_schema = dump_engine_object(MixedDescriptions)
-    
+
     assert "fields" in encoded_schema["type"]
     fields = encoded_schema["type"]["fields"]
-    
+
     # Find fields by name and check descriptions
     field_descriptions = {field["name"]: field.get("description") for field in fields}
-    
+
     assert field_descriptions["name"] == "The name field"
     assert field_descriptions["age"] is None
     assert field_descriptions["email"] == "The email field"

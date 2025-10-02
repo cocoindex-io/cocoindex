@@ -359,7 +359,9 @@ def _encode_struct_schema(
 ) -> tuple[dict[str, Any], int | None]:
     fields = []
 
-    def add_field(name: str, analyzed_type: AnalyzedTypeInfo, description: str | None = None) -> None:
+    def add_field(
+        name: str, analyzed_type: AnalyzedTypeInfo, description: str | None = None
+    ) -> None:
         try:
             type_info = encode_enriched_type_info(analyzed_type)
         except ValueError as e:
@@ -387,7 +389,7 @@ def _encode_struct_schema(
                     # Get the annotation from the field info
                     field_type = field_info.annotation
                     # Extract description from Pydantic field info
-                    description = getattr(field_info, 'description', None)
+                    description = getattr(field_info, "description", None)
                     add_field(name, analyze_type_info(field_type), description)
             else:
                 raise ValueError(f"Invalid Pydantic model: {struct_type}")
@@ -633,9 +635,9 @@ class FieldSchema:
     @staticmethod
     def decode(obj: dict[str, Any]) -> "FieldSchema":
         return FieldSchema(
-            name=obj["name"], 
+            name=obj["name"],
             value_type=EnrichedValueType.decode(obj),
-            description=obj.get("description")
+            description=obj.get("description"),
         )
 
     def encode(self) -> dict[str, Any]:

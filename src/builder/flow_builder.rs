@@ -364,8 +364,11 @@ impl FlowBuilder {
                 .into_py_result()?;
         }
         let result = Self::last_field_to_data_slice(&self.root_op_scope).into_py_result()?;
-        self.direct_input_fields
-            .push(FieldSchema { name, value_type, description: None });
+        self.direct_input_fields.push(FieldSchema {
+            name,
+            value_type,
+            description: None,
+        });
         Ok(result)
     }
 
