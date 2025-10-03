@@ -10,11 +10,11 @@ In CocoIndex, a source is the data origin you import from (e.g., files, database
 
 | Source Type    | See Also                    |
 |------------------|-------------------------|
-| LocalFile | Local File System   |
-| AmazonS3 | Amazon S3   |
-| AzureBlob | Azure Blob Storage   |
-| GoogleDrive | Google Drive   |
-| Postgres | PostgreSQL   |
+| LocalFile | [Local File System](/docs/sources#localfile)   |
+| AmazonS3 | [Amazon S3](/docs/sources#amazons3)   |
+| AzureBlob | [Azure Blob Storage](/docs/sources#azureblob)   |
+| GoogleDrive | [Google Drive](/docs/sources#googledrive)   |
+| Postgres | [PostgreSQL](/docs/sources#postgres)   |
 
 Related:
 - [Life cycle of a indexing flow](/docs/core/basics#life-cycle-of-an-indexing-flow) 
