@@ -44,6 +44,16 @@ const sidebars: SidebarsConfig = {
       ],
     },
     {
+    
+      type: 'category',
+      label: 'Built-in Sources',
+      link: { type: 'doc', id: 'sources/index' },
+      collapsed: true,
+      items: [    
+      ],
+    
+    },
+    {
       type: 'category',
       label: 'Built-in Targets',
       link: { type: 'doc', id: 'targets/index' },

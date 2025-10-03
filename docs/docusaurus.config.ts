@@ -54,6 +54,10 @@ const config: Config = {
       {
         redirects: [
           {
+            from: '/ops/sources',
+            to: '/sources',
+          },
+          {
             from: '/core/initialization',
             to: '/core/settings',
           },
