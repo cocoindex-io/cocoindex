@@ -53,11 +53,12 @@ const sidebars: SidebarsConfig = {
       link: { type: 'doc', id: 'targets/index' },
       collapsed: true,
       items: [
-        'targets/postgres',
-        'targets/qdrant',
-        'targets/lancedb',
-        'targets/neo4j',
-        'targets/kuzu',
+
+            'targets/postgres',
+            'targets/qdrant',
+            'targets/lancedb',
+            'targets/neo4j',
+            'targets/kuzu',
       ],
     },
     {

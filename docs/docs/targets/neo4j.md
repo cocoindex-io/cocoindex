@@ -11,7 +11,7 @@ import { ExampleButton } from '../../src/components/GitHubButton';
 
 
 ## Get Started
-Read [Property Graph Targets](./index.md#property-graph-targets) for more information to get started on how it works in CocoIndex. 
+Read [Property Graph Targets](./index.md#property-graph-targets) for more information to get started on how it works in CocoIndex.
 
 
 ## Spec
