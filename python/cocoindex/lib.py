@@ -7,7 +7,7 @@ import warnings
 
 from . import _engine  # type: ignore
 from . import flow, setting
-from .convert import dump_engine_object
+from .engine_object import dump_engine_object
 from .validation import validate_app_namespace_name
 from typing import Any, Callable, overload
 

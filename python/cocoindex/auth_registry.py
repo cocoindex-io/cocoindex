@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 from . import _engine  # type: ignore
-from .convert import dump_engine_object, load_engine_object
+from .engine_object import dump_engine_object, load_engine_object
 
 T = TypeVar("T")
 
