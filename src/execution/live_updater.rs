@@ -28,7 +28,7 @@ pub struct FlowLiveUpdater {
     join_set: Mutex<Option<JoinSet<Result<()>>>>,
     stats_per_task: Vec<Arc<stats::UpdateStats>>,
     /// Global tracking of in-process rows per operation
-    operation_in_process_stats: Arc<stats::OperationInProcessStats>,
+    pub operation_in_process_stats: Arc<stats::OperationInProcessStats>,
     recv_state: tokio::sync::Mutex<UpdateReceiveState>,
     num_remaining_tasks_rx: watch::Receiver<usize>,
 
@@ -413,23 +413,6 @@ impl FlowLiveUpdater {
             })
             .collect(),
         }
-    }
-
-    /// Get the total number of rows currently being processed across all operations.
-    pub fn get_total_in_process_count(&self) -> i64 {
-        self.operation_in_process_stats.get_total_in_process_count()
-    }
-
-    /// Get the number of rows currently being processed for a specific operation.
-    pub fn get_operation_in_process_count(&self, operation_name: &str) -> i64 {
-        self.operation_in_process_stats
-            .get_operation_in_process_count(operation_name)
-    }
-
-    /// Get a snapshot of all operation in-process counts.
-    pub fn get_all_operations_in_process(&self) -> std::collections::HashMap<String, i64> {
-        self.operation_in_process_stats
-            .get_all_operations_in_process()
     }
 
     pub async fn next_status_updates(&self) -> Result<FlowLiveUpdaterUpdates> {

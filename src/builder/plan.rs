@@ -117,6 +117,7 @@ pub struct AnalyzedExportOp {
 
 pub struct AnalyzedExportTargetOpGroup {
     pub target_factory: Arc<dyn TargetFactory + Send + Sync>,
+    pub target_kind: String,
     pub op_idx: Vec<usize>,
 }
 

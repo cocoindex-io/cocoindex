@@ -326,8 +326,8 @@ impl SourceIndexingContext {
         let operation_name = {
             let plan_result = self.flow.get_execution_plan().await;
             match plan_result {
-                Ok(plan) => plan.import_ops[self.source_idx].name.clone(),
-                Err(_) => "unknown".to_string(),
+                Ok(plan) => format!("import/{}", plan.import_ops[self.source_idx].name),
+                Err(_) => "import/unknown".to_string(),
             }
         };
 
@@ -339,7 +339,8 @@ impl SourceIndexingContext {
             // Track that we're starting to process this row
             update_stats.processing.start(1);
             if let Some(ref op_stats) = operation_in_process_stats {
-                op_stats.start_processing(&import_op.name, 1);
+                let import_key = format!("import/{}", import_op.name);
+                op_stats.start_processing(&import_key, 1);
             }
 
             let eval_ctx = SourceRowEvaluationContext {

@@ -1059,6 +1059,7 @@ pub async fn analyze_flow(
         let target_factory = get_target_factory(&target_kind)?;
         let analyzed_target_op_group = AnalyzedExportTargetOpGroup {
             target_factory,
+            target_kind: target_kind.clone(),
             op_idx: op_ids.export_op_ids,
         };
         export_ops_futs.extend(

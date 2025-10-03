@@ -322,7 +322,7 @@ async fn evaluate_child_op_scope(
     child_scope_entry: ScopeEntry<'_>,
     concurrency_controller: &concur_control::ConcurrencyController,
     memory: &EvaluationMemory,
-    operation_in_process_stats: Option<&crate::execution::stats::OperationInProcessStats>,
+    operation_in_process_stats: Option<&execution::stats::OperationInProcessStats>,
 ) -> Result<()> {
     let _permit = concurrency_controller
         .acquire(Some(|| {
@@ -356,7 +356,7 @@ async fn evaluate_op_scope(
     op_scope: &AnalyzedOpScope,
     scoped_entries: RefList<'_, &ScopeEntry<'_>>,
     memory: &EvaluationMemory,
-    operation_in_process_stats: Option<&crate::execution::stats::OperationInProcessStats>,
+    operation_in_process_stats: Option<&execution::stats::OperationInProcessStats>,
 ) -> Result<()> {
     let head_scope = *scoped_entries.head().unwrap();
     for reactive_op in op_scope.reactive_ops.iter() {
@@ -364,7 +364,8 @@ async fn evaluate_op_scope(
             AnalyzedReactiveOp::Transform(op) => {
                 // Track transform operation start
                 if let Some(ref op_stats) = operation_in_process_stats {
-                    op_stats.start_processing(&op.name, 1);
+                    let transform_key = format!("transform/{}", op.name);
+                    op_stats.start_processing(&transform_key, 1);
                 }
 
                 let mut input_values = Vec::with_capacity(op.inputs.len());
@@ -399,7 +400,8 @@ async fn evaluate_op_scope(
 
                 // Track transform operation completion
                 if let Some(ref op_stats) = operation_in_process_stats {
-                    op_stats.finish_processing(&op.name, 1);
+                    let transform_key = format!("transform/{}", op.name);
+                    op_stats.finish_processing(&transform_key, 1);
                 }
 
                 result?
@@ -532,7 +534,7 @@ pub async fn evaluate_source_entry(
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
     source_value: value::FieldValues,
     memory: &EvaluationMemory,
-    operation_in_process_stats: Option<&crate::execution::stats::OperationInProcessStats>,
+    operation_in_process_stats: Option<&execution::stats::OperationInProcessStats>,
 ) -> Result<EvaluateSourceEntryOutput> {
     let _permit = src_eval_ctx
         .import_op

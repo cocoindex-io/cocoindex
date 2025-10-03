@@ -377,17 +377,11 @@ impl<'a> RowIndexer<'a> {
                     (!mutations_w_ctx.is_empty()).then(|| {
                         // Track export operation start
                         if let Some(ref op_stats) = self.operation_in_process_stats {
-                            for export_op_idx in &export_op_group.op_idx {
-                                let export_op = &self.src_eval_ctx.plan.export_ops[*export_op_idx];
-                                op_stats.start_processing(&export_op.name, 1);
-                            }
+                            let export_key = format!("export/{}", export_op_group.target_kind);
+                            op_stats.start_processing(&export_key, 1);
                         }
 
-                        let export_op_names: Vec<String> = export_op_group
-                            .op_idx
-                            .iter()
-                            .map(|idx| self.src_eval_ctx.plan.export_ops[*idx].name.clone())
-                            .collect();
+                        let export_key = format!("export/{}", export_op_group.target_kind);
                         let operation_in_process_stats = self.operation_in_process_stats;
 
                         async move {
@@ -398,9 +392,7 @@ impl<'a> RowIndexer<'a> {
 
                             // Track export operation completion
                             if let Some(ref op_stats) = operation_in_process_stats {
-                                for export_op_name in &export_op_names {
-                                    op_stats.finish_processing(export_op_name, 1);
-                                }
+                                op_stats.finish_processing(&export_key, 1);
                             }
 
                             result
