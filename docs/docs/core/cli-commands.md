@@ -117,7 +117,7 @@ cocoindex server [OPTIONS] APP_TARGET
 | `-cl, --cors-local INTEGER` | Allow `http://localhost:<port>` to access the server. |
 | `-L, --live-update` | Continuously watch changes from data sources and apply to the target index. |
 | `--setup` | Automatically setup backends for the flow if it's not setup yet. |
-| `--reset` | Drop existing setup before starting server (equivalent to running 'cocoindex drop' first). --reset implies --setup. |
+| `--reset` | Drop existing setup before starting server (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`. |
 | `--reexport` | Reexport to targets even if there's no change. |
 | `-f, --force` | Force setup without confirmation prompts. |
 | `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |
@@ -207,7 +207,7 @@ cocoindex update [OPTIONS] APP_FLOW_SPECIFIER
 | `-L, --live` | Continuously watch changes from data sources and apply to the target index. |
 | `--reexport` | Reexport to targets even if there's no change. |
 | `--setup` | Automatically setup backends for the flow if it's not setup yet. |
-| `--reset` | Drop existing setup before updating (equivalent to running 'cocoindex drop' first). |
+| `--reset` | Drop existing setup before updating (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`. |
 | `-f, --force` | Force setup without confirmation prompts. |
 | `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |
 | `--help` | Show this message and exit. |

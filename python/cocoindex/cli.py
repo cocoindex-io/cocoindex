@@ -405,7 +405,7 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
     is_flag=True,
     show_default=True,
     default=False,
-    help="Drop existing setup before updating (equivalent to running 'cocoindex drop' first).",
+    help="Drop existing setup before updating (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`.",
 )
 @click.option(
     "-f",
@@ -569,7 +569,7 @@ def evaluate(
     is_flag=True,
     show_default=True,
     default=False,
-    help="Drop existing setup before starting server (equivalent to running 'cocoindex drop' first). --reset implies --setup.",
+    help="Drop existing setup before starting server (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`.",
 )
 @click.option(
     "--reexport",
