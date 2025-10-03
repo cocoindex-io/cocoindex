@@ -63,7 +63,7 @@ const config: Config = {
           },
           {
             from: '/ops/storages',
-            to: '/ops/targets',
+            to: '/targets',
           },
           {
             from: '/about/contributing',

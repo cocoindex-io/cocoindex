@@ -23,12 +23,12 @@ The `Neo4j` target spec takes the following fields:
     *   `user` (`str`): Username for the Neo4j database.
     *   `password` (`str`): Password for the Neo4j database.
     *   `db` (`str`, optional): The name of the Neo4j database to use as the internal storage, e.g. `neo4j`.
-*   `mapping` (`Nodes | Relationships`): The mapping from collected row to nodes or relationships of the graph. For either [nodes to export](#nodes-to-export) or [relationships to export](#relationships-to-export).
+*   `mapping` (`Nodes | Relationships`): The mapping from collected row to nodes or relationships of the graph. For either [nodes to export](./index.md#nodes-to-export) or [relationships to export](./index.md#relationships-to-export).
 
 Neo4j also provides a declaration spec `Neo4jDeclaration`, to configure indexing options for nodes only referenced by relationships. It has the following fields:
 
 *   `connection` (auth reference to `Neo4jConnectionSpec`)
-*   Fields for [nodes to declare](#declare-extra-node-labels), including
+*   Fields for [nodes to declare](./index.md#declare-extra-node-labels), including
     *   `nodes_label` (required)
     *   `primary_key_fields` (required)
     *   `vector_indexes` (optional)
