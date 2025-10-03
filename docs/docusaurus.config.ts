@@ -73,6 +73,10 @@ const config: Config = {
             from: '/ops/targets',
             to: '/targets',
           },
+          {
+            from: '/ops/sources',
+            to: '/sources',
+          },
         ],
       },
     ],

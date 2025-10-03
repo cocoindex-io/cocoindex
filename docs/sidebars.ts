@@ -39,8 +39,15 @@ const sidebars: SidebarsConfig = {
       label: 'Built-in Operations',
       collapsed: false,
       items: [
-        'ops/sources',
         'ops/functions',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Built-in Sources',
+      link: { type: 'doc', id: 'sources/index' },
+      collapsed: true,
+      items: [
       ],
     },
     {
