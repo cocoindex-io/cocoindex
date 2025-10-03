@@ -4,8 +4,17 @@ from typing import TypedDict, NamedTuple
 
 import numpy as np
 from numpy.typing import NDArray
+import pytest
 
 from cocoindex.convert import dump_engine_object, load_engine_object
+
+# Optional Pydantic support for testing
+try:
+    import pydantic
+
+    PYDANTIC_AVAILABLE = True
+except ImportError:
+    PYDANTIC_AVAILABLE = False
 
 
 @dataclasses.dataclass
@@ -181,3 +190,34 @@ def test_dataclass_unsupported_type_still_fails() -> None:
         assert False, "Expected TypeError to be raised"
     except TypeError:
         pass  # Expected behavior
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_pydantic_unsupported_type_still_fails() -> None:
+    """Test that fields with unsupported types still cause errors when missing."""
+
+    class TestPydantic(pydantic.BaseModel):
+        required_field1: str
+        required_field2: int  # No auto-default for int
+        optional_field: str | None
+        list_field: list[str]
+        dict_field: dict[str, int]
+        field_with_default: str = "default_value"
+
+    # Input missing required_field2 which has no safe auto-default
+    input_data = {"required_field1": "test_value"}
+
+    # Should still raise an error because int has no safe auto-default
+    with pytest.raises(pydantic.ValidationError):
+        load_engine_object(TestPydantic, input_data)
+
+    assert load_engine_object(
+        TestPydantic, {"required_field1": "test_value", "required_field2": 1}
+    ) == TestPydantic(
+        required_field1="test_value",
+        required_field2=1,
+        field_with_default="default_value",
+        optional_field=None,
+        list_field=[],
+        dict_field={},
+    )
