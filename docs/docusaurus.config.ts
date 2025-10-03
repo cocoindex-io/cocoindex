@@ -20,10 +20,12 @@ const config: Config = {
   // If you aren't using GitHub pages, you don't need these.
   organizationName: 'cocoindex-io', // Usually your GitHub org/user name.
   projectName: 'docs', // Usually your repo name.
+
   trailingSlash: false,
 
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
+  onBrokenAnchors: 'throw',
 
   // Even if you don't use internationalization, you can use this field to set
   // useful metadata like html lang. For example, if your site is Chinese, you
@@ -98,6 +100,7 @@ const config: Config = {
   ],
 
   themes: ['@docusaurus/theme-mermaid'],
+
   themeConfig: {
     // Replace with your project's social card
     image: 'img/social-card.jpg',
@@ -132,7 +135,7 @@ const config: Config = {
         {
           type: 'html',
           position: 'right',
-          value: '<iframe src="https://ghbtns.com/github-btn.html?user=cocoindex-io&repo=cocoindex&type=star&count=true" frameborder="0" scrolling="0" width="120" height="20" title="GitHub" style="vertical-align: middle;"></iframe>',
+          value: '<iframe frameborder="0" height="20" scrolling="0" src="https://ghbtns.com/github-btn.html?user=cocoindex-io&repo=cocoindex&type=star&count=true" style="vertical-align: middle;" title="GitHub" width="120"></iframe>',
           className: 'navbar-github-link',
         },
       ],
@@ -200,7 +203,6 @@ const config: Config = {
   } satisfies Preset.ThemeConfig,
 };
 
-
 if (!!process.env.COCOINDEX_DOCS_POSTHOG_API_KEY) {
   config.plugins.push([
     "posthog-docusaurus",
@@ -211,7 +213,6 @@ if (!!process.env.COCOINDEX_DOCS_POSTHOG_API_KEY) {
     },
   ]);
 }
-
 
 if (!!process.env.COCOINDEX_DOCS_ALGOLIA_API_KEY && !!process.env.COCOINDEX_DOCS_ALGOLIA_APP_ID) {
   config.themeConfig.algolia = {
