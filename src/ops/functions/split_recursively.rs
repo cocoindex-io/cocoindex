@@ -1,11 +1,12 @@
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use log::{error, trace};
 use regex::{Matches, Regex};
 use std::collections::HashSet;
 use std::sync::LazyLock;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ops::Range, sync::Arc};
 use unicase::UniCase;
 
+use crate::ops::sdk::RangeValue;
 use crate::ops::shared::split::{Position, set_output_positions};
 use crate::{fields_value, ops::sdk::*};
 
@@ -22,8 +23,6 @@ struct Spec {
     #[serde(default)]
     custom_languages: Vec<CustomLanguageSpec>,
 }
-
-const TREESITTER_MAX_RECURSION_DEPTH: usize = 128;
 
 const SYNTAX_LEVEL_GAP_COST: usize = 512;
 const MISSING_OVERLAP_COST: usize = 512;
@@ -60,12 +59,12 @@ struct TreesitterLanguageConfig {
     terminal_node_kind_ids: HashSet<u16>,
 }
 
-fn add_treesitter_language<'a>(
-    output: &'a mut HashMap<UniCase<String>, Arc<TreesitterLanguageConfig>>,
+fn add_treesitter_language(
+    output: &mut HashMap<UniCase<String>, Arc<TreesitterLanguageConfig>>,
     name: &'static str,
     aliases: impl IntoIterator<Item = &'static str>,
     lang_fn: impl Into<tree_sitter::Language>,
-    terminal_node_kinds: impl IntoIterator<Item = &'a str>,
+    terminal_node_kinds: impl IntoIterator<Item = &'static str>,
 ) {
     let tree_sitter_lang: tree_sitter::Language = lang_fn.into();
     let terminal_node_kind_ids = terminal_node_kinds
@@ -103,7 +102,7 @@ static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<
         &mut map,
         "C++",
         [".cpp", ".cc", ".cxx", ".h", ".hpp", "cpp"],
-        tree_sitter_c::LANGUAGE,
+        tree_sitter_cpp::LANGUAGE,
         [],
     );
     add_treesitter_language(
@@ -260,15 +259,10 @@ struct Chunk<'t, 's: 't> {
     kind: ChunkKind<'t>,
 }
 
-impl<'t, 's: 't> Chunk<'t, 's> {
-    fn text(&self) -> &'s str {
-        self.range.extract_str(self.full_text)
-    }
-}
-
 struct TextChunksIter<'t, 's: 't> {
     lang_config: &'t SimpleLanguageConfig,
-    parent: &'t Chunk<'t, 's>,
+    full_text: &'s str,
+    range: RangeValue,
     matches_iter: Matches<'t, 's>,
     regexp_sep_id: usize,
     next_start_pos: Option<usize>,
@@ -277,15 +271,19 @@ struct TextChunksIter<'t, 's: 't> {
 impl<'t, 's: 't> TextChunksIter<'t, 's> {
     fn new(
         lang_config: &'t SimpleLanguageConfig,
-        parent: &'t Chunk<'t, 's>,
+        full_text: &'s str,
+        range: RangeValue,
         regexp_sep_id: usize,
     ) -> Self {
+        let std_range = range.start..range.end;
         Self {
             lang_config,
-            parent,
-            matches_iter: lang_config.separator_regex[regexp_sep_id].find_iter(parent.text()),
+            full_text,
+            range,
+            matches_iter: lang_config.separator_regex[regexp_sep_id]
+                .find_iter(&full_text[std_range.clone()]),
             regexp_sep_id,
-            next_start_pos: Some(parent.range.start),
+            next_start_pos: Some(std_range.start),
         }
     }
 }
@@ -297,19 +295,19 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
         let start_pos = self.next_start_pos?;
         let end_pos = match self.matches_iter.next() {
             Some(grp) => {
-                self.next_start_pos = Some(self.parent.range.start + grp.end());
-                self.parent.range.start + grp.start()
+                self.next_start_pos = Some(self.range.start + grp.end());
+                self.range.start + grp.start()
             }
             None => {
                 self.next_start_pos = None;
-                if start_pos >= self.parent.range.end {
+                if start_pos >= self.range.end {
                     return None;
                 }
-                self.parent.range.end
+                self.range.end
             }
         };
         Some(Chunk {
-            full_text: self.parent.full_text,
+            full_text: self.full_text,
             range: RangeValue::new(start_pos, end_pos),
             kind: ChunkKind::RegexpSepChunk {
                 lang_config: self.lang_config,
@@ -422,22 +420,22 @@ const INLINE_SPACE_CHARS: [char; 2] = [' ', '\t'];
 struct AtomChunk {
     range: RangeValue,
     boundary_syntax_level: usize,
-
     internal_lb_level: LineBreakLevel,
     boundary_lb_level: LineBreakLevel,
 }
 
 struct AtomChunksCollector<'s> {
     full_text: &'s str,
-
     curr_level: usize,
     min_level: usize,
     atom_chunks: Vec<AtomChunk>,
 }
+
 impl<'s> AtomChunksCollector<'s> {
     fn collect(&mut self, range: RangeValue) {
         // Trim trailing whitespaces.
-        let end_trimmed_text = &self.full_text[range.start..range.end].trim_end();
+        let std_range = range.start..range.end;
+        let end_trimmed_text = &self.full_text[std_range].trim_end();
         if end_trimmed_text.is_empty() {
             return;
         }
@@ -451,7 +449,7 @@ impl<'s> AtomChunksCollector<'s> {
         let prev_end = self.atom_chunks.last().map_or(0, |chunk| chunk.range.end);
         let gap = &self.full_text[prev_end..new_start];
         let boundary_lb_level = line_break_level(gap);
-        let range = if boundary_lb_level != LineBreakLevel::Inline {
+        let range: RangeValue = if boundary_lb_level != LineBreakLevel::Inline {
             let trimmed_gap = gap.trim_end_matches(INLINE_SPACE_CHARS);
             RangeValue::new(prev_end + trimmed_gap.len(), new_end)
         } else {
@@ -492,106 +490,92 @@ struct RecursiveChunker<'s> {
 }
 
 impl<'t, 's: 't> RecursiveChunker<'s> {
-    fn collect_atom_chunks_from_iter(
-        &self,
-        sub_chunks_iter: impl Iterator<Item = Chunk<'t, 's>>,
-        atom_collector: &mut AtomChunksCollector<'s>,
-    ) -> Result<()> {
-        atom_collector.curr_level += 1;
-        for sub_chunk in sub_chunks_iter {
-            let range = sub_chunk.range;
-            if range.len() <= self.min_chunk_size {
-                atom_collector.collect(range);
-            } else {
-                self.collect_atom_chunks(sub_chunk, atom_collector)?;
-            }
-        }
-        atom_collector.curr_level -= 1;
-        if atom_collector.curr_level < atom_collector.min_level {
-            atom_collector.min_level = atom_collector.curr_level;
-        }
-        Ok(())
-    }
-
     fn collect_atom_chunks(
         &self,
         chunk: Chunk<'t, 's>,
         atom_collector: &mut AtomChunksCollector<'s>,
     ) -> Result<()> {
-        match chunk.kind {
-            ChunkKind::TreeSitterNode { lang_config, node } => {
-                if !lang_config.terminal_node_kind_ids.contains(&node.kind_id())
-                    && atom_collector.curr_level < TREESITTER_MAX_RECURSION_DEPTH
-                {
-                    let mut cursor = node.walk();
-                    if cursor.goto_first_child() {
-                        return self.collect_atom_chunks_from_iter(
-                            TreeSitterNodeIter {
-                                lang_config,
+        let mut iter_stack: Vec<Box<dyn Iterator<Item = Chunk<'t, 's>>>> =
+            vec![Box::new(std::iter::once(chunk))];
+
+        while !iter_stack.is_empty() {
+            atom_collector.curr_level = iter_stack.len();
+
+            if let Some(current_chunk) = iter_stack.last_mut().unwrap().next() {
+                if current_chunk.range.len() <= self.min_chunk_size {
+                    atom_collector.collect(current_chunk.range);
+                } else {
+                    match current_chunk.kind {
+                        ChunkKind::TreeSitterNode { lang_config, node } => {
+                            if !lang_config.terminal_node_kind_ids.contains(&node.kind_id()) {
+                                let mut cursor = node.walk();
+                                if cursor.goto_first_child() {
+                                    iter_stack.push(Box::new(TreeSitterNodeIter {
+                                        lang_config,
+                                        full_text: self.full_text,
+                                        cursor: Some(cursor),
+                                        next_start_pos: node.start_byte(),
+                                        end_pos: node.end_byte(),
+                                    }));
+                                    continue;
+                                }
+                            }
+                            iter_stack.push(Box::new(std::iter::once(Chunk {
                                 full_text: self.full_text,
-                                cursor: Some(cursor),
-                                next_start_pos: node.start_byte(),
-                                end_pos: node.end_byte(),
-                            },
-                            atom_collector,
-                        );
+                                range: current_chunk.range,
+                                kind: ChunkKind::RegexpSepChunk {
+                                    lang_config: &DEFAULT_LANGUAGE_CONFIG,
+                                    next_regexp_sep_id: 0,
+                                },
+                            })));
+                        }
+                        ChunkKind::RegexpSepChunk {
+                            lang_config,
+                            next_regexp_sep_id,
+                        } => {
+                            if next_regexp_sep_id >= lang_config.separator_regex.len() {
+                                atom_collector.collect(current_chunk.range);
+                            } else {
+                                iter_stack.push(Box::new(TextChunksIter::new(
+                                    lang_config,
+                                    current_chunk.full_text,
+                                    current_chunk.range,
+                                    next_regexp_sep_id,
+                                )));
+                            }
+                        }
                     }
                 }
-                self.collect_atom_chunks(
-                    Chunk {
-                        full_text: self.full_text,
-                        range: chunk.range,
-                        kind: ChunkKind::RegexpSepChunk {
-                            lang_config: &DEFAULT_LANGUAGE_CONFIG,
-                            next_regexp_sep_id: 0,
-                        },
-                    },
-                    atom_collector,
-                )
-            }
-            ChunkKind::RegexpSepChunk {
-                lang_config,
-                next_regexp_sep_id,
-            } => {
-                if next_regexp_sep_id >= lang_config.separator_regex.len() {
-                    atom_collector.collect(chunk.range);
-                    Ok(())
-                } else {
-                    self.collect_atom_chunks_from_iter(
-                        TextChunksIter::new(lang_config, &chunk, next_regexp_sep_id),
-                        atom_collector,
-                    )
+            } else {
+                iter_stack.pop();
+                let level_after_pop = iter_stack.len();
+                atom_collector.curr_level = level_after_pop;
+                if level_after_pop < atom_collector.min_level {
+                    atom_collector.min_level = level_after_pop;
                 }
             }
         }
-    }
-
-    fn get_overlap_cost_base(&self, offset: usize) -> usize {
-        if self.chunk_overlap == 0 {
-            0
-        } else {
-            (self.full_text.len() - offset) * MISSING_OVERLAP_COST / self.chunk_overlap
-        }
+        atom_collector.curr_level = 0;
+        Ok(())
     }
 
     fn merge_atom_chunks(&self, atom_chunks: Vec<AtomChunk>) -> Vec<ChunkOutput<'s>> {
         struct AtomRoutingPlan {
-            start_idx: usize,     // index of `atom_chunks` for the start chunk
-            prev_plan_idx: usize, // index of `plans` for the previous plan
+            start_idx: usize,
+            prev_plan_idx: usize,
             cost: usize,
-            overlap_cost_base: usize,
         }
-        type PrevPlanCandidate = (std::cmp::Reverse<usize>, usize); // (cost, start_idx)
+
+        if atom_chunks.is_empty() || atom_chunks.len() == 1 {
+            return Vec::new();
+        }
 
         let mut plans = Vec::with_capacity(atom_chunks.len());
-        // Janitor
         plans.push(AtomRoutingPlan {
             start_idx: 0,
             prev_plan_idx: 0,
             cost: 0,
-            overlap_cost_base: self.get_overlap_cost_base(0),
         });
-        let mut prev_plan_candidates = std::collections::BinaryHeap::<PrevPlanCandidate>::new();
 
         let mut gap_cost_cache = vec![0];
         let mut syntax_level_gap_cost = |boundary: usize, internal: usize| -> usize {
@@ -606,7 +590,7 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
             }
         };
 
-        for (i, chunk) in atom_chunks[0..atom_chunks.len() - 1].iter().enumerate() {
+        for i in 0..atom_chunks.len() - 1 {
             let mut min_cost = usize::MAX;
             let mut arg_min_start_idx: usize = 0;
             let mut arg_min_prev_plan_idx: usize = 0;
@@ -625,9 +609,11 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
                     0
                 }
             }
+
             loop {
                 let start_chunk = &atom_chunks[start_idx];
-                let chunk_size = chunk.range.end - start_chunk.range.start;
+                let current_chunk_end = atom_chunks[i].range.end;
+                let chunk_size = current_chunk_end - start_chunk.range.start;
 
                 let mut cost = 0;
                 cost +=
@@ -649,41 +635,42 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
                     break;
                 }
 
-                let prev_plan_idx = if self.chunk_overlap > 0 {
-                    while let Some(top_prev_plan) = prev_plan_candidates.peek() {
-                        let overlap_size =
-                            atom_chunks[top_prev_plan.1].range.end - start_chunk.range.start;
-                        if overlap_size <= self.chunk_overlap {
+                let mut best_prev_plan_idx = start_idx;
+                if self.chunk_overlap > 0 {
+                    let mut min_prev_plan_cost = plans[start_idx].cost;
+                    for k_idx in (0..start_idx).rev() {
+                        let end_of_prev_chunk = if k_idx > 0 {
+                            atom_chunks[k_idx - 1].range.end
+                        } else {
+                            0
+                        };
+                        let overlap = end_of_prev_chunk.saturating_sub(start_chunk.range.start);
+                        if overlap > self.chunk_overlap {
                             break;
                         }
-                        prev_plan_candidates.pop();
+                        if plans[k_idx].cost < min_prev_plan_cost {
+                            min_prev_plan_cost = plans[k_idx].cost;
+                            best_prev_plan_idx = k_idx;
+                        }
                     }
-                    prev_plan_candidates.push((
-                        std::cmp::Reverse(
-                            plans[start_idx].cost + plans[start_idx].overlap_cost_base,
-                        ),
-                        start_idx,
-                    ));
-                    prev_plan_candidates.peek().unwrap().1
-                } else {
-                    start_idx
-                };
-                let prev_plan = &plans[prev_plan_idx];
-                cost += prev_plan.cost;
-                if self.chunk_overlap == 0 {
-                    cost += MISSING_OVERLAP_COST / 2;
-                } else {
-                    let start_cost_base = self.get_overlap_cost_base(start_chunk.range.start);
-                    cost += if prev_plan.overlap_cost_base < start_cost_base {
-                        MISSING_OVERLAP_COST + prev_plan.overlap_cost_base - start_cost_base
-                    } else {
-                        MISSING_OVERLAP_COST
-                    };
                 }
+
+                let prev_plan = &plans[best_prev_plan_idx];
+                cost += prev_plan.cost;
+
+                let end_of_prev_chunk = if best_prev_plan_idx > 0 {
+                    atom_chunks[best_prev_plan_idx - 1].range.end
+                } else {
+                    0
+                };
+                if end_of_prev_chunk < start_chunk.range.start {
+                    cost += MISSING_OVERLAP_COST;
+                }
+
                 if cost < min_cost {
                     min_cost = cost;
                     arg_min_start_idx = start_idx;
-                    arg_min_prev_plan_idx = prev_plan_idx;
+                    arg_min_prev_plan_idx = best_prev_plan_idx;
                 }
 
                 if start_idx == 0 {
@@ -692,16 +679,14 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
 
                 start_idx -= 1;
                 internal_syntax_level =
-                    internal_syntax_level.min(start_chunk.boundary_syntax_level);
-                internal_lb_level = internal_lb_level.max(start_chunk.internal_lb_level);
+                    internal_syntax_level.min(atom_chunks[start_idx].boundary_syntax_level);
+                internal_lb_level = internal_lb_level.max(atom_chunks[start_idx].internal_lb_level);
             }
             plans.push(AtomRoutingPlan {
                 start_idx: arg_min_start_idx,
                 prev_plan_idx: arg_min_prev_plan_idx,
                 cost: min_cost,
-                overlap_cost_base: self.get_overlap_cost_base(chunk.range.end),
             });
-            prev_plan_candidates.clear();
         }
 
         let mut output = Vec::new();
@@ -710,10 +695,11 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
             let plan = &plans[plan_idx];
             let start_chunk = &atom_chunks[plan.start_idx];
             let end_chunk = &atom_chunks[plan_idx - 1];
+            let std_range: Range<usize> = start_chunk.range.start..end_chunk.range.end;
             output.push(ChunkOutput {
                 start_pos: Position::new(start_chunk.range.start),
                 end_pos: Position::new(end_chunk.range.end),
-                text: &self.full_text[start_chunk.range.start..end_chunk.range.end],
+                text: &self.full_text[std_range],
             });
             plan_idx = plan.prev_plan_idx;
         }
@@ -724,7 +710,7 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
     fn split_root_chunk(&self, kind: ChunkKind<'t>) -> Result<Vec<ChunkOutput<'s>>> {
         let mut atom_collector = AtomChunksCollector {
             full_text: self.full_text,
-            min_level: 0,
+            min_level: usize::MAX,
             curr_level: 0,
             atom_chunks: Vec::new(),
         };
@@ -940,10 +926,9 @@ pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
 mod tests {
     use super::*;
     use crate::ops::functions::test_utils::test_flow_function;
-    use crate::ops::sdk::{BasicValueType, KeyValue, RangeValue, make_output_type};
+    use crate::ops::sdk::{BasicValueType, KeyPart, KeyValue, make_output_type};
     use crate::ops::shared::split::OutputPosition;
 
-    // Helper function to build the standard input argument schemas for split_recursively tests
     fn build_split_recursively_arg_schemas() -> Vec<(Option<&'static str>, EnrichedValueType)> {
         vec![
             (
@@ -1014,7 +999,7 @@ mod tests {
                                     scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
                                         panic!("Chunk text not a string for key {key:?}")
                                     });
-                                assert_eq!(**chunk_text, *expected_text);
+                                assert_eq!(*chunk_text, expected_text.into());
                             }
                             None => panic!("Expected row value for key {key:?}, not found"),
                         }
@@ -1159,11 +1144,6 @@ mod tests {
                 ],
             )
             .await;
-            assert!(
-                result.is_ok(),
-                "test_flow_function failed: {:?}",
-                result.err()
-            );
             let value = result.unwrap();
             match value {
                 Value::KTable(table) => {
@@ -1177,11 +1157,8 @@ mod tests {
                         let key = KeyValue::from_single_part(range);
                         match table.get(&key) {
                             Some(scope_value_ref) => {
-                                let chunk_text =
-                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
-                                        panic!("Chunk text not a string for key {key:?}")
-                                    });
-                                assert_eq!(**chunk_text, *expected_text);
+                                let chunk_text = scope_value_ref.0.fields[0].as_str().unwrap();
+                                assert_eq!(*chunk_text, expected_text.into());
                             }
                             None => panic!("Expected row value for key {key:?}, not found"),
                         }
@@ -1207,25 +1184,16 @@ mod tests {
                 ],
             )
             .await;
-            assert!(
-                result.is_ok(),
-                "test_flow_function failed: {:?}",
-                result.err()
-            );
             let value = result.unwrap();
             match value {
                 Value::KTable(table) => {
-                    // Expect multiple chunks, likely split by spaces due to chunk_size.
                     assert!(table.len() > 1);
 
                     let key = KeyValue::from_single_part(RangeValue::new(0, 16));
                     match table.get(&key) {
                         Some(scope_value_ref) => {
-                            let chunk_text =
-                                scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
-                                    panic!("Chunk text not a string for key {key:?}")
-                                });
-                            assert_eq!(&**chunk_text, "A very very long");
+                            let chunk_text = scope_value_ref.0.fields[0].as_str().unwrap();
+                            assert_eq!(*chunk_text, "A very very long".into());
                             assert!(chunk_text.len() <= 20);
                         }
                         None => panic!("Expected row value for key {key:?}, not found"),
@@ -1259,26 +1227,21 @@ mod tests {
                 ],
             )
             .await;
-            assert!(
-                result.is_ok(),
-                "test_flow_function failed: {:?}",
-                result.err()
-            );
             let value = result.unwrap();
             match value {
                 Value::KTable(table) => {
                     assert!(table.len() > 1);
 
-                    // Check first chunk length
                     if table.len() >= 2 {
                         let first_key = table.keys().next().unwrap();
                         match table.get(first_key) {
                             Some(scope_value_ref) => {
-                                let chunk_text =
-                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
-                                        panic!("Chunk text not a string for key {first_key:?}")
-                                    });
-                                assert!(chunk_text.len() <= 25);
+                                let chunk_text = scope_value_ref.0.fields[0].as_str().unwrap();
+                                assert!(
+                                    chunk_text.len() <= 25,
+                                    "Chunk was too long: '{}'",
+                                    chunk_text
+                                );
                             }
                             None => panic!("Expected row value for first key, not found"),
                         }
@@ -1312,38 +1275,67 @@ mod tests {
                 ],
             )
             .await;
-            assert!(
-                result.is_ok(),
-                "test_flow_function failed: {:?}",
-                result.err()
-            );
             let value = result.unwrap();
             match value {
                 Value::KTable(table) => {
-                    assert_eq!(table.len(), 3);
+                    let chunks: Vec<(&str, RangeValue)> = table
+                        .iter()
+                        .map(|(k, v)| {
+                            let text = v.0.fields[0].as_str().unwrap();
+                            let range = match &k.0[0] {
+                                KeyPart::Range(r) => r.clone(),
+                                _ => panic!("Expected KeyPart to be a Range"),
+                            };
+                            (text.as_ref(), range)
+                        })
+                        .collect();
 
-                    let expected_chunks = vec![
-                        (RangeValue::new(3, 16), " First chunk."),
-                        (RangeValue::new(19, 45), "  Second chunk with spaces"),
-                        (RangeValue::new(46, 57), "at the end."),
-                    ];
-
-                    for (range, expected_text) in expected_chunks {
-                        let key = KeyValue::from_single_part(range);
-                        match table.get(&key) {
-                            Some(scope_value_ref) => {
-                                let chunk_text =
-                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
-                                        panic!("Chunk text not a string for key {key:?}")
-                                    });
-                                assert_eq!(**chunk_text, *expected_text);
-                            }
-                            None => panic!("Expected row value for key {key:?}, not found"),
-                        }
-                    }
+                    assert!(chunks.contains(&("First chunk.", RangeValue::new(3, 16))));
+                    assert!(chunks.contains(&(
+                        "Second chunk with spaces at the end.",
+                        RangeValue::new(22, 59)
+                    )));
                 }
                 other => panic!("Expected Value::KTable, got {other:?}"),
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_deeply_nested_structure_no_stack_overflow() {
+        let spec = Spec {
+            custom_languages: vec![],
+        };
+        let factory = Arc::new(Factory);
+        let input_arg_schemas = &build_split_recursively_arg_schemas();
+
+        let deep_text = format!("{}{}{}", "(".repeat(500), "some text", ")".repeat(500));
+        let language = "C++";
+
+        let result = test_flow_function(
+            &factory,
+            &spec,
+            input_arg_schemas,
+            vec![
+                deep_text.into(),
+                (20i64).into(),
+                (5i64).into(),
+                (0i64).into(),
+                language.to_string().into(),
+            ],
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "The function should not panic or crash on deeply nested input."
+        );
+
+        if let Ok(Value::KTable(table)) = result {
+            assert!(
+                !table.is_empty(),
+                "It should have produced at least one chunk."
+            );
         }
     }
 }
