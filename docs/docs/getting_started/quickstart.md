@@ -138,7 +138,7 @@ doc_embeddings.export(
 
 CocoIndex supports other vector databases as well, with 1-line switch.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets" text="Targets" />
+<DocumentationButton url="https://cocoindex.io/docs/targets" text="Targets" />
 
 
 ## Run the indexing pipeline

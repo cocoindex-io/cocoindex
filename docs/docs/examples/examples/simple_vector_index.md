@@ -103,7 +103,7 @@ doc_embeddings.export(
             metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 ```
 CocoIndex supports other vector databases as well, with 1-line switch.
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets" text="Targets" />
+<DocumentationButton url="https://cocoindex.io/docs/targets" text="Targets" />
 
 Need IVFFlat or custom HNSW parameters? Pass a method, for example:
 
