@@ -10,7 +10,6 @@ import warnings
 from typing import Any, Callable, Mapping, TypeVar
 
 import numpy as np
-
 from .typing import (
     AnalyzedAnyType,
     AnalyzedBasicType,
@@ -30,6 +29,7 @@ from .typing import (
     StructType,
     TableType,
 )
+from .engine_object import get_auto_default_for_type
 
 
 T = TypeVar("T")
@@ -439,30 +439,6 @@ def make_engine_value_decoder(
     return lambda value: value
 
 
-def _get_auto_default_for_type(
-    type_info: AnalyzedTypeInfo,
-) -> tuple[Any, bool]:
-    """
-    Get an auto-default value for a type annotation if it's safe to do so.
-
-    Returns:
-        A tuple of (default_value, is_supported) where:
-        - default_value: The default value if auto-defaulting is supported
-        - is_supported: True if auto-defaulting is supported for this type
-    """
-    # Case 1: Nullable types (Optional[T] or T | None)
-    if type_info.nullable:
-        return None, True
-
-    # Case 2: Table types (KTable or LTable) - check if it's a list or dict type
-    if isinstance(type_info.variant, AnalyzedListType):
-        return [], True
-    elif isinstance(type_info.variant, AnalyzedDictType):
-        return {}, True
-
-    return None, False
-
-
 def make_engine_struct_decoder(
     field_path: list[str],
     src_fields: list[FieldSchema],
@@ -557,7 +533,7 @@ def make_engine_struct_decoder(
             if default_value is not inspect.Parameter.empty:
                 return lambda _: default_value
 
-            auto_default, is_supported = _get_auto_default_for_type(type_info)
+            auto_default, is_supported = get_auto_default_for_type(type_info)
             if is_supported:
                 warnings.warn(
                     f"Field '{name}' (type {param.annotation}) without default value is missing in input: "

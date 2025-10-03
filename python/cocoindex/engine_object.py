@@ -37,7 +37,7 @@ except ImportError:
     pass
 
 
-def _get_auto_default_for_type(
+def get_auto_default_for_type(
     type_info: AnalyzedTypeInfo,
 ) -> tuple[Any, bool]:
     """
@@ -233,7 +233,7 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
 
         for name, f_type in missing_fields:
             type_info = analyze_type_info(f_type)
-            auto_default, is_supported = _get_auto_default_for_type(type_info)
+            auto_default, is_supported = get_auto_default_for_type(type_info)
             if is_supported:
                 init_kwargs[name] = auto_default
         return struct_type(**init_kwargs)
