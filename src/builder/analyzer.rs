@@ -982,13 +982,13 @@ impl AnalyzerContext {
 
     fn build_scope_qualifier(&self, op_scope: &Arc<OpScope>) -> String {
         let mut scope_names = Vec::new();
-        let mut current_scope = Some(op_scope.as_ref());
+        let mut current_scope = op_scope.as_ref();
 
         // Walk up the parent chain to collect scope names
-        while let Some(scope) = current_scope {
-            if let Some((parent, _)) = &scope.parent {
-                scope_names.push(scope.name.clone());
-                current_scope = Some(parent.as_ref());
+        loop {
+            if let Some((parent, _)) = &current_scope.parent {
+                scope_names.push(current_scope.name.clone());
+                current_scope = parent.as_ref();
             } else {
                 break;
             }
