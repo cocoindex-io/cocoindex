@@ -49,7 +49,7 @@ const sidebars: SidebarsConfig = {
       link: { type: 'doc', id: 'targets/index' },
       collapsed: true,
       items: [
-      
+
             'targets/postgres',
             'targets/qdrant',
             'targets/lancedb',
