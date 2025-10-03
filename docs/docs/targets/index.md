@@ -12,7 +12,7 @@ The way to map data from a data collector to a target depends on data model of t
 
 ## Targets Overview
 
-| Target Type    | See Also                    |
+| Target Type    | Description                   |
 |------------------|-------------------------|
 | [Postgres](/docs/targets/postgres) | Relational Database, Vector Search (PGVector)   |
 | [Qdrant](/docs/targets/qdrant)     | Vector Database, Keyword Search       |
