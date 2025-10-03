@@ -1,11 +1,12 @@
 import dataclasses
 import datetime
-from typing import TypedDict, NamedTuple
+from typing import TypedDict, NamedTuple, Literal
 
 import numpy as np
 from numpy.typing import NDArray
 import pytest
 
+from cocoindex.typing import Vector
 from cocoindex.engine_object import dump_engine_object, load_engine_object
 
 # Optional Pydantic support for testing
@@ -190,6 +191,30 @@ def test_dataclass_unsupported_type_still_fails() -> None:
         assert False, "Expected TypeError to be raised"
     except TypeError:
         pass  # Expected behavior
+
+
+def test_dump_vector_type_annotation_with_dim() -> None:
+    """Test dumping a vector type annotation with a specified dimension."""
+    expected_dump = {
+        "type": {
+            "kind": "Vector",
+            "element_type": {"kind": "Float32"},
+            "dimension": 3,
+        }
+    }
+    assert dump_engine_object(Vector[np.float32, Literal[3]]) == expected_dump
+
+
+def test_dump_vector_type_annotation_no_dim() -> None:
+    """Test dumping a vector type annotation with no dimension."""
+    expected_dump_no_dim = {
+        "type": {
+            "kind": "Vector",
+            "element_type": {"kind": "Float64"},
+            "dimension": None,
+        }
+    }
+    assert dump_engine_object(Vector[np.float64]) == expected_dump_no_dim
 
 
 @pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")

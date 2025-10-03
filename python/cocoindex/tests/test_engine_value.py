@@ -1005,30 +1005,6 @@ def test_decode_error_non_nullable_or_non_list_vector() -> None:
         decoder("not a list")
 
 
-# def test_dump_vector_type_annotation_with_dim() -> None:
-#     """Test dumping a vector type annotation with a specified dimension."""
-#     expected_dump = {
-#         "type": {
-#             "kind": "Vector",
-#             "element_type": {"kind": "Float32"},
-#             "dimension": 3,
-#         }
-#     }
-#     assert dump_engine_object(Float32VectorType) == expected_dump
-
-
-# def test_dump_vector_type_annotation_no_dim() -> None:
-#     """Test dumping a vector type annotation with no dimension."""
-#     expected_dump_no_dim = {
-#         "type": {
-#             "kind": "Vector",
-#             "element_type": {"kind": "Float64"},
-#             "dimension": None,
-#         }
-#     }
-#     assert dump_engine_object(Float64VectorTypeNoDim) == expected_dump_no_dim
-
-
 def test_full_roundtrip_vector_numeric_types() -> None:
     """Test full roundtrip for numeric vector types using NDArray."""
     value_f32 = np.array([1.0, 2.0, 3.0], dtype=np.float32)
