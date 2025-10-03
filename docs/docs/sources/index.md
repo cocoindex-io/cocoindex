@@ -262,7 +262,7 @@ The spec takes the following fields:
     :::info
 
     Since it only retrieves metadata for recent modified files (up to the previous poll) during polling,
-    it's typically cheaper than a full refresh by setting the [refresh interval](../core/flow_def#refresh-interval) especially when the folder contains a large number of files.
+    it's typically cheaper than a full refresh by setting the [refresh interval](/docs/core/flow_def#refresh-interval) especially when the folder contains a large number of files.
     So you can usually set it with a smaller value compared to the `refresh_interval`.
 
     On the other hand, this only detects changes for files that still exist.
