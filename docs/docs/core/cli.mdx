@@ -53,23 +53,6 @@ CocoIndex CLI supports the following global options:
 * `--version`: Show the CocoIndex version and exit.
 * `--help`: Show the main help message and exit.
 
-## Subcommands
+import CliCommands from './cli-commands.md';
 
-The following subcommands are available:
-
-| Subcommand | Description |
-| ---------- | ----------- |
-| `ls` | List all flows present in the given file/module. Or list all persisted flows under the current app namespace if no file/module specified. |
-| `show` | Show the spec and schema for a specific flow. |
-| `setup` | Check and apply backend setup changes for flows, including the internal storage and target (to export). |
-| `drop` | Drop the backend setup for specified flows. |
-| `update` | Update the index defined by the flow. |
-| `evaluate` | Evaluate the flow and dump flow outputs to files.  Instead of updating the index, it dumps what should be indexed to files. Mainly used for evaluation purpose. |
-| `server` | Start a HTTP server providing REST APIs. It will allow tools like CocoInsight to access the server. |
-
-Use `--help` to see the full list of subcommands, and `subcommand --help` to see the usage of a specific one.
-
-```sh
-cocoindex --help       # Show all subcommands
-cocoindex show --help  # Show usage of "show" subcommand
-```
+<CliCommands />

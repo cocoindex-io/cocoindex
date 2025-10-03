@@ -33,6 +33,13 @@ repos:
           files: ^(python/|src/|Cargo\.toml|pyproject\.toml)
           pass_filenames: false
 
+        - id: generate-cli-docs
+          name: generate CLI documentation
+          entry: python dev/generate_cli_docs.py
+          language: system
+          files: ^(python/cocoindex/cli\.py|dev/generate_cli_docs\.py)$
+          pass_filenames: false
+
         - id: cargo-fmt
           name: cargo fmt
           entry: cargo fmt

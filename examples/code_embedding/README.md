@@ -42,13 +42,13 @@ We will match against user-provided text by a SQL query, reusing the embedding o
 - Setup:
 
   ```bash
-  cocoindex setup main.py
+  cocoindex setup main
   ```
 
 - Update index:
 
   ```bash
-  cocoindex update main.py
+  cocoindex update main
   ```
 
 - Run:

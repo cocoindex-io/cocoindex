@@ -229,6 +229,7 @@ fn try_merge_fields_schemas(
         result_fields.push(FieldSchema {
             name: field1.name.clone(),
             value_type: try_make_common_value_type(&field1.value_type, &field2.value_type)?,
+            description: None,
         });
     }
     Ok(result_fields)
@@ -316,6 +317,7 @@ impl DataScopeBuilder {
         let field_index = self.data.add_field(FieldSchema {
             name,
             value_type: EnrichedValueType::from_alternative(value_type)?,
+            description: None,
         })?;
         Ok(AnalyzedOpOutput {
             field_idx: field_index,
@@ -567,6 +569,7 @@ fn analyze_struct_mapping(
         field_schemas.push(FieldSchema {
             name: field.name.clone(),
             value_type,
+            description: None,
         });
     }
     Ok((

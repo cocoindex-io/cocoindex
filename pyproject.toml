@@ -84,3 +84,11 @@ strict = true
 files = "python/cocoindex"
 exclude = "(\\.venv|site-packages)"
 disable_error_code = ["unused-ignore"]
+[[tool.mypy.overrides]]
+module = [
+    "sentence_transformers",
+    "torch",
+    "colpali_engine",
+    "PIL",
+]
+ignore_missing_imports = true
