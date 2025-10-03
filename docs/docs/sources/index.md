@@ -6,6 +6,23 @@ description: CocoIndex Built-in Sources
 
 # CocoIndex Built-in Sources
 
+In CocoIndex, a source is the data origin you import from (e.g., files, databases, APIs) that feeds into an indexing flow for transformation and retrieval.
+
+| Source Type    | See Also                    |
+|------------------|-------------------------|
+| LocalFile | Local File System   |
+| AmazonS3 | Amazon S3   |
+| AzureBlob | Azure Blob Storage   |
+| GoogleDrive | Google Drive   |
+| Postgres | PostgreSQL   |
+
+Related:
+- [Life cycle of a indexing flow](/docs/core/basics#life-cycle-of-an-indexing-flow) 
+- [Live Update Tutorial](/docs/tutorials/live_updates) 
+for change capture mechanisms.
+
+
+
 ## LocalFile
 
 The `LocalFile` source imports files from a local file system.
