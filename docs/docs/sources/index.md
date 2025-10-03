@@ -8,7 +8,7 @@ description: CocoIndex Built-in Sources
 
 In CocoIndex, a source is the data origin you import from (e.g., files, databases, APIs) that feeds into an indexing flow for transformation and retrieval.
 
-| Source Type    | Description                        |
+| Source Type    | See Also                        |
 |----------------|------------------------------------|
 | [LocalFile](/docs/sources#localfile)     | Local file system                        |
 | [AmazonS3](/docs/sources#amazons3)       | Object store (Amazon S3 bucket)          |
