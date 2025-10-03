@@ -364,7 +364,8 @@ async fn evaluate_op_scope(
             AnalyzedReactiveOp::Transform(op) => {
                 // Track transform operation start
                 if let Some(ref op_stats) = operation_in_process_stats {
-                    let transform_key = format!("transform/{}", op.name);
+                    let transform_key =
+                        format!("transform/{}{}", op_scope.scope_qualifier, op.name);
                     op_stats.start_processing(&transform_key, 1);
                 }
 
@@ -400,7 +401,8 @@ async fn evaluate_op_scope(
 
                 // Track transform operation completion
                 if let Some(ref op_stats) = operation_in_process_stats {
-                    let transform_key = format!("transform/{}", op.name);
+                    let transform_key =
+                        format!("transform/{}{}", op_scope.scope_qualifier, op.name);
                     op_stats.finish_processing(&transform_key, 1);
                 }
 

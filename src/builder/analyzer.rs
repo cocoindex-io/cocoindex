@@ -969,13 +969,40 @@ impl AnalyzerContext {
             op_futs.push(self.analyze_reactive_op(op_scope, reactive_op).await?);
         }
         let collector_len = op_scope.states.lock().unwrap().collectors.len();
+        let scope_qualifier = self.build_scope_qualifier(op_scope);
         let result_fut = async move {
             Ok(AnalyzedOpScope {
                 reactive_ops: try_join_all(op_futs).await?,
                 collector_len,
+                scope_qualifier,
             })
         };
         Ok(result_fut)
+    }
+
+    fn build_scope_qualifier(&self, op_scope: &Arc<OpScope>) -> String {
+        let mut scope_names = Vec::new();
+        let mut current_scope = Some(op_scope.as_ref());
+
+        // Walk up the parent chain to collect scope names
+        while let Some(scope) = current_scope {
+            if let Some((parent, _)) = &scope.parent {
+                scope_names.push(scope.name.clone());
+                current_scope = Some(parent.as_ref());
+            } else {
+                break;
+            }
+        }
+
+        // Reverse to get the correct order (root to leaf)
+        scope_names.reverse();
+
+        // Build the qualifier string: "" for root, "name." for single level, "parent.child." for nested
+        if scope_names.is_empty() {
+            String::new()
+        } else {
+            format!("{}.", scope_names.join("."))
+        }
     }
 }
 

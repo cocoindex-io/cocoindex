@@ -338,10 +338,6 @@ impl SourceIndexingContext {
 
             // Track that we're starting to process this row
             update_stats.processing.start(1);
-            if let Some(ref op_stats) = operation_in_process_stats {
-                let import_key = format!("import/{}", import_op.name);
-                op_stats.start_processing(&import_key, 1);
-            }
 
             let eval_ctx = SourceRowEvaluationContext {
                 plan: &plan,
@@ -351,13 +347,16 @@ impl SourceIndexingContext {
                 import_op_idx: self.source_idx,
             };
             let process_time = chrono::Utc::now();
+            let operation_in_process_stats_cloned = operation_in_process_stats.clone();
             let row_indexer = row_indexer::RowIndexer::new(
                 &eval_ctx,
                 &self.setup_execution_ctx,
                 mode,
                 process_time,
                 &update_stats,
-                operation_in_process_stats.as_ref().map(|s| s.as_ref()),
+                operation_in_process_stats_cloned
+                    .as_ref()
+                    .map(|s| s.as_ref()),
                 &pool,
             )?;
 
@@ -365,6 +364,9 @@ impl SourceIndexingContext {
             let mut row_state_operator =
                 LocalSourceRowStateOperator::new(&row_input.key, &self.state, &update_stats);
             let mut ordinal_touched = false;
+
+            let operation_in_process_stats_for_async = operation_in_process_stats.clone();
+            let operation_name_for_async = operation_name.clone();
             let result = {
                 let row_state_operator = &mut row_state_operator;
                 let row_key = &row_input.key;
@@ -417,6 +419,9 @@ impl SourceIndexingContext {
                                 (ordinal, source_data.content_version_fp, value)
                             }
                             _ => {
+                                if let Some(ref op_stats) = operation_in_process_stats_for_async {
+                                    op_stats.start_processing(&operation_name_for_async, 1);
+                                }
                                 let data = import_op
                         .executor
                         .get_value(
@@ -433,6 +438,9 @@ impl SourceIndexingContext {
                             },
                         )
                         .await?;
+                                if let Some(ref op_stats) = operation_in_process_stats_for_async {
+                                    op_stats.finish_processing(&operation_name_for_async, 1);
+                                }
                                 (
                                     data.ordinal.ok_or_else(|| {
                                         anyhow::anyhow!("ordinal is not available")
@@ -496,9 +504,6 @@ impl SourceIndexingContext {
 
             // Track that we're finishing processing this row (regardless of success/failure)
             update_stats.processing.end(1);
-            if let Some(ref op_stats) = operation_in_process_stats {
-                op_stats.finish_processing(&operation_name, 1);
-            }
 
             result?;
             if let Some(ack_fn) = ack_fn {

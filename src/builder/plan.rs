@@ -130,6 +130,7 @@ pub enum AnalyzedReactiveOp {
 pub struct AnalyzedOpScope {
     pub reactive_ops: Vec<AnalyzedReactiveOp>,
     pub collector_len: usize,
+    pub scope_qualifier: String,
 }
 
 pub struct ExecutionPlan {

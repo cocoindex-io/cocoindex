@@ -375,16 +375,15 @@ impl<'a> RowIndexer<'a> {
                         })
                         .collect();
                     (!mutations_w_ctx.is_empty()).then(|| {
-                        // Track export operation start
-                        if let Some(ref op_stats) = self.operation_in_process_stats {
-                            let export_key = format!("export/{}", export_op_group.target_kind);
-                            op_stats.start_processing(&export_key, 1);
-                        }
-
                         let export_key = format!("export/{}", export_op_group.target_kind);
                         let operation_in_process_stats = self.operation_in_process_stats;
 
                         async move {
+                            // Track export operation start
+                            if let Some(ref op_stats) = operation_in_process_stats {
+                                op_stats.start_processing(&export_key, 1);
+                            }
+
                             let result = export_op_group
                                 .target_factory
                                 .apply_mutation(mutations_w_ctx)
