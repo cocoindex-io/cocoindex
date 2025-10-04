@@ -261,8 +261,7 @@ struct Chunk<'t, 's: 't> {
 
 struct TextChunksIter<'t, 's: 't> {
     lang_config: &'t SimpleLanguageConfig,
-    full_text: &'s str,
-    range: RangeValue,
+    parent: &'t Chunk<'t, 's>,
     matches_iter: Matches<'t, 's>,
     regexp_sep_id: usize,
     next_start_pos: Option<usize>,
@@ -271,19 +270,16 @@ struct TextChunksIter<'t, 's: 't> {
 impl<'t, 's: 't> TextChunksIter<'t, 's> {
     fn new(
         lang_config: &'t SimpleLanguageConfig,
-        full_text: &'s str,
-        range: RangeValue,
+        parent: &'t Chunk<'t, 's>,
         regexp_sep_id: usize,
     ) -> Self {
-        let std_range = range.start..range.end;
         Self {
             lang_config,
-            full_text,
-            range,
+            parent,
             matches_iter: lang_config.separator_regex[regexp_sep_id]
-                .find_iter(&full_text[std_range.clone()]),
+                .find_iter(&parent.full_text[parent.range.start..parent.range.end]),
             regexp_sep_id,
-            next_start_pos: Some(std_range.start),
+            next_start_pos: Some(parent.range.start),
         }
     }
 }
@@ -295,19 +291,19 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
         let start_pos = self.next_start_pos?;
         let end_pos = match self.matches_iter.next() {
             Some(grp) => {
-                self.next_start_pos = Some(self.range.start + grp.end());
-                self.range.start + grp.start()
+                self.next_start_pos = Some(self.parent.range.start + grp.end());
+                self.parent.range.start + grp.start()
             }
             None => {
                 self.next_start_pos = None;
-                if start_pos >= self.range.end {
+                if start_pos >= self.parent.range.end {
                     return None;
                 }
-                self.range.end
+                self.parent.range.end
             }
         };
         Some(Chunk {
-            full_text: self.full_text,
+            full_text: self.parent.full_text,
             range: RangeValue::new(start_pos, end_pos),
             kind: ChunkKind::RegexpSepChunk {
                 lang_config: self.lang_config,
@@ -378,6 +374,24 @@ impl<'t, 's: 't> Iterator for TreeSitterNodeIter<'t, 's> {
     }
 }
 
+enum ChunkIterator<'t, 's: 't> {
+    TreeSitter(TreeSitterNodeIter<'t, 's>),
+    Text(TextChunksIter<'t, 's>),
+    Once(std::iter::Once<Chunk<'t, 's>>),
+}
+
+impl<'t, 's: 't> Iterator for ChunkIterator<'t, 's> {
+    type Item = Chunk<'t, 's>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ChunkIterator::TreeSitter(iter) => iter.next(),
+            ChunkIterator::Text(iter) => iter.next(),
+            ChunkIterator::Once(iter) => iter.next(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum LineBreakLevel {
     Inline,
@@ -434,8 +448,7 @@ struct AtomChunksCollector<'s> {
 impl<'s> AtomChunksCollector<'s> {
     fn collect(&mut self, range: RangeValue) {
         // Trim trailing whitespaces.
-        let std_range = range.start..range.end;
-        let end_trimmed_text = &self.full_text[std_range].trim_end();
+        let end_trimmed_text = &self.full_text[range.start..range.end].trim_end();
         if end_trimmed_text.is_empty() {
             return;
         }
@@ -449,7 +462,7 @@ impl<'s> AtomChunksCollector<'s> {
         let prev_end = self.atom_chunks.last().map_or(0, |chunk| chunk.range.end);
         let gap = &self.full_text[prev_end..new_start];
         let boundary_lb_level = line_break_level(gap);
-        let range: RangeValue = if boundary_lb_level != LineBreakLevel::Inline {
+        let range = if boundary_lb_level != LineBreakLevel::Inline {
             let trimmed_gap = gap.trim_end_matches(INLINE_SPACE_CHARS);
             RangeValue::new(prev_end + trimmed_gap.len(), new_end)
         } else {
@@ -495,8 +508,8 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
         chunk: Chunk<'t, 's>,
         atom_collector: &mut AtomChunksCollector<'s>,
     ) -> Result<()> {
-        let mut iter_stack: Vec<Box<dyn Iterator<Item = Chunk<'t, 's>>>> =
-            vec![Box::new(std::iter::once(chunk))];
+        let mut iter_stack: Vec<ChunkIterator<'t, 's>> =
+            vec![ChunkIterator::Once(std::iter::once(chunk))];
 
         while !iter_stack.is_empty() {
             atom_collector.curr_level = iter_stack.len();
@@ -510,17 +523,19 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
                             if !lang_config.terminal_node_kind_ids.contains(&node.kind_id()) {
                                 let mut cursor = node.walk();
                                 if cursor.goto_first_child() {
-                                    iter_stack.push(Box::new(TreeSitterNodeIter {
-                                        lang_config,
-                                        full_text: self.full_text,
-                                        cursor: Some(cursor),
-                                        next_start_pos: node.start_byte(),
-                                        end_pos: node.end_byte(),
-                                    }));
+                                    iter_stack.push(ChunkIterator::TreeSitter(
+                                        TreeSitterNodeIter {
+                                            lang_config,
+                                            full_text: self.full_text,
+                                            cursor: Some(cursor),
+                                            next_start_pos: node.start_byte(),
+                                            end_pos: node.end_byte(),
+                                        },
+                                    ));
                                     continue;
                                 }
                             }
-                            iter_stack.push(Box::new(std::iter::once(Chunk {
+                            iter_stack.push(ChunkIterator::Once(std::iter::once(Chunk {
                                 full_text: self.full_text,
                                 range: current_chunk.range,
                                 kind: ChunkKind::RegexpSepChunk {
@@ -536,10 +551,9 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
                             if next_regexp_sep_id >= lang_config.separator_regex.len() {
                                 atom_collector.collect(current_chunk.range);
                             } else {
-                                iter_stack.push(Box::new(TextChunksIter::new(
+                                iter_stack.push(ChunkIterator::Text(TextChunksIter::new(
                                     lang_config,
-                                    current_chunk.full_text,
-                                    current_chunk.range,
+                                    &current_chunk, // Pass reference to chunk
                                     next_regexp_sep_id,
                                 )));
                             }
@@ -559,12 +573,22 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
         Ok(())
     }
 
+    fn get_overlap_cost_base(&self, offset: usize) -> usize {
+        if self.chunk_overlap == 0 {
+            0
+        } else {
+            (self.full_text.len() - offset) * MISSING_OVERLAP_COST / self.chunk_overlap
+        }
+    }
+
     fn merge_atom_chunks(&self, atom_chunks: Vec<AtomChunk>) -> Vec<ChunkOutput<'s>> {
         struct AtomRoutingPlan {
             start_idx: usize,
             prev_plan_idx: usize,
             cost: usize,
+            overlap_cost_base: usize,
         }
+        type PrevPlanCandidate = (std::cmp::Reverse<usize>, usize); // (cost, start_idx)
 
         if atom_chunks.is_empty() || atom_chunks.len() == 1 {
             return Vec::new();
@@ -575,7 +599,9 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
             start_idx: 0,
             prev_plan_idx: 0,
             cost: 0,
+            overlap_cost_base: self.get_overlap_cost_base(0),
         });
+        let mut prev_plan_candidates = std::collections::BinaryHeap::<PrevPlanCandidate>::new();
 
         let mut gap_cost_cache = vec![0];
         let mut syntax_level_gap_cost = |boundary: usize, internal: usize| -> usize {
@@ -590,7 +616,7 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
             }
         };
 
-        for i in 0..atom_chunks.len() - 1 {
+        for (i, chunk) in atom_chunks[0..atom_chunks.len() - 1].iter().enumerate() {
             let mut min_cost = usize::MAX;
             let mut arg_min_start_idx: usize = 0;
             let mut arg_min_prev_plan_idx: usize = 0;
@@ -609,11 +635,9 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
                     0
                 }
             }
-
             loop {
                 let start_chunk = &atom_chunks[start_idx];
-                let current_chunk_end = atom_chunks[i].range.end;
-                let chunk_size = current_chunk_end - start_chunk.range.start;
+                let chunk_size = chunk.range.end - start_chunk.range.start;
 
                 let mut cost = 0;
                 cost +=
@@ -635,42 +659,41 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
                     break;
                 }
 
-                let mut best_prev_plan_idx = start_idx;
-                if self.chunk_overlap > 0 {
-                    let mut min_prev_plan_cost = plans[start_idx].cost;
-                    for k_idx in (0..start_idx).rev() {
-                        let end_of_prev_chunk = if k_idx > 0 {
-                            atom_chunks[k_idx - 1].range.end
-                        } else {
-                            0
-                        };
-                        let overlap = end_of_prev_chunk.saturating_sub(start_chunk.range.start);
-                        if overlap > self.chunk_overlap {
+                let prev_plan_idx = if self.chunk_overlap > 0 {
+                    while let Some(top_prev_plan) = prev_plan_candidates.peek() {
+                        let overlap_size =
+                            atom_chunks[top_prev_plan.1].range.end - start_chunk.range.start;
+                        if overlap_size <= self.chunk_overlap {
                             break;
                         }
-                        if plans[k_idx].cost < min_prev_plan_cost {
-                            min_prev_plan_cost = plans[k_idx].cost;
-                            best_prev_plan_idx = k_idx;
-                        }
+                        prev_plan_candidates.pop();
                     }
-                }
-
-                let prev_plan = &plans[best_prev_plan_idx];
-                cost += prev_plan.cost;
-
-                let end_of_prev_chunk = if best_prev_plan_idx > 0 {
-                    atom_chunks[best_prev_plan_idx - 1].range.end
+                    prev_plan_candidates.push((
+                        std::cmp::Reverse(
+                            plans[start_idx].cost + plans[start_idx].overlap_cost_base,
+                        ),
+                        start_idx,
+                    ));
+                    prev_plan_candidates.peek().unwrap().1
                 } else {
-                    0
+                    start_idx
                 };
-                if end_of_prev_chunk < start_chunk.range.start {
-                    cost += MISSING_OVERLAP_COST;
+                let prev_plan = &plans[prev_plan_idx];
+                cost += prev_plan.cost;
+                if self.chunk_overlap == 0 {
+                    cost += MISSING_OVERLAP_COST / 2;
+                } else {
+                    let start_cost_base = self.get_overlap_cost_base(start_chunk.range.start);
+                    cost += if prev_plan.overlap_cost_base < start_cost_base {
+                        MISSING_OVERLAP_COST + prev_plan.overlap_cost_base - start_cost_base
+                    } else {
+                        MISSING_OVERLAP_COST
+                    };
                 }
-
                 if cost < min_cost {
                     min_cost = cost;
                     arg_min_start_idx = start_idx;
-                    arg_min_prev_plan_idx = best_prev_plan_idx;
+                    arg_min_prev_plan_idx = prev_plan_idx;
                 }
 
                 if start_idx == 0 {
@@ -679,14 +702,17 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
 
                 start_idx -= 1;
                 internal_syntax_level =
-                    internal_syntax_level.min(atom_chunks[start_idx].boundary_syntax_level);
-                internal_lb_level = internal_lb_level.max(atom_chunks[start_idx].internal_lb_level);
+                    internal_syntax_level.min(atom_chunks[start_idx + 1].boundary_syntax_level);
+                internal_lb_level =
+                    internal_lb_level.max(atom_chunks[start_idx + 1].internal_lb_level);
             }
             plans.push(AtomRoutingPlan {
                 start_idx: arg_min_start_idx,
                 prev_plan_idx: arg_min_prev_plan_idx,
                 cost: min_cost,
+                overlap_cost_base: self.get_overlap_cost_base(chunk.range.end),
             });
+            prev_plan_candidates.clear();
         }
 
         let mut output = Vec::new();
@@ -695,11 +721,10 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
             let plan = &plans[plan_idx];
             let start_chunk = &atom_chunks[plan.start_idx];
             let end_chunk = &atom_chunks[plan_idx - 1];
-            let std_range: Range<usize> = start_chunk.range.start..end_chunk.range.end;
             output.push(ChunkOutput {
                 start_pos: Position::new(start_chunk.range.start),
                 end_pos: Position::new(end_chunk.range.end),
-                text: &self.full_text[std_range],
+                text: &self.full_text[start_chunk.range.start..end_chunk.range.end],
             });
             plan_idx = plan.prev_plan_idx;
         }
@@ -710,7 +735,7 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
     fn split_root_chunk(&self, kind: ChunkKind<'t>) -> Result<Vec<ChunkOutput<'s>>> {
         let mut atom_collector = AtomChunksCollector {
             full_text: self.full_text,
-            min_level: usize::MAX,
+            min_level: 0,
             curr_level: 0,
             atom_chunks: Vec::new(),
         };
