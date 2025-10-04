@@ -3,7 +3,7 @@ import functools
 import io
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import Literal, cast, AsyncIterator, Final
 
 import cocoindex
 import torch
@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from PIL import Image
 from qdrant_client import QdrantClient
 from transformers import CLIPModel, CLIPProcessor
@@ -19,7 +20,7 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearch"
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
-CLIP_MODEL_DIMENSION = 768
+CLIP_MODEL_DIMENSION: Final = 768
 
 
 @functools.cache
@@ -37,13 +38,13 @@ def embed_query(text: str) -> list[float]:
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     with torch.no_grad():
         features = model.get_text_features(**inputs)
-    return features[0].tolist()
+    return cast(list[float], features[0].tolist())
 
 
 @cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
 def embed_image(
     img_bytes: bytes,
-) -> cocoindex.Vector[cocoindex.Float32, Literal[CLIP_MODEL_DIMENSION]]:
+) -> cocoindex.Vector[cocoindex.Float32, Literal[768]]:
     """
     Convert image to embedding using CLIP model.
     """
@@ -52,7 +53,7 @@ def embed_image(
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         features = model.get_image_features(**inputs)
-    return features[0].tolist()
+    return cast(list[float], features[0].tolist())
 
 
 # CocoIndex flow: Ingest images, extract captions, embed, export to Qdrant
@@ -64,15 +65,12 @@ def image_object_embedding_flow(
         cocoindex.sources.LocalFile(
             path="img", included_patterns=["*.jpg", "*.jpeg", "*.png"], binary=True
         ),
-        refresh_interval=datetime.timedelta(
-            minutes=1
-        ),  # Poll for changes every 1 minute
+        refresh_interval=datetime.timedelta(minutes=1),
     )
     img_embeddings = data_scope.add_collector()
     with data_scope["images"].row() as img:
         ollama_model_name = os.getenv("OLLAMA_MODEL")
         if ollama_model_name is not None:
-            # If an Ollama model is specified, generate an image caption
             img["caption"] = flow_builder.transform(
                 cocoindex.functions.ExtractByLlm(
                     llm_spec=cocoindex.llm.LlmSpec(
@@ -112,18 +110,19 @@ def image_object_embedding_flow(
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> None:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     load_dotenv()
     cocoindex.init()
     image_object_embedding_flow.setup(report_to_stdout=True)
 
     app.state.qdrant_client = QdrantClient(url=QDRANT_URL, prefer_grpc=True)
-
-    # Start updater
     app.state.live_updater = cocoindex.FlowLiveUpdater(image_object_embedding_flow)
     app.state.live_updater.start()
 
-    yield
+    try:
+        yield None
+    finally:
+        app.state.live_updater.stop()
 
 
 # --- FastAPI app for web API ---
@@ -136,20 +135,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Serve images from the 'img' directory at /img
 app.mount("/img", StaticFiles(directory="img"), name="img")
 
 
+# --- Typed response models ---
+class SearchResult(BaseModel):
+    filename: str
+    score: float
+    caption: str | None = None
+
+
+class SearchResponse(BaseModel):
+    results: list[SearchResult]
+
+
 # --- Search API ---
-@app.get("/search")
+@app.get("/search", response_model=SearchResponse)  # type: ignore[misc]
 def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
-) -> Any:
-    # Get the embedding for the query
+) -> SearchResponse:
     query_embedding = embed_query(q)
 
-    # Search in Qdrant
     search_results = app.state.qdrant_client.search(
         collection_name=QDRANT_COLLECTION,
         query_vector=("embedding", query_embedding),
@@ -157,15 +164,13 @@ def search(
         with_payload=True,
     )
 
-    return {
-        "results": [
-            {
-                "filename": result.payload["filename"],
-                "score": result.score,
-                "caption": result.payload.get(
-                    "caption"
-                ),  # Include caption if available
-            }
+    return SearchResponse(
+        results=[
+            SearchResult(
+                filename=result.payload["filename"],
+                score=result.score,
+                caption=result.payload.get("caption"),
+            )
             for result in search_results
         ]
-    }
+    )

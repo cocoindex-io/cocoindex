@@ -67,7 +67,7 @@ def pdf_to_markdown(content: bytes) -> str:
         temp_file.write(content)
         temp_file.flush()
         text, _, _ = text_from_rendered(get_marker_converter()(temp_file.name))
-        return text
+        return str(text)
 
 
 @cocoindex.flow_def(name="PaperMetadata")

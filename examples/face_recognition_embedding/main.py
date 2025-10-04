@@ -3,6 +3,7 @@ import dataclasses
 import datetime
 import io
 import os
+from typing import cast
 
 import face_recognition
 import numpy as np
@@ -52,8 +53,9 @@ def extract_faces(content: bytes) -> list[FaceBase]:
         ratio = 1.0
         img = orig_img
 
-    # Extract face locations.
-    locs = face_recognition.face_locations(np.array(img), model="cnn")
+    locs: list[tuple[int, int, int, int]] = face_recognition.face_locations(
+        np.array(img), model="cnn"
+    )
 
     faces: list[FaceBase] = []
     for min_y, max_x, max_y, min_x in locs:
@@ -63,8 +65,6 @@ def extract_faces(content: bytes) -> list[FaceBase]:
             max_x=int(max_x * ratio),
             max_y=int(max_y * ratio),
         )
-
-        # Crop the face and save it as a PNG.
         buf = io.BytesIO()
         orig_img.crop((rect.min_x, rect.min_y, rect.max_x, rect.max_y)).save(
             buf, format="PNG"
@@ -76,16 +76,14 @@ def extract_faces(content: bytes) -> list[FaceBase]:
 
 
 @cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
-def extract_face_embedding(
-    face: bytes,
-) -> cocoindex.Vector[cocoindex.Float32]:
+def extract_face_embedding(face: bytes) -> cocoindex.Vector[cocoindex.Float32]:
     """Extract the embedding of a face."""
     img = Image.open(io.BytesIO(face)).convert("RGB")
-    embedding = face_recognition.face_encodings(
+    encoding: np.ndarray = face_recognition.face_encodings(
         np.array(img),
         known_face_locations=[(0, img.width - 1, img.height - 1, 0)],
     )[0]
-    return embedding
+    return cast(cocoindex.Vector[cocoindex.Float32], encoding.astype(np.float32))
 
 
 @cocoindex.flow_def(name="FaceRecognition")

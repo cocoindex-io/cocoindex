@@ -11,6 +11,7 @@ from ._engine_builtin_specs import (
     SplitBySeparators,
     EmbedText,
     ExtractByLlm,
+    CustomLanguageSpec
 )
 
 # Import SentenceTransformer embedding functionality
@@ -34,6 +35,7 @@ __all__ = [
     "SplitBySeparators",
     "EmbedText",
     "ExtractByLlm",
+    "CustomLanguageSpec",
     # SentenceTransformer
     "SentenceTransformerEmbed",
     "SentenceTransformerEmbedExecutor",

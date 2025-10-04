@@ -81,14 +81,30 @@ all = [
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = "python/cocoindex"
+files = "python/cocoindex,examples"
 exclude = "(\\.venv|site-packages)"
 disable_error_code = ["unused-ignore"]
+
 [[tool.mypy.overrides]]
 module = [
     "sentence_transformers",
     "torch",
     "colpali_engine",
     "PIL",
+    "qdrant_client",
+    "psycopg_pool",
+    "pgvector.psycopg",
+    "psycopg.rows",
+    "marker.*",
+    "pypdf",
+    "pdf2image", 
+    "markitdown",
+    "openai",
+    "fastapi.*",
+    "uvicorn",
+    "face_recognition",
 ]
 ignore_missing_imports = true
+
+[mypy-face_recognition]
+ignore_errors = true

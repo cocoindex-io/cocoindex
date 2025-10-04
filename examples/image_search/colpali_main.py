@@ -1,13 +1,14 @@
 import datetime
 import os
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import AsyncIterator, List
 
 import cocoindex
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
 
@@ -17,7 +18,7 @@ from qdrant_client import QdrantClient
 QDRANT_URL = os.getenv("QDRANT_URL", "localhost:6334")
 PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "true").lower() == "true"
 
-# Use HTTP
+# Use HTTP (uncomment if needed)
 # QDRANT_URL = os.getenv("QDRANT_URL", "localhost:6333")
 # PREFER_GRPC = os.getenv("QDRANT_PREFER_GRPC", "false").lower() == "true"
 
@@ -25,6 +26,9 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
 QDRANT_COLLECTION = "ImageSearchColpali"
 COLPALI_MODEL_NAME = os.getenv("COLPALI_MODEL", "vidore/colpali-v1.2")
 print(f"📐 Using ColPali model {COLPALI_MODEL_NAME}")
+
+
+# --- Embedding helpers ---
 
 
 @cocoindex.transform_flow()
@@ -70,8 +74,11 @@ def image_object_embedding_flow(
     )
 
 
+# --- Lifespan context ---
+
+
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> None:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     load_dotenv()
     cocoindex.init()
     image_object_embedding_flow.setup(report_to_stdout=True)
@@ -95,16 +102,30 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # Serve images from the 'img' directory at /img
 app.mount("/img", StaticFiles(directory="img"), name="img")
 
 
+# --- Response Models ---
+
+
+class SearchResult(BaseModel):
+    filename: str
+    score: float
+    caption: str | None = None
+
+
+class SearchResponse(BaseModel):
+    results: List[SearchResult]
+
+
 # --- Search API ---
-@app.get("/search")
+@app.get("/search", response_model=SearchResponse)  # type: ignore[misc]
 def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
-) -> Any:
+) -> SearchResponse:
     # Get the multi-vector embedding for the query
     query_embedding = text_to_colpali_embedding.eval(q)
     print(
@@ -122,13 +143,13 @@ def search(
 
     print(f"📈 Found {len(search_results.points)} results with MaxSim scoring")
 
-    return {
-        "results": [
-            {
-                "filename": result.payload["filename"],
-                "score": result.score,
-                "caption": result.payload.get("caption"),
-            }
+    return SearchResponse(
+        results=[
+            SearchResult(
+                filename=result.payload["filename"],
+                score=result.score,
+                caption=result.payload.get("caption"),
+            )
             for result in search_results.points
         ]
-    }
+    )
