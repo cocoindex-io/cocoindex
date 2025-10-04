@@ -405,7 +405,7 @@ class DataCollector:
         /,
         *,
         primary_key_fields: Sequence[str],
-        attachments: Sequence[op.TargetAttachmentSpec],
+        attachments: Sequence[op.TargetAttachmentSpec] = (),
         vector_indexes: Sequence[index.VectorIndexDef] = (),
         vector_index: Sequence[tuple[str, index.VectorSimilarityMetric]] = (),
         setup_by_user: bool = False,

@@ -26,6 +26,8 @@ pub struct AnalyzedTargetSetupState {
     pub setup_by_user: bool,
     /// None for declarations.
     pub key_type: Option<Box<[schema::ValueType]>>,
+
+    pub attachments: IndexMap<interface::AttachmentSetupKey, serde_json::Value>,
 }
 
 pub struct AnalyzedSetupState {
@@ -176,6 +178,7 @@ fn build_export_op_exec_ctx(
     } else {
         max_schema_version_id + 1
     };
+
     match target_states.entry(resource_id) {
         indexmap::map::Entry::Occupied(entry) => {
             api_bail!(
@@ -194,6 +197,7 @@ fn build_export_op_exec_ctx(
                     key_type: analyzed_target_ss.key_type.clone(),
                 },
                 state: analyzed_target_ss.desired_setup_state.clone(),
+                attachments: analyzed_target_ss.attachments.clone(),
             });
         }
     }

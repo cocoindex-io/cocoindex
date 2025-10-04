@@ -99,4 +99,11 @@ impl ExecutorFactoryRegistry {
     ) -> Option<&Arc<dyn super::interface::TargetFactory + Send + Sync>> {
         self.target_factories.get(name)
     }
+
+    pub fn get_target_attachment(
+        &self,
+        name: &str,
+    ) -> Option<&Arc<dyn super::interface::TargetAttachmentFactory + Send + Sync>> {
+        self.target_attachment_factories.get(name)
+    }
 }

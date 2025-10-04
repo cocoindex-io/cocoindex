@@ -1,3 +1,4 @@
+use crate::ops::interface::AttachmentSetupChangeAction;
 /// Concepts:
 /// - Resource: some setup that needs to be tracked and maintained.
 /// - Setup State: current state of a resource.
@@ -49,10 +50,18 @@ pub struct CombinedState<T> {
 }
 
 impl<T> CombinedState<T> {
-    pub fn from_desired(desired: T) -> Self {
+    pub fn current(desired: T) -> Self {
         Self {
             current: Some(desired),
             staging: vec![],
+            legacy_state_key: None,
+        }
+    }
+
+    pub fn staging(change: StateChange<T>) -> Self {
+        Self {
+            current: None,
+            staging: vec![change],
             legacy_state_key: None,
         }
     }
@@ -196,6 +205,13 @@ pub struct TargetSetupState {
     pub common: TargetSetupStateCommon,
 
     pub state: serde_json::Value,
+
+    #[serde(
+        default,
+        with = "indexmap::map::serde_seq",
+        skip_serializing_if = "IndexMap::is_empty"
+    )]
+    pub attachments: IndexMap<interface::AttachmentSetupKey, serde_json::Value>,
 }
 
 impl TargetSetupState {
@@ -270,7 +286,7 @@ pub enum ChangeDescription {
     Note(String),
 }
 
-pub trait ResourceSetupChange: Send + Sync + Debug + Any + 'static {
+pub trait ResourceSetupChange: Send + Sync + Any + 'static {
     fn describe_changes(&self) -> Vec<ChangeDescription>;
 
     fn change_type(&self) -> SetupChangeType;
@@ -384,7 +400,56 @@ pub trait ObjectSetupChange {
     }
 }
 
-#[derive(Debug)]
+#[derive(Default)]
+pub struct AttachmentsSetupChange {
+    pub deletes: Vec<Box<dyn AttachmentSetupChangeAction + Send + Sync>>,
+    pub upserts: Vec<Box<dyn AttachmentSetupChangeAction + Send + Sync>>,
+}
+
+impl AttachmentsSetupChange {
+    pub fn is_empty(&self) -> bool {
+        self.deletes.is_empty() && self.upserts.is_empty()
+    }
+}
+
+pub struct TargetSetupChange {
+    pub target_change: Box<dyn ResourceSetupChange>,
+    pub attachments_change: AttachmentsSetupChange,
+}
+
+impl ResourceSetupChange for TargetSetupChange {
+    fn describe_changes(&self) -> Vec<ChangeDescription> {
+        let mut result = vec![];
+        result.extend(
+            self.attachments_change
+                .deletes
+                .iter()
+                .map(|a| ChangeDescription::Action(a.describe_change())),
+        );
+        result.extend(self.target_change.describe_changes());
+        result.extend(
+            self.attachments_change
+                .upserts
+                .iter()
+                .map(|a| ChangeDescription::Action(a.describe_change())),
+        );
+        result
+    }
+
+    fn change_type(&self) -> SetupChangeType {
+        match self.target_change.change_type() {
+            SetupChangeType::NoChange => {
+                if self.attachments_change.is_empty() {
+                    SetupChangeType::NoChange
+                } else {
+                    SetupChangeType::Update
+                }
+            }
+            t => t,
+        }
+    }
+}
+
 pub struct FlowSetupChange {
     pub status: Option<ObjectStatus>,
     pub seen_flow_metadata_version: Option<u64>,
@@ -394,7 +459,7 @@ pub struct FlowSetupChange {
     pub tracking_table:
         Option<ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupChange>>,
     pub target_resources:
-        Vec<ResourceSetupInfo<ResourceIdentifier, TargetSetupState, Box<dyn ResourceSetupChange>>>,
+        Vec<ResourceSetupInfo<ResourceIdentifier, TargetSetupState, TargetSetupChange>>,
 
     pub unknown_resources: Vec<ResourceIdentifier>,
 }

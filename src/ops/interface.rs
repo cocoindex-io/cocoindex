@@ -322,6 +322,12 @@ pub struct TargetAttachmentState {
 }
 
 #[async_trait]
+pub trait AttachmentSetupChangeAction {
+    fn describe_change(&self) -> String;
+
+    async fn apply_change(&self) -> Result<()>;
+}
+
 pub trait TargetAttachmentFactory: Send + Sync {
     /// Normalize the key. e.g. the JSON format may change (after code change, e.g. new optional field or field ordering), even if the underlying value is not changed.
     /// This should always return the canonical serialized form.
@@ -330,22 +336,17 @@ pub trait TargetAttachmentFactory: Send + Sync {
     fn get_state(
         &self,
         target_name: &str,
-        target_spec: &spec::OpSpec,
+        target_spec: &serde_json::Map<String, serde_json::Value>,
         attachment_spec: serde_json::Value,
     ) -> Result<TargetAttachmentState>;
 
-    fn describe(&self, key: &serde_json::Value, state: &serde_json::Value) -> Result<String>;
-
-    fn has_update(&self, old: &serde_json::Value, new: &serde_json::Value) -> bool {
-        old != new
-    }
-
-    async fn apply_setup_change(
+    /// Should return Some if and only if any changes are needed.
+    fn diff_setup_states(
         &self,
         key: &serde_json::Value,
-        old: Option<serde_json::Value>,
-        new: Option<serde_json::Value>,
-    ) -> Result<()>;
+        new_state: Option<serde_json::Value>,
+        existing_states: setup::CombinedState<serde_json::Value>,
+    ) -> Result<Option<Box<dyn AttachmentSetupChangeAction + Send + Sync>>>;
 }
 
 #[derive(Clone)]
@@ -354,4 +355,13 @@ pub enum ExecutorFactory {
     SimpleFunction(Arc<dyn SimpleFunctionFactory + Send + Sync>),
     ExportTarget(Arc<dyn TargetFactory + Send + Sync>),
     TargetAttachment(Arc<dyn TargetAttachmentFactory + Send + Sync>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct AttachmentSetupKey(pub String, pub serde_json::Value);
+
+impl std::fmt::Display for AttachmentSetupKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.0, self.1)
+    }
 }

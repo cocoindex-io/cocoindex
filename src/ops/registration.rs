@@ -56,6 +56,13 @@ pub fn get_optional_target_factory(
     registry.get_target(kind).cloned()
 }
 
+pub fn get_optional_attachment_factory(
+    kind: &str,
+) -> Option<std::sync::Arc<dyn super::interface::TargetAttachmentFactory + Send + Sync>> {
+    let registry = EXECUTOR_FACTORY_REGISTRY.read().unwrap();
+    registry.get_target_attachment(kind).cloned()
+}
+
 pub fn get_source_factory(
     kind: &str,
 ) -> Result<std::sync::Arc<dyn super::interface::SourceFactory + Send + Sync>> {
@@ -75,6 +82,13 @@ pub fn get_target_factory(
 ) -> Result<std::sync::Arc<dyn super::interface::TargetFactory + Send + Sync>> {
     get_optional_target_factory(kind)
         .ok_or_else(|| anyhow::anyhow!("Target factory not found for op kind: {}", kind))
+}
+
+pub fn get_attachment_factory(
+    kind: &str,
+) -> Result<std::sync::Arc<dyn super::interface::TargetAttachmentFactory + Send + Sync>> {
+    get_optional_attachment_factory(kind)
+        .ok_or_else(|| anyhow::anyhow!("Attachment factory not found for op kind: {}", kind))
 }
 
 pub fn register_factory(name: String, factory: ExecutorFactory) -> Result<()> {
