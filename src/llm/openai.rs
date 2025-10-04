@@ -50,13 +50,16 @@ impl Client {
         if let Some(project_id) = config.project_id {
             openai_config = openai_config.with_project_id(project_id);
         }
-
-        // Verify API key is set
-        if std::env::var("OPENAI_API_KEY").is_err() {
-            api_bail!("OPENAI_API_KEY environment variable must be set");
+        if let Some(api_key) = config.api_key {
+            openai_config = openai_config.with_api_key(api_key);
+        } else {
+            // Verify API key is set in environment if not provided in config
+            if std::env::var("OPENAI_API_KEY").is_err() {
+                api_bail!("OPENAI_API_KEY environment variable must be set");
+            }
         }
+        
         Ok(Self {
-            // OpenAI client will use OPENAI_API_KEY and OPENAI_API_BASE env variables by default
             client: OpenAIClient::with_config(openai_config),
         })
     }
