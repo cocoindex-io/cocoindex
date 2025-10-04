@@ -985,24 +985,21 @@ impl AnalyzerContext {
         let mut current_scope = op_scope.as_ref();
 
         // Walk up the parent chain to collect scope names
-        loop {
-            if let Some((parent, _)) = &current_scope.parent {
-                scope_names.push(current_scope.name.clone());
-                current_scope = parent.as_ref();
-            } else {
-                break;
-            }
+        while let Some((parent, _)) = &current_scope.parent {
+            scope_names.push(current_scope.name.as_str());
+            current_scope = parent.as_ref();
         }
 
         // Reverse to get the correct order (root to leaf)
         scope_names.reverse();
 
-        // Build the qualifier string: "" for root, "name." for single level, "parent.child." for nested
-        if scope_names.is_empty() {
-            String::new()
-        } else {
-            format!("{}.", scope_names.join("."))
+        // Build the qualifier string
+        let mut result = String::new();
+        for name in scope_names {
+            result.push_str(&name);
+            result.push('.');
         }
+        result
     }
 }
 
