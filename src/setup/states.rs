@@ -1,4 +1,4 @@
-use crate::ops::interface::AttachmentSetupChangeAction;
+use crate::ops::interface::AttachmentSetupChange;
 /// Concepts:
 /// - Resource: some setup that needs to be tracked and maintained.
 /// - Setup State: current state of a resource.
@@ -402,8 +402,8 @@ pub trait ObjectSetupChange {
 
 #[derive(Default)]
 pub struct AttachmentsSetupChange {
-    pub deletes: Vec<Box<dyn AttachmentSetupChangeAction + Send + Sync>>,
-    pub upserts: Vec<Box<dyn AttachmentSetupChangeAction + Send + Sync>>,
+    pub deletes: Vec<Box<dyn AttachmentSetupChange + Send + Sync>>,
+    pub upserts: Vec<Box<dyn AttachmentSetupChange + Send + Sync>>,
 }
 
 impl AttachmentsSetupChange {

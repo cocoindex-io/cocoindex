@@ -322,7 +322,7 @@ pub struct TargetAttachmentState {
 }
 
 #[async_trait]
-pub trait AttachmentSetupChangeAction {
+pub trait AttachmentSetupChange {
     fn describe_change(&self) -> String;
 
     async fn apply_change(&self) -> Result<()>;
@@ -346,7 +346,7 @@ pub trait TargetAttachmentFactory: Send + Sync {
         key: &serde_json::Value,
         new_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
-    ) -> Result<Option<Box<dyn AttachmentSetupChangeAction + Send + Sync>>>;
+    ) -> Result<Option<Box<dyn AttachmentSetupChange + Send + Sync>>>;
 }
 
 #[derive(Clone)]
