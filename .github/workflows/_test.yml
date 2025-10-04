@@ -1,7 +1,7 @@
 name: Run Tests (INTERNAL)
 
 on:
-    workflow_call:
+  workflow_call:
 
 permissions:
   contents: read
@@ -10,75 +10,78 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-    build-test:
-        strategy:
-            matrix:
-                python-version: [3.11]
-                platform:
-                  - { runner: ubuntu-latest, python_exec: ".venv/bin/python" }
-                  - { runner: ubuntu-24.04-arm, python_exec: ".venv/bin/python" }
-                  - { runner: macos-latest, python_exec: ".venv/bin/python" }
-                  - { runner: macos-13, python_exec: ".venv/bin/python" }
-                  - { runner: windows-latest, python_exec: ".venv\\Scripts\\python" }
-        runs-on: ${{ matrix.platform.runner }}
-        steps:
-        - uses: actions/checkout@v4
+  build-test:
+    strategy:
+      matrix:
+        python-version: [3.11]
+        platform:
+          - { runner: ubuntu-latest, python_exec: ".venv/bin/python" }
+          - { runner: ubuntu-24.04-arm, python_exec: ".venv/bin/python" }
+          - { runner: macos-latest, python_exec: ".venv/bin/python" }
+          - { runner: macos-13, python_exec: ".venv/bin/python" }
+          - { runner: windows-latest, python_exec: ".venv\\Scripts\\python" }
+    runs-on: ${{ matrix.platform.runner }}
+    steps:
+      - uses: actions/checkout@v4
 
-        - uses: actions/setup-python@v5
-          id: setup_python
-          with:
-            python-version: ${{ matrix.python-version }}
-            cache: 'pip'
+      - uses: actions/setup-python@v5
+        id: setup_python
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
 
-        - run: rustup toolchain install stable --profile minimal
-        - name: Rust Cache
-          uses: Swatinem/rust-cache@v2
-          with:
-            key: rust-${{ matrix.platform.runner }}-${{ matrix.python-version }}
-        - name: Rust tests
-          run: cargo test --verbose
+      - run: rustup toolchain install stable --profile minimal
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: rust-${{ matrix.platform.runner }}-${{ matrix.python-version }}
+      - name: Rust tests
+        run: cargo test --verbose
 
-        - uses: actions/cache@v4
-          with:
-            path: .venv
-            key: pyenv-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
-            restore-keys: |
-              pyenv-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-
+      - name: Rust tests (no default features)
+        run: cargo test --no-default-features --verbose
 
-        - name: Setup venv
-          run: |
-            python -m venv .venv
-        - name: Install Python toolchains
-          run: |
-            ${{ matrix.platform.python_exec }} -m pip install maturin mypy pytest pytest-asyncio
-        - name: Python build
-          run: |
-            ${{ matrix.platform.python_exec }} -m maturin develop -E all
-        - name: Python type check (mypy)
-          run: |
-            ${{ matrix.platform.python_exec }} -m mypy python
-        - name: Python tests
-          run: |
-            ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests
+      - uses: actions/cache@v4
+        with:
+          path: .venv
+          key: pyenv-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            pyenv-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-
 
-    validate-3p-notices:
-        runs-on: ubuntu-latest
-        steps:
-        - uses: actions/checkout@v4
-        - name: Install Rust toolchain
-          uses: dtolnay/rust-toolchain@stable
-        - uses: taiki-e/install-action@v2
-          with:
-            tool: cargo-binstall
-        - name: Install cargo-about
-          run: cargo binstall -y cargo-about
-        - name: Validate third-party notices (dry-run)
-          shell: bash
-          run: |
-            set +e
-            cargo about generate about.hbs > /dev/null
-            status=$?
-            if [ $status -ne 0 ]; then
-              echo "::error::Third-party notices validation failed. Please update /about.toml and rerun."
-              exit $status
-            fi
+      - name: Setup venv
+        run: |
+          python -m venv .venv
+      - name: Install Python toolchains
+        run: |
+          ${{ matrix.platform.python_exec }} -m pip install maturin mypy pytest pytest-asyncio
+      - name: Python build
+        run: |
+          ${{ matrix.platform.python_exec }} -m maturin develop -E all
+      - name: Python type check (mypy)
+        run: |
+          ${{ matrix.platform.python_exec }} -m mypy python
+      - name: Python tests
+        run: |
+          ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests
+
+  validate-3p-notices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+      - name: Install cargo-about
+        run: cargo binstall -y cargo-about
+      - name: Validate third-party notices (dry-run)
+        shell: bash
+        run: |
+          set +e
+          cargo about generate about.hbs > /dev/null
+          status=$?
+          if [ $status -ne 0 ]; then
+            echo "::error::Third-party notices validation failed. Please update /about.toml and rerun."
+            exit $status
+          fi
