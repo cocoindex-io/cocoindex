@@ -98,6 +98,7 @@ const config: Config = {
   ],
 
   themes: ['@docusaurus/theme-mermaid'],
+
   themeConfig: {
     // Replace with your project's social card
     image: 'img/social-card.jpg',
@@ -132,7 +133,7 @@ const config: Config = {
         {
           type: 'html',
           position: 'right',
-          value: '<iframe src="https://ghbtns.com/github-btn.html?user=cocoindex-io&repo=cocoindex&type=star&count=true" frameborder="0" scrolling="0" width="120" height="20" title="GitHub" style="vertical-align: middle;"></iframe>',
+          value: '<iframe frameborder="0" height="20" scrolling="0" src="https://ghbtns.com/github-btn.html?user=cocoindex-io&repo=cocoindex&type=star&count=true" style="vertical-align: middle;" title="GitHub" width="120"></iframe>',
           className: 'navbar-github-link',
         },
       ],
