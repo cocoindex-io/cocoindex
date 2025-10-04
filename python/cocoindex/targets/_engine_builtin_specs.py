@@ -14,6 +14,7 @@ class Postgres(op.TargetSpec):
 
     database: AuthEntryReference[DatabaseConnectionSpec] | None = None
     table_name: str | None = None
+    schema: str | None = None
 
 
 @dataclass
