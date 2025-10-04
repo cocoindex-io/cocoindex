@@ -139,6 +139,8 @@ struct VectorDef {
     metric: spec::VectorSimilarityMetric,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     multi_vector_comparator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    method: Option<spec::VectorIndexMethod>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SetupState {
@@ -221,6 +223,26 @@ impl SetupChange {
                         vector_def.vector_size as u64,
                         embedding_metric_to_qdrant(vector_def.metric)?,
                     );
+                    if let Some(method) = &vector_def.method {
+                        match method {
+                            spec::VectorIndexMethod::Hnsw { m, ef_construction } => {
+                                if let Some(m_val) = m {
+                                    params = params.hnsw_m(*m_val as u64);
+                                }
+                                if let Some(ef_val) = ef_construction {
+                                    params = params.hnsw_ef_construct(*ef_val as u64);
+                                }
+                            }
+                            spec::VectorIndexMethod::IvfFlat { nlist } => {
+                                if let Some(nlist_val) = nlist {
+                                    params = params.ivf_flat_nlist(*nlist_val as u64);
+                                }
+                            }
+                            _ => {
+                                api_bail!("Unsupported vector index method for Qdrant");
+                            }
+                        }
+                    }
                     if let Some(multi_vector_comparator) = &vector_def.multi_vector_comparator {
                         params = params.multivector_config(MultiVectorConfigBuilder::new(
                             MultiVectorComparator::from_str_name(multi_vector_comparator)
@@ -422,8 +444,23 @@ impl TargetFactoryBase for Factory {
                             } else {
                                 api_bail!("Field `{}` specified more than once in vector index definition", vector_index.field_name);
                             }
-                            if vector_index.method.is_some() {
-                                api_bail!("Vector index method is not configurable for Qdrant yet");
+
+                            let vector_def_entry = vector_def.get_mut(&vector_index.field_name)
+                            .expect("VectorDef must exist here");
+
+                            vector_def_entry.vector_size = vector_index.vector_size;
+                            vector_def_entry.metric = vector_index.metric.clone();
+
+                            if let Some(method) = &vector_index.method {
+                                match method {
+                                    spec::VectorIndexMethod::Hnsw { .. } |
+                                    spec::VectorIndexMethod::IvfFlat { .. } => {
+                                        vector_def_entry.method = Some(method.clone());
+                                    }
+                                    _ => {
+                                        api_bail!("Vector index method is not supported for Qdrant");
+                                    }
+                                }
                             }
                         }
                         None => {
