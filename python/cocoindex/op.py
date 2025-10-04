@@ -17,9 +17,8 @@ from typing import (
 
 from . import _engine  # type: ignore
 from .subprocess_exec import executor_stub
-from .convert import (
-    dump_engine_object,
-    load_engine_object,
+from .engine_object import dump_engine_object, load_engine_object
+from .engine_value import (
     make_engine_value_encoder,
     make_engine_value_decoder,
     make_engine_key_decoder,

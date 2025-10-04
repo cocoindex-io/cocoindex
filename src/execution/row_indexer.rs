@@ -183,6 +183,7 @@ pub struct RowIndexer<'a> {
     setup_execution_ctx: &'a exec_ctx::FlowSetupExecutionContext,
     mode: super::source_indexer::UpdateMode,
     update_stats: &'a stats::UpdateStats,
+    operation_in_process_stats: Option<&'a stats::OperationInProcessStats>,
     pool: &'a PgPool,
 
     source_id: i32,
@@ -201,6 +202,7 @@ impl<'a> RowIndexer<'a> {
         mode: super::source_indexer::UpdateMode,
         process_time: chrono::DateTime<chrono::Utc>,
         update_stats: &'a stats::UpdateStats,
+        operation_in_process_stats: Option<&'a stats::OperationInProcessStats>,
         pool: &'a PgPool,
     ) -> Result<Self> {
         Ok(Self {
@@ -212,6 +214,7 @@ impl<'a> RowIndexer<'a> {
             setup_execution_ctx,
             mode,
             update_stats,
+            operation_in_process_stats,
             pool,
         })
     }
@@ -311,9 +314,13 @@ impl<'a> RowIndexer<'a> {
                         },
                     );
 
-                    let output =
-                        evaluate_source_entry(self.src_eval_ctx, source_value, &evaluation_memory)
-                            .await?;
+                    let output = evaluate_source_entry(
+                        self.src_eval_ctx,
+                        source_value,
+                        &evaluation_memory,
+                        self.operation_in_process_stats,
+                    )
+                    .await?;
                     let mut stored_info = evaluation_memory.into_stored()?;
                     if tracking_setup_state.has_fast_fingerprint_column {
                         (Some(output), stored_info, content_version_fp)
@@ -368,9 +375,27 @@ impl<'a> RowIndexer<'a> {
                         })
                         .collect();
                     (!mutations_w_ctx.is_empty()).then(|| {
-                        export_op_group
-                            .target_factory
-                            .apply_mutation(mutations_w_ctx)
+                        let export_key = format!("export/{}", export_op_group.target_kind);
+                        let operation_in_process_stats = self.operation_in_process_stats;
+
+                        async move {
+                            // Track export operation start
+                            if let Some(ref op_stats) = operation_in_process_stats {
+                                op_stats.start_processing(&export_key, 1);
+                            }
+
+                            let result = export_op_group
+                                .target_factory
+                                .apply_mutation(mutations_w_ctx)
+                                .await;
+
+                            // Track export operation completion
+                            if let Some(ref op_stats) = operation_in_process_stats {
+                                op_stats.finish_processing(&export_key, 1);
+                            }
+
+                            result
+                        }
                     })
                 });
 
@@ -875,7 +900,7 @@ pub async fn evaluate_source_entry_with_memory(
         .ok_or_else(|| anyhow::anyhow!("value not returned"))?;
     let output = match source_value {
         interface::SourceValue::Existence(source_value) => {
-            Some(evaluate_source_entry(src_eval_ctx, source_value, &memory).await?)
+            Some(evaluate_source_entry(src_eval_ctx, source_value, &memory, None).await?)
         }
         interface::SourceValue::NonExistence => None,
     };
