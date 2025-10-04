@@ -82,9 +82,15 @@ def docs_to_kg_flow(
             cocoindex.functions.ExtractByLlm(
                 llm_spec=cocoindex.LlmSpec(
                     # Supported LLM: https://cocoindex.io/docs/ai/llm
-                    api_type=cocoindex.LlmApiType.OPENAI,
-                    model="gpt-4o",
+                    api_type=cocoindex.LlmApiType.OLLAMA,
+                    model="llama3.2",
+                    address="http://localhost:11434",
                 ),
+                # Alternative: Use OpenAI API model instead of Ollama
+                # llm_spec=cocoindex.LlmSpec(
+                #     api_type=cocoindex.LlmApiType.OPENAI,
+                #     model="gpt-4o",
+                # ),
                 output_type=DocumentSummary,
                 instruction="Please summarize the content of the document.",
             )
@@ -100,9 +106,15 @@ def docs_to_kg_flow(
             cocoindex.functions.ExtractByLlm(
                 llm_spec=cocoindex.LlmSpec(
                     # Supported LLM: https://cocoindex.io/docs/ai/llm
-                    api_type=cocoindex.LlmApiType.OPENAI,
-                    model="gpt-4o",
+                    api_type=cocoindex.LlmApiType.OLLAMA,
+                    model="llama3.2",
+                    address="http://localhost:11434",
                 ),
+                # Alternative: Use OpenAI API model instead of Ollama
+                # llm_spec=cocoindex.LlmSpec(
+                #     api_type=cocoindex.LlmApiType.OPENAI,
+                #     model="gpt-4o",
+                # ),
                 output_type=list[Relationship],
                 instruction=(
                     "Please extract relationships from CocoIndex documents. "
