@@ -15,6 +15,10 @@ lto = true
 name = "cocoindex_engine"
 crate-type = ["cdylib"]
 
+[features]
+default = ["legacy-states-v0"]
+legacy-states-v0 = []
+
 [dependencies]
 pyo3 = { version = "0.25.1", features = [
     "abi3-py311",
