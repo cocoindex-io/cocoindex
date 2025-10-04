@@ -196,7 +196,7 @@ For example, the following image shows the lineage of the `embedding` field, you
 3. Setup tables and update the index:
 
     ```bash
-    cocoindex update --setup main.py
+    cocoindex update --setup main
     ```
 
 4. Run CocoInsight:

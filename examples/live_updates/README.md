@@ -42,7 +42,7 @@ The script then starts a `FlowLiveUpdater`, which runs in the background and con
     This method is useful for managing your indexes from the command line, through CocoIndex [CLI](https://cocoindex.io/docs/core/flow_methods#cli-2).
 
     ```bash
-    cocoindex update main.py -L --setup
+    cocoindex update main -L --setup
     ```
 
 4.  **Test the live updates:**

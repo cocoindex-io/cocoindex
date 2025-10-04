@@ -37,14 +37,14 @@ and then build a knowledge graph.
 
 ## Setup
 *   [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
-*   [Install Neo4j](https://cocoindex.io/docs/ops/targets#neo4j-dev-instance), a graph database.
+*   [Install Neo4j](https://cocoindex.io/docs/targets/neo4j#neo4j-dev-instance), a graph database.
 *   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).  Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
     <DocumentationButton url="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
 
 
 ## Documentation
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets#property-graph-targets" text="Property Graph Targets" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/targets#property-graph-targets" text="Property Graph Targets" margin="0 0 16px 0" />
 
 
 ## Data flow to build knowledge graph
@@ -334,7 +334,7 @@ It creates relationships by:
 
 2.  Run following commands to setup and update the index.
     ```sh
-    cocoindex update --setup main.py
+    cocoindex update --setup main
     ```
 
     You'll see the index updates state in the terminal. For example,
@@ -371,7 +371,7 @@ MATCH p=()-->() RETURN p
 ## Kuzu
 Cocoindex natively supports Kuzu - a high performant, embedded open source graph database.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets#kuzu" text="Kuzu" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/targets/kuzu" text="Kuzu" margin="0 0 16px 0" />
 
 The GraphDB interface in CocoIndex is standardized, you just need to **switch the configuration** without any additional code changes. CocoIndex supports exporting to Kuzu through its API server. You can bring up a Kuzu API server locally by running:
 

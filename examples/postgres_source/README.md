@@ -38,7 +38,7 @@ Before running the example, you need to:
 Update index, which will also setup the tables at the first time:
 
 ```bash
-cocoindex update --setup main.py
+cocoindex update --setup main
 ```
 
 ## CocoInsight

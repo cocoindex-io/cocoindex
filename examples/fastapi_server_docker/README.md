@@ -24,13 +24,13 @@ COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
 - Setup:
 
     ```bash
-    cocoindex setup main.py
+    cocoindex setup main
     ```
 
 - Update index:
 
     ```bash
-    cocoindex update main.py
+    cocoindex update main
     ```
 
 - Run:

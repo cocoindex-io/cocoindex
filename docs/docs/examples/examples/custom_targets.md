@@ -192,7 +192,7 @@ output_html.export(
 
 ```bash
 pip install -e .
-cocoindex update --setup main.py
+cocoindex update --setup main
 ```
 
 You can add, modify, or remove files in the `data/` directory — CocoIndex will only reprocess the changed files and update the target accordingly.

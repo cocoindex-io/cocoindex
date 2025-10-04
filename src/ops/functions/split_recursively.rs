@@ -939,55 +939,13 @@ pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::{functions::test_utils::test_flow_function, shared::split::OutputPosition};
+    use crate::ops::functions::test_utils::test_flow_function;
+    use crate::ops::sdk::{BasicValueType, KeyValue, RangeValue, make_output_type};
+    use crate::ops::shared::split::OutputPosition;
 
-    // Helper function to assert chunk text and its consistency with the range within the original text.
-    fn assert_chunk_text_consistency(
-        full_text: &str, // Added full text
-        actual_chunk: &ChunkOutput<'_>,
-        expected_text: &str,
-        context: &str,
-    ) {
-        // Extract text using the chunk's range from the original full text.
-        let extracted_text = full_text
-            .get(actual_chunk.start_pos.byte_offset..actual_chunk.end_pos.byte_offset)
-            .unwrap();
-        // Assert that the expected text matches the text provided in the chunk.
-        assert_eq!(
-            actual_chunk.text, expected_text,
-            "Provided chunk text mismatch - {context}"
-        );
-        // Assert that the expected text also matches the text extracted using the chunk's range.
-        assert_eq!(
-            extracted_text, expected_text,
-            "Range inconsistency: extracted text mismatch - {context}"
-        );
-    }
-
-    // Creates a default RecursiveChunker for testing, assuming no language-specific parsing.
-    fn create_test_chunker<'a>(
-        text: &'a str,
-        chunk_size: usize,
-        min_chunk_size: usize,
-        chunk_overlap: usize,
-    ) -> RecursiveChunker<'a> {
-        RecursiveChunker {
-            full_text: text,
-            chunk_size,
-            chunk_overlap,
-            min_chunk_size,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_split_recursively() {
-        let spec = Spec {
-            custom_languages: vec![],
-        };
-        let factory = Arc::new(Factory);
-        let text_content = "Linea 1.\nLinea 2.\n\nLinea 3.";
-
-        let input_arg_schemas = &[
+    // Helper function to build the standard input argument schemas for split_recursively tests
+    fn build_split_recursively_arg_schemas() -> Vec<(Option<&'static str>, EnrichedValueType)> {
+        vec![
             (
                 Some("text"),
                 make_output_type(BasicValueType::Str).with_nullable(true),
@@ -1008,7 +966,17 @@ mod tests {
                 Some("language"),
                 make_output_type(BasicValueType::Str).with_nullable(true),
             ),
-        ];
+        ]
+    }
+
+    #[tokio::test]
+    async fn test_split_recursively() {
+        let spec = Spec {
+            custom_languages: vec![],
+        };
+        let factory = Arc::new(Factory);
+        let text_content = "Linea 1.\nLinea 2.\n\nLinea 3.";
+        let input_arg_schemas = &build_split_recursively_arg_schemas();
 
         {
             let result = test_flow_function(
@@ -1168,88 +1136,214 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_basic_split_no_overlap() {
+    #[tokio::test]
+    async fn test_basic_split_no_overlap() {
+        let spec = Spec {
+            custom_languages: vec![],
+        };
+        let factory = Arc::new(Factory);
         let text = "Linea 1.\nLinea 2.\n\nLinea 3.";
-        let chunker = create_test_chunker(text, 15, 5, 0);
+        let input_arg_schemas = &build_split_recursively_arg_schemas();
 
-        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
-            lang_config: &DEFAULT_LANGUAGE_CONFIG,
-            next_regexp_sep_id: 0,
-        });
+        {
+            let result = test_flow_function(
+                &factory,
+                &spec,
+                input_arg_schemas,
+                vec![
+                    text.to_string().into(),
+                    (15i64).into(),
+                    (5i64).into(),
+                    (0i64).into(),
+                    Value::Null,
+                ],
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "test_flow_function failed: {:?}",
+                result.err()
+            );
+            let value = result.unwrap();
+            match value {
+                Value::KTable(table) => {
+                    let expected_chunks = vec![
+                        (RangeValue::new(0, 8), "Linea 1."),
+                        (RangeValue::new(9, 17), "Linea 2."),
+                        (RangeValue::new(19, 27), "Linea 3."),
+                    ];
 
-        assert!(result.is_ok());
-        let chunks = result.unwrap();
-
-        assert_eq!(chunks.len(), 3);
-        assert_chunk_text_consistency(text, &chunks[0], "Linea 1.", "Test 1, Chunk 0");
-        assert_chunk_text_consistency(text, &chunks[1], "Linea 2.", "Test 1, Chunk 1");
-        assert_chunk_text_consistency(text, &chunks[2], "Linea 3.", "Test 1, Chunk 2");
+                    for (range, expected_text) in expected_chunks {
+                        let key = KeyValue::from_single_part(range);
+                        match table.get(&key) {
+                            Some(scope_value_ref) => {
+                                let chunk_text =
+                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
+                                        panic!("Chunk text not a string for key {key:?}")
+                                    });
+                                assert_eq!(**chunk_text, *expected_text);
+                            }
+                            None => panic!("Expected row value for key {key:?}, not found"),
+                        }
+                    }
+                }
+                other => panic!("Expected Value::KTable, got {other:?}"),
+            }
+        }
 
         // Test splitting when chunk_size forces breaks within segments.
         let text2 = "A very very long text that needs to be split.";
-        let chunker2 = create_test_chunker(text2, 20, 12, 0);
-        let result2 = chunker2.split_root_chunk(ChunkKind::RegexpSepChunk {
-            lang_config: &DEFAULT_LANGUAGE_CONFIG,
-            next_regexp_sep_id: 0,
-        });
+        {
+            let result = test_flow_function(
+                &factory,
+                &spec,
+                input_arg_schemas,
+                vec![
+                    text2.to_string().into(),
+                    (20i64).into(),
+                    (12i64).into(),
+                    (0i64).into(),
+                    Value::Null,
+                ],
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "test_flow_function failed: {:?}",
+                result.err()
+            );
+            let value = result.unwrap();
+            match value {
+                Value::KTable(table) => {
+                    // Expect multiple chunks, likely split by spaces due to chunk_size.
+                    assert!(table.len() > 1);
 
-        assert!(result2.is_ok());
-        let chunks2 = result2.unwrap();
-
-        // Expect multiple chunks, likely split by spaces due to chunk_size.
-        assert!(chunks2.len() > 1);
-        assert_chunk_text_consistency(text2, &chunks2[0], "A very very long", "Test 2, Chunk 0");
-        assert!(chunks2[0].text.len() <= 20);
-    }
-
-    #[test]
-    fn test_basic_split_with_overlap() {
-        let text = "This is a test text that is a bit longer to see how the overlap works.";
-        let chunker = create_test_chunker(text, 20, 10, 5);
-
-        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
-            lang_config: &DEFAULT_LANGUAGE_CONFIG,
-            next_regexp_sep_id: 0,
-        });
-
-        assert!(result.is_ok());
-        let chunks = result.unwrap();
-
-        assert!(chunks.len() > 1);
-
-        if chunks.len() >= 2 {
-            assert!(chunks[0].text.len() <= 25);
+                    let key = KeyValue::from_single_part(RangeValue::new(0, 16));
+                    match table.get(&key) {
+                        Some(scope_value_ref) => {
+                            let chunk_text =
+                                scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
+                                    panic!("Chunk text not a string for key {key:?}")
+                                });
+                            assert_eq!(&**chunk_text, "A very very long");
+                            assert!(chunk_text.len() <= 20);
+                        }
+                        None => panic!("Expected row value for key {key:?}, not found"),
+                    }
+                }
+                other => panic!("Expected Value::KTable, got {other:?}"),
+            }
         }
     }
 
-    #[test]
-    fn test_split_trims_whitespace() {
+    #[tokio::test]
+    async fn test_basic_split_with_overlap() {
+        let spec = Spec {
+            custom_languages: vec![],
+        };
+        let factory = Arc::new(Factory);
+        let text = "This is a test text that is a bit longer to see how the overlap works.";
+        let input_arg_schemas = &build_split_recursively_arg_schemas();
+
+        {
+            let result = test_flow_function(
+                &factory,
+                &spec,
+                input_arg_schemas,
+                vec![
+                    text.to_string().into(),
+                    (20i64).into(),
+                    (10i64).into(),
+                    (5i64).into(),
+                    Value::Null,
+                ],
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "test_flow_function failed: {:?}",
+                result.err()
+            );
+            let value = result.unwrap();
+            match value {
+                Value::KTable(table) => {
+                    assert!(table.len() > 1);
+
+                    // Check first chunk length
+                    if table.len() >= 2 {
+                        let first_key = table.keys().next().unwrap();
+                        match table.get(first_key) {
+                            Some(scope_value_ref) => {
+                                let chunk_text =
+                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
+                                        panic!("Chunk text not a string for key {first_key:?}")
+                                    });
+                                assert!(chunk_text.len() <= 25);
+                            }
+                            None => panic!("Expected row value for first key, not found"),
+                        }
+                    }
+                }
+                other => panic!("Expected Value::KTable, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_split_trims_whitespace() {
+        let spec = Spec {
+            custom_languages: vec![],
+        };
+        let factory = Arc::new(Factory);
         let text = "  \n First chunk. \n\n  Second chunk with spaces at the end.   \n";
-        let chunker = create_test_chunker(text, 30, 10, 0);
+        let input_arg_schemas = &build_split_recursively_arg_schemas();
 
-        let result = chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
-            lang_config: &DEFAULT_LANGUAGE_CONFIG,
-            next_regexp_sep_id: 0,
-        });
+        {
+            let result = test_flow_function(
+                &factory,
+                &spec,
+                input_arg_schemas,
+                vec![
+                    text.to_string().into(),
+                    (30i64).into(),
+                    (10i64).into(),
+                    (0i64).into(),
+                    Value::Null,
+                ],
+            )
+            .await;
+            assert!(
+                result.is_ok(),
+                "test_flow_function failed: {:?}",
+                result.err()
+            );
+            let value = result.unwrap();
+            match value {
+                Value::KTable(table) => {
+                    assert_eq!(table.len(), 3);
 
-        assert!(result.is_ok());
-        let chunks = result.unwrap();
+                    let expected_chunks = vec![
+                        (RangeValue::new(3, 16), " First chunk."),
+                        (RangeValue::new(19, 45), "  Second chunk with spaces"),
+                        (RangeValue::new(46, 57), "at the end."),
+                    ];
 
-        assert_eq!(chunks.len(), 3);
-
-        assert_chunk_text_consistency(
-            text,
-            &chunks[0],
-            " First chunk.",
-            "Whitespace Test, Chunk 0",
-        );
-        assert_chunk_text_consistency(
-            text,
-            &chunks[1],
-            "  Second chunk with spaces",
-            "Whitespace Test, Chunk 1",
-        );
-        assert_chunk_text_consistency(text, &chunks[2], "at the end.", "Whitespace Test, Chunk 2");
+                    for (range, expected_text) in expected_chunks {
+                        let key = KeyValue::from_single_part(range);
+                        match table.get(&key) {
+                            Some(scope_value_ref) => {
+                                let chunk_text =
+                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
+                                        panic!("Chunk text not a string for key {key:?}")
+                                    });
+                                assert_eq!(**chunk_text, *expected_text);
+                            }
+                            None => panic!("Expected row value for key {key:?}, not found"),
+                        }
+                    }
+                }
+                other => panic!("Expected Value::KTable, got {other:?}"),
+            }
+        }
     }
 }

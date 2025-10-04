@@ -324,7 +324,7 @@ metadata_embeddings.export(
 
 In this example we use PGVector as embedding store. With CocoIndex, you can do one line switch on other supported Vector databases.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets#entry-oriented-targets" text="Entry Oriented Targets" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/targets" text="Targets" margin="0 0 16px 0" />
 
 ## Query the index
 
