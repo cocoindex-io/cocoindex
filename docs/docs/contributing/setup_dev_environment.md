@@ -20,13 +20,14 @@ Follow the steps below to get CocoIndex built on the latest codebase locally - i
     ```sh
     python3 -m venv .venv
     ```
-    Activate the virtual environment, before any installing / building / running:
+
+    Activate the virtual environment, before any installing / building / running below:
 
     ```sh
     . .venv/bin/activate
     ```
 
--   Install required tools:
+-   Install required tools under the virtual environment:
     ```sh
     pip install maturin
     ```
@@ -35,6 +36,8 @@ Follow the steps below to get CocoIndex built on the latest codebase locally - i
     ```sh
     maturin develop -E all,dev
     ```
+
+    This step needs to be repeated whenever you make changes to the Rust code.
 
 -   Install and enable pre-commit hooks. This ensures all checks run automatically before each commit:
     ```sh

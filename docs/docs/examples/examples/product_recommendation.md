@@ -39,7 +39,7 @@ Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choos
 
 
 ## Documentation
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets#property-graph-targets" text="Property Graph Targets" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/targets#property-graph-targets" text="Property Graph Targets" margin="0 0 16px 0" />
 
 ## Flow Overview
 
@@ -364,7 +364,7 @@ Note that different relationships may share the same source and target nodes.
 
 2.  Run the following command to setup and update the index.
     ```sh
-    cocoindex update --setup main.py
+    cocoindex update --setup main
     ```
 
     You'll see the index updates state in the terminal. For example, you'll see the following output:

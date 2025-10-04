@@ -41,7 +41,7 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
 - Setup:
 
    ```bash
-   cocoindex setup main.py
+   cocoindex setup main
    ```
 
    It will automatically create a collection in Qdrant.
@@ -50,7 +50,7 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
 - Update index:
 
    ```bash
-   cocoindex update main.py
+   cocoindex update main
    ```
 
 - Run:

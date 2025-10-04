@@ -28,7 +28,7 @@ pip install -e .
 Update the target:
 
 ```bash
-cocoindex update --setup main.py
+cocoindex update --setup main
 ```
 
 You can add new files to the `data/` directory, delete or update existing files.

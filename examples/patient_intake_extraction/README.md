@@ -32,13 +32,13 @@ CocoIndex supports multiple [sources](https://cocoindex.io/docs/ops/sources) and
 Setup index:
 
 ```bash
-cocoindex setup main.py
+cocoindex setup main
 ```
 
 Update index:
 
 ```bash
-cocoindex update main.py
+cocoindex update main
 ```
 
 Run query:

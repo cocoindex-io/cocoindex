@@ -186,7 +186,7 @@ face_embeddings.export(
 Now you can run cosine similarity queries over facial vectors.
 
 CocoIndex supports 1-line switch with other vector databases.
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets#postgres" text="Postgres" />
+<DocumentationButton url="https://cocoindex.io/docs/targets/postgres" text="Postgres" />
 
 ## Query the Index
 
