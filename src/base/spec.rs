@@ -384,7 +384,7 @@ impl fmt::Display for VectorSimilarityMetric {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
 pub enum VectorIndexMethod {
     Hnsw {

@@ -568,9 +568,6 @@ impl SetupState {
             .map(|f| (f.name.as_str(), &f.value_type.typ))
             .collect::<HashMap<_, _>>();
         for index_def in index_options.vector_indexes.iter() {
-            if index_def.method.is_some() {
-                api_bail!("Vector index method is not configurable for Neo4j yet");
-            }
             sub_components.push(ComponentState {
                 object_label: schema.elem_type.clone(),
                 index_def: IndexDef::from_vector_index_def(
@@ -583,6 +580,7 @@ impl SetupState {
                                 index_def.field_name
                             )
                         })?,
+                    index_def.method.clone(),
                 )?,
             });
         }
@@ -644,6 +642,7 @@ enum IndexDef {
         field_name: String,
         metric: spec::VectorSimilarityMetric,
         vector_size: usize,
+        method: Option<spec::VectorIndexMethod>,
     },
 }
 
@@ -651,7 +650,12 @@ impl IndexDef {
     fn from_vector_index_def(
         index_def: &spec::VectorIndexDef,
         field_typ: &schema::ValueType,
+        method: Option<spec::VectorIndexMethod>,
     ) -> Result<Self> {
+        let method = index_def.method.clone();
+        if let Some(spec::VectorIndexMethod::IvfFlat { .. }) = method {
+            api_bail!("IVFFlat vector index method is not supported for Neo4j");
+        }
         Ok(Self::VectorIndex {
             field_name: index_def.field_name.clone(),
             vector_size: (match field_typ {
@@ -664,6 +668,7 @@ impl IndexDef {
                 api_error!("Vector index field must be a vector with fixed dimension")
             })?,
             metric: index_def.metric,
+            method,
         })
     }
 }
@@ -723,9 +728,14 @@ impl components::SetupOperator for SetupComponentOperator {
                 field_name,
                 metric,
                 vector_size,
+                method,
             } => {
+                let method_str = method
+                    .as_ref()
+                    .map(|m| format!(", method: {}", m))
+                    .unwrap_or_default();
                 format!(
-                    "{key_desc} ON {label} (field_name: {field_name}, vector_size: {vector_size}, metric: {metric})",
+                    "{key_desc} ON {label} (field_name: {field_name}, vector_size: {vector_size}, metric: {metric}{method_str})",
                 )
             }
         }
@@ -752,14 +762,32 @@ impl components::SetupOperator for SetupComponentOperator {
                 field_name,
                 metric,
                 vector_size,
+                method,
             } => {
+                let method_config =
+                    if let Some(spec::VectorIndexMethod::Hnsw { m, ef_construction }) = method {
+                        let mut parts = vec![];
+                        if let Some(m_val) = m {
+                            parts.push(format!("`hnsw.m`: {}", m_val));
+                        }
+                        if let Some(ef_val) = ef_construction {
+                            parts.push(format!("`hnsw.ef_construction`: {}", ef_val));
+                        }
+                        if parts.is_empty() {
+                            "".to_string()
+                        } else {
+                            format!(", {}", parts.join(", "))
+                        }
+                    } else {
+                        "".to_string()
+                    };
                 formatdoc! {"
                     CREATE VECTOR INDEX {name} IF NOT EXISTS
                     FOR {matcher} ON {qualifier}.{field_name}
                     OPTIONS {{
                         indexConfig: {{
                             `vector.dimensions`: {vector_size},
-                            `vector.similarity_function`: '{metric}'
+                            `vector.similarity_function`: '{metric}'{method_config}
                         }}
                     }}",
                     name = key.name,
