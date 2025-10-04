@@ -67,6 +67,7 @@ class EmbedText(op.FunctionSpec):
     output_dimension: int | None = None
     task_type: str | None = None
     api_config: llm.VertexAiConfig | None = None
+    api_key: str | None = None
 
 
 class ExtractByLlm(op.FunctionSpec):

@@ -34,6 +34,61 @@ class OpenAiConfig:
 
     org_id: str | None = None
     project_id: str | None = None
+    api_key: str | None = None
+
+
+@dataclass
+class AnthropicConfig:
+    """A specification for an Anthropic LLM."""
+
+    kind = "Anthropic"
+
+    api_key: str | None = None
+
+
+@dataclass
+class GeminiConfig:
+    """A specification for a Gemini LLM."""
+
+    kind = "Gemini"
+
+    api_key: str | None = None
+
+
+@dataclass
+class VoyageConfig:
+    """A specification for a Voyage LLM."""
+
+    kind = "Voyage"
+
+    api_key: str | None = None
+
+
+@dataclass
+class LiteLlmConfig:
+    """A specification for a LiteLLM LLM."""
+
+    kind = "LiteLlm"
+
+    api_key: str | None = None
+
+
+@dataclass
+class OpenRouterConfig:
+    """A specification for an OpenRouter LLM."""
+
+    kind = "OpenRouter"
+
+    api_key: str | None = None
+
+
+@dataclass
+class VllmConfig:
+    """A specification for a VLLM LLM."""
+
+    kind = "Vllm"
+
+    api_key: str | None = None
 
 
 @dataclass
@@ -43,4 +98,4 @@ class LlmSpec:
     api_type: LlmApiType
     model: str
     address: str | None = None
-    api_config: VertexAiConfig | OpenAiConfig | None = None
+    api_config: VertexAiConfig | OpenAiConfig | AnthropicConfig | GeminiConfig | VoyageConfig | LiteLlmConfig | OpenRouterConfig | VllmConfig | None = None

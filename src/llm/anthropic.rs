@@ -14,14 +14,23 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn new(address: Option<String>) -> Result<Self> {
+    pub async fn new(address: Option<String>, api_config: Option<super::LlmApiConfig>) -> Result<Self> {
         if address.is_some() {
             api_bail!("Anthropic doesn't support custom API address");
         }
-        let api_key = match std::env::var("ANTHROPIC_API_KEY") {
-            Ok(val) => val,
-            Err(_) => api_bail!("ANTHROPIC_API_KEY environment variable must be set"),
+        
+        let api_key = if let Some(super::LlmApiConfig::Anthropic(config)) = api_config {
+            if let Some(key) = config.api_key {
+                key
+            } else {
+                std::env::var("ANTHROPIC_API_KEY")
+                    .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY environment variable must be set"))?
+            }
+        } else {
+            std::env::var("ANTHROPIC_API_KEY")
+                .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY environment variable must be set"))?
         };
+        
         Ok(Self {
             api_key,
             client: reqwest::Client::new(),

@@ -13,6 +13,7 @@ struct Spec {
     api_config: Option<LlmApiConfig>,
     output_dimension: Option<u32>,
     task_type: Option<String>,
+    api_key: Option<String>,
 }
 
 struct Args {
@@ -91,9 +92,58 @@ impl SimpleFunctionFactoryBase for Factory {
             .next_arg("text")?
             .expect_type(&ValueType::Basic(BasicValueType::Str))?
             .required()?;
+
+        // Create API config based on api_key parameter if provided
+        let api_config = if let Some(api_key) = &spec.api_key {
+            Some(match spec.api_type {
+                LlmApiType::OpenAi => {
+                    LlmApiConfig::OpenAi(super::super::super::llm::OpenAiConfig {
+                        org_id: None,
+                        project_id: None,
+                        api_key: Some(api_key.clone()),
+                    })
+                }
+                LlmApiType::Anthropic => {
+                    LlmApiConfig::Anthropic(super::super::super::llm::AnthropicConfig {
+                        api_key: Some(api_key.clone()),
+                    })
+                }
+                LlmApiType::Gemini => {
+                    LlmApiConfig::Gemini(super::super::super::llm::GeminiConfig {
+                        api_key: Some(api_key.clone()),
+                    })
+                }
+                LlmApiType::Voyage => {
+                    LlmApiConfig::Voyage(super::super::super::llm::VoyageConfig {
+                        api_key: Some(api_key.clone()),
+                    })
+                }
+                LlmApiType::LiteLlm => {
+                    LlmApiConfig::LiteLlm(super::super::super::llm::LiteLlmConfig {
+                        api_key: Some(api_key.clone()),
+                    })
+                }
+                LlmApiType::OpenRouter => {
+                    LlmApiConfig::OpenRouter(super::super::super::llm::OpenRouterConfig {
+                        api_key: Some(api_key.clone()),
+                    })
+                }
+                LlmApiType::Vllm => LlmApiConfig::Vllm(super::super::super::llm::VllmConfig {
+                    api_key: Some(api_key.clone()),
+                }),
+                _ => spec.api_config.clone().unwrap_or_else(|| {
+                    api_bail!(
+                        "API key parameter is not supported for API type {:?}",
+                        spec.api_type
+                    )
+                }),
+            })
+        } else {
+            spec.api_config.clone()
+        };
+
         let client =
-            new_llm_embedding_client(spec.api_type, spec.address.clone(), spec.api_config.clone())
-                .await?;
+            new_llm_embedding_client(spec.api_type, spec.address.clone(), api_config).await?;
         let output_dimension = match spec.output_dimension {
             Some(output_dimension) => output_dimension,
             None => {
@@ -144,6 +194,7 @@ mod tests {
             api_config: None,
             output_dimension: None,
             task_type: None,
+            api_key: None,
         };
 
         let factory = Arc::new(Factory);
