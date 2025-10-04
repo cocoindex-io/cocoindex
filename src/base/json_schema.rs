@@ -395,10 +395,979 @@ pub fn build_json_schema(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base::schema::{
-        BasicValueType, EnrichedValueType, FieldSchema, StructSchema, ValueType,
-    };
+    use crate::base::schema::*;
+    use expect_test::expect;
+    use serde_json::json;
     use std::sync::Arc;
+
+    fn create_test_options() -> ToJsonSchemaOptions {
+        ToJsonSchemaOptions {
+            fields_always_required: false,
+            supports_format: true,
+            extract_descriptions: false,
+            top_level_must_be_object: false,
+        }
+    }
+
+    fn create_test_options_with_extracted_descriptions() -> ToJsonSchemaOptions {
+        ToJsonSchemaOptions {
+            fields_always_required: false,
+            supports_format: true,
+            extract_descriptions: true,
+            top_level_must_be_object: false,
+        }
+    }
+
+    fn create_test_options_always_required() -> ToJsonSchemaOptions {
+        ToJsonSchemaOptions {
+            fields_always_required: true,
+            supports_format: true,
+            extract_descriptions: false,
+            top_level_must_be_object: false,
+        }
+    }
+
+    fn create_test_options_top_level_object() -> ToJsonSchemaOptions {
+        ToJsonSchemaOptions {
+            fields_always_required: false,
+            supports_format: true,
+            extract_descriptions: false,
+            top_level_must_be_object: true,
+        }
+    }
+
+    fn schema_to_json(schema: &SchemaObject) -> serde_json::Value {
+        serde_json::to_value(schema).unwrap()
+    }
+
+    #[test]
+    fn test_basic_types_str() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Str),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "type": "string"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_bool() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Bool),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "type": "boolean"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_int64() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Int64),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "type": "integer"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_float32() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Float32),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "type": "number"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_float64() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Float64),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "type": "number"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_bytes() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Bytes),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "type": "string"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_range() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Range),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "description": "A range represented by a list of two positions, start pos (inclusive), end pos (exclusive).",
+              "items": {
+                "type": "integer"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            }"#]].assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_uuid() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Uuid),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "description": "A UUID, e.g. 123e4567-e89b-12d3-a456-426614174000",
+              "format": "uuid",
+              "type": "string"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_date() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Date),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "description": "A date in YYYY-MM-DD format, e.g. 2025-03-27",
+              "format": "date",
+              "type": "string"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_time() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Time),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "description": "A time in HH:MM:SS format, e.g. 13:32:12",
+              "format": "time",
+              "type": "string"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_local_date_time() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::LocalDateTime),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "description": "Date time without timezone offset in YYYY-MM-DDTHH:MM:SS format, e.g. 2025-03-27T13:32:12",
+              "format": "date-time",
+              "type": "string"
+            }"#]].assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_offset_date_time() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::OffsetDateTime),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "description": "Date time with timezone offset in RFC3339, e.g. 2025-03-27T13:32:12Z, 2025-03-27T07:32:12.313-06:00",
+              "format": "date-time",
+              "type": "string"
+            }"#]].assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_time_delta() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::TimeDelta),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "description": "A duration, e.g. 'PT1H2M3S' (ISO 8601) or '1 day 2 hours 3 seconds'",
+              "format": "duration",
+              "type": "string"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_json() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Json),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect!["{}"].assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_vector() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Vector(VectorTypeSchema {
+                element_type: Box::new(BasicValueType::Str),
+                dimension: Some(3),
+            })),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": "array"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_union() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Union(UnionTypeSchema {
+                types: vec![BasicValueType::Str, BasicValueType::Int64],
+            })),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_nullable_basic_type() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Str),
+            nullable: true,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "type": "string"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_struct_type_simple() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Struct(StructSchema {
+                fields: Arc::new(vec![
+                    FieldSchema::new(
+                        "name",
+                        EnrichedValueType {
+                            typ: ValueType::Basic(BasicValueType::Str),
+                            nullable: false,
+                            attrs: Arc::new(BTreeMap::new()),
+                        },
+                    ),
+                    FieldSchema::new(
+                        "age",
+                        EnrichedValueType {
+                            typ: ValueType::Basic(BasicValueType::Int64),
+                            nullable: false,
+                            attrs: Arc::new(BTreeMap::new()),
+                        },
+                    ),
+                ]),
+                description: None,
+            }),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "additionalProperties": false,
+              "properties": {
+                "age": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "age",
+                "name"
+              ],
+              "type": "object"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_struct_type_with_optional_field() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Struct(StructSchema {
+                fields: Arc::new(vec![
+                    FieldSchema::new(
+                        "name",
+                        EnrichedValueType {
+                            typ: ValueType::Basic(BasicValueType::Str),
+                            nullable: false,
+                            attrs: Arc::new(BTreeMap::new()),
+                        },
+                    ),
+                    FieldSchema::new(
+                        "age",
+                        EnrichedValueType {
+                            typ: ValueType::Basic(BasicValueType::Int64),
+                            nullable: true,
+                            attrs: Arc::new(BTreeMap::new()),
+                        },
+                    ),
+                ]),
+                description: None,
+            }),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "additionalProperties": false,
+              "properties": {
+                "age": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_struct_type_with_description() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Struct(StructSchema {
+                fields: Arc::new(vec![FieldSchema::new(
+                    "name",
+                    EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Str),
+                        nullable: false,
+                        attrs: Arc::new(BTreeMap::new()),
+                    },
+                )]),
+                description: Some("A person".into()),
+            }),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "additionalProperties": false,
+              "description": "A person",
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_struct_type_with_extracted_descriptions() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Struct(StructSchema {
+                fields: Arc::new(vec![FieldSchema::new(
+                    "name",
+                    EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Str),
+                        nullable: false,
+                        attrs: Arc::new(BTreeMap::new()),
+                    },
+                )]),
+                description: Some("A person".into()),
+            }),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options_with_extracted_descriptions();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+
+        // Check that description was extracted to extra instructions
+        assert!(result.extra_instructions.is_some());
+        let instructions = result.extra_instructions.unwrap();
+        assert!(instructions.contains("A person"));
+    }
+
+    #[test]
+    fn test_struct_type_always_required() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Struct(StructSchema {
+                fields: Arc::new(vec![
+                    FieldSchema::new(
+                        "name",
+                        EnrichedValueType {
+                            typ: ValueType::Basic(BasicValueType::Str),
+                            nullable: false,
+                            attrs: Arc::new(BTreeMap::new()),
+                        },
+                    ),
+                    FieldSchema::new(
+                        "age",
+                        EnrichedValueType {
+                            typ: ValueType::Basic(BasicValueType::Int64),
+                            nullable: true,
+                            attrs: Arc::new(BTreeMap::new()),
+                        },
+                    ),
+                ]),
+                description: None,
+            }),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options_always_required();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "additionalProperties": false,
+              "properties": {
+                "age": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "age",
+                "name"
+              ],
+              "type": "object"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_table_type_utable() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Table(TableSchema {
+                kind: TableKind::UTable,
+                row: StructSchema {
+                    fields: Arc::new(vec![
+                        FieldSchema::new(
+                            "id",
+                            EnrichedValueType {
+                                typ: ValueType::Basic(BasicValueType::Int64),
+                                nullable: false,
+                                attrs: Arc::new(BTreeMap::new()),
+                            },
+                        ),
+                        FieldSchema::new(
+                            "name",
+                            EnrichedValueType {
+                                typ: ValueType::Basic(BasicValueType::Str),
+                                nullable: false,
+                                attrs: Arc::new(BTreeMap::new()),
+                            },
+                        ),
+                    ]),
+                    description: None,
+                },
+            }),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_table_type_ktable() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Table(TableSchema {
+                kind: TableKind::KTable(KTableInfo { num_key_parts: 1 }),
+                row: StructSchema {
+                    fields: Arc::new(vec![
+                        FieldSchema::new(
+                            "id",
+                            EnrichedValueType {
+                                typ: ValueType::Basic(BasicValueType::Int64),
+                                nullable: false,
+                                attrs: Arc::new(BTreeMap::new()),
+                            },
+                        ),
+                        FieldSchema::new(
+                            "name",
+                            EnrichedValueType {
+                                typ: ValueType::Basic(BasicValueType::Str),
+                                nullable: false,
+                                attrs: Arc::new(BTreeMap::new()),
+                            },
+                        ),
+                    ]),
+                    description: None,
+                },
+            }),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "integer"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "name"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_table_type_ltable() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Table(TableSchema {
+                kind: TableKind::LTable,
+                row: StructSchema {
+                    fields: Arc::new(vec![FieldSchema::new(
+                        "value",
+                        EnrichedValueType {
+                            typ: ValueType::Basic(BasicValueType::Str),
+                            nullable: false,
+                            attrs: Arc::new(BTreeMap::new()),
+                        },
+                    )]),
+                    description: None,
+                },
+            }),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_top_level_must_be_object_with_basic_type() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Str),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options_top_level_object();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value"
+              ],
+              "type": "object"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+
+        // Check that value extractor has the wrapper field name
+        assert_eq!(
+            result.value_extractor.object_wrapper_field_name,
+            Some("value".to_string())
+        );
+    }
+
+    #[test]
+    fn test_top_level_must_be_object_with_struct_type() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Struct(StructSchema {
+                fields: Arc::new(vec![FieldSchema::new(
+                    "name",
+                    EnrichedValueType {
+                        typ: ValueType::Basic(BasicValueType::Str),
+                        nullable: false,
+                        attrs: Arc::new(BTreeMap::new()),
+                    },
+                )]),
+                description: None,
+            }),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options_top_level_object();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+
+        // Check that value extractor has no wrapper field name since it's already a struct
+        assert_eq!(result.value_extractor.object_wrapper_field_name, None);
+    }
+
+    #[test]
+    fn test_nested_struct() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Struct(StructSchema {
+                fields: Arc::new(vec![FieldSchema::new(
+                    "person",
+                    EnrichedValueType {
+                        typ: ValueType::Struct(StructSchema {
+                            fields: Arc::new(vec![
+                                FieldSchema::new(
+                                    "name",
+                                    EnrichedValueType {
+                                        typ: ValueType::Basic(BasicValueType::Str),
+                                        nullable: false,
+                                        attrs: Arc::new(BTreeMap::new()),
+                                    },
+                                ),
+                                FieldSchema::new(
+                                    "age",
+                                    EnrichedValueType {
+                                        typ: ValueType::Basic(BasicValueType::Int64),
+                                        nullable: false,
+                                        attrs: Arc::new(BTreeMap::new()),
+                                    },
+                                ),
+                            ]),
+                            description: None,
+                        }),
+                        nullable: false,
+                        attrs: Arc::new(BTreeMap::new()),
+                    },
+                )]),
+                description: None,
+            }),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "additionalProperties": false,
+              "properties": {
+                "person": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "age": {
+                      "type": "integer"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "age",
+                    "name"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "person"
+              ],
+              "type": "object"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_value_extractor_basic_type() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Str),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+
+        // Test extracting a string value
+        let json_value = json!("hello world");
+        let extracted = result.value_extractor.extract_value(json_value).unwrap();
+        assert!(
+            matches!(extracted, crate::base::value::Value::Basic(crate::base::value::BasicValue::Str(s)) if s.as_ref() == "hello world")
+        );
+    }
+
+    #[test]
+    fn test_value_extractor_with_wrapper() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Str),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options_top_level_object();
+        let result = build_json_schema(value_type, options).unwrap();
+
+        // Test extracting a wrapped value
+        let json_value = json!({"value": "hello world"});
+        let extracted = result.value_extractor.extract_value(json_value).unwrap();
+        assert!(
+            matches!(extracted, crate::base::value::Value::Basic(crate::base::value::BasicValue::Str(s)) if s.as_ref() == "hello world")
+        );
+    }
+
+    #[test]
+    fn test_no_format_support() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Uuid),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = ToJsonSchemaOptions {
+            fields_always_required: false,
+            supports_format: false,
+            extract_descriptions: false,
+            top_level_must_be_object: false,
+        };
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "description": "A UUID, e.g. 123e4567-e89b-12d3-a456-426614174000",
+              "type": "string"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
 
     #[test]
     fn test_description_concatenation() {
