@@ -88,6 +88,7 @@ pub struct SourceTrackingInfoForProcessing {
     pub processed_source_ordinal: Option<i64>,
     pub processed_source_fp: Option<Vec<u8>>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
+    pub process_lineage_fingerprint: Option<Vec<u8>>,
     pub max_process_ordinal: Option<i64>,
     pub process_ordinal: Option<i64>,
 }
@@ -99,7 +100,7 @@ pub async fn read_source_tracking_info_for_processing(
     pool: &PgPool,
 ) -> Result<Option<SourceTrackingInfoForProcessing>> {
     let query_str = format!(
-        "SELECT memoization_info, processed_source_ordinal, {}, process_logic_fingerprint, max_process_ordinal, process_ordinal FROM {} WHERE source_id = $1 AND source_key = $2",
+        "SELECT memoization_info, processed_source_ordinal, {}, process_logic_fingerprint, process_lineage_fingerprint, max_process_ordinal, process_ordinal FROM {} WHERE source_id = $1 AND source_key = $2",
         if db_setup.has_fast_fingerprint_column {
             "processed_source_fp"
         } else {
@@ -124,6 +125,7 @@ pub struct SourceTrackingInfoForPrecommit {
     pub processed_source_ordinal: Option<i64>,
     pub processed_source_fp: Option<Vec<u8>>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
+    pub process_lineage_fingerprint: Option<Vec<u8>>,
     pub process_ordinal: Option<i64>,
     pub target_keys: Option<sqlx::types::Json<TrackedTargetKeyForSource>>,
 }
@@ -135,7 +137,7 @@ pub async fn read_source_tracking_info_for_precommit(
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<Option<SourceTrackingInfoForPrecommit>> {
     let query_str = format!(
-        "SELECT max_process_ordinal, staging_target_keys, processed_source_ordinal, {}, process_logic_fingerprint, process_ordinal, target_keys FROM {} WHERE source_id = $1 AND source_key = $2",
+        "SELECT max_process_ordinal, staging_target_keys, processed_source_ordinal, {}, process_logic_fingerprint, process_lineage_fingerprint, process_ordinal, target_keys FROM {} WHERE source_id = $1 AND source_key = $2",
         if db_setup.has_fast_fingerprint_column {
             "processed_source_fp"
         } else {
@@ -240,6 +242,7 @@ pub async fn commit_source_tracking_info(
     processed_source_ordinal: Option<i64>,
     processed_source_fp: Option<Vec<u8>>,
     logic_fingerprint: &[u8],
+    lineage_fingerprint: &[u8],
     process_ordinal: i64,
     process_time_micros: i64,
     target_keys: TrackedTargetKeyForSource,
@@ -252,8 +255,8 @@ pub async fn commit_source_tracking_info(
             "INSERT INTO {} ( \
                source_id, source_key, \
                max_process_ordinal, staging_target_keys, \
-               processed_source_ordinal, process_logic_fingerprint, process_ordinal, process_time_micros, target_keys{}) \
-            VALUES ($1, $2, $6 + 1, $3, $4, $5, $6, $7, $8{})",
+               processed_source_ordinal, process_logic_fingerprint, process_lineage_fingerprint, process_ordinal, process_time_micros, target_keys{}) \
+            VALUES ($1, $2, $7 + 1, $3, $4, $5, $6, $7, $8, $9{})",
             db_setup.table_name,
             if db_setup.has_fast_fingerprint_column {
                 ", processed_source_fp"
@@ -261,16 +264,16 @@ pub async fn commit_source_tracking_info(
                 ""
             },
             if db_setup.has_fast_fingerprint_column {
-                ", $9"
+                ", $10"
             } else {
                 ""
             },
         ),
         WriteAction::Update => format!(
-            "UPDATE {} SET staging_target_keys = $3, processed_source_ordinal = $4, process_logic_fingerprint = $5, process_ordinal = $6, process_time_micros = $7, target_keys = $8{} WHERE source_id = $1 AND source_key = $2",
+            "UPDATE {} SET staging_target_keys = $3, processed_source_ordinal = $4, process_logic_fingerprint = $5, process_lineage_fingerprint = $6, process_ordinal = $7, process_time_micros = $8, target_keys = $9{} WHERE source_id = $1 AND source_key = $2",
             db_setup.table_name,
             if db_setup.has_fast_fingerprint_column {
-                ", processed_source_fp = $9"
+                ", processed_source_fp = $10"
             } else {
                 ""
             },
@@ -282,12 +285,12 @@ pub async fn commit_source_tracking_info(
         .bind(sqlx::types::Json(staging_target_keys)) // $3
         .bind(processed_source_ordinal) // $4
         .bind(logic_fingerprint) // $5
-        .bind(process_ordinal) // $6
-        .bind(process_time_micros) // $7
-        .bind(sqlx::types::Json(target_keys)); // $8
-
+        .bind(lineage_fingerprint) // $6
+        .bind(process_ordinal) // $7
+        .bind(process_time_micros) // $8
+        .bind(sqlx::types::Json(target_keys)); // $9
     if db_setup.has_fast_fingerprint_column {
-        query = query.bind(processed_source_fp); // $9
+        query = query.bind(processed_source_fp); // $10
     }
     query.execute(db_executor).await?;
 
@@ -317,7 +320,8 @@ pub struct TrackedSourceKeyMetadata {
     pub source_key: serde_json::Value,
     pub processed_source_ordinal: Option<i64>,
     pub processed_source_fp: Option<Vec<u8>>,
-    pub process_logic_fingerprint: Option<Vec<u8>>,
+    // pub process_logic_fingerprint: Option<Vec<u8>>,
+    pub process_lineage_fingerprint: Option<Vec<u8>>,
     pub max_process_ordinal: Option<i64>,
     pub process_ordinal: Option<i64>,
 }
@@ -341,7 +345,7 @@ impl ListTrackedSourceKeyMetadataState {
     ) -> impl Stream<Item = Result<TrackedSourceKeyMetadata, sqlx::Error>> + 'a {
         self.query_str = format!(
             "SELECT \
-            source_key, processed_source_ordinal, {}, process_logic_fingerprint, max_process_ordinal, process_ordinal \
+            source_key, processed_source_ordinal, {}, process_logic_fingerprint, process_lineage_fingerprint, max_process_ordinal, process_ordinal \
             FROM {} WHERE source_id = $1",
             if db_setup.has_fast_fingerprint_column {
                 "processed_source_fp"

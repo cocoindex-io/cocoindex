@@ -54,14 +54,14 @@ pub struct SourceVersion {
 impl SourceVersion {
     pub fn from_stored(
         stored_ordinal: Option<i64>,
-        stored_fp: &Option<Vec<u8>>,
-        curr_fp: Fingerprint,
+        stored_lineage_fp: &Option<Vec<u8>>,
+        curr_lineage_fp: Fingerprint,
     ) -> Self {
         Self {
             ordinal: Ordinal(stored_ordinal),
-            kind: match &stored_fp {
+            kind: match &stored_lineage_fp {
                 Some(stored_fp) => {
-                    if stored_fp.as_slice() == curr_fp.0.as_slice() {
+                    if stored_fp.as_slice() == curr_lineage_fp.0.as_slice() {
                         SourceVersionKind::CurrentLogic
                     } else {
                         SourceVersionKind::DifferentLogic
@@ -74,23 +74,23 @@ impl SourceVersion {
 
     pub fn from_stored_processing_info(
         info: &db_tracking::SourceTrackingInfoForProcessing,
-        curr_fp: Fingerprint,
+        curr_lineage_fp: Fingerprint,
     ) -> Self {
         Self::from_stored(
             info.processed_source_ordinal,
-            &info.process_logic_fingerprint,
-            curr_fp,
+            &info.process_lineage_fingerprint,
+            curr_lineage_fp,
         )
     }
 
     pub fn from_stored_precommit_info(
         info: &db_tracking::SourceTrackingInfoForPrecommit,
-        curr_fp: Fingerprint,
+        curr_lineage_fp: Fingerprint,
     ) -> Self {
         Self::from_stored(
             info.processed_source_ordinal,
-            &info.process_logic_fingerprint,
-            curr_fp,
+            &info.process_lineage_fingerprint,
+            curr_lineage_fp,
         )
     }
 
@@ -119,9 +119,16 @@ impl SourceVersion {
         // Never process older ordinals to maintain consistency
         let should_skip = match (self.ordinal.0, target.ordinal.0) {
             (Some(existing_ordinal), Some(target_ordinal)) => {
-                // Skip if target ordinal is older, or same ordinal with same/older logic version
-                existing_ordinal > target_ordinal
-                    || (existing_ordinal == target_ordinal && self.kind >= target.kind)
+                // Skip if target ordinal is older
+                if existing_ordinal > target_ordinal {
+                    true
+                // If ordinals are equal, only skip if logic is unchanged (CurrentLogic)
+                } else if existing_ordinal == target_ordinal {
+                    self.kind == SourceVersionKind::CurrentLogic
+                        && target.kind == SourceVersionKind::CurrentLogic
+                } else {
+                    false
+                }
             }
             _ => false,
         };
@@ -835,6 +842,7 @@ impl<'a> RowIndexer<'a> {
                 source_version.ordinal.into(),
                 source_fp,
                 &self.src_eval_ctx.plan.logic_fingerprint.0,
+                &self.src_eval_ctx.plan.lineage_fingerprint.0,
                 precommit_metadata.process_ordinal,
                 self.process_time.timestamp_micros(),
                 precommit_metadata.new_target_keys,
@@ -1075,5 +1083,88 @@ mod tests {
             after_optimization.should_skip(&after_github_checkout, None),
             "After optimization, same ordinal should be skipped"
         );
+    }
+
+    #[test]
+    fn test_lineage_fingerprint_skip_logic_happy_path() {
+        // Happy path: lineage fingerprint matches, should skip if ordinal is same or older
+        let stored_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        let target_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        assert!(stored_version.should_skip(&target_version, None));
+        // Newer ordinal should not skip
+        let newer_version = SourceVersion {
+            ordinal: Ordinal(Some(101)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        assert!(!stored_version.should_skip(&newer_version, None));
+    }
+
+    #[test]
+    fn test_lineage_fingerprint_skip_logic_benign_change() {
+        // Benign change: lineage fingerprint unchanged, ordinal increases
+        let stored_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        let benign_version = SourceVersion {
+            ordinal: Ordinal(Some(101)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        assert!(!stored_version.should_skip(&benign_version, None));
+    }
+
+    #[test]
+    fn test_lineage_fingerprint_skip_logic_breaking_change() {
+        // Breaking change: lineage fingerprint changes, should not skip even if ordinal is same
+        let stored_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        let breaking_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::DifferentLogic,
+        };
+        assert!(!stored_version.should_skip(&breaking_version, None));
+    }
+
+    #[test]
+    fn test_lineage_fingerprint_skip_logic_edge_cases() {
+        // Edge case: missing ordinals
+        let stored_version = SourceVersion {
+            ordinal: Ordinal(None),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        let target_version = SourceVersion {
+            ordinal: Ordinal(None),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        // Should not skip if ordinals are missing
+        assert!(!stored_version.should_skip(&target_version, None));
+        // Edge case: stored ordinal is older
+        let stored_version = SourceVersion {
+            ordinal: Ordinal(Some(99)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        let target_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        assert!(!stored_version.should_skip(&target_version, None));
+        // Edge case: stored ordinal is newer
+        let stored_version = SourceVersion {
+            ordinal: Ordinal(Some(101)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        let target_version = SourceVersion {
+            ordinal: Ordinal(Some(100)),
+            kind: SourceVersionKind::CurrentLogic,
+        };
+        assert!(stored_version.should_skip(&target_version, None));
     }
 }

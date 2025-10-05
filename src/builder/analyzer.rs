@@ -1120,6 +1120,17 @@ pub async fn analyze_flow(
         .with(&flow_inst)?
         .with(&flow_schema.schema)?
         .into_fingerprint();
+
+    // Build a lineage fingerprint that focuses on export-level field lineage.
+    // It include export op identity, target kind, primary key schema and the
+    // output value fingerprinter (which is derived from the output value schema)
+    // so that benign changes (like exclude_pattern on sources or intermediate
+    // field ordering) that don't affect exported field lineage will not change
+    // this fingerprint.
+    let mut lineage_fp = Fingerprinter::default();
+    lineage_fp = lineage_fp.with(&flow_inst.export_ops)?;
+    lineage_fp = lineage_fp.with(&flow_schema.schema)?;
+    let lineage_fingerprint = lineage_fp.into_fingerprint();
     let plan_fut = async move {
         let (import_ops, op_scope, export_ops) = try_join3(
             try_join_all(import_ops_futs),
@@ -1130,6 +1141,7 @@ pub async fn analyze_flow(
 
         Ok(ExecutionPlan {
             logic_fingerprint,
+            lineage_fingerprint,
             import_ops,
             op_scope,
             export_ops,

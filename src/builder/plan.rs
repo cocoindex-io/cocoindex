@@ -135,6 +135,9 @@ pub struct AnalyzedOpScope {
 
 pub struct ExecutionPlan {
     pub logic_fingerprint: Fingerprint,
+    /// Coarser-grained fingerprint that captures field-level lineage relevant to outputs/exports.
+    /// Changes that don't affect lineage should not modify this fingerprint.
+    pub lineage_fingerprint: Fingerprint,
 
     pub import_ops: Vec<AnalyzedImportOp>,
     pub op_scope: AnalyzedOpScope,
