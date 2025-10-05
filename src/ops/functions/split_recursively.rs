@@ -261,7 +261,8 @@ struct Chunk<'t, 's: 't> {
 
 struct TextChunksIter<'t, 's: 't> {
     lang_config: &'t SimpleLanguageConfig,
-    parent: &'t Chunk<'t, 's>,
+    full_text: &'s str,
+    range: RangeValue,
     matches_iter: Matches<'t, 's>,
     regexp_sep_id: usize,
     next_start_pos: Option<usize>,
@@ -270,16 +271,19 @@ struct TextChunksIter<'t, 's: 't> {
 impl<'t, 's: 't> TextChunksIter<'t, 's> {
     fn new(
         lang_config: &'t SimpleLanguageConfig,
-        parent: &'t Chunk<'t, 's>,
+        full_text: &'s str,
+        range: RangeValue,
         regexp_sep_id: usize,
     ) -> Self {
+        let std_range = range.start..range.end;
         Self {
             lang_config,
-            parent,
+            full_text,
+            range,
             matches_iter: lang_config.separator_regex[regexp_sep_id]
-                .find_iter(&parent.full_text[parent.range.start..parent.range.end]),
+                .find_iter(&full_text[std_range.clone()]),
             regexp_sep_id,
-            next_start_pos: Some(parent.range.start),
+            next_start_pos: Some(std_range.start),
         }
     }
 }
@@ -291,19 +295,19 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
         let start_pos = self.next_start_pos?;
         let end_pos = match self.matches_iter.next() {
             Some(grp) => {
-                self.next_start_pos = Some(self.parent.range.start + grp.end());
-                self.parent.range.start + grp.start()
+                self.next_start_pos = Some(self.range.start + grp.end());
+                self.range.start + grp.start()
             }
             None => {
                 self.next_start_pos = None;
-                if start_pos >= self.parent.range.end {
+                if start_pos >= self.range.end {
                     return None;
                 }
-                self.parent.range.end
+                self.range.end
             }
         };
         Some(Chunk {
-            full_text: self.parent.full_text,
+            full_text: self.full_text,
             range: RangeValue::new(start_pos, end_pos),
             kind: ChunkKind::RegexpSepChunk {
                 lang_config: self.lang_config,
@@ -553,7 +557,8 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
                             } else {
                                 iter_stack.push(ChunkIterator::Text(TextChunksIter::new(
                                     lang_config,
-                                    &current_chunk, // Pass reference to chunk
+                                    current_chunk.full_text,
+                                    current_chunk.range,
                                     next_regexp_sep_id,
                                 )));
                             }
