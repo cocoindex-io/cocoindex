@@ -106,6 +106,17 @@ impl<T> CombinedState<T> {
             .filter(|v| Some(*v) != desired_value)
             .collect()
     }
+
+    pub fn has_state_diff<S>(&self, state: Option<&S>, map_fn: impl Fn(&T) -> &S) -> bool
+    where
+        S: PartialEq,
+    {
+        if let Some(state) = state {
+            !self.always_exists_and(|s| map_fn(s) == state)
+        } else {
+            self.possible_versions().next().is_some()
+        }
+    }
 }
 
 impl<T: Debug + Clone> Default for CombinedState<T> {
@@ -320,6 +331,7 @@ impl ResourceSetupChange for std::convert::Infallible {
 pub struct ResourceSetupInfo<K, S, C: ResourceSetupChange> {
     pub key: K,
     pub state: Option<S>,
+    pub has_tracked_state_change: bool,
     pub description: String,
 
     /// If `None`, the resource is managed by users.
@@ -406,6 +418,7 @@ pub trait ObjectSetupChange {
 
 #[derive(Default)]
 pub struct AttachmentsSetupChange {
+    pub has_tracked_state_change: bool,
     pub deletes: Vec<Box<dyn AttachmentSetupChange + Send + Sync>>,
     pub upserts: Vec<Box<dyn AttachmentSetupChange + Send + Sync>>,
 }
@@ -472,7 +485,15 @@ impl ObjectSetupChange for FlowSetupChange {
     }
 
     fn has_internal_changes(&self) -> bool {
-        return self.metadata_change.is_some();
+        self.metadata_change.is_some()
+            || self
+                .tracking_table
+                .as_ref()
+                .map_or(false, |t| t.has_tracked_state_change)
+            || self
+                .target_resources
+                .iter()
+                .any(|target| target.has_tracked_state_change)
     }
 
     fn has_external_changes(&self) -> bool {

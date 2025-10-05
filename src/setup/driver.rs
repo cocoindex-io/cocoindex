@@ -309,6 +309,13 @@ async fn collect_attachments_setup_change(
 
     let mut attachments_change = AttachmentsSetupChange::default();
     for (AttachmentSetupKey(kind, key), setup_state) in grouped_attachment_states.into_iter() {
+        let has_diff = setup_state
+            .existing
+            .has_state_diff(setup_state.desired.as_ref(), |s| s);
+        if !has_diff {
+            continue;
+        }
+        attachments_change.has_tracked_state_change = true;
         let factory = get_attachment_factory(&kind)?;
         let is_upsertion = setup_state.desired.is_some();
         if let Some(action) = factory
@@ -428,9 +435,13 @@ pub async fn diff_flow_setup_states(
         .await?;
 
         let desired_state = target_states_group.desired.clone();
-        let target_state = target_states_group
+        let desired_target_state = target_states_group
             .desired
             .and_then(|state| (!state.common.setup_by_user).then_some(state.state));
+        let has_tracked_state_change = target_states_group
+            .existing
+            .has_state_diff(desired_target_state.as_ref(), |s| &s.state)
+            || attachments_change.has_tracked_state_change;
         let existing_without_setup_by_user = CombinedState {
             current: target_states_group
                 .existing
@@ -449,7 +460,7 @@ pub async fn diff_flow_setup_states(
                 .collect(),
             legacy_state_key: target_states_group.existing.legacy_state_key.clone(),
         };
-        let never_setup_by_sys = target_state.is_none()
+        let never_setup_by_sys = desired_target_state.is_none()
             && existing_without_setup_by_user.current.is_none()
             && existing_without_setup_by_user.staging.is_empty();
         let setup_change = if never_setup_by_sys {
@@ -459,7 +470,7 @@ pub async fn diff_flow_setup_states(
                 target_change: factory
                     .diff_setup_states(
                         &resource_id.key,
-                        target_state,
+                        desired_target_state,
                         existing_without_setup_by_user,
                         flow_instance_ctx.clone(),
                     )
@@ -471,6 +482,7 @@ pub async fn diff_flow_setup_states(
         target_resources.push(ResourceSetupInfo {
             key: resource_id.clone(),
             state: desired_state,
+            has_tracked_state_change,
             description: factory.describe_resource(&resource_id.key)?,
             setup_change,
             legacy_key: target_states_group
