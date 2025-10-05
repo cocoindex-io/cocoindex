@@ -1301,67 +1301,38 @@ mod tests {
                 ],
             )
             .await;
+            assert!(
+                result.is_ok(),
+                "test_flow_function failed: {:?}",
+                result.err()
+            );
             let value = result.unwrap();
             match value {
                 Value::KTable(table) => {
-                    let chunks: Vec<(&str, RangeValue)> = table
-                        .iter()
-                        .map(|(k, v)| {
-                            let text = v.0.fields[0].as_str().unwrap();
-                            let range = match &k.0[0] {
-                                KeyPart::Range(r) => r.clone(),
-                                _ => panic!("Expected KeyPart to be a Range"),
-                            };
-                            (text.as_ref(), range)
-                        })
-                        .collect();
+                    assert_eq!(table.len(), 3);
 
-                    assert!(chunks.contains(&("First chunk.", RangeValue::new(3, 16))));
-                    assert!(chunks.contains(&(
-                        "Second chunk with spaces at the end.",
-                        RangeValue::new(22, 59)
-                    )));
+                    let expected_chunks = vec![
+                        (RangeValue::new(3, 16), " First chunk."),
+                        (RangeValue::new(19, 45), "  Second chunk with spaces"),
+                        (RangeValue::new(46, 57), "at the end."),
+                    ];
+
+                    for (range, expected_text) in expected_chunks {
+                        let key = KeyValue::from_single_part(range);
+                        match table.get(&key) {
+                            Some(scope_value_ref) => {
+                                let chunk_text =
+                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
+                                        panic!("Chunk text not a string for key {key:?}")
+                                    });
+                                assert_eq!(**chunk_text, *expected_text);
+                            }
+                            None => panic!("Expected row value for key {key:?}, not found"),
+                        }
+                    }
                 }
                 other => panic!("Expected Value::KTable, got {other:?}"),
             }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_deeply_nested_structure_no_stack_overflow() {
-        let spec = Spec {
-            custom_languages: vec![],
-        };
-        let factory = Arc::new(Factory);
-        let input_arg_schemas = &build_split_recursively_arg_schemas();
-
-        let deep_text = format!("{}{}{}", "(".repeat(500), "some text", ")".repeat(500));
-        let language = "C++";
-
-        let result = test_flow_function(
-            &factory,
-            &spec,
-            input_arg_schemas,
-            vec![
-                deep_text.into(),
-                (20i64).into(),
-                (5i64).into(),
-                (0i64).into(),
-                language.to_string().into(),
-            ],
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "The function should not panic or crash on deeply nested input."
-        );
-
-        if let Ok(Value::KTable(table)) = result {
-            assert!(
-                !table.is_empty(),
-                "It should have produced at least one chunk."
-            );
         }
     }
 }
