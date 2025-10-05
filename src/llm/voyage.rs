@@ -33,19 +33,13 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(address: Option<String>, api_config: Option<super::LlmApiConfig>) -> Result<Self> {
+    pub fn new(address: Option<String>, api_key: Option<String>, _api_config: Option<super::LlmApiConfig>) -> Result<Self> {
         if address.is_some() {
             api_bail!("Voyage AI doesn't support custom API address");
         }
 
-        let api_key = if let Some(super::LlmApiConfig::Voyage(config)) = api_config {
-            if let Some(key) = config.api_key {
-                key
-            } else {
-                std::env::var("VOYAGE_API_KEY").map_err(|_| {
-                    anyhow::anyhow!("VOYAGE_API_KEY environment variable must be set")
-                })?
-            }
+        let api_key = if let Some(key) = api_key {
+            key
         } else {
             std::env::var("VOYAGE_API_KEY")
                 .map_err(|_| anyhow::anyhow!("VOYAGE_API_KEY environment variable must be set"))?

@@ -100,37 +100,24 @@ impl SimpleFunctionFactoryBase for Factory {
                     LlmApiConfig::OpenAi(super::super::super::llm::OpenAiConfig {
                         org_id: None,
                         project_id: None,
-                        api_key: Some(api_key.clone()),
                     })
                 }
                 LlmApiType::Anthropic => {
-                    LlmApiConfig::Anthropic(super::super::super::llm::AnthropicConfig {
-                        api_key: Some(api_key.clone()),
-                    })
+                    LlmApiConfig::Anthropic(super::super::super::llm::AnthropicConfig {})
                 }
                 LlmApiType::Gemini => {
-                    LlmApiConfig::Gemini(super::super::super::llm::GeminiConfig {
-                        api_key: Some(api_key.clone()),
-                    })
+                    LlmApiConfig::Gemini(super::super::super::llm::GeminiConfig {})
                 }
                 LlmApiType::Voyage => {
-                    LlmApiConfig::Voyage(super::super::super::llm::VoyageConfig {
-                        api_key: Some(api_key.clone()),
-                    })
+                    LlmApiConfig::Voyage(super::super::super::llm::VoyageConfig {})
                 }
                 LlmApiType::LiteLlm => {
-                    LlmApiConfig::LiteLlm(super::super::super::llm::LiteLlmConfig {
-                        api_key: Some(api_key.clone()),
-                    })
+                    LlmApiConfig::LiteLlm(super::super::super::llm::LiteLlmConfig {})
                 }
                 LlmApiType::OpenRouter => {
-                    LlmApiConfig::OpenRouter(super::super::super::llm::OpenRouterConfig {
-                        api_key: Some(api_key.clone()),
-                    })
+                    LlmApiConfig::OpenRouter(super::super::super::llm::OpenRouterConfig {})
                 }
-                LlmApiType::Vllm => LlmApiConfig::Vllm(super::super::super::llm::VllmConfig {
-                    api_key: Some(api_key.clone()),
-                }),
+                LlmApiType::Vllm => LlmApiConfig::Vllm(super::super::super::llm::VllmConfig {}),
                 _ => spec.api_config.clone().unwrap_or_else(|| {
                     api_bail!(
                         "API key parameter is not supported for API type {:?}",
@@ -143,7 +130,7 @@ impl SimpleFunctionFactoryBase for Factory {
         };
 
         let client =
-            new_llm_embedding_client(spec.api_type, spec.address.clone(), api_config).await?;
+            new_llm_embedding_client(spec.api_type, spec.address.clone(), spec.api_key.clone(), api_config).await?;
         let output_dimension = match spec.output_dimension {
             Some(output_dimension) => output_dimension,
             None => {

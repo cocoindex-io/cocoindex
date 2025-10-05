@@ -55,6 +55,7 @@ impl Executor {
         let client = new_llm_generation_client(
             spec.llm_spec.api_type,
             spec.llm_spec.address,
+            spec.llm_spec.api_key,
             spec.llm_spec.api_config,
         )
         .await?;
@@ -204,6 +205,7 @@ mod tests {
                 api_type: crate::llm::LlmApiType::OpenAi,
                 model: "gpt-4o".to_string(),
                 address: None,
+                api_key: None,
                 api_config: None,
             },
             output_type: output_type_spec,
@@ -274,6 +276,7 @@ mod tests {
                 api_type: crate::llm::LlmApiType::OpenAi,
                 model: "gpt-4o".to_string(),
                 address: None,
+                api_key: None,
                 api_config: None,
             },
             output_type: make_output_type(BasicValueType::Str),
