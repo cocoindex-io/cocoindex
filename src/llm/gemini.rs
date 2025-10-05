@@ -30,7 +30,11 @@ pub struct AiStudioClient {
 }
 
 impl AiStudioClient {
-    pub fn new(address: Option<String>, api_key: Option<String>, _api_config: Option<super::LlmApiConfig>) -> Result<Self> {
+    pub fn new(
+        address: Option<String>,
+        api_key: Option<String>,
+        _api_config: Option<super::LlmApiConfig>,
+    ) -> Result<Self> {
         if address.is_some() {
             api_bail!("Gemini doesn't support custom API address");
         }

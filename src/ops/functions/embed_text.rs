@@ -129,8 +129,13 @@ impl SimpleFunctionFactoryBase for Factory {
             spec.api_config.clone()
         };
 
-        let client =
-            new_llm_embedding_client(spec.api_type, spec.address.clone(), spec.api_key.clone(), api_config).await?;
+        let client = new_llm_embedding_client(
+            spec.api_type,
+            spec.address.clone(),
+            spec.api_key.clone(),
+            api_config,
+        )
+        .await?;
         let output_dimension = match spec.output_dimension {
             Some(output_dimension) => output_dimension,
             None => {

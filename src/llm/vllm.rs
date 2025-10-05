@@ -4,7 +4,11 @@ use async_openai::config::OpenAIConfig;
 pub use super::openai::Client;
 
 impl Client {
-    pub async fn new_vllm(address: Option<String>, api_key: Option<String>, _api_config: Option<super::LlmApiConfig>) -> anyhow::Result<Self> {
+    pub async fn new_vllm(
+        address: Option<String>,
+        api_key: Option<String>,
+        _api_config: Option<super::LlmApiConfig>,
+    ) -> anyhow::Result<Self> {
         let address = address.unwrap_or_else(|| "http://127.0.0.1:8000/v1".to_string());
         
         let api_key = api_key.or_else(|| std::env::var("VLLM_API_KEY").ok());

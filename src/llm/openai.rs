@@ -33,7 +33,11 @@ impl Client {
         Self { client }
     }
 
-    pub fn new(address: Option<String>, api_key: Option<String>, api_config: Option<super::LlmApiConfig>) -> Result<Self> {
+    pub fn new(
+        address: Option<String>,
+        api_key: Option<String>,
+        api_config: Option<super::LlmApiConfig>,
+    ) -> Result<Self> {
         let config = match api_config {
             Some(super::LlmApiConfig::OpenAi(config)) => config,
             Some(_) => api_bail!("unexpected config type, expected OpenAiConfig"),

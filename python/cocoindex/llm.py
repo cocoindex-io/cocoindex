@@ -86,4 +86,14 @@ class LlmSpec:
     model: str
     address: str | None = None
     api_key: str | None = None
-    api_config: VertexAiConfig | OpenAiConfig | AnthropicConfig | GeminiConfig | VoyageConfig | LiteLlmConfig | OpenRouterConfig | VllmConfig | None = None
+    api_config: (
+        VertexAiConfig
+        | OpenAiConfig
+        | AnthropicConfig
+        | GeminiConfig
+        | VoyageConfig
+        | LiteLlmConfig
+        | OpenRouterConfig
+        | VllmConfig
+        | None
+    ) = None
