@@ -790,10 +790,10 @@ impl AttachmentSetupChange for SqlStatementAttachmentSetupChange {
 
     async fn apply_change(&self) -> Result<()> {
         for teardown_sql in self.teardown_sql_to_run.iter() {
-            sqlx::query(teardown_sql).execute(&self.db_pool).await?;
+            sqlx::raw_sql(teardown_sql).execute(&self.db_pool).await?;
         }
         if let Some(setup_sql) = &self.setup_sql_to_run {
-            sqlx::query(setup_sql).execute(&self.db_pool).await?;
+            sqlx::raw_sql(setup_sql).execute(&self.db_pool).await?;
         }
         Ok(())
     }
