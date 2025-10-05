@@ -118,12 +118,16 @@ impl SimpleFunctionFactoryBase for Factory {
                     LlmApiConfig::OpenRouter(super::super::super::llm::OpenRouterConfig {})
                 }
                 LlmApiType::Vllm => LlmApiConfig::Vllm(super::super::super::llm::VllmConfig {}),
-                _ => spec.api_config.clone().unwrap_or_else(|| {
-                    api_bail!(
-                        "API key parameter is not supported for API type {:?}",
-                        spec.api_type
-                    )
-                }),
+                _ => {
+                    if let Some(config) = spec.api_config.clone() {
+                        config
+                    } else {
+                        api_bail!(
+                            "API key parameter is not supported for API type {:?}",
+                            spec.api_type
+                        )
+                    }
+                },
             })
         } else {
             spec.api_config.clone()
