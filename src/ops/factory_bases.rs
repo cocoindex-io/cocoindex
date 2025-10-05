@@ -642,12 +642,16 @@ pub struct TypedTargetAttachmentState<F: TargetSpecificAttachmentFactoryBase + ?
 }
 
 /// A factory for target-specific attachments.
+#[async_trait]
 pub trait TargetSpecificAttachmentFactoryBase: Send + Sync + 'static {
+    type TargetKey: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash + Send + Sync;
     type TargetSpec: DeserializeOwned + Send + Sync;
     type Spec: DeserializeOwned + Send + Sync;
     type SetupKey: Debug + Clone + Serialize + DeserializeOwned + Eq + Hash + Send + Sync;
     type SetupState: Debug + Clone + Serialize + DeserializeOwned + Send + Sync;
     type SetupChange: interface::AttachmentSetupChange + Send + Sync;
+
+    fn name(&self) -> &str;
 
     fn get_state(
         &self,
@@ -656,17 +660,29 @@ pub trait TargetSpecificAttachmentFactoryBase: Send + Sync + 'static {
         attachment_spec: Self::Spec,
     ) -> Result<TypedTargetAttachmentState<Self>>;
 
-    fn diff_setup_states(
+    async fn diff_setup_states(
         &self,
-        key: &serde_json::Value,
-        new_state: Option<serde_json::Value>,
-        existing_states: setup::CombinedState<serde_json::Value>,
+        target_key: &Self::TargetKey,
+        attachment_key: &Self::SetupKey,
+        new_state: Option<Self::SetupState>,
+        existing_states: setup::CombinedState<Self::SetupState>,
+        context: &interface::FlowInstanceContext,
     ) -> Result<Option<Self::SetupChange>>;
 
     /// Deserialize the setup key from a JSON value.
     /// You can override this method to provide a custom deserialization logic, e.g. to perform backward compatible deserialization.
     fn deserialize_setup_key(key: serde_json::Value) -> Result<Self::SetupKey> {
         Ok(utils::deser::from_json_value(key)?)
+    }
+
+    fn register(self, registry: &mut ExecutorFactoryRegistry) -> Result<()>
+    where
+        Self: Sized,
+    {
+        registry.register(
+            self.name().to_string(),
+            ExecutorFactory::TargetAttachment(Arc::new(self)),
+        )
     }
 }
 
@@ -695,19 +711,25 @@ impl<T: TargetSpecificAttachmentFactoryBase> TargetAttachmentFactory for T {
         })
     }
 
-    fn diff_setup_states(
+    async fn diff_setup_states(
         &self,
-        key: &serde_json::Value,
+        target_key: &serde_json::Value,
+        attachment_key: &serde_json::Value,
         new_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
+        context: &interface::FlowInstanceContext,
     ) -> Result<Option<Box<dyn AttachmentSetupChange + Send + Sync>>> {
-        let setup_change = self.diff_setup_states(
-            &utils::deser::from_json_value(key.clone())?,
-            new_state
-                .map(|v| utils::deser::from_json_value(v))
-                .transpose()?,
-            from_json_combined_state(existing_states)?,
-        )?;
+        let setup_change = self
+            .diff_setup_states(
+                &utils::deser::from_json_value(target_key.clone())?,
+                &utils::deser::from_json_value(attachment_key.clone())?,
+                new_state
+                    .map(|v| utils::deser::from_json_value(v))
+                    .transpose()?,
+                from_json_combined_state(existing_states)?,
+                context,
+            )
+            .await?;
         Ok(setup_change.map(|s| Box::new(s) as Box<dyn AttachmentSetupChange + Send + Sync>))
     }
 }

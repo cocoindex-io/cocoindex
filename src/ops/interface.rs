@@ -323,11 +323,12 @@ pub struct TargetAttachmentState {
 
 #[async_trait]
 pub trait AttachmentSetupChange {
-    fn describe_change(&self) -> String;
+    fn describe_changes(&self) -> Vec<String>;
 
     async fn apply_change(&self) -> Result<()>;
 }
 
+#[async_trait]
 pub trait TargetAttachmentFactory: Send + Sync {
     /// Normalize the key. e.g. the JSON format may change (after code change, e.g. new optional field or field ordering), even if the underlying value is not changed.
     /// This should always return the canonical serialized form.
@@ -341,11 +342,13 @@ pub trait TargetAttachmentFactory: Send + Sync {
     ) -> Result<TargetAttachmentState>;
 
     /// Should return Some if and only if any changes are needed.
-    fn diff_setup_states(
+    async fn diff_setup_states(
         &self,
-        key: &serde_json::Value,
+        target_key: &serde_json::Value,
+        attachment_key: &serde_json::Value,
         new_state: Option<serde_json::Value>,
         existing_states: setup::CombinedState<serde_json::Value>,
+        context: &interface::FlowInstanceContext,
     ) -> Result<Option<Box<dyn AttachmentSetupChange + Send + Sync>>>;
 }
 

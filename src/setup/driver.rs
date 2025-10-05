@@ -256,9 +256,11 @@ fn group_states<K: Hash + Eq + std::fmt::Display + std::fmt::Debug + Clone, S: D
     Ok(grouped)
 }
 
-fn collect_attachments_setup_change(
+async fn collect_attachments_setup_change(
+    target_key: &serde_json::Value,
     desired: Option<&TargetSetupState>,
     existing: &CombinedState<TargetSetupState>,
+    context: &interface::FlowInstanceContext,
 ) -> Result<AttachmentsSetupChange> {
     let existing_current_attachments = existing
         .current
@@ -309,8 +311,15 @@ fn collect_attachments_setup_change(
     for (AttachmentSetupKey(kind, key), setup_state) in grouped_attachment_states.into_iter() {
         let factory = get_attachment_factory(&kind)?;
         let is_upsertion = setup_state.desired.is_some();
-        if let Some(action) =
-            factory.diff_setup_states(&key, setup_state.desired, setup_state.existing)?
+        if let Some(action) = factory
+            .diff_setup_states(
+                &target_key,
+                &key,
+                setup_state.desired,
+                setup_state.existing,
+                context,
+            )
+            .await?
         {
             if is_upsertion {
                 attachments_change.upserts.push(action);
@@ -411,9 +420,12 @@ pub async fn diff_flow_setup_states(
         };
 
         let attachments_change = collect_attachments_setup_change(
+            &resource_id.key,
             target_states_group.desired.as_ref(),
             &target_states_group.existing,
-        )?;
+            &flow_instance_ctx,
+        )
+        .await?;
 
         let desired_state = target_states_group.desired.clone();
         let target_state = target_states_group

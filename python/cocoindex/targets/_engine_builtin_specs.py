@@ -16,6 +16,14 @@ class Postgres(op.TargetSpec):
     table_name: str | None = None
 
 
+class PostgresSqlAttachment(op.TargetAttachmentSpec):
+    """Attachment to execute specified SQL statements for Postgres targets."""
+
+    name: str
+    setup_sql: str
+    teardown_sql: str | None = None
+
+
 @dataclass
 class QdrantConnection:
     """Connection spec for Qdrant."""

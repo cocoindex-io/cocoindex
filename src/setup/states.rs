@@ -91,6 +91,10 @@ impl<T> CombinedState<T> {
         self.current.is_some() && self.staging.iter().all(|s| !s.is_delete())
     }
 
+    pub fn always_exists_and(&self, predicate: impl Fn(&T) -> bool) -> bool {
+        self.always_exists() && self.possible_versions().all(predicate)
+    }
+
     pub fn legacy_values<V: Ord + Eq, F: Fn(&T) -> &V>(
         &self,
         desired: Option<&T>,
@@ -420,19 +424,17 @@ pub struct TargetSetupChange {
 impl ResourceSetupChange for TargetSetupChange {
     fn describe_changes(&self) -> Vec<ChangeDescription> {
         let mut result = vec![];
-        result.extend(
-            self.attachments_change
-                .deletes
-                .iter()
-                .map(|a| ChangeDescription::Action(a.describe_change())),
-        );
+        self.attachments_change
+            .deletes
+            .iter()
+            .flat_map(|a| a.describe_changes().into_iter())
+            .for_each(|change| result.push(ChangeDescription::Action(change)));
         result.extend(self.target_change.describe_changes());
-        result.extend(
-            self.attachments_change
-                .upserts
-                .iter()
-                .map(|a| ChangeDescription::Action(a.describe_change())),
-        );
+        self.attachments_change
+            .upserts
+            .iter()
+            .flat_map(|a| a.describe_changes().into_iter())
+            .for_each(|change| result.push(ChangeDescription::Action(change)));
         result
     }
 

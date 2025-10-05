@@ -248,8 +248,7 @@ impl ExportContext {
     }
 }
 
-#[derive(Default)]
-pub struct Factory {}
+struct TargetFactory;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct TableId {
@@ -614,7 +613,7 @@ impl SetupChange {
 }
 
 #[async_trait]
-impl TargetFactoryBase for Factory {
+impl TargetFactoryBase for TargetFactory {
     type Spec = Spec;
     type DeclarationSpec = ();
     type SetupState = SetupState;
@@ -751,4 +750,124 @@ impl TargetFactoryBase for Factory {
         }
         Ok(())
     }
+}
+
+////////////////////////////////////////////////////////////
+// Attachment Factory
+////////////////////////////////////////////////////////////
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SqlStatementAttachmentSpec {
+    name: String,
+    setup_sql: String,
+    teardown_sql: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SqlStatementAttachmentState {
+    setup_sql: String,
+    teardown_sql: Option<String>,
+}
+
+pub struct SqlStatementAttachmentSetupChange {
+    db_pool: PgPool,
+    setup_sql_to_run: Option<String>,
+    teardown_sql_to_run: IndexSet<String>,
+}
+
+#[async_trait]
+impl AttachmentSetupChange for SqlStatementAttachmentSetupChange {
+    fn describe_changes(&self) -> Vec<String> {
+        let mut result = vec![];
+        for teardown_sql in self.teardown_sql_to_run.iter() {
+            result.push(format!("Run teardown SQL: {}", teardown_sql));
+        }
+        if let Some(setup_sql) = &self.setup_sql_to_run {
+            result.push(format!("Run setup SQL: {}", setup_sql));
+        }
+        result
+    }
+
+    async fn apply_change(&self) -> Result<()> {
+        for teardown_sql in self.teardown_sql_to_run.iter() {
+            sqlx::query(teardown_sql).execute(&self.db_pool).await?;
+        }
+        if let Some(setup_sql) = &self.setup_sql_to_run {
+            sqlx::query(setup_sql).execute(&self.db_pool).await?;
+        }
+        Ok(())
+    }
+}
+
+struct SqlAttachmentFactory;
+
+#[async_trait]
+impl TargetSpecificAttachmentFactoryBase for SqlAttachmentFactory {
+    type TargetKey = TableId;
+    type TargetSpec = Spec;
+    type Spec = SqlStatementAttachmentSpec;
+    type SetupKey = String;
+    type SetupState = SqlStatementAttachmentState;
+    type SetupChange = SqlStatementAttachmentSetupChange;
+
+    fn name(&self) -> &str {
+        "PostgresSqlAttachment"
+    }
+
+    fn get_state(
+        &self,
+        _target_name: &str,
+        _target_spec: &Spec,
+        attachment_spec: SqlStatementAttachmentSpec,
+    ) -> Result<TypedTargetAttachmentState<Self>> {
+        Ok(TypedTargetAttachmentState {
+            setup_key: attachment_spec.name,
+            setup_state: SqlStatementAttachmentState {
+                setup_sql: attachment_spec.setup_sql,
+                teardown_sql: attachment_spec.teardown_sql,
+            },
+        })
+    }
+
+    async fn diff_setup_states(
+        &self,
+        target_key: &TableId,
+        _attachment_key: &String,
+        new_state: Option<SqlStatementAttachmentState>,
+        existing_states: setup::CombinedState<SqlStatementAttachmentState>,
+        context: &interface::FlowInstanceContext,
+    ) -> Result<Option<SqlStatementAttachmentSetupChange>> {
+        let teardown_sql_to_run: IndexSet<String> = if new_state.is_none() {
+            existing_states
+                .possible_versions()
+                .filter_map(|s| s.teardown_sql.clone())
+                .collect()
+        } else {
+            IndexSet::new()
+        };
+        let setup_sql_to_run = if let Some(new_state) = new_state
+            && !existing_states.always_exists_and(|s| s.setup_sql == new_state.setup_sql)
+        {
+            Some(new_state.setup_sql)
+        } else {
+            None
+        };
+        let change = if setup_sql_to_run.is_some() || !teardown_sql_to_run.is_empty() {
+            let db_pool = get_db_pool(target_key.database.as_ref(), &context.auth_registry).await?;
+            Some(SqlStatementAttachmentSetupChange {
+                db_pool,
+                setup_sql_to_run,
+                teardown_sql_to_run,
+            })
+        } else {
+            None
+        };
+        Ok(change)
+    }
+}
+
+pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
+    TargetFactory.register(registry)?;
+    SqlAttachmentFactory.register(registry)?;
+    Ok(())
 }

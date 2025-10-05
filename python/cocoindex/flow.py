@@ -437,7 +437,10 @@ class DataCollector:
             target_name,
             _spec_kind(target_spec),
             dump_engine_object(target_spec),
-            dump_engine_object(attachments),
+            [
+                {"kind": _spec_kind(att), **dump_engine_object(att)}
+                for att in attachments
+            ],
             dump_engine_object(index_options),
             self._engine_data_collector,
             setup_by_user,
