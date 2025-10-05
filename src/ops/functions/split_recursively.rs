@@ -583,18 +583,15 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
 
     fn merge_atom_chunks(&self, atom_chunks: Vec<AtomChunk>) -> Vec<ChunkOutput<'s>> {
         struct AtomRoutingPlan {
-            start_idx: usize,
-            prev_plan_idx: usize,
+            start_idx: usize,     // index of `atom_chunks` for the start chunk
+            prev_plan_idx: usize, // index of `plans` for the previous plan
             cost: usize,
             overlap_cost_base: usize,
         }
         type PrevPlanCandidate = (std::cmp::Reverse<usize>, usize); // (cost, start_idx)
 
-        if atom_chunks.is_empty() || atom_chunks.len() == 1 {
-            return Vec::new();
-        }
-
         let mut plans = Vec::with_capacity(atom_chunks.len());
+        // Janitor
         plans.push(AtomRoutingPlan {
             start_idx: 0,
             prev_plan_idx: 0,
@@ -702,9 +699,8 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
 
                 start_idx -= 1;
                 internal_syntax_level =
-                    internal_syntax_level.min(atom_chunks[start_idx + 1].boundary_syntax_level);
-                internal_lb_level =
-                    internal_lb_level.max(atom_chunks[start_idx + 1].internal_lb_level);
+                    internal_syntax_level.min(start_chunk.boundary_syntax_level);
+                internal_lb_level = internal_lb_level.max(start_chunk.internal_lb_level);
             }
             plans.push(AtomRoutingPlan {
                 start_idx: arg_min_start_idx,
