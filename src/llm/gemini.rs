@@ -38,14 +38,14 @@ impl AiStudioClient {
         if address.is_some() {
             api_bail!("Gemini doesn't support custom API address");
         }
-        
+
         let api_key = if let Some(key) = api_key {
             key
         } else {
             std::env::var("GEMINI_API_KEY")
                 .map_err(|_| anyhow::anyhow!("GEMINI_API_KEY environment variable must be set"))?
         };
-        
+
         Ok(Self {
             api_key,
             client: reqwest::Client::new(),

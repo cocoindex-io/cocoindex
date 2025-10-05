@@ -10,9 +10,9 @@ impl Client {
         _api_config: Option<super::LlmApiConfig>,
     ) -> anyhow::Result<Self> {
         let address = address.unwrap_or_else(|| "http://127.0.0.1:8000/v1".to_string());
-        
+
         let api_key = api_key.or_else(|| std::env::var("VLLM_API_KEY").ok());
-        
+
         let mut config = OpenAIConfig::new().with_api_base(address);
         if let Some(api_key) = api_key {
             config = config.with_api_key(api_key);

@@ -127,7 +127,7 @@ impl SimpleFunctionFactoryBase for Factory {
                             spec.api_type
                         )
                     }
-                },
+                }
             })
         } else {
             spec.api_config.clone()

@@ -62,7 +62,7 @@ impl Client {
                 api_bail!("OPENAI_API_KEY environment variable must be set");
             }
         }
-        
+
         Ok(Self {
             client: OpenAIClient::with_config(openai_config),
         })
