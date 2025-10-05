@@ -1,3 +1,4 @@
+use crate::ops::interface::AttachmentSetupChange;
 /// Concepts:
 /// - Resource: some setup that needs to be tracked and maintained.
 /// - Setup State: current state of a resource.
@@ -49,10 +50,18 @@ pub struct CombinedState<T> {
 }
 
 impl<T> CombinedState<T> {
-    pub fn from_desired(desired: T) -> Self {
+    pub fn current(desired: T) -> Self {
         Self {
             current: Some(desired),
             staging: vec![],
+            legacy_state_key: None,
+        }
+    }
+
+    pub fn staging(change: StateChange<T>) -> Self {
+        Self {
+            current: None,
+            staging: vec![change],
             legacy_state_key: None,
         }
     }
@@ -82,6 +91,10 @@ impl<T> CombinedState<T> {
         self.current.is_some() && self.staging.iter().all(|s| !s.is_delete())
     }
 
+    pub fn always_exists_and(&self, predicate: impl Fn(&T) -> bool) -> bool {
+        self.always_exists() && self.possible_versions().all(predicate)
+    }
+
     pub fn legacy_values<V: Ord + Eq, F: Fn(&T) -> &V>(
         &self,
         desired: Option<&T>,
@@ -92,6 +105,17 @@ impl<T> CombinedState<T> {
             .map(f)
             .filter(|v| Some(*v) != desired_value)
             .collect()
+    }
+
+    pub fn has_state_diff<S>(&self, state: Option<&S>, map_fn: impl Fn(&T) -> &S) -> bool
+    where
+        S: PartialEq,
+    {
+        if let Some(state) = state {
+            !self.always_exists_and(|s| map_fn(s) == state)
+        } else {
+            self.possible_versions().next().is_some()
+        }
     }
 }
 
@@ -196,6 +220,13 @@ pub struct TargetSetupState {
     pub common: TargetSetupStateCommon,
 
     pub state: serde_json::Value,
+
+    #[serde(
+        default,
+        with = "indexmap::map::serde_seq",
+        skip_serializing_if = "IndexMap::is_empty"
+    )]
+    pub attachments: IndexMap<interface::AttachmentSetupKey, serde_json::Value>,
 }
 
 impl TargetSetupState {
@@ -270,7 +301,7 @@ pub enum ChangeDescription {
     Note(String),
 }
 
-pub trait ResourceSetupChange: Send + Sync + Debug + Any + 'static {
+pub trait ResourceSetupChange: Send + Sync + Any + 'static {
     fn describe_changes(&self) -> Vec<ChangeDescription>;
 
     fn change_type(&self) -> SetupChangeType;
@@ -300,6 +331,7 @@ impl ResourceSetupChange for std::convert::Infallible {
 pub struct ResourceSetupInfo<K, S, C: ResourceSetupChange> {
     pub key: K,
     pub state: Option<S>,
+    pub has_tracked_state_change: bool,
     pub description: String,
 
     /// If `None`, the resource is managed by users.
@@ -384,7 +416,55 @@ pub trait ObjectSetupChange {
     }
 }
 
-#[derive(Debug)]
+#[derive(Default)]
+pub struct AttachmentsSetupChange {
+    pub has_tracked_state_change: bool,
+    pub deletes: Vec<Box<dyn AttachmentSetupChange + Send + Sync>>,
+    pub upserts: Vec<Box<dyn AttachmentSetupChange + Send + Sync>>,
+}
+
+impl AttachmentsSetupChange {
+    pub fn is_empty(&self) -> bool {
+        self.deletes.is_empty() && self.upserts.is_empty()
+    }
+}
+
+pub struct TargetSetupChange {
+    pub target_change: Box<dyn ResourceSetupChange>,
+    pub attachments_change: AttachmentsSetupChange,
+}
+
+impl ResourceSetupChange for TargetSetupChange {
+    fn describe_changes(&self) -> Vec<ChangeDescription> {
+        let mut result = vec![];
+        self.attachments_change
+            .deletes
+            .iter()
+            .flat_map(|a| a.describe_changes().into_iter())
+            .for_each(|change| result.push(ChangeDescription::Action(change)));
+        result.extend(self.target_change.describe_changes());
+        self.attachments_change
+            .upserts
+            .iter()
+            .flat_map(|a| a.describe_changes().into_iter())
+            .for_each(|change| result.push(ChangeDescription::Action(change)));
+        result
+    }
+
+    fn change_type(&self) -> SetupChangeType {
+        match self.target_change.change_type() {
+            SetupChangeType::NoChange => {
+                if self.attachments_change.is_empty() {
+                    SetupChangeType::NoChange
+                } else {
+                    SetupChangeType::Update
+                }
+            }
+            t => t,
+        }
+    }
+}
+
 pub struct FlowSetupChange {
     pub status: Option<ObjectStatus>,
     pub seen_flow_metadata_version: Option<u64>,
@@ -394,7 +474,7 @@ pub struct FlowSetupChange {
     pub tracking_table:
         Option<ResourceSetupInfo<(), TrackingTableSetupState, TrackingTableSetupChange>>,
     pub target_resources:
-        Vec<ResourceSetupInfo<ResourceIdentifier, TargetSetupState, Box<dyn ResourceSetupChange>>>,
+        Vec<ResourceSetupInfo<ResourceIdentifier, TargetSetupState, TargetSetupChange>>,
 
     pub unknown_resources: Vec<ResourceIdentifier>,
 }
@@ -405,7 +485,15 @@ impl ObjectSetupChange for FlowSetupChange {
     }
 
     fn has_internal_changes(&self) -> bool {
-        return self.metadata_change.is_some();
+        self.metadata_change.is_some()
+            || self
+                .tracking_table
+                .as_ref()
+                .map_or(false, |t| t.has_tracked_state_change)
+            || self
+                .target_resources
+                .iter()
+                .any(|target| target.has_tracked_state_change)
     }
 
     fn has_external_changes(&self) -> bool {

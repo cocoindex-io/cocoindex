@@ -323,6 +323,7 @@ impl MetadataTableSetup {
         ResourceSetupInfo {
             key: (),
             state: None,
+            has_tracked_state_change: self.metadata_table_missing,
             description: "CocoIndex Metadata Table".to_string(),
             setup_change: Some(self),
             legacy_key: None,

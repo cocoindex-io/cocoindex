@@ -395,7 +395,6 @@ pub fn build_json_schema(
 #[cfg(test)]
 mod tests {
     use super::*;
-<<<<<<< HEAD
     use crate::base::schema::*;
     use expect_test::expect;
     use serde_json::json;
@@ -1368,11 +1367,7 @@ mod tests {
               "type": "string"
             }"#]]
         .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
-=======
-    use crate::base::schema::{
-        BasicValueType, EnrichedValueType, FieldSchema, StructSchema, ValueType,
-    };
-    use std::sync::Arc;
+    }
 
     #[test]
     fn test_description_concatenation() {
@@ -1421,6 +1416,5 @@ mod tests {
         } else {
             panic!("No description found in the schema");
         }
->>>>>>> ef87b68dac10345e67361c4d5d6a3edf44a4af0f
     }
 }

@@ -549,12 +549,13 @@ impl FlowBuilder {
         Ok(())
     }
 
-    #[pyo3(signature = (name, kind, op_spec, index_options, input, setup_by_user=false))]
+    #[pyo3(signature = (name, kind, op_spec, attachments, index_options, input, setup_by_user=false))]
     pub fn export(
         &mut self,
         name: String,
         kind: String,
         op_spec: py::Pythonized<serde_json::Map<String, serde_json::Value>>,
+        attachments: py::Pythonized<Vec<spec::OpSpec>>,
         index_options: py::Pythonized<spec::IndexOptions>,
         input: &DataCollector,
         setup_by_user: bool,
@@ -574,6 +575,7 @@ impl FlowBuilder {
             spec: spec::ExportOpSpec {
                 collector_name: input.name.clone(),
                 target: spec,
+                attachments: attachments.into_inner(),
                 index_options: index_options.into_inner(),
                 setup_by_user,
             },
