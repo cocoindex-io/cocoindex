@@ -356,8 +356,8 @@ fn to_column_type_sql(column_type: &ValueType) -> String {
 
 fn qualified_table_name(table_id: &TableId) -> String {
     match &table_id.schema {
-        Some(schema) => format!("\"{}\".\"{}\"", schema, table_id.table_name),
-        None => format!("\"{}\"", table_id.table_name),
+        Some(schema) => format!("\"{}\".{}", schema, table_id.table_name),
+        None => table_id.table_name.clone(),
     }
 }
 
@@ -571,12 +571,6 @@ impl setup::ResourceSetupChange for SetupChange {
 
 impl SetupChange {
     async fn apply_change(&self, db_pool: &PgPool, table_id: &TableId) -> Result<()> {
-        // Create schema if specified
-        if let Some(schema) = &table_id.schema {
-            let sql = format!("CREATE SCHEMA IF NOT EXISTS \"{}\"", schema);
-            sqlx::query(&sql).execute(db_pool).await?;
-        }
-
         let table_name = qualified_table_name(table_id);
 
         if self.actions.table_action.drop_existing {
@@ -596,6 +590,12 @@ impl SetupChange {
         if let Some(table_upsertion) = &self.actions.table_action.table_upsertion {
             match table_upsertion {
                 TableUpsertionAction::Create { keys, values } => {
+                    // Create schema if specified
+                    if let Some(schema) = &table_id.schema {
+                        let sql = format!("CREATE SCHEMA IF NOT EXISTS \"{}\"", schema);
+                        sqlx::query(&sql).execute(db_pool).await?;
+                    }
+
                     let mut fields = (keys
                         .iter()
                         .map(|(name, typ)| format!("\"{name}\" {typ} NOT NULL")))
