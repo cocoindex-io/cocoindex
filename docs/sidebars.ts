@@ -36,14 +36,6 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Built-in Operations',
-      collapsed: false,
-      items: [
-        'ops/functions',
-      ],
-    },
-    {
-      type: 'category',
       label: 'Built-in Sources',
       link: { type: 'doc', id: 'sources/index' },
       collapsed: true,
@@ -51,17 +43,21 @@ const sidebars: SidebarsConfig = {
       ],
     },
     {
+      type: 'doc',
+      id: 'ops/functions',
+      label: 'Built-in Functions',
+    },
+    {
       type: 'category',
       label: 'Built-in Targets',
       link: { type: 'doc', id: 'targets/index' },
       collapsed: true,
       items: [
-      
-            'targets/postgres',
-            'targets/qdrant',
-            'targets/lancedb',
-            'targets/neo4j',
-            'targets/kuzu',
+        'targets/postgres',
+        'targets/qdrant',
+        'targets/lancedb',
+        'targets/neo4j',
+        'targets/kuzu',
       ],
     },
     {
