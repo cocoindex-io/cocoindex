@@ -1,5 +1,8 @@
 use crate::base::schema::FieldSchema;
+use crate::base::spec::FieldName;
 use crate::prelude::*;
+
+use std::collections::HashMap;
 
 use crate::ops::interface::*;
 use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
@@ -90,7 +93,11 @@ pub struct AnalyzedCollectOp {
     pub name: String,
     pub has_auto_uuid_field: bool,
     pub input: AnalyzedStructMapping,
+    pub input_field_names: Vec<FieldName>,
+    pub collector_schema: Arc<schema::CollectorSchema>,
     pub collector_ref: AnalyzedCollectorReference,
+    /// Pre-computed mapping from collector field index to input field index.
+    pub field_index_mapping: HashMap<usize, usize>,
     /// Fingerprinter of the collector's schema. Used to decide when to reuse auto-generated UUIDs.
     pub fingerprinter: Fingerprinter,
 }
