@@ -41,15 +41,57 @@ CocoIndex automatically strips U+0000 (NUL) characters from strings before expor
 
 The spec takes the following fields:
 
-*   `database` ([auth reference](/docs/core/flow_def#auth-registry) to `DatabaseConnectionSpec`, optional): The connection to the Postgres database.
+* `database` ([auth reference](/docs/core/flow_def#auth-registry) to `DatabaseConnectionSpec`, optional): The connection to the Postgres database.
     See [DatabaseConnectionSpec](/docs/core/settings#databaseconnectionspec) for its specific fields.
     If not provided, will use the same database as the [internal storage](/docs/core/basics#internal-storage).
 
-*   `table_name` (`str`, optional): The name of the table to store to. If unspecified, will use the table name `[${AppNamespace}__]${FlowName}__${TargetName}`, e.g. `DemoFlow__doc_embeddings` or `Staging__DemoFlow__doc_embeddings`.
+* `table_name` (`str`, optional): The name of the table to store to. If unspecified, will use the table name `[${AppNamespace}__]${FlowName}__${TargetName}`, e.g. `DemoFlow__doc_embeddings` or `Staging__DemoFlow__doc_embeddings`.
 
-*   `schema` (`str`, optional): The PostgreSQL schema to create the table in. If unspecified, the table will be created in the default schema (usually `public`). When specified, `table_name` must also be explicitly specified. CocoIndex will automatically create the schema if it doesn't exist.
+* `schema` (`str`, optional): The PostgreSQL schema to create the table in. If unspecified, the table will be created in the default schema (usually `public`). When specified, `table_name` must also be explicitly specified. CocoIndex will automatically create the schema if it doesn't exist.
+
+## Attachments
+
+### PostgresSqlCommand
+
+Execute arbitrary Postgres SQL during flow setup, with an optional SQL to undo it when the attachment or target is removed.
+
+This attachment is useful for capabilities not natively modeled by the target spec, such as creating specialized indexes, triggers, or grants.
+
+Fields:
+
+* `name` (`str`, required): A identifier for this attachment on the target. Unique within the target.
+* `setup_sql` (`str`, required): SQL to execute during setup.
+* `teardown_sql` (`str`, optional): SQL to execute on removal/drop.
+
+Notes about `setup_sql` and `teardown_sql`:
+
+* Multiple statements are allowed in both `setup_sql` and `teardown_sql`. Use `;` to separate them.
+* Both `setup_sql` and `teardown_sql` are expected to be idempotent, e.g. use statements like `CREATE ... IF NOT EXISTS` and `DROP ... IF EXISTS`.
+* The `setup_sql` is expected to have an "upsert" behavior. If you update `setup_sql`, the updated `setup_sql` will be executed during setup.
+* The `teardown_sql` is saved by CocoIndex, so it'll be executed when the attachment no longer exists. If you update `teardown_sql`, the updated `teardown_sql` will be saved and executed (instead of the previous one) during teardown.
+
+Example (create a custom index):
+
+```py
+collector.export(
+    "doc_embeddings",
+    cocoindex.targets.Postgres(table_name="doc_embeddings"),
+    primary_key_fields=["id"],
+    attachments=[
+        cocoindex.targets.PostgresSqlCommand(
+            name="fts",
+            setup_sql=(
+                "CREATE INDEX IF NOT EXISTS doc_embeddings_text_fts "
+                "ON doc_embeddings USING GIN (to_tsvector('english', text));"
+            ),
+            teardown_sql= "DROP INDEX IF EXISTS doc_embeddings_text_fts;",
+        )
+    ],
+)
+```
 
 ## Example
+
 <ExampleButton
   href="https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding"
   text="Text Embedding Example with Postgres"
