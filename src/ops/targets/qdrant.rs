@@ -233,11 +233,10 @@ impl SetupChange {
                                     params = params.hnsw_ef_construct(*ef_val as u64);
                                 }
                             }
-                            spec::VectorIndexMethod::IvfFlat { nlist } => {
-                                if let Some(nlist_val) = nlist {
-                                    params = params.ivf_flat_nlist(*nlist_val as u64);
-                                }
+                            spec::VectorIndexMethod::IvfFlat => {
+                                api_bail!("IvfFlat vector index method is not supported for Qdrant yet");
                             }
+
                             _ => {
                                 api_bail!("Unsupported vector index method for Qdrant");
                             }
