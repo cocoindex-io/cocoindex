@@ -1,5 +1,8 @@
 use crate::{
-    execution::{source_indexer::ProcessSourceRowInput, stats::UpdateStats},
+    execution::{
+        source_indexer::{ProcessSourceRowInput, SourceIndexingContext},
+        stats::UpdateStats,
+    },
     prelude::*,
 };
 
@@ -106,100 +109,113 @@ impl Drop for SourceUpdateTask {
 
 impl SourceUpdateTask {
     async fn run(self) -> Result<()> {
-        let source_idx = self.source_idx;
-        let source_context = self
+        let source_indexing_context = self
             .execution_ctx
-            .get_source_indexing_context(&self.flow, source_idx, &self.pool)
+            .get_source_indexing_context(&self.flow, self.source_idx, &self.pool)
             .await?;
-
-        let import_op = &self.plan.import_ops[source_idx];
-
-        let report_stats = |stats: &stats::UpdateStats, kind: &str| {
-            self.source_update_stats.merge(stats);
-            if self.options.print_stats {
-                println!(
-                    "{}.{} ({kind}): {}",
-                    self.flow.flow_instance.name, import_op.name, stats
-                );
+        let initial_update_options = super::source_indexer::UpdateOptions {
+            expect_little_diff: false,
+            mode: if self.options.reexport_targets {
+                super::source_indexer::UpdateMode::ReexportTargets
             } else {
-                trace!(
-                    "{}.{} ({kind}): {}",
-                    self.flow.flow_instance.name, import_op.name, stats
-                );
-            }
+                super::source_indexer::UpdateMode::Normal
+            },
         };
 
+        if !self.options.live_mode {
+            return self
+                .update_one_pass(
+                    source_indexing_context,
+                    "batch update",
+                    initial_update_options,
+                )
+                .await;
+        }
+
         let mut futs: Vec<BoxFuture<'_, Result<()>>> = Vec::new();
+        let source_idx = self.source_idx;
+        let import_op = self.import_op();
+        let task = &self;
 
         // Deal with change streams.
-        if self.options.live_mode {
-            if let Some(change_stream) = import_op.executor.change_stream().await? {
-                let change_stream_stats = Arc::new(stats::UpdateStats::default());
-                futs.push(
-                    {
-                        let change_stream_stats = change_stream_stats.clone();
-                        let pool = self.pool.clone();
-                        let status_tx = self.status_tx.clone();
-                        let operation_in_process_stats = self.operation_in_process_stats.clone();
-                        async move {
-                            let mut change_stream = change_stream;
-                            let retry_options = retryable::RetryOptions {
-                                retry_timeout: None,
-                                initial_backoff: std::time::Duration::from_secs(5),
-                                max_backoff: std::time::Duration::from_secs(60),
-                            };
-                            loop {
-                                // Workaround as AsyncFnMut isn't mature yet.
-                                // Should be changed to use AsyncFnMut once it is.
-                                let change_stream = tokio::sync::Mutex::new(&mut change_stream);
-                                let change_msg = retryable::run(
-                                    || async {
-                                        let mut change_stream = change_stream.lock().await;
-                                        change_stream
-                                            .next()
-                                            .await
-                                            .transpose()
-                                            .map_err(retryable::Error::always_retryable)
-                                    },
-                                    &retry_options,
+        if let Some(change_stream) = import_op.executor.change_stream().await? {
+            let change_stream_stats = Arc::new(stats::UpdateStats::default());
+            futs.push(
+                {
+                    let change_stream_stats = change_stream_stats.clone();
+                    let pool = self.pool.clone();
+                    let status_tx = self.status_tx.clone();
+                    let operation_in_process_stats = self.operation_in_process_stats.clone();
+                    async move {
+                        let mut change_stream = change_stream;
+                        let retry_options = retryable::RetryOptions {
+                            retry_timeout: None,
+                            initial_backoff: std::time::Duration::from_secs(5),
+                            max_backoff: std::time::Duration::from_secs(60),
+                        };
+                        loop {
+                            // Workaround as AsyncFnMut isn't mature yet.
+                            // Should be changed to use AsyncFnMut once it is.
+                            let change_stream = tokio::sync::Mutex::new(&mut change_stream);
+                            let change_msg = retryable::run(
+                                || async {
+                                    let mut change_stream = change_stream.lock().await;
+                                    change_stream
+                                        .next()
+                                        .await
+                                        .transpose()
+                                        .map_err(retryable::Error::always_retryable)
+                                },
+                                &retry_options,
+                            )
+                            .await
+                            .map_err(Into::<anyhow::Error>::into)
+                            .with_context(|| {
+                                format!(
+                                    "Error in getting change message for flow `{}` source `{}`",
+                                    task.flow.flow_instance.name, import_op.name
                                 )
-                                .await?;
-                                let change_msg = if let Some(change_msg) = change_msg {
-                                    change_msg
-                                } else {
-                                    break;
-                                };
+                            });
+                            let change_msg = match change_msg {
+                                Ok(Some(change_msg)) => change_msg,
+                                Ok(None) => break,
+                                Err(err) => {
+                                    error!("{:?}", err);
+                                    continue;
+                                }
+                            };
 
-                                let update_stats = Arc::new(stats::UpdateStats::default());
-                                let ack_fn = {
-                                    let status_tx = status_tx.clone();
-                                    let update_stats = update_stats.clone();
-                                    let change_stream_stats = change_stream_stats.clone();
-                                    async move || {
-                                        if update_stats.has_any_change() {
-                                            status_tx.send_modify(|update| {
-                                                update.source_updates_num[source_idx] += 1;
-                                            });
-                                            change_stream_stats.merge(&update_stats);
-                                        }
-                                        if let Some(ack_fn) = change_msg.ack_fn {
-                                            ack_fn().await
-                                        } else {
-                                            Ok(())
-                                        }
+                            let update_stats = Arc::new(stats::UpdateStats::default());
+                            let ack_fn = {
+                                let status_tx = status_tx.clone();
+                                let update_stats = update_stats.clone();
+                                let change_stream_stats = change_stream_stats.clone();
+                                async move || {
+                                    if update_stats.has_any_change() {
+                                        status_tx.send_modify(|update| {
+                                            update.source_updates_num[source_idx] += 1;
+                                        });
+                                        change_stream_stats.merge(&update_stats);
                                     }
-                                };
-                                let shared_ack_fn = Arc::new(Mutex::new(SharedAckFn::new(
-                                    change_msg.changes.iter().len(),
-                                    ack_fn,
-                                )));
-                                for change in change_msg.changes {
-                                    let shared_ack_fn = shared_ack_fn.clone();
-                                    let concur_permit = import_op
-                                        .concurrency_controller
-                                        .acquire(concur_control::BYTES_UNKNOWN_YET)
-                                        .await?;
-                                    tokio::spawn(source_context.clone().process_source_row(
+                                    if let Some(ack_fn) = change_msg.ack_fn {
+                                        ack_fn().await
+                                    } else {
+                                        Ok(())
+                                    }
+                                }
+                            };
+                            let shared_ack_fn = Arc::new(Mutex::new(SharedAckFn::new(
+                                change_msg.changes.iter().len(),
+                                ack_fn,
+                            )));
+                            for change in change_msg.changes {
+                                let shared_ack_fn = shared_ack_fn.clone();
+                                let concur_permit = import_op
+                                    .concurrency_controller
+                                    .acquire(concur_control::BYTES_UNKNOWN_YET)
+                                    .await?;
+                                tokio::spawn(
+                                    source_indexing_context.clone().process_source_row(
                                         ProcessSourceRowInput {
                                             key: change.key,
                                             key_aux_info: Some(change.key_aux_info),
@@ -213,91 +229,69 @@ impl SourceUpdateTask {
                                             SharedAckFn::ack(&shared_ack_fn).await
                                         }),
                                         pool.clone(),
-                                    ));
-                                }
+                                    ),
+                                );
                             }
-                            Ok(())
                         }
+                        Ok(())
                     }
-                    .boxed(),
-                );
+                }
+                .boxed(),
+            );
 
-                futs.push(
-                    async move {
-                        let mut interval = tokio::time::interval(REPORT_INTERVAL);
-                        let mut last_change_stream_stats: UpdateStats =
-                            change_stream_stats.as_ref().clone();
-                        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            futs.push(
+                async move {
+                    let mut interval = tokio::time::interval(REPORT_INTERVAL);
+                    let mut last_change_stream_stats: UpdateStats =
+                        change_stream_stats.as_ref().clone();
+                    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                    interval.tick().await;
+                    loop {
                         interval.tick().await;
-                        loop {
-                            interval.tick().await;
-                            let curr_change_stream_stats = change_stream_stats.as_ref().clone();
-                            let delta = curr_change_stream_stats.delta(&last_change_stream_stats);
-                            if delta.has_any_change() {
-                                report_stats(&delta, "change stream");
-                                last_change_stream_stats = curr_change_stream_stats;
-                            }
+                        let curr_change_stream_stats = change_stream_stats.as_ref().clone();
+                        let delta = curr_change_stream_stats.delta(&last_change_stream_stats);
+                        if delta.has_any_change() {
+                            task.report_stats(&delta, "change stream");
+                            last_change_stream_stats = curr_change_stream_stats;
                         }
                     }
-                    .boxed(),
-                );
-            }
+                }
+                .boxed(),
+            );
         }
 
         // The main update loop.
         futs.push({
-            let status_tx = self.status_tx.clone();
-            let pool = self.pool.clone();
-            let live_mode = self.options.live_mode;
             async move {
-                let update_stats = Arc::new(stats::UpdateStats::default());
-                source_context
-                    .update(
-                        &pool,
-                        &update_stats,
-                        super::source_indexer::UpdateOptions {
-                            expect_little_diff: false,
-                            mode: if self.options.reexport_targets {
-                                super::source_indexer::UpdateMode::ReexportTargets
-                            } else {
-                                super::source_indexer::UpdateMode::Normal
-                            },
-                        },
-                    )
-                    .await?;
-                if update_stats.has_any_change() {
-                    status_tx.send_modify(|update| {
-                        update.source_updates_num[source_idx] += 1;
-                    });
-                }
-                report_stats(&update_stats, "batch update");
+                let refresh_interval = import_op.refresh_options.refresh_interval;
 
-                if let (true, Some(refresh_interval)) =
-                    (live_mode, import_op.refresh_options.refresh_interval)
-                {
+                task.update_with_pass_with_error_logging(
+                    source_indexing_context,
+                    if refresh_interval.is_some() {
+                        "initial interval update"
+                    } else {
+                        "batch update"
+                    },
+                    initial_update_options,
+                )
+                .await;
+
+                if let Some(refresh_interval) = refresh_interval {
                     let mut interval = tokio::time::interval(refresh_interval);
                     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                     interval.tick().await;
                     loop {
                         interval.tick().await;
 
-                        let update_stats = Arc::new(stats::UpdateStats::default());
-                        source_context
-                            .update(
-                                &pool,
-                                &update_stats,
-                                super::source_indexer::UpdateOptions {
-                                    expect_little_diff: true,
-                                    mode: super::source_indexer::UpdateMode::Normal,
-                                },
-                            )
-                            .await?;
-                        if update_stats.has_any_change() {
-                            status_tx.send_modify(|update| {
-                                update.source_updates_num[source_idx] += 1;
-                            });
-                        }
-                        report_stats(&update_stats, "interval refresh");
+                        task.update_with_pass_with_error_logging(
+                            source_indexing_context,
+                            "interval update",
+                            super::source_indexer::UpdateOptions {
+                                expect_little_diff: true,
+                                mode: super::source_indexer::UpdateMode::Normal,
+                            },
+                        )
+                        .await;
                     }
                 }
                 Ok(())
@@ -305,12 +299,71 @@ impl SourceUpdateTask {
             .boxed()
         });
 
-        let join_result = try_join_all(futs).await;
-        if let Err(err) = join_result {
-            error!("Error in source `{}`: {:?}", import_op.name, err);
-            return Err(err);
-        }
+        try_join_all(futs).await?;
         Ok(())
+    }
+
+    fn report_stats(&self, stats: &stats::UpdateStats, update_title: &str) {
+        self.source_update_stats.merge(stats);
+        if self.options.print_stats {
+            println!(
+                "{}.{} ({update_title}): {}",
+                self.flow.flow_instance.name,
+                self.import_op().name,
+                stats
+            );
+        } else {
+            trace!(
+                "{}.{} ({update_title}): {}",
+                self.flow.flow_instance.name,
+                self.import_op().name,
+                stats
+            );
+        }
+    }
+
+    async fn update_one_pass(
+        &self,
+        source_indexing_context: &Arc<SourceIndexingContext>,
+        update_title: &str,
+        update_options: super::source_indexer::UpdateOptions,
+    ) -> Result<()> {
+        let update_stats = Arc::new(stats::UpdateStats::default());
+        source_indexing_context
+            .update(&self.pool, &update_stats, update_options)
+            .await
+            .with_context(|| {
+                format!(
+                    "Error in processing flow `{}` source `{}` ({update_title})",
+                    self.flow.flow_instance.name,
+                    self.import_op().name
+                )
+            })?;
+        if update_stats.has_any_change() {
+            self.status_tx.send_modify(|update| {
+                update.source_updates_num[self.source_idx] += 1;
+            });
+        }
+        self.report_stats(&update_stats, update_title);
+        Ok(())
+    }
+
+    async fn update_with_pass_with_error_logging(
+        &self,
+        source_indexing_context: &Arc<SourceIndexingContext>,
+        update_title: &str,
+        update_options: super::source_indexer::UpdateOptions,
+    ) {
+        let result = self
+            .update_one_pass(source_indexing_context, update_title, update_options)
+            .await;
+        if let Err(err) = result {
+            error!("{:?}", err);
+        }
+    }
+
+    fn import_op(&self) -> &plan::AnalyzedImportOp {
+        &self.plan.import_ops[self.source_idx]
     }
 }
 
