@@ -129,9 +129,7 @@ pub async fn run<
                         return Result::Err(err);
                     }
                     let remaining_time = deadline.saturating_duration_since(now);
-                    if remaining_time < sleep_duration {
-                        sleep_duration = remaining_time;
-                    }
+                    sleep_duration = std::cmp::min(sleep_duration, remaining_time);
                 }
                 trace!(
                     "Will retry in {}ms for error: {}",
