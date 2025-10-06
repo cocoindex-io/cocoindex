@@ -7,6 +7,7 @@ use crate::llm::{
 use base64::prelude::*;
 use google_cloud_aiplatform_v1 as vertexai;
 use google_cloud_gax::exponential_backoff::ExponentialBackoff;
+use google_cloud_gax::options::RequestOptionsBuilder;
 use google_cloud_gax::retry_policy::{Aip194Strict, RetryPolicyExt};
 use google_cloud_gax::retry_throttler::{AdaptiveThrottler, SharedRetryThrottler};
 use serde_json::Value;
@@ -251,9 +252,6 @@ impl google_cloud_gax::retry_policy::RetryPolicy for CustomizedGoogleCloudRetryP
     ) -> google_cloud_gax::retry_result::RetryResult {
         use google_cloud_gax::retry_result::RetryResult;
 
-        if !state.idempotent {
-            return RetryResult::Permanent(error);
-        }
         if let Some(status) = error.status() {
             if status.code == google_cloud_gax::error::rpc::Code::ResourceExhausted {
                 return RetryResult::Continue(error);
@@ -350,7 +348,8 @@ impl LlmGenerationClient for VertexAiClient {
             .client
             .generate_content()
             .set_model(self.get_model_path(request.model))
-            .set_contents(contents);
+            .set_contents(contents)
+            .with_idempotency(true);
         if let Some(sys) = system_instruction {
             req = req.set_system_instruction(sys);
         }
@@ -414,6 +413,7 @@ impl LlmEmbeddingClient for VertexAiClient {
             .set_endpoint(self.get_model_path(request.model))
             .set_instances(instances)
             .set_parameters(parameters)
+            .with_idempotency(true)
             .send()
             .await?;
 
