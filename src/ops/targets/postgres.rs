@@ -791,26 +791,26 @@ impl TargetFactoryBase for TargetFactory {
 ////////////////////////////////////////////////////////////
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SqlStatementAttachmentSpec {
+pub struct SqlCommandSpec {
     name: String,
     setup_sql: String,
     teardown_sql: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SqlStatementAttachmentState {
+pub struct SqlCommandState {
     setup_sql: String,
     teardown_sql: Option<String>,
 }
 
-pub struct SqlStatementAttachmentSetupChange {
+pub struct SqlCommandSetupChange {
     db_pool: PgPool,
     setup_sql_to_run: Option<String>,
     teardown_sql_to_run: IndexSet<String>,
 }
 
 #[async_trait]
-impl AttachmentSetupChange for SqlStatementAttachmentSetupChange {
+impl AttachmentSetupChange for SqlCommandSetupChange {
     fn describe_changes(&self) -> Vec<String> {
         let mut result = vec![];
         for teardown_sql in self.teardown_sql_to_run.iter() {
@@ -833,30 +833,30 @@ impl AttachmentSetupChange for SqlStatementAttachmentSetupChange {
     }
 }
 
-struct SqlAttachmentFactory;
+struct SqlCommandFactory;
 
 #[async_trait]
-impl TargetSpecificAttachmentFactoryBase for SqlAttachmentFactory {
+impl TargetSpecificAttachmentFactoryBase for SqlCommandFactory {
     type TargetKey = TableId;
     type TargetSpec = Spec;
-    type Spec = SqlStatementAttachmentSpec;
+    type Spec = SqlCommandSpec;
     type SetupKey = String;
-    type SetupState = SqlStatementAttachmentState;
-    type SetupChange = SqlStatementAttachmentSetupChange;
+    type SetupState = SqlCommandState;
+    type SetupChange = SqlCommandSetupChange;
 
     fn name(&self) -> &str {
-        "PostgresSqlAttachment"
+        "PostgresSqlCommand"
     }
 
     fn get_state(
         &self,
         _target_name: &str,
         _target_spec: &Spec,
-        attachment_spec: SqlStatementAttachmentSpec,
+        attachment_spec: SqlCommandSpec,
     ) -> Result<TypedTargetAttachmentState<Self>> {
         Ok(TypedTargetAttachmentState {
             setup_key: attachment_spec.name,
-            setup_state: SqlStatementAttachmentState {
+            setup_state: SqlCommandState {
                 setup_sql: attachment_spec.setup_sql,
                 teardown_sql: attachment_spec.teardown_sql,
             },
@@ -867,10 +867,10 @@ impl TargetSpecificAttachmentFactoryBase for SqlAttachmentFactory {
         &self,
         target_key: &TableId,
         _attachment_key: &String,
-        new_state: Option<SqlStatementAttachmentState>,
-        existing_states: setup::CombinedState<SqlStatementAttachmentState>,
+        new_state: Option<SqlCommandState>,
+        existing_states: setup::CombinedState<SqlCommandState>,
         context: &interface::FlowInstanceContext,
-    ) -> Result<Option<SqlStatementAttachmentSetupChange>> {
+    ) -> Result<Option<SqlCommandSetupChange>> {
         let teardown_sql_to_run: IndexSet<String> = if new_state.is_none() {
             existing_states
                 .possible_versions()
@@ -888,7 +888,7 @@ impl TargetSpecificAttachmentFactoryBase for SqlAttachmentFactory {
         };
         let change = if setup_sql_to_run.is_some() || !teardown_sql_to_run.is_empty() {
             let db_pool = get_db_pool(target_key.database.as_ref(), &context.auth_registry).await?;
-            Some(SqlStatementAttachmentSetupChange {
+            Some(SqlCommandSetupChange {
                 db_pool,
                 setup_sql_to_run,
                 teardown_sql_to_run,
@@ -902,6 +902,6 @@ impl TargetSpecificAttachmentFactoryBase for SqlAttachmentFactory {
 
 pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
     TargetFactory.register(registry)?;
-    SqlAttachmentFactory.register(registry)?;
+    SqlCommandFactory.register(registry)?;
     Ok(())
 }

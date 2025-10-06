@@ -17,7 +17,7 @@ class Postgres(op.TargetSpec):
     schema: str | None = None
 
 
-class PostgresSqlAttachment(op.TargetAttachmentSpec):
+class PostgresSqlCommand(op.TargetAttachmentSpec):
     """Attachment to execute specified SQL statements for Postgres targets."""
 
     name: str
