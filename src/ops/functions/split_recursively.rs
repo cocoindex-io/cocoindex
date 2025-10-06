@@ -161,7 +161,7 @@ static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<
         "Markdown",
         [".md", ".mdx", "md"],
         tree_sitter_md::LANGUAGE,
-        ["inline"],
+        ["inline", "indented_code_block", "fenced_code_block"],
     );
     add_treesitter_language(
         &mut map,
