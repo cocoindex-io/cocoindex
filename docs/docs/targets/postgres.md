@@ -47,6 +47,8 @@ The spec takes the following fields:
 
 *   `table_name` (`str`, optional): The name of the table to store to. If unspecified, will use the table name `[${AppNamespace}__]${FlowName}__${TargetName}`, e.g. `DemoFlow__doc_embeddings` or `Staging__DemoFlow__doc_embeddings`.
 
+*   `schema` (`str`, optional): The PostgreSQL schema to create the table in. If unspecified, the table will be created in the default schema (usually `public`). When specified, `table_name` must also be explicitly specified. CocoIndex will automatically create the schema if it doesn't exist.
+
 ## Example
 <ExampleButton
   href="https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding"
