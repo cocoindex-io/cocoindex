@@ -3,7 +3,7 @@ use log::{error, trace};
 use regex::{Matches, Regex};
 use std::collections::HashSet;
 use std::sync::LazyLock;
-use std::{collections::HashMap, ops::Range, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use unicase::UniCase;
 
 use crate::ops::sdk::RangeValue;
