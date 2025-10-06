@@ -1,5 +1,7 @@
 use crate::builder::exec_ctx::AnalyzedSetupState;
-use crate::ops::{get_function_factory, get_source_factory, get_target_factory};
+use crate::ops::{
+    get_attachment_factory, get_function_factory, get_source_factory, get_target_factory,
+};
 use crate::prelude::*;
 
 use super::plan::*;
@@ -913,6 +915,27 @@ impl AnalyzerContext {
                 let op_name = export_op.name.clone();
                 let export_target_factory = export_op_group.target_factory.clone();
 
+                let attachments = export_op
+                    .spec
+                    .attachments
+                    .iter()
+                    .map(|attachment| {
+                        let attachment_factory = get_attachment_factory(&attachment.kind)?;
+                        let attachment_state = attachment_factory.get_state(
+                            &op_name,
+                            &export_op.spec.target.spec,
+                            serde_json::Value::Object(attachment.spec.clone()),
+                        )?;
+                        Ok((
+                            interface::AttachmentSetupKey(
+                                attachment.kind.clone(),
+                                attachment_state.setup_key,
+                            ),
+                            attachment_state.setup_state,
+                        ))
+                    })
+                    .collect::<Result<IndexMap<_, _>>>()?;
+
                 let export_op_ss = exec_ctx::AnalyzedTargetSetupState {
                     target_kind: target_kind.to_string(),
                     setup_key: data_coll_output.setup_key,
@@ -925,6 +948,7 @@ impl AnalyzerContext {
                             .map(|field| field.value_type.typ.clone())
                             .collect::<Box<[_]>>(),
                     ),
+                    attachments,
                 };
                 targets_analyzed_ss[*idx] = Some(export_op_ss);
 
@@ -956,6 +980,7 @@ impl AnalyzerContext {
                 desired_setup_state,
                 setup_by_user: false,
                 key_type: None,
+                attachments: IndexMap::new(),
             };
             declarations_analyzed_ss.push(decl_ss);
         }

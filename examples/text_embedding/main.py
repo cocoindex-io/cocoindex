@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 from pgvector.psycopg import register_vector
-from typing import Any
 import cocoindex
 import os
 import functools
@@ -71,6 +70,18 @@ def text_embedding_flow(
                 field_name="embedding",
                 metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
             )
+        ],
+        attachments=[
+            cocoindex.targets.PostgresSqlCommand(
+                name="new_column_foo",
+                setup_sql="ALTER TABLE TextEmbedding__doc_embeddings DROP COLUMN IF EXISTS foo; ALTER TABLE TextEmbedding__doc_embeddings ADD COLUMN foo TEXT",
+                teardown_sql="ALTER TABLE TextEmbedding__doc_embeddings DROP COLUMN IF EXISTS foo",
+            ),
+            cocoindex.targets.PostgresSqlCommand(
+                name="new_column_bar",
+                setup_sql="ALTER TABLE TextEmbedding__doc_embeddings ADD COLUMN bar TEXT",
+                teardown_sql="ALTER TABLE TextEmbedding__doc_embeddings DROP COLUMN IF EXISTS bar",
+            ),
         ],
     )
 

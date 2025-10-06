@@ -144,7 +144,7 @@ impl SourceUpdateTask {
                         async move {
                             let mut change_stream = change_stream;
                             let retry_options = retryable::RetryOptions {
-                                max_retries: None,
+                                retry_timeout: std::time::Duration::from_secs(365 * 24 * 60 * 60),
                                 initial_backoff: std::time::Duration::from_secs(5),
                                 max_backoff: std::time::Duration::from_secs(60),
                             };

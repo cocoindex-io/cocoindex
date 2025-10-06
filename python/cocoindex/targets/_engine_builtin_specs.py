@@ -14,6 +14,15 @@ class Postgres(op.TargetSpec):
 
     database: AuthEntryReference[DatabaseConnectionSpec] | None = None
     table_name: str | None = None
+    schema: str | None = None
+
+
+class PostgresSqlCommand(op.TargetAttachmentSpec):
+    """Attachment to execute specified SQL statements for Postgres targets."""
+
+    name: str
+    setup_sql: str
+    teardown_sql: str | None = None
 
 
 @dataclass
