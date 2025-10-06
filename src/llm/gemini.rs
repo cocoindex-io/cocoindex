@@ -6,6 +6,9 @@ use crate::llm::{
 };
 use base64::prelude::*;
 use google_cloud_aiplatform_v1 as vertexai;
+use google_cloud_gax::exponential_backoff::ExponentialBackoff;
+use google_cloud_gax::retry_policy::{Aip194Strict, RetryPolicyExt};
+use google_cloud_gax::retry_throttler::{AdaptiveThrottler, SharedRetryThrottler};
 use serde_json::Value;
 use urlencoding::encode;
 
@@ -237,6 +240,36 @@ pub struct VertexAiClient {
     config: super::VertexAiConfig,
 }
 
+#[derive(Debug)]
+struct CustomizedGoogleCloudRetryPolicy;
+
+impl google_cloud_gax::retry_policy::RetryPolicy for CustomizedGoogleCloudRetryPolicy {
+    fn on_error(
+        &self,
+        state: &google_cloud_gax::retry_state::RetryState,
+        error: google_cloud_gax::error::Error,
+    ) -> google_cloud_gax::retry_result::RetryResult {
+        use google_cloud_gax::retry_result::RetryResult;
+
+        if !state.idempotent {
+            return RetryResult::Permanent(error);
+        }
+        if let Some(status) = error.status() {
+            if status.code == google_cloud_gax::error::rpc::Code::ResourceExhausted {
+                return RetryResult::Continue(error);
+            }
+        } else if let Some(code) = error.http_status_code()
+            && code == reqwest::StatusCode::TOO_MANY_REQUESTS.as_u16()
+        {
+            return RetryResult::Continue(error);
+        }
+        Aip194Strict.on_error(state, error)
+    }
+}
+
+static SHARED_RETRY_THROTTLER: LazyLock<SharedRetryThrottler> =
+    LazyLock::new(|| Arc::new(Mutex::new(AdaptiveThrottler::new(2.0).unwrap())));
+
 impl VertexAiClient {
     pub async fn new(
         address: Option<String>,
@@ -249,6 +282,11 @@ impl VertexAiClient {
             api_bail!("VertexAi API config is required for VertexAi API type");
         };
         let client = vertexai::client::PredictionService::builder()
+            .with_retry_policy(
+                CustomizedGoogleCloudRetryPolicy.with_time_limit(retryable::DEFAULT_RETRY_TIMEOUT),
+            )
+            .with_backoff_policy(ExponentialBackoff::default())
+            .with_retry_throttler(SHARED_RETRY_THROTTLER.clone())
             .build()
             .await?;
         Ok(Self { client, config })
