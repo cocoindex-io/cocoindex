@@ -80,7 +80,7 @@ pub fn Ok<T>(value: T) -> Result<T> {
 }
 
 pub struct RetryOptions {
-    pub retry_timeout: Duration,
+    pub retry_timeout: Option<Duration>,
     pub initial_backoff: Duration,
     pub max_backoff: Duration,
 }
@@ -88,7 +88,7 @@ pub struct RetryOptions {
 impl Default for RetryOptions {
     fn default() -> Self {
         Self {
-            retry_timeout: DEFAULT_RETRY_TIMEOUT,
+            retry_timeout: Some(DEFAULT_RETRY_TIMEOUT),
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(10),
         }
@@ -96,7 +96,7 @@ impl Default for RetryOptions {
 }
 
 pub static HEAVY_LOADED_OPTIONS: RetryOptions = RetryOptions {
-    retry_timeout: DEFAULT_RETRY_TIMEOUT,
+    retry_timeout: Some(DEFAULT_RETRY_TIMEOUT),
     initial_backoff: Duration::from_secs(1),
     max_backoff: Duration::from_secs(60),
 };
@@ -110,8 +110,9 @@ pub async fn run<
     f: F,
     options: &RetryOptions,
 ) -> Result<Ok, Err> {
-    let start_time = Instant::now();
-    let deadline = start_time + options.retry_timeout;
+    let deadline = options
+        .retry_timeout
+        .map(|timeout| Instant::now() + timeout);
     let mut backoff = options.initial_backoff;
 
     loop {
@@ -121,13 +122,20 @@ pub async fn run<
                 if !err.is_retryable() {
                     return Result::Err(err);
                 }
-                let now = Instant::now();
-                if now >= deadline {
-                    return Result::Err(err);
+                let mut sleep_duration = backoff;
+                if let Some(deadline) = deadline {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Result::Err(err);
+                    }
+                    let remaining_time = deadline.saturating_duration_since(now);
+                    sleep_duration = std::cmp::min(sleep_duration, remaining_time);
                 }
-                trace!("Will retry in {}ms for error: {}", backoff.as_millis(), err);
-                let remaining_time = deadline.saturating_duration_since(now);
-                let sleep_duration = std::cmp::min(backoff, remaining_time);
+                trace!(
+                    "Will retry in {}ms for error: {}",
+                    sleep_duration.as_millis(),
+                    err
+                );
                 tokio::time::sleep(sleep_duration).await;
                 if backoff < options.max_backoff {
                     backoff = std::cmp::min(

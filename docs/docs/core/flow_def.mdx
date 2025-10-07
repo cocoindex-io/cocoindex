@@ -313,9 +313,9 @@ Types of the fields must be key types. See [Key Types](data_types#key-types) for
 
 *Vector index* is specified by `vector_indexes` (`Sequence[VectorIndexDef]`). `VectorIndexDef` has the following fields:
 
-    *   `field_name`: the field to create vector index.
-    *   `metric`: the similarity metric to use.
-    *   `method` (optional): the index algorithm and optional tuning parameters. Leave unset to use the target default (HNSW for Postgres). Use `cocoindex.HnswVectorIndexMethod()` or `cocoindex.IvfFlatVectorIndexMethod()` to customize the method and its parameters.
+* `field_name`: the field to create vector index.
+* `metric`: the similarity metric to use.
+* `method` (optional): the index algorithm and optional tuning parameters. Leave unset to use the target default (HNSW for Postgres). Use `cocoindex.HnswVectorIndexMethod()` or `cocoindex.IvfFlatVectorIndexMethod()` to customize the method and its parameters.
 
 #### Similarity Metrics
 
