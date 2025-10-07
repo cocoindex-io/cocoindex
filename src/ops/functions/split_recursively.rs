@@ -511,6 +511,7 @@ struct RecursiveChunker<'s> {
     chunk_size: usize,
     chunk_overlap: usize,
     min_chunk_size: usize,
+    min_atom_chunk_size: usize,
 }
 
 impl<'t, 's: 't> RecursiveChunker<'s> {
@@ -526,7 +527,7 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
             atom_collector.curr_level = iter_stack.len();
 
             if let Some(current_chunk) = iter_stack.last_mut().unwrap().next() {
-                if current_chunk.range.len() <= self.min_chunk_size {
+                if current_chunk.range.len() <= self.min_atom_chunk_size {
                     atom_collector.collect(current_chunk.range);
                 } else {
                     match current_chunk.kind {
@@ -819,19 +820,29 @@ impl SimpleFunctionExecutor for Executor {
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
         let full_text = self.args.text.value(&input)?.as_str()?;
         let chunk_size = self.args.chunk_size.value(&input)?.as_int64()?;
-        let recursive_chunker = RecursiveChunker {
-            full_text,
-            chunk_size: chunk_size as usize,
-            chunk_overlap: (self.args.chunk_overlap.value(&input)?)
+        let min_chunk_size = (self.args.min_chunk_size.value(&input)?)
+            .optional()
+            .map(|v| v.as_int64())
+            .transpose()?
+            .unwrap_or(chunk_size / 2) as usize;
+        let chunk_overlap = std::cmp::min(
+            (self.args.chunk_overlap.value(&input)?)
                 .optional()
                 .map(|v| v.as_int64())
                 .transpose()?
                 .unwrap_or(0) as usize,
-            min_chunk_size: (self.args.min_chunk_size.value(&input)?)
-                .optional()
-                .map(|v| v.as_int64())
-                .transpose()?
-                .unwrap_or(chunk_size / 2) as usize,
+            min_chunk_size,
+        );
+        let recursive_chunker = RecursiveChunker {
+            full_text,
+            chunk_size: chunk_size as usize,
+            chunk_overlap,
+            min_chunk_size,
+            min_atom_chunk_size: if chunk_overlap > 0 {
+                chunk_overlap
+            } else {
+                min_chunk_size
+            },
         };
 
         let language = UniCase::new(
