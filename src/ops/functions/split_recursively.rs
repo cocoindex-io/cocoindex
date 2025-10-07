@@ -47,10 +47,17 @@ static DEFAULT_LANGUAGE_CONFIG: LazyLock<SimpleLanguageConfig> =
     LazyLock::new(|| SimpleLanguageConfig {
         name: "_DEFAULT".to_string(),
         aliases: vec![],
-        separator_regex: [r"\n\n+", r"\n", r"\s+"]
-            .into_iter()
-            .map(|s| Regex::new(s).unwrap())
-            .collect(),
+        separator_regex: [
+            r"\n\n+",
+            r"\n",
+            r"[\.\?!]\s+|。|？|！",
+            r"[;:—\-]\s+|；|：|—+",
+            r",\s+|，",
+            r"\s+",
+        ]
+        .into_iter()
+        .map(|s| Regex::new(s).unwrap())
+        .collect(),
     });
 
 struct TreesitterLanguageConfig {
@@ -1284,7 +1291,7 @@ mod tests {
             custom_languages: vec![],
         };
         let factory = Arc::new(Factory);
-        let text = "  \n First chunk. \n\n  Second chunk with spaces at the end.   \n";
+        let text = "  \n First chunk  \n\n  Second chunk with spaces at the end    \n";
         let input_arg_schemas = &build_split_recursively_arg_schemas();
 
         {
@@ -1312,9 +1319,9 @@ mod tests {
                     assert_eq!(table.len(), 3);
 
                     let expected_chunks = vec![
-                        (RangeValue::new(3, 16), " First chunk."),
+                        (RangeValue::new(3, 15), " First chunk"),
                         (RangeValue::new(19, 45), "  Second chunk with spaces"),
-                        (RangeValue::new(46, 57), "at the end."),
+                        (RangeValue::new(46, 56), "at the end"),
                     ];
 
                     for (range, expected_text) in expected_chunks {
