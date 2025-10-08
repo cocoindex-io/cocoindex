@@ -650,7 +650,7 @@ impl IndexDef {
     fn from_vector_index_def(
         index_def: &spec::VectorIndexDef,
         field_typ: &schema::ValueType,
-        method: Option<spec::VectorIndexMethod>,
+        _method: Option<spec::VectorIndexMethod>,
     ) -> Result<Self> {
         let method = index_def.method.clone();
         if let Some(spec::VectorIndexMethod::IvfFlat { .. }) = method {
@@ -764,33 +764,30 @@ impl components::SetupOperator for SetupComponentOperator {
                 vector_size,
                 method,
             } => {
-                let method_config =
-                    if let Some(spec::VectorIndexMethod::Hnsw { m, ef_construction }) = method {
-                        let mut parts = vec![];
-                        if let Some(m_val) = m {
-                            parts.push(format!("`hnsw.m`: {}", m_val));
-                        }
-                        if let Some(ef_val) = ef_construction {
-                            parts.push(format!("`hnsw.ef_construction`: {}", ef_val));
-                        }
-                        if parts.is_empty() {
-                            "".to_string()
-                        } else {
-                            format!(", {}", parts.join(", "))
-                        }
-                    } else {
-                        "".to_string()
-                    };
+                let mut parts = vec![];
+
+                parts.push(format!("`vector.dimensions`: {}", vector_size));
+                parts.push(format!("`vector.similarity_function`: '{}'", metric));
+
+                if let Some(spec::VectorIndexMethod::Hnsw { m, ef_construction }) = method {
+                    if let Some(m_val) = m {
+                        parts.push(format!("`vector.hnsw.m`: {}", m_val));
+                    }
+                    if let Some(ef_val) = ef_construction {
+                        parts.push(format!("`vector.hnsw.ef_construction`: {}", ef_val));
+                    }
+                }
+
                 formatdoc! {"
                     CREATE VECTOR INDEX {name} IF NOT EXISTS
                     FOR {matcher} ON {qualifier}.{field_name}
                     OPTIONS {{
                         indexConfig: {{
-                            `vector.dimensions`: {vector_size},
-                            `vector.similarity_function`: '{metric}'{method_config}
+                            {config}
                         }}
                     }}",
                     name = key.name,
+                    config = parts.join(", ")
                 }
             }
         });
