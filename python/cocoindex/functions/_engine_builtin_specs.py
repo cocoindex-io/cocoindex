@@ -19,6 +19,10 @@ class CustomLanguageSpec:
     aliases: list[str] = dataclasses.field(default_factory=list)
 
 
+class DetectProgrammingLanguage(op.FunctionSpec):
+    """Detect the programming language of a file."""
+
+
 class SplitRecursively(op.FunctionSpec):
     """Split a document (in string) recursively."""
 
