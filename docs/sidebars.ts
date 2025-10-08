@@ -48,6 +48,11 @@ const sidebars: SidebarsConfig = {
       link: { type: 'doc', id: 'sources/index' },
       collapsed: true,
       items: [
+        'sources/amazons3',
+        'sources/azureblob',
+        'sources/googledrive',
+        'sources/localfile',
+        'sources/postgres',
       ],
     },
     {
