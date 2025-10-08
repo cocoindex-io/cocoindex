@@ -255,14 +255,71 @@ fn try_merge_collector_schemas(
     schema1: &CollectorSchema,
     schema2: &CollectorSchema,
 ) -> Result<CollectorSchema> {
-    let fields = try_merge_fields_schemas(&schema1.fields, &schema2.fields)?;
+    // Union all fields from both schemas
+    let mut field_map: HashMap<FieldName, EnrichedValueType> = HashMap::new();
+
+    // Add fields from schema1
+    for field in &schema1.fields {
+        field_map.insert(field.name.clone(), field.value_type.clone());
+    }
+
+    // Merge fields from schema2
+    for field in &schema2.fields {
+        if let Some(existing_type) = field_map.get(&field.name) {
+            // Try to merge types if they differ
+            let merged_type = try_make_common_value_type(existing_type, &field.value_type)?;
+            field_map.insert(field.name.clone(), merged_type);
+        } else {
+            field_map.insert(field.name.clone(), field.value_type.clone());
+        }
+    }
+
+    // Sort fields by name for consistent ordering, but prioritize UUID fields
+    let mut fields: Vec<FieldSchema> = field_map
+        .into_iter()
+        .map(|(name, value_type)| FieldSchema {
+            name,
+            value_type,
+            description: None,
+        })
+        .collect();
+
+    // Prioritize UUID fields by placing them at the beginning for efficiency
+    fields.sort_by(|a, b| {
+        let a_is_uuid = matches!(a.value_type.typ, ValueType::Basic(BasicValueType::Uuid));
+        let b_is_uuid = matches!(b.value_type.typ, ValueType::Basic(BasicValueType::Uuid));
+
+        match (a_is_uuid, b_is_uuid) {
+            (true, false) => std::cmp::Ordering::Less, // UUID fields first
+            (false, true) => std::cmp::Ordering::Greater, // UUID fields first
+            _ => a.name.cmp(&b.name),                  // Then alphabetical
+        }
+    });
+
+    // Handle auto_uuid_field_idx (UUID fields are now at position 0 for efficiency)
+    let auto_uuid_field_idx = match (schema1.auto_uuid_field_idx, schema2.auto_uuid_field_idx) {
+        (Some(idx1), Some(idx2)) => {
+            let name1 = &schema1.fields[idx1].name;
+            let name2 = &schema2.fields[idx2].name;
+            if name1 == name2 {
+                // UUID fields are prioritized to position 0, so check if first field is UUID
+                if fields.first().map_or(false, |f| {
+                    matches!(f.value_type.typ, ValueType::Basic(BasicValueType::Uuid))
+                }) {
+                    Some(0)
+                } else {
+                    fields.iter().position(|f| &f.name == name1)
+                }
+            } else {
+                None // Different auto_uuid fields, disable
+            }
+        }
+        _ => None, // If either doesn't have it, or both don't, disable
+    };
+
     Ok(CollectorSchema {
         fields,
-        auto_uuid_field_idx: if schema1.auto_uuid_field_idx == schema2.auto_uuid_field_idx {
-            schema1.auto_uuid_field_idx
-        } else {
-            None
-        },
+        auto_uuid_field_idx,
     })
 }
 
@@ -803,16 +860,42 @@ impl AnalyzerContext {
                 let (struct_mapping, fields_schema) = analyze_struct_mapping(&op.input, op_scope)?;
                 let has_auto_uuid_field = op.auto_uuid_field.is_some();
                 let fingerprinter = Fingerprinter::default().with(&fields_schema)?;
+                let input_field_names: Vec<FieldName> =
+                    fields_schema.iter().map(|f| f.name.clone()).collect();
+                let collector_ref = add_collector(
+                    &op.scope_name,
+                    op.collector_name.clone(),
+                    CollectorSchema::from_fields(fields_schema, op.auto_uuid_field.clone()),
+                    op_scope,
+                )?;
+                // Get the merged collector schema after adding
+                let collector_schema: Arc<CollectorSchema> = {
+                    let scope = find_scope(&op.scope_name, op_scope)?.1;
+                    let states = scope.states.lock().unwrap();
+                    let collector = states.collectors.get(&op.collector_name).unwrap();
+                    collector.schema.clone()
+                };
+
+                // Pre-compute field index mappings for efficient evaluation
+                let field_index_mapping: Vec<usize> = input_field_names
+                    .iter()
+                    .map(|field_name| {
+                        collector_schema
+                            .fields
+                            .iter()
+                            .position(|f| &f.name == field_name)
+                            .unwrap_or(usize::MAX)
+                    })
+                    .collect();
+
                 let collect_op = AnalyzedReactiveOp::Collect(AnalyzedCollectOp {
                     name: reactive_op.name.clone(),
                     has_auto_uuid_field,
                     input: struct_mapping,
-                    collector_ref: add_collector(
-                        &op.scope_name,
-                        op.collector_name.clone(),
-                        CollectorSchema::from_fields(fields_schema, op.auto_uuid_field.clone()),
-                        op_scope,
-                    )?,
+                    input_field_names,
+                    collector_schema,
+                    collector_ref,
+                    field_index_mapping,
                     fingerprinter,
                 });
                 async move { Ok(collect_op) }.boxed()

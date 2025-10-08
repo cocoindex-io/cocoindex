@@ -1,4 +1,5 @@
 use crate::base::schema::FieldSchema;
+use crate::base::spec::FieldName;
 use crate::prelude::*;
 
 use crate::ops::interface::*;
@@ -90,7 +91,12 @@ pub struct AnalyzedCollectOp {
     pub name: String,
     pub has_auto_uuid_field: bool,
     pub input: AnalyzedStructMapping,
+    pub input_field_names: Vec<FieldName>,
+    pub collector_schema: Arc<schema::CollectorSchema>,
     pub collector_ref: AnalyzedCollectorReference,
+    /// Pre-computed mapping from input field index to collector field index.
+    /// For missing fields, the value is usize::MAX.
+    pub field_index_mapping: Vec<usize>,
     /// Fingerprinter of the collector's schema. Used to decide when to reuse auto-generated UUIDs.
     pub fingerprinter: Fingerprinter,
 }

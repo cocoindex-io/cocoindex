@@ -483,26 +483,45 @@ async fn evaluate_op_scope(
             }
 
             AnalyzedReactiveOp::Collect(op) => {
-                let mut field_values = Vec::with_capacity(
-                    op.input.fields.len() + if op.has_auto_uuid_field { 1 } else { 0 },
-                );
-                let field_values_iter = assemble_input_values(&op.input.fields, scoped_entries);
-                if op.has_auto_uuid_field {
-                    field_values.push(value::Value::Null);
-                    field_values.extend(field_values_iter);
-                    let uuid = memory.next_uuid(
-                        op.fingerprinter
-                            .clone()
-                            .with(&field_values[1..])?
-                            .into_fingerprint(),
-                    )?;
-                    field_values[0] = value::Value::Basic(value::BasicValue::Uuid(uuid));
-                } else {
-                    field_values.extend(field_values_iter);
-                };
                 let collector_entry = scoped_entries
                     .headn(op.collector_ref.scope_up_level as usize)
                     .ok_or_else(|| anyhow::anyhow!("Collector level out of bound"))?;
+
+                // Assemble input values
+                let input_values: Vec<value::Value> =
+                    assemble_input_values(&op.input.fields, scoped_entries).collect();
+
+                // Create field_values vector for all fields in the merged schema
+                let mut field_values: Vec<value::Value> =
+                    vec![value::Value::Null; op.collector_schema.fields.len()];
+
+                // Use pre-computed field index mappings for O(1) field placement
+                for (i, &collector_field_idx) in op.field_index_mapping.iter().enumerate() {
+                    if collector_field_idx != usize::MAX {
+                        field_values[collector_field_idx] = input_values[i].clone();
+                    }
+                }
+
+                // Handle auto_uuid_field (assumed to be at position 0 for efficiency)
+                if op.has_auto_uuid_field {
+                    if let Some(uuid_idx) = op.collector_schema.auto_uuid_field_idx {
+                        let uuid = memory.next_uuid(
+                            op.fingerprinter
+                                .clone()
+                                .with(
+                                    &field_values
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(i, _)| *i != uuid_idx)
+                                        .map(|(_, v)| v)
+                                        .collect::<Vec<_>>(),
+                                )?
+                                .into_fingerprint(),
+                        )?;
+                        field_values[uuid_idx] = value::Value::Basic(value::BasicValue::Uuid(uuid));
+                    }
+                }
+
                 {
                     let mut collected_records = collector_entry.collected_values
                         [op.collector_ref.local.collector_idx as usize]
