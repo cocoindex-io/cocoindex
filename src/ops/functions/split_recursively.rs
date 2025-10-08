@@ -1,15 +1,13 @@
 use anyhow::{Context, anyhow};
-use log::{error, trace};
 use regex::{Matches, Regex};
-use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::{collections::HashMap, sync::Arc};
 use unicase::UniCase;
 
 use crate::ops::sdk::RangeValue;
+use crate::ops::shared::program_langs;
 use crate::ops::shared::split::{Position, set_output_positions};
 use crate::{fields_value, ops::sdk::*};
-
 #[derive(Serialize, Deserialize)]
 struct CustomLanguageSpec {
     language_name: String,
@@ -60,198 +58,9 @@ static DEFAULT_LANGUAGE_CONFIG: LazyLock<SimpleLanguageConfig> =
         .collect(),
     });
 
-struct TreesitterLanguageConfig {
-    name: String,
-    tree_sitter_lang: tree_sitter::Language,
-    terminal_node_kind_ids: HashSet<u16>,
-}
-
-fn add_treesitter_language(
-    output: &mut HashMap<UniCase<String>, Arc<TreesitterLanguageConfig>>,
-    name: &'static str,
-    aliases: impl IntoIterator<Item = &'static str>,
-    lang_fn: impl Into<tree_sitter::Language>,
-    terminal_node_kinds: impl IntoIterator<Item = &'static str>,
-) {
-    let tree_sitter_lang: tree_sitter::Language = lang_fn.into();
-    let terminal_node_kind_ids = terminal_node_kinds
-        .into_iter()
-        .filter_map(|kind| {
-            let id = tree_sitter_lang.id_for_node_kind(kind, true);
-            if id != 0 {
-                trace!("Got id for node kind: `{kind}` -> {id}");
-                Some(id)
-            } else {
-                error!("Failed in getting id for node kind: `{kind}`");
-                None
-            }
-        })
-        .collect();
-
-    let config = Arc::new(TreesitterLanguageConfig {
-        name: name.to_string(),
-        tree_sitter_lang,
-        terminal_node_kind_ids,
-    });
-    for name in std::iter::once(name).chain(aliases.into_iter()) {
-        if output.insert(name.into(), config.clone()).is_some() {
-            panic!("Language `{name}` already exists");
-        }
-    }
-}
-
-static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<
-    HashMap<UniCase<String>, Arc<TreesitterLanguageConfig>>,
-> = LazyLock::new(|| {
-    let mut map = HashMap::new();
-    add_treesitter_language(&mut map, "C", [".c"], tree_sitter_c::LANGUAGE, []);
-    add_treesitter_language(
-        &mut map,
-        "C++",
-        [".cpp", ".cc", ".cxx", ".h", ".hpp", "cpp"],
-        tree_sitter_cpp::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "C#",
-        [".cs", "cs", "csharp"],
-        tree_sitter_c_sharp::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "CSS",
-        [".css", ".scss"],
-        tree_sitter_css::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Fortran",
-        [".f", ".f90", ".f95", ".f03", "f", "f90", "f95", "f03"],
-        tree_sitter_fortran::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Go",
-        [".go", "golang"],
-        tree_sitter_go::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "HTML",
-        [".html", ".htm"],
-        tree_sitter_html::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(&mut map, "Java", [".java"], tree_sitter_java::LANGUAGE, []);
-    add_treesitter_language(
-        &mut map,
-        "JavaScript",
-        [".js", "js"],
-        tree_sitter_javascript::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(&mut map, "JSON", [".json"], tree_sitter_json::LANGUAGE, []);
-    add_treesitter_language(
-        &mut map,
-        "Kotlin",
-        [".kt", ".kts"],
-        tree_sitter_kotlin_ng::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Markdown",
-        [".md", ".mdx", "md"],
-        tree_sitter_md::LANGUAGE,
-        ["inline", "indented_code_block", "fenced_code_block"],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Pascal",
-        [".pas", "pas", ".dpr", "dpr", "Delphi"],
-        tree_sitter_pascal::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(&mut map, "PHP", [".php"], tree_sitter_php::LANGUAGE_PHP, []);
-    add_treesitter_language(
-        &mut map,
-        "Python",
-        [".py"],
-        tree_sitter_python::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(&mut map, "R", [".r"], tree_sitter_r::LANGUAGE, []);
-    add_treesitter_language(&mut map, "Ruby", [".rb"], tree_sitter_ruby::LANGUAGE, []);
-    add_treesitter_language(
-        &mut map,
-        "Rust",
-        [".rs", "rs"],
-        tree_sitter_rust::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Scala",
-        [".scala"],
-        tree_sitter_scala::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(&mut map, "SQL", [".sql"], tree_sitter_sequel::LANGUAGE, []);
-    add_treesitter_language(
-        &mut map,
-        "Swift",
-        [".swift"],
-        tree_sitter_swift::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "TOML",
-        [".toml"],
-        tree_sitter_toml_ng::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "TSX",
-        [".tsx"],
-        tree_sitter_typescript::LANGUAGE_TSX,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "TypeScript",
-        [".ts", "ts"],
-        tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-        [],
-    );
-    add_treesitter_language(&mut map, "XML", [".xml"], tree_sitter_xml::LANGUAGE_XML, []);
-    add_treesitter_language(&mut map, "DTD", [".dtd"], tree_sitter_xml::LANGUAGE_DTD, []);
-    add_treesitter_language(
-        &mut map,
-        "YAML",
-        [".yaml", ".yml"],
-        tree_sitter_yaml::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Solidity",
-        [".sol"],
-        tree_sitter_solidity::LANGUAGE,
-        [],
-    );
-    map
-});
-
 enum ChunkKind<'t> {
     TreeSitterNode {
-        lang_config: &'t TreesitterLanguageConfig,
+        tree_sitter_info: &'t program_langs::TreeSitterLanguageInfo,
         node: tree_sitter::Node<'t>,
     },
     RegexpSepChunk {
@@ -325,7 +134,7 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
 }
 
 struct TreeSitterNodeIter<'t, 's: 't> {
-    lang_config: &'t TreesitterLanguageConfig,
+    lang_config: &'t program_langs::TreeSitterLanguageInfo,
     full_text: &'s str,
     cursor: Option<tree_sitter::TreeCursor<'t>>,
     next_start_pos: usize,
@@ -378,7 +187,7 @@ impl<'t, 's: 't> Iterator for TreeSitterNodeIter<'t, 's> {
             full_text: self.full_text,
             range: RangeValue::new(node.start_byte(), node.end_byte()),
             kind: ChunkKind::TreeSitterNode {
-                lang_config: self.lang_config,
+                tree_sitter_info: self.lang_config,
                 node,
             },
         })
@@ -531,7 +340,10 @@ impl<'t, 's: 't> RecursiveChunker<'s> {
                     atom_collector.collect(current_chunk.range);
                 } else {
                     match current_chunk.kind {
-                        ChunkKind::TreeSitterNode { lang_config, node } => {
+                        ChunkKind::TreeSitterNode {
+                            tree_sitter_info: lang_config,
+                            node,
+                        } => {
                             if !lang_config.terminal_node_kind_ids.contains(&node.kind_id()) {
                                 let mut cursor = node.walk();
                                 if cursor.goto_first_child() {
@@ -858,14 +670,16 @@ impl SimpleFunctionExecutor for Executor {
                 lang_config,
                 next_regexp_sep_id: 0,
             })?
-        } else if let Some(lang_config) = TREE_SITTER_LANGUAGE_BY_LANG.get(&language) {
+        } else if let Some(lang_info) = program_langs::get_language_info(&language)
+            && let Some(tree_sitter_info) = lang_info.treesitter_info.as_ref()
+        {
             let mut parser = tree_sitter::Parser::new();
-            parser.set_language(&lang_config.tree_sitter_lang)?;
-            let tree = parser.parse(full_text.as_ref(), None).ok_or_else(|| {
-                anyhow!("failed in parsing text in language: {}", lang_config.name)
-            })?;
+            parser.set_language(&tree_sitter_info.tree_sitter_lang)?;
+            let tree = parser
+                .parse(full_text.as_ref(), None)
+                .ok_or_else(|| anyhow!("failed in parsing text in language: {}", lang_info.name))?;
             recursive_chunker.split_root_chunk(ChunkKind::TreeSitterNode {
-                lang_config,
+                tree_sitter_info,
                 node: tree.root_node(),
             })?
         } else {
