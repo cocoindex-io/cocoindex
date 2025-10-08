@@ -36,7 +36,7 @@ pub struct ProgrammingLanguageInfo {
     /// The main name of the language.
     /// It's expected to be consistent with the language names listed at:
     ///   https://github.com/Goldziher/tree-sitter-language-pack?tab=readme-ov-file#available-languages
-    pub name: String,
+    pub name: Arc<str>,
 
     pub treesitter_info: Option<TreeSitterLanguageInfo>,
 }
@@ -51,7 +51,7 @@ fn add_treesitter_language(
     treesitter_info: Option<TreeSitterLanguageInfo>,
 ) {
     let config = Arc::new(ProgrammingLanguageInfo {
-        name: name.to_string(),
+        name: Arc::from(name),
         treesitter_info,
     });
     for name in std::iter::once(name).chain(aliases.into_iter()) {
