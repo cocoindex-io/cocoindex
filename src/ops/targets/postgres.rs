@@ -15,7 +15,7 @@ use sqlx::postgres::types::PgRange;
 use std::ops::Bound;
 
 #[derive(Debug, Deserialize)]
-pub struct Spec {
+struct Spec {
     database: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
     table_name: Option<String>,
     schema: Option<String>,
@@ -130,7 +130,7 @@ fn bind_value_field<'arg>(
     Ok(())
 }
 
-pub struct ExportContext {
+struct ExportContext {
     db_ref: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
     db_pool: PgPool,
     key_fields_schema: Box<[FieldSchema]>,
@@ -254,7 +254,7 @@ impl ExportContext {
 struct TargetFactory;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct TableId {
+struct TableId {
     #[serde(skip_serializing_if = "Option::is_none")]
     database: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -277,9 +277,44 @@ impl std::fmt::Display for TableId {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetupState {
+#[serde(untagged)]
+enum ColumnType {
+    ValueType(ValueType),
+    PostgresType(String),
+}
+
+impl ColumnType {
+    fn uses_pgvector(&self) -> bool {
+        match self {
+            ColumnType::ValueType(ValueType::Basic(BasicValueType::Vector(vec_schema))) => {
+                convertible_to_pgvector(vec_schema)
+            }
+            ColumnType::PostgresType(pg_type) => {
+                pg_type.starts_with("vector(") || pg_type.starts_with("halfvec(")
+            }
+            _ => false,
+        }
+    }
+
+    fn to_column_type_sql<'a>(&'a self) -> Cow<'a, str> {
+        match self {
+            ColumnType::ValueType(v) => Cow::Owned(to_column_type_sql(v)),
+            ColumnType::PostgresType(pg_type) => Cow::Borrowed(pg_type),
+        }
+    }
+}
+
+impl PartialEq for ColumnType {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_column_type_sql() == other.to_column_type_sql()
+    }
+}
+impl Eq for ColumnType {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SetupState {
     #[serde(flatten)]
-    columns: TableColumnsSchema<ValueType>,
+    columns: TableColumnsSchema<ColumnType>,
 
     vector_indexes: BTreeMap<String, VectorIndexDef>,
 }
@@ -295,11 +330,21 @@ impl SetupState {
             columns: TableColumnsSchema {
                 key_columns: key_fields_schema
                     .iter()
-                    .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
+                    .map(|f| {
+                        (
+                            f.name.clone(),
+                            ColumnType::ValueType(f.value_type.typ.without_attrs()),
+                        )
+                    })
                     .collect(),
                 value_columns: value_fields_schema
                     .iter()
-                    .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
+                    .map(|f| {
+                        (
+                            f.name.clone(),
+                            ColumnType::ValueType(f.value_type.typ.without_attrs()),
+                        )
+                    })
                     .collect(),
             },
             vector_indexes: index_options
@@ -314,12 +359,7 @@ impl SetupState {
         self.columns
             .value_columns
             .iter()
-            .any(|(_, value)| match &value {
-                ValueType::Basic(BasicValueType::Vector(vec_schema)) => {
-                    convertible_to_pgvector(vec_schema)
-                }
-                _ => false,
-            })
+            .any(|(_, t)| t.uses_pgvector())
     }
 }
 
@@ -367,27 +407,27 @@ impl<'a> From<&'a SetupState> for Cow<'a, TableColumnsSchema<String>> {
                 .columns
                 .key_columns
                 .iter()
-                .map(|(k, v)| (k.clone(), to_column_type_sql(v)))
+                .map(|(k, v)| (k.clone(), v.to_column_type_sql().into_owned()))
                 .collect(),
             value_columns: val
                 .columns
                 .value_columns
                 .iter()
-                .map(|(k, v)| (k.clone(), to_column_type_sql(v)))
+                .map(|(k, v)| (k.clone(), v.to_column_type_sql().into_owned()))
                 .collect(),
         })
     }
 }
 
 #[derive(Debug)]
-pub struct TableSetupAction {
+struct TableSetupAction {
     table_action: TableMainSetupAction<String>,
     indexes_to_delete: IndexSet<String>,
     indexes_to_create: IndexMap<String, VectorIndexDef>,
 }
 
 #[derive(Debug)]
-pub struct SetupChange {
+struct SetupChange {
     create_pgvector_extension: bool,
     actions: TableSetupAction,
     vector_as_jsonb_columns: Vec<(String, ValueType)>,
@@ -402,7 +442,8 @@ impl SetupChange {
             .iter()
             .flat_map(|s| {
                 s.columns.value_columns.iter().filter_map(|(name, schema)| {
-                    if let ValueType::Basic(BasicValueType::Vector(vec_schema)) = schema
+                    if let ColumnType::ValueType(value_type) = schema
+                        && let ValueType::Basic(BasicValueType::Vector(vec_schema)) = value_type
                         && !convertible_to_pgvector(vec_schema)
                     {
                         let is_touched = match &table_action.table_upsertion {
@@ -415,7 +456,7 @@ impl SetupChange {
                             None => false,
                         };
                         if is_touched {
-                            Some((name.clone(), schema.clone()))
+                            Some((name.clone(), value_type.clone()))
                         } else {
                             None
                         }
@@ -791,19 +832,19 @@ impl TargetFactoryBase for TargetFactory {
 ////////////////////////////////////////////////////////////
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SqlCommandSpec {
+struct SqlCommandSpec {
     name: String,
     setup_sql: String,
     teardown_sql: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SqlCommandState {
+struct SqlCommandState {
     setup_sql: String,
     teardown_sql: Option<String>,
 }
 
-pub struct SqlCommandSetupChange {
+struct SqlCommandSetupChange {
     db_pool: PgPool,
     setup_sql_to_run: Option<String>,
     teardown_sql_to_run: IndexSet<String>,
