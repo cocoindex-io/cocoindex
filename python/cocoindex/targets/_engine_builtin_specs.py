@@ -1,12 +1,20 @@
 """All builtin targets."""
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Sequence, Literal
 
 from .. import op
 from .. import index
 from ..auth_registry import AuthEntryReference
 from ..setting import DatabaseConnectionSpec
+
+
+@dataclass
+class PostgresColumnOptions:
+    """Options for a Postgres column."""
+
+    # Specify the specific type of the column in Postgres. Can use it to override the default type derived from CocoIndex schema.
+    type: Literal["vector", "halfvec"] | None = None
 
 
 class Postgres(op.TargetSpec):
@@ -15,6 +23,7 @@ class Postgres(op.TargetSpec):
     database: AuthEntryReference[DatabaseConnectionSpec] | None = None
     table_name: str | None = None
     schema: str | None = None
+    column_options: dict[str, PostgresColumnOptions] | None = None
 
 
 class PostgresSqlCommand(op.TargetAttachmentSpec):
