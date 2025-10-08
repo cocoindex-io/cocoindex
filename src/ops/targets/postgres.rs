@@ -14,12 +14,40 @@ use sqlx::PgPool;
 use sqlx::postgres::types::PgRange;
 use std::ops::Bound;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+enum PostgresTypeSpec {
+    #[serde(rename = "vector")]
+    Vector,
+    #[serde(rename = "halfvec")]
+    HalfVec,
+}
+
+impl PostgresTypeSpec {
+    fn default_vector() -> Self {
+        Self::Vector
+    }
+
+    fn is_default_vector(&self) -> bool {
+        self == &Self::Vector
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ColumnOptions {
+    #[serde(default, rename = "type")]
+    typ: Option<PostgresTypeSpec>,
+}
+
 #[derive(Debug, Deserialize)]
-pub struct Spec {
+struct Spec {
     database: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
     table_name: Option<String>,
     schema: Option<String>,
+
+    #[serde(default)]
+    column_options: HashMap<String, ColumnOptions>,
 }
+
 const BIND_LIMIT: usize = 65535;
 
 fn convertible_to_pgvector(vec_schema: &VectorTypeSchema) -> bool {
@@ -36,6 +64,7 @@ fn convertible_to_pgvector(vec_schema: &VectorTypeSchema) -> bool {
 fn bind_value_field<'arg>(
     builder: &mut sqlx::QueryBuilder<'arg, sqlx::Postgres>,
     field_schema: &'arg FieldSchema,
+    column_spec: &'arg Option<ColumnOptions>,
     value: &'arg Value,
 ) -> Result<()> {
     match &value {
@@ -100,7 +129,13 @@ fn bind_value_field<'arg>(
                             })
                         })
                         .collect::<Result<Vec<f32>>>()?;
-                    builder.push_bind(pgvector::Vector::from(vec));
+                    if let Some(column_spec) = column_spec
+                        && matches!(column_spec.typ, Some(PostgresTypeSpec::HalfVec))
+                    {
+                        builder.push_bind(pgvector::HalfVector::from_f32_slice(&vec));
+                    } else {
+                        builder.push_bind(pgvector::Vector::from(vec));
+                    }
                 }
                 _ => {
                     builder.push_bind(sqlx::types::Json(v));
@@ -130,11 +165,11 @@ fn bind_value_field<'arg>(
     Ok(())
 }
 
-pub struct ExportContext {
+struct ExportContext {
     db_ref: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
     db_pool: PgPool,
-    key_fields_schema: Box<[FieldSchema]>,
-    value_fields_schema: Vec<FieldSchema>,
+    key_fields_schema: Box<[(FieldSchema, Option<ColumnOptions>)]>,
+    value_fields_schema: Vec<(FieldSchema, Option<ColumnOptions>)>,
     upsert_sql_prefix: String,
     upsert_sql_suffix: String,
     delete_sql_prefix: String,
@@ -147,6 +182,7 @@ impl ExportContext {
         table_id: &TableId,
         key_fields_schema: Box<[FieldSchema]>,
         value_fields_schema: Vec<FieldSchema>,
+        column_options: &HashMap<String, ColumnOptions>,
     ) -> Result<Self> {
         let table_name = qualified_table_name(table_id);
 
@@ -165,6 +201,10 @@ impl ExportContext {
             .collect::<Vec<_>>()
             .join(", ");
 
+        let to_field_spec = |f: FieldSchema| {
+            let column_spec = column_options.get(&f.name).cloned();
+            (f, column_spec)
+        };
         Ok(Self {
             db_ref,
             db_pool,
@@ -175,8 +215,14 @@ impl ExportContext {
                 format!(" ON CONFLICT ({key_fields}) DO UPDATE SET {set_value_fields};")
             },
             delete_sql_prefix: format!("DELETE FROM {table_name} WHERE "),
-            key_fields_schema,
-            value_fields_schema,
+            key_fields_schema: key_fields_schema
+                .into_iter()
+                .map(to_field_spec)
+                .collect::<Box<_>>(),
+            value_fields_schema: value_fields_schema
+                .into_iter()
+                .map(to_field_spec)
+                .collect::<Vec<_>>(),
         })
     }
 }
@@ -208,13 +254,13 @@ impl ExportContext {
                         upsert.value.fields.len()
                     );
                 }
-                for (schema, value) in self
+                for ((schema, column_spec), value) in self
                     .value_fields_schema
                     .iter()
                     .zip(upsert.value.fields.iter())
                 {
                     query_builder.push(", ");
-                    bind_value_field(&mut query_builder, schema, value)?;
+                    bind_value_field(&mut query_builder, schema, column_spec, value)?;
                 }
                 query_builder.push(")");
             }
@@ -233,7 +279,7 @@ impl ExportContext {
         for deletion in deletions.iter() {
             let mut query_builder = sqlx::QueryBuilder::new("");
             query_builder.push(&self.delete_sql_prefix);
-            for (i, (schema, value)) in
+            for (i, ((schema, _), value)) in
                 std::iter::zip(&self.key_fields_schema, &deletion.key).enumerate()
             {
                 if i > 0 {
@@ -254,7 +300,7 @@ impl ExportContext {
 struct TargetFactory;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct TableId {
+struct TableId {
     #[serde(skip_serializing_if = "Option::is_none")]
     database: Option<spec::AuthEntryReference<DatabaseConnectionSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -277,11 +323,57 @@ impl std::fmt::Display for TableId {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SetupState {
-    #[serde(flatten)]
-    columns: TableColumnsSchema<ValueType>,
+#[serde(untagged)]
+enum ColumnType {
+    ValueType(ValueType),
+    PostgresType(String),
+}
 
-    vector_indexes: BTreeMap<String, VectorIndexDef>,
+impl ColumnType {
+    fn uses_pgvector(&self) -> bool {
+        match self {
+            ColumnType::ValueType(ValueType::Basic(BasicValueType::Vector(vec_schema))) => {
+                convertible_to_pgvector(vec_schema)
+            }
+            ColumnType::PostgresType(pg_type) => {
+                pg_type.starts_with("vector(") || pg_type.starts_with("halfvec(")
+            }
+            _ => false,
+        }
+    }
+
+    fn to_column_type_sql<'a>(&'a self) -> Cow<'a, str> {
+        match self {
+            ColumnType::ValueType(v) => Cow::Owned(to_column_type_sql(v)),
+            ColumnType::PostgresType(pg_type) => Cow::Borrowed(pg_type),
+        }
+    }
+}
+
+impl PartialEq for ColumnType {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_column_type_sql() == other.to_column_type_sql()
+    }
+}
+impl Eq for ColumnType {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct ExtendedVectorIndexDef {
+    #[serde(flatten)]
+    index_def: VectorIndexDef,
+    #[serde(
+        default = "PostgresTypeSpec::default_vector",
+        skip_serializing_if = "PostgresTypeSpec::is_default_vector"
+    )]
+    type_spec: PostgresTypeSpec,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SetupState {
+    #[serde(flatten)]
+    columns: TableColumnsSchema<ColumnType>,
+
+    vector_indexes: BTreeMap<String, ExtendedVectorIndexDef>,
 }
 
 impl SetupState {
@@ -290,37 +382,91 @@ impl SetupState {
         key_fields_schema: &[FieldSchema],
         value_fields_schema: &[FieldSchema],
         index_options: &IndexOptions,
-    ) -> Self {
-        Self {
+        column_options: &HashMap<String, ColumnOptions>,
+    ) -> Result<Self> {
+        Ok(Self {
             columns: TableColumnsSchema {
                 key_columns: key_fields_schema
                     .iter()
-                    .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
-                    .collect(),
+                    .map(|f| Self::get_column_type_sql(f, column_options))
+                    .collect::<Result<_>>()?,
                 value_columns: value_fields_schema
                     .iter()
-                    .map(|f| (f.name.clone(), f.value_type.typ.without_attrs()))
-                    .collect(),
+                    .map(|f| Self::get_column_type_sql(f, column_options))
+                    .collect::<Result<_>>()?,
             },
             vector_indexes: index_options
                 .vector_indexes
                 .iter()
-                .map(|v| (to_vector_index_name(&table_id.table_name, v), v.clone()))
+                .map(|v| {
+                    let type_spec = column_options
+                        .get(&v.field_name)
+                        .and_then(|c| c.typ.as_ref())
+                        .cloned()
+                        .unwrap_or_else(PostgresTypeSpec::default_vector);
+                    (
+                        to_vector_index_name(&table_id.table_name, v, &type_spec),
+                        ExtendedVectorIndexDef {
+                            index_def: v.clone(),
+                            type_spec,
+                        },
+                    )
+                })
                 .collect(),
-        }
+        })
+    }
+
+    fn get_column_type_sql(
+        field_schema: &FieldSchema,
+        column_options: &HashMap<String, ColumnOptions>,
+    ) -> Result<(String, ColumnType)> {
+        let column_type_option = column_options
+            .get(&field_schema.name)
+            .and_then(|c| c.typ.as_ref());
+        let result = if let Some(column_type_option) = column_type_option {
+            ColumnType::PostgresType(to_column_type_sql_with_option(
+                &field_schema.value_type.typ,
+                column_type_option,
+            )?)
+        } else {
+            ColumnType::ValueType(field_schema.value_type.typ.without_attrs())
+        };
+        Ok((field_schema.name.clone(), result))
     }
 
     fn uses_pgvector(&self) -> bool {
         self.columns
             .value_columns
             .iter()
-            .any(|(_, value)| match &value {
-                ValueType::Basic(BasicValueType::Vector(vec_schema)) => {
-                    convertible_to_pgvector(vec_schema)
-                }
-                _ => false,
-            })
+            .any(|(_, t)| t.uses_pgvector())
     }
+}
+
+fn to_column_type_sql_with_option(
+    column_type: &ValueType,
+    type_spec: &PostgresTypeSpec,
+) -> Result<String> {
+    match column_type {
+        ValueType::Basic(basic_type) => match basic_type {
+            BasicValueType::Vector(vec_schema) => {
+                if convertible_to_pgvector(vec_schema) {
+                    let dim = vec_schema.dimension.unwrap_or(0);
+                    let type_sql = match type_spec {
+                        PostgresTypeSpec::Vector => {
+                            format!("vector({dim})")
+                        }
+                        PostgresTypeSpec::HalfVec => {
+                            format!("halfvec({dim})")
+                        }
+                    };
+                    return Ok(type_sql);
+                }
+            }
+            _ => {}
+        },
+        _ => {}
+    }
+    api_bail!("Unexpected column type: {}", column_type)
 }
 
 fn to_column_type_sql(column_type: &ValueType) -> String {
@@ -367,27 +513,27 @@ impl<'a> From<&'a SetupState> for Cow<'a, TableColumnsSchema<String>> {
                 .columns
                 .key_columns
                 .iter()
-                .map(|(k, v)| (k.clone(), to_column_type_sql(v)))
+                .map(|(k, v)| (k.clone(), v.to_column_type_sql().into_owned()))
                 .collect(),
             value_columns: val
                 .columns
                 .value_columns
                 .iter()
-                .map(|(k, v)| (k.clone(), to_column_type_sql(v)))
+                .map(|(k, v)| (k.clone(), v.to_column_type_sql().into_owned()))
                 .collect(),
         })
     }
 }
 
 #[derive(Debug)]
-pub struct TableSetupAction {
+struct TableSetupAction {
     table_action: TableMainSetupAction<String>,
     indexes_to_delete: IndexSet<String>,
-    indexes_to_create: IndexMap<String, VectorIndexDef>,
+    indexes_to_create: IndexMap<String, ExtendedVectorIndexDef>,
 }
 
 #[derive(Debug)]
-pub struct SetupChange {
+struct SetupChange {
     create_pgvector_extension: bool,
     actions: TableSetupAction,
     vector_as_jsonb_columns: Vec<(String, ValueType)>,
@@ -402,7 +548,8 @@ impl SetupChange {
             .iter()
             .flat_map(|s| {
                 s.columns.value_columns.iter().filter_map(|(name, schema)| {
-                    if let ValueType::Basic(BasicValueType::Vector(vec_schema)) = schema
+                    if let ColumnType::ValueType(value_type) = schema
+                        && let ValueType::Basic(BasicValueType::Vector(vec_schema)) = value_type
                         && !convertible_to_pgvector(vec_schema)
                     {
                         let is_touched = match &table_action.table_upsertion {
@@ -415,7 +562,7 @@ impl SetupChange {
                             None => false,
                         };
                         if is_touched {
-                            Some((name.clone(), schema.clone()))
+                            Some((name.clone(), value_type.clone()))
                         } else {
                             None
                         }
@@ -467,16 +614,24 @@ impl SetupChange {
     }
 }
 
-fn to_vector_similarity_metric_sql(metric: VectorSimilarityMetric) -> &'static str {
-    match metric {
-        VectorSimilarityMetric::CosineSimilarity => "vector_cosine_ops",
-        VectorSimilarityMetric::L2Distance => "vector_l2_ops",
-        VectorSimilarityMetric::InnerProduct => "vector_ip_ops",
-    }
+fn to_vector_similarity_metric_sql(
+    metric: VectorSimilarityMetric,
+    type_spec: &PostgresTypeSpec,
+) -> String {
+    let prefix = match type_spec {
+        PostgresTypeSpec::Vector => "vector",
+        PostgresTypeSpec::HalfVec => "halfvec",
+    };
+    let suffix = match metric {
+        VectorSimilarityMetric::CosineSimilarity => "cosine_ops",
+        VectorSimilarityMetric::L2Distance => "l2_ops",
+        VectorSimilarityMetric::InnerProduct => "ip_ops",
+    };
+    format!("{prefix}_{suffix}")
 }
 
-fn to_index_spec_sql(index_spec: &VectorIndexDef) -> Cow<'static, str> {
-    let (method, options) = match index_spec.method.as_ref() {
+fn to_index_spec_sql(index_spec: &ExtendedVectorIndexDef) -> Cow<'static, str> {
+    let (method, options) = match index_spec.index_def.method.as_ref() {
         Some(spec::VectorIndexMethod::Hnsw { m, ef_construction }) => {
             let mut opts = Vec::new();
             if let Some(m) = m {
@@ -502,19 +657,23 @@ fn to_index_spec_sql(index_spec: &VectorIndexDef) -> Cow<'static, str> {
     };
     format!(
         "USING {method} ({} {}){}",
-        index_spec.field_name,
-        to_vector_similarity_metric_sql(index_spec.metric),
+        index_spec.index_def.field_name,
+        to_vector_similarity_metric_sql(index_spec.index_def.metric, &index_spec.type_spec),
         with_clause
     )
     .into()
 }
 
-fn to_vector_index_name(table_name: &str, vector_index_def: &spec::VectorIndexDef) -> String {
+fn to_vector_index_name(
+    table_name: &str,
+    vector_index_def: &spec::VectorIndexDef,
+    type_spec: &PostgresTypeSpec,
+) -> String {
     let mut name = format!(
         "{}__{}__{}",
         table_name,
         vector_index_def.field_name,
-        to_vector_similarity_metric_sql(vector_index_def.metric)
+        to_vector_similarity_metric_sql(vector_index_def.metric, type_spec)
     );
     if let Some(method) = vector_index_def.method.as_ref() {
         name.push_str("__");
@@ -523,7 +682,7 @@ fn to_vector_index_name(table_name: &str, vector_index_def: &spec::VectorIndexDe
     name
 }
 
-fn describe_index_spec(index_name: &str, index_spec: &VectorIndexDef) -> String {
+fn describe_index_spec(index_name: &str, index_spec: &ExtendedVectorIndexDef) -> String {
     format!("{} {}", index_name, to_index_spec_sql(index_spec))
 }
 
@@ -685,7 +844,8 @@ impl TargetFactoryBase for TargetFactory {
                     &d.key_fields_schema,
                     &d.value_fields_schema,
                     &d.index_options,
-                );
+                    &d.spec.column_options,
+                )?;
                 let table_id_clone = table_id.clone();
                 let db_ref = d.spec.database;
                 let auth_registry = context.auth_registry.clone();
@@ -697,6 +857,7 @@ impl TargetFactoryBase for TargetFactory {
                         &table_id_clone,
                         d.key_fields_schema,
                         d.value_fields_schema,
+                        &d.spec.column_options,
                     )?);
                     Ok(export_context)
                 });
@@ -791,19 +952,19 @@ impl TargetFactoryBase for TargetFactory {
 ////////////////////////////////////////////////////////////
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SqlCommandSpec {
+struct SqlCommandSpec {
     name: String,
     setup_sql: String,
     teardown_sql: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SqlCommandState {
+struct SqlCommandState {
     setup_sql: String,
     teardown_sql: Option<String>,
 }
 
-pub struct SqlCommandSetupChange {
+struct SqlCommandSetupChange {
     db_pool: PgPool,
     setup_sql_to_run: Option<String>,
     teardown_sql_to_run: IndexSet<String>,
