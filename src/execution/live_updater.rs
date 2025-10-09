@@ -164,7 +164,7 @@ impl SourceUpdateTask {
                                         .next()
                                         .await
                                         .transpose()
-                                        .map_err(retryable::Error::always_retryable)
+                                        .map_err(retryable::Error::retryable)
                                 },
                                 &retry_options,
                             )

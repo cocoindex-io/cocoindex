@@ -9,8 +9,8 @@ pub trait IsRetryable {
 }
 
 pub struct Error {
-    error: anyhow::Error,
-    is_retryable: bool,
+    pub error: anyhow::Error,
+    pub is_retryable: bool,
 }
 
 pub const DEFAULT_RETRY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -40,10 +40,17 @@ impl IsRetryable for reqwest::Error {
 }
 
 impl Error {
-    pub fn always_retryable(error: anyhow::Error) -> Self {
+    pub fn retryable<E: Into<anyhow::Error>>(error: E) -> Self {
         Self {
-            error,
+            error: error.into(),
             is_retryable: true,
+        }
+    }
+
+    pub fn not_retryable<E: Into<anyhow::Error>>(error: E) -> Self {
+        Self {
+            error: error.into(),
+            is_retryable: false,
         }
     }
 }
