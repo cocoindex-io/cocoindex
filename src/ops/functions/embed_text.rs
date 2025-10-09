@@ -94,33 +94,26 @@ impl SimpleFunctionFactoryBase for Factory {
             .required()?;
 
         // Create API config based on api_key parameter if provided
-        let api_config = if let Some(api_key) = &spec.api_key {
-            Some(match spec.api_type {
-                LlmApiType::OpenAi => {
-                    LlmApiConfig::OpenAi(super::super::super::llm::OpenAiConfig {
+        let api_config = if let Some(_api_key) = &spec.api_key {
+            match spec.api_type {
+                LlmApiType::OpenAi => Some(LlmApiConfig::OpenAi(
+                    super::super::super::llm::OpenAiConfig {
                         org_id: None,
                         project_id: None,
-                    })
+                    },
+                )),
+                LlmApiType::Anthropic
+                | LlmApiType::Gemini
+                | LlmApiType::Voyage
+                | LlmApiType::LiteLlm
+                | LlmApiType::OpenRouter
+                | LlmApiType::Vllm => {
+                    // These API types don't require a config, just an API key
+                    None
                 }
-                LlmApiType::Anthropic => {
-                    LlmApiConfig::Anthropic(super::super::super::llm::AnthropicConfig {})
-                }
-                LlmApiType::Gemini => {
-                    LlmApiConfig::Gemini(super::super::super::llm::GeminiConfig {})
-                }
-                LlmApiType::Voyage => {
-                    LlmApiConfig::Voyage(super::super::super::llm::VoyageConfig {})
-                }
-                LlmApiType::LiteLlm => {
-                    LlmApiConfig::LiteLlm(super::super::super::llm::LiteLlmConfig {})
-                }
-                LlmApiType::OpenRouter => {
-                    LlmApiConfig::OpenRouter(super::super::super::llm::OpenRouterConfig {})
-                }
-                LlmApiType::Vllm => LlmApiConfig::Vllm(super::super::super::llm::VllmConfig {}),
                 _ => {
                     if let Some(config) = spec.api_config.clone() {
-                        config
+                        Some(config)
                     } else {
                         api_bail!(
                             "API key parameter is not supported for API type {:?}",
@@ -128,7 +121,7 @@ impl SimpleFunctionFactoryBase for Factory {
                         )
                     }
                 }
-            })
+            }
         } else {
             spec.api_config.clone()
         };
