@@ -14,11 +14,12 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
     sources::azure_blob::Factory.register(registry)?;
     sources::postgres::Factory.register(registry)?;
 
-    functions::parse_json::Factory.register(registry)?;
-    functions::split_recursively::register(registry)?;
-    functions::extract_by_llm::Factory.register(registry)?;
+    functions::detect_program_lang::register(registry)?;
     functions::embed_text::register(registry)?;
+    functions::extract_by_llm::Factory.register(registry)?;
+    functions::parse_json::Factory.register(registry)?;
     functions::split_by_separators::register(registry)?;
+    functions::split_recursively::register(registry)?;
 
     targets::postgres::register(registry)?;
     targets::qdrant::register(registry)?;

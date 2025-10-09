@@ -176,6 +176,7 @@ pub struct SourceSetupState {
     pub keys_schema: Option<Box<[schema::ValueType]>>,
 
     /// DEPRECATED. For backward compatibility.
+    #[cfg(feature = "legacy-states-v0")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_schema: Option<schema::ValueType>,
 

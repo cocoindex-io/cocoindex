@@ -35,6 +35,9 @@ jobs:
           uses: Swatinem/rust-cache@v2
           with:
             key: rust-${{ matrix.platform.runner }}-${{ matrix.python-version }}
+        - name: Rust tests (no default features)
+          run: cargo test --no-default-features --verbose
+
         - name: Rust tests
           run: cargo test --verbose
 

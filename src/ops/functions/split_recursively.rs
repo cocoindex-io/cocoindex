@@ -1,14 +1,13 @@
-use anyhow::anyhow;
-use log::{error, trace};
+use anyhow::{Context, anyhow};
 use regex::{Matches, Regex};
-use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::{collections::HashMap, sync::Arc};
 use unicase::UniCase;
 
+use crate::ops::sdk::RangeValue;
+use crate::ops::shared::program_langs;
 use crate::ops::shared::split::{Position, set_output_positions};
 use crate::{fields_value, ops::sdk::*};
-
 #[derive(Serialize, Deserialize)]
 struct CustomLanguageSpec {
     language_name: String,
@@ -22,8 +21,6 @@ struct Spec {
     #[serde(default)]
     custom_languages: Vec<CustomLanguageSpec>,
 }
-
-const TREESITTER_MAX_RECURSION_DEPTH: usize = 128;
 
 const SYNTAX_LEVEL_GAP_COST: usize = 512;
 const MISSING_OVERLAP_COST: usize = 512;
@@ -48,204 +45,22 @@ static DEFAULT_LANGUAGE_CONFIG: LazyLock<SimpleLanguageConfig> =
     LazyLock::new(|| SimpleLanguageConfig {
         name: "_DEFAULT".to_string(),
         aliases: vec![],
-        separator_regex: [r"\n\n+", r"\n", r"\s+"]
-            .into_iter()
-            .map(|s| Regex::new(s).unwrap())
-            .collect(),
-    });
-
-struct TreesitterLanguageConfig {
-    name: String,
-    tree_sitter_lang: tree_sitter::Language,
-    terminal_node_kind_ids: HashSet<u16>,
-}
-
-fn add_treesitter_language<'a>(
-    output: &'a mut HashMap<UniCase<String>, Arc<TreesitterLanguageConfig>>,
-    name: &'static str,
-    aliases: impl IntoIterator<Item = &'static str>,
-    lang_fn: impl Into<tree_sitter::Language>,
-    terminal_node_kinds: impl IntoIterator<Item = &'a str>,
-) {
-    let tree_sitter_lang: tree_sitter::Language = lang_fn.into();
-    let terminal_node_kind_ids = terminal_node_kinds
+        separator_regex: [
+            r"\n\n+",
+            r"\n",
+            r"[\.\?!]\s+|。|？|！",
+            r"[;:—\-]\s+|；|：|—+",
+            r",\s+|，",
+            r"\s+",
+        ]
         .into_iter()
-        .filter_map(|kind| {
-            let id = tree_sitter_lang.id_for_node_kind(kind, true);
-            if id != 0 {
-                trace!("Got id for node kind: `{kind}` -> {id}");
-                Some(id)
-            } else {
-                error!("Failed in getting id for node kind: `{kind}`");
-                None
-            }
-        })
-        .collect();
-
-    let config = Arc::new(TreesitterLanguageConfig {
-        name: name.to_string(),
-        tree_sitter_lang,
-        terminal_node_kind_ids,
+        .map(|s| Regex::new(s).unwrap())
+        .collect(),
     });
-    for name in std::iter::once(name).chain(aliases.into_iter()) {
-        if output.insert(name.into(), config.clone()).is_some() {
-            panic!("Language `{name}` already exists");
-        }
-    }
-}
-
-static TREE_SITTER_LANGUAGE_BY_LANG: LazyLock<
-    HashMap<UniCase<String>, Arc<TreesitterLanguageConfig>>,
-> = LazyLock::new(|| {
-    let mut map = HashMap::new();
-    add_treesitter_language(&mut map, "C", [".c"], tree_sitter_c::LANGUAGE, []);
-    add_treesitter_language(
-        &mut map,
-        "C++",
-        [".cpp", ".cc", ".cxx", ".h", ".hpp", "cpp"],
-        tree_sitter_c::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "C#",
-        [".cs", "cs", "csharp"],
-        tree_sitter_c_sharp::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "CSS",
-        [".css", ".scss"],
-        tree_sitter_css::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Fortran",
-        [".f", ".f90", ".f95", ".f03", "f", "f90", "f95", "f03"],
-        tree_sitter_fortran::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Go",
-        [".go", "golang"],
-        tree_sitter_go::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "HTML",
-        [".html", ".htm"],
-        tree_sitter_html::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(&mut map, "Java", [".java"], tree_sitter_java::LANGUAGE, []);
-    add_treesitter_language(
-        &mut map,
-        "JavaScript",
-        [".js", "js"],
-        tree_sitter_javascript::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(&mut map, "JSON", [".json"], tree_sitter_json::LANGUAGE, []);
-    add_treesitter_language(
-        &mut map,
-        "Kotlin",
-        [".kt", ".kts"],
-        tree_sitter_kotlin_ng::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Markdown",
-        [".md", ".mdx", "md"],
-        tree_sitter_md::LANGUAGE,
-        ["inline"],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Pascal",
-        [".pas", "pas", ".dpr", "dpr", "Delphi"],
-        tree_sitter_pascal::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(&mut map, "PHP", [".php"], tree_sitter_php::LANGUAGE_PHP, []);
-    add_treesitter_language(
-        &mut map,
-        "Python",
-        [".py"],
-        tree_sitter_python::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(&mut map, "R", [".r"], tree_sitter_r::LANGUAGE, []);
-    add_treesitter_language(&mut map, "Ruby", [".rb"], tree_sitter_ruby::LANGUAGE, []);
-    add_treesitter_language(
-        &mut map,
-        "Rust",
-        [".rs", "rs"],
-        tree_sitter_rust::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Scala",
-        [".scala"],
-        tree_sitter_scala::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(&mut map, "SQL", [".sql"], tree_sitter_sequel::LANGUAGE, []);
-    add_treesitter_language(
-        &mut map,
-        "Swift",
-        [".swift"],
-        tree_sitter_swift::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "TOML",
-        [".toml"],
-        tree_sitter_toml_ng::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "TSX",
-        [".tsx"],
-        tree_sitter_typescript::LANGUAGE_TSX,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "TypeScript",
-        [".ts", "ts"],
-        tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-        [],
-    );
-    add_treesitter_language(&mut map, "XML", [".xml"], tree_sitter_xml::LANGUAGE_XML, []);
-    add_treesitter_language(&mut map, "DTD", [".dtd"], tree_sitter_xml::LANGUAGE_DTD, []);
-    add_treesitter_language(
-        &mut map,
-        "YAML",
-        [".yaml", ".yml"],
-        tree_sitter_yaml::LANGUAGE,
-        [],
-    );
-    add_treesitter_language(
-        &mut map,
-        "Solidity",
-        [".sol"],
-        tree_sitter_solidity::LANGUAGE,
-        [],
-    );
-    map
-});
 
 enum ChunkKind<'t> {
     TreeSitterNode {
-        lang_config: &'t TreesitterLanguageConfig,
+        tree_sitter_info: &'t program_langs::TreeSitterLanguageInfo,
         node: tree_sitter::Node<'t>,
     },
     RegexpSepChunk {
@@ -260,15 +75,10 @@ struct Chunk<'t, 's: 't> {
     kind: ChunkKind<'t>,
 }
 
-impl<'t, 's: 't> Chunk<'t, 's> {
-    fn text(&self) -> &'s str {
-        self.range.extract_str(self.full_text)
-    }
-}
-
 struct TextChunksIter<'t, 's: 't> {
     lang_config: &'t SimpleLanguageConfig,
-    parent: &'t Chunk<'t, 's>,
+    full_text: &'s str,
+    range: RangeValue,
     matches_iter: Matches<'t, 's>,
     regexp_sep_id: usize,
     next_start_pos: Option<usize>,
@@ -277,15 +87,19 @@ struct TextChunksIter<'t, 's: 't> {
 impl<'t, 's: 't> TextChunksIter<'t, 's> {
     fn new(
         lang_config: &'t SimpleLanguageConfig,
-        parent: &'t Chunk<'t, 's>,
+        full_text: &'s str,
+        range: RangeValue,
         regexp_sep_id: usize,
     ) -> Self {
+        let std_range = range.start..range.end;
         Self {
             lang_config,
-            parent,
-            matches_iter: lang_config.separator_regex[regexp_sep_id].find_iter(parent.text()),
+            full_text,
+            range,
+            matches_iter: lang_config.separator_regex[regexp_sep_id]
+                .find_iter(&full_text[std_range.clone()]),
             regexp_sep_id,
-            next_start_pos: Some(parent.range.start),
+            next_start_pos: Some(std_range.start),
         }
     }
 }
@@ -297,19 +111,19 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
         let start_pos = self.next_start_pos?;
         let end_pos = match self.matches_iter.next() {
             Some(grp) => {
-                self.next_start_pos = Some(self.parent.range.start + grp.end());
-                self.parent.range.start + grp.start()
+                self.next_start_pos = Some(self.range.start + grp.end());
+                self.range.start + grp.start()
             }
             None => {
                 self.next_start_pos = None;
-                if start_pos >= self.parent.range.end {
+                if start_pos >= self.range.end {
                     return None;
                 }
-                self.parent.range.end
+                self.range.end
             }
         };
         Some(Chunk {
-            full_text: self.parent.full_text,
+            full_text: self.full_text,
             range: RangeValue::new(start_pos, end_pos),
             kind: ChunkKind::RegexpSepChunk {
                 lang_config: self.lang_config,
@@ -320,7 +134,7 @@ impl<'t, 's: 't> Iterator for TextChunksIter<'t, 's> {
 }
 
 struct TreeSitterNodeIter<'t, 's: 't> {
-    lang_config: &'t TreesitterLanguageConfig,
+    lang_config: &'t program_langs::TreeSitterLanguageInfo,
     full_text: &'s str,
     cursor: Option<tree_sitter::TreeCursor<'t>>,
     next_start_pos: usize,
@@ -373,10 +187,28 @@ impl<'t, 's: 't> Iterator for TreeSitterNodeIter<'t, 's> {
             full_text: self.full_text,
             range: RangeValue::new(node.start_byte(), node.end_byte()),
             kind: ChunkKind::TreeSitterNode {
-                lang_config: self.lang_config,
+                tree_sitter_info: self.lang_config,
                 node,
             },
         })
+    }
+}
+
+enum ChunkIterator<'t, 's: 't> {
+    TreeSitter(TreeSitterNodeIter<'t, 's>),
+    Text(TextChunksIter<'t, 's>),
+    Once(std::iter::Once<Chunk<'t, 's>>),
+}
+
+impl<'t, 's: 't> Iterator for ChunkIterator<'t, 's> {
+    type Item = Chunk<'t, 's>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ChunkIterator::TreeSitter(iter) => iter.next(),
+            ChunkIterator::Text(iter) => iter.next(),
+            ChunkIterator::Once(iter) => iter.next(),
+        }
     }
 }
 
@@ -422,18 +254,17 @@ const INLINE_SPACE_CHARS: [char; 2] = [' ', '\t'];
 struct AtomChunk {
     range: RangeValue,
     boundary_syntax_level: usize,
-
     internal_lb_level: LineBreakLevel,
     boundary_lb_level: LineBreakLevel,
 }
 
 struct AtomChunksCollector<'s> {
     full_text: &'s str,
-
     curr_level: usize,
     min_level: usize,
     atom_chunks: Vec<AtomChunk>,
 }
+
 impl<'s> AtomChunksCollector<'s> {
     fn collect(&mut self, range: RangeValue) {
         // Trim trailing whitespaces.
@@ -489,81 +320,82 @@ struct RecursiveChunker<'s> {
     chunk_size: usize,
     chunk_overlap: usize,
     min_chunk_size: usize,
+    min_atom_chunk_size: usize,
 }
 
 impl<'t, 's: 't> RecursiveChunker<'s> {
-    fn collect_atom_chunks_from_iter(
-        &self,
-        sub_chunks_iter: impl Iterator<Item = Chunk<'t, 's>>,
-        atom_collector: &mut AtomChunksCollector<'s>,
-    ) -> Result<()> {
-        atom_collector.curr_level += 1;
-        for sub_chunk in sub_chunks_iter {
-            let range = sub_chunk.range;
-            if range.len() <= self.min_chunk_size {
-                atom_collector.collect(range);
-            } else {
-                self.collect_atom_chunks(sub_chunk, atom_collector)?;
-            }
-        }
-        atom_collector.curr_level -= 1;
-        if atom_collector.curr_level < atom_collector.min_level {
-            atom_collector.min_level = atom_collector.curr_level;
-        }
-        Ok(())
-    }
-
     fn collect_atom_chunks(
         &self,
         chunk: Chunk<'t, 's>,
         atom_collector: &mut AtomChunksCollector<'s>,
     ) -> Result<()> {
-        match chunk.kind {
-            ChunkKind::TreeSitterNode { lang_config, node } => {
-                if !lang_config.terminal_node_kind_ids.contains(&node.kind_id())
-                    && atom_collector.curr_level < TREESITTER_MAX_RECURSION_DEPTH
-                {
-                    let mut cursor = node.walk();
-                    if cursor.goto_first_child() {
-                        return self.collect_atom_chunks_from_iter(
-                            TreeSitterNodeIter {
-                                lang_config,
+        let mut iter_stack: Vec<ChunkIterator<'t, 's>> =
+            vec![ChunkIterator::Once(std::iter::once(chunk))];
+
+        while !iter_stack.is_empty() {
+            atom_collector.curr_level = iter_stack.len();
+
+            if let Some(current_chunk) = iter_stack.last_mut().unwrap().next() {
+                if current_chunk.range.len() <= self.min_atom_chunk_size {
+                    atom_collector.collect(current_chunk.range);
+                } else {
+                    match current_chunk.kind {
+                        ChunkKind::TreeSitterNode {
+                            tree_sitter_info: lang_config,
+                            node,
+                        } => {
+                            if !lang_config.terminal_node_kind_ids.contains(&node.kind_id()) {
+                                let mut cursor = node.walk();
+                                if cursor.goto_first_child() {
+                                    iter_stack.push(ChunkIterator::TreeSitter(
+                                        TreeSitterNodeIter {
+                                            lang_config,
+                                            full_text: self.full_text,
+                                            cursor: Some(cursor),
+                                            next_start_pos: node.start_byte(),
+                                            end_pos: node.end_byte(),
+                                        },
+                                    ));
+                                    continue;
+                                }
+                            }
+                            iter_stack.push(ChunkIterator::Once(std::iter::once(Chunk {
                                 full_text: self.full_text,
-                                cursor: Some(cursor),
-                                next_start_pos: node.start_byte(),
-                                end_pos: node.end_byte(),
-                            },
-                            atom_collector,
-                        );
+                                range: current_chunk.range,
+                                kind: ChunkKind::RegexpSepChunk {
+                                    lang_config: &DEFAULT_LANGUAGE_CONFIG,
+                                    next_regexp_sep_id: 0,
+                                },
+                            })));
+                        }
+                        ChunkKind::RegexpSepChunk {
+                            lang_config,
+                            next_regexp_sep_id,
+                        } => {
+                            if next_regexp_sep_id >= lang_config.separator_regex.len() {
+                                atom_collector.collect(current_chunk.range);
+                            } else {
+                                iter_stack.push(ChunkIterator::Text(TextChunksIter::new(
+                                    lang_config,
+                                    current_chunk.full_text,
+                                    current_chunk.range,
+                                    next_regexp_sep_id,
+                                )));
+                            }
+                        }
                     }
                 }
-                self.collect_atom_chunks(
-                    Chunk {
-                        full_text: self.full_text,
-                        range: chunk.range,
-                        kind: ChunkKind::RegexpSepChunk {
-                            lang_config: &DEFAULT_LANGUAGE_CONFIG,
-                            next_regexp_sep_id: 0,
-                        },
-                    },
-                    atom_collector,
-                )
-            }
-            ChunkKind::RegexpSepChunk {
-                lang_config,
-                next_regexp_sep_id,
-            } => {
-                if next_regexp_sep_id >= lang_config.separator_regex.len() {
-                    atom_collector.collect(chunk.range);
-                    Ok(())
-                } else {
-                    self.collect_atom_chunks_from_iter(
-                        TextChunksIter::new(lang_config, &chunk, next_regexp_sep_id),
-                        atom_collector,
-                    )
+            } else {
+                iter_stack.pop();
+                let level_after_pop = iter_stack.len();
+                atom_collector.curr_level = level_after_pop;
+                if level_after_pop < atom_collector.min_level {
+                    atom_collector.min_level = level_after_pop;
                 }
             }
         }
+        atom_collector.curr_level = 0;
+        Ok(())
     }
 
     fn get_overlap_cost_base(&self, offset: usize) -> usize {
@@ -800,19 +632,29 @@ impl SimpleFunctionExecutor for Executor {
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
         let full_text = self.args.text.value(&input)?.as_str()?;
         let chunk_size = self.args.chunk_size.value(&input)?.as_int64()?;
-        let recursive_chunker = RecursiveChunker {
-            full_text,
-            chunk_size: chunk_size as usize,
-            chunk_overlap: (self.args.chunk_overlap.value(&input)?)
+        let min_chunk_size = (self.args.min_chunk_size.value(&input)?)
+            .optional()
+            .map(|v| v.as_int64())
+            .transpose()?
+            .unwrap_or(chunk_size / 2) as usize;
+        let chunk_overlap = std::cmp::min(
+            (self.args.chunk_overlap.value(&input)?)
                 .optional()
                 .map(|v| v.as_int64())
                 .transpose()?
                 .unwrap_or(0) as usize,
-            min_chunk_size: (self.args.min_chunk_size.value(&input)?)
-                .optional()
-                .map(|v| v.as_int64())
-                .transpose()?
-                .unwrap_or(chunk_size / 2) as usize,
+            min_chunk_size,
+        );
+        let recursive_chunker = RecursiveChunker {
+            full_text,
+            chunk_size: chunk_size as usize,
+            chunk_overlap,
+            min_chunk_size,
+            min_atom_chunk_size: if chunk_overlap > 0 {
+                chunk_overlap
+            } else {
+                min_chunk_size
+            },
         };
 
         let language = UniCase::new(
@@ -828,14 +670,16 @@ impl SimpleFunctionExecutor for Executor {
                 lang_config,
                 next_regexp_sep_id: 0,
             })?
-        } else if let Some(lang_config) = TREE_SITTER_LANGUAGE_BY_LANG.get(&language) {
+        } else if let Some(lang_info) = program_langs::get_language_info(&language)
+            && let Some(tree_sitter_info) = lang_info.treesitter_info.as_ref()
+        {
             let mut parser = tree_sitter::Parser::new();
-            parser.set_language(&lang_config.tree_sitter_lang)?;
-            let tree = parser.parse(full_text.as_ref(), None).ok_or_else(|| {
-                anyhow!("failed in parsing text in language: {}", lang_config.name)
-            })?;
+            parser.set_language(&tree_sitter_info.tree_sitter_lang)?;
+            let tree = parser
+                .parse(full_text.as_ref(), None)
+                .ok_or_else(|| anyhow!("failed in parsing text in language: {}", lang_info.name))?;
             recursive_chunker.split_root_chunk(ChunkKind::TreeSitterNode {
-                lang_config,
+                tree_sitter_info,
                 node: tree.root_node(),
             })?
         } else {
@@ -940,10 +784,9 @@ pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
 mod tests {
     use super::*;
     use crate::ops::functions::test_utils::test_flow_function;
-    use crate::ops::sdk::{BasicValueType, KeyValue, RangeValue, make_output_type};
+    use crate::ops::sdk::{BasicValueType, KeyPart, KeyValue, make_output_type};
     use crate::ops::shared::split::OutputPosition;
 
-    // Helper function to build the standard input argument schemas for split_recursively tests
     fn build_split_recursively_arg_schemas() -> Vec<(Option<&'static str>, EnrichedValueType)> {
         vec![
             (
@@ -1014,7 +857,7 @@ mod tests {
                                     scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
                                         panic!("Chunk text not a string for key {key:?}")
                                     });
-                                assert_eq!(**chunk_text, *expected_text);
+                                assert_eq!(*chunk_text, expected_text.into());
                             }
                             None => panic!("Expected row value for key {key:?}, not found"),
                         }
@@ -1159,11 +1002,6 @@ mod tests {
                 ],
             )
             .await;
-            assert!(
-                result.is_ok(),
-                "test_flow_function failed: {:?}",
-                result.err()
-            );
             let value = result.unwrap();
             match value {
                 Value::KTable(table) => {
@@ -1177,11 +1015,8 @@ mod tests {
                         let key = KeyValue::from_single_part(range);
                         match table.get(&key) {
                             Some(scope_value_ref) => {
-                                let chunk_text =
-                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
-                                        panic!("Chunk text not a string for key {key:?}")
-                                    });
-                                assert_eq!(**chunk_text, *expected_text);
+                                let chunk_text = scope_value_ref.0.fields[0].as_str().unwrap();
+                                assert_eq!(*chunk_text, expected_text.into());
                             }
                             None => panic!("Expected row value for key {key:?}, not found"),
                         }
@@ -1207,25 +1042,16 @@ mod tests {
                 ],
             )
             .await;
-            assert!(
-                result.is_ok(),
-                "test_flow_function failed: {:?}",
-                result.err()
-            );
             let value = result.unwrap();
             match value {
                 Value::KTable(table) => {
-                    // Expect multiple chunks, likely split by spaces due to chunk_size.
                     assert!(table.len() > 1);
 
                     let key = KeyValue::from_single_part(RangeValue::new(0, 16));
                     match table.get(&key) {
                         Some(scope_value_ref) => {
-                            let chunk_text =
-                                scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
-                                    panic!("Chunk text not a string for key {key:?}")
-                                });
-                            assert_eq!(&**chunk_text, "A very very long");
+                            let chunk_text = scope_value_ref.0.fields[0].as_str().unwrap();
+                            assert_eq!(*chunk_text, "A very very long".into());
                             assert!(chunk_text.len() <= 20);
                         }
                         None => panic!("Expected row value for key {key:?}, not found"),
@@ -1259,26 +1085,21 @@ mod tests {
                 ],
             )
             .await;
-            assert!(
-                result.is_ok(),
-                "test_flow_function failed: {:?}",
-                result.err()
-            );
             let value = result.unwrap();
             match value {
                 Value::KTable(table) => {
                     assert!(table.len() > 1);
 
-                    // Check first chunk length
                     if table.len() >= 2 {
                         let first_key = table.keys().next().unwrap();
                         match table.get(first_key) {
                             Some(scope_value_ref) => {
-                                let chunk_text =
-                                    scope_value_ref.0.fields[0].as_str().unwrap_or_else(|_| {
-                                        panic!("Chunk text not a string for key {first_key:?}")
-                                    });
-                                assert!(chunk_text.len() <= 25);
+                                let chunk_text = scope_value_ref.0.fields[0].as_str().unwrap();
+                                assert!(
+                                    chunk_text.len() <= 25,
+                                    "Chunk was too long: '{}'",
+                                    chunk_text
+                                );
                             }
                             None => panic!("Expected row value for first key, not found"),
                         }
@@ -1295,7 +1116,7 @@ mod tests {
             custom_languages: vec![],
         };
         let factory = Arc::new(Factory);
-        let text = "  \n First chunk. \n\n  Second chunk with spaces at the end.   \n";
+        let text = "  \n First chunk  \n\n  Second chunk with spaces at the end    \n";
         let input_arg_schemas = &build_split_recursively_arg_schemas();
 
         {
@@ -1323,9 +1144,9 @@ mod tests {
                     assert_eq!(table.len(), 3);
 
                     let expected_chunks = vec![
-                        (RangeValue::new(3, 16), " First chunk."),
+                        (RangeValue::new(3, 15), " First chunk"),
                         (RangeValue::new(19, 45), "  Second chunk with spaces"),
-                        (RangeValue::new(46, 57), "at the end."),
+                        (RangeValue::new(46, 56), "at the end"),
                     ];
 
                     for (range, expected_text) in expected_chunks {

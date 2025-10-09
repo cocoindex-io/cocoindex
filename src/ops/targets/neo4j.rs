@@ -1070,8 +1070,7 @@ impl TargetFactoryBase for Factory {
                 },
                 &retry_options,
             )
-            .await
-            .map_err(Into::<anyhow::Error>::into)?
+            .await?;
         }
         Ok(())
     }
