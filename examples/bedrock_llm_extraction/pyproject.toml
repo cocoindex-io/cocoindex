@@ -1,0 +1,9 @@
+[project]
+name = "manuals-llm-extraction"
+version = "0.1.0"
+description = "Simple example for cocoindex: extract structured information from a Markdown file using LLM."
+requires-python = ">=3.11"
+dependencies = ["cocoindex>=0.2.8", "marker-pdf>=1.8.5"]
+
+[tool.setuptools]
+packages = []
