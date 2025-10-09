@@ -580,7 +580,6 @@ impl SetupState {
                                 index_def.field_name
                             )
                         })?,
-                    index_def.method.clone(),
                 )?,
             });
         }
@@ -650,7 +649,6 @@ impl IndexDef {
     fn from_vector_index_def(
         index_def: &spec::VectorIndexDef,
         field_typ: &schema::ValueType,
-        _method: Option<spec::VectorIndexMethod>,
     ) -> Result<Self> {
         let method = index_def.method.clone();
         if let Some(spec::VectorIndexMethod::IvfFlat { .. }) = method {

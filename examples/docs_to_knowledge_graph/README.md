@@ -16,7 +16,7 @@ Please drop [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a s
 *   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
 *   Install [Neo4j](https://cocoindex.io/docs/ops/targets#neo4j-dev-instance) or [Kuzu](https://cocoindex.io/docs/ops/targets#kuzu-dev-instance) if you don't have one.
     *   The example uses Neo4j by default for now. If you want to use Kuzu, find out the "SELECT ONE GRAPH DATABASE TO USE" section and switch the active branch.
-*   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).
+*   Install / configure LLM API. In this example we use Ollama, which runs LLM model locally. You need to get it ready following [this guide](https://cocoindex.io/docs/ai/llm#ollama). Alternatively, you can also follow the comments in source code to switch to OpenAI, and [configure OpenAI API key](https://cocoindex.io/docs/ai/llm#openai) before running the example.
 
 ## Documentation
 You can read the official CocoIndex Documentation for Property Graph Targets [here](https://cocoindex.io/docs/ops/targets#property-graph-targets).

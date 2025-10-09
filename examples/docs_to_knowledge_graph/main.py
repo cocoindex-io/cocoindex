@@ -84,7 +84,6 @@ def docs_to_kg_flow(
                     # Supported LLM: https://cocoindex.io/docs/ai/llm
                     api_type=cocoindex.LlmApiType.OLLAMA,
                     model="llama3.2",
-                    address="http://localhost:11434",
                 ),
                 # Alternative: Use OpenAI API model instead of Ollama
                 # llm_spec=cocoindex.LlmSpec(
@@ -108,7 +107,6 @@ def docs_to_kg_flow(
                     # Supported LLM: https://cocoindex.io/docs/ai/llm
                     api_type=cocoindex.LlmApiType.OLLAMA,
                     model="llama3.2",
-                    address="http://localhost:11434",
                 ),
                 # Alternative: Use OpenAI API model instead of Ollama
                 # llm_spec=cocoindex.LlmSpec(
