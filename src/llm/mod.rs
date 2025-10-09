@@ -33,34 +33,10 @@ pub struct OpenAiConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AnthropicConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GeminiConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VoyageConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LiteLlmConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpenRouterConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VllmConfig {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum LlmApiConfig {
     VertexAi(VertexAiConfig),
     OpenAi(OpenAiConfig),
-    Anthropic(AnthropicConfig),
-    Gemini(GeminiConfig),
-    Voyage(VoyageConfig),
-    LiteLlm(LiteLlmConfig),
-    OpenRouter(OpenRouterConfig),
-    Vllm(VllmConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

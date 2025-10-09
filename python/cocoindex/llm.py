@@ -37,48 +37,6 @@ class OpenAiConfig:
 
 
 @dataclass
-class AnthropicConfig:
-    """A specification for an Anthropic LLM."""
-
-    kind = "Anthropic"
-
-
-@dataclass
-class GeminiConfig:
-    """A specification for a Gemini LLM."""
-
-    kind = "Gemini"
-
-
-@dataclass
-class VoyageConfig:
-    """A specification for a Voyage LLM."""
-
-    kind = "Voyage"
-
-
-@dataclass
-class LiteLlmConfig:
-    """A specification for a LiteLLM LLM."""
-
-    kind = "LiteLlm"
-
-
-@dataclass
-class OpenRouterConfig:
-    """A specification for an OpenRouter LLM."""
-
-    kind = "OpenRouter"
-
-
-@dataclass
-class VllmConfig:
-    """A specification for a VLLM LLM."""
-
-    kind = "Vllm"
-
-
-@dataclass
 class LlmSpec:
     """A specification for a LLM."""
 
@@ -89,11 +47,5 @@ class LlmSpec:
     api_config: (
         VertexAiConfig
         | OpenAiConfig
-        | AnthropicConfig
-        | GeminiConfig
-        | VoyageConfig
-        | LiteLlmConfig
-        | OpenRouterConfig
-        | VllmConfig
         | None
     ) = None
