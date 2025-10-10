@@ -66,7 +66,7 @@ def image_object_embedding_flow(flow_builder, data_scope):
 
 The `add_source` function sets up a table with fields like `filename` and `content`. Images are automatically re-scanned every minute.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources#localfile" text="LocalFile" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/sources/localfile" text="LocalFile" />
 
 
 ## Process Each Image and Collect the Embedding
