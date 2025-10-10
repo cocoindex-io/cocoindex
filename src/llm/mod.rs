@@ -44,6 +44,7 @@ pub struct LlmSpec {
     pub api_type: LlmApiType,
     pub address: Option<String>,
     pub model: String,
+    pub api_key: Option<String>,
     pub api_config: Option<LlmApiConfig>,
 }
 
@@ -117,34 +118,35 @@ mod voyage;
 pub async fn new_llm_generation_client(
     api_type: LlmApiType,
     address: Option<String>,
+    api_key: Option<String>,
     api_config: Option<LlmApiConfig>,
 ) -> Result<Box<dyn LlmGenerationClient>> {
     let client = match api_type {
         LlmApiType::Ollama => {
             Box::new(ollama::Client::new(address).await?) as Box<dyn LlmGenerationClient>
         }
-        LlmApiType::OpenAi => {
-            Box::new(openai::Client::new(address, api_config)?) as Box<dyn LlmGenerationClient>
-        }
+        LlmApiType::OpenAi => Box::new(openai::Client::new(address, api_key, api_config)?)
+            as Box<dyn LlmGenerationClient>,
         LlmApiType::Gemini => {
-            Box::new(gemini::AiStudioClient::new(address)?) as Box<dyn LlmGenerationClient>
+            Box::new(gemini::AiStudioClient::new(address, api_key)?) as Box<dyn LlmGenerationClient>
         }
-        LlmApiType::VertexAi => Box::new(gemini::VertexAiClient::new(address, api_config).await?)
+        LlmApiType::VertexAi => {
+            Box::new(gemini::VertexAiClient::new(address, api_key, api_config).await?)
+                as Box<dyn LlmGenerationClient>
+        }
+        LlmApiType::Anthropic => Box::new(anthropic::Client::new(address, api_key).await?)
             as Box<dyn LlmGenerationClient>,
-        LlmApiType::Anthropic => {
-            Box::new(anthropic::Client::new(address).await?) as Box<dyn LlmGenerationClient>
-        }
-        LlmApiType::LiteLlm => {
-            Box::new(litellm::Client::new_litellm(address).await?) as Box<dyn LlmGenerationClient>
-        }
-        LlmApiType::OpenRouter => Box::new(openrouter::Client::new_openrouter(address).await?)
+        LlmApiType::LiteLlm => Box::new(litellm::Client::new_litellm(address, api_key).await?)
             as Box<dyn LlmGenerationClient>,
+        LlmApiType::OpenRouter => {
+            Box::new(openrouter::Client::new_openrouter(address, api_key).await?)
+                as Box<dyn LlmGenerationClient>
+        }
         LlmApiType::Voyage => {
             api_bail!("Voyage is not supported for generation")
         }
-        LlmApiType::Vllm => {
-            Box::new(vllm::Client::new_vllm(address).await?) as Box<dyn LlmGenerationClient>
-        }
+        LlmApiType::Vllm => Box::new(vllm::Client::new_vllm(address, api_key).await?)
+            as Box<dyn LlmGenerationClient>,
     };
     Ok(client)
 }
@@ -152,6 +154,7 @@ pub async fn new_llm_generation_client(
 pub async fn new_llm_embedding_client(
     api_type: LlmApiType,
     address: Option<String>,
+    api_key: Option<String>,
     api_config: Option<LlmApiConfig>,
 ) -> Result<Box<dyn LlmEmbeddingClient>> {
     let client = match api_type {
@@ -159,16 +162,17 @@ pub async fn new_llm_embedding_client(
             Box::new(ollama::Client::new(address).await?) as Box<dyn LlmEmbeddingClient>
         }
         LlmApiType::Gemini => {
-            Box::new(gemini::AiStudioClient::new(address)?) as Box<dyn LlmEmbeddingClient>
+            Box::new(gemini::AiStudioClient::new(address, api_key)?) as Box<dyn LlmEmbeddingClient>
         }
-        LlmApiType::OpenAi => {
-            Box::new(openai::Client::new(address, api_config)?) as Box<dyn LlmEmbeddingClient>
-        }
-        LlmApiType::Voyage => {
-            Box::new(voyage::Client::new(address)?) as Box<dyn LlmEmbeddingClient>
-        }
-        LlmApiType::VertexAi => Box::new(gemini::VertexAiClient::new(address, api_config).await?)
+        LlmApiType::OpenAi => Box::new(openai::Client::new(address, api_key, api_config)?)
             as Box<dyn LlmEmbeddingClient>,
+        LlmApiType::Voyage => {
+            Box::new(voyage::Client::new(address, api_key)?) as Box<dyn LlmEmbeddingClient>
+        }
+        LlmApiType::VertexAi => {
+            Box::new(gemini::VertexAiClient::new(address, api_key, api_config).await?)
+                as Box<dyn LlmEmbeddingClient>
+        }
         LlmApiType::OpenRouter | LlmApiType::LiteLlm | LlmApiType::Vllm | LlmApiType::Anthropic => {
             api_bail!("Embedding is not supported for API type {:?}", api_type)
         }

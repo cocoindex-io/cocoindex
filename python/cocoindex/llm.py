@@ -43,4 +43,5 @@ class LlmSpec:
     api_type: LlmApiType
     model: str
     address: str | None = None
+    api_key: str | None = None
     api_config: VertexAiConfig | OpenAiConfig | None = None

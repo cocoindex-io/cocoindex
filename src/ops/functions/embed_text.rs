@@ -13,6 +13,7 @@ struct Spec {
     api_config: Option<LlmApiConfig>,
     output_dimension: Option<u32>,
     task_type: Option<String>,
+    api_key: Option<String>,
 }
 
 struct Args {
@@ -91,9 +92,14 @@ impl SimpleFunctionFactoryBase for Factory {
             .next_arg("text")?
             .expect_type(&ValueType::Basic(BasicValueType::Str))?
             .required()?;
-        let client =
-            new_llm_embedding_client(spec.api_type, spec.address.clone(), spec.api_config.clone())
-                .await?;
+
+        let client = new_llm_embedding_client(
+            spec.api_type,
+            spec.address.clone(),
+            spec.api_key.clone(),
+            spec.api_config.clone(),
+        )
+        .await?;
         let output_dimension = match spec.output_dimension {
             Some(output_dimension) => output_dimension,
             None => {
@@ -144,6 +150,7 @@ mod tests {
             api_config: None,
             output_dimension: None,
             task_type: None,
+            api_key: None,
         };
 
         let factory = Arc::new(Factory);
