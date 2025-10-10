@@ -52,7 +52,7 @@ data_scope["documents"] = flow_builder.add_source(
     cocoindex.sources.LocalFile(path="source_files", binary=True)
 )
 ```
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources#localfile" text="LocalFile" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/ops/sources/localfile" text="LocalFile" margin="0 0 16px 0" />
 
 
 ## Convert Files to Pages
