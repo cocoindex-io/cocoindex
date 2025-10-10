@@ -33,11 +33,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(
-        address: Option<String>,
-        api_key: Option<String>,
-        _api_config: Option<super::LlmApiConfig>,
-    ) -> Result<Self> {
+    pub fn new(address: Option<String>, api_key: Option<String>) -> Result<Self> {
         if address.is_some() {
             api_bail!("Voyage AI doesn't support custom API address");
         }

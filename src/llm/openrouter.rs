@@ -7,7 +7,6 @@ impl Client {
     pub async fn new_openrouter(
         address: Option<String>,
         api_key: Option<String>,
-        _api_config: Option<super::LlmApiConfig>,
     ) -> anyhow::Result<Self> {
         let address = address.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
 

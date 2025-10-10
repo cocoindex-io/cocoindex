@@ -93,44 +93,11 @@ impl SimpleFunctionFactoryBase for Factory {
             .expect_type(&ValueType::Basic(BasicValueType::Str))?
             .required()?;
 
-        // Create API config based on api_key parameter if provided
-        let api_config = if let Some(_api_key) = &spec.api_key {
-            match spec.api_type {
-                LlmApiType::OpenAi => Some(LlmApiConfig::OpenAi(
-                    super::super::super::llm::OpenAiConfig {
-                        org_id: None,
-                        project_id: None,
-                    },
-                )),
-                LlmApiType::Anthropic
-                | LlmApiType::Gemini
-                | LlmApiType::Voyage
-                | LlmApiType::LiteLlm
-                | LlmApiType::OpenRouter
-                | LlmApiType::Vllm => {
-                    // These API types don't require a config, just an API key
-                    None
-                }
-                _ => {
-                    if let Some(config) = spec.api_config.clone() {
-                        Some(config)
-                    } else {
-                        api_bail!(
-                            "API key parameter is not supported for API type {:?}",
-                            spec.api_type
-                        )
-                    }
-                }
-            }
-        } else {
-            spec.api_config.clone()
-        };
-
         let client = new_llm_embedding_client(
             spec.api_type,
             spec.address.clone(),
             spec.api_key.clone(),
-            api_config,
+            spec.api_config.clone(),
         )
         .await?;
         let output_dimension = match spec.output_dimension {

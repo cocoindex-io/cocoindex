@@ -14,11 +14,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub async fn new(
-        address: Option<String>,
-        api_key: Option<String>,
-        _api_config: Option<super::LlmApiConfig>,
-    ) -> Result<Self> {
+    pub async fn new(address: Option<String>, api_key: Option<String>) -> Result<Self> {
         if address.is_some() {
             api_bail!("Anthropic doesn't support custom API address");
         }
