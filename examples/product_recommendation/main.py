@@ -94,8 +94,12 @@ class ProductTaxonomyInfo:
     - complementary_taxonomies: Think about when customers buy this product, what else they might need as complementary products. Put labels for these complentary products.
     """
 
-    taxonomies: list[ProductTaxonomy]
-    complementary_taxonomies: list[ProductTaxonomy]
+    taxonomies: list[ProductTaxonomy] = dataclasses.field(
+        metadata={"description": "Taxonomies for the current product."}
+    )
+    complementary_taxonomies: list[ProductTaxonomy] = dataclasses.field(
+        metadata={"description": "Think about when customers buy this product, what else they might need as complementary products. Put labels for these complentary products."}
+    )
 
 
 @cocoindex.op.function(behavior_version=2)
