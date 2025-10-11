@@ -425,10 +425,6 @@ impl SourceExecutor for PostgresSourceExecutor {
         if let Some(where_clause) = &self.filter {
             write!(&mut query, " WHERE {}", where_clause)?;
         }
-        // Add ordering by ordinal column if specified
-        if let Some(ord_schema) = &self.table_schema.ordinal_field_schema {
-            write!(&mut query, " ORDER BY \"{}\"", ord_schema.schema.name)?;
-        }
 
         let stream = try_stream! {
             let mut rows = sqlx::query(&query).fetch(&self.db_pool);
