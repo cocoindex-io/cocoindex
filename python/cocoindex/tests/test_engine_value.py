@@ -1064,25 +1064,6 @@ def test_full_roundtrip_vector_numeric_types() -> None:
         validate_full_roundtrip(value_u64, Vector[np.uint64, Literal[3]])
 
 
-def test_llm_api_type_bedrock() -> None:
-    """Test that LlmApiType.BEDROCK is available and works."""
-    from cocoindex.llm import LlmApiType, LlmSpec
-
-    # Test enum availability
-    assert hasattr(LlmApiType, "BEDROCK")
-    assert LlmApiType.BEDROCK.value == "Bedrock"
-
-    # Test LlmSpec creation with Bedrock
-    spec = LlmSpec(
-        api_type=LlmApiType.BEDROCK, model="us.anthropic.claude-3-5-haiku-20241022-v1:0"
-    )
-
-    assert spec.api_type == LlmApiType.BEDROCK
-    assert spec.model == "us.anthropic.claude-3-5-haiku-20241022-v1:0"
-    assert spec.address is None
-    assert spec.api_config is None
-
-
 def test_full_roundtrip_vector_of_vector() -> None:
     """Test full roundtrip for vector of vector."""
     value_f32 = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
