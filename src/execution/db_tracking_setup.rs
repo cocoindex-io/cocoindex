@@ -45,6 +45,7 @@ async fn upgrade_tracking_table(
                 processed_source_ordinal BIGINT,
                 {opt_fast_fingerprint_column}
                 process_logic_fingerprint BYTEA,
+                process_lineage_fingerprint BYTEA,
                 process_ordinal BIGINT,
                 process_time_micros BIGINT,
                 target_keys JSONB,

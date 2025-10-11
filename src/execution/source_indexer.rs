@@ -283,8 +283,8 @@ impl SourceIndexingContext {
                         version_state: SourceRowVersionState {
                             source_version: SourceVersion::from_stored(
                                 key_metadata.processed_source_ordinal,
-                                &key_metadata.process_logic_fingerprint,
-                                plan.logic_fingerprint,
+                                &key_metadata.process_lineage_fingerprint,
+                                plan.lineage_fingerprint,
                             ),
                             content_version_fp: key_metadata.processed_source_fp,
                         },
