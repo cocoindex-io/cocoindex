@@ -20,6 +20,7 @@ GraphDbConnection = cocoindex.targets.Neo4jConnection
 GraphDbDeclaration = cocoindex.targets.Neo4jDeclaration
 conn_spec = neo4j_conn_spec
 
+
 @dataclasses.dataclass
 class DocumentSummary:
     """Describe a summary of a document."""
