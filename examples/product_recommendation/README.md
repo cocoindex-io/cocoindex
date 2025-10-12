@@ -9,11 +9,11 @@ Please drop [CocoIndex on Github](https://github.com/cocoindex-io/cocoindex) a s
 
 ## Prerequisite
 *   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) 
-*   Install [Neo4j](https://cocoindex.io/docs/ops/targets#neo4j-dev-instance)
+*   Install [Neo4j](https://cocoindex.io/docs/targets#neo4j-dev-instance)
 *   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).
 
 ## Documentation
-You can read the official CocoIndex Documentation for Property Graph Targets [here](https://cocoindex.io/docs/ops/targets#property-graph-targets).
+You can read the official CocoIndex Documentation for Property Graph Targets [here](https://cocoindex.io/docs/targets#property-graph-targets).
 
 ## Run
 

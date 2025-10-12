@@ -14,12 +14,12 @@ Please drop [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a s
 
 ## Prerequisite
 *   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
-*   Install [Neo4j](https://cocoindex.io/docs/ops/targets#neo4j-dev-instance) or [Kuzu](https://cocoindex.io/docs/ops/targets#kuzu-dev-instance) if you don't have one.
+*   Install [Neo4j](https://cocoindex.io/docs/targets#neo4j-dev-instance) or [Kuzu](https://cocoindex.io/docs/targets#kuzu-dev-instance) if you don't have one.
     *   The example uses Neo4j by default for now. If you want to use Kuzu, find out the "SELECT ONE GRAPH DATABASE TO USE" section and switch the active branch.
 *   Install / configure LLM API. In this example we use Ollama, which runs LLM model locally. You need to get it ready following [this guide](https://cocoindex.io/docs/ai/llm#ollama). Alternatively, you can also follow the comments in source code to switch to OpenAI, and [configure OpenAI API key](https://cocoindex.io/docs/ai/llm#openai) before running the example.
 
 ## Documentation
-You can read the official CocoIndex Documentation for Property Graph Targets [here](https://cocoindex.io/docs/ops/targets#property-graph-targets).
+You can read the official CocoIndex Documentation for Property Graph Targets [here](https://cocoindex.io/docs/targets#property-graph-targets).
 
 ## Run
 
@@ -48,7 +48,7 @@ cocoindex update main
 After the knowledge graph is built, you can explore the knowledge graph.
 
 * If you're using Neo4j, you can open the explorer at [http://localhost:7474](http://localhost:7474), with username `neo4j` and password `cocoindex`.
-* If you're using Kuzu, you can start a Kuzu explorer locally. See [Kuzu dev instance](https://cocoindex.io/docs/ops/targets#kuzu-dev-instance) for more details.
+* If you're using Kuzu, you can start a Kuzu explorer locally. See [Kuzu dev instance](https://cocoindex.io/docs/targets#kuzu-dev-instance) for more details.
 
 You can run the following Cypher query to get all relationships:
 

@@ -2,7 +2,7 @@
 
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
-CocoIndex supports Qdrant natively - [documentation](https://cocoindex.io/docs/ops/targets#qdrant). In this example, we will build index flow from text embedding from local markdown files, and query the index. We will use **Qdrant** as the vector database.
+CocoIndex supports Qdrant natively - [documentation](https://cocoindex.io/docs/targets#qdrant). In this example, we will build index flow from text embedding from local markdown files, and query the index. We will use **Qdrant** as the vector database.
 
 We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 

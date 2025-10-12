@@ -98,7 +98,7 @@ data_scope["documents"] = flow_builder.add_source(
 doc_embeddings = data_scope.add_collector()
 ```
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Source" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Source" margin="0 0 16px 0" />
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/collectors" text="Collector" margin="0 0 16px 0" />
 
@@ -154,4 +154,4 @@ For a step-by-step walkthrough of each indexing stage and the query path, check 
 
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more with native incremental processing out of box - when new or updated files are detected, the pipeline will capture the changes and only process what's changed.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" margin="0 0 16px 0" />
