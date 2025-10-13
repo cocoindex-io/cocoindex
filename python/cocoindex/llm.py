@@ -14,6 +14,7 @@ class LlmApiType(Enum):
     OPEN_ROUTER = "OpenRouter"
     VOYAGE = "Voyage"
     VLLM = "Vllm"
+    BEDROCK = "Bedrock"
 
 
 @dataclass

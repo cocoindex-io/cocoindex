@@ -18,6 +18,7 @@ pub enum LlmApiType {
     Voyage,
     Vllm,
     VertexAi,
+    Bedrock,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +108,7 @@ pub trait LlmEmbeddingClient: Send + Sync {
 }
 
 mod anthropic;
+mod bedrock;
 mod gemini;
 mod litellm;
 mod ollama;
@@ -136,6 +138,9 @@ pub async fn new_llm_generation_client(
         }
         LlmApiType::Anthropic => Box::new(anthropic::Client::new(address, api_key).await?)
             as Box<dyn LlmGenerationClient>,
+        LlmApiType::Bedrock => {
+            Box::new(bedrock::Client::new(address).await?) as Box<dyn LlmGenerationClient>
+        }
         LlmApiType::LiteLlm => Box::new(litellm::Client::new_litellm(address, api_key).await?)
             as Box<dyn LlmGenerationClient>,
         LlmApiType::OpenRouter => {
@@ -173,7 +178,11 @@ pub async fn new_llm_embedding_client(
             Box::new(gemini::VertexAiClient::new(address, api_key, api_config).await?)
                 as Box<dyn LlmEmbeddingClient>
         }
-        LlmApiType::OpenRouter | LlmApiType::LiteLlm | LlmApiType::Vllm | LlmApiType::Anthropic => {
+        LlmApiType::OpenRouter
+        | LlmApiType::LiteLlm
+        | LlmApiType::Vllm
+        | LlmApiType::Anthropic
+        | LlmApiType::Bedrock => {
             api_bail!("Embedding is not supported for API type {:?}", api_type)
         }
     };

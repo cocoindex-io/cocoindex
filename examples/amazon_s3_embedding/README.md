@@ -9,7 +9,7 @@ Before running the example, you need to:
 1.  [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
 
 2.  Prepare for Amazon S3.
-    See [Setup for AWS S3](https://cocoindex.io/docs/ops/sources#setup-for-amazon-s3) for more details.
+    See [Setup for AWS S3](https://cocoindex.io/docs/sources/amazons3#setup-for-amazon-s3) for more details.
 
 3.  Create a `.env` file with your Amazon S3 bucket name and (optionally) prefix.
     Start from copying the `.env.example`, and then edit it to fill in your bucket name and prefix.
