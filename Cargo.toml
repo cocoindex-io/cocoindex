@@ -152,3 +152,4 @@ azure_storage_blobs = { version = "0.21.0", default-features = false, features =
 ] }
 serde_path_to_error = "0.1.17"
 expect-test = "1.5.0"
+encoding_rs = "0.8.35"
