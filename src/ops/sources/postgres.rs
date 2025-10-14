@@ -8,6 +8,7 @@ use indoc::formatdoc;
 use sqlx::postgres::types::PgInterval;
 use sqlx::postgres::{PgListener, PgNotification};
 use sqlx::{PgPool, Row};
+use std::fmt::Write;
 
 type PgValueDecoder = fn(&sqlx::postgres::PgRow, usize) -> Result<Value>;
 
@@ -34,6 +35,8 @@ pub struct Spec {
     ordinal_column: Option<String>,
     /// Optional: notification for change capture
     notification: Option<NotificationSpec>,
+    /// Optional: WHERE clause filter for rows (arbitrary SQL boolean expression)
+    filter: Option<String>,
 }
 
 #[derive(Clone)]
@@ -55,6 +58,7 @@ struct PostgresSourceExecutor {
     table_name: String,
     table_schema: PostgresTableSchema,
     notification_ctx: Option<NotificationContext>,
+    filter: Option<String>,
 }
 
 impl PostgresSourceExecutor {
@@ -400,25 +404,29 @@ impl SourceExecutor for PostgresSourceExecutor {
         &self,
         options: &SourceExecutorReadOptions,
     ) -> Result<BoxStream<'async_trait, Result<Vec<PartialSourceRow>>>> {
+        // Build selection including PKs (for keys), and optionally values and ordinal
+        let pk_columns: Vec<String> = self
+            .table_schema
+            .primary_key_columns
+            .iter()
+            .map(|col| format!("\"{}\"", col.schema.name))
+            .collect();
+        let pk_count = pk_columns.len();
+        let mut select_parts = pk_columns;
+        let ordinal_col_index = self.build_selected_columns(&mut select_parts, options);
+
+        let mut query = format!(
+            "SELECT {} FROM \"{}\"",
+            select_parts.join(", "),
+            self.table_name
+        );
+
+        // Add WHERE filter if specified
+        if let Some(where_clause) = &self.filter {
+            write!(&mut query, " WHERE {}", where_clause)?;
+        }
+
         let stream = try_stream! {
-            // Build selection including PKs (for keys), and optionally values and ordinal
-            let pk_columns: Vec<String> = self
-                .table_schema
-                .primary_key_columns
-                .iter()
-                .map(|col| format!("\"{}\"", col.schema.name))
-                .collect();
-            let pk_count = pk_columns.len();
-            let mut select_parts = pk_columns;
-            let ordinal_col_index = self.build_selected_columns(&mut select_parts, options);
-
-            let mut query = format!("SELECT {} FROM \"{}\"", select_parts.join(", "), self.table_name);
-
-            // Add ordering by ordinal column if specified
-            if let Some(ord_schema) = &self.table_schema.ordinal_field_schema {
-                query.push_str(&format!(" ORDER BY \"{}\"", ord_schema.schema.name));
-            }
-
             let mut rows = sqlx::query(&query).fetch(&self.db_pool);
             while let Some(row) = rows.try_next().await? {
                 // Decode key from PKs (selected first)
@@ -483,6 +491,13 @@ impl SourceExecutor for PostgresSourceExecutor {
             qb.push(pk_col.schema.name.as_str());
             qb.push("\" = ");
             bind_key_field(&mut qb, key_value)?;
+        }
+
+        // Add WHERE filter if specified
+        if let Some(where_clause) = &self.filter {
+            qb.push(" AND (");
+            qb.push(where_clause);
+            qb.push(")");
         }
 
         let row_opt = qb.build().fetch_optional(&self.db_pool).await?;
@@ -804,6 +819,7 @@ impl SourceFactoryBase for Factory {
             table_name: spec.table_name.clone(),
             table_schema,
             notification_ctx,
+            filter: spec.filter,
         };
 
         Ok(Box::new(executor))

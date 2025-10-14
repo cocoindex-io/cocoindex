@@ -133,8 +133,19 @@ pub struct AnalyzedOpScope {
     pub scope_qualifier: String,
 }
 
+pub struct ExecutionPlanLogicFingerprint {
+    pub current: Fingerprint,
+    pub legacy: Fingerprint,
+}
+
+impl ExecutionPlanLogicFingerprint {
+    pub fn matches(&self, other: impl AsRef<[u8]>) -> bool {
+        self.current.as_slice() == other.as_ref() || self.legacy.as_slice() == other.as_ref()
+    }
+}
+
 pub struct ExecutionPlan {
-    pub logic_fingerprint: Fingerprint,
+    pub logic_fingerprint: ExecutionPlanLogicFingerprint,
 
     pub import_ops: Vec<AnalyzedImportOp>,
     pub op_scope: AnalyzedOpScope,
