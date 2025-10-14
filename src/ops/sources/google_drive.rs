@@ -400,9 +400,8 @@ impl SourceExecutor for Executor {
                     if self.binary {
                         content.to_bytes().to_vec().into()
                     } else {
-                        String::from_utf8_lossy(&content.to_bytes())
-                            .to_string()
-                            .into()
+                        let (s, _) = utils::bytes_decode::bytes_to_string(&content.to_bytes());
+                        s.into()
                     },
                 ];
                 Some(SourceValue::Existence(FieldValues { fields }))

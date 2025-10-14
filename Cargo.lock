@@ -1305,6 +1305,7 @@ dependencies = [
  "config",
  "const_format",
  "derivative",
+ "encoding_rs",
  "env_logger",
  "expect-test",
  "futures",
