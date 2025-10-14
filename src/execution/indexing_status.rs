@@ -51,8 +51,10 @@ pub async fn get_source_row_indexing_status(
         processing_time: l
             .process_time_micros
             .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_micros),
-        is_logic_current: Some(src_eval_ctx.plan.logic_fingerprint.0.as_slice())
-            == l.process_logic_fingerprint.as_deref(),
+        is_logic_current: l
+            .process_logic_fingerprint
+            .as_ref()
+            .map_or(false, |fp| src_eval_ctx.plan.logic_fingerprint.matches(fp)),
     });
     let current = SourceRowInfo {
         ordinal: current
