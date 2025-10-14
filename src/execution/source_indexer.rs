@@ -284,7 +284,7 @@ impl SourceIndexingContext {
                             source_version: SourceVersion::from_stored(
                                 key_metadata.processed_source_ordinal,
                                 &key_metadata.process_logic_fingerprint,
-                                plan.logic_fingerprint,
+                                &plan.logic_fingerprint,
                             ),
                             content_version_fp: key_metadata.processed_source_fp,
                         },
