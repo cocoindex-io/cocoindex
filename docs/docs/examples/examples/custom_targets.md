@@ -36,7 +36,7 @@ flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 	)
 ```
 This ingestion creates a table with `filename` and `content` fields.
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" />
 
 ## Process each file and collect
 

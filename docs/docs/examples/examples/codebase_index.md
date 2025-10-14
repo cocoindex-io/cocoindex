@@ -70,7 +70,7 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 - Exclude files and directories starting `.`,  `target` in the root and `node_modules` under any directory.
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`).
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" />
 
 
 ## Process each file and collect the information

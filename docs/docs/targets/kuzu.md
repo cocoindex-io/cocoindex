@@ -5,7 +5,9 @@ toc_max_heading_level: 4
 ---
 import { ExampleButton } from '../../src/components/GitHubButton';
 
-# Kuzu
+# Kuzu (Archived)
+
+Note:[Kuzu](https://github.com/kuzudb/kuzu) - embedded graph database is no longer maintained.
 
 Exports data to a [Kuzu](https://kuzu.com/) graph database.
 

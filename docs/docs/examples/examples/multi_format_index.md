@@ -52,7 +52,7 @@ data_scope["documents"] = flow_builder.add_source(
     cocoindex.sources.LocalFile(path="source_files", binary=True)
 )
 ```
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources/localfile" text="LocalFile" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/sources/localfile" text="LocalFile" margin="0 0 16px 0" />
 
 
 ## Convert Files to Pages
@@ -203,4 +203,4 @@ Follow the url `https://cocoindex.io/cocoinsight`.  It connects to your local Co
 ## Connect to other sources
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" margin="0 0 16px 0" />

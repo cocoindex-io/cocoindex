@@ -59,7 +59,7 @@ CocoIndex incrementally sync data from Postgres. When new or updated rows are fo
 - `notification` enables change capture based on Postgres LISTEN/NOTIFY. Each change triggers an incremental processing on the specific row immediately.
 - Regardless if `notification` is provided or not, CocoIndex still needs to scan the full table to detect changes in some scenarios (e.g. between two `update` invocation), and the `ordinal_column` provides a field that CocoIndex can use to quickly detect which row has changed without reading value columns.
 
-Check [Postgres source](https://cocoindex.io/docs/ops/sources/postgres) for more details.
+Check [Postgres source](https://cocoindex.io/docs/sources/postgres) for more details.
 
 If you use the Postgres database hosted by Supabase, please click Connect on your project dashboard and find the URL there. Check [DatabaseConnectionSpec](https://cocoindex.io/docs/core/settings#databaseconnectionspec)
 for more details.

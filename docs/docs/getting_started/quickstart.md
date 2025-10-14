@@ -64,7 +64,7 @@ doc_embeddings = data_scope.add_collector()
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`)
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Source" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Source" />
 
 <DocumentationButton url="https://cocoindex.io/docs/core/flow_def#data-collector" text="Data Collector" />
 
