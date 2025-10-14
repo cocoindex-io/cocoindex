@@ -400,7 +400,8 @@ impl SourceExecutor for Executor {
                     if self.binary {
                         content.to_bytes().to_vec().into()
                     } else {
-                        let (s, _) = utils::bytes_decode::bytes_to_string(&content.to_bytes());
+                        let bytes = content.to_bytes();
+                        let (s, _) = utils::bytes_decode::bytes_to_string(&bytes);
                         s.into()
                     },
                 ];

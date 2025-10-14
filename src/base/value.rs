@@ -115,6 +115,12 @@ impl From<String> for KeyPart {
     }
 }
 
+impl From<Cow<'_, str>> for KeyPart {
+    fn from(value: Cow<'_, str>) -> Self {
+        KeyPart::Str(Arc::from(value))
+    }
+}
+
 impl From<bool> for KeyPart {
     fn from(value: bool) -> Self {
         KeyPart::Bool(value)
@@ -518,6 +524,12 @@ impl From<Arc<str>> for BasicValue {
 
 impl From<String> for BasicValue {
     fn from(value: String) -> Self {
+        BasicValue::Str(Arc::from(value))
+    }
+}
+
+impl From<Cow<'_, str>> for BasicValue {
+    fn from(value: Cow<'_, str>) -> Self {
         BasicValue::Str(Arc::from(value))
     }
 }
