@@ -2,10 +2,15 @@
 This example shows how to extract relationships from Markdown documents and build a knowledge graph.
 """
 
-import dataclasses
+# New Pydantic Imports
+from pydantic import BaseModel, Field
 import datetime
 import cocoindex
 from jinja2 import Template
+
+# NOTE: dataclasses import is no longer strictly needed but kept for ProductInfo
+import dataclasses 
+
 
 neo4j_conn_spec = cocoindex.add_auth_entry(
     "Neo4jConnection",
@@ -21,6 +26,15 @@ GraphDbConnection = cocoindex.targets.Neo4jConnection
 GraphDbDeclaration = cocoindex.targets.Neo4jDeclaration
 conn_spec = neo4j_conn_spec
 
+<<<<<<< HEAD
+=======
+# Use Kuzu
+#  GraphDbSpec = cocoindex.targets.Kuzu
+#  GraphDbConnection = cocoindex.targets.KuzuConnection
+#  GraphDbDeclaration = cocoindex.targets.KuzuDeclaration
+#  conn_spec = kuzu_conn_spec
+
+>>>>>>> 5ad0ff8 (feat: Pydantic fields)
 
 # Template for rendering product information as markdown to provide information to LLMs
 PRODUCT_TEMPLATE = """
@@ -39,55 +53,55 @@ PRODUCT_TEMPLATE = """
 - {{ bullet }}
 {% endfor %}
 
- """
+ """
 
 
 @dataclasses.dataclass
 class ProductInfo:
+    """Kept as dataclass, as it's not the LLM extraction target."""
     id: str
     title: str
     price: float
     detail: str
 
 
-@dataclasses.dataclass
-class ProductTaxonomy:
+# --- CONVERTED TO PYDANTIC ---
+class ProductTaxonomy(BaseModel):
     """
     Taxonomy for the product.
-
-    A taxonomy is a concise noun (or short noun phrase), based on its core functionality, without specific details such as branding, style, etc.
-
-    Always use the most common words in US English.
-
-    Use lowercase without punctuation, unless it's a proper noun or acronym.
-
-    A product may have multiple taxonomies. Avoid large categories like "office supplies" or "electronics". Use specific ones, like "pen" or "printer".
     """
+    name: str = Field(
+        ...,
+        description=(
+            "A taxonomy is a concise noun (or short noun phrase), based on its core functionality, "
+            "without specific details such as branding, style, etc. Always use the most common words in US English. "
+            "Use lowercase without punctuation, unless it's a proper noun or acronym. "
+            "A product may have multiple taxonomies. Avoid large categories like 'office supplies' or 'electronics'. "
+            "Use specific ones, like 'pen' or 'printer'."
+        ),
+    )
 
-    name: str
 
-
-@dataclasses.dataclass
-class ProductTaxonomyInfo:
+# --- CONVERTED TO PYDANTIC AND FIELD DESCRIPTIONS ADDED ---
+class ProductTaxonomyInfo(BaseModel):
     """
     Taxonomy information for the product.
-
-    Fields:
-    - taxonomies: Taxonomies for the current product.
-    - complementary_taxonomies: Think about when customers buy this product, what else they might need as complementary products. Put labels for these complentary products.
     """
-
-    taxonomies: list[ProductTaxonomy] = dataclasses.field(
-        metadata={"description": "Taxonomies for the current product."}
+    # NOTE: The explicit "Fields:" section in the docstring has been removed.
+    
+    taxonomies: list[ProductTaxonomy] = Field(
+        ...,
+        description="Taxonomies for the current product."
     )
-    complementary_taxonomies: list[ProductTaxonomy] = dataclasses.field(
-        metadata={"description": "Think about when customers buy this product, what else they might need as complementary products. Put labels for these complentary products."}
+    complementary_taxonomies: list[ProductTaxonomy] = Field(
+        ...,
+        description="Think about when customers buy this product, what else they might need as complementary products. Put labels for these complentary products."
     )
 
 
 @cocoindex.op.function(behavior_version=2)
 def extract_product_info(product: cocoindex.Json, filename: str) -> ProductInfo:
-    # Print  markdown for LLM to extract the taxonomy and complimentary taxonomy
+    # Print  markdown for LLM to extract the taxonomy and complimentary taxonomy
     return ProductInfo(
         id=f"{filename.removesuffix('.json')}",
         title=product["title"],
@@ -118,6 +132,7 @@ def store_product_flow(
             .transform(cocoindex.functions.ParseJson(), language="json")
             .transform(extract_product_info, filename=product["filename"])
         )
+        # output_type still points to the refactored class
         taxonomy = data["detail"].transform(
             cocoindex.functions.ExtractByLlm(
                 llm_spec=cocoindex.LlmSpec(
