@@ -17,9 +17,8 @@ from typing import (
 
 from . import _engine  # type: ignore
 from .subprocess_exec import executor_stub
-from .convert import (
-    dump_engine_object,
-    load_engine_object,
+from .engine_object import dump_engine_object, load_engine_object
+from .engine_value import (
     make_engine_value_encoder,
     make_engine_value_decoder,
     make_engine_key_decoder,
@@ -47,6 +46,7 @@ class OpCategory(Enum):
     SOURCE = "source"
     TARGET = "target"
     DECLARATION = "declaration"
+    TARGET_ATTACHMENT = "target_attachment"
 
 
 @dataclass_transform()
@@ -80,6 +80,10 @@ class FunctionSpec(metaclass=SpecMeta, category=OpCategory.FUNCTION):  # pylint:
 
 class TargetSpec(metaclass=SpecMeta, category=OpCategory.TARGET):  # pylint: disable=too-few-public-methods
     """A target spec. All its subclass can be instantiated similar to a dataclass, i.e. ClassName(field1=value1, field2=value2, ...)"""
+
+
+class TargetAttachmentSpec(metaclass=SpecMeta, category=OpCategory.TARGET_ATTACHMENT):  # pylint: disable=too-few-public-methods
+    """A target attachment spec. All its subclass can be instantiated similar to a dataclass, i.e. ClassName(field1=value1, field2=value2, ...)"""
 
 
 class DeclarationSpec(metaclass=SpecMeta, category=OpCategory.DECLARATION):  # pylint: disable=too-few-public-methods

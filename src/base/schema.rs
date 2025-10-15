@@ -325,6 +325,10 @@ pub struct FieldSchema<DataType = ValueType> {
 
     #[serde(flatten)]
     pub value_type: EnrichedValueType<DataType>,
+
+    /// Optional description for the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<Arc<str>>,
 }
 
 impl FieldSchema {
@@ -332,6 +336,19 @@ impl FieldSchema {
         Self {
             name: name.to_string(),
             value_type,
+            description: None,
+        }
+    }
+
+    pub fn new_with_description(
+        name: impl ToString,
+        value_type: EnrichedValueType,
+        description: Option<impl ToString>,
+    ) -> Self {
+        Self {
+            name: name.to_string(),
+            value_type,
+            description: description.map(|d| d.to_string().into()),
         }
     }
 
@@ -339,6 +356,7 @@ impl FieldSchema {
         Self {
             name: self.name.clone(),
             value_type: self.value_type.without_attrs(),
+            description: None,
         }
     }
 }
@@ -351,6 +369,7 @@ impl<DataType> FieldSchema<DataType> {
         Ok(Self {
             name: field.name.clone(),
             value_type: EnrichedValueType::from_alternative(&field.value_type)?,
+            description: field.description.clone(),
         })
     }
 }

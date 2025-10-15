@@ -65,8 +65,8 @@ def face_recognition_flow(flow_builder, data_scope):
 This creates a table with `filename` and `content` fields. 📂
 
 
-You can connect it to your [S3 Buckets](https://cocoindex.io/docs/ops/sources#amazons3) (with SQS integration, [example](https://cocoindex.io/blogs/s3-incremental-etl))
-or [Azure Blob store](https://cocoindex.io/docs/ops/sources#azureblob).
+You can connect it to your [S3 Buckets](https://cocoindex.io/docs/sources/amazons3) (with SQS integration, [example](https://cocoindex.io/blogs/s3-incremental-etl))
+or [Azure Blob store](https://cocoindex.io/docs/sources/azureblob).
 
 ## Detect and Extract Faces
 
@@ -186,7 +186,7 @@ face_embeddings.export(
 Now you can run cosine similarity queries over facial vectors.
 
 CocoIndex supports 1-line switch with other vector databases.
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets#postgres" text="Postgres" />
+<DocumentationButton url="https://cocoindex.io/docs/targets/postgres" text="Postgres" />
 
 ## Query the Index
 

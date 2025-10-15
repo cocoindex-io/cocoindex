@@ -51,7 +51,7 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 ```
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`)
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Source" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Source" />
 
 
 ## Process each file and collect the embeddings
@@ -103,7 +103,7 @@ doc_embeddings.export(
             metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 ```
 CocoIndex supports other vector databases as well, with 1-line switch.
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets" text="Targets" />
+<DocumentationButton url="https://cocoindex.io/docs/targets" text="Targets" />
 
 Need IVFFlat or custom HNSW parameters? Pass a method, for example:
 
@@ -140,7 +140,7 @@ This decorator marks this as a reusable transformation flow that can be called o
 
 CocoIndex doesn't provide additional query interface at the moment. We can write SQL or rely on the query engine by the target storage, if any.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets#postgres" text="Postgres" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/targets/postgres" text="Postgres" margin="0 0 16px 0" />
 
 
 ```python
@@ -204,7 +204,7 @@ There're two CocoIndex-specific logic:
 - Run the following command to setup and update the index.
 
     ```sh
-    cocoindex update --setup main.py
+    cocoindex update --setup main
     ```
 
 - Start the interactive query in terminal.

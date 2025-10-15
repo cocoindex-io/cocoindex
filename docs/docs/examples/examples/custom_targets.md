@@ -36,7 +36,7 @@ flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 	)
 ```
 This ingestion creates a table with `filename` and `content` fields.
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" />
 
 ## Process each file and collect
 
@@ -192,7 +192,7 @@ output_html.export(
 
 ```bash
 pip install -e .
-cocoindex update --setup main.py
+cocoindex update --setup main
 ```
 
 You can add, modify, or remove files in the `data/` directory — CocoIndex will only reprocess the changed files and update the target accordingly.

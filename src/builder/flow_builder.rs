@@ -364,8 +364,11 @@ impl FlowBuilder {
                 .into_py_result()?;
         }
         let result = Self::last_field_to_data_slice(&self.root_op_scope).into_py_result()?;
-        self.direct_input_fields
-            .push(FieldSchema { name, value_type });
+        self.direct_input_fields.push(FieldSchema {
+            name,
+            value_type,
+            description: None,
+        });
         Ok(result)
     }
 
@@ -527,6 +530,7 @@ impl FlowBuilder {
                     Ok(FieldSchema {
                         name,
                         value_type: ds.value_type()?,
+                        description: None,
                     })
                 })
                 .collect::<Result<Vec<FieldSchema>>>()
@@ -545,12 +549,13 @@ impl FlowBuilder {
         Ok(())
     }
 
-    #[pyo3(signature = (name, kind, op_spec, index_options, input, setup_by_user=false))]
+    #[pyo3(signature = (name, kind, op_spec, attachments, index_options, input, setup_by_user=false))]
     pub fn export(
         &mut self,
         name: String,
         kind: String,
         op_spec: py::Pythonized<serde_json::Map<String, serde_json::Value>>,
+        attachments: py::Pythonized<Vec<spec::OpSpec>>,
         index_options: py::Pythonized<spec::IndexOptions>,
         input: &DataCollector,
         setup_by_user: bool,
@@ -570,6 +575,7 @@ impl FlowBuilder {
             spec: spec::ExportOpSpec {
                 collector_name: input.name.clone(),
                 target: spec,
+                attachments: attachments.into_inner(),
                 index_options: index_options.into_inner(),
                 setup_by_user,
             },

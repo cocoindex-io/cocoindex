@@ -64,7 +64,7 @@ doc_embeddings = data_scope.add_collector()
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`)
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Source" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Source" />
 
 <DocumentationButton url="https://cocoindex.io/docs/core/flow_def#data-collector" text="Data Collector" />
 
@@ -138,7 +138,7 @@ doc_embeddings.export(
 
 CocoIndex supports other vector databases as well, with 1-line switch.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/targets" text="Targets" />
+<DocumentationButton url="https://cocoindex.io/docs/targets" text="Targets" />
 
 
 ## Run the indexing pipeline
@@ -152,7 +152,7 @@ CocoIndex supports other vector databases as well, with 1-line switch.
 - Build the index:
 
     ```bash
-    cocoindex update --setup main.py
+    cocoindex update --setup main
     ```
 
 CocoIndex will run for a few seconds and populate the target table with data as declared by the flow. It will output the following statistics:

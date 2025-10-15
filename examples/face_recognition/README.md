@@ -37,7 +37,7 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 Update index, which will also setup the tables at the first time:
 
 ```bash
-cocoindex update --setup main.py
+cocoindex update --setup main
 ```
 
 You can also run the command with `-L`, which will watch for file changes and update the index automatically.

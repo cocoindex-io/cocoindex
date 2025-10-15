@@ -97,7 +97,8 @@ impl SourceExecutor for Executor {
                     let content = if self.binary {
                         fields_value!(content)
                     } else {
-                        fields_value!(String::from_utf8_lossy(&content).to_string())
+                        let (s, _) = utils::bytes_decode::bytes_to_string(&content);
+                        fields_value!(s)
                     };
                     Some(SourceValue::Existence(content))
                 }

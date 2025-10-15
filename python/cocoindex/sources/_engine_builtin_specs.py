@@ -102,3 +102,6 @@ class Postgres(op.SourceSpec):
 
     # Optional: when set, supports change capture from PostgreSQL notification.
     notification: PostgresNotification | None = None
+
+    # Optional: SQL expression filter for rows (arbitrary SQL boolean expression)
+    filter: str | None = None

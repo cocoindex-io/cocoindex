@@ -103,6 +103,8 @@ pub struct TrackingTableSetupChange {
     pub legacy_source_state_table_names: BTreeSet<String>,
 
     pub source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
+
+    has_state_change: bool,
 }
 
 impl TrackingTableSetupChange {
@@ -136,6 +138,7 @@ impl TrackingTableSetupChange {
                 legacy_source_state_table_names,
                 min_existing_version_id,
                 source_names_need_state_cleanup,
+                has_state_change: existing.has_state_diff(desired, |v| v),
             })
         } else {
             None
@@ -148,6 +151,7 @@ impl TrackingTableSetupChange {
         ResourceSetupInfo {
             key: (),
             state: self.desired_state.clone(),
+            has_tracked_state_change: self.has_state_change,
             description: "Internal Storage for Tracking".to_string(),
             setup_change: Some(self),
             legacy_key: None,

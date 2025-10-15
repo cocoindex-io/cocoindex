@@ -459,6 +459,7 @@ mod tests {
                         nullable: false,
                         attrs: Default::default(),
                     },
+                    description: None,
                 },
                 schema::FieldSchema {
                     name: "b".to_string(),
@@ -467,6 +468,7 @@ mod tests {
                         nullable: false,
                         attrs: Default::default(),
                     },
+                    description: None,
                 },
             ]),
         };
@@ -496,6 +498,7 @@ mod tests {
                         nullable: false,
                         attrs: Default::default(),
                     },
+                    description: None,
                 },
                 schema::FieldSchema {
                     name: "data_col_1".to_string(),
@@ -504,6 +507,7 @@ mod tests {
                         nullable: false,
                         attrs: Default::default(),
                     },
+                    description: None,
                 },
                 schema::FieldSchema {
                     name: "data_col_2".to_string(),
@@ -512,6 +516,7 @@ mod tests {
                         nullable: false,
                         attrs: Default::default(),
                     },
+                    description: None,
                 },
             ]),
         });

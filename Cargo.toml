@@ -9,11 +9,16 @@ license = "Apache-2.0"
 
 [profile.release]
 codegen-units = 1
+strip = "symbols"
 lto = true
 
 [lib]
 name = "cocoindex_engine"
 crate-type = ["cdylib"]
+
+[features]
+default = ["legacy-states-v0"]
+legacy-states-v0 = []
 
 [dependencies]
 pyo3 = { version = "0.25.1", features = [
@@ -57,7 +62,7 @@ tower = "0.5.2"
 tower-http = { version = "0.6.6", features = ["cors", "trace"] }
 indexmap = { version = "2.10.0", features = ["serde"] }
 blake2 = "0.10.6"
-pgvector = { version = "0.4.1", features = ["sqlx"] }
+pgvector = { version = "0.4.1", features = ["sqlx", "halfvec"] }
 phf = { version = "0.12.1", features = ["macros"] }
 indenter = "0.3.4"
 itertools = "0.14.0"
@@ -86,7 +91,7 @@ tree-sitter-javascript = "0.23.1"
 tree-sitter-json = "0.24.8"
 # The other more popular crate tree-sitter-kotlin requires tree-sitter < 0.23 for now
 tree-sitter-kotlin-ng = "1.1.0"
-tree-sitter-md = "0.3.2"
+tree-sitter-md = "0.5.1"
 tree-sitter-pascal = "0.10.0"
 tree-sitter-php = "0.23.11"
 tree-sitter-python = "0.23.6"
@@ -129,9 +134,10 @@ time = { version = "0.3", features = ["macros", "serde"] }
 numpy = "0.25.0"
 infer = "0.19.0"
 serde_with = { version = "3.14.0", features = ["base64"] }
-google-cloud-aiplatform-v1 = { version = "0.4.4", default-features = false, features = [
+google-cloud-aiplatform-v1 = { version = "0.4.5", default-features = false, features = [
     "prediction-service",
 ] }
+google-cloud-gax = "0.24.0"
 
 azure_identity = { version = "0.21.0", default-features = false, features = [
     "enable_reqwest_rustls",
@@ -147,3 +153,5 @@ azure_storage_blobs = { version = "0.21.0", default-features = false, features =
 ] }
 serde_path_to_error = "0.1.17"
 redis = { version = "0.31.0", features = ["tokio-comp", "connection-manager"] }
+expect-test = "1.5.0"
+encoding_rs = "0.8.35"

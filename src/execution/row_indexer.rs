@@ -55,13 +55,13 @@ impl SourceVersion {
     pub fn from_stored(
         stored_ordinal: Option<i64>,
         stored_fp: &Option<Vec<u8>>,
-        curr_fp: Fingerprint,
+        curr_fp: &ExecutionPlanLogicFingerprint,
     ) -> Self {
         Self {
             ordinal: Ordinal(stored_ordinal),
             kind: match &stored_fp {
                 Some(stored_fp) => {
-                    if stored_fp.as_slice() == curr_fp.0.as_slice() {
+                    if curr_fp.matches(stored_fp) {
                         SourceVersionKind::CurrentLogic
                     } else {
                         SourceVersionKind::DifferentLogic
@@ -74,7 +74,7 @@ impl SourceVersion {
 
     pub fn from_stored_processing_info(
         info: &db_tracking::SourceTrackingInfoForProcessing,
-        curr_fp: Fingerprint,
+        curr_fp: &ExecutionPlanLogicFingerprint,
     ) -> Self {
         Self::from_stored(
             info.processed_source_ordinal,
@@ -85,7 +85,7 @@ impl SourceVersion {
 
     pub fn from_stored_precommit_info(
         info: &db_tracking::SourceTrackingInfoForPrecommit,
-        curr_fp: Fingerprint,
+        curr_fp: &ExecutionPlanLogicFingerprint,
     ) -> Self {
         Self::from_stored(
             info.processed_source_ordinal,
@@ -183,6 +183,7 @@ pub struct RowIndexer<'a> {
     setup_execution_ctx: &'a exec_ctx::FlowSetupExecutionContext,
     mode: super::source_indexer::UpdateMode,
     update_stats: &'a stats::UpdateStats,
+    operation_in_process_stats: Option<&'a stats::OperationInProcessStats>,
     pool: &'a PgPool,
 
     source_id: i32,
@@ -201,6 +202,7 @@ impl<'a> RowIndexer<'a> {
         mode: super::source_indexer::UpdateMode,
         process_time: chrono::DateTime<chrono::Utc>,
         update_stats: &'a stats::UpdateStats,
+        operation_in_process_stats: Option<&'a stats::OperationInProcessStats>,
         pool: &'a PgPool,
     ) -> Result<Self> {
         Ok(Self {
@@ -212,6 +214,7 @@ impl<'a> RowIndexer<'a> {
             setup_execution_ctx,
             mode,
             update_stats,
+            operation_in_process_stats,
             pool,
         })
     }
@@ -237,7 +240,7 @@ impl<'a> RowIndexer<'a> {
             Some(info) => {
                 let existing_version = SourceVersion::from_stored_processing_info(
                     info,
-                    self.src_eval_ctx.plan.logic_fingerprint,
+                    &self.src_eval_ctx.plan.logic_fingerprint,
                 );
 
                 // First check ordinal-based skipping
@@ -311,9 +314,13 @@ impl<'a> RowIndexer<'a> {
                         },
                     );
 
-                    let output =
-                        evaluate_source_entry(self.src_eval_ctx, source_value, &evaluation_memory)
-                            .await?;
+                    let output = evaluate_source_entry(
+                        self.src_eval_ctx,
+                        source_value,
+                        &evaluation_memory,
+                        self.operation_in_process_stats,
+                    )
+                    .await?;
                     let mut stored_info = evaluation_memory.into_stored()?;
                     if tracking_setup_state.has_fast_fingerprint_column {
                         (Some(output), stored_info, content_version_fp)
@@ -368,9 +375,27 @@ impl<'a> RowIndexer<'a> {
                         })
                         .collect();
                     (!mutations_w_ctx.is_empty()).then(|| {
-                        export_op_group
-                            .target_factory
-                            .apply_mutation(mutations_w_ctx)
+                        let export_key = format!("export/{}", export_op_group.target_kind);
+                        let operation_in_process_stats = self.operation_in_process_stats;
+
+                        async move {
+                            // Track export operation start
+                            if let Some(ref op_stats) = operation_in_process_stats {
+                                op_stats.start_processing(&export_key, 1);
+                            }
+
+                            let result = export_op_group
+                                .target_factory
+                                .apply_mutation(mutations_w_ctx)
+                                .await;
+
+                            // Track export operation completion
+                            if let Some(ref op_stats) = operation_in_process_stats {
+                                op_stats.finish_processing(&export_key, 1);
+                            }
+
+                            result
+                        }
                     })
                 });
 
@@ -461,7 +486,7 @@ impl<'a> RowIndexer<'a> {
         // Check 1: Same check as precommit - verify no newer version exists
         let existing_source_version = SourceVersion::from_stored_precommit_info(
             &existing_tracking_info,
-            self.src_eval_ctx.plan.logic_fingerprint,
+            &self.src_eval_ctx.plan.logic_fingerprint,
         );
         if existing_source_version.should_skip(source_version, Some(self.update_stats)) {
             return Ok(Some(SkippedOr::Skipped(
@@ -512,7 +537,7 @@ impl<'a> RowIndexer<'a> {
         let db_setup = &self.setup_execution_ctx.setup_state.tracking_table;
         let export_ops = &self.src_eval_ctx.plan.export_ops;
         let export_ops_exec_ctx = &self.setup_execution_ctx.export_ops;
-        let logic_fp = self.src_eval_ctx.plan.logic_fingerprint;
+        let logic_fp = &self.src_eval_ctx.plan.logic_fingerprint;
 
         let mut txn = self.pool.begin().await?;
 
@@ -809,7 +834,7 @@ impl<'a> RowIndexer<'a> {
                 cleaned_staging_target_keys,
                 source_version.ordinal.into(),
                 source_fp,
-                &self.src_eval_ctx.plan.logic_fingerprint.0,
+                &self.src_eval_ctx.plan.logic_fingerprint.current.0,
                 precommit_metadata.process_ordinal,
                 self.process_time.timestamp_micros(),
                 precommit_metadata.new_target_keys,
@@ -875,7 +900,7 @@ pub async fn evaluate_source_entry_with_memory(
         .ok_or_else(|| anyhow::anyhow!("value not returned"))?;
     let output = match source_value {
         interface::SourceValue::Existence(source_value) => {
-            Some(evaluate_source_entry(src_eval_ctx, source_value, &memory).await?)
+            Some(evaluate_source_entry(src_eval_ctx, source_value, &memory, None).await?)
         }
         interface::SourceValue::NonExistence => None,
     };
