@@ -117,6 +117,33 @@ This is how to setup:
 
 AWS's [Guide of Configuring a Bucket for Notifications](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ways-to-add-notification-config-to-bucket.html#step1-create-sqs-queue-for-notification) provides more details.
 
+#### (Alternative) Setup Redis for event notifications (MinIO)
+
+For MinIO setups that don't use AWS SQS, you can configure MinIO to publish event notifications to Redis:
+
+*   Configure MinIO to publish events to Redis by setting environment variables:
+    ```bash
+    export MINIO_NOTIFY_REDIS_ENABLE="on"
+    export MINIO_NOTIFY_REDIS_ADDRESS="redis-endpoint.example.net:6379"
+    export MINIO_NOTIFY_REDIS_KEY="bucketevents"
+    export MINIO_NOTIFY_REDIS_FORMAT="namespace"
+    ```
+    Replace the values with your Redis server details.
+
+*   Alternatively, use the `mc` command-line tool:
+    ```bash
+    mc alias set myminio http://minio.example.com:9000 ACCESSKEY SECRETKEY
+    mc admin config set myminio/ notify_redis \
+      address="redis-endpoint.example.net:6379" \
+      key="bucketevents" \
+      format="namespace"
+    mc admin service restart myminio
+    ```
+
+*   Ensure your Redis server is accessible and configured to accept connections from MinIO.
+
+MinIO's [Redis Notification Settings](https://min.io/docs/minio/linux/reference/minio-server/settings/notifications/redis.html) documentation provides more details on configuration options.
+
 ### Spec
 
 The spec takes the following fields:
@@ -141,6 +168,17 @@ The spec takes the following fields:
 
     We will delete messages from the queue after they're processed.
     If there are unrelated messages in the queue (e.g. test messages that SQS will send automatically on queue creation, messages for a different bucket, for non-included files, etc.), we will delete the message upon receiving it, to avoid repeatedly receiving irrelevant messages after they're redelivered.
+
+    :::
+
+*   `redis_url` (`str`, optional): if provided, the source will receive change event notifications via Redis pub/sub. This is particularly useful for MinIO setups that publish events to Redis instead of SQS.
+
+*   `redis_channel` (`str`, optional): the Redis channel to subscribe to for event notifications. Required when `redis_url` is provided.
+
+    :::info
+
+    Redis pub/sub is preferred over SQS when both are configured. This allows MinIO users to receive S3-compatible event notifications without requiring AWS SQS.
+    The Redis implementation expects S3 event notifications in the same JSON format as SQS messages.
 
     :::
 

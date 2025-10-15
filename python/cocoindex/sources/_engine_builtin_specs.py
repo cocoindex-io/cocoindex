@@ -46,6 +46,8 @@ class AmazonS3(op.SourceSpec):
     included_patterns: list[str] | None = None
     excluded_patterns: list[str] | None = None
     sqs_queue_url: str | None = None
+    redis_url: str | None = None
+    redis_channel: str | None = None
 
 
 class AzureBlob(op.SourceSpec):
