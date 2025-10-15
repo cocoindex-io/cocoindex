@@ -2,6 +2,8 @@ use crate::fields_value;
 use async_stream::try_stream;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
+use futures::StreamExt;
+use redis::Client as RedisClient;
 use std::sync::Arc;
 use urlencoding;
 
@@ -27,6 +29,8 @@ pub struct Spec {
     included_patterns: Option<Vec<String>>,
     excluded_patterns: Option<Vec<String>>,
     sqs_queue_url: Option<String>,
+    redis_url: Option<String>,
+    redis_channel: Option<String>,
 }
 
 struct SqsContext {
@@ -46,6 +50,27 @@ impl SqsContext {
     }
 }
 
+struct RedisContext {
+    client: RedisClient,
+    channel: String,
+}
+
+impl RedisContext {
+    async fn new(redis_url: &str, channel: &str) -> Result<Self> {
+        let client = RedisClient::open(redis_url)?;
+        Ok(Self {
+            client,
+            channel: channel.to_string(),
+        })
+    }
+
+    async fn subscribe(&self) -> Result<redis::aio::PubSub> {
+        let mut pubsub = self.client.get_async_pubsub().await?;
+        pubsub.subscribe(&self.channel).await?;
+        Ok(pubsub)
+    }
+}
+
 struct Executor {
     client: Client,
     bucket_name: String,
@@ -53,6 +78,7 @@ struct Executor {
     binary: bool,
     pattern_matcher: PatternMatcher,
     sqs_context: Option<Arc<SqsContext>>,
+    redis_context: Option<Arc<RedisContext>>,
 }
 
 fn datetime_to_ordinal(dt: &aws_sdk_s3::primitives::DateTime) -> Ordinal {
@@ -167,26 +193,42 @@ impl SourceExecutor for Executor {
     async fn change_stream(
         &self,
     ) -> Result<Option<BoxStream<'async_trait, Result<SourceChangeMessage>>>> {
-        let sqs_context = if let Some(sqs_context) = &self.sqs_context {
-            sqs_context
-        } else {
-            return Ok(None);
-        };
-        let stream = stream! {
-            loop {
-                 match self.poll_sqs(sqs_context).await {
-                    Ok(messages) => {
-                        for message in messages {
-                            yield Ok(message);
+        // Prefer Redis if both are configured, otherwise use SQS if available
+        if let Some(redis_context) = &self.redis_context {
+            let stream = stream! {
+                loop {
+                    match self.poll_redis(redis_context).await {
+                        Ok(messages) => {
+                            for message in messages {
+                                yield Ok(message);
+                            }
                         }
-                    }
-                    Err(e) => {
-                        yield Err(e);
-                    }
-                };
-            }
-        };
-        Ok(Some(stream.boxed()))
+                        Err(e) => {
+                            yield Err(e);
+                        }
+                    };
+                }
+            };
+            Ok(Some(stream.boxed()))
+        } else if let Some(sqs_context) = &self.sqs_context {
+            let stream = stream! {
+                loop {
+                     match self.poll_sqs(sqs_context).await {
+                        Ok(messages) => {
+                            for message in messages {
+                                yield Ok(message);
+                            }
+                        }
+                        Err(e) => {
+                            yield Err(e);
+                        }
+                    };
+                }
+            };
+            Ok(Some(stream.boxed()))
+        } else {
+            Ok(None)
+        }
     }
 
     fn provides_ordinal(&self) -> bool {
@@ -288,6 +330,78 @@ impl Executor {
         }
         Ok(change_messages)
     }
+
+    async fn poll_redis(
+        &self,
+        redis_context: &Arc<RedisContext>,
+    ) -> Result<Vec<SourceChangeMessage>> {
+        let mut pubsub = redis_context.subscribe().await?;
+        let mut change_messages = vec![];
+
+        // Try to get a message with a timeout
+        let message_result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            pubsub.on_message().next(),
+        )
+        .await;
+
+        match message_result {
+            Ok(Some(message)) => {
+                let payload: String = message.get_payload()?;
+                // Parse the Redis message - MinIO sends S3 event notifications in JSON format
+                let notification: S3EventNotification = utils::deser::from_json_str(&payload)?;
+                let mut changes = vec![];
+
+                for record in notification.records {
+                    let s3 = if let Some(s3) = record.s3 {
+                        s3
+                    } else {
+                        continue;
+                    };
+
+                    if s3.bucket.name != self.bucket_name {
+                        continue;
+                    }
+
+                    if !self
+                        .prefix
+                        .as_ref()
+                        .is_none_or(|prefix| s3.object.key.starts_with(prefix))
+                    {
+                        continue;
+                    }
+
+                    if record.event_name.starts_with("ObjectCreated:")
+                        || record.event_name.starts_with("ObjectRemoved:")
+                    {
+                        let decoded_key = decode_form_encoded_url(&s3.object.key)?;
+                        changes.push(SourceChange {
+                            key: KeyValue::from_single_part(decoded_key),
+                            key_aux_info: serde_json::Value::Null,
+                            data: PartialSourceRowData::default(),
+                        });
+                    }
+                }
+
+                if !changes.is_empty() {
+                    change_messages.push(SourceChangeMessage {
+                        changes,
+                        ack_fn: None, // Redis pub/sub doesn't require acknowledgment
+                    });
+                }
+            }
+            Ok(None) => {
+                // No message received
+                return Ok(Vec::new());
+            }
+            Err(_) => {
+                // Timeout - no message received, return empty vec
+                return Ok(Vec::new());
+            }
+        }
+
+        Ok(change_messages)
+    }
 }
 
 pub struct Factory;
@@ -336,6 +450,16 @@ impl SourceFactoryBase for Factory {
         _context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SourceExecutor>> {
         let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
+
+        let redis_context =
+            if let (Some(redis_url), Some(redis_channel)) = (spec.redis_url, spec.redis_channel) {
+                Some(Arc::new(
+                    RedisContext::new(&redis_url, &redis_channel).await?,
+                ))
+            } else {
+                None
+            };
+
         Ok(Box::new(Executor {
             client: Client::new(&config),
             bucket_name: spec.bucket_name,
@@ -348,6 +472,7 @@ impl SourceFactoryBase for Factory {
                     queue_url: url,
                 })
             }),
+            redis_context,
         }))
     }
 }
