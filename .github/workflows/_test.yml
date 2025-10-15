@@ -17,12 +17,12 @@ jobs:
                 platform:
                   - { runner: ubuntu-latest, python_exec: ".venv/bin/python" }
                   - { runner: ubuntu-24.04-arm, python_exec: ".venv/bin/python" }
-                  - { runner: macos-latest, python_exec: ".venv/bin/python" }
-                  - { runner: macos-13, python_exec: ".venv/bin/python" }
+                  - { runner: macos-latest, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
+                  - { runner: macos-13, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
                   - { runner: windows-latest, python_exec: ".venv\\Scripts\\python" }
         runs-on: ${{ matrix.platform.runner }}
         env:
-          RUSTFLAGS: "-C debuginfo=0 -C split-debuginfo=off"
+          RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
           CARGO_INCREMENTAL: "0"
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: "sccache"
