@@ -13,6 +13,8 @@ jobs:
     environment: docs-release
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
           cache: yarn

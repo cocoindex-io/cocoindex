@@ -17,12 +17,23 @@ jobs:
                 platform:
                   - { runner: ubuntu-latest, python_exec: ".venv/bin/python" }
                   - { runner: ubuntu-24.04-arm, python_exec: ".venv/bin/python" }
-                  - { runner: macos-latest, python_exec: ".venv/bin/python" }
-                  - { runner: macos-13, python_exec: ".venv/bin/python" }
+                  - { runner: macos-latest, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
+                  - { runner: macos-13, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
                   - { runner: windows-latest, python_exec: ".venv\\Scripts\\python" }
         runs-on: ${{ matrix.platform.runner }}
+        env:
+          RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
+          CARGO_INCREMENTAL: "0"
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+
         steps:
         - uses: actions/checkout@v4
+          with:
+            fetch-depth: 1
+
+        - name: Run sccache-cache
+          uses: mozilla-actions/sccache-action@v0.0.9
 
         - uses: actions/setup-python@v5
           id: setup_python
@@ -31,22 +42,20 @@ jobs:
             cache: 'pip'
 
         - run: rustup toolchain install stable --profile minimal
+
         - name: Rust Cache
           uses: Swatinem/rust-cache@v2
           with:
             key: rust-${{ matrix.platform.runner }}-${{ matrix.python-version }}
+            cache-targets: 'false'
+            cache-all-crates: 'false'
+            cache-workspace-crates: 'false'
+
         - name: Rust tests (no default features)
           run: cargo test --no-default-features --verbose
 
         - name: Rust tests
           run: cargo test --verbose
-
-        - uses: actions/cache@v4
-          with:
-            path: .venv
-            key: pyenv-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-${{ hashFiles('pyproject.toml') }}
-            restore-keys: |
-              pyenv-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-
 
         - name: Setup venv
           run: |
@@ -56,7 +65,7 @@ jobs:
             ${{ matrix.platform.python_exec }} -m pip install maturin mypy pytest pytest-asyncio
         - name: Python build
           run: |
-            ${{ matrix.platform.python_exec }} -m maturin develop -E all
+            ${{ matrix.platform.python_exec }} -m maturin develop --strip -E all
         - name: Python type check (mypy)
           run: |
             ${{ matrix.platform.python_exec }} -m mypy python
@@ -68,6 +77,8 @@ jobs:
         runs-on: ubuntu-latest
         steps:
         - uses: actions/checkout@v4
+          with:
+            fetch-depth: 1
         - name: Install Rust toolchain
           uses: dtolnay/rust-toolchain@stable
         - uses: taiki-e/install-action@v2
