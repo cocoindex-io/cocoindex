@@ -12,6 +12,9 @@ from typing import (
     Protocol,
     dataclass_transform,
     Annotated,
+    TypeVar,
+    Generic,
+    Literal,
     get_args,
 )
 
@@ -419,6 +422,53 @@ def function(**args: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         return fn
 
     return _inner
+
+
+########################################################
+# Custom source connector
+########################################################
+
+
+@dataclasses.dataclass
+class SourceReadOptions:
+    include_ordinal: bool = False
+    include_content_version_fp: bool = False
+    include_value: bool = False
+
+
+T = TypeVar("T")
+
+NON_EXISTENCE = "NON_EXISTENCE"
+
+
+@dataclasses.dataclass
+class SourceRowData(Generic[T]):
+    """
+    The data of a source row.
+
+    - value: The value of the source row.
+    - ordinal: The ordinal of the source row.
+    - content_version_fp: The content version fingerprint of the source row.
+    """
+
+    value: T | Literal["NON_EXISTENCE"] | None
+    ordinal: int | None = None
+    content_version_fp: bytes | None = None
+
+
+# Users will define a source spec class first (e.g. CustomSource), then provide a source connector like this:
+#
+# @cocoindex.op.source_connector(spec_cls=CustomSource, key_type=KeyType, value_type=ValueType)
+# class CustomSourceConnector:
+#     @staticmethod
+#     async def create(spec: CustomSource) -> Self:
+#         ...
+#
+#     async def list(self, options: SourceReadOptions) -> AsyncIterator[tuple[KeyType, SourceRowData[ValueType]]]:
+#         ...
+#
+#     async def get_value(self, key: KeyType, options: SourceReadOptions) -> SourceRowData[ValueType]:
+#         ...
 
 
 ########################################################
