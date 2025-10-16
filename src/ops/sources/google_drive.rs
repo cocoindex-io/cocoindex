@@ -9,9 +9,9 @@ use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
 use phf::phf_map;
 
+use super::shared::pattern_matcher::PatternMatcher;
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
-use super::shared::pattern_matcher::PatternMatcher;
 
 struct ExportMimeType {
     text: &'static str,
@@ -128,14 +128,16 @@ impl Executor {
         let (id, mime_type, name) = match (file.id, file.mime_type, file.name) {
             (Some(id), Some(mime_type), Some(name)) => (Arc::<str>::from(id), mime_type, name),
             (id, mime_type, name) => {
-                warn!("Skipping file with incomplete metadata: id={id:?}, mime_type={mime_type:?}, name={name:?}",);
+                warn!(
+                    "Skipping file with incomplete metadata: id={id:?}, mime_type={mime_type:?}, name={name:?}"
+                );
                 return Ok(None);
             }
         };
         if !seen_ids.insert(id.clone()) {
             return Ok(None);
         }
-        if self.pattern_matcher.is_file_included(&name){
+        if self.pattern_matcher.is_file_included(&name) {
             return Ok(None);
         }
         if !self.pattern_matcher.is_excluded(&name) {
