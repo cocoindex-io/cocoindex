@@ -1,3 +1,4 @@
+pub mod bytes_decode;
 pub mod concur_control;
 pub mod db;
 pub mod deser;

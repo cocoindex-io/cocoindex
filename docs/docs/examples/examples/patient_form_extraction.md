@@ -66,7 +66,7 @@ def patient_intake_extraction_flow(
 
 `flow_builder.add_source` will create a table with a few sub fields.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" margin="0 0 16px 0" />
 
 
 ##  Parse documents with different formats to Markdown
@@ -298,4 +298,4 @@ Click on the `markdown` column for `Patient_Intake_Form_Joe.pdf`, you could see 
 ## Connect to other sources
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" margin="0 0 16px 0" />

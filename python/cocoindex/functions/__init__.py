@@ -5,13 +5,7 @@ including embedding functions, text processing, and multimodal operations.
 """
 
 # Import all engine builtin function specs
-from ._engine_builtin_specs import (
-    ParseJson,
-    SplitRecursively,
-    SplitBySeparators,
-    EmbedText,
-    ExtractByLlm,
-)
+from ._engine_builtin_specs import *
 
 # Import SentenceTransformer embedding functionality
 from .sbert import (
@@ -29,11 +23,12 @@ from .colpali import (
 
 __all__ = [
     # Engine builtin specs
-    "ParseJson",
-    "SplitRecursively",
-    "SplitBySeparators",
+    "DetectProgrammingLanguage",
     "EmbedText",
     "ExtractByLlm",
+    "ParseJson",
+    "SplitBySeparators",
+    "SplitRecursively",
     # SentenceTransformer
     "SentenceTransformerEmbed",
     "SentenceTransformerEmbedExecutor",

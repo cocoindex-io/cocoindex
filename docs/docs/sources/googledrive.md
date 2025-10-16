@@ -39,6 +39,9 @@ The spec takes the following fields:
     :::info
     
     `included_patterns` and `excluded_patterns` are using Unix-style glob syntax. See [globset syntax](https://docs.rs/globset/latest/globset/index.html#syntax) for the details.
+*   `recent_changes_poll_interval` (`datetime.timedelta`, optional): when set, this source provides a change capture mechanism by polling Google Drive for recent modified files periodically.
+
+    :::info
 
     Since it only retrieves metadata for recent modified files (up to the previous poll) during polling,
     it's typically cheaper than a full refresh by setting the [refresh interval](/docs/core/flow_def#refresh-interval) especially when the folder contains a large number of files.

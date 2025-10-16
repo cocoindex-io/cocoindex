@@ -14,9 +14,8 @@ Certain settings need to be provided for CocoIndex to work, e.g. database connec
 
 Note that in general, you have two ways to launch CocoIndex:
 
-*   Call CocoIndex APIs from your own Python application or library.
-*   Use [Cocoindex CLI](cli). It's handy for most routine indexing building and management tasks.
-
+* Call CocoIndex APIs from your own Python application or library.
+* Use [Cocoindex CLI](cli). It's handy for most routine indexing building and management tasks.
 
 CocoIndex exposes process-level settings specified by `cocoindex.Settings` dataclass.
 Settings can be configured in three different ways.
@@ -77,10 +76,10 @@ But be careful that if you call `cocoindex.init()` only under the path of main (
 
 `cocoindex.init()` is optional:
 
--   You can call `cocoindex.init()` with a `cocoindex.Settings` dataclass object as argument, or without any argument.
+* You can call `cocoindex.init()` with a `cocoindex.Settings` dataclass object as argument, or without any argument.
     When without argument, the settings will be loaded from the `@cocoindex.settings` function or environment variables.
 
--   You don't have to explicitly call `cocoindex.init()`.
+* You don't have to explicitly call `cocoindex.init()`.
     CocoIndex will be automatically initialized when needed, e.g. when any method of any flow is called the first time.
     But calling `cocoindex.init()` explicitly (usually at startup time, e.g. in the main function of your application) has the benefit of making sure CocoIndex library is initialized and any potential exceptions are raised earlier before proceeding with the application.
     If you need this clarity, you can call it explicitly even if you don't want to provide settings by the `cocoindex.init()` call.
@@ -91,9 +90,9 @@ But be careful that if you call `cocoindex.init()` only under the path of main (
 
 `cocoindex.Settings` is a dataclass that contains the following fields:
 
-*   `app_namespace` (type: `str`, required): The namespace of the application.
-*   `database` (type: `DatabaseConnectionSpec`, required): The connection to the Postgres database.
-*   `global_execution_options` (type: `GlobalExecutionOptions`, optional): The global execution options shared by all  flows.
+* `app_namespace` (type: `str`, required): The namespace of the application.
+* `database` (type: `DatabaseConnectionSpec`, required): The connection to the Postgres database.
+* `global_execution_options` (type: `GlobalExecutionOptions`, optional): The global execution options shared by all  flows.
 
 ### App Namespace
 
@@ -110,15 +109,15 @@ If not set, all flows are in a default unnamed namespace.
 
 `DatabaseConnectionSpec` configures the connection to a database. Only Postgres is supported for now. It has the following fields:
 
-*   `url` (type: `str`): The URL of the Postgres database to use as the internal storage, e.g. `postgres://cocoindex:cocoindex@localhost/cocoindex`.
+* `url` (type: `str`): The URL of the Postgres database to use as the internal storage, e.g. `postgres://cocoindex:cocoindex@localhost/cocoindex`.
 
     *Environment variable* for `Settings.database.url`: `COCOINDEX_DATABASE_URL`
 
-*   `user` (type: `Optional[str]`, default: `None`): The username for the Postgres database. If not provided, username will come from `url`.
+* `user` (type: `Optional[str]`, default: `None`): The username for the Postgres database. If not provided, username will come from `url`.
 
     *Environment variable* for `Settings.database.user`: `COCOINDEX_DATABASE_USER`
 
-*   `password` (type: `Optional[str]`, default: `None`): The password for the Postgres database. If not provided, password will come from `url`.
+* `password` (type: `Optional[str]`, default: `None`): The password for the Postgres database. If not provided, password will come from `url`.
 
     *Environment variable* for `Settings.database.password`: `COCOINDEX_DATABASE_PASSWORD`
 
@@ -129,21 +128,24 @@ If not set, all flows are in a default unnamed namespace.
 
     :::
 
-*   `max_connections` (type: `int`, default: `25`): The maximum number of connections to keep in the pool.
+* `max_connections` (type: `int`, default: `25`): The maximum number of connections to keep in the pool.
 
     *Environment variable* for `Settings.database.max_connections`: `COCOINDEX_DATABASE_MAX_CONNECTIONS`
 
-*   `min_connections` (type: `int`, default: `5`): The minimum number of connections to keep in the pool.
+* `min_connections` (type: `int`, default: `5`): The minimum number of connections to keep in the pool.
 
     *Environment variable* for `Settings.database.min_connections`: `COCOINDEX_DATABASE_MIN_CONNECTIONS`
-
 
 :::info
 
 If you use the Postgres database hosted by [Supabase](https://supabase.com/), please click **Connect** on your project dashboard and find the following URL:
 
-*    If you're on a IPv6 network, use the URL under **Direct connection**. You can visit [IPv6 test](https://test-ipv6.com/) to see if you have IPv6 Internet connection.
-*    Otherwise, use the URL under **Session pooler**.
+* If you're on a IPv6 network, use the URL under **Direct connection**. You can visit [IPv6 test](https://test-ipv6.com/) to see if you have IPv6 Internet connection.
+* Otherwise, use the URL under **Session pooler**.
+  Note that Supabase has a pool size limit of 15 by default, while CocoIndex's default `max_connections` value is 25.
+  You can adjust either value to make sure Supabase's pool size limit is greater than CocoIndex's `max_connections` value.
+  Supabase's pool size limit can be adjusted under "Database" -> "Settings".
+* CocoIndex doesn't support *Transaction pooler* now.
 
 :::
 
@@ -151,8 +153,8 @@ If you use the Postgres database hosted by [Supabase](https://supabase.com/), pl
 
 `GlobalExecutionOptions` is used to configure the global execution options shared by all flows. It has the following fields:
 
-*   `source_max_inflight_rows` (type: `int | None`, default: `1024`): The maximum number of concurrent inflight rows for all source operations.
-*   `source_max_inflight_bytes` (type: `int | None`, default: `None`): The maximum number of concurrent inflight bytes for all source operations.
+* `source_max_inflight_rows` (type: `int | None`, default: `1024`): The maximum number of concurrent inflight rows for all source operations.
+* `source_max_inflight_bytes` (type: `int | None`, default: `None`): The maximum number of concurrent inflight bytes for all source operations.
 
 See also [flow definition docs](/docs/core/flow_def#control-processing-concurrency) about why it's necessary to control processing concurrency, and how to configure it on per-source basis.
 If both global and per-source limits are specified, both need to be satisfied to admit additional source rows.

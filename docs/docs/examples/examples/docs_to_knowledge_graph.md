@@ -66,7 +66,7 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
 Here `flow_builder.add_source` creates a [KTable](https://cocoindex.io/docs/core/data_types#KTable).
 `filename` is the key of the KTable.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" margin="0 0 16px 0" />
 
 
 ### Add data collectors

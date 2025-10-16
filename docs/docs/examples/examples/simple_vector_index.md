@@ -51,7 +51,7 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 ```
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`)
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Source" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Source" />
 
 
 ## Process each file and collect the embeddings

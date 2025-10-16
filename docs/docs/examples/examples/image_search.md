@@ -66,7 +66,7 @@ def image_object_embedding_flow(flow_builder, data_scope):
 
 The `add_source` function sets up a table with fields like `filename` and `content`. Images are automatically re-scanned every minute.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources#localfile" text="LocalFile" />
+<DocumentationButton url="https://cocoindex.io/docs/sources/localfile" text="LocalFile" />
 
 
 ## Process Each Image and Collect the Embedding
@@ -266,6 +266,6 @@ One of CocoIndex’s core strengths is its ability to connect to your existing d
 - Amazon S3 / SQS
 - Azure Blob Storage
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" margin="0 0 16px 0" />
 
 Once connected, CocoIndex continuously watches for changes — new uploads, updates, or deletions — and applies them to your index in real time.

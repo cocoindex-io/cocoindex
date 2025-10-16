@@ -67,7 +67,7 @@ def manual_extraction_flow(
 - `filename` (key, type: `str`): the filename of the file, e.g. `dir1/file1.md`
 - `content` (type: `str` if `binary` is `False`, otherwise `bytes`): the content of the file
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="LocalFile" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="LocalFile" margin="0 0 16px 0" />
 
 ## Parse Markdown
 

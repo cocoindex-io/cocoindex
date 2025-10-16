@@ -26,6 +26,8 @@ pub struct AnalyzedTargetSetupState {
     pub setup_by_user: bool,
     /// None for declarations.
     pub key_type: Option<Box<[schema::ValueType]>>,
+
+    pub attachments: IndexMap<interface::AttachmentSetupKey, serde_json::Value>,
 }
 
 pub struct AnalyzedSetupState {
@@ -53,9 +55,14 @@ fn build_import_op_exec_ctx(
             let existing_keys_schema: &[schema::ValueType] =
                 if let Some(keys_schema) = &state.keys_schema {
                     keys_schema
-                } else if let Some(key_schema) = &state.key_schema {
-                    std::slice::from_ref(key_schema)
                 } else {
+                    #[cfg(feature = "legacy-states-v0")]
+                    if let Some(key_schema) = &state.key_schema {
+                        std::slice::from_ref(key_schema)
+                    } else {
+                        &[]
+                    }
+                    #[cfg(not(feature = "legacy-states-v0"))]
                     &[]
                 };
             if existing_keys_schema == keys_schema_no_attrs.as_ref() {
@@ -81,6 +88,7 @@ fn build_import_op_exec_ctx(
 
             // Keep this field for backward compatibility,
             // so users can still swap back to older version if needed.
+            #[cfg(feature = "legacy-states-v0")]
             key_schema: Some(if keys_schema_no_attrs.len() == 1 {
                 keys_schema_no_attrs[0].clone()
             } else {
@@ -176,6 +184,7 @@ fn build_export_op_exec_ctx(
     } else {
         max_schema_version_id + 1
     };
+
     match target_states.entry(resource_id) {
         indexmap::map::Entry::Occupied(entry) => {
             api_bail!(
@@ -194,6 +203,7 @@ fn build_export_op_exec_ctx(
                     key_type: analyzed_target_ss.key_type.clone(),
                 },
                 state: analyzed_target_ss.desired_setup_state.clone(),
+                attachments: analyzed_target_ss.attachments.clone(),
             });
         }
     }
