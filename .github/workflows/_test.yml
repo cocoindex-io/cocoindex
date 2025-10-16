@@ -44,13 +44,14 @@ jobs:
 
         - run: rustup toolchain install stable --profile minimal
 
-        - name: Rust Cache
-          uses: Swatinem/rust-cache@v2
-          with:
-            key: rust-${{ matrix.platform.runner }}-${{ matrix.python-version }}
-            cache-targets: 'false'
-            cache-all-crates: 'false'
-            cache-workspace-crates: 'false'
+        # Disable Rust cache until we have higher cache size limits
+        # - name: Rust Cache
+        #   uses: Swatinem/rust-cache@v2
+        #   with:
+        #     key: rust-${{ matrix.platform.runner }}-${{ matrix.python-version }}
+        #     cache-targets: 'false'
+        #     cache-all-crates: 'false'
+        #     cache-workspace-crates: 'false'
 
         - name: Rust tests (no default features)
           run: cargo test --no-default-features --verbose
