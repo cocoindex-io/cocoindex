@@ -338,12 +338,10 @@ static LIB_CONTEXT: LazyLock<tokio::sync::Mutex<Option<Arc<LibContext>>>> =
     LazyLock::new(|| tokio::sync::Mutex::new(None));
 
 pub(crate) async fn init_lib_context(settings: Option<settings::Settings>) -> Result<()> {
-    error!("Init lib context");
     let settings = match settings {
         Some(settings) => settings,
         None => get_settings()?,
     };
-    error!("Init lib context with settings: {:?}", settings);
     let mut lib_context_locked = LIB_CONTEXT.lock().await;
     *lib_context_locked = Some(Arc::new(create_lib_context(settings).await?));
     Ok(())
