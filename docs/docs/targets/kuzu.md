@@ -13,7 +13,7 @@ Exports data to a [Kuzu](https://kuzu.com/) graph database.
 
 ## Get Started
 
-Read [Property Graph Targets](./index.md#property-graph-targets) for more information to get started on how it works in CocoIndex. 
+Read [Property Graph Targets](./index.md#property-graph-targets) for more information to get started on how it works in CocoIndex.
 
 ## Spec
 
