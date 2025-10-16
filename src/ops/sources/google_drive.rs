@@ -11,6 +11,7 @@ use phf::phf_map;
 
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
+use super::shared::pattern_matcher::PatternMatcher;
 
 struct ExportMimeType {
     text: &'static str,
@@ -59,6 +60,8 @@ pub struct Spec {
     binary: bool,
     root_folder_ids: Vec<String>,
     recent_changes_poll_interval: Option<std::time::Duration>,
+    included_patterns: Option<Vec<String>>,
+    excluded_patterns: Option<Vec<String>>,
 }
 
 struct Executor {
@@ -66,6 +69,7 @@ struct Executor {
     binary: bool,
     root_folder_ids: IndexSet<Arc<str>>,
     recent_updates_poll_interval: Option<std::time::Duration>,
+    pattern_matcher: PatternMatcher,
 }
 
 impl Executor {
@@ -87,11 +91,13 @@ impl Executor {
                         .build(),
                 );
         let drive_hub = DriveHub::new(client, auth);
+        let pattern_matcher = PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?;
         Ok(Self {
             drive_hub,
             binary: spec.binary,
             root_folder_ids: spec.root_folder_ids.into_iter().map(Arc::from).collect(),
             recent_updates_poll_interval: spec.recent_changes_poll_interval,
+            pattern_matcher,
         })
     }
 }
@@ -119,14 +125,20 @@ impl Executor {
         if file.trashed == Some(true) {
             return Ok(None);
         }
-        let (id, mime_type) = match (file.id, file.mime_type) {
-            (Some(id), Some(mime_type)) => (Arc::<str>::from(id), mime_type),
-            (id, mime_type) => {
-                warn!("Skipping file with incomplete metadata: id={id:?}, mime_type={mime_type:?}",);
+        let (id, mime_type, name) = match (file.id, file.mime_type, file.name) {
+            (Some(id), Some(mime_type), Some(name)) => (Arc::<str>::from(id), mime_type, name),
+            (id, mime_type, name) => {
+                warn!("Skipping file with incomplete metadata: id={id:?}, mime_type={mime_type:?}, name={name:?}",);
                 return Ok(None);
             }
         };
         if !seen_ids.insert(id.clone()) {
+            return Ok(None);
+        }
+        if self.pattern_matcher.is_file_included(&name){
+            return Ok(None);
+        }
+        if !self.pattern_matcher.is_excluded(&name) {
             return Ok(None);
         }
         let result = if mime_type == FOLDER_MIME_TYPE {

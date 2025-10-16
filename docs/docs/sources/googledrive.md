@@ -29,9 +29,16 @@ The spec takes the following fields:
 *   `service_account_credential_path` (`str`): full path to the service account credential file in JSON format.
 *   `root_folder_ids` (`list[str]`): a list of Google Drive folder IDs to import files from.
 *   `binary` (`bool`, optional): whether reading files as binary (instead of text).
+*   `included_patterns` (`list[str]`, optional): a list of glob patterns to include files, e.g. `["*.txt", "docs/**/*.md"]`.
+    If not specified, all files will be included.
+*   `excluded_patterns` (`list[str]`, optional): a list of glob patterns to exclude files, e.g. `["tmp", "**/node_modules"]`.
+    Any file or directory matching these patterns will be excluded even if they match `included_patterns`.
+    If not specified, no files will be excluded.
 *   `recent_changes_poll_interval` (`datetime.timedelta`, optional): when set, this source provides a change capture mechanism by polling Google Drive for recent modified files periodically.
 
     :::info
+    
+    `included_patterns` and `excluded_patterns` are using Unix-style glob syntax. See [globset syntax](https://docs.rs/globset/latest/globset/index.html#syntax) for the details.
 
     Since it only retrieves metadata for recent modified files (up to the previous poll) during polling,
     it's typically cheaper than a full refresh by setting the [refresh interval](/docs/core/flow_def#refresh-interval) especially when the folder contains a large number of files.
