@@ -9,6 +9,7 @@ from typing import (
     Any,
     Awaitable,
     Callable,
+    Iterator,
     Protocol,
     dataclass_transform,
     Annotated,
@@ -17,17 +18,24 @@ from typing import (
     Literal,
     get_args,
 )
+from collections.abc import AsyncIterator
 
 from . import _engine  # type: ignore
 from .subprocess_exec import executor_stub
 from .engine_object import dump_engine_object, load_engine_object
 from .engine_value import (
+    make_engine_key_encoder,
     make_engine_value_encoder,
     make_engine_value_decoder,
     make_engine_key_decoder,
     make_engine_struct_decoder,
 )
 from .typing import (
+    KEY_FIELD_NAME,
+    AnalyzedTypeInfo,
+    StructSchema,
+    StructType,
+    TableType,
     TypeAttr,
     encode_enriched_type_info,
     resolve_forward_ref,
@@ -99,12 +107,12 @@ class Executor(Protocol):
     op_category: OpCategory
 
 
-def _get_required_method(cls: type, name: str) -> Callable[..., Any]:
-    method = getattr(cls, name, None)
+def _get_required_method(obj: type, name: str) -> Callable[..., Any]:
+    method = getattr(obj, name, None)
     if method is None:
-        raise ValueError(f"Method {name}() is required for {cls.__name__}")
-    if not inspect.isfunction(method):
-        raise ValueError(f"Method {cls.__name__}.{name}() is not a function")
+        raise ValueError(f"Method {name}() is required for {obj}")
+    if not inspect.isfunction(method) and not inspect.ismethod(method):
+        raise ValueError(f"{obj}.{name}() is not a function; {method}")
     return method
 
 
@@ -436,24 +444,219 @@ class SourceReadOptions:
     include_value: bool = False
 
 
-T = TypeVar("T")
+K = TypeVar("K")
+V = TypeVar("V")
 
-NON_EXISTENCE = "NON_EXISTENCE"
+NON_EXISTENCE: Literal["NON_EXISTENCE"] = "NON_EXISTENCE"
+NO_ORDINAL: Literal["NO_ORDINAL"] = "NO_ORDINAL"
 
 
 @dataclasses.dataclass
-class SourceRowData(Generic[T]):
+class PartialSourceRowData(Generic[V]):
     """
     The data of a source row.
 
-    - value: The value of the source row.
-    - ordinal: The ordinal of the source row.
+    - value: The value of the source row. NON_EXISTENCE means the row does not exist.
+    - ordinal: The ordinal of the source row. NO_ORDINAL means ordinal is not available for the source.
     - content_version_fp: The content version fingerprint of the source row.
     """
 
-    value: T | Literal["NON_EXISTENCE"] | None
-    ordinal: int | None = None
+    value: V | Literal["NON_EXISTENCE"] | None = None
+    ordinal: int | Literal["NO_ORDINAL"] | None = None
     content_version_fp: bytes | None = None
+
+
+@dataclasses.dataclass
+class PartialSourceRow(Generic[K, V]):
+    key: K
+    data: PartialSourceRowData[V]
+
+
+class _SourceExecutorContext:
+    _executor: Any
+
+    _key_encoder: Callable[[Any], Any]
+    _key_decoder: Callable[[Any], Any]
+
+    _value_encoder: Callable[[Any], Any]
+
+    _list_fn: Callable[
+        [SourceReadOptions],
+        AsyncIterator[PartialSourceRow[Any, Any]]
+        | Iterator[PartialSourceRow[Any, Any]],
+    ]
+    _get_value_fn: Callable[
+        [Any, SourceReadOptions], Awaitable[PartialSourceRowData[Any]]
+    ]
+    _provides_ordinal_fn: Callable[[], bool] | None
+
+    def __init__(
+        self,
+        executor: Any,
+        key_type_info: AnalyzedTypeInfo,
+        key_decoder: Callable[[Any], Any],
+        value_type_info: AnalyzedTypeInfo,
+    ):
+        self._executor = executor
+
+        self._key_encoder = make_engine_key_encoder(key_type_info)
+        self._key_decoder = key_decoder
+        self._value_encoder = make_engine_value_encoder(value_type_info)
+
+        self._list_fn = _get_required_method(executor, "list")
+        self._get_value_fn = to_async_call(_get_required_method(executor, "get_value"))
+        self._provides_ordinal_fn = getattr(executor, "provides_ordinal", None)
+
+    def provides_ordinal(self) -> bool:
+        if self._provides_ordinal_fn is not None:
+            result = self._provides_ordinal_fn()
+            return bool(result)
+        else:
+            return False
+
+    async def list_async(
+        self, options: dict[str, Any]
+    ) -> AsyncIterator[tuple[Any, dict[str, Any]]]:
+        """
+        Return an async iterator that yields individual rows one by one.
+        Each yielded item is a tuple of (key, data).
+        """
+        # Convert the options dict to SourceReadOptions
+        read_options = load_engine_object(SourceReadOptions, options)
+
+        # Call the user's list method
+        list_result = self._list_fn(read_options)
+
+        # Handle both sync and async iterators
+        if hasattr(list_result, "__aiter__"):
+            async for partial_row in list_result:
+                yield (
+                    self._key_encoder(partial_row.key),
+                    self._encode_source_row_data(partial_row.data),
+                )
+        else:
+            for partial_row in list_result:
+                yield (
+                    self._key_encoder(partial_row.key),
+                    self._encode_source_row_data(partial_row.data),
+                )
+
+    async def get_value_async(
+        self,
+        raw_key: Any,
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        key = self._key_decoder(raw_key)
+        read_options = load_engine_object(SourceReadOptions, options)
+
+        row_data = await self._get_value_fn(key, read_options)
+        return self._encode_source_row_data(row_data)
+
+    def _encode_source_row_data(
+        self, row_data: PartialSourceRowData[Any]
+    ) -> dict[str, Any]:
+        """Convert Python PartialSourceRowData to the format expected by Rust."""
+        return {
+            "ordinal": row_data.ordinal,
+            "content_version_fp": row_data.content_version_fp,
+            "value": (
+                NON_EXISTENCE
+                if row_data.value == NON_EXISTENCE
+                else self._value_encoder(row_data.value)
+            ),
+        }
+
+
+class _SourceConnector:
+    """
+    The connector class passed to the engine.
+    """
+
+    _spec_cls: type[Any]
+    _key_type_info: AnalyzedTypeInfo
+    _key_decoder: Callable[[Any], Any]
+    _value_type_info: AnalyzedTypeInfo
+    _table_type: EnrichedValueType
+    _connector_cls: type[Any]
+
+    _create_fn: Callable[[Any], Awaitable[Any]]
+
+    def __init__(
+        self,
+        spec_cls: type[Any],
+        key_type: Any,
+        value_type: Any,
+        connector_cls: type[Any],
+    ):
+        self._spec_cls = spec_cls
+        self._key_type_info = analyze_type_info(key_type)
+        self._value_type_info = analyze_type_info(value_type)
+        self._connector_cls = connector_cls
+
+        # TODO: We can save the intermediate step after #1083 is fixed.
+        encoded_engine_key_type = encode_enriched_type_info(self._key_type_info)
+        engine_key_type = EnrichedValueType.decode(encoded_engine_key_type)
+
+        # TODO: We can save the intermediate step after #1083 is fixed.
+        encoded_engine_value_type = encode_enriched_type_info(self._value_type_info)
+        engine_value_type = EnrichedValueType.decode(encoded_engine_value_type)
+
+        if not isinstance(engine_value_type.type, StructType):
+            raise ValueError(f"Expected a StructType, got {engine_value_type.type}")
+
+        if isinstance(engine_key_type.type, StructType):
+            key_fields_schema = engine_key_type.type.fields
+        else:
+            key_fields_schema = [
+                FieldSchema(name=KEY_FIELD_NAME, value_type=engine_key_type)
+            ]
+        self._key_decoder = make_engine_key_decoder(
+            [], key_fields_schema, self._key_type_info
+        )
+        self._table_type = EnrichedValueType(
+            type=TableType(
+                kind="KTable",
+                row=StructSchema(
+                    fields=key_fields_schema + engine_value_type.type.fields
+                ),
+                num_key_parts=len(key_fields_schema),
+            ),
+        )
+
+        self._create_fn = to_async_call(_get_required_method(connector_cls, "create"))
+
+    async def create_executor(self, raw_spec: dict[str, Any]) -> _SourceExecutorContext:
+        spec = load_engine_object(self._spec_cls, raw_spec)
+        executor = await self._create_fn(spec)
+        return _SourceExecutorContext(
+            executor, self._key_type_info, self._key_decoder, self._value_type_info
+        )
+
+    def get_table_type(self) -> Any:
+        return dump_engine_object(self._table_type)
+
+
+def source_connector(
+    *,
+    spec_cls: type[Any],
+    key_type: Any = Any,
+    value_type: Any = Any,
+) -> Callable[[type], type]:
+    """
+    Decorate a class to provide a source connector for an op.
+    """
+
+    # Validate the spec_cls is a SourceSpec.
+    if not issubclass(spec_cls, SourceSpec):
+        raise ValueError(f"Expect a SourceSpec, got {spec_cls}")
+
+    # Register the source connector.
+    def _inner(connector_cls: type) -> type:
+        connector = _SourceConnector(spec_cls, key_type, value_type, connector_cls)
+        _engine.register_source_connector(spec_cls.__name__, connector)
+        return connector_cls
+
+    return _inner
 
 
 # Users will define a source spec class first (e.g. CustomSource), then provide a source connector like this:
@@ -462,13 +665,26 @@ class SourceRowData(Generic[T]):
 # class CustomSourceConnector:
 #     @staticmethod
 #     async def create(spec: CustomSource) -> Self:
+#         # Initialize and return the connector instance
 #         ...
 #
-#     async def list(self, options: SourceReadOptions) -> AsyncIterator[tuple[KeyType, SourceRowData[ValueType]]]:
+#     async def list(self, options: SourceReadOptions) -> AsyncIterator[PartialSourceRow[KeyType, ValueType]]:
+#         # options.include_ordinal: whether to include ordinal information
+#         # options.include_content_version_fp: whether to include content version fingerprint
+#         # options.include_value: whether to include the actual value data
 #         ...
 #
-#     async def get_value(self, key: KeyType, options: SourceReadOptions) -> SourceRowData[ValueType]:
+#     async def get_value(self, key: KeyType, options: SourceReadOptions) -> PartialSourceRowData[ValueType]:
+#         # options.include_ordinal: must return ordinal if True
+#         # options.include_content_version_fp: may return fingerprint if efficient
+#         # options.include_value: must return value if True
 #         ...
+#
+#     @staticmethod
+#     def provides_ordinal(executor: Self) -> bool:
+#         # Return True if this source can provide ordinal information
+#         # Called with the executor instance (not the spec)
+#         return False
 
 
 ########################################################

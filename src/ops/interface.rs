@@ -12,7 +12,7 @@ pub struct FlowInstanceContext {
     pub py_exec_ctx: Option<Arc<crate::py::PythonExecutionContext>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Ordinal(pub Option<i64>);
 
 impl Ordinal {
@@ -114,7 +114,7 @@ pub struct SourceChangeMessage {
     pub ack_fn: Option<Box<dyn FnOnce() -> BoxFuture<'static, Result<()>> + Send + Sync>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct SourceExecutorReadOptions {
     /// When set to true, the implementation must return a non-None `ordinal`.
     pub include_ordinal: bool,
