@@ -35,6 +35,16 @@ class GoogleDrive(op.SourceSpec):
     recent_changes_poll_interval: datetime.timedelta | None = None
 
 
+@dataclass
+class RedisNotification:
+    """Redis pub/sub configuration for event notifications."""
+
+    # Redis server URL (e.g., "redis://localhost:6379")
+    redis_url: str
+    # Redis channel name for pub/sub notifications
+    redis_channel: str
+
+
 class AmazonS3(op.SourceSpec):
     """Import data from an Amazon S3 bucket. Supports optional prefix and file filtering by glob patterns."""
 
@@ -46,8 +56,7 @@ class AmazonS3(op.SourceSpec):
     included_patterns: list[str] | None = None
     excluded_patterns: list[str] | None = None
     sqs_queue_url: str | None = None
-    redis_url: str | None = None
-    redis_channel: str | None = None
+    redis: RedisNotification | None = None
 
 
 class AzureBlob(op.SourceSpec):

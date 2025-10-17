@@ -22,6 +22,12 @@ fn decode_form_encoded_url(input: &str) -> Result<Arc<str>> {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct RedisConfig {
+    redis_url: String,
+    redis_channel: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Spec {
     bucket_name: String,
     prefix: Option<String>,
@@ -29,8 +35,7 @@ pub struct Spec {
     included_patterns: Option<Vec<String>>,
     excluded_patterns: Option<Vec<String>>,
     sqs_queue_url: Option<String>,
-    redis_url: Option<String>,
-    redis_channel: Option<String>,
+    redis: Option<RedisConfig>,
 }
 
 struct SqsContext {
@@ -339,65 +344,51 @@ impl Executor {
         let mut pubsub = redis_context.subscribe().await?;
         let mut change_messages = vec![];
 
-        // Try to get a message with a timeout
-        let message_result = tokio::time::timeout(
-            std::time::Duration::from_secs(20),
-            pubsub.on_message().next(),
-        )
-        .await;
+        // Wait for a message without timeout - long waiting is expected for event notifications
+        let message = pubsub.on_message().next().await;
 
-        match message_result {
-            Ok(Some(message)) => {
-                let payload: String = message.get_payload()?;
-                // Parse the Redis message - MinIO sends S3 event notifications in JSON format
-                let notification: S3EventNotification = utils::deser::from_json_str(&payload)?;
-                let mut changes = vec![];
+        if let Some(message) = message {
+            let payload: String = message.get_payload()?;
+            // Parse the Redis message - MinIO sends S3 event notifications in JSON format
+            let notification: S3EventNotification = utils::deser::from_json_str(&payload)?;
+            let mut changes = vec![];
 
-                for record in notification.records {
-                    let s3 = if let Some(s3) = record.s3 {
-                        s3
-                    } else {
-                        continue;
-                    };
+            for record in notification.records {
+                let s3 = if let Some(s3) = record.s3 {
+                    s3
+                } else {
+                    continue;
+                };
 
-                    if s3.bucket.name != self.bucket_name {
-                        continue;
-                    }
-
-                    if !self
-                        .prefix
-                        .as_ref()
-                        .is_none_or(|prefix| s3.object.key.starts_with(prefix))
-                    {
-                        continue;
-                    }
-
-                    if record.event_name.starts_with("ObjectCreated:")
-                        || record.event_name.starts_with("ObjectRemoved:")
-                    {
-                        let decoded_key = decode_form_encoded_url(&s3.object.key)?;
-                        changes.push(SourceChange {
-                            key: KeyValue::from_single_part(decoded_key),
-                            key_aux_info: serde_json::Value::Null,
-                            data: PartialSourceRowData::default(),
-                        });
-                    }
+                if s3.bucket.name != self.bucket_name {
+                    continue;
                 }
 
-                if !changes.is_empty() {
-                    change_messages.push(SourceChangeMessage {
-                        changes,
-                        ack_fn: None, // Redis pub/sub doesn't require acknowledgment
+                if !self
+                    .prefix
+                    .as_ref()
+                    .is_none_or(|prefix| s3.object.key.starts_with(prefix))
+                {
+                    continue;
+                }
+
+                if record.event_name.starts_with("ObjectCreated:")
+                    || record.event_name.starts_with("ObjectRemoved:")
+                {
+                    let decoded_key = decode_form_encoded_url(&s3.object.key)?;
+                    changes.push(SourceChange {
+                        key: KeyValue::from_single_part(decoded_key),
+                        key_aux_info: serde_json::Value::Null,
+                        data: PartialSourceRowData::default(),
                     });
                 }
             }
-            Ok(None) => {
-                // No message received
-                return Ok(Vec::new());
-            }
-            Err(_) => {
-                // Timeout - no message received, return empty vec
-                return Ok(Vec::new());
+
+            if !changes.is_empty() {
+                change_messages.push(SourceChangeMessage {
+                    changes,
+                    ack_fn: None, // Redis pub/sub doesn't require acknowledgment
+                });
             }
         }
 
@@ -452,14 +443,13 @@ impl SourceFactoryBase for Factory {
     ) -> Result<Box<dyn SourceExecutor>> {
         let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
 
-        let redis_context =
-            if let (Some(redis_url), Some(redis_channel)) = (spec.redis_url, spec.redis_channel) {
-                Some(Arc::new(
-                    RedisContext::new(&redis_url, &redis_channel).await?,
-                ))
-            } else {
-                None
-            };
+        let redis_context = if let Some(redis_config) = &spec.redis {
+            Some(Arc::new(
+                RedisContext::new(&redis_config.redis_url, &redis_config.redis_channel).await?,
+            ))
+        } else {
+            None
+        };
 
         Ok(Box::new(Executor {
             client: Client::new(&config),
