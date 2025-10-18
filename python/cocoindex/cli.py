@@ -84,9 +84,7 @@ def _load_user_app(app_target: str) -> None:
     try:
         load_user_app(app_target)
     except UserAppLoaderError as e:
-        raise click.ClickException(
-            f"Failed to load APP_TARGET '{app_target}': {e}"
-        ) from e
+        raise ValueError(f"Failed to load APP_TARGET '{app_target}'") from e
 
     add_user_app(app_target)
 
