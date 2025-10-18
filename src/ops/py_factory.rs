@@ -355,7 +355,7 @@ impl PySourceExecutor {
                     if py_err.is_instance_of::<pyo3::exceptions::PyStopAsyncIteration>(py) {
                         Ok(None)
                     } else {
-                        Err(anyhow!("Error from async iterator: {}", py_err))
+                        Err(py_err).to_result_with_py_trace(py)
                     }
                 }
             }
