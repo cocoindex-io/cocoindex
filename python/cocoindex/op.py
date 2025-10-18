@@ -659,34 +659,6 @@ def source_connector(
     return _inner
 
 
-# Users will define a source spec class first (e.g. CustomSource), then provide a source connector like this:
-#
-# @cocoindex.op.source_connector(spec_cls=CustomSource, key_type=KeyType, value_type=ValueType)
-# class CustomSourceConnector:
-#     @staticmethod
-#     async def create(spec: CustomSource) -> Self:
-#         # Initialize and return the connector instance
-#         ...
-#
-#     async def list(self, options: SourceReadOptions) -> AsyncIterator[PartialSourceRow[KeyType, ValueType]]:
-#         # options.include_ordinal: whether to include ordinal information
-#         # options.include_content_version_fp: whether to include content version fingerprint
-#         # options.include_value: whether to include the actual value data
-#         ...
-#
-#     async def get_value(self, key: KeyType, options: SourceReadOptions) -> PartialSourceRowData[ValueType]:
-#         # options.include_ordinal: must return ordinal if True
-#         # options.include_content_version_fp: may return fingerprint if efficient
-#         # options.include_value: must return value if True
-#         ...
-#
-#     @staticmethod
-#     def provides_ordinal(executor: Self) -> bool:
-#         # Return True if this source can provide ordinal information
-#         # Called with the executor instance (not the spec)
-#         return False
-
-
 ########################################################
 # Custom target connector
 ########################################################
