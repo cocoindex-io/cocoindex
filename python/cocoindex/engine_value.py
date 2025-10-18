@@ -70,6 +70,17 @@ def _is_type_kind_convertible_to(src_type_kind: str, dst_type_kind: str) -> bool
 ANY_TYPE_INFO = analyze_type_info(inspect.Parameter.empty)
 
 
+def make_engine_key_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], Any]:
+    """
+    Create an encoder closure for a key type.
+    """
+    value_encoder = make_engine_value_encoder(type_info)
+    if isinstance(type_info.variant, AnalyzedBasicType):
+        return lambda value: [value_encoder(value)]
+    else:
+        return value_encoder
+
+
 def make_engine_value_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], Any]:
     """
     Create an encoder closure for a specific type.
@@ -94,6 +105,9 @@ def make_engine_value_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], An
         # Otherwise it's a vector, falling into basic type in the engine.
 
     if isinstance(variant, AnalyzedDictType):
+        key_type_info = analyze_type_info(variant.key_type)
+        key_encoder = make_engine_key_encoder(key_type_info)
+
         value_type_info = analyze_type_info(variant.value_type)
         if not isinstance(value_type_info.variant, AnalyzedStructType):
             raise ValueError(
@@ -102,22 +116,10 @@ def make_engine_value_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], An
             )
         value_encoder = make_engine_value_encoder(value_type_info)
 
-        key_type_info = analyze_type_info(variant.key_type)
-        key_encoder = make_engine_value_encoder(key_type_info)
-        if isinstance(key_type_info.variant, AnalyzedBasicType):
-
-            def encode_row(k: Any, v: Any) -> Any:
-                return [key_encoder(k)] + value_encoder(v)
-
-        else:
-
-            def encode_row(k: Any, v: Any) -> Any:
-                return key_encoder(k) + value_encoder(v)
-
         def encode_struct_dict(value: Any) -> Any:
             if not value:
                 return []
-            return [encode_row(k, v) for k, v in value.items()]
+            return [key_encoder(k) + value_encoder(v) for k, v in value.items()]
 
         return encode_struct_dict
 

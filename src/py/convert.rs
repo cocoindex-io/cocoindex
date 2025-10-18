@@ -308,24 +308,21 @@ fn handle_vector_to_py<'py>(
     }
 }
 
-fn field_values_from_py_object<'py>(
-    schema: &schema::StructSchema,
+pub fn field_values_from_py_seq<'py>(
+    fields_schema: &[schema::FieldSchema],
     v: &Bound<'py, PyAny>,
 ) -> PyResult<value::FieldValues> {
     let list = v.extract::<Vec<Bound<'py, PyAny>>>()?;
-    if list.len() != schema.fields.len() {
+    if list.len() != fields_schema.len() {
         return Err(PyException::new_err(format!(
             "struct field number mismatch, expected {}, got {}",
-            schema.fields.len(),
+            fields_schema.len(),
             list.len()
         )));
     }
 
     Ok(value::FieldValues {
-        fields: schema
-            .fields
-            .iter()
-            .zip(list.into_iter())
+        fields: std::iter::zip(fields_schema, list.into_iter())
             .map(|(f, v)| value_from_py_object(&f.value_type.typ, &v))
             .collect::<PyResult<Vec<_>>>()?,
     })
@@ -343,13 +340,13 @@ pub fn value_from_py_object<'py>(
                 value::Value::Basic(basic_value_from_py_object(typ, v)?)
             }
             schema::ValueType::Struct(schema) => {
-                value::Value::Struct(field_values_from_py_object(schema, v)?)
+                value::Value::Struct(field_values_from_py_seq(&schema.fields, v)?)
             }
             schema::ValueType::Table(schema) => {
                 let list = v.extract::<Vec<Bound<'py, PyAny>>>()?;
                 let values = list
                     .into_iter()
-                    .map(|v| field_values_from_py_object(&schema.row, &v))
+                    .map(|v| field_values_from_py_seq(&schema.row.fields, &v))
                     .collect::<PyResult<Vec<_>>>()?;
 
                 match schema.kind {

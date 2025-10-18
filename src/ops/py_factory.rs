@@ -1,8 +1,8 @@
 use crate::prelude::*;
 
 use pyo3::{
-    IntoPyObjectExt, Py, PyAny, Python, pyclass, pymethods,
-    types::{IntoPyDict, PyList, PyString, PyTuple},
+    Bound, IntoPyObjectExt, Py, PyAny, Python, pyclass, pymethods,
+    types::{IntoPyDict, PyAnyMethods, PyList, PyString, PyTuple, PyTupleMethods},
 };
 use pythonize::{depythonize, pythonize};
 
@@ -221,6 +221,347 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
         Ok((result_type, executor_fut.boxed()))
     }
 }
+
+////////////////////////////////////////////////////////
+// Custom source connector
+////////////////////////////////////////////////////////
+
+pub(crate) struct PySourceConnectorFactory {
+    pub py_source_connector: Py<PyAny>,
+}
+
+struct PySourceExecutor {
+    py_source_executor: Py<PyAny>,
+    py_exec_ctx: Arc<crate::py::PythonExecutionContext>,
+    provides_ordinal: bool,
+    key_fields: Box<[schema::FieldSchema]>,
+    value_fields: Box<[schema::FieldSchema]>,
+}
+
+#[async_trait]
+impl interface::SourceExecutor for PySourceExecutor {
+    async fn list(
+        &self,
+        options: &interface::SourceExecutorReadOptions,
+    ) -> Result<BoxStream<'async_trait, Result<Vec<interface::PartialSourceRow>>>> {
+        let py_exec_ctx = self.py_exec_ctx.clone();
+        let py_source_executor = Python::with_gil(|py| self.py_source_executor.clone_ref(py));
+
+        // Get the Python async iterator
+        let py_async_iter = Python::with_gil(|py| {
+            py_source_executor
+                .call_method(py, "list_async", (pythonize(py, options)?,), None)
+                .to_result_with_py_trace(py)
+        })?;
+
+        // Create a stream that pulls from the Python async iterator one item at a time
+        let stream = try_stream! {
+            // We need to iterate over the Python async iterator
+            loop {
+                if let Some(source_row) = self.next_partial_source_row(&py_async_iter, &py_exec_ctx).await? {
+                    // Yield a Vec containing just this single row
+                    yield vec![source_row];
+                } else {
+                    break;
+                }
+            }
+        };
+
+        Ok(stream.boxed())
+    }
+
+    async fn get_value(
+        &self,
+        key: &value::KeyValue,
+        _key_aux_info: &serde_json::Value,
+        options: &interface::SourceExecutorReadOptions,
+    ) -> Result<interface::PartialSourceRowData> {
+        let py_exec_ctx = self.py_exec_ctx.clone();
+        let py_source_executor = Python::with_gil(|py| self.py_source_executor.clone_ref(py));
+        let key_clone = key.clone();
+
+        let py_result = Python::with_gil(|py| -> Result<_> {
+            let result_coro = py_source_executor
+                .call_method(
+                    py,
+                    "get_value_async",
+                    (
+                        py::key_to_py_object(py, &key_clone)?,
+                        pythonize(py, options)?,
+                    ),
+                    None,
+                )
+                .to_result_with_py_trace(py)?;
+            let task_locals =
+                pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
+            Ok(pyo3_async_runtimes::into_future_with_locals(
+                &task_locals,
+                result_coro.into_bound(py),
+            )?)
+        })?
+        .await;
+
+        Python::with_gil(|py| -> Result<_> {
+            let result = py_result.to_result_with_py_trace(py)?;
+            let result_bound = result.into_bound(py);
+            let data = self.parse_partial_source_row_data(py, &result_bound)?;
+            Ok(data)
+        })
+    }
+
+    async fn change_stream(
+        &self,
+    ) -> Result<Option<BoxStream<'async_trait, Result<interface::SourceChangeMessage>>>> {
+        Ok(None)
+    }
+
+    fn provides_ordinal(&self) -> bool {
+        self.provides_ordinal
+    }
+}
+
+impl PySourceExecutor {
+    async fn next_partial_source_row(
+        &self,
+        py_async_iter: &Py<PyAny>,
+        py_exec_ctx: &Arc<crate::py::PythonExecutionContext>,
+    ) -> Result<Option<interface::PartialSourceRow>> {
+        // Call the Python method to get the next item, avoiding storing Python objects across await points
+        let next_item_coro = Python::with_gil(|py| -> Result<_> {
+            let coro = py_async_iter
+                .call_method0(py, "__anext__")
+                .to_result_with_py_trace(py)?;
+            let task_locals =
+                pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
+            Ok(pyo3_async_runtimes::into_future_with_locals(
+                &task_locals,
+                coro.into_bound(py),
+            )?)
+        })?;
+
+        // Await the future to get the next item
+        let py_item_result = next_item_coro.await;
+
+        // Handle StopAsyncIteration and convert to Rust data immediately to avoid Send issues
+        Python::with_gil(|py| -> Result<Option<interface::PartialSourceRow>> {
+            match py_item_result {
+                Ok(item) => {
+                    let bound_item = item.into_bound(py);
+                    let source_row =
+                        self.convert_py_tuple_to_partial_source_row(py, &bound_item)?;
+                    Ok(Some(source_row))
+                }
+                Err(py_err) => {
+                    if py_err.is_instance_of::<pyo3::exceptions::PyStopAsyncIteration>(py) {
+                        Ok(None)
+                    } else {
+                        Err(anyhow!("Error from async iterator: {}", py_err))
+                    }
+                }
+            }
+        })
+    }
+
+    fn convert_py_tuple_to_partial_source_row(
+        &self,
+        py: Python,
+        bound_item: &Bound<PyAny>,
+    ) -> Result<interface::PartialSourceRow> {
+        // Each item should be a tuple of (key, data)
+        let tuple = bound_item
+            .downcast::<PyTuple>()
+            .map_err(|e| anyhow!("Failed to downcast to PyTuple: {}", e))?;
+        if tuple.len() != 2 {
+            api_bail!("Expected tuple of length 2 from Python source iterator");
+        }
+
+        let key_py = tuple.get_item(0)?;
+        let data_py = tuple.get_item(1)?;
+
+        // key_aux_info is always Null now
+        let key_aux_info = serde_json::Value::Null;
+
+        // Parse data
+        let data = self.parse_partial_source_row_data(py, &data_py)?;
+
+        // Convert key using py::field_values_from_py_seq
+        let key_field_values = py::field_values_from_py_seq(&self.key_fields, &key_py)?;
+        let key_parts: Result<Vec<_>, _> = key_field_values
+            .fields
+            .into_iter()
+            .map(|field| field.into_key())
+            .collect();
+        let key_value = value::KeyValue(key_parts?.into_boxed_slice());
+
+        Ok(interface::PartialSourceRow {
+            key: key_value,
+            key_aux_info,
+            data,
+        })
+    }
+
+    fn parse_partial_source_row_data(
+        &self,
+        _py: Python,
+        data_py: &Bound<PyAny>,
+    ) -> Result<interface::PartialSourceRowData> {
+        // Extract fields from the Python dict
+        let ordinal = if let Ok(ordinal_py) = data_py.get_item("ordinal")
+            && !ordinal_py.is_none()
+        {
+            if ordinal_py.is_instance_of::<PyString>()
+                && ordinal_py.extract::<&str>()? == "NO_ORDINAL"
+            {
+                Some(interface::Ordinal::unavailable())
+            } else if let Ok(ordinal) = ordinal_py.extract::<i64>() {
+                Some(interface::Ordinal(Some(ordinal)))
+            } else {
+                api_bail!("Invalid ordinal: {}", ordinal_py);
+            }
+        } else {
+            None
+        };
+
+        // Handle content_version_fp - can be bytes or null
+        let content_version_fp = if let Ok(fp_py) = data_py.get_item("content_version_fp")
+            && !fp_py.is_none()
+        {
+            if let Ok(bytes_vec) = fp_py.extract::<Vec<u8>>() {
+                Some(bytes_vec)
+            } else {
+                api_bail!("Invalid content_version_fp: {}", fp_py);
+            }
+        } else {
+            None
+        };
+
+        // Handle value - can be NON_EXISTENCE string, encoded value, or null
+        let value = if let Ok(value_py) = data_py.get_item("value")
+            && !value_py.is_none()
+        {
+            if value_py.is_instance_of::<PyString>()
+                && value_py.extract::<&str>()? == "NON_EXISTENCE"
+            {
+                Some(interface::SourceValue::NonExistence)
+            } else if let Ok(field_values) =
+                py::field_values_from_py_seq(&self.value_fields, &value_py)
+            {
+                Some(interface::SourceValue::Existence(field_values))
+            } else {
+                api_bail!("Invalid value: {}", value_py);
+            }
+        } else {
+            None
+        };
+
+        Ok(interface::PartialSourceRowData {
+            ordinal,
+            content_version_fp,
+            value,
+        })
+    }
+}
+
+#[async_trait]
+impl interface::SourceFactory for PySourceConnectorFactory {
+    async fn build(
+        self: Arc<Self>,
+        _source_name: &str,
+        spec: serde_json::Value,
+        context: Arc<interface::FlowInstanceContext>,
+    ) -> Result<(
+        schema::EnrichedValueType,
+        BoxFuture<'static, Result<Box<dyn interface::SourceExecutor>>>,
+    )> {
+        let py_exec_ctx = context
+            .py_exec_ctx
+            .as_ref()
+            .ok_or_else(|| anyhow!("Python execution context is missing"))?
+            .clone();
+
+        // First get the table type (this doesn't require executor)
+        let table_type = Python::with_gil(|py| -> Result<_> {
+            let value_type_result = self
+                .py_source_connector
+                .call_method(py, "get_table_type", (), None)
+                .to_result_with_py_trace(py)?;
+            let table_type: schema::EnrichedValueType =
+                depythonize(&value_type_result.into_bound(py))?;
+            Ok(table_type)
+        })?;
+
+        // Extract key and value field schemas from the table type - must be a KTable
+        let (key_fields, value_fields) = match &table_type.typ {
+            schema::ValueType::Table(table) => {
+                // Must be a KTable for sources
+                let num_key_parts = match &table.kind {
+                    schema::TableKind::KTable(info) => info.num_key_parts,
+                    _ => api_bail!("Source must return a KTable type, got {:?}", table.kind),
+                };
+
+                let key_fields = table.row.fields[..num_key_parts]
+                    .to_vec()
+                    .into_boxed_slice();
+                let value_fields = table.row.fields[num_key_parts..]
+                    .to_vec()
+                    .into_boxed_slice();
+
+                (key_fields, value_fields)
+            }
+            _ => api_bail!(
+                "Expected KTable type from get_value_type(), got {:?}",
+                table_type.typ
+            ),
+        };
+
+        let executor_fut = async move {
+            // Create the executor using the async create_executor method
+            let create_future = Python::with_gil(|py| -> Result<_> {
+                let create_coro = self
+                    .py_source_connector
+                    .call_method(py, "create_executor", (pythonize(py, &spec)?,), None)
+                    .to_result_with_py_trace(py)?;
+                let task_locals =
+                    pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
+                let create_future = pyo3_async_runtimes::into_future_with_locals(
+                    &task_locals,
+                    create_coro.into_bound(py),
+                )?;
+                Ok(create_future)
+            })?;
+
+            let py_executor_context_result = create_future.await;
+
+            let (py_source_executor_context, provides_ordinal) =
+                Python::with_gil(|py| -> Result<_> {
+                    let executor_context =
+                        py_executor_context_result.to_result_with_py_trace(py)?;
+
+                    // Get provides_ordinal from the executor context
+                    let provides_ordinal = executor_context
+                        .call_method(py, "provides_ordinal", (), None)
+                        .to_result_with_py_trace(py)?
+                        .extract::<bool>(py)?;
+
+                    Ok((executor_context, provides_ordinal))
+                })?;
+
+            Ok(Box::new(PySourceExecutor {
+                py_source_executor: py_source_executor_context,
+                py_exec_ctx,
+                provides_ordinal,
+                key_fields,
+                value_fields,
+            }) as Box<dyn interface::SourceExecutor>)
+        };
+
+        Ok((table_type, executor_fut.boxed()))
+    }
+}
+
+////////////////////////////////////////////////////////
+// Custom target connector
+////////////////////////////////////////////////////////
 
 pub(crate) struct PyExportTargetFactory {
     pub py_target_connector: Py<PyAny>,
