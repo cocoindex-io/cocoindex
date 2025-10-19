@@ -191,6 +191,7 @@ It defines an index flow like this:
 | [Face Recognition](examples/face_recognition) | Recognize faces in images and build embedding index |
 | [Paper Metadata](examples/paper_metadata) | Index papers in PDF files, and build metadata tables for each paper |
 | [Multi Format Indexing](examples/multi_format_indexing) | Build visual document index from PDFs and images with ColPali for semantic search |
+| [Custom Source HackerNews](examples/custom_source_hn) | Index HackerNews threads and comments, using *CocoIndex Custom Source* |
 | [Custom Output Files](examples/custom_output_files) | Convert markdown files to HTML files and save them to a local directory, using *CocoIndex Custom Targets* |
 | [Patient intake form extraction](examples/patient_intake_extraction) | Use LLM to extract structured data from patient intake forms with different formats |
 
