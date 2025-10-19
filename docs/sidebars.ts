@@ -70,6 +70,7 @@ const sidebars: SidebarsConfig = {
       label: 'Custom Operations',
       collapsed: false,
       items: [
+        'custom_ops/custom_sources',
         'custom_ops/custom_functions',
         'custom_ops/custom_targets',
       ],

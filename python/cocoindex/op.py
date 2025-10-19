@@ -439,6 +439,27 @@ def function(**args: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
 
 @dataclasses.dataclass
 class SourceReadOptions:
+    """
+    The options for reading a source row.
+    This is argument for both `list()` and `get_value()` methods.
+    Note that in most cases (unless spelled out otherwise below) it's not a mandatory requirement, but more like a hint to say it's useful under the current context.
+
+    - include_ordinal: Whether to include the ordinal of the source row.
+      When provides_ordinal() returns True, you must provide `ordinal` in `list()` when `include_ordinal` is True.
+      It's optional for other cases. It's helpful to skip unnecessary reprocessing early, and avoid output from older version of input over-writing the latest one when there's concurrency (especially multiple processes) and source updates frequently.
+
+    - include_content_version_fp: Whether to include the content version fingerprint of the source row.
+      It's always optional even if this is True.
+      It's helpful to skip unnecessary reprocessing early.
+      You should only consider providing it if you can directly get it without computing the hash on the content.
+
+    - include_value: Whether to include the value of the source row.
+      You must provide it in `get_value()` when `include_value` is True.
+      It's optional for `list()`.
+      Consider providing it when it's significantly cheaper then calling another `get_value()` for each row.
+      It will save costs of individual `get_value()` calls.
+    """
+
     include_ordinal: bool = False
     include_content_version_fp: bool = False
     include_value: bool = False
