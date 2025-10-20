@@ -24,7 +24,7 @@ CocoIndex is an ultra-performant real-time data transformation framework for AI 
 - Multiple targets (Postgres+pgvector, Qdrant, LanceDB, Neo4j, Kuzu)
 
 **For detailed documentation:** <https://cocoindex.io/docs/>
-**Search documentation:** <https://cocoindex.io/docs/search?q=><url-encoded-keyword>
+**Search documentation:** <https://cocoindex.io/docs/search?q=url%20encoded%20keyword>
 
 ## When to Use This Skill
 
@@ -90,20 +90,37 @@ Users can install using their preferred package manager (pip, uv, poetry, etc.) 
 
 ### Step 3: Set Up Environment
 
-Guide user to create `.env` file:
+**Check existing environment first:**
+
+1. Check if `COCOINDEX_DATABASE_URL` exists in environment variables
+   - If not found, use default: `postgres://cocoindex:cocoindex@localhost/cocoindex`
+
+2. **For flows requiring LLM APIs** (embeddings, extraction):
+   - Ask user which LLM provider they want to use:
+     - **OpenAI** - Both generation and embeddings
+     - **Anthropic** - Generation only
+     - **Gemini** - Both generation and embeddings
+     - **Voyage** - Embeddings only
+     - **Ollama** - Local models (generation and embeddings)
+   - Check if the corresponding API key exists in environment variables
+   - If not found, **ask user to provide the API key value**
+   - **Never create simplified examples without LLM** - always get the proper API key and use the real LLM functions
+
+**Guide user to create `.env` file:**
 
 ```bash
 # Database connection (required - internal storage)
-COCOINDEX_DATABASE_URL=postgresql://user:password@localhost/cocoindex_db
+COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
 
-# Optional: App namespace for organizing flows
-COCOINDEX_APP_NAMESPACE=dev
-
-# Optional: LLM API keys (if using LLM functions)
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-VOYAGE_API_KEY=pa-...
+# LLM API keys (add the ones you need)
+OPENAI_API_KEY=sk-...          # For OpenAI (generation + embeddings)
+ANTHROPIC_API_KEY=sk-ant-...   # For Anthropic (generation only)
+GOOGLE_API_KEY=...             # For Gemini (generation + embeddings)
+VOYAGE_API_KEY=pa-...          # For Voyage (embeddings only)
+# Ollama requires no API key (local)
 ```
+
+**For more LLM options:** <https://cocoindex.io/docs/ai/llm>
 
 Create basic project structure:
 
@@ -172,9 +189,42 @@ def flow_name(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 
 - Each source creates a field in the top-level data scope
 - Use `.row()` to iterate through table data
+- **CRITICAL: Always assign transformed data to row fields** - Use `item["new_field"] = item["existing_field"].transform(...)`, NOT local variables like `new_field = item["existing_field"].transform(...)`
 - Transformations create new fields without mutating existing data
 - Collectors gather data from any scope level
 - Export must happen at top level (not within row iterations)
+
+**Common mistakes to avoid:**
+
+❌ **Wrong:** Using local variables for transformations
+
+```python
+with data_scope["files"].row() as file:
+    summary = file["content"].transform(...)  # ❌ Local variable
+    summaries_collector.collect(filename=file["filename"], summary=summary)
+```
+
+✅ **Correct:** Assigning to row fields
+
+```python
+with data_scope["files"].row() as file:
+    file["summary"] = file["content"].transform(...)  # ✅ Field assignment
+    summaries_collector.collect(filename=file["filename"], summary=file["summary"])
+```
+
+❌ **Wrong:** Creating unnecessary dataclasses to mirror flow fields
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class FileSummary:  # ❌ Unnecessary - CocoIndex manages fields automatically
+    filename: str
+    summary: str
+    embedding: list[float]
+
+# This dataclass is never used in the flow!
+```
 
 ### Step 5: Design the Flow Solution
 
@@ -217,14 +267,11 @@ No single pattern covers this exact scenario, but the building blocks are compos
 Guide user through testing:
 
 ```bash
-# 1. Test without side effects
-cocoindex evaluate main:FlowName --output-dir ./test_output
+# 1. Run with setup
+cocoindex update --setup -f main   # -f force setup without confirmation prompts
 
-# 2. If looks good, setup and run
-cocoindex setup main
-cocoindex update main
 
-# 3. Start a server and redirect users to CocoInsight
+# 2. Start a server and redirect users to CocoInsight
 cocoindex server -ci main
 # Then open CocoInsight at https://cocoindex.io/cocoinsight
 
@@ -233,6 +280,12 @@ cocoindex server -ci main
 ## Data Types
 
 CocoIndex has a type system independent of programming languages. All data types are determined at flow definition time, making schemas clear and predictable.
+
+**IMPORTANT: When to define types:**
+
+- **Custom functions**: Type annotations are **required** for return values (these are the source of truth for type inference)
+- **Flow fields**: Type annotations are **NOT needed** - CocoIndex automatically infers types from sources, functions, and transformations
+- **Dataclasses/Pydantic models**: Only create them when they're **actually used** (as function parameters/returns or ExtractByLlm output_type), NOT to mirror flow field schemas
 
 **Type annotation requirements:**
 
@@ -557,11 +610,14 @@ chunk["embedding"] = chunk["text"].transform(
 
 **EmbedText** - LLM API embeddings
 
+This is the **recommended way** to generate embeddings using LLM APIs (OpenAI, Voyage, etc.).
+
 ```python
 chunk["embedding"] = chunk["text"].transform(
     cocoindex.functions.EmbedText(
         api_type=cocoindex.LlmApiType.OPENAI,
-        model="text-embedding-3-small"
+        model="text-embedding-3-small",
+        dimensions=1024  # Optional: specify dimensions
     )
 )
 ```
@@ -579,23 +635,38 @@ image["embedding"] = image["img_bytes"].transform(
 
 **ExtractByLlm** - Extract structured data with LLM
 
+This is the **recommended way** to use LLMs for extraction and summarization tasks. It supports both structured outputs (dataclasses, Pydantic models) and simple text outputs (str).
+
 ```python
 import dataclasses
 
+# For structured extraction
 @dataclasses.dataclass
 class ProductInfo:
     name: str
     price: float
     category: str
 
-data = text.transform(
+item["product_info"] = item["text"].transform(
     cocoindex.functions.ExtractByLlm(
         llm_spec=cocoindex.LlmSpec(
             api_type=cocoindex.LlmApiType.OPENAI,
-            model="gpt-4"
+            model="gpt-4o-mini"
         ),
         output_type=ProductInfo,
         instruction="Extract product information"
+    )
+)
+
+# For text summarization/generation
+file["summary"] = file["content"].transform(
+    cocoindex.functions.ExtractByLlm(
+        llm_spec=cocoindex.LlmSpec(
+            api_type=cocoindex.LlmApiType.OPENAI,
+            model="gpt-4o-mini"
+        ),
+        output_type=str,
+        instruction="Summarize this document in one paragraph"
     )
 )
 ```
