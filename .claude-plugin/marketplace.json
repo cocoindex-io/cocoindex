@@ -1,0 +1,10 @@
+{
+  "name": "cocoindex",
+  "version": "1.0.0",
+  "description": "Comprehensive toolkit for building data transformation pipelines (flows) using the CocoIndex library",
+  "author": "CocoIndex Team",
+  "homepage": "https://github.com/cocoindex-io/cocoindex",
+  "skills": [
+    "cocoindex-flows"
+  ]
+}
