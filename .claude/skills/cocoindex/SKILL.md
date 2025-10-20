@@ -1,9 +1,9 @@
 ---
-name: cocoindex-flows
-description: Comprehensive toolkit for building data transformation pipelines (flows) using the CocoIndex library. Use when users need to create ETL workflows for AI data processing, including embedding documents into vector databases, building knowledge graphs, creating search indexes, or processing data streams with incremental updates. Supports writing flows, custom functions, and operating flows via CLI or API.
+name: cocoindex
+description: Comprehensive toolkit for developing with the CocoIndex library. Use when users need to create data transformation pipelines (flows), write custom functions, or operate flows via CLI or API. Covers building ETL workflows for AI data processing, including embedding documents into vector databases, building knowledge graphs, creating search indexes, or processing data streams with incremental updates.
 ---
 
-# CocoIndex Flows
+# CocoIndex
 
 ## Overview
 
