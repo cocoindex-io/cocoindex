@@ -230,6 +230,78 @@ cocoindex server -ci main
 
 ```
 
+## Data Types
+
+CocoIndex has a type system independent of programming languages. All data types are determined at flow definition time, making schemas clear and predictable.
+
+**Type annotation requirements:**
+
+- **Return values of custom functions**: Must use **specific type annotations** - these are the source of truth for type inference
+- **Arguments of custom functions**: Relaxed - can use `Any`, `dict[str, Any]`, or omit annotations; engine already knows the types
+- **Flow definitions**: No explicit type annotations needed - CocoIndex automatically infers types from sources and functions
+
+**Why specific return types matter:** Custom function return types let CocoIndex infer field types throughout the flow without processing real data. This enables creating proper target schemas (e.g., vector indexes with fixed dimensions).
+
+**Common type categories:**
+
+1. **Primitive types**: `str`, `int`, `float`, `bool`, `bytes`, `datetime.date`, `datetime.datetime`, `uuid.UUID`
+
+2. **Vector types** (embeddings): Specify dimension in return type if you plan to export as vectors to targets, as most targets require a fixed vector dimension
+   - `cocoindex.Vector[cocoindex.Float32, typing.Literal[768]]` - 768-dim float32 vector (recommended)
+   - `list[float]` without dimension also works
+
+3. **Struct types**: Dataclass, NamedTuple, or Pydantic model
+   - Return type: Must use specific class (e.g., `Person`)
+   - Argument: Can use `dict[str, Any]` or `Any`
+
+4. **Table types**:
+   - **KTable** (keyed): `dict[K, V]` where K = key type (primitive or frozen struct), V = Struct type
+   - **LTable** (ordered): `list[R]` where R = Struct type
+   - Arguments: Can use `dict[Any, Any]` or `list[Any]`
+
+5. **Json type**: `cocoindex.Json` for unstructured/dynamic data
+
+6. **Optional types**: `T | None` for nullable values
+
+**Examples:**
+
+```python
+from dataclasses import dataclass
+from typing import Literal
+import cocoindex
+
+@dataclass
+class Person:
+    name: str
+    age: int
+
+# ✅ Vector with dimension (recommended for vector search)
+@cocoindex.op.function(behavior_version=1)
+def embed_text(text: str) -> cocoindex.Vector[cocoindex.Float32, Literal[768]]:
+    """Generate 768-dim embedding - dimension needed for vector index."""
+    # ... embedding logic ...
+    return embedding  # numpy array or list of 768 floats
+
+# ✅ Struct return type, relaxed argument
+@cocoindex.op.function(behavior_version=1)
+def process_person(person: dict[str, Any]) -> Person:
+    """Argument can be dict[str, Any], return must be specific Struct."""
+    return Person(name=person["name"], age=person["age"])
+
+# ✅ LTable return type
+@cocoindex.op.function(behavior_version=1)
+def filter_people(people: list[Any]) -> list[Person]:
+    """Return type specifies list of specific Struct."""
+    return [p for p in people if p.age >= 18]
+
+# ❌ Wrong: dict[str, str] is not a valid specific CocoIndex type
+# @cocoindex.op.function(...)
+# def bad_example(person: Person) -> dict[str, str]:
+#     return {"name": person.name}
+```
+
+**For comprehensive data types documentation:** <https://cocoindex.io/docs/core/data_types>
+
 ## Custom Functions
 
 When users need custom transformation logic, create custom functions.
