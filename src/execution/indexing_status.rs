@@ -13,7 +13,7 @@ pub struct SourceRowLastProcessedInfo {
 
 #[derive(Debug, Serialize)]
 pub struct SourceRowInfo {
-    pub ordinal: interface::Ordinal,
+    pub ordinal: Option<interface::Ordinal>,
 }
 
 #[derive(Debug, Serialize)]
@@ -57,9 +57,7 @@ pub async fn get_source_row_indexing_status(
             .map_or(false, |fp| src_eval_ctx.plan.logic_fingerprint.matches(fp)),
     });
     let current = SourceRowInfo {
-        ordinal: current
-            .ordinal
-            .ok_or(anyhow::anyhow!("Ordinal is unavailable for the source"))?,
+        ordinal: current.ordinal,
     };
     Ok(SourceRowIndexingStatus {
         last_processed,
