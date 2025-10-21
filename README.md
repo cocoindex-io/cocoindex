@@ -122,6 +122,13 @@ pip install -U cocoindex
 
 2. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. CocoIndex uses it for incremental processing.
 
+3. (Optional) Install Claude Code skill for enhanced development experience. Run these commands in [Claude Code](https://claude.com/claude-code):
+
+```
+/plugin marketplace add cocoindex-io/cocoindex-claude
+/plugin install cocoindex-skills@cocoindex
+```
+
 ## Define data flow
 
 Follow [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart) to define your first indexing flow. An example flow looks like:
