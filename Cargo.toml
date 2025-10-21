@@ -152,5 +152,6 @@ azure_storage_blobs = { version = "0.21.0", default-features = false, features =
     "hmac_rust",
 ] }
 serde_path_to_error = "0.1.17"
+redis = { version = "0.31.0", features = ["tokio-comp", "connection-manager"] }
 expect-test = "1.5.0"
 encoding_rs = "0.8.35"
