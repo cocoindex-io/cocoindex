@@ -65,6 +65,7 @@ blake2 = "0.10.6"
 pgvector = { version = "0.4.1", features = ["sqlx", "halfvec"] }
 phf = { version = "0.12.1", features = ["macros"] }
 indenter = "0.3.4"
+indicatif = "0.17.9"
 itertools = "0.14.0"
 derivative = "2.2.0"
 hex = "0.4.3"
