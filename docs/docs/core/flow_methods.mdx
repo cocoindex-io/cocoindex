@@ -147,13 +147,13 @@ The `cocoindex update` subcommand creates/updates data in the target.
 Once it's done, the target data is fresh up to the moment when the command is called.
 
 ```sh
-cocoindex update main.py
+cocoindex update main
 ```
 
 With a `--setup` option, it will also setup the flow first if needed.
 
 ```sh
-cocoindex update --setup main.py
+cocoindex update --setup main
 ```
 
 With a `--reexport` option, it will reexport the targets even if there's no change.
@@ -210,7 +210,7 @@ A data source may enable one or multiple *change capture mechanisms*:
 *   Configured with a [refresh interval](flow_def#refresh-interval), which is generally applicable to all data sources.
 
 *   Specific data sources also provide their specific change capture mechanisms.
-    For example, [`Postgres` source](../ops/sources/#postgres) listens to PostgreSQL's change notifications, [`AmazonS3` source](../ops/sources/#amazons3) watches S3 bucket's change events, and [`GoogleDrive` source](../ops/sources#googledrive) allows polling recent modified files.
+    For example, [`Postgres` source](../sources/postgres) listens to PostgreSQL's change notifications, [`AmazonS3` source](../sources/amazons3) watches S3 bucket's change events, and [`GoogleDrive` source](../sources/googledrive) allows polling recent modified files.
     See documentations for specific data sources.
 
 Change capture mechanisms enable CocoIndex to continuously capture changes from the source data and update the target data accordingly, under live update mode.
@@ -220,7 +220,7 @@ Change capture mechanisms enable CocoIndex to continuously capture changes from 
 To perform live update, run the `cocoindex update` subcommand with `-L` option:
 
 ```sh
-cocoindex update main.py -L
+cocoindex update main -L
 ```
 
 If there's at least one data source with change capture mechanism enabled, it will keep running until aborted (e.g. by `Ctrl-C`).

@@ -31,8 +31,8 @@ from . import _engine  # type: ignore
 from . import index
 from . import op
 from . import setting
-from .convert import (
-    dump_engine_object,
+from .engine_object import dump_engine_object
+from .engine_value import (
     make_engine_value_decoder,
     make_engine_value_encoder,
 )
@@ -405,6 +405,7 @@ class DataCollector:
         /,
         *,
         primary_key_fields: Sequence[str],
+        attachments: Sequence[op.TargetAttachmentSpec] = (),
         vector_indexes: Sequence[index.VectorIndexDef] = (),
         vector_index: Sequence[tuple[str, index.VectorSimilarityMetric]] = (),
         setup_by_user: bool = False,
@@ -436,6 +437,10 @@ class DataCollector:
             target_name,
             _spec_kind(target_spec),
             dump_engine_object(target_spec),
+            [
+                {"kind": _spec_kind(att), **dump_engine_object(att)}
+                for att in attachments
+            ],
             dump_engine_object(index_options),
             self._engine_data_collector,
             setup_by_user,
@@ -454,7 +459,9 @@ class _FlowBuilderState:
     field_name_builder: _NameBuilder
 
     def __init__(self, full_name: str):
-        self.engine_flow_builder = _engine.FlowBuilder(full_name)
+        self.engine_flow_builder = _engine.FlowBuilder(
+            full_name, execution_context.event_loop
+        )
         self.field_name_builder = _NameBuilder()
 
     def get_data_slice(self, v: Any) -> _engine.DataSlice:
@@ -926,9 +933,7 @@ def _create_lazy_flow(
             flow_builder_state, flow_builder_state.engine_flow_builder.root_scope()
         )
         fl_def(FlowBuilder(flow_builder_state), root_scope)
-        return flow_builder_state.engine_flow_builder.build_flow(
-            execution_context.event_loop
-        )
+        return flow_builder_state.engine_flow_builder.build_flow()
 
     return Flow(flow_name, _create_engine_flow)
 

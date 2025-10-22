@@ -247,7 +247,7 @@ pub struct FlowBuilder {
 #[pymethods]
 impl FlowBuilder {
     #[new]
-    pub fn new(py: Python<'_>, name: &str) -> PyResult<Self> {
+    pub fn new(py: Python<'_>, name: &str, py_event_loop: Py<PyAny>) -> PyResult<Self> {
         let lib_context = py
             .allow_threads(|| -> anyhow::Result<Arc<LibContext>> {
                 get_runtime().block_on(get_lib_context())
@@ -258,7 +258,13 @@ impl FlowBuilder {
             None,
             Arc::new(Mutex::new(DataScopeBuilder::new())),
         );
-        let flow_inst_context = build_flow_instance_context(name, None);
+        let flow_inst_context = build_flow_instance_context(
+            name,
+            Some(Arc::new(crate::py::PythonExecutionContext::new(
+                py,
+                py_event_loop,
+            ))),
+        );
         let result = Self {
             lib_context,
             flow_inst_context,
@@ -364,8 +370,11 @@ impl FlowBuilder {
                 .into_py_result()?;
         }
         let result = Self::last_field_to_data_slice(&self.root_op_scope).into_py_result()?;
-        self.direct_input_fields
-            .push(FieldSchema { name, value_type });
+        self.direct_input_fields.push(FieldSchema {
+            name,
+            value_type,
+            description: None,
+        });
         Ok(result)
     }
 
@@ -527,6 +536,7 @@ impl FlowBuilder {
                     Ok(FieldSchema {
                         name,
                         value_type: ds.value_type()?,
+                        description: None,
                     })
                 })
                 .collect::<Result<Vec<FieldSchema>>>()
@@ -545,12 +555,13 @@ impl FlowBuilder {
         Ok(())
     }
 
-    #[pyo3(signature = (name, kind, op_spec, index_options, input, setup_by_user=false))]
+    #[pyo3(signature = (name, kind, op_spec, attachments, index_options, input, setup_by_user=false))]
     pub fn export(
         &mut self,
         name: String,
         kind: String,
         op_spec: py::Pythonized<serde_json::Map<String, serde_json::Value>>,
+        attachments: py::Pythonized<Vec<spec::OpSpec>>,
         index_options: py::Pythonized<spec::IndexOptions>,
         input: &DataCollector,
         setup_by_user: bool,
@@ -570,6 +581,7 @@ impl FlowBuilder {
             spec: spec::ExportOpSpec {
                 collector_name: input.name.clone(),
                 target: spec,
+                attachments: attachments.into_inner(),
                 index_options: index_options.into_inner(),
                 setup_by_user,
             },
@@ -600,7 +612,7 @@ impl FlowBuilder {
         }))
     }
 
-    pub fn build_flow(&self, py: Python<'_>, py_event_loop: Py<PyAny>) -> PyResult<py::Flow> {
+    pub fn build_flow(&self, py: Python<'_>) -> PyResult<py::Flow> {
         let spec = spec::FlowInstanceSpec {
             name: self.flow_instance_name.clone(),
             import_ops: self.import_ops.clone(),
@@ -608,10 +620,7 @@ impl FlowBuilder {
             export_ops: self.export_ops.clone(),
             declarations: self.declarations.clone(),
         };
-        let flow_instance_ctx = build_flow_instance_context(
-            &self.flow_instance_name,
-            Some(crate::py::PythonExecutionContext::new(py, py_event_loop)),
-        );
+        let flow_instance_ctx = self.flow_inst_context.clone();
         let flow_ctx = py
             .allow_threads(|| {
                 get_runtime().block_on(async move {

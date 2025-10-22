@@ -284,7 +284,7 @@ impl SourceIndexingContext {
                             source_version: SourceVersion::from_stored(
                                 key_metadata.processed_source_ordinal,
                                 &key_metadata.process_logic_fingerprint,
-                                plan.logic_fingerprint,
+                                &plan.logic_fingerprint,
                             ),
                             content_version_fp: key_metadata.processed_source_fp,
                         },
@@ -317,14 +317,29 @@ impl SourceIndexingContext {
         row_input: ProcessSourceRowInput,
         mode: UpdateMode,
         update_stats: Arc<stats::UpdateStats>,
+        operation_in_process_stats: Option<Arc<stats::OperationInProcessStats>>,
         _concur_permit: concur_control::CombinedConcurrencyControllerPermit,
         ack_fn: Option<AckFn>,
         pool: PgPool,
     ) {
+        use ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint;
+
+        // Store operation name for tracking cleanup
+        let operation_name = {
+            let plan_result = self.flow.get_execution_plan().await;
+            match plan_result {
+                Ok(plan) => format!("import/{}", plan.import_ops[self.source_idx].name),
+                Err(_) => "import/unknown".to_string(),
+            }
+        };
+
         let process = async {
             let plan = self.flow.get_execution_plan().await?;
             let import_op = &plan.import_ops[self.source_idx];
             let schema = &self.flow.data_schema;
+
+            // Track that we're starting to process this row
+            update_stats.processing.start(1);
 
             let eval_ctx = SourceRowEvaluationContext {
                 plan: &plan,
@@ -334,12 +349,16 @@ impl SourceIndexingContext {
                 import_op_idx: self.source_idx,
             };
             let process_time = chrono::Utc::now();
+            let operation_in_process_stats_cloned = operation_in_process_stats.clone();
             let row_indexer = row_indexer::RowIndexer::new(
                 &eval_ctx,
                 &self.setup_execution_ctx,
                 mode,
                 process_time,
                 &update_stats,
+                operation_in_process_stats_cloned
+                    .as_ref()
+                    .map(|s| s.as_ref()),
                 &pool,
             )?;
 
@@ -347,6 +366,9 @@ impl SourceIndexingContext {
             let mut row_state_operator =
                 LocalSourceRowStateOperator::new(&row_input.key, &self.state, &update_stats);
             let mut ordinal_touched = false;
+
+            let operation_in_process_stats_for_async = operation_in_process_stats.clone();
+            let operation_name_for_async = operation_name.clone();
             let result = {
                 let row_state_operator = &mut row_state_operator;
                 let row_key = &row_input.key;
@@ -372,22 +394,21 @@ impl SourceIndexingContext {
                                 // Fast path optimization: may collapse the row based on source version fingerprint.
                                 // Still need to update the tracking table as the processed ordinal advanced.
                                 if let Some(prev_content_version_fp) =
-                            &prev_version_state.content_version_fp
-                            && mode == UpdateMode::Normal
-                            && row_indexer
-                                .try_collapse(
-                                    &version,
-                                    content_version_fp.as_slice(),
-                                    &prev_version_state.source_version,
-                                    ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint(
-                                        prev_content_version_fp,
-                                    ),
-                                )
-                                .await?
-                                .is_some()
-                        {
-                            return Ok(());
-                        }
+                                    &prev_version_state.content_version_fp
+                                    && mode == UpdateMode::Normal
+                                {
+                                    let collapse_result = row_indexer
+                                        .try_collapse(
+                                            &version,
+                                            content_version_fp.as_slice(),
+                                            &prev_version_state.source_version,
+                                            ProcessedSourceFingerprint(prev_content_version_fp),
+                                        )
+                                        .await?;
+                                    if collapse_result.is_some() {
+                                        return Ok(());
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -399,26 +420,29 @@ impl SourceIndexingContext {
                                 (ordinal, source_data.content_version_fp, value)
                             }
                             _ => {
+                                if let Some(ref op_stats) = operation_in_process_stats_for_async {
+                                    op_stats.start_processing(&operation_name_for_async, 1);
+                                }
+                                let row_input = row_input
+                                    .key_aux_info
+                                    .as_ref()
+                                    .ok_or_else(|| anyhow!("`key_aux_info` must be provided"))?;
+                                let read_options = interface::SourceExecutorReadOptions {
+                                    include_value: true,
+                                    include_ordinal: true,
+                                    include_content_version_fp: true,
+                                };
                                 let data = import_op
-                        .executor
-                        .get_value(
-                            row_key,
-                            row_input.key_aux_info.as_ref().ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "`key_aux_info` must be provided when there's no `source_data`"
-                                )
-                            })?,
-                            &interface::SourceExecutorReadOptions {
-                                include_value: true,
-                                include_ordinal: true,
-                                include_content_version_fp: true,
-                            },
-                        )
-                        .await?;
+                                    .executor
+                                    .get_value(row_key, row_input, &read_options)
+                                    .await?;
+                                if let Some(ref op_stats) = operation_in_process_stats_for_async {
+                                    op_stats.finish_processing(&operation_name_for_async, 1);
+                                }
                                 (
-                                    data.ordinal.ok_or_else(|| {
-                                        anyhow::anyhow!("ordinal is not available")
-                                    })?,
+                                    data.ordinal
+                                        .or(source_data.ordinal)
+                                        .unwrap_or(interface::Ordinal::unavailable()),
                                     data.content_version_fp,
                                     data.value
                                         .ok_or_else(|| anyhow::anyhow!("value is not available"))?,
@@ -474,7 +498,12 @@ impl SourceIndexingContext {
             result
         };
         let process_and_ack = async {
-            process.await?;
+            let result = process.await;
+
+            // Track that we're finishing processing this row (regardless of success/failure)
+            update_stats.processing.end(1);
+
+            result?;
             if let Some(ack_fn) = ack_fn {
                 ack_fn().await?;
             }
@@ -603,6 +632,7 @@ impl SourceIndexingContext {
                     },
                     update_options.mode,
                     update_stats.clone(),
+                    None, // operation_in_process_stats
                     concur_permit,
                     NO_ACK,
                     pool.clone(),
@@ -642,6 +672,7 @@ impl SourceIndexingContext {
                 },
                 update_options.mode,
                 update_stats.clone(),
+                None, // operation_in_process_stats
                 concur_permit,
                 NO_ACK,
                 pool.clone(),

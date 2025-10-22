@@ -1,10 +1,11 @@
 use crate::{
     lib_context::{FlowContext, FlowExecutionContext, LibSetupContext},
     ops::{
-        get_optional_target_factory,
-        interface::{FlowInstanceContext, TargetFactory},
+        get_attachment_factory, get_optional_target_factory,
+        interface::{AttachmentSetupKey, FlowInstanceContext, TargetFactory},
     },
     prelude::*,
+    setup::{AttachmentsSetupChange, TargetSetupChange},
 };
 
 use sqlx::PgPool;
@@ -185,17 +186,26 @@ fn to_object_status<A, B>(existing: Option<A>, desired: Option<B>) -> Option<Obj
     })
 }
 
-#[derive(Debug, Default)]
-struct GroupedResourceStates {
-    desired: Option<TargetSetupState>,
-    existing: CombinedState<TargetSetupState>,
+#[derive(Debug)]
+struct GroupedResourceStates<S: Debug + Clone> {
+    desired: Option<S>,
+    existing: CombinedState<S>,
 }
 
-fn group_resource_states<'a>(
-    desired: impl Iterator<Item = (&'a ResourceIdentifier, &'a TargetSetupState)>,
-    existing: impl Iterator<Item = (&'a ResourceIdentifier, &'a CombinedState<TargetSetupState>)>,
-) -> Result<IndexMap<&'a ResourceIdentifier, GroupedResourceStates>> {
-    let mut grouped: IndexMap<&'a ResourceIdentifier, GroupedResourceStates> = desired
+impl<S: Debug + Clone> Default for GroupedResourceStates<S> {
+    fn default() -> Self {
+        Self {
+            desired: None,
+            existing: CombinedState::default(),
+        }
+    }
+}
+
+fn group_states<K: Hash + Eq + std::fmt::Display + std::fmt::Debug + Clone, S: Debug + Clone>(
+    desired: impl Iterator<Item = (K, S)>,
+    existing: impl Iterator<Item = (K, CombinedState<S>)>,
+) -> Result<IndexMap<K, GroupedResourceStates<S>>> {
+    let mut grouped: IndexMap<K, GroupedResourceStates<S>> = desired
         .into_iter()
         .map(|(key, state)| {
             (
@@ -208,7 +218,7 @@ fn group_resource_states<'a>(
         })
         .collect();
     for (key, state) in existing {
-        let entry = grouped.entry(key);
+        let entry = grouped.entry(key.clone());
         if state.current.is_some() {
             if let indexmap::map::Entry::Occupied(entry) = &entry {
                 if entry.get().existing.current.is_some() {
@@ -228,8 +238,8 @@ fn group_resource_states<'a>(
                 .is_some_and(|v| v != legacy_state_key)
             {
                 warn!(
-                    "inconsistent legacy key: {:?}, {:?}",
-                    key, entry.existing.legacy_state_key
+                    "inconsistent legacy key: {key}, {:?}",
+                    entry.existing.legacy_state_key
                 );
             }
             entry.existing.legacy_state_key = Some(legacy_state_key.clone());
@@ -244,6 +254,88 @@ fn group_resource_states<'a>(
         }
     }
     Ok(grouped)
+}
+
+async fn collect_attachments_setup_change(
+    target_key: &serde_json::Value,
+    desired: Option<&TargetSetupState>,
+    existing: &CombinedState<TargetSetupState>,
+    context: &interface::FlowInstanceContext,
+) -> Result<AttachmentsSetupChange> {
+    let existing_current_attachments = existing
+        .current
+        .iter()
+        .flat_map(|s| s.attachments.iter())
+        .map(|(key, state)| (key.clone(), CombinedState::current(state.clone())));
+    let existing_staging_attachments = existing.staging.iter().flat_map(|s| {
+        match s {
+            StateChange::Upsert(s) => Some(s.attachments.iter().map(|(key, state)| {
+                (
+                    key.clone(),
+                    CombinedState::staging(StateChange::Upsert(state.clone())),
+                )
+            })),
+            StateChange::Delete => None,
+        }
+        .into_iter()
+        .flatten()
+    });
+    let mut grouped_attachment_states = group_states(
+        desired.iter().flat_map(|s| {
+            s.attachments
+                .iter()
+                .map(|(key, state)| (key.clone(), state.clone()))
+        }),
+        (existing_current_attachments.into_iter())
+            .chain(existing_staging_attachments)
+            .rev(),
+    )?;
+    if existing
+        .staging
+        .iter()
+        .any(|s| matches!(s, StateChange::Delete))
+    {
+        for state in grouped_attachment_states.values_mut() {
+            if state
+                .existing
+                .staging
+                .iter()
+                .all(|s| matches!(s, StateChange::Delete))
+            {
+                state.existing.staging.push(StateChange::Delete);
+            }
+        }
+    }
+
+    let mut attachments_change = AttachmentsSetupChange::default();
+    for (AttachmentSetupKey(kind, key), setup_state) in grouped_attachment_states.into_iter() {
+        let has_diff = setup_state
+            .existing
+            .has_state_diff(setup_state.desired.as_ref(), |s| s);
+        if !has_diff {
+            continue;
+        }
+        attachments_change.has_tracked_state_change = true;
+        let factory = get_attachment_factory(&kind)?;
+        let is_upsertion = setup_state.desired.is_some();
+        if let Some(action) = factory
+            .diff_setup_states(
+                &target_key,
+                &key,
+                setup_state.desired,
+                setup_state.existing,
+                context,
+            )
+            .await?
+        {
+            if is_upsertion {
+                attachments_change.upserts.push(action);
+            } else {
+                attachments_change.deletes.push(action);
+            }
+        }
+    }
+    Ok(attachments_change)
 }
 
 pub async fn diff_flow_setup_states(
@@ -317,11 +409,15 @@ pub async fn diff_flow_setup_states(
     let mut target_resources = Vec::new();
     let mut unknown_resources = Vec::new();
 
-    let grouped_target_resources = group_resource_states(
-        desired_state.iter().flat_map(|d| d.targets.iter()),
-        existing_state.iter().flat_map(|e| e.targets.iter()),
+    let grouped_target_resources = group_states(
+        desired_state
+            .iter()
+            .flat_map(|d| d.targets.iter().map(|(k, v)| (k.clone(), v.clone()))),
+        existing_state
+            .iter()
+            .flat_map(|e| e.targets.iter().map(|(k, v)| (k.clone(), v.clone()))),
     )?;
-    for (resource_id, v) in grouped_target_resources.into_iter() {
+    for (resource_id, target_states_group) in grouped_target_resources.into_iter() {
         let factory = match get_export_target_factory(&resource_id.target_kind) {
             Some(factory) => factory,
             None => {
@@ -329,16 +425,29 @@ pub async fn diff_flow_setup_states(
                 continue;
             }
         };
-        let state = v.desired.clone();
-        let target_state = v
+
+        let attachments_change = collect_attachments_setup_change(
+            &resource_id.key,
+            target_states_group.desired.as_ref(),
+            &target_states_group.existing,
+            &flow_instance_ctx,
+        )
+        .await?;
+
+        let desired_state = target_states_group.desired.clone();
+        let desired_target_state = target_states_group
             .desired
             .and_then(|state| (!state.common.setup_by_user).then_some(state.state));
+        let has_tracked_state_change = target_states_group
+            .existing
+            .has_state_diff(desired_target_state.as_ref(), |s| &s.state)
+            || attachments_change.has_tracked_state_change;
         let existing_without_setup_by_user = CombinedState {
-            current: v
+            current: target_states_group
                 .existing
                 .current
                 .and_then(|s| s.state_unless_setup_by_user()),
-            staging: v
+            staging: target_states_group
                 .existing
                 .staging
                 .into_iter()
@@ -349,31 +458,34 @@ pub async fn diff_flow_setup_states(
                     StateChange::Delete => Some(StateChange::Delete),
                 })
                 .collect(),
-            legacy_state_key: v.existing.legacy_state_key.clone(),
+            legacy_state_key: target_states_group.existing.legacy_state_key.clone(),
         };
-        let never_setup_by_sys = target_state.is_none()
+        let never_setup_by_sys = desired_target_state.is_none()
             && existing_without_setup_by_user.current.is_none()
             && existing_without_setup_by_user.staging.is_empty();
         let setup_change = if never_setup_by_sys {
             None
         } else {
-            Some(
-                factory
+            Some(TargetSetupChange {
+                target_change: factory
                     .diff_setup_states(
                         &resource_id.key,
-                        target_state,
+                        desired_target_state,
                         existing_without_setup_by_user,
                         flow_instance_ctx.clone(),
                     )
                     .await?,
-            )
+                attachments_change,
+            })
         };
+
         target_resources.push(ResourceSetupInfo {
             key: resource_id.clone(),
-            state,
+            state: desired_state,
+            has_tracked_state_change,
             description: factory.describe_resource(&resource_id.key)?,
             setup_change,
-            legacy_key: v
+            legacy_key: target_states_group
                 .existing
                 .legacy_state_key
                 .map(|legacy_state_key| ResourceIdentifier {
@@ -532,22 +644,32 @@ async fn apply_changes_for_flow(
             target_kind,
             write,
             resources.into_iter(),
-            |setup_change| async move {
+            |targets_change| async move {
                 let factory = get_export_target_factory(target_kind).ok_or_else(|| {
                     anyhow::anyhow!("No factory found for target kind: {}", target_kind)
                 })?;
+                for target_change in targets_change.iter() {
+                    for delete in target_change.setup_change.attachments_change.deletes.iter() {
+                        delete.apply_change().await?;
+                    }
+                }
                 factory
                     .apply_setup_changes(
-                        setup_change
-                            .into_iter()
+                        targets_change
+                            .iter()
                             .map(|s| interface::ResourceSetupChangeItem {
                                 key: &s.key.key,
-                                setup_change: s.setup_change.as_ref(),
+                                setup_change: s.setup_change.target_change.as_ref(),
                             })
                             .collect(),
                         flow_ctx.flow.flow_instance_ctx.clone(),
                     )
                     .await?;
+                for target_change in targets_change.iter() {
+                    for delete in target_change.setup_change.attachments_change.upserts.iter() {
+                        delete.apply_change().await?;
+                    }
+                }
                 Ok(())
             },
         )
@@ -592,7 +714,7 @@ async fn apply_changes_for_flow(
                 Some(state) => {
                     targets.insert(
                         target_resource.key.clone(),
-                        CombinedState::from_desired(state.clone()),
+                        CombinedState::current(state.clone()),
                     );
                 }
                 None => {

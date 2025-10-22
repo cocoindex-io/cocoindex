@@ -1,5 +1,7 @@
 use crate::builder::exec_ctx::AnalyzedSetupState;
-use crate::ops::{get_function_factory, get_source_factory, get_target_factory};
+use crate::ops::{
+    get_attachment_factory, get_function_factory, get_source_factory, get_target_factory,
+};
 use crate::prelude::*;
 
 use super::plan::*;
@@ -229,6 +231,7 @@ fn try_merge_fields_schemas(
         result_fields.push(FieldSchema {
             name: field1.name.clone(),
             value_type: try_make_common_value_type(&field1.value_type, &field2.value_type)?,
+            description: None,
         });
     }
     Ok(result_fields)
@@ -316,6 +319,7 @@ impl DataScopeBuilder {
         let field_index = self.data.add_field(FieldSchema {
             name,
             value_type: EnrichedValueType::from_alternative(value_type)?,
+            description: None,
         })?;
         Ok(AnalyzedOpOutput {
             field_idx: field_index,
@@ -567,6 +571,7 @@ fn analyze_struct_mapping(
         field_schemas.push(FieldSchema {
             name: field.name.clone(),
             value_type,
+            description: None,
         });
     }
     Ok((
@@ -910,6 +915,27 @@ impl AnalyzerContext {
                 let op_name = export_op.name.clone();
                 let export_target_factory = export_op_group.target_factory.clone();
 
+                let attachments = export_op
+                    .spec
+                    .attachments
+                    .iter()
+                    .map(|attachment| {
+                        let attachment_factory = get_attachment_factory(&attachment.kind)?;
+                        let attachment_state = attachment_factory.get_state(
+                            &op_name,
+                            &export_op.spec.target.spec,
+                            serde_json::Value::Object(attachment.spec.clone()),
+                        )?;
+                        Ok((
+                            interface::AttachmentSetupKey(
+                                attachment.kind.clone(),
+                                attachment_state.setup_key,
+                            ),
+                            attachment_state.setup_state,
+                        ))
+                    })
+                    .collect::<Result<IndexMap<_, _>>>()?;
+
                 let export_op_ss = exec_ctx::AnalyzedTargetSetupState {
                     target_kind: target_kind.to_string(),
                     setup_key: data_coll_output.setup_key,
@@ -922,6 +948,7 @@ impl AnalyzerContext {
                             .map(|field| field.value_type.typ.clone())
                             .collect::<Box<[_]>>(),
                     ),
+                    attachments,
                 };
                 targets_analyzed_ss[*idx] = Some(export_op_ss);
 
@@ -953,6 +980,7 @@ impl AnalyzerContext {
                 desired_setup_state,
                 setup_by_user: false,
                 key_type: None,
+                attachments: IndexMap::new(),
             };
             declarations_analyzed_ss.push(decl_ss);
         }
@@ -969,24 +997,48 @@ impl AnalyzerContext {
             op_futs.push(self.analyze_reactive_op(op_scope, reactive_op).await?);
         }
         let collector_len = op_scope.states.lock().unwrap().collectors.len();
+        let scope_qualifier = self.build_scope_qualifier(op_scope);
         let result_fut = async move {
             Ok(AnalyzedOpScope {
                 reactive_ops: try_join_all(op_futs).await?,
                 collector_len,
+                scope_qualifier,
             })
         };
         Ok(result_fut)
+    }
+
+    fn build_scope_qualifier(&self, op_scope: &Arc<OpScope>) -> String {
+        let mut scope_names = Vec::new();
+        let mut current_scope = op_scope.as_ref();
+
+        // Walk up the parent chain to collect scope names
+        while let Some((parent, _)) = &current_scope.parent {
+            scope_names.push(current_scope.name.as_str());
+            current_scope = parent.as_ref();
+        }
+
+        // Reverse to get the correct order (root to leaf)
+        scope_names.reverse();
+
+        // Build the qualifier string
+        let mut result = String::new();
+        for name in scope_names {
+            result.push_str(&name);
+            result.push('.');
+        }
+        result
     }
 }
 
 pub fn build_flow_instance_context(
     flow_inst_name: &str,
-    py_exec_ctx: Option<crate::py::PythonExecutionContext>,
+    py_exec_ctx: Option<Arc<crate::py::PythonExecutionContext>>,
 ) -> Arc<FlowInstanceContext> {
     Arc::new(FlowInstanceContext {
         flow_instance_name: flow_inst_name.to_string(),
         auth_registry: get_auth_registry().clone(),
-        py_exec_ctx: py_exec_ctx.map(Arc::new),
+        py_exec_ctx: py_exec_ctx,
     })
 }
 
@@ -1059,6 +1111,7 @@ pub async fn analyze_flow(
         let target_factory = get_target_factory(&target_kind)?;
         let analyzed_target_op_group = AnalyzedExportTargetOpGroup {
             target_factory,
+            target_kind: target_kind.clone(),
             op_idx: op_ids.export_op_ids,
         };
         export_ops_futs.extend(
@@ -1088,10 +1141,37 @@ pub async fn analyze_flow(
         declarations: declarations_analyzed_ss,
     };
 
-    let logic_fingerprint = Fingerprinter::default()
+    let legacy_fingerprint = Fingerprinter::default()
         .with(&flow_inst)?
         .with(&flow_schema.schema)?
         .into_fingerprint();
+
+    fn append_reactive_op_scope(
+        mut fingerprinter: Fingerprinter,
+        reactive_ops: &[NamedSpec<ReactiveOpSpec>],
+    ) -> Result<Fingerprinter> {
+        fingerprinter = fingerprinter.with(&reactive_ops.len())?;
+        for reactive_op in reactive_ops.iter() {
+            fingerprinter = fingerprinter.with(&reactive_op.name)?;
+            match &reactive_op.spec {
+                ReactiveOpSpec::Transform(_) => {}
+                ReactiveOpSpec::ForEach(foreach_op) => {
+                    fingerprinter = fingerprinter.with(&foreach_op.field_path)?;
+                    fingerprinter =
+                        append_reactive_op_scope(fingerprinter, &foreach_op.op_scope.ops)?;
+                }
+                ReactiveOpSpec::Collect(collect_op) => {
+                    fingerprinter = fingerprinter.with(collect_op)?;
+                }
+            }
+        }
+        Ok(fingerprinter)
+    }
+    let current_fingerprinter =
+        append_reactive_op_scope(Fingerprinter::default(), &flow_inst.reactive_ops)?
+            .with(&flow_inst.export_ops)?
+            .with(&flow_inst.declarations)?
+            .with(&flow_schema.schema)?;
     let plan_fut = async move {
         let (import_ops, op_scope, export_ops) = try_join3(
             try_join_all(import_ops_futs),
@@ -1100,8 +1180,40 @@ pub async fn analyze_flow(
         )
         .await?;
 
+        fn append_function_behavior(
+            mut fingerprinter: Fingerprinter,
+            reactive_ops: &[AnalyzedReactiveOp],
+        ) -> Result<Fingerprinter> {
+            for reactive_op in reactive_ops.iter() {
+                match reactive_op {
+                    AnalyzedReactiveOp::Transform(transform_op) => {
+                        fingerprinter = fingerprinter.with(&transform_op.name)?.with(
+                            &transform_op
+                                .function_exec_info
+                                .fingerprinter
+                                .clone()
+                                .into_fingerprint(),
+                        )?;
+                    }
+                    AnalyzedReactiveOp::ForEach(foreach_op) => {
+                        fingerprinter = append_function_behavior(
+                            fingerprinter,
+                            &foreach_op.op_scope.reactive_ops,
+                        )?;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(fingerprinter)
+        }
+        let current_fingerprint =
+            append_function_behavior(current_fingerprinter, &op_scope.reactive_ops)?
+                .into_fingerprint();
         Ok(ExecutionPlan {
-            logic_fingerprint,
+            logic_fingerprint: ExecutionPlanLogicFingerprint {
+                current: current_fingerprint,
+                legacy: legacy_fingerprint,
+            },
             import_ops,
             op_scope,
             export_ops,

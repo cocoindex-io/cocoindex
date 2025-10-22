@@ -58,7 +58,8 @@ impl AnalyzedTransientFlow {
         transient_flow: spec::TransientFlowSpec,
         py_exec_ctx: Option<crate::py::PythonExecutionContext>,
     ) -> Result<Self> {
-        let ctx = analyzer::build_flow_instance_context(&transient_flow.name, py_exec_ctx);
+        let ctx =
+            analyzer::build_flow_instance_context(&transient_flow.name, py_exec_ctx.map(Arc::new));
         let (output_type, data_schema, execution_plan_fut) =
             analyzer::analyze_transient_flow(&transient_flow, ctx).await?;
         Ok(Self {

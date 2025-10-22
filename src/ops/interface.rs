@@ -12,7 +12,7 @@ pub struct FlowInstanceContext {
     pub py_exec_ctx: Option<Arc<crate::py::PythonExecutionContext>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Ordinal(pub Option<i64>);
 
 impl Ordinal {
@@ -114,7 +114,7 @@ pub struct SourceChangeMessage {
     pub ack_fn: Option<Box<dyn FnOnce() -> BoxFuture<'static, Result<()>> + Send + Sync>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct SourceExecutorReadOptions {
     /// When set to true, the implementation must return a non-None `ordinal`.
     pub include_ordinal: bool,
@@ -316,9 +316,55 @@ pub trait TargetFactory: Send + Sync {
     ) -> Result<()>;
 }
 
+pub struct TargetAttachmentState {
+    pub setup_key: serde_json::Value,
+    pub setup_state: serde_json::Value,
+}
+
+#[async_trait]
+pub trait AttachmentSetupChange {
+    fn describe_changes(&self) -> Vec<String>;
+
+    async fn apply_change(&self) -> Result<()>;
+}
+
+#[async_trait]
+pub trait TargetAttachmentFactory: Send + Sync {
+    /// Normalize the key. e.g. the JSON format may change (after code change, e.g. new optional field or field ordering), even if the underlying value is not changed.
+    /// This should always return the canonical serialized form.
+    fn normalize_setup_key(&self, key: &serde_json::Value) -> Result<serde_json::Value>;
+
+    fn get_state(
+        &self,
+        target_name: &str,
+        target_spec: &serde_json::Map<String, serde_json::Value>,
+        attachment_spec: serde_json::Value,
+    ) -> Result<TargetAttachmentState>;
+
+    /// Should return Some if and only if any changes are needed.
+    async fn diff_setup_states(
+        &self,
+        target_key: &serde_json::Value,
+        attachment_key: &serde_json::Value,
+        new_state: Option<serde_json::Value>,
+        existing_states: setup::CombinedState<serde_json::Value>,
+        context: &interface::FlowInstanceContext,
+    ) -> Result<Option<Box<dyn AttachmentSetupChange + Send + Sync>>>;
+}
+
 #[derive(Clone)]
 pub enum ExecutorFactory {
     Source(Arc<dyn SourceFactory + Send + Sync>),
     SimpleFunction(Arc<dyn SimpleFunctionFactory + Send + Sync>),
     ExportTarget(Arc<dyn TargetFactory + Send + Sync>),
+    TargetAttachment(Arc<dyn TargetAttachmentFactory + Send + Sync>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct AttachmentSetupKey(pub String, pub serde_json::Value);
+
+impl std::fmt::Display for AttachmentSetupKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.0, self.1)
+    }
 }

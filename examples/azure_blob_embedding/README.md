@@ -9,7 +9,7 @@ Before running the example, you need to:
 1.  [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
 
 2.  Prepare for Azure Blob Storage.
-    See [Setup for Azure Blob Storage](https://cocoindex.io/docs/ops/sources#setup-for-azure-blob-storage) for more details.
+    See [Setup for Azure Blob Storage](https://cocoindex.io/docs/sources/azureblob#setup-for-azure-blob-storage) for more details.
 
 3.  Create a `.env` file with your Azure Blob Storage container name and (optionally) prefix.
     Start from copying the `.env.example`, and then edit it to fill in your bucket name and prefix.

@@ -14,13 +14,14 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
     sources::azure_blob::Factory.register(registry)?;
     sources::postgres::Factory.register(registry)?;
 
-    functions::parse_json::Factory.register(registry)?;
-    functions::split_recursively::register(registry)?;
-    functions::extract_by_llm::Factory.register(registry)?;
+    functions::detect_program_lang::register(registry)?;
     functions::embed_text::register(registry)?;
+    functions::extract_by_llm::Factory.register(registry)?;
+    functions::parse_json::Factory.register(registry)?;
     functions::split_by_separators::register(registry)?;
+    functions::split_recursively::register(registry)?;
 
-    targets::postgres::Factory::default().register(registry)?;
+    targets::postgres::register(registry)?;
     targets::qdrant::register(registry)?;
     targets::kuzu::register(registry, reqwest_client)?;
 
@@ -56,6 +57,13 @@ pub fn get_optional_target_factory(
     registry.get_target(kind).cloned()
 }
 
+pub fn get_optional_attachment_factory(
+    kind: &str,
+) -> Option<std::sync::Arc<dyn super::interface::TargetAttachmentFactory + Send + Sync>> {
+    let registry = EXECUTOR_FACTORY_REGISTRY.read().unwrap();
+    registry.get_target_attachment(kind).cloned()
+}
+
 pub fn get_source_factory(
     kind: &str,
 ) -> Result<std::sync::Arc<dyn super::interface::SourceFactory + Send + Sync>> {
@@ -75,6 +83,13 @@ pub fn get_target_factory(
 ) -> Result<std::sync::Arc<dyn super::interface::TargetFactory + Send + Sync>> {
     get_optional_target_factory(kind)
         .ok_or_else(|| anyhow::anyhow!("Target factory not found for op kind: {}", kind))
+}
+
+pub fn get_attachment_factory(
+    kind: &str,
+) -> Result<std::sync::Arc<dyn super::interface::TargetAttachmentFactory + Send + Sync>> {
+    get_optional_attachment_factory(kind)
+        .ok_or_else(|| anyhow::anyhow!("Attachment factory not found for op kind: {}", kind))
 }
 
 pub fn register_factory(name: String, factory: ExecutorFactory) -> Result<()> {

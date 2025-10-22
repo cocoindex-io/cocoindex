@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
 from pgvector.psycopg import register_vector
-from typing import Any
 import cocoindex
 import os
 import functools

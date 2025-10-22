@@ -359,7 +359,9 @@ def _encode_struct_schema(
 ) -> tuple[dict[str, Any], int | None]:
     fields = []
 
-    def add_field(name: str, analyzed_type: AnalyzedTypeInfo) -> None:
+    def add_field(
+        name: str, analyzed_type: AnalyzedTypeInfo, description: str | None = None
+    ) -> None:
         try:
             type_info = encode_enriched_type_info(analyzed_type)
         except ValueError as e:
@@ -369,6 +371,8 @@ def _encode_struct_schema(
             )
             raise
         type_info["name"] = name
+        if description is not None:
+            type_info["description"] = description
         fields.append(type_info)
 
     def add_fields_from_struct(struct_type: type) -> None:
@@ -384,7 +388,9 @@ def _encode_struct_schema(
                 for name, field_info in struct_type.model_fields.items():  # type: ignore[attr-defined]
                     # Get the annotation from the field info
                     field_type = field_info.annotation
-                    add_field(name, analyze_type_info(field_type))
+                    # Extract description from Pydantic field info
+                    description = getattr(field_info, "description", None)
+                    add_field(name, analyze_type_info(field_type), description)
             else:
                 raise ValueError(f"Invalid Pydantic model: {struct_type}")
         else:
@@ -469,16 +475,16 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         }
 
 
-def encode_enriched_type_info(enriched_type_info: AnalyzedTypeInfo) -> dict[str, Any]:
+def encode_enriched_type_info(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
     """
-    Encode an enriched type info to a CocoIndex engine's type representation
+    Encode an `AnalyzedTypeInfo` to a CocoIndex engine's `EnrichedValueType` representation
     """
-    encoded: dict[str, Any] = {"type": _encode_type(enriched_type_info)}
+    encoded: dict[str, Any] = {"type": _encode_type(type_info)}
 
-    if enriched_type_info.attrs is not None:
-        encoded["attrs"] = enriched_type_info.attrs
+    if type_info.attrs is not None:
+        encoded["attrs"] = type_info.attrs
 
-    if enriched_type_info.nullable:
+    if type_info.nullable:
         encoded["nullable"] = True
 
     return encoded
@@ -516,6 +522,13 @@ class VectorTypeSchema:
     element_type: "BasicValueType"
     dimension: int | None
 
+    def __str__(self) -> str:
+        dimension_str = f", {self.dimension}" if self.dimension is not None else ""
+        return f"Vector[{self.element_type}{dimension_str}]"
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
     @staticmethod
     def decode(obj: dict[str, Any]) -> "VectorTypeSchema":
         return VectorTypeSchema(
@@ -533,6 +546,13 @@ class VectorTypeSchema:
 @dataclasses.dataclass
 class UnionTypeSchema:
     variants: list["BasicValueType"]
+
+    def __str__(self) -> str:
+        types_str = " | ".join(str(t) for t in self.variants)
+        return f"Union[{types_str}]"
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
     @staticmethod
     def decode(obj: dict[str, Any]) -> "UnionTypeSchema":
@@ -573,6 +593,23 @@ class BasicValueType:
     vector: VectorTypeSchema | None = None
     union: UnionTypeSchema | None = None
 
+    def __str__(self) -> str:
+        if self.kind == "Vector" and self.vector is not None:
+            dimension_str = (
+                f", {self.vector.dimension}"
+                if self.vector.dimension is not None
+                else ""
+            )
+            return f"Vector[{self.vector.element_type}{dimension_str}]"
+        elif self.kind == "Union" and self.union is not None:
+            types_str = " | ".join(str(t) for t in self.union.variants)
+            return f"Union[{types_str}]"
+        else:
+            return self.kind
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
     @staticmethod
     def decode(obj: dict[str, Any]) -> "BasicValueType":
         kind = obj["kind"]
@@ -603,6 +640,18 @@ class EnrichedValueType:
     nullable: bool = False
     attrs: dict[str, Any] | None = None
 
+    def __str__(self) -> str:
+        result = str(self.type)
+        if self.nullable:
+            result += "?"
+        if self.attrs:
+            attrs_str = ", ".join(f"{k}: {v}" for k, v in self.attrs.items())
+            result += f" [{attrs_str}]"
+        return result
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
     @staticmethod
     def decode(obj: dict[str, Any]) -> "EnrichedValueType":
         return EnrichedValueType(
@@ -624,14 +673,27 @@ class EnrichedValueType:
 class FieldSchema:
     name: str
     value_type: EnrichedValueType
+    description: str | None = None
+
+    def __str__(self) -> str:
+        return f"{self.name}: {self.value_type}"
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
     @staticmethod
     def decode(obj: dict[str, Any]) -> "FieldSchema":
-        return FieldSchema(name=obj["name"], value_type=EnrichedValueType.decode(obj))
+        return FieldSchema(
+            name=obj["name"],
+            value_type=EnrichedValueType.decode(obj),
+            description=obj.get("description"),
+        )
 
     def encode(self) -> dict[str, Any]:
         result = self.value_type.encode()
         result["name"] = self.name
+        if self.description is not None:
+            result["description"] = self.description
         return result
 
 
@@ -639,6 +701,13 @@ class FieldSchema:
 class StructSchema:
     fields: list[FieldSchema]
     description: str | None = None
+
+    def __str__(self) -> str:
+        fields_str = ", ".join(str(field) for field in self.fields)
+        return f"Struct({fields_str})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
     @classmethod
     def decode(cls, obj: dict[str, Any]) -> Self:
@@ -658,6 +727,13 @@ class StructSchema:
 class StructType(StructSchema):
     kind: Literal["Struct"] = "Struct"
 
+    def __str__(self) -> str:
+        # Use the parent's __str__ method for consistency
+        return super().__str__()
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
     def encode(self) -> dict[str, Any]:
         result = super().encode()
         result["kind"] = self.kind
@@ -669,6 +745,18 @@ class TableType:
     kind: Literal["KTable", "LTable"]
     row: StructSchema
     num_key_parts: int | None = None  # Only for KTable
+
+    def __str__(self) -> str:
+        if self.kind == "KTable":
+            num_parts = self.num_key_parts if self.num_key_parts is not None else 1
+            table_kind = f"KTable({num_parts})"
+        else:  # LTable
+            table_kind = "LTable"
+
+        return f"{table_kind}({self.row})"
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
     @staticmethod
     def decode(obj: dict[str, Any]) -> "TableType":

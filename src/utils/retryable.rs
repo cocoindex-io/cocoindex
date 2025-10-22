@@ -1,14 +1,19 @@
 use log::trace;
-use std::{future::Future, time::Duration};
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 pub trait IsRetryable {
     fn is_retryable(&self) -> bool;
 }
 
 pub struct Error {
-    error: anyhow::Error,
-    is_retryable: bool,
+    pub error: anyhow::Error,
+    pub is_retryable: bool,
 }
+
+pub const DEFAULT_RETRY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -35,10 +40,17 @@ impl IsRetryable for reqwest::Error {
 }
 
 impl Error {
-    pub fn always_retryable(error: anyhow::Error) -> Self {
+    pub fn retryable<E: Into<anyhow::Error>>(error: E) -> Self {
         Self {
-            error,
+            error: error.into(),
             is_retryable: true,
+        }
+    }
+
+    pub fn not_retryable<E: Into<anyhow::Error>>(error: E) -> Self {
+        Self {
+            error: error.into(),
+            is_retryable: false,
         }
     }
 }
@@ -75,7 +87,7 @@ pub fn Ok<T>(value: T) -> Result<T> {
 }
 
 pub struct RetryOptions {
-    pub max_retries: Option<usize>,
+    pub retry_timeout: Option<Duration>,
     pub initial_backoff: Duration,
     pub max_backoff: Duration,
 }
@@ -83,7 +95,7 @@ pub struct RetryOptions {
 impl Default for RetryOptions {
     fn default() -> Self {
         Self {
-            max_retries: Some(10),
+            retry_timeout: Some(DEFAULT_RETRY_TIMEOUT),
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(10),
         }
@@ -91,7 +103,7 @@ impl Default for RetryOptions {
 }
 
 pub static HEAVY_LOADED_OPTIONS: RetryOptions = RetryOptions {
-    max_retries: Some(10),
+    retry_timeout: Some(DEFAULT_RETRY_TIMEOUT),
     initial_backoff: Duration::from_secs(1),
     max_backoff: Duration::from_secs(60),
 };
@@ -105,28 +117,33 @@ pub async fn run<
     f: F,
     options: &RetryOptions,
 ) -> Result<Ok, Err> {
-    let mut retries = 0;
+    let deadline = options
+        .retry_timeout
+        .map(|timeout| Instant::now() + timeout);
     let mut backoff = options.initial_backoff;
 
     loop {
         match f().await {
             Result::Ok(result) => return Result::Ok(result),
             Result::Err(err) => {
-                if !err.is_retryable()
-                    || options
-                        .max_retries
-                        .is_some_and(|max_retries| retries >= max_retries)
-                {
+                if !err.is_retryable() {
                     return Result::Err(err);
                 }
-                retries += 1;
+                let mut sleep_duration = backoff;
+                if let Some(deadline) = deadline {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Result::Err(err);
+                    }
+                    let remaining_time = deadline.saturating_duration_since(now);
+                    sleep_duration = std::cmp::min(sleep_duration, remaining_time);
+                }
                 trace!(
-                    "Will retry #{} in {}ms for error: {}",
-                    retries,
-                    backoff.as_millis(),
+                    "Will retry in {}ms for error: {}",
+                    sleep_duration.as_millis(),
                     err
                 );
-                tokio::time::sleep(backoff).await;
+                tokio::time::sleep(sleep_duration).await;
                 if backoff < options.max_backoff {
                     backoff = std::cmp::min(
                         Duration::from_micros(
