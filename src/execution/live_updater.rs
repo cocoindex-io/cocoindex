@@ -8,6 +8,7 @@ use crate::{
 
 use super::stats;
 use futures::future::try_join_all;
+use indicatif::ProgressBar;
 use sqlx::PgPool;
 use tokio::{sync::watch, task::JoinSet, time::MissedTickBehavior};
 
@@ -331,34 +332,41 @@ impl SourceUpdateTask {
         let update_stats = Arc::new(stats::UpdateStats::default());
 
         // Spawn periodic stats reporting task if print_stats is enabled
-        let reporting_handle = if self.options.print_stats {
+        let (reporting_handle, progress_bar) = if self.options.print_stats {
             let update_stats_clone = update_stats.clone();
             let update_title_owned = update_title.to_string();
             let flow_name = self.flow.flow_instance.name.clone();
             let import_op_name = self.import_op().name.clone();
 
+            // Create a progress bar that will overwrite the same line
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                indicatif::ProgressStyle::default_spinner()
+                    .template("{msg}")
+                    .unwrap(),
+            );
+            let pb_clone = pb.clone();
+
             let report_task = async move {
                 let mut interval = tokio::time::interval(REPORT_INTERVAL);
-                let mut last_stats = update_stats_clone.as_ref().clone();
                 interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                 interval.tick().await; // Skip first tick
+
                 loop {
                     interval.tick().await;
                     let current_stats = update_stats_clone.as_ref().clone();
-                    let delta = current_stats.delta(&last_stats);
-                    if delta.has_any_change() {
-                        // Print periodic progress (do NOT merge here, final report_stats will merge)
-                        println!(
+                    if current_stats.has_any_change() {
+                        // Show cumulative stats (always show latest total, not delta)
+                        pb_clone.set_message(format!(
                             "{}.{} ({update_title_owned}): {}",
-                            flow_name, import_op_name, delta
-                        );
-                        last_stats = current_stats;
+                            flow_name, import_op_name, current_stats
+                        ));
                     }
                 }
             };
-            Some(tokio::spawn(report_task))
+            (Some(tokio::spawn(report_task)), Some(pb))
         } else {
-            None
+            (None, None)
         };
 
         // Run the actual update
@@ -376,6 +384,11 @@ impl SourceUpdateTask {
         // Cancel the reporting task if it was spawned
         if let Some(handle) = reporting_handle {
             handle.abort();
+        }
+
+        // Clear the progress bar to ensure final stats appear on a new line
+        if let Some(pb) = progress_bar {
+            pb.finish_and_clear();
         }
 
         // Check update result
