@@ -175,7 +175,6 @@ def extract_description(help_text: str) -> str:
     # Find the description between usage and options/commands
     description_lines = []
     in_description = False
-    last_was_empty = False
 
     for line in lines:
         if line.startswith("Usage:"):
@@ -187,12 +186,8 @@ def extract_description(help_text: str) -> str:
             stripped = line.strip()
             if stripped:
                 description_lines.append(stripped)
-                last_was_empty = False
-            else:
-                # Blank line - preserve as paragraph separator, avoid duplicates
-                if description_lines and not last_was_empty:
-                    description_lines.append("")
-                    last_was_empty = True
+            elif description_lines:  # Preserve blank line only if we have content
+                description_lines.append("")
 
     # Simply join with single newline - let Markdown handle paragraph formatting naturally
     description = "\n".join(description_lines) if description_lines else ""
