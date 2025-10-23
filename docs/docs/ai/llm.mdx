@@ -28,6 +28,7 @@ We support the following types of LLM APIs:
 | [LiteLLM](#litellm) | `LlmApiType.LITE_LLM` | ✅ | ❌ |
 | [OpenRouter](#openrouter) | `LlmApiType.OPEN_ROUTER` | ✅ | ❌ |
 | [vLLM](#vllm) | `LlmApiType.VLLM` | ✅ | ❌ |
+| [Bedrock](#bedrock) | `LlmApiType.BEDROCK` | ✅ | ❌ |
 
 ## LLM Tasks
 
@@ -440,3 +441,28 @@ cocoindex.LlmSpec(
 
 </TabItem>
 </Tabs>
+
+### Bedrock
+
+To use the Bedrock API, you need to set up AWS credentials. You can do this by setting the following environment variables:
+
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_SESSION_TOKEN` (optional)
+
+A spec for Bedrock looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.BEDROCK,
+    model="us.anthropic.claude-3-5-haiku-20241022-v1:0",
+)
+```
+
+</TabItem>
+</Tabs>
+
+You can find the full list of models supported by Bedrock [here](https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html).

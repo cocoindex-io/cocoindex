@@ -30,7 +30,7 @@ Before running the example, you need to:
     -   Setup a service account in Google Cloud, and download the credential file.
     -   Share folders containing files you want to import with the service account's email address.
 
-    See [Setup for Google Drive](https://cocoindex.io/docs/ops/sources#setup-for-google-drive) for more details.
+    See [Setup for Google Drive](https://cocoindex.io/docs/sources/googledrive#setup-for-google-drive) for more details.
 
 3.  Create `.env` file with your credential file and folder IDs.
     Starting from copying the `.env.example`, and then edit it to fill in your credential file path and folder IDs.

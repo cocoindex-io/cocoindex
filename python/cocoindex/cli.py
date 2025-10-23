@@ -84,9 +84,7 @@ def _load_user_app(app_target: str) -> None:
     try:
         load_user_app(app_target)
     except UserAppLoaderError as e:
-        raise click.ClickException(
-            f"Failed to load APP_TARGET '{app_target}': {e}"
-        ) from e
+        raise ValueError(f"Failed to load APP_TARGET '{app_target}'") from e
 
     add_user_app(app_target)
 
@@ -138,11 +136,9 @@ def ls(app_target: str | None) -> None:
     """
     List all flows.
 
-    If APP_TARGET (path/to/app.py or a module) is provided, lists flows
-    defined in the app and their backend setup status.
+    If `APP_TARGET` (`path/to/app.py` or a module) is provided, lists flows defined in the app and their backend setup status.
 
-    If APP_TARGET is omitted, lists all flows that have a persisted
-    setup in the backend.
+    If `APP_TARGET` is omitted, lists all flows that have a persisted setup in the backend.
     """
     persisted_flow_names = flow_names_with_setup()
     if app_target:
@@ -191,16 +187,15 @@ def show(app_flow_specifier: str, color: bool, verbose: bool, live_status: bool)
     """
     Show the flow spec and schema.
 
-    APP_FLOW_SPECIFIER: Specifies the application and optionally the target flow.
-    Can be one of the following formats:
+    `APP_FLOW_SPECIFIER`: Specifies the application and optionally the target flow. Can be one of the following formats:
 
     \b
-      - path/to/your_app.py
-      - an_installed.module_name
-      - path/to/your_app.py:SpecificFlowName
-      - an_installed.module_name:SpecificFlowName
+      - `path/to/your_app.py`
+      - `an_installed.module_name`
+      - `path/to/your_app.py:SpecificFlowName`
+      - `an_installed.module_name:SpecificFlowName`
 
-    :SpecificFlowName can be omitted only if the application defines a single flow.
+    `:SpecificFlowName` can be omitted only if the application defines a single flow.
     """
     app_ref, flow_ref = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
@@ -326,7 +321,7 @@ def setup(app_target: str, force: bool, reset: bool) -> None:
     """
     Check and apply backend setup changes for flows, including the internal storage and target (to export to).
 
-    APP_TARGET: path/to/app.py or installed_module.
+    `APP_TARGET`: `path/to/app.py` or `installed_module`.
     """
     app_ref = _get_app_ref_from_specifier(app_target)
     _load_user_app(app_ref)
@@ -445,8 +440,7 @@ def update(
     """
     Update the index to reflect the latest data from data sources.
 
-    APP_FLOW_SPECIFIER: path/to/app.py, module, path/to/app.py:FlowName, or module:FlowName.
-    If :FlowName is omitted, updates all flows.
+    `APP_FLOW_SPECIFIER`: `path/to/app.py`, module, `path/to/app.py:FlowName`, or `module:FlowName`. If `:FlowName` is omitted, updates all flows.
     """
     app_ref, flow_name = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
@@ -508,18 +502,16 @@ def evaluate(
     """
     Evaluate the flow and dump flow outputs to files.
 
-    Instead of updating the index, it dumps what should be indexed to files.
-    Mainly used for evaluation purpose.
+    Instead of updating the index, it dumps what should be indexed to files. Mainly used for evaluation purpose.
 
     \b
-    APP_FLOW_SPECIFIER: Specifies the application and optionally the target flow.
-    Can be one of the following formats:
-      - path/to/your_app.py
-      - an_installed.module_name
-      - path/to/your_app.py:SpecificFlowName
-      - an_installed.module_name:SpecificFlowName
+    `APP_FLOW_SPECIFIER`: Specifies the application and optionally the target flow. Can be one of the following formats:
+      - `path/to/your_app.py`
+      - `an_installed.module_name`
+      - `path/to/your_app.py:SpecificFlowName`
+      - `an_installed.module_name:SpecificFlowName`
 
-    :SpecificFlowName can be omitted only if the application defines a single flow.
+    `:SpecificFlowName` can be omitted only if the application defines a single flow.
     """
     app_ref, flow_ref = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
@@ -635,7 +627,7 @@ def server(
 
     It will allow tools like CocoInsight to access the server.
 
-    APP_TARGET: path/to/app.py or installed_module.
+    `APP_TARGET`: `path/to/app.py` or `installed_module`.
     """
     app_ref = _get_app_ref_from_specifier(app_target)
     args = (

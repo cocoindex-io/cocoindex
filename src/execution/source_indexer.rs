@@ -284,7 +284,7 @@ impl SourceIndexingContext {
                             source_version: SourceVersion::from_stored(
                                 key_metadata.processed_source_ordinal,
                                 &key_metadata.process_logic_fingerprint,
-                                plan.logic_fingerprint,
+                                &plan.logic_fingerprint,
                             ),
                             content_version_fp: key_metadata.processed_source_fp,
                         },
@@ -322,6 +322,8 @@ impl SourceIndexingContext {
         ack_fn: Option<AckFn>,
         pool: PgPool,
     ) {
+        use ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint;
+
         // Store operation name for tracking cleanup
         let operation_name = {
             let plan_result = self.flow.get_execution_plan().await;
@@ -392,22 +394,21 @@ impl SourceIndexingContext {
                                 // Fast path optimization: may collapse the row based on source version fingerprint.
                                 // Still need to update the tracking table as the processed ordinal advanced.
                                 if let Some(prev_content_version_fp) =
-                            &prev_version_state.content_version_fp
-                            && mode == UpdateMode::Normal
-                            && row_indexer
-                                .try_collapse(
-                                    &version,
-                                    content_version_fp.as_slice(),
-                                    &prev_version_state.source_version,
-                                    ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint(
-                                        prev_content_version_fp,
-                                    ),
-                                )
-                                .await?
-                                .is_some()
-                        {
-                            return Ok(());
-                        }
+                                    &prev_version_state.content_version_fp
+                                    && mode == UpdateMode::Normal
+                                {
+                                    let collapse_result = row_indexer
+                                        .try_collapse(
+                                            &version,
+                                            content_version_fp.as_slice(),
+                                            &prev_version_state.source_version,
+                                            ProcessedSourceFingerprint(prev_content_version_fp),
+                                        )
+                                        .await?;
+                                    if collapse_result.is_some() {
+                                        return Ok(());
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -422,29 +423,26 @@ impl SourceIndexingContext {
                                 if let Some(ref op_stats) = operation_in_process_stats_for_async {
                                     op_stats.start_processing(&operation_name_for_async, 1);
                                 }
+                                let row_input = row_input
+                                    .key_aux_info
+                                    .as_ref()
+                                    .ok_or_else(|| anyhow!("`key_aux_info` must be provided"))?;
+                                let read_options = interface::SourceExecutorReadOptions {
+                                    include_value: true,
+                                    include_ordinal: true,
+                                    include_content_version_fp: true,
+                                };
                                 let data = import_op
-                        .executor
-                        .get_value(
-                            row_key,
-                            row_input.key_aux_info.as_ref().ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "`key_aux_info` must be provided when there's no `source_data`"
-                                )
-                            })?,
-                            &interface::SourceExecutorReadOptions {
-                                include_value: true,
-                                include_ordinal: true,
-                                include_content_version_fp: true,
-                            },
-                        )
-                        .await?;
+                                    .executor
+                                    .get_value(row_key, row_input, &read_options)
+                                    .await?;
                                 if let Some(ref op_stats) = operation_in_process_stats_for_async {
                                     op_stats.finish_processing(&operation_name_for_async, 1);
                                 }
                                 (
-                                    data.ordinal.ok_or_else(|| {
-                                        anyhow::anyhow!("ordinal is not available")
-                                    })?,
+                                    data.ordinal
+                                        .or(source_data.ordinal)
+                                        .unwrap_or(interface::Ordinal::unavailable()),
                                     data.content_version_fp,
                                     data.value
                                         .ok_or_else(|| anyhow::anyhow!("value is not available"))?,

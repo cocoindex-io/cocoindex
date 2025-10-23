@@ -475,16 +475,16 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         }
 
 
-def encode_enriched_type_info(enriched_type_info: AnalyzedTypeInfo) -> dict[str, Any]:
+def encode_enriched_type_info(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
     """
-    Encode an enriched type info to a CocoIndex engine's type representation
+    Encode an `AnalyzedTypeInfo` to a CocoIndex engine's `EnrichedValueType` representation
     """
-    encoded: dict[str, Any] = {"type": _encode_type(enriched_type_info)}
+    encoded: dict[str, Any] = {"type": _encode_type(type_info)}
 
-    if enriched_type_info.attrs is not None:
-        encoded["attrs"] = enriched_type_info.attrs
+    if type_info.attrs is not None:
+        encoded["attrs"] = type_info.attrs
 
-    if enriched_type_info.nullable:
+    if type_info.nullable:
         encoded["nullable"] = True
 
     return encoded

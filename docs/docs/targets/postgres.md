@@ -49,6 +49,11 @@ The spec takes the following fields:
 
 * `schema` (`str`, optional): The PostgreSQL schema to create the table in. If unspecified, the table will be created in the default schema (usually `public`). When specified, `table_name` must also be explicitly specified. CocoIndex will automatically create the schema if it doesn't exist.
 
+* `column_options` (`dict[str, PostgresColumnOptions]`, optional): Options for the columns in the table.
+  Key is the column name, and value is the specific option, with the following fields:
+
+  * `type` (`str`, optional): The specific type of the column in Postgres. Currently only supports `"vector"` and `"halfvec"`. By default, we use `"vector"` for vector columns, and you can use this field to override it to `"halfvec"` for some columns.
+
 ## Attachments
 
 ### PostgresSqlCommand

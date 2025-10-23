@@ -147,7 +147,8 @@ impl SourceExecutor for Executor {
             Some(SourceValue::Existence(if self.binary {
                 fields_value!(bytes)
             } else {
-                fields_value!(String::from_utf8_lossy(&bytes).to_string())
+                let (s, _) = utils::bytes_decode::bytes_to_string(&bytes);
+                fields_value!(s)
             }))
         } else {
             None

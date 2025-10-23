@@ -38,6 +38,8 @@ and then build a knowledge graph.
 ## Setup
 *   [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
 *   [Install Neo4j](https://cocoindex.io/docs/targets/neo4j#neo4j-dev-instance), a graph database.
+
+    <DocumentationButton url="https://cocoindex.io/docs/targets/neo4j" text="Neo4j" margin="0 0 16px 0" />
 *   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).  Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
     <DocumentationButton url="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
@@ -66,7 +68,7 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
 Here `flow_builder.add_source` creates a [KTable](https://cocoindex.io/docs/core/data_types#KTable).
 `filename` is the key of the KTable.
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" margin="0 0 16px 0" />
 
 
 ### Add data collectors
@@ -357,6 +359,9 @@ And then open the url `https://cocoindex.io/cocoinsight`.  It just connects to y
 ## Browse the knowledge graph
 After the knowledge graph is built, you can explore the knowledge graph you built in Neo4j Browser.
 
+<DocumentationButton url="https://cocoindex.io/docs/targets/neo4j" text="Neo4j" margin="0 0 16px 0" />
+
+
 For the dev environment, you can connect to Neo4j browser using credentials:
 - username: `Neo4j`
 - password: `cocoindex`
@@ -368,28 +373,4 @@ You can open it at [http://localhost:7474](http://localhost:7474), and run the f
 MATCH p=()-->() RETURN p
 ```
 
-## Kuzu
-Cocoindex natively supports Kuzu - a high performant, embedded open source graph database.
-
-<DocumentationButton url="https://cocoindex.io/docs/targets/kuzu" text="Kuzu" margin="0 0 16px 0" />
-
-The GraphDB interface in CocoIndex is standardized, you just need to **switch the configuration** without any additional code changes. CocoIndex supports exporting to Kuzu through its API server. You can bring up a Kuzu API server locally by running:
-
-``` sh
-KUZU_DB_DIR=$HOME/.kuzudb
-KUZU_PORT=8123
-docker run -d --name kuzu -p ${KUZU_PORT}:8000 -v ${KUZU_DB_DIR}:/database kuzudb/api-server:latest
-```
-
-In your CocoIndex flow, you need to add the Kuzu connection spec to your flow.
-
-```python
-kuzu_conn_spec = cocoindex.add_auth_entry(
-    "KuzuConnection",
-    cocoindex.storages.KuzuConnection(
-        api_server_url="http://localhost:8123",
-    ),
-)
-```
-
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/blob/30761f8ab674903d742c8ab2e18d4c588df6d46f/examples/docs_to_knowledge_graph/main.py#L33-L37"  margin="0 0 16px 0" />
+![Neo4j Browser](/img/examples/docs_to_knowledge_graph/neo4j_browser.png)

@@ -22,7 +22,6 @@
     <a href="https://trendshift.io/repositories/13939" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13939" alt="cocoindex-io%2Fcocoindex | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 </div>
 
-
 Ultra performant data transformation framework for AI, with core engine written in Rust. Support incremental processing and data lineage out-of-box.  Exceptional developer velocity. Production-ready at day 0.
 
 ⭐ Drop a star to help us grow!
@@ -60,9 +59,8 @@ CocoIndex makes it effortless to transform data with AI, and keep source data an
 
 </br>
 
-
-
 ## Exceptional velocity
+
 Just declare transformation in dataflow with ~100 lines of python
 
 ```python
@@ -86,6 +84,7 @@ CocoIndex follows the idea of [Dataflow](https://en.wikipedia.org/wiki/Dataflow_
 **Particularly**, developers don't explicitly mutate data by creating, updating and deleting. They just need to define transformation/formula for a set of source data.
 
 ## Plug-and-Play Building Blocks
+
 Native builtins for different source, targets and transformations. Standardize interface, make it 1-line code switch between different components - as easy as assembling building blocks.
 
 <p align="center">
@@ -93,6 +92,7 @@ Native builtins for different source, targets and transformations. Standardize i
 </p>
 
 ## Data Freshness
+
 CocoIndex keep source data and target in sync effortlessly.
 
 <p align="center">
@@ -100,11 +100,14 @@ CocoIndex keep source data and target in sync effortlessly.
 </p>
 
 It has out-of-box support for incremental indexing:
+
 - minimal recomputation on source or logic change.
 - (re-)processing necessary portions; reuse cache when possible
 
-## Quick Start:
+## Quick Start
+
 If you're new to CocoIndex, we recommend checking out
+
 - 📖 [Documentation](https://cocoindex.io/docs)
 - ⚡  [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart)
 - 🎬 [Quick Start Video Tutorial](https://youtu.be/gv5R8nOXsWU?si=9ioeKYkMEnYevTXT)
@@ -119,6 +122,12 @@ pip install -U cocoindex
 
 2. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. CocoIndex uses it for incremental processing.
 
+3. (Optional) Install Claude Code skill for enhanced development experience. Run these commands in [Claude Code](https://claude.com/claude-code):
+
+```
+/plugin marketplace add cocoindex-io/cocoindex-claude
+/plugin install cocoindex-skills@cocoindex
+```
 
 ## Define data flow
 
@@ -175,6 +184,7 @@ It defines an index flow like this:
 | [Text Embedding](examples/text_embedding) | Index text documents with embeddings for semantic search |
 | [Code Embedding](examples/code_embedding) | Index code embeddings for semantic search |
 | [PDF Embedding](examples/pdf_embedding) | Parse PDF and index text embeddings for semantic search |
+| [PDF Elements Embedding](examples/pdf_elements_embedding) | Extract text and images from PDFs; embed text with SentenceTransformers and images with CLIP; store in Qdrant for multimodal search |
 | [Manuals LLM Extraction](examples/manuals_llm_extraction) | Extract structured information from a manual using LLM |
 | [Amazon S3 Embedding](examples/amazon_s3_embedding) | Index text documents from Amazon S3 |
 | [Azure Blob Storage Embedding](examples/azure_blob_embedding) | Index text documents from Azure Blob Storage |
@@ -188,19 +198,23 @@ It defines an index flow like this:
 | [Face Recognition](examples/face_recognition) | Recognize faces in images and build embedding index |
 | [Paper Metadata](examples/paper_metadata) | Index papers in PDF files, and build metadata tables for each paper |
 | [Multi Format Indexing](examples/multi_format_indexing) | Build visual document index from PDFs and images with ColPali for semantic search |
+| [Custom Source HackerNews](examples/custom_source_hn) | Index HackerNews threads and comments, using *CocoIndex Custom Source* |
 | [Custom Output Files](examples/custom_output_files) | Convert markdown files to HTML files and save them to a local directory, using *CocoIndex Custom Targets* |
 | [Patient intake form extraction](examples/patient_intake_extraction) | Use LLM to extract structured data from patient intake forms with different formats |
-
+| [HackerNews Trending Topics](examples/hn_trending_topics) | Extract trending topics from HackerNews threads and comments, using *CocoIndex Custom Source* and LLM |
 
 More coming and stay tuned 👀!
 
 ## 📖 Documentation
+
 For detailed documentation, visit [CocoIndex Documentation](https://cocoindex.io/docs), including a [Quickstart guide](https://cocoindex.io/docs/getting_started/quickstart).
 
 ## 🤝 Contributing
+
 We love contributions from our community ❤️. For details on contributing or running the project for development, check out our [contributing guide](https://cocoindex.io/docs/about/contributing).
 
 ## 👥 Community
+
 Welcome with a huge coconut hug 🥥⋆｡˚🤗. We are super excited for community contributions of all kinds - whether it's code improvements, documentation updates, issue reports, feature requests, and discussions in our Discord.
 
 Join our community here:
@@ -210,8 +224,10 @@ Join our community here:
 - ▶️ [Subscribe to our YouTube channel](https://www.youtube.com/@cocoindex-io)
 - 📜 [Read our blog posts](https://cocoindex.io/blogs/)
 
-## Support us:
+## Support us
+
 We are constantly improving, and more features and examples are coming soon. If you love this project, please drop us a star ⭐ at GitHub repo [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex) to stay tuned and help us grow.
 
 ## License
+
 CocoIndex is Apache 2.0 licensed.

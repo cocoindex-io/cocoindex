@@ -40,6 +40,11 @@ const sidebars: SidebarsConfig = {
       link: { type: 'doc', id: 'sources/index' },
       collapsed: true,
       items: [
+        'sources/amazons3',
+        'sources/azureblob',
+        'sources/googledrive',
+        'sources/localfile',
+        'sources/postgres',
       ],
     },
     {
@@ -65,6 +70,7 @@ const sidebars: SidebarsConfig = {
       label: 'Custom Operations',
       collapsed: false,
       items: [
+        'custom_ops/custom_sources',
         'custom_ops/custom_functions',
         'custom_ops/custom_targets',
       ],

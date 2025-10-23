@@ -35,6 +35,17 @@ If you don't have a Postgres database:
 docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
 ```
 
+## 🤖 Install Claude Code Skill (Optional)
+
+If you're using [Claude Code](https://claude.com/claude-code), you can install the CocoIndex skill for enhanced development support. Run these commands in Claude Code:
+
+```
+/plugin marketplace add cocoindex-io/cocoindex-claude
+/plugin install cocoindex-skills@cocoindex
+```
+
+This provides specialized CocoIndex knowledge and workflow support within Claude Code.
+
 ## 🎉 All set!
 
 You can now start using CocoIndex.

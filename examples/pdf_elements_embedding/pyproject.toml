@@ -1,0 +1,14 @@
+[project]
+name = "pdf-elements-embedding"
+version = "0.1.0"
+description = "Simple example for cocoindex: extract text and images from PDF files and build vector index."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[embeddings,colpali]>=0.2.8",
+    "pypdf>=5.7.0",
+    "pillow>=10.0.0",
+    "qdrant-client>=1.15.0",
+]
+
+[tool.setuptools]
+packages = []
