@@ -8,6 +8,7 @@ use crate::{
 
 use super::stats;
 use futures::future::try_join_all;
+use indicatif::ProgressBar;
 use sqlx::PgPool;
 use tokio::{sync::watch, task::JoinSet, time::MissedTickBehavior};
 
@@ -329,7 +330,47 @@ impl SourceUpdateTask {
         update_options: super::source_indexer::UpdateOptions,
     ) -> Result<()> {
         let update_stats = Arc::new(stats::UpdateStats::default());
-        source_indexing_context
+
+        // Spawn periodic stats reporting task if print_stats is enabled
+        let (reporting_handle, progress_bar) = if self.options.print_stats {
+            let update_stats_clone = update_stats.clone();
+            let update_title_owned = update_title.to_string();
+            let flow_name = self.flow.flow_instance.name.clone();
+            let import_op_name = self.import_op().name.clone();
+
+            // Create a progress bar that will overwrite the same line
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                indicatif::ProgressStyle::default_spinner()
+                    .template("{msg}")
+                    .unwrap(),
+            );
+            let pb_clone = pb.clone();
+
+            let report_task = async move {
+                let mut interval = tokio::time::interval(REPORT_INTERVAL);
+                interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+                interval.tick().await; // Skip first tick
+
+                loop {
+                    interval.tick().await;
+                    let current_stats = update_stats_clone.as_ref().clone();
+                    if current_stats.has_any_change() {
+                        // Show cumulative stats (always show latest total, not delta)
+                        pb_clone.set_message(format!(
+                            "{}.{} ({update_title_owned}): {}",
+                            flow_name, import_op_name, current_stats
+                        ));
+                    }
+                }
+            };
+            (Some(tokio::spawn(report_task)), Some(pb))
+        } else {
+            (None, None)
+        };
+
+        // Run the actual update
+        let update_result = source_indexing_context
             .update(&self.pool, &update_stats, update_options)
             .await
             .with_context(|| {
@@ -338,12 +379,28 @@ impl SourceUpdateTask {
                     self.flow.flow_instance.name,
                     self.import_op().name
                 )
-            })?;
+            });
+
+        // Cancel the reporting task if it was spawned
+        if let Some(handle) = reporting_handle {
+            handle.abort();
+        }
+
+        // Clear the progress bar to ensure final stats appear on a new line
+        if let Some(pb) = progress_bar {
+            pb.finish_and_clear();
+        }
+
+        // Check update result
+        update_result?;
+
         if update_stats.has_any_change() {
             self.status_tx.send_modify(|update| {
                 update.source_updates_num[self.source_idx] += 1;
             });
         }
+
+        // Report final stats
         self.report_stats(&update_stats, update_title);
         Ok(())
     }
