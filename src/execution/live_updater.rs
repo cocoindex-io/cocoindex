@@ -165,9 +165,8 @@ impl SourceUpdateTask {
                         .await
                         .map_err(Into::<anyhow::Error>::into)?;
                         let change_msg = match change_msg {
-                            Ok(Some(change_msg)) => change_msg,
-                            Ok(None) => break,
-                            Err(err) => { error!("{:?}", err); continue; }
+                            Some(change_msg) => change_msg,
+                            None => break,
                         };
 
                         let update_stats = Arc::new(stats::UpdateStats::default());
@@ -327,11 +326,18 @@ impl FlowLiveUpdater {
         let execution_ctx = Arc::new(flow_ctx.use_owned_execution_ctx().await?);
 
         let num_sources = plan.import_ops.len();
+        // Check change streams for each source
+        let mut source_change_capture_enabled = Vec::new();
+        for op in &plan.import_ops {
+            let has_change_stream = op.executor.change_stream().await?.is_some();
+            source_change_capture_enabled.push(has_change_stream);
+        }
+
         let (status_tx, status_rx) = watch::channel(FlowLiveUpdaterStatus {
             active_source_idx: BTreeSet::from_iter(0..num_sources),
             source_updates_num: vec![0; num_sources],
             source_interval_enabled: plan.import_ops.iter().map(|op| op.refresh_options.refresh_interval.is_some()).collect(),
-            source_change_capture_enabled: plan.import_ops.iter().map(|op| op.executor.change_stream().await.is_some()).collect(),
+            source_change_capture_enabled,
         });
 
         let (num_remaining_tasks_tx, num_remaining_tasks_rx) = watch::channel(num_sources);
@@ -404,7 +410,8 @@ impl FlowLiveUpdater {
 
     // --- CLI printing ---
     pub fn print_cli_status(&self, updates: &FlowLiveUpdaterUpdates) {
-        let status = self.recv_state.blocking_lock().status_rx.borrow();
+        let recv_state = self.recv_state.blocking_lock();
+        let status = recv_state.status_rx.borrow();
         for (idx, import_op) in self.flow_ctx.flow.flow_instance.import_ops.iter().enumerate() {
             println!(
                 "{} | interval={} | change_capture={}",
@@ -433,15 +440,21 @@ impl FlowLiveUpdater {
                 Err(err) if err.is_cancelled() => {}
                 Err(err) => return Err(err.into()),
             }
-     .
-    
-    ..}
+        }
         Ok(())
     }
 
     pub fn abort(&self) {
         if let Some(join_set) = &mut *self.join_set.lock().unwrap() {
             join_set.abort_all();
+        }
+    }
+
+    pub fn index_update_info(&self) -> stats::IndexUpdateInfo {
+        // Return an empty IndexUpdateInfo for now
+        // This method is used by the Python bindings
+        stats::IndexUpdateInfo {
+            sources: Vec::new(),
         }
     }
 }
