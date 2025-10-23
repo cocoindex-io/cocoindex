@@ -678,6 +678,30 @@ class FlowLiveUpdater:
         """
         return self._get_engine_live_updater().index_update_info()
 
+    def print_cli_status(self) -> None:
+        """
+        Print CLI status showing interval and change capture information for each source.
+        """
+        execution_context.run(self.print_cli_status_async())
+
+    async def print_cli_status_async(self) -> None:
+        """
+        Print CLI status showing interval and change capture information for each source. Async version.
+        """
+        await self._get_engine_live_updater().print_cli_status_async()
+
+    def next_status_updates_cli(self) -> None:
+        """
+        Get the next status updates and print CLI status.
+        """
+        execution_context.run(self.next_status_updates_cli_async())
+
+    async def next_status_updates_cli_async(self) -> None:
+        """
+        Get the next status updates and print CLI status. Async version.
+        """
+        await self._get_engine_live_updater().next_status_updates_cli_async()
+
     def _get_engine_live_updater(self) -> _engine.FlowLiveUpdater:
         if self._engine_live_updater is None:
             raise RuntimeError("Live updater is not started")

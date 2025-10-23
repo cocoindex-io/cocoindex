@@ -261,6 +261,23 @@ impl FlowLiveUpdater {
     pub fn index_update_info(&self) -> IndexUpdateInfo {
         IndexUpdateInfo(self.0.index_update_info())
     }
+
+    pub fn print_cli_status_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let live_updater = self.0.clone();
+        future_into_py(py, async move {
+            let updates = live_updater.next_status_updates().await.into_py_result()?;
+            live_updater.print_cli_status(&updates);
+            Ok(())
+        })
+    }
+
+    pub fn next_status_updates_cli_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let live_updater = self.0.clone();
+        future_into_py(py, async move {
+            live_updater.next_status_updates_cli().await.into_py_result()?;
+            Ok(())
+        })
+    }
 }
 
 #[pymethods]

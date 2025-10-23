@@ -186,7 +186,8 @@ def ls(app_target: str | None) -> None:
     "--color/--no-color", default=True, help="Enable or disable colored output."
 )
 @click.option("--verbose", is_flag=True, help="Show verbose output with full details.")
-def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
+@click.option("--live-status", is_flag=True, help="Show live update status for each data source.")
+def show(app_flow_specifier: str, color: bool, verbose: bool, live_status: bool) -> None:
     """
     Show the flow spec and schema.
 
@@ -208,6 +209,15 @@ def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
     console = Console(no_color=not color)
     console.print(fl._render_spec(verbose=verbose))
     console.print()
+    
+    if live_status:
+        # Show live update status
+        console.print("\n[bold cyan]Live Update Status:[/bold cyan]")
+        options = flow.FlowLiveUpdaterOptions(live_mode=False, reexport_targets=False, print_stats=False)
+        with flow.FlowLiveUpdater(fl, options) as updater:
+            updater.print_cli_status()
+        console.print()
+    
     table = Table(
         title=f"Schema for Flow: {fl.name}",
         title_style="cyan",
@@ -467,6 +477,10 @@ def update(
     else:
         assert len(flow_list) == 1
         with flow.FlowLiveUpdater(flow_list[0], options) as updater:
+            if options.live_mode:
+                # Show initial status
+                updater.print_cli_status()
+                click.echo()
             updater.wait()
             if options.live_mode:
                 _show_no_live_update_hint()
