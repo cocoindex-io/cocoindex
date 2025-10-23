@@ -285,6 +285,22 @@ def _setup_flows(
     setup_bundle.apply(report_to_stdout=not quiet)
 
 
+def _deprecate_setup_flag(
+    ctx: click.Context, param: click.Parameter, value: bool
+) -> bool:
+    """Callback to warn users that --setup flag is deprecated."""
+    if param.name is not None:
+        param_source = ctx.get_parameter_source(param.name)
+        if param_source == click.core.ParameterSource.COMMANDLINE:
+            click.secho(
+                "Warning: The --setup flag is deprecated and will be removed in a future version. "
+                "Setup is now always enabled by default.",
+                fg="yellow",
+                err=True,
+            )
+    return value
+
+
 def _show_no_live_update_hint() -> None:
     click.secho(
         "NOTE: No change capture mechanism exists. See https://cocoindex.io/docs/core/flow_methods#live-update for more details.\n",
@@ -402,8 +418,9 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
     "--setup",
     is_flag=True,
     show_default=True,
-    default=False,
-    help="Automatically setup backends for the flow if it's not setup yet.",
+    default=True,
+    callback=_deprecate_setup_flag,
+    help="(DEPRECATED) Automatically setup backends for the flow if it's not setup yet. This is now the default behavior.",
 )
 @click.option(
     "--reset",
@@ -567,8 +584,9 @@ def evaluate(
     "--setup",
     is_flag=True,
     show_default=True,
-    default=False,
-    help="Automatically setup backends for the flow if it's not setup yet.",
+    default=True,
+    callback=_deprecate_setup_flag,
+    help="(DEPRECATED) Automatically setup backends for the flow if it's not setup yet. This is now the default behavior.",
 )
 @click.option(
     "--reset",
