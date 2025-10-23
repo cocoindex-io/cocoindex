@@ -50,3 +50,13 @@ You can access the Neo4j browser at [http://localhost:7474](http://localhost:747
   text="Docs to Knowledge Graph"
   margin="16px 0 24px 0"
 />
+
+## Data Clean up between different projects
+If you are building multiple CocoIndex flows from different projects to neo4j, we recommend you to
+
+- bring up separate container for each flow if you are on community edition, or
+- setup different databases within one container if you are on enterprise edition.
+
+This way, you can clean up the data for each flow independently.
+
+In case you need to clean up the data in the same database, you can do it manually by running `cocoindex drop <APP_TARGET>` from the project you want to clean up.
