@@ -8,7 +8,7 @@ Please drop [CocoIndex on Github](https://github.com/cocoindex-io/cocoindex) a s
 
 
 ## Prerequisite
-*   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) 
+*   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres)
 *   Install [Neo4j](https://cocoindex.io/docs/targets/neo4j)
 *   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).
 

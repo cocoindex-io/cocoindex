@@ -13,6 +13,8 @@ from typing import (
     Literal,
     NamedTuple,
     Protocol,
+    Optional,
+    Sequence,
     TypeVar,
     overload,
     Self,
@@ -63,6 +65,19 @@ Range = Annotated[tuple[int, int], TypeKind("Range")]
 Json = Annotated[Any, TypeKind("Json")]
 LocalDateTime = Annotated[datetime.datetime, TypeKind("LocalDateTime")]
 OffsetDateTime = Annotated[datetime.datetime, TypeKind("OffsetDateTime")]
+
+
+def Enum(*, variants: Optional[Sequence[str]] = None) -> Any:
+    """
+    String-like enumerated type. Use `variants` to hint allowed values.
+    Example:
+        color: Enum(variants=["red", "green", "blue"])
+    At runtime this is a plain `str`; `variants` are emitted as schema attrs.
+    """
+    if variants is not None:
+        return Annotated[str, TypeKind("Enum"), TypeAttr("variants", list(variants))]
+    return Annotated[str, TypeKind("Enum")]
+
 
 if TYPE_CHECKING:
     T_co = TypeVar("T_co", covariant=True)
@@ -587,6 +602,7 @@ class BasicValueType:
         "OffsetDateTime",
         "TimeDelta",
         "Json",
+        "Enum",
         "Vector",
         "Union",
     ]

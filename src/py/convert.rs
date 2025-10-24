@@ -156,6 +156,7 @@ fn basic_value_from_py_object<'py>(
             value::BasicValue::Bytes(Bytes::from(v.extract::<Vec<u8>>()?))
         }
         schema::BasicValueType::Str => value::BasicValue::Str(Arc::from(v.extract::<String>()?)),
+        schema::BasicValueType::Enum => value::BasicValue::Str(Arc::from(v.extract::<String>()?)),
         schema::BasicValueType::Bool => value::BasicValue::Bool(v.extract::<bool>()?),
         schema::BasicValueType::Int64 => value::BasicValue::Int64(v.extract::<i64>()?),
         schema::BasicValueType::Float32 => value::BasicValue::Float32(v.extract::<f32>()?),

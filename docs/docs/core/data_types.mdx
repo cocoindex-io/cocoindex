@@ -46,6 +46,7 @@ This is the list of all primitive types supported by CocoIndex:
 | *Bytes* | `bytes` | | |
 | *Str* | `str` | | |
 | *Bool* | `bool` | | |
+| *Enum* | `str`, `cocoindex.typing.Enum()` | | |
 | *Int64* | `cocoindex.Int64`, `int`, `numpy.int64` | | |
 | *Float32* | `cocoindex.Float32`, `numpy.float32` | *Float64* | |
 | *Float64* |  `cocoindex.Float64`, `float`, `numpy.float64` | | |
@@ -84,6 +85,9 @@ Notes:
 In Python, it's represented by `cocoindex.Json`.
 It's useful to hold data without fixed schema known at flow definition time.
 
+#### Enum Type
+
+*Enum* represents a string-like enumerated type. In Python, use the helper from `cocoindex.typing`.
 
 #### Vector Types
 

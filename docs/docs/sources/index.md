@@ -17,6 +17,6 @@ In CocoIndex, a source is the data origin you import from (e.g., files, database
 | [Postgres](/docs/sources/postgres)       | Relational database (Postgres)           |
 
 Related:
-- [Life cycle of a indexing flow](/docs/core/basics#life-cycle-of-an-indexing-flow) 
-- [Live Update Tutorial](/docs/tutorials/live_updates) 
+- [Life cycle of a indexing flow](/docs/core/basics#life-cycle-of-an-indexing-flow)
+- [Live Update Tutorial](/docs/tutorials/live_updates)
 for change capture mechanisms.
