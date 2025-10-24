@@ -1,6 +1,6 @@
 use crate::prelude::*;
-
 use crate::utils::immutable::RefList;
+use indexmap::IndexMap;
 use schemars::schema::{
     ArrayValidation, InstanceType, ObjectValidation, Schema, SchemaObject, SingleOrVec,
     SubschemaValidation,
@@ -72,6 +72,9 @@ impl JsonSchemaBuilder {
         let mut schema = schema_base;
         match basic_type {
             schema::BasicValueType::Str => {
+                schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
+            }
+            schema::BasicValueType::Enum => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
             }
             schema::BasicValueType::Bytes => {
@@ -245,15 +248,34 @@ impl JsonSchemaBuilder {
                         field_path.prepend(&f.name),
                     );
                     if self.options.fields_always_required && f.value_type.nullable {
-                        if let Some(instance_type) = &mut field_schema.instance_type {
-                            let mut types = match instance_type {
-                                SingleOrVec::Single(t) => vec![**t],
-                                SingleOrVec::Vec(t) => std::mem::take(t),
+                        if field_schema.enum_values.is_some() {
+                            // Keep the enum as-is and support null via oneOf
+                            let non_null = Schema::Object(field_schema);
+                            let null_branch = Schema::Object(SchemaObject {
+                                instance_type: Some(SingleOrVec::Single(Box::new(
+                                    InstanceType::Null,
+                                ))),
+                                ..Default::default()
+                            });
+                            field_schema = SchemaObject {
+                                subschemas: Some(Box::new(SubschemaValidation {
+                                    one_of: Some(vec![non_null, null_branch]),
+                                    ..Default::default()
+                                })),
+                                ..Default::default()
                             };
-                            types.push(InstanceType::Null);
-                            *instance_type = SingleOrVec::Vec(types);
+                        } else {
+                            if let Some(instance_type) = &mut field_schema.instance_type {
+                                let mut types = match instance_type {
+                                    SingleOrVec::Single(t) => vec![**t],
+                                    SingleOrVec::Vec(t) => std::mem::take(t),
+                                };
+                                types.push(InstanceType::Null);
+                                *instance_type = SingleOrVec::Vec(types);
+                            }
                         }
                     }
+
                     (f.name.to_string(), field_schema.into())
                 })
                 .collect(),
@@ -298,9 +320,26 @@ impl JsonSchemaBuilder {
         enriched_value_type: &schema::EnrichedValueType,
         field_path: RefList<'_, &'_ spec::FieldName>,
     ) -> SchemaObject {
-        self.for_value_type(schema_base, &enriched_value_type.typ, field_path)
-    }
+        let mut out = self.for_value_type(schema_base, &enriched_value_type.typ, field_path);
 
+        if let schema::ValueType::Basic(schema::BasicValueType::Enum) = &enriched_value_type.typ {
+            if let Some(variants) = enriched_value_type.attrs.get("variants") {
+                if let Some(arr) = variants.as_array() {
+                    let enum_values: Vec<serde_json::Value> = arr
+                        .iter()
+                        .filter_map(|v| {
+                            v.as_str().map(|s| serde_json::Value::String(s.to_string()))
+                        })
+                        .collect();
+                    if !enum_values.is_empty() {
+                        out.enum_values = Some(enum_values);
+                    }
+                }
+            }
+        }
+
+        out
+    }
     fn build_extra_instructions(&self) -> Result<Option<String>> {
         if self.extra_instructions_per_field.is_empty() {
             return Ok(None);
@@ -453,6 +492,53 @@ mod tests {
 
         expect![[r#"
             {
+              "type": "string"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_enum_without_variants() {
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Enum),
+            nullable: false,
+            attrs: Arc::new(BTreeMap::new()),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "type": "string"
+            }"#]]
+        .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());
+    }
+
+    #[test]
+    fn test_basic_types_enum_with_variants() {
+        let mut attrs = BTreeMap::new();
+        attrs.insert(
+            "variants".to_string(),
+            serde_json::json!(["red", "green", "blue"]),
+        );
+
+        let value_type = EnrichedValueType {
+            typ: ValueType::Basic(BasicValueType::Enum),
+            nullable: false,
+            attrs: Arc::new(attrs),
+        };
+        let options = create_test_options();
+        let result = build_json_schema(value_type, options).unwrap();
+        let json_schema = schema_to_json(&result.schema);
+
+        expect![[r#"
+            {
+              "enum": [
+                "red",
+                "green",
+                "blue"
+              ],
               "type": "string"
             }"#]]
         .assert_eq(&serde_json::to_string_pretty(&json_schema).unwrap());

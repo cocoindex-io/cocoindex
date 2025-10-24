@@ -202,6 +202,7 @@ impl KeyPart {
                         KeyPart::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
                     }
                     BasicValueType::Str => KeyPart::Str(Arc::from(v)),
+                    BasicValueType::Enum => KeyPart::Str(Arc::from(v)),
                     BasicValueType::Bool => KeyPart::Bool(v.parse()?),
                     BasicValueType::Int64 => KeyPart::Int64(v.parse()?),
                     BasicValueType::Range => {
@@ -1136,6 +1137,7 @@ impl BasicValue {
                 BasicValue::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
             }
             (serde_json::Value::String(v), BasicValueType::Str) => BasicValue::Str(Arc::from(v)),
+            (serde_json::Value::String(v), BasicValueType::Enum) => BasicValue::Str(Arc::from(v)),
             (serde_json::Value::Bool(v), BasicValueType::Bool) => BasicValue::Bool(v),
             (serde_json::Value::Number(v), BasicValueType::Int64) => BasicValue::Int64(
                 v.as_i64()

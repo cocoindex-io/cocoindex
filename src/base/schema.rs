@@ -23,6 +23,9 @@ pub enum BasicValueType {
     /// String encoded in UTF-8.
     Str,
 
+    /// Enumerated symbolic value.
+    Enum,
+
     /// A boolean value.
     Bool,
 
@@ -71,6 +74,7 @@ impl std::fmt::Display for BasicValueType {
         match self {
             BasicValueType::Bytes => write!(f, "Bytes"),
             BasicValueType::Str => write!(f, "Str"),
+            BasicValueType::Enum => write!(f, "Enum"),
             BasicValueType::Bool => write!(f, "Bool"),
             BasicValueType::Int64 => write!(f, "Int64"),
             BasicValueType::Float32 => write!(f, "Float32"),
