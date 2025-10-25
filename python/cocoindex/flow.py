@@ -2,7 +2,7 @@
 Flow is the main interface for building and running flows.
 """
 
-from __future__ import annotations
+from _future_ import annotations
 
 import asyncio
 import datetime
@@ -52,7 +52,7 @@ class _NameBuilder:
     _existing_names: set[str]
     _next_name_index: dict[str, int]
 
-    def __init__(self) -> None:
+    def _init_(self) -> None:
         self._existing_names = set()
         self._next_name_index = {}
 
@@ -78,7 +78,7 @@ _WORD_BOUNDARY_RE = re.compile("(?<!^)(?=[A-Z])")
 
 
 def _to_snake_case(name: str) -> str:
-    return _WORD_BOUNDARY_RE.sub("_", name).lower()
+    return WORD_BOUNDARY_RE.sub("", name).lower()
 
 
 def _create_data_slice(
@@ -100,7 +100,7 @@ def _create_data_slice(
 
 
 def _spec_kind(spec: Any) -> str:
-    return cast(str, spec.__class__.__name__)
+    return cast(str, spec._class.name_)
 
 
 def _transform_helper(
@@ -113,7 +113,7 @@ def _transform_helper(
         kind = _spec_kind(fn_spec)
         spec = fn_spec
     elif callable(fn_spec) and (
-        op_kind := getattr(fn_spec, "__cocoindex_op_kind__", None)
+        op_kind := getattr(fn_spec, "_cocoindex_op_kind_", None)
     ):
         kind = op_kind
         spec = op.EmptyFunctionSpec()
@@ -129,7 +129,7 @@ def _transform_helper(
             transform_args,
             target_scope,
             flow_builder_state.field_name_builder.build_name(
-                name, prefix=_to_snake_case(_spec_kind(fn_spec)) + "_"
+                name, prefix=to_snake_case(_spec_kind(fn_spec)) + ""
             ),
         )
         return result
@@ -154,7 +154,7 @@ class _DataSliceState:
         Callable[[tuple[_engine.DataScopeRef, str] | None], _engine.DataSlice] | None
     ) = None
 
-    def __init__(
+    def _init_(
         self,
         flow_builder_state: _FlowBuilderState,
         data_slice: _engine.DataSlice
@@ -213,16 +213,16 @@ class DataSlice(Generic[T]):
 
     _state: _DataSliceState
 
-    def __init__(self, state: _DataSliceState):
+    def _init_(self, state: _DataSliceState):
         self._state = state
 
-    def __str__(self) -> str:
+    def _str_(self) -> str:
         return str(self._state.engine_data_slice)
 
-    def __repr__(self) -> str:
+    def _repr_(self) -> str:
         return repr(self._state.engine_data_slice)
 
-    def __getitem__(self, field_name: str) -> DataSlice[T]:
+    def _getitem_(self, field_name: str) -> DataSlice[T]:
         field_slice = self._state.engine_data_slice.field(field_name)
         if field_slice is None:
             raise KeyError(field_name)
@@ -307,19 +307,19 @@ class DataScope:
     _flow_builder_state: _FlowBuilderState
     _engine_data_scope: _engine.DataScopeRef
 
-    def __init__(
+    def _init_(
         self, flow_builder_state: _FlowBuilderState, data_scope: _engine.DataScopeRef
     ):
         self._flow_builder_state = flow_builder_state
         self._engine_data_scope = data_scope
 
-    def __str__(self) -> str:
+    def _str_(self) -> str:
         return str(self._engine_data_scope)
 
-    def __repr__(self) -> str:
+    def _repr_(self) -> str:
         return repr(self._engine_data_scope)
 
-    def __getitem__(self, field_name: str) -> DataSlice[T]:
+    def _getitem_(self, field_name: str) -> DataSlice[T]:
         return DataSlice(
             _DataSliceState(
                 self._flow_builder_state,
@@ -329,16 +329,16 @@ class DataScope:
             )
         )
 
-    def __setitem__(self, field_name: str, value: DataSlice[T]) -> None:
+    def _setitem_(self, field_name: str, value: DataSlice[T]) -> None:
         from .validation import validate_field_name
 
         validate_field_name(field_name)
         value._state.attach_to_scope(self._engine_data_scope, field_name)
 
-    def __enter__(self) -> DataScope:
+    def _enter_(self) -> DataScope:
         return self
 
-    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+    def _exit_(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         del self._engine_data_scope
 
     def add_collector(self, name: str | None = None) -> DataCollector:
@@ -349,7 +349,7 @@ class DataScope:
             self._flow_builder_state,
             self._engine_data_scope.add_collector(
                 self._flow_builder_state.field_name_builder.build_name(
-                    name, prefix="_collector_"
+                    name, prefix="collector"
                 )
             ),
         )
@@ -369,7 +369,7 @@ class DataCollector:
     _flow_builder_state: _FlowBuilderState
     _engine_data_collector: _engine.DataCollector
 
-    def __init__(
+    def _init_(
         self,
         flow_builder_state: _FlowBuilderState,
         data_collector: _engine.DataCollector,
@@ -413,7 +413,7 @@ class DataCollector:
         """
         Export the collected data to the specified target.
 
-        `vector_index` is for backward compatibility only. Please use `vector_indexes` instead.
+        vector_index is for backward compatibility only. Please use vector_indexes instead.
         """
 
         validate_target_name(target_name)
@@ -458,7 +458,7 @@ class _FlowBuilderState:
     engine_flow_builder: _engine.FlowBuilder
     field_name_builder: _NameBuilder
 
-    def __init__(self, full_name: str):
+    def _init_(self, full_name: str):
         self.engine_flow_builder = _engine.FlowBuilder(
             full_name, execution_context.event_loop
         )
@@ -495,13 +495,13 @@ class FlowBuilder:
 
     _state: _FlowBuilderState
 
-    def __init__(self, state: _FlowBuilderState):
+    def _init_(self, state: _FlowBuilderState):
         self._state = state
 
-    def __str__(self) -> str:
+    def _str_(self) -> str:
         return str(self._state.engine_flow_builder)
 
-    def __repr__(self) -> str:
+    def _repr_(self) -> str:
         return repr(self._state.engine_flow_builder)
 
     def add_source(
@@ -526,7 +526,7 @@ class FlowBuilder:
                 dump_engine_object(spec),
                 target_scope,
                 self._state.field_name_builder.build_name(
-                    name, prefix=_to_snake_case(_spec_kind(spec)) + "_"
+                    name, prefix=to_snake_case(_spec_kind(spec)) + ""
                 ),
                 refresh_options=dump_engine_object(
                     _SourceRefreshOptions(refresh_interval=refresh_interval)
@@ -603,23 +603,23 @@ class FlowLiveUpdater:
     _options: FlowLiveUpdaterOptions
     _engine_live_updater: _engine.FlowLiveUpdater | None = None
 
-    def __init__(self, fl: Flow, options: FlowLiveUpdaterOptions | None = None):
+    def _init_(self, fl: Flow, options: FlowLiveUpdaterOptions | None = None):
         self._flow = fl
         self._options = options or FlowLiveUpdaterOptions()
 
-    def __enter__(self) -> FlowLiveUpdater:
+    def _enter_(self) -> FlowLiveUpdater:
         self.start()
         return self
 
-    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+    def _exit_(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         self.abort()
         self.wait()
 
-    async def __aenter__(self) -> FlowLiveUpdater:
+    async def _aenter_(self) -> FlowLiveUpdater:
         await self.start_async()
         return self
 
-    async def __aexit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+    async def _aexit_(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         self.abort()
         await self.wait_async()
 
@@ -680,6 +680,30 @@ class FlowLiveUpdater:
         """
         return self._get_engine_live_updater().index_update_info()
 
+    def print_cli_status(self) -> None:
+        """
+        Print CLI status showing interval and change capture information for each source.
+        """
+        execution_context.run(self.print_cli_status_async())
+
+    async def print_cli_status_async(self) -> None:
+        """
+        Print CLI status showing interval and change capture information for each source. Async version.
+        """
+        await self._get_engine_live_updater().print_cli_status_async()
+
+    def next_status_updates_cli(self) -> None:
+        """
+        Get the next status updates and print CLI status.
+        """
+        execution_context.run(self.next_status_updates_cli_async())
+
+    async def next_status_updates_cli_async(self) -> None:
+        """
+        Get the next status updates and print CLI status. Async version.
+        """
+        await self._get_engine_live_updater().next_status_updates_cli_async()
+
     def _get_engine_live_updater(self) -> _engine.FlowLiveUpdater:
         if self._engine_live_updater is None:
             raise RuntimeError("Live updater is not started")
@@ -708,7 +732,7 @@ class Flow:
     _lazy_query_handler_args: list[tuple[Any, ...]]
     _lazy_engine_flow: _engine.Flow | None = None
 
-    def __init__(self, name: str, engine_flow_creator: Callable[[], _engine.Flow]):
+    def _init_(self, name: str, engine_flow_creator: Callable[[], _engine.Flow]):
         validate_flow_name(name)
         self._name = name
         self._engine_flow_creator = engine_flow_creator
@@ -742,10 +766,10 @@ class Flow:
     def _get_schema(self) -> list[tuple[str, str, str]]:
         return cast(list[tuple[str, str, str]], self.internal_flow().get_schema())
 
-    def __str__(self) -> str:
+    def _str_(self) -> str:
         return str(self._get_spec())
 
-    def __repr__(self) -> str:
+    def _repr_(self) -> str:
         return repr(self.internal_flow())
 
     @property
@@ -843,9 +867,9 @@ class Flow:
         Drop persistent backends of the flow.
 
         The current instance is still valid after it's called.
-        For example, you can still call `setup()` after it, to setup the persistent backends again.
+        For example, you can still call setup() after it, to setup the persistent backends again.
 
-        Call `close()` if you want to remove the flow from the current process.
+        Call close() if you want to remove the flow from the current process.
         """
         execution_context.run(self.drop_async(report_to_stdout=report_to_stdout))
 
@@ -909,7 +933,7 @@ class Flow:
 
         def _inner(handler: Callable[[str], Any]) -> Callable[[str], Any]:
             self.add_query_handler(
-                name or handler.__qualname__, handler, result_fields=result_fields
+                name or handler._qualname_, handler, result_fields=result_fields
             )
             return handler
 
@@ -923,7 +947,7 @@ def _create_lazy_flow(
     Create a flow without really building it yet.
     The flow will be built the first time when it's really needed.
     """
-    flow_name = _flow_name_builder.build_name(name, prefix="_flow_")
+    flow_name = flow_name_builder.build_name(name, prefix="_flow")
 
     def _create_engine_flow() -> _engine.Flow:
         flow_full_name = get_flow_full_name(flow_name)
@@ -962,14 +986,14 @@ def open_flow(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Fl
 
 def add_flow_def(name: str, fl_def: Callable[[FlowBuilder, DataScope], None]) -> Flow:
     """
-    DEPRECATED: Use `open_flow()` instead.
+    DEPRECATED: Use open_flow() instead.
     """
     return open_flow(name, fl_def)
 
 
 def remove_flow(fl: Flow) -> None:
     """
-    DEPRECATED: Use `Flow.close()` instead.
+    DEPRECATED: Use Flow.close() instead.
     """
     fl.close()
 
@@ -980,7 +1004,7 @@ def flow_def(
     """
     A decorator to wrap the flow definition.
     """
-    return lambda fl_def: open_flow(name or fl_def.__name__, fl_def)
+    return lambda fl_def: open_flow(name or fl_def._name_, fl_def)
 
 
 def flow_names() -> list[str]:
@@ -1090,7 +1114,7 @@ class TransformFlow(Generic[T]):
     _lazy_lock: asyncio.Lock
     _lazy_flow_info: TransformFlowInfo[T] | None = None
 
-    def __init__(
+    def _init_(
         self,
         flow_fn: Callable[..., DataSlice[T]],
         /,
@@ -1098,7 +1122,7 @@ class TransformFlow(Generic[T]):
     ):
         self._flow_fn = flow_fn
         self._flow_name = _transform_flow_name_builder.build_name(
-            name, prefix="_transform_flow_"
+            name, prefix="transform_flow"
         )
         self._lazy_lock = asyncio.Lock()
 
@@ -1110,15 +1134,15 @@ class TransformFlow(Generic[T]):
                 inspect.Parameter.KEYWORD_ONLY,
             ):
                 raise ValueError(
-                    f"Parameter `{param_name}` is not a parameter can be passed by name"
+                    f"Parameter {param_name} is not a parameter can be passed by name"
                 )
             value_type_annotation: type | None = _get_data_slice_annotation_type(
                 param.annotation
             )
             if value_type_annotation is None:
                 raise ValueError(
-                    f"Parameter `{param_name}` for {flow_fn} has no value type annotation. "
-                    "Please use `cocoindex.DataSlice[T]` where T is the type of the value."
+                    f"Parameter {param_name} for {flow_fn} has no value type annotation. "
+                    "Please use cocoindex.DataSlice[T] where T is the type of the value."
                 )
             encoder = make_engine_value_encoder(
                 analyze_type_info(value_type_annotation)
@@ -1126,7 +1150,7 @@ class TransformFlow(Generic[T]):
             args_info.append(FlowArgInfo(param_name, value_type_annotation, encoder))
         self._args_info = args_info
 
-    def __call__(self, *args: Any, **kwargs: Any) -> DataSlice[T]:
+    def _call_(self, *args: Any, **kwargs: Any) -> DataSlice[T]:
         return self._flow_fn(*args, **kwargs)
 
     @property
@@ -1149,7 +1173,7 @@ class TransformFlow(Generic[T]):
         for arg_info in self._args_info:
             encoded_type = encode_enriched_type(arg_info.type_hint)
             if encoded_type is None:
-                raise ValueError(f"Parameter `{arg_info.name}` has no type annotation")
+                raise ValueError(f"Parameter {arg_info.name} has no type annotation")
             engine_ds = flow_builder_state.engine_flow_builder.add_direct_input(
                 arg_info.name, encoded_type
             )
@@ -1178,10 +1202,10 @@ class TransformFlow(Generic[T]):
 
         return TransformFlowInfo(engine_flow, result_decoder)
 
-    def __str__(self) -> str:
+    def _str_(self) -> str:
         return str(self._flow_info.engine_flow)
 
-    def __repr__(self) -> str:
+    def _repr_(self) -> str:
         return repr(self._flow_info.engine_flow)
 
     def internal_flow(self) -> _engine.TransientFlow:

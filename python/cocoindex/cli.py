@@ -136,9 +136,9 @@ def ls(app_target: str | None) -> None:
     """
     List all flows.
 
-    If `APP_TARGET` (`path/to/app.py` or a module) is provided, lists flows defined in the app and their backend setup status.
+    If APP_TARGET (path/to/app.py or a module) is provided, lists flows defined in the app and their backend setup status.
 
-    If `APP_TARGET` is omitted, lists all flows that have a persisted setup in the backend.
+    If APP_TARGET is omitted, lists all flows that have a persisted setup in the backend.
     """
     persisted_flow_names = flow_names_with_setup()
     if app_target:
@@ -182,19 +182,20 @@ def ls(app_target: str | None) -> None:
     "--color/--no-color", default=True, help="Enable or disable colored output."
 )
 @click.option("--verbose", is_flag=True, help="Show verbose output with full details.")
-def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
+@click.option("--live-status", is_flag=True, help="Show live update status for each data source.")
+def show(app_flow_specifier: str, color: bool, verbose: bool, live_status: bool) -> None:
     """
     Show the flow spec and schema.
 
-    `APP_FLOW_SPECIFIER`: Specifies the application and optionally the target flow. Can be one of the following formats:
+    APP_FLOW_SPECIFIER: Specifies the application and optionally the target flow. Can be one of the following formats:
 
     \b
-      - `path/to/your_app.py`
-      - `an_installed.module_name`
-      - `path/to/your_app.py:SpecificFlowName`
-      - `an_installed.module_name:SpecificFlowName`
+      - path/to/your_app.py
+      - an_installed.module_name
+      - path/to/your_app.py:SpecificFlowName
+      - an_installed.module_name:SpecificFlowName
 
-    `:SpecificFlowName` can be omitted only if the application defines a single flow.
+    :SpecificFlowName can be omitted only if the application defines a single flow.
     """
     app_ref, flow_ref = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
@@ -203,6 +204,15 @@ def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
     console = Console(no_color=not color)
     console.print(fl._render_spec(verbose=verbose))
     console.print()
+    
+    if live_status:
+        # Show live update status
+        console.print("\n[bold cyan]Live Update Status:[/bold cyan]")
+        options = flow.FlowLiveUpdaterOptions(live_mode=False, reexport_targets=False, print_stats=False)
+        with flow.FlowLiveUpdater(fl, options) as updater:
+            updater.print_cli_status()
+        console.print()
+    
     table = Table(
         title=f"Schema for Flow: {fl.name}",
         title_style="cyan",
@@ -251,23 +261,6 @@ def _drop_flows(flows: Iterable[flow.Flow], app_ref: str, force: bool = False) -
     setup_bundle.apply(report_to_stdout=True)
 
 
-def _deprecate_setup_flag(
-    ctx: click.Context, param: click.Parameter, value: bool
-) -> bool:
-    """Callback to warn users that --setup flag is deprecated."""
-    # Check if the parameter was explicitly provided by the user
-    if param.name is not None:
-        param_source = ctx.get_parameter_source(param.name)
-        if param_source == click.core.ParameterSource.COMMANDLINE:
-            click.secho(
-                "Warning: The --setup flag is deprecated and will be removed in a future version. "
-                "Setup is now always enabled by default.",
-                fg="yellow",
-                err=True,
-            )
-    return value
-
-
 def _setup_flows(
     flow_iter: Iterable[flow.Flow],
     *,
@@ -290,6 +283,22 @@ def _setup_flows(
     ):
         return
     setup_bundle.apply(report_to_stdout=not quiet)
+
+
+def _deprecate_setup_flag(
+    ctx: click.Context, param: click.Parameter, value: bool
+) -> bool:
+    """Callback to warn users that --setup flag is deprecated."""
+    if param.name is not None:
+        param_source = ctx.get_parameter_source(param.name)
+        if param_source == click.core.ParameterSource.COMMANDLINE:
+            click.secho(
+                "Warning: The --setup flag is deprecated and will be removed in a future version. "
+                "Setup is now always enabled by default.",
+                fg="yellow",
+                err=True,
+            )
+    return value
 
 
 def _show_no_live_update_hint() -> None:
@@ -328,7 +337,7 @@ def setup(app_target: str, force: bool, reset: bool) -> None:
     """
     Check and apply backend setup changes for flows, including the internal storage and target (to export to).
 
-    `APP_TARGET`: `path/to/app.py` or `installed_module`.
+    APP_TARGET: path/to/app.py or installed_module.
     """
     app_ref = _get_app_ref_from_specifier(app_target)
     _load_user_app(app_ref)
@@ -357,8 +366,8 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
 
     \b
     Modes of operation:
-    1. Drop all flows defined in an app: `cocoindex drop <APP_TARGET>`
-    2. Drop specific named flows: `cocoindex drop <APP_TARGET> [FLOW_NAME...]`
+    1. Drop all flows defined in an app: cocoindex drop <APP_TARGET>
+    2. Drop specific named flows: cocoindex drop <APP_TARGET> [FLOW_NAME...]
     """
     app_ref = None
 
@@ -379,7 +388,7 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
                 flows.append(flow.flow_by_name(name))
             except KeyError:
                 click.echo(
-                    f"Warning: Failed to get flow `{name}`. Ignored.",
+                    f"Warning: Failed to get flow {name}. Ignored.",
                     err=True,
                 )
     else:
@@ -418,7 +427,7 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
     is_flag=True,
     show_default=True,
     default=False,
-    help="Drop existing setup before updating (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`.",
+    help="Drop existing setup before updating (equivalent to running 'cocoindex drop' first). --reset implies --setup.",
 )
 @click.option(
     "-f",
@@ -448,7 +457,7 @@ def update(
     """
     Update the index to reflect the latest data from data sources.
 
-    `APP_FLOW_SPECIFIER`: `path/to/app.py`, module, `path/to/app.py:FlowName`, or `module:FlowName`. If `:FlowName` is omitted, updates all flows.
+    APP_FLOW_SPECIFIER: path/to/app.py, module, path/to/app.py:FlowName, or module:FlowName. If :FlowName is omitted, updates all flows.
     """
     app_ref, flow_name = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
@@ -479,6 +488,10 @@ def update(
     else:
         assert len(flow_list) == 1
         with flow.FlowLiveUpdater(flow_list[0], options) as updater:
+            if options.live_mode:
+                # Show initial status
+                updater.print_cli_status()
+                click.echo()
             updater.wait()
             if options.live_mode:
                 _show_no_live_update_hint()
@@ -509,20 +522,20 @@ def evaluate(
     Instead of updating the index, it dumps what should be indexed to files. Mainly used for evaluation purpose.
 
     \b
-    `APP_FLOW_SPECIFIER`: Specifies the application and optionally the target flow. Can be one of the following formats:
-      - `path/to/your_app.py`
-      - `an_installed.module_name`
-      - `path/to/your_app.py:SpecificFlowName`
-      - `an_installed.module_name:SpecificFlowName`
+    APP_FLOW_SPECIFIER: Specifies the application and optionally the target flow. Can be one of the following formats:
+      - path/to/your_app.py
+      - an_installed.module_name
+      - path/to/your_app.py:SpecificFlowName
+      - an_installed.module_name:SpecificFlowName
 
-    `:SpecificFlowName` can be omitted only if the application defines a single flow.
+    :SpecificFlowName can be omitted only if the application defines a single flow.
     """
     app_ref, flow_ref = _parse_app_flow_specifier(app_flow_specifier)
     _load_user_app(app_ref)
 
     fl = _flow_by_name(flow_ref)
     if output_dir is None:
-        output_dir = f"eval_{setting.get_app_namespace(trailing_delimiter='_')}{fl.name}_{datetime.datetime.now().strftime('%y%m%d_%H%M%S')}"
+        output_dir = f"eval_{setting.get_app_namespace(trailing_delimiter='')}{fl.name}{datetime.datetime.now().strftime('%y%m%d_%H%M%S')}"
     options = flow.EvaluateAndDumpOptions(output_dir=output_dir, use_cache=cache)
     fl.evaluate_and_dump(options)
 
@@ -542,7 +555,7 @@ def evaluate(
     type=str,
     help="The origins of the clients (e.g. CocoInsight UI) to allow CORS from. "
     "Multiple origins can be specified as a comma-separated list. "
-    "e.g. `https://cocoindex.io,http://localhost:3000`. "
+    "e.g. https://cocoindex.io,http://localhost:3000. "
     "Origins specified in COCOINDEX_SERVER_CORS_ORIGINS will also be included.",
 )
 @click.option(
@@ -580,7 +593,7 @@ def evaluate(
     is_flag=True,
     show_default=True,
     default=False,
-    help="Drop existing setup before starting server (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`.",
+    help="Drop existing setup before starting server (equivalent to running 'cocoindex drop' first). --reset implies --setup.",
 )
 @click.option(
     "--reexport",
@@ -632,7 +645,7 @@ def server(
 
     It will allow tools like CocoInsight to access the server.
 
-    `APP_TARGET`: `path/to/app.py` or `installed_module`.
+    APP_TARGET: path/to/app.py or installed_module.
     """
     app_ref = _get_app_ref_from_specifier(app_target)
     args = (
@@ -826,5 +839,5 @@ def _flow_by_name(name: str | None) -> flow.Flow:
     return flow.flow_by_name(_flow_name(name))
 
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     cli()

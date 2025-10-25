@@ -27,7 +27,7 @@ pub struct PythonExecutionContext {
 }
 
 impl PythonExecutionContext {
-    pub fn new(_py: Python<'_>, event_loop: Py<PyAny>) -> Self {
+    pub fn new(py: Python<'>, event_loop: Py<PyAny>) -> Self {
         Self { event_loop }
     }
 }
@@ -175,12 +175,12 @@ pub struct IndexUpdateInfo(pub execution::stats::IndexUpdateInfo);
 
 #[pymethods]
 impl IndexUpdateInfo {
-    pub fn __str__(&self) -> String {
+    pub fn _str_(&self) -> String {
         format!("{}", self.0)
     }
 
-    pub fn __repr__(&self) -> String {
-        self.__str__()
+    pub fn _repr_(&self) -> String {
+        self._str_()
     }
 }
 
@@ -269,16 +269,33 @@ impl FlowLiveUpdater {
     pub fn index_update_info(&self) -> IndexUpdateInfo {
         IndexUpdateInfo(self.0.index_update_info())
     }
+
+    pub fn print_cli_status_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let live_updater = self.0.clone();
+        future_into_py(py, async move {
+            let updates = live_updater.next_status_updates().await.into_py_result()?;
+            live_updater.print_cli_status(&updates);
+            Ok(())
+        })
+    }
+
+    pub fn next_status_updates_cli_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let live_updater = self.0.clone();
+        future_into_py(py, async move {
+            live_updater.next_status_updates_cli().await.into_py_result()?;
+            Ok(())
+        })
+    }
 }
 
 #[pymethods]
 impl Flow {
-    pub fn __str__(&self) -> String {
+    pub fn _str_(&self) -> String {
         serde_json::to_string_pretty(&self.0.flow.flow_instance).unwrap()
     }
 
-    pub fn __repr__(&self) -> String {
-        self.__str__()
+    pub fn _repr_(&self) -> String {
+        self._str_()
     }
 
     pub fn name(&self) -> &str {
@@ -514,12 +531,12 @@ pub struct TransientFlow(pub Arc<builder::AnalyzedTransientFlow>);
 
 #[pymethods]
 impl TransientFlow {
-    pub fn __str__(&self) -> String {
+    pub fn _str_(&self) -> String {
         serde_json::to_string_pretty(&self.0.transient_flow_instance).unwrap()
     }
 
-    pub fn __repr__(&self) -> String {
-        self.__str__()
+    pub fn _repr_(&self) -> String {
+        self._str_()
     }
 
     pub fn evaluate_async<'py>(
@@ -584,7 +601,7 @@ impl SetupChangeBundle {
 }
 
 #[pyfunction]
-fn flow_names_with_setup_async(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+fn flow_names_with_setup_async(py: Python<'>) -> PyResult<Bound<', PyAny>> {
     future_into_py(py, async move {
         let lib_context = get_lib_context().await.into_py_result()?;
         let setup_ctx = lib_context
