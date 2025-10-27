@@ -64,7 +64,7 @@ struct OllamaEmbeddingRequest<'a> {
 
 #[derive(Debug, Deserialize)]
 struct OllamaEmbeddingResponse {
-    pub embedding: Vec<f32>,
+    pub embeddings: Vec<Vec<f32>>,
 }
 
 const OLLAMA_DEFAULT_ADDRESS: &str = "http://localhost:11434";
@@ -153,10 +153,17 @@ impl LlmEmbeddingClient for Client {
         )
         .await
         .context("Ollama API error")?;
+
         let embedding_resp: OllamaEmbeddingResponse = resp.json().await.context("Invalid JSON")?;
-        Ok(super::LlmEmbeddingResponse {
-            embedding: embedding_resp.embedding,
-        })
+
+        // Extract the first embedding (index 0)
+        let embedding = embedding_resp
+            .embeddings
+            .into_iter()
+            .next()
+            .context("Ollama API returned no embeddings")?;
+
+        Ok(super::LlmEmbeddingResponse { embedding })
     }
 
     fn get_default_embedding_dimension(&self, model: &str) -> Option<u32> {
