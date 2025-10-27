@@ -8,7 +8,7 @@ import asyncio
 import inspect
 import warnings
 
-from typing import Any, Callable, Awaitable, TypeVar
+from typing import Any, Callable, Awaitable, TypeVar, Coroutine
 
 T = TypeVar("T")
 
@@ -35,7 +35,7 @@ class _ExecutionContext:
                 threading.Thread(target=_runner, args=(loop,), daemon=True).start()
             return self._event_loop
 
-    def run(self, coro):
+    def run(self, coro: Coroutine[Any, Any, T]) -> T:
         """Run a coroutine in the event loop, blocking until it finishes. Return its result."""
         try:
             running_loop = asyncio.get_running_loop()
