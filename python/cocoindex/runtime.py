@@ -42,7 +42,7 @@ class _ExecutionContext:
         except RuntimeError:
             running_loop = None
 
-        loop = self.event_loop  
+        loop = self.event_loop
 
         if running_loop is not None:
             if running_loop is loop:
