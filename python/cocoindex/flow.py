@@ -459,7 +459,9 @@ class _FlowBuilderState:
     field_name_builder: _NameBuilder
 
     def __init__(self, full_name: str):
-        self.engine_flow_builder = _engine.FlowBuilder(full_name)
+        self.engine_flow_builder = _engine.FlowBuilder(
+            full_name, execution_context.event_loop
+        )
         self.field_name_builder = _NameBuilder()
 
     def get_data_slice(self, v: Any) -> _engine.DataSlice:
@@ -931,9 +933,7 @@ def _create_lazy_flow(
             flow_builder_state, flow_builder_state.engine_flow_builder.root_scope()
         )
         fl_def(FlowBuilder(flow_builder_state), root_scope)
-        return flow_builder_state.engine_flow_builder.build_flow(
-            execution_context.event_loop
-        )
+        return flow_builder_state.engine_flow_builder.build_flow()
 
     return Flow(flow_name, _create_engine_flow)
 

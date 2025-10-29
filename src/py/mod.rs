@@ -6,7 +6,7 @@ use crate::base::spec::{AuthEntryReference, NamedSpec, OutputMode, ReactiveOpSpe
 use crate::lib_context::{
     QueryHandlerContext, clear_lib_context, get_auth_registry, init_lib_context,
 };
-use crate::ops::py_factory::{PyExportTargetFactory, PyOpArgSchema};
+use crate::ops::py_factory::{PyExportTargetFactory, PyOpArgSchema, PySourceConnectorFactory};
 use crate::ops::{interface::ExecutorFactory, py_factory::PyFunctionFactory, register_factory};
 use crate::server::{self, ServerSettings};
 use crate::service::query_handler::QueryHandlerSpec;
@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 mod convert;
 pub(crate) use convert::*;
+pub mod future;
 
 pub struct PythonExecutionContext {
     pub event_loop: Py<PyAny>,
@@ -144,6 +145,14 @@ fn start_server(py: Python<'_>, settings: Pythonized<ServerSettings>) -> PyResul
 fn stop(py: Python<'_>) -> PyResult<()> {
     py.allow_threads(|| get_runtime().block_on(clear_lib_context()));
     Ok(())
+}
+
+#[pyfunction]
+fn register_source_connector(name: String, py_source_connector: Py<PyAny>) -> PyResult<()> {
+    let factory = PySourceConnectorFactory {
+        py_source_connector,
+    };
+    register_factory(name, ExecutorFactory::Source(Arc::new(factory))).into_py_result()
 }
 
 #[pyfunction]
@@ -470,7 +479,8 @@ impl Flow {
                     let task_locals = pyo3_async_runtimes::TaskLocals::new(
                         py_exec_ctx.event_loop.bind(py).clone(),
                     );
-                    Ok(pyo3_async_runtimes::into_future_with_locals(
+                    Ok(future::from_py_future(
+                        py,
                         &task_locals,
                         result_coro.into_bound(py),
                     )?)
@@ -676,6 +686,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_settings_fn, m)?)?;
     m.add_function(wrap_pyfunction!(start_server, m)?)?;
     m.add_function(wrap_pyfunction!(stop, m)?)?;
+    m.add_function(wrap_pyfunction!(register_source_connector, m)?)?;
     m.add_function(wrap_pyfunction!(register_function_factory, m)?)?;
     m.add_function(wrap_pyfunction!(register_target_connector, m)?)?;
     m.add_function(wrap_pyfunction!(flow_names_with_setup_async, m)?)?;

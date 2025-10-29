@@ -14,28 +14,11 @@ neo4j_conn_spec = cocoindex.add_auth_entry(
         password="cocoindex",
     ),
 )
-kuzu_conn_spec = cocoindex.add_auth_entry(
-    "KuzuConnection",
-    cocoindex.targets.KuzuConnection(
-        api_server_url="http://localhost:8123",
-    ),
-)
 
-# SELECT ONE GRAPH DATABASE TO USE
-# This example can use either Neo4j or Kuzu as the graph database.
-# Please make sure only one branch is live and others are commented out.
-
-# Use Neo4j
 GraphDbSpec = cocoindex.targets.Neo4j
 GraphDbConnection = cocoindex.targets.Neo4jConnection
 GraphDbDeclaration = cocoindex.targets.Neo4jDeclaration
 conn_spec = neo4j_conn_spec
-
-# Use Kuzu
-#  GraphDbSpec = cocoindex.targets.Kuzu
-#  GraphDbConnection = cocoindex.targets.KuzuConnection
-#  GraphDbDeclaration = cocoindex.targets.KuzuDeclaration
-#  conn_spec = kuzu_conn_spec
 
 
 @dataclasses.dataclass

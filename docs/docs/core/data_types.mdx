@@ -21,11 +21,16 @@ All you need to do is to make sure the data passed to functions and targets are 
 Each type in CocoIndex type system is mapped to one or multiple types in Python.
 When you define a [custom function](/docs/custom_ops/custom_functions), you need to annotate the data types of arguments and return values.
 
-*   When you pass a Python value to the engine (e.g. return values of a custom function), a specific type annotation is required.
-    The type annotation needs to be specific in describing the target data type, as it provides the ground truth of the data type in the flow.
+*   **When you pass a Python value to the engine (e.g. return values of a custom function)**, a **specific type annotation is required**.
+    The type annotation needs to be specific in describing the target data type, as it provides the **ground truth of the data type in the flow**.
 
-*   When you use a Python variable to bind to an engine value (e.g. arguments of a custom function),
-    the engine already knows the specific data type, so we don't require a specific type annotation, e.g. type annotations can be omitted, or you can use `Any` at any level.
+    This is critical because CocoIndex uses return type annotations to infer data types throughout the flow without processing any actual data. This enables:
+    - Creating proper target schemas (e.g., vector indexes with fixed dimensions)
+    - Type checking during flow definition
+    - Clear documentation of data transformations
+
+*   **When you use a Python variable to bind to an engine value (e.g. arguments of a custom function)**,
+    the engine already knows the specific data type, so we **don't require a specific type annotation**. Type annotations can be omitted, or you can use `Any` at any level.
     When a specific type annotation is provided, it's still used as a guidance to construct the Python value with compatible type.
     Otherwise, we will bind to a default Python type.
 
@@ -85,12 +90,35 @@ It's useful to hold data without fixed schema known at flow definition time.
 A vector type is a collection of elements of the same basic type.
 Optionally, it can have a fixed dimension. Noted as *Vector[Type]* or *Vector[Type, Dim]*, e.g. *Vector[Float32]* or *Vector[Float32, 384]*.
 
+**When to specify vector dimension:**
+Specify the dimension in return type annotations if you plan to export the vector to a target, as **most targets require a fixed vector dimension** for creating vector indexes. For example, use `cocoindex.Vector[cocoindex.Float32, typing.Literal[768]]` for 768-dimensional embeddings.
+
 It supports the following Python types:
 
 *   `cocoindex.Vector[T]` or `cocoindex.Vector[T, typing.Literal[Dim]]`, e.g. `cocoindex.Vector[cocoindex.Float32]` or `cocoindex.Vector[cocoindex.Float32, typing.Literal[384]]`
     *   The underlying Python type is `numpy.typing.NDArray[T]` where `T` is a numpy numeric type (`numpy.int64`, `numpy.float32` or `numpy.float64`) or array type (`numpy.typing.NDArray[T]`), or `list[T]` otherwise
 *   `numpy.typing.NDArray[T]` where `T` is a numpy numeric type or array type
 *   `list[T]`
+
+**Example:**
+
+```python
+from typing import Literal
+import cocoindex
+
+# ✅ Good: Specify dimension for vectors that will be exported to targets
+@cocoindex.op.function(behavior_version=1)
+def embed_text(text: str) -> cocoindex.Vector[cocoindex.Float32, Literal[768]]:
+    """Generate 768-dimensional embedding."""
+    # ... embedding logic ...
+    return embedding  # numpy array or list of 768 floats
+
+# ⚠️ Works but less precise: Vector without dimension
+@cocoindex.op.function(behavior_version=1)
+def embed_text_no_dim(text: str) -> list[float]:
+    """Generate embedding without dimension specification."""
+    return embedding
+```
 
 
 #### Union Types
@@ -146,8 +174,39 @@ class PersonModel(BaseModel):
 All three examples (`Person`, `PersonTuple`, and `PersonModel`) are valid Struct types in CocoIndex, with identical schemas (three fields: `first_name` (Str), `last_name` (Str), `dob` (Date)).
 Choose `dataclass` for mutable objects, `NamedTuple` for immutable lightweight structures, or `Pydantic` for data validation and serialization features.
 
-Besides, for arguments of custom functions, CocoIndex also supports using dictionaries (`dict[str, Any]`) to represent a *Struct* type.
-It's the default Python type if you don't annotate the function argument with a specific type.
+**Type annotations for Struct:**
+
+- **For return values**: Must use a specific Struct type (dataclass, NamedTuple, or Pydantic model)
+- **For arguments**: Can use `dict[str, Any]` or `Any` instead of a specific Struct type. `dict[str, Any]` is the default binding if you don't annotate the function argument with a specific type.
+
+**Example:**
+
+```python
+from dataclasses import dataclass
+from typing import Any
+import datetime
+
+@dataclass
+class Person:
+    first_name: str
+    last_name: str
+    dob: datetime.date
+
+# ✅ Good: Specific return type, relaxed argument type
+@cocoindex.op.function(behavior_version=1)
+def process_person(person_data: dict[str, Any]) -> Person:
+    """Argument can use dict[str, Any], return must be specific Struct."""
+    return Person(
+        first_name=person_data["first_name"],
+        last_name=person_data["last_name"],
+        dob=person_data["dob"]
+    )
+
+# ❌ Wrong: Return type is not a valid specific CocoIndex type
+# @cocoindex.op.function(behavior_version=1)
+# def bad_example(person: Person) -> dict[str, str]:
+#     return {"name": person.first_name}  # dict[str, str] is not a CocoIndex type
+```
 
 ### Table Types
 
@@ -165,9 +224,12 @@ Each key column must be a [key type](#key-types). When multiple key columns are 
 In Python, a *KTable* type is represented by `dict[K, V]`.
 `K` represents the key and `V` represents the value for each row:
 
-- `K` can be a Struct type (either a frozen dataclass or a `NamedTuple`) that contains all key parts as fields. This is the general way to model multi-part keys.
-- When there is only a single key part and it is a basic type (e.g. `str`, `int`), you may use that basic type directly as the dictionary key instead of wrapping it in a Struct.
-- `V` should be the type bound to a *Struct* representing the non-key value fields of each row.
+- **`K` (key type)** can be:
+  - A primitive [key type](#key-types) (e.g., `str`, `int`) for single-part keys
+  - An immutable Struct type (frozen dataclass or `NamedTuple`) for multi-part composite keys
+- **`V` (value type)** must be a Struct type representing the non-key value fields of each row
+  - For return values: Must use a specific Struct type (dataclass, NamedTuple, or Pydantic model)
+  - For arguments: Can use `dict[str, Any]` or `Any`
 
 When a specific type annotation is not provided:
 - For composite keys (multiple key parts), the key binds to a Python tuple of the key parts, e.g. `tuple[str, str]`.
@@ -210,9 +272,31 @@ If you don't annotate the function argument with a specific type, it's bound to 
 
 *LTable* is a *Table* type whose row order is preserved. *LTable* has no key column.
 
-In Python, a *LTable* type is represented by `list[R]`, where `R` is the type binding to the *Struct* type representing the value fields of each row.
-For example, you can use `list[Person]`, `list[PersonTuple]`, or `list[PersonModel]` to represent a *LTable* with 3 columns: `first_name` (*Str*), `last_name` (*Str*), `dob` (*Date*).
-It's bound to `list[dict[str, Any]]` if you don't annotate the function argument with a specific type.
+In Python, a *LTable* type is represented by `list[R]`, where **`R` must be a Struct type** representing the value fields of each row:
+- **For return values**: Must use a specific Struct type (e.g., `list[Person]`, `list[PersonTuple]`, or `list[PersonModel]`)
+- **For arguments**: Can use `list[dict[str, Any]]` or `list[Any]`. Defaults to `list[dict[str, Any]]` if you don't annotate the function argument.
+
+For example, `list[Person]` represents a *LTable* with 3 columns: `first_name` (*Str*), `last_name` (*Str*), `dob` (*Date*).
+
+**Example:**
+
+```python
+from dataclasses import dataclass
+from typing import Any
+import datetime
+
+@dataclass
+class Person:
+    first_name: str
+    last_name: str
+    dob: datetime.date
+
+# ✅ Good: Return type specifies list of specific Struct
+@cocoindex.op.function(behavior_version=1)
+def filter_adults(people: list[Any]) -> list[Person]:
+    """Filter people - argument relaxed, return type specific."""
+    return [p for p in people if p["age"] >= 18]
+```
 
 ## Key Types
 

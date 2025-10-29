@@ -9,6 +9,7 @@ license = "Apache-2.0"
 
 [profile.release]
 codegen-units = 1
+strip = "symbols"
 lto = true
 
 [lib]
@@ -64,6 +65,7 @@ blake2 = "0.10.6"
 pgvector = { version = "0.4.1", features = ["sqlx", "halfvec"] }
 phf = { version = "0.12.1", features = ["macros"] }
 indenter = "0.3.4"
+indicatif = "0.17.9"
 itertools = "0.14.0"
 derivative = "2.2.0"
 hex = "0.4.3"
@@ -151,4 +153,7 @@ azure_storage_blobs = { version = "0.21.0", default-features = false, features =
     "hmac_rust",
 ] }
 serde_path_to_error = "0.1.17"
+redis = { version = "0.31.0", features = ["tokio-comp", "connection-manager"] }
 expect-test = "1.5.0"
+encoding_rs = "0.8.35"
+tokio-util = { version = "0.7.16", features = ["rt"] }

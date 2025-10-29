@@ -51,11 +51,18 @@ Unless explicitly instructed otherwise, output only the JSON. DO NOT include exp
 }
 
 impl Executor {
-    async fn new(spec: Spec, args: Args) -> Result<Self> {
+    async fn new(spec: Spec, args: Args, auth_registry: &AuthRegistry) -> Result<Self> {
+        let api_key = spec
+            .llm_spec
+            .api_key
+            .as_ref()
+            .map(|key_ref| auth_registry.get(key_ref))
+            .transpose()?;
+
         let client = new_llm_generation_client(
             spec.llm_spec.api_type,
             spec.llm_spec.address,
-            spec.llm_spec.api_key,
+            api_key,
             spec.llm_spec.api_config,
         )
         .await?;
@@ -165,9 +172,9 @@ impl SimpleFunctionFactoryBase for Factory {
         self: Arc<Self>,
         spec: Spec,
         resolved_input_schema: Args,
-        _context: Arc<FlowInstanceContext>,
+        context: Arc<FlowInstanceContext>,
     ) -> Result<impl SimpleFunctionExecutor> {
-        Executor::new(spec, resolved_input_schema).await
+        Executor::new(spec, resolved_input_schema, &context.auth_registry).await
     }
 }
 

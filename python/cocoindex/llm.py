@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from .auth_registry import TransientAuthEntryReference
+
 
 class LlmApiType(Enum):
     """The type of LLM API to use."""
@@ -44,5 +46,5 @@ class LlmSpec:
     api_type: LlmApiType
     model: str
     address: str | None = None
-    api_key: str | None = None
+    api_key: TransientAuthEntryReference[str] | None = None
     api_config: VertexAiConfig | OpenAiConfig | None = None

@@ -64,7 +64,7 @@ def paper_metadata_flow(
 ```
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`).
-<DocumentationButton url="https://cocoindex.io/docs/ops/sources" text="Sources" margin="0 0 16px 0" />
+<DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" margin="0 0 16px 0" />
 
 ## Extract and collect metadata
 

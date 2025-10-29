@@ -45,7 +45,7 @@ pub struct LlmSpec {
     pub api_type: LlmApiType,
     pub address: Option<String>,
     pub model: String,
-    pub api_key: Option<String>,
+    pub api_key: Option<spec::AuthEntryReference<String>>,
     pub api_config: Option<LlmApiConfig>,
 }
 

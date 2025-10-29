@@ -1033,12 +1033,12 @@ impl AnalyzerContext {
 
 pub fn build_flow_instance_context(
     flow_inst_name: &str,
-    py_exec_ctx: Option<crate::py::PythonExecutionContext>,
+    py_exec_ctx: Option<Arc<crate::py::PythonExecutionContext>>,
 ) -> Arc<FlowInstanceContext> {
     Arc::new(FlowInstanceContext {
         flow_instance_name: flow_inst_name.to_string(),
         auth_registry: get_auth_registry().clone(),
-        py_exec_ctx: py_exec_ctx.map(Arc::new),
+        py_exec_ctx: py_exec_ctx,
     })
 }
 
@@ -1141,10 +1141,37 @@ pub async fn analyze_flow(
         declarations: declarations_analyzed_ss,
     };
 
-    let logic_fingerprint = Fingerprinter::default()
+    let legacy_fingerprint = Fingerprinter::default()
         .with(&flow_inst)?
         .with(&flow_schema.schema)?
         .into_fingerprint();
+
+    fn append_reactive_op_scope(
+        mut fingerprinter: Fingerprinter,
+        reactive_ops: &[NamedSpec<ReactiveOpSpec>],
+    ) -> Result<Fingerprinter> {
+        fingerprinter = fingerprinter.with(&reactive_ops.len())?;
+        for reactive_op in reactive_ops.iter() {
+            fingerprinter = fingerprinter.with(&reactive_op.name)?;
+            match &reactive_op.spec {
+                ReactiveOpSpec::Transform(_) => {}
+                ReactiveOpSpec::ForEach(foreach_op) => {
+                    fingerprinter = fingerprinter.with(&foreach_op.field_path)?;
+                    fingerprinter =
+                        append_reactive_op_scope(fingerprinter, &foreach_op.op_scope.ops)?;
+                }
+                ReactiveOpSpec::Collect(collect_op) => {
+                    fingerprinter = fingerprinter.with(collect_op)?;
+                }
+            }
+        }
+        Ok(fingerprinter)
+    }
+    let current_fingerprinter =
+        append_reactive_op_scope(Fingerprinter::default(), &flow_inst.reactive_ops)?
+            .with(&flow_inst.export_ops)?
+            .with(&flow_inst.declarations)?
+            .with(&flow_schema.schema)?;
     let plan_fut = async move {
         let (import_ops, op_scope, export_ops) = try_join3(
             try_join_all(import_ops_futs),
@@ -1153,8 +1180,40 @@ pub async fn analyze_flow(
         )
         .await?;
 
+        fn append_function_behavior(
+            mut fingerprinter: Fingerprinter,
+            reactive_ops: &[AnalyzedReactiveOp],
+        ) -> Result<Fingerprinter> {
+            for reactive_op in reactive_ops.iter() {
+                match reactive_op {
+                    AnalyzedReactiveOp::Transform(transform_op) => {
+                        fingerprinter = fingerprinter.with(&transform_op.name)?.with(
+                            &transform_op
+                                .function_exec_info
+                                .fingerprinter
+                                .clone()
+                                .into_fingerprint(),
+                        )?;
+                    }
+                    AnalyzedReactiveOp::ForEach(foreach_op) => {
+                        fingerprinter = append_function_behavior(
+                            fingerprinter,
+                            &foreach_op.op_scope.reactive_ops,
+                        )?;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(fingerprinter)
+        }
+        let current_fingerprint =
+            append_function_behavior(current_fingerprinter, &op_scope.reactive_ops)?
+                .into_fingerprint();
         Ok(ExecutionPlan {
-            logic_fingerprint,
+            logic_fingerprint: ExecutionPlanLogicFingerprint {
+                current: current_fingerprint,
+                legacy: legacy_fingerprint,
+            },
             import_ops,
             op_scope,
             export_ops,

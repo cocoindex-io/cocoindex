@@ -182,10 +182,15 @@ def extract_description(help_text: str) -> str:
             continue
         elif line.strip() in ["Options:", "Commands:"]:
             break
-        elif in_description and line.strip():
-            description_lines.append(line.strip())
+        elif in_description:
+            stripped = line.strip()
+            if stripped:
+                description_lines.append(stripped)
+            elif description_lines:  # Preserve blank line only if we have content
+                description_lines.append("")
 
-    description = "\n\n".join(description_lines) if description_lines else ""
+    # Simply join with single newline - let Markdown handle paragraph formatting naturally
+    description = "\n".join(description_lines) if description_lines else ""
     return escape_html_tags(description)  # Escape HTML tags for MDX compatibility
 
 

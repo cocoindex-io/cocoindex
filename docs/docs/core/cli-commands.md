@@ -7,10 +7,9 @@
 Drop the backend setup for flows.
 
 Modes of operation:
-
 1. Drop all flows defined in an app: `cocoindex drop <APP_TARGET>`
-
 2. Drop specific named flows: `cocoindex drop <APP_TARGET> [FLOW_NAME...]`
+
 
 **Usage:**
 
@@ -32,24 +31,17 @@ cocoindex drop [OPTIONS] [APP_TARGET] [FLOW_NAME]...
 Evaluate the flow and dump flow outputs to files.
 
 Instead of updating the index, it dumps what should be indexed to files.
-
 Mainly used for evaluation purpose.
 
-APP_FLOW_SPECIFIER: Specifies the application and optionally the target flow.
+`APP_FLOW_SPECIFIER`: Specifies the application and optionally the target flow. Can be one of the following formats:
+- `path/to/your_app.py`
+- `an_installed.module_name`
+- `path/to/your_app.py:SpecificFlowName`
+- `an_installed.module_name:SpecificFlowName`
 
-Can be one of the following formats:
-
-- path/to/your_app.py
-
-- an_installed.module_name
-
-- path/to/your_app.py:SpecificFlowName
-
-- an_installed.module_name:SpecificFlowName
-
-:SpecificFlowName can be omitted only if the application defines a single
-
+`:SpecificFlowName` can be omitted only if the application defines a single
 flow.
+
 
 **Usage:**
 
@@ -71,13 +63,12 @@ cocoindex evaluate [OPTIONS] APP_FLOW_SPECIFIER
 
 List all flows.
 
-If APP_TARGET (path/to/app.py or a module) is provided, lists flows defined
+If `APP_TARGET` (`path/to/app.py` or a module) is provided, lists flows
+defined in the app and their backend setup status.
 
-in the app and their backend setup status.
+If `APP_TARGET` is omitted, lists all flows that have a persisted setup in
+the backend.
 
-If APP_TARGET is omitted, lists all flows that have a persisted setup in the
-
-backend.
 
 **Usage:**
 
@@ -99,7 +90,8 @@ Start a HTTP server providing REST APIs.
 
 It will allow tools like CocoInsight to access the server.
 
-APP_TARGET: path/to/app.py or installed_module.
+`APP_TARGET`: `path/to/app.py` or `installed_module`.
+
 
 **Usage:**
 
@@ -116,7 +108,7 @@ cocoindex server [OPTIONS] APP_TARGET
 | `-ci, --cors-cocoindex` | Allow `https://cocoindex.io` to access the server. |
 | `-cl, --cors-local INTEGER` | Allow `http://localhost:<port>` to access the server. |
 | `-L, --live-update` | Continuously watch changes from data sources and apply to the target index. |
-| `--setup` | Automatically setup backends for the flow if it's not setup yet. |
+| `--setup` | (DEPRECATED) Automatically setup backends for the flow if it's not setup yet. This is now the default behavior.  [default: True] |
 | `--reset` | Drop existing setup before starting server (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`. |
 | `--reexport` | Reexport to targets even if there's no change. |
 | `-f, --force` | Force setup without confirmation prompts. |
@@ -129,10 +121,10 @@ cocoindex server [OPTIONS] APP_TARGET
 ### `setup`
 
 Check and apply backend setup changes for flows, including the internal
-
 storage and target (to export to).
 
-APP_TARGET: path/to/app.py or installed_module.
+`APP_TARGET`: `path/to/app.py` or `installed_module`.
+
 
 **Usage:**
 
@@ -154,21 +146,17 @@ cocoindex setup [OPTIONS] APP_TARGET
 
 Show the flow spec and schema.
 
-APP_FLOW_SPECIFIER: Specifies the application and optionally the target
-
+`APP_FLOW_SPECIFIER`: Specifies the application and optionally the target
 flow. Can be one of the following formats:
 
-- path/to/your_app.py
+- `path/to/your_app.py`
+- `an_installed.module_name`
+- `path/to/your_app.py:SpecificFlowName`
+- `an_installed.module_name:SpecificFlowName`
 
-- an_installed.module_name
-
-- path/to/your_app.py:SpecificFlowName
-
-- an_installed.module_name:SpecificFlowName
-
-:SpecificFlowName can be omitted only if the application defines a single
-
+`:SpecificFlowName` can be omitted only if the application defines a single
 flow.
+
 
 **Usage:**
 
@@ -190,9 +178,9 @@ cocoindex show [OPTIONS] APP_FLOW_SPECIFIER
 
 Update the index to reflect the latest data from data sources.
 
-APP_FLOW_SPECIFIER: path/to/app.py, module, path/to/app.py:FlowName, or
+`APP_FLOW_SPECIFIER`: `path/to/app.py`, module, `path/to/app.py:FlowName`,
+or `module:FlowName`. If `:FlowName` is omitted, updates all flows.
 
-module:FlowName. If :FlowName is omitted, updates all flows.
 
 **Usage:**
 
@@ -206,7 +194,7 @@ cocoindex update [OPTIONS] APP_FLOW_SPECIFIER
 |--------|-------------|
 | `-L, --live` | Continuously watch changes from data sources and apply to the target index. |
 | `--reexport` | Reexport to targets even if there's no change. |
-| `--setup` | Automatically setup backends for the flow if it's not setup yet. |
+| `--setup` | (DEPRECATED) Automatically setup backends for the flow if it's not setup yet. This is now the default behavior.  [default: True] |
 | `--reset` | Drop existing setup before updating (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`. |
 | `-f, --force` | Force setup without confirmation prompts. |
 | `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |

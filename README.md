@@ -122,6 +122,13 @@ pip install -U cocoindex
 
 2. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. CocoIndex uses it for incremental processing.
 
+3. (Optional) Install Claude Code skill for enhanced development experience. Run these commands in [Claude Code](https://claude.com/claude-code):
+
+```
+/plugin marketplace add cocoindex-io/cocoindex-claude
+/plugin install cocoindex-skills@cocoindex
+```
+
 ## Define data flow
 
 Follow [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart) to define your first indexing flow. An example flow looks like:
@@ -191,8 +198,10 @@ It defines an index flow like this:
 | [Face Recognition](examples/face_recognition) | Recognize faces in images and build embedding index |
 | [Paper Metadata](examples/paper_metadata) | Index papers in PDF files, and build metadata tables for each paper |
 | [Multi Format Indexing](examples/multi_format_indexing) | Build visual document index from PDFs and images with ColPali for semantic search |
+| [Custom Source HackerNews](examples/custom_source_hn) | Index HackerNews threads and comments, using *CocoIndex Custom Source* |
 | [Custom Output Files](examples/custom_output_files) | Convert markdown files to HTML files and save them to a local directory, using *CocoIndex Custom Targets* |
 | [Patient intake form extraction](examples/patient_intake_extraction) | Use LLM to extract structured data from patient intake forms with different formats |
+| [HackerNews Trending Topics](examples/hn_trending_topics) | Extract trending topics from HackerNews threads and comments, using *CocoIndex Custom Source* and LLM |
 
 More coming and stay tuned 👀!
 
