@@ -11,6 +11,7 @@ use futures::future::try_join_all;
 use indicatif::ProgressBar;
 use sqlx::PgPool;
 use tokio::{sync::watch, task::JoinSet, time::MissedTickBehavior};
+use tokio_util::task::AbortOnDropHandle;
 
 pub struct FlowLiveUpdaterUpdates {
     pub active_sources: Vec<String>,
@@ -364,7 +365,10 @@ impl SourceUpdateTask {
                     }
                 }
             };
-            (Some(tokio::spawn(report_task)), Some(pb))
+            (
+                Some(AbortOnDropHandle::new(tokio::spawn(report_task))),
+                Some(pb),
+            )
         } else {
             (None, None)
         };

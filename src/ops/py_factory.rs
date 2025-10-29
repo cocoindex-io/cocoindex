@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{prelude::*, py::future::from_py_future};
 
 use pyo3::{
     Bound, IntoPyObjectExt, Py, PyAny, Python, pyclass, pymethods,
@@ -93,10 +93,7 @@ impl interface::SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
             let result_coro = self.call_py_fn(py, input)?;
             let task_locals =
                 pyo3_async_runtimes::TaskLocals::new(self.py_exec_ctx.event_loop.bind(py).clone());
-            Ok(pyo3_async_runtimes::into_future_with_locals(
-                &task_locals,
-                result_coro,
-            )?)
+            Ok(from_py_future(py, &task_locals, result_coro)?)
         })?;
         let result = result_fut.await;
         Python::with_gil(|py| -> Result<_> {
@@ -188,7 +185,8 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                         let prepare_coro = executor
                             .call_method(py, "prepare", (), None)
                             .to_result_with_py_trace(py)?;
-                        let prepare_fut = pyo3_async_runtimes::into_future_with_locals(
+                        let prepare_fut = from_py_future(
+                            py,
                             &pyo3_async_runtimes::TaskLocals::new(
                                 py_exec_ctx.event_loop.bind(py).clone(),
                             ),
@@ -294,7 +292,8 @@ impl interface::SourceExecutor for PySourceExecutor {
                 .to_result_with_py_trace(py)?;
             let task_locals =
                 pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
-            Ok(pyo3_async_runtimes::into_future_with_locals(
+            Ok(from_py_future(
+                py,
                 &task_locals,
                 result_coro.into_bound(py),
             )?)
@@ -333,10 +332,7 @@ impl PySourceExecutor {
                 .to_result_with_py_trace(py)?;
             let task_locals =
                 pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
-            Ok(pyo3_async_runtimes::into_future_with_locals(
-                &task_locals,
-                coro.into_bound(py),
-            )?)
+            Ok(from_py_future(py, &task_locals, coro.into_bound(py))?)
         })?;
 
         // Await the future to get the next item
@@ -523,10 +519,7 @@ impl interface::SourceFactory for PySourceConnectorFactory {
                     .to_result_with_py_trace(py)?;
                 let task_locals =
                     pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
-                let create_future = pyo3_async_runtimes::into_future_with_locals(
-                    &task_locals,
-                    create_coro.into_bound(py),
-                )?;
+                let create_future = from_py_future(py, &task_locals, create_coro.into_bound(py))?;
                 Ok(create_future)
             })?;
 
@@ -671,7 +664,8 @@ impl interface::TargetFactory for PyExportTargetFactory {
                         let task_locals = pyo3_async_runtimes::TaskLocals::new(
                             py_exec_ctx.event_loop.bind(py).clone(),
                         );
-                        anyhow::Ok(pyo3_async_runtimes::into_future_with_locals(
+                        anyhow::Ok(from_py_future(
+                            py,
                             &task_locals,
                             prepare_coro.into_bound(py),
                         )?)
@@ -807,7 +801,8 @@ impl interface::TargetFactory for PyExportTargetFactory {
                 .to_result_with_py_trace(py)?;
             let task_locals =
                 pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
-            Ok(pyo3_async_runtimes::into_future_with_locals(
+            Ok(from_py_future(
+                py,
                 &task_locals,
                 result_coro.into_bound(py),
             )?)
@@ -867,7 +862,8 @@ impl interface::TargetFactory for PyExportTargetFactory {
                 .to_result_with_py_trace(py)?;
             let task_locals =
                 pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
-            Ok(pyo3_async_runtimes::into_future_with_locals(
+            Ok(from_py_future(
+                py,
                 &task_locals,
                 result_coro.into_bound(py),
             )?)

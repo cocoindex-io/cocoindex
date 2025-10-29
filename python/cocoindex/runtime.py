@@ -56,11 +56,13 @@ class _ExecutionContext:
                 RuntimeWarning,
                 stacklevel=2,
             )
-            fut = asyncio.run_coroutine_threadsafe(coro, loop)
-            return fut.result()
 
         fut = asyncio.run_coroutine_threadsafe(coro, loop)
-        return fut.result()
+        try:
+            return fut.result()
+        except KeyboardInterrupt:
+            fut.cancel()
+            raise
 
 
 execution_context = _ExecutionContext()

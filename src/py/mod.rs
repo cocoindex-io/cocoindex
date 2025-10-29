@@ -21,6 +21,7 @@ use std::sync::Arc;
 
 mod convert;
 pub(crate) use convert::*;
+pub mod future;
 
 pub struct PythonExecutionContext {
     pub event_loop: Py<PyAny>,
@@ -478,7 +479,8 @@ impl Flow {
                     let task_locals = pyo3_async_runtimes::TaskLocals::new(
                         py_exec_ctx.event_loop.bind(py).clone(),
                     );
-                    Ok(pyo3_async_runtimes::into_future_with_locals(
+                    Ok(future::from_py_future(
+                        py,
                         &task_locals,
                         result_coro.into_bound(py),
                     )?)
