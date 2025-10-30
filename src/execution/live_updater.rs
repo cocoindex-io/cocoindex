@@ -145,7 +145,6 @@ impl SourceUpdateTask {
             futs.push(
                 {
                     let change_stream_stats = change_stream_stats.clone();
-                    let pool = self.pool.clone();
                     let status_tx = self.status_tx.clone();
                     let operation_in_process_stats = self.operation_in_process_stats.clone();
                     async move {
@@ -230,7 +229,6 @@ impl SourceUpdateTask {
                                         Some(move || async move {
                                             SharedAckFn::ack(&shared_ack_fn).await
                                         }),
-                                        pool.clone(),
                                     ),
                                 );
                             }
@@ -267,7 +265,7 @@ impl SourceUpdateTask {
             async move {
                 let refresh_interval = import_op.refresh_options.refresh_interval;
 
-                task.update_with_pass_with_error_logging(
+                task.update_one_pass_with_error_logging(
                     source_indexing_context,
                     if refresh_interval.is_some() {
                         "initial interval update"
@@ -285,7 +283,7 @@ impl SourceUpdateTask {
                     loop {
                         interval.tick().await;
 
-                        task.update_with_pass_with_error_logging(
+                        task.update_one_pass_with_error_logging(
                             source_indexing_context,
                             "interval update",
                             super::source_indexer::UpdateOptions {
@@ -375,7 +373,7 @@ impl SourceUpdateTask {
 
         // Run the actual update
         let update_result = source_indexing_context
-            .update(&self.pool, &update_stats, update_options)
+            .update(&update_stats, update_options)
             .await
             .with_context(|| {
                 format!(
@@ -409,7 +407,7 @@ impl SourceUpdateTask {
         Ok(())
     }
 
-    async fn update_with_pass_with_error_logging(
+    async fn update_one_pass_with_error_logging(
         &self,
         source_indexing_context: &Arc<SourceIndexingContext>,
         update_title: &str,

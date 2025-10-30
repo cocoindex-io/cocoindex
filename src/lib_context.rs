@@ -84,7 +84,7 @@ impl FlowExecutionContext {
     ) -> Result<&Arc<SourceIndexingContext>> {
         self.source_indexing_contexts[source_idx]
             .get_or_try_init(|| async move {
-                anyhow::Ok(Arc::new(
+                anyhow::Ok(
                     SourceIndexingContext::load(
                         flow.clone(),
                         source_idx,
@@ -92,7 +92,7 @@ impl FlowExecutionContext {
                         pool,
                     )
                     .await?,
-                ))
+                )
             })
             .await
     }
