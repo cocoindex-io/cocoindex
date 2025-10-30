@@ -79,6 +79,15 @@ pub struct ResidualErrorData {
 #[derive(Clone)]
 pub struct ResidualError(Arc<ResidualErrorData>);
 
+impl ResidualError {
+    pub fn new<Err: Display + Debug>(err: &Err) -> Self {
+        Self(Arc::new(ResidualErrorData {
+            message: err.to_string(),
+            debug: err.to_string(),
+        }))
+    }
+}
+
 impl Display for ResidualError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{}", self.0.message)
@@ -116,10 +125,7 @@ impl SharedError {
             SharedErrorState::ResidualErrorMessage(err) => {
                 return anyhow::Error::from(err.clone());
             }
-            SharedErrorState::Anyhow(err) => ResidualError(Arc::new(ResidualErrorData {
-                message: format!("{}", err),
-                debug: format!("{:?}", err),
-            })),
+            SharedErrorState::Anyhow(err) => ResidualError::new(err),
         };
         let orig_state = std::mem::replace(
             mut_state,
