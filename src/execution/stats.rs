@@ -193,53 +193,109 @@ impl OperationInProcessStats {
 
 impl std::fmt::Display for UpdateStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut messages = Vec::new();
-        let num_errors = self.num_errors.get();
-        if num_errors > 0 {
-            messages.push(format!("{num_errors} source rows FAILED"));
-        }
-
-        let num_skipped = self.num_no_change.get();
-        if num_skipped > 0 {
-            messages.push(format!("{num_skipped} source rows NO CHANGE"));
-        }
-
+        let mut segments = Vec::new();
         let num_insertions = self.num_insertions.get();
         let num_deletions = self.num_deletions.get();
         let num_updates = self.num_updates.get();
-        let num_reprocesses = self.num_reprocesses.get();
-        let num_source_rows = num_insertions + num_deletions + num_updates + num_reprocesses;
-        if num_source_rows > 0 {
-            let mut sub_messages = Vec::new();
+        let num_no_change = self.num_no_change.get();
+        let num_errors = self.num_errors.get();
+        let num_in_process = self.processing.get_in_process();
+        let total = num_insertions + num_deletions + num_updates + num_no_change;
+
+        // Progress bar segments
+        if total > 0 {
             if num_insertions > 0 {
-                sub_messages.push(format!("{num_insertions} ADDED"));
+                segments.push((num_insertions, "+", format!("\x1B[90m(+{} added)\x1B[0m", num_insertions)));
             }
             if num_deletions > 0 {
-                sub_messages.push(format!("{num_deletions} REMOVED"));
-            }
-            if num_reprocesses > 0 {
-                sub_messages.push(format!(
-                    "{num_reprocesses} REPROCESSED on flow/logic changes or reexport"
-                ));
+                segments.push((num_deletions, "-", format!("\x1B[90m(-{} removed)\x1B[0m", num_deletions)));
             }
             if num_updates > 0 {
-                sub_messages.push(format!("{num_updates} UPDATED in source content only"));
+                segments.push((num_updates, "~", format!("\x1B[90m(~{} updated)\x1B[0m", num_updates)));
             }
-            messages.push(format!(
-                "{num_source_rows} source rows processed ({})",
-                sub_messages.join(", "),
-            ));
+            if num_no_change > 0 {
+                segments.push((num_no_change, " ", "".to_string()));
+            }
         }
 
-        let num_in_process = self.processing.get_in_process();
-        if num_in_process > 0 {
-            messages.push(format!("{num_in_process} source rows IN PROCESS"));
+        // Error handling
+        if num_errors > 0 {
+            write!(f, "{} rows failed", num_errors)?;
+            if !segments.is_empty() {
+                write!(f, "; ")?;
+            }
         }
 
-        if !messages.is_empty() {
-            write!(f, "{}", messages.join("; "))?;
+        // Progress bar
+        if !segments.is_empty() {
+            let mut sorted_segments = segments.clone();
+            sorted_segments.sort_by_key(|s| s.0);
+            sorted_segments.reverse();
+
+            let bar_width = 40;
+            let mut bar = String::new();
+
+            let percentage = ((total - num_in_process) as f64 / total as f64 * 100.0) as i64;
+            let mut remaining_width = bar_width;
+
+            for (count, segment_type, _) in sorted_segments.iter() {
+                let segment_width = (*count * bar_width as i64 / total as i64) as usize;
+                let width = std::cmp::min(segment_width, remaining_width);
+                if width > 0 {
+                    // Calculate completed and remaining portions
+                    let completed_portion = (width as f64 * (total - num_in_process) as f64 / total as f64) as usize;
+                    let remaining_portion = width - completed_portion;
+
+                    // Add segment with appropriate characters based on type
+                    if completed_portion > 0 {
+                        let completed_char = match *segment_type {
+                            "+" => "█",
+                            "-" => "▓",
+                            "~" => "▒",
+                            _ => "░"
+                        };
+                        bar.push_str(&completed_char.repeat(completed_portion));
+                    }
+
+                    if remaining_portion > 0 {
+                        let remaining_char = match *segment_type {
+                            "+" => "▒",
+                            "-" => "░",
+                            "~" => "░",
+                            _ => " "
+                        };
+                        bar.push_str(&remaining_char.repeat(remaining_portion));
+                    }
+
+                    remaining_width = remaining_width.saturating_sub(width);
+                }
+            }
+            if remaining_width > 0 {
+                bar.push_str(&" ".repeat(remaining_width));
+            }
+            write!(f, "[{}] {}/{} records ", bar, total - num_in_process, total)?;
+
+            // Add segment labels
+            let mut first = true;
+            for (_, _, label) in segments.iter() {
+                if !label.is_empty() {
+                    if !first {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}", label)?;
+                    first = false;
+                }
+            }
         } else {
             write!(f, "No changes")?;
+        }
+
+        // In-process info
+        if num_in_process > 0 {
+            if !segments.is_empty() {
+                write!(f, " ")?;
+            }
+            write!(f, "({} in process)", num_in_process)?;
         }
 
         Ok(())
