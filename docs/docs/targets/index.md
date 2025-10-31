@@ -334,6 +334,3 @@ You can find end-to-end examples fitting into any of supported property graphs i
 *   <ExampleButton href="https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph" text="Docs to Knowledge Graph" margin="0 0 16px 0" />
 
 *   <ExampleButton href="https://github.com/cocoindex-io/cocoindex/tree/main/examples/product_recommendation" text="Product Recommendation" margin="0 0 16px 0" />
-
-
-
