@@ -75,18 +75,12 @@ impl LlmEmbeddingClient for Client {
             payload["input_type"] = serde_json::Value::String(task_type.into());
         }
 
-        let resp = retryable::run(
-            || async {
-                self.client
-                    .post(url)
-                    .header("Authorization", format!("Bearer {}", self.api_key))
-                    .json(&payload)
-                    .send()
-                    .await?
-                    .error_for_status()
-            },
-            &retryable::HEAVY_LOADED_OPTIONS,
-        )
+        let resp = http::request(|| {
+            self.client
+                .post(url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .json(&payload)
+        })
         .await
         .context("Voyage AI API error")?;
 

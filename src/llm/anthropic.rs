@@ -88,19 +88,13 @@ impl LlmGenerationClient for Client {
 
         let encoded_api_key = encode(&self.api_key);
 
-        let resp = retryable::run(
-            || async {
-                self.client
-                    .post(url)
-                    .header("x-api-key", encoded_api_key.as_ref())
-                    .header("anthropic-version", "2023-06-01")
-                    .json(&payload)
-                    .send()
-                    .await?
-                    .error_for_status()
-            },
-            &retryable::HEAVY_LOADED_OPTIONS,
-        )
+        let resp = http::request(|| {
+            self.client
+                .post(url)
+                .header("x-api-key", encoded_api_key.as_ref())
+                .header("anthropic-version", "2023-06-01")
+                .json(&payload)
+        })
         .await
         .context("Anthropic API error")?;
 

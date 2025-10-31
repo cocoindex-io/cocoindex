@@ -106,22 +106,16 @@ impl LlmGenerationClient for Client {
 
         let encoded_api_key = encode(&self.api_key);
 
-        let resp = retryable::run(
-            || async {
-                self.client
-                    .post(&url)
-                    .header(
-                        "Authorization",
-                        format!("Bearer {}", encoded_api_key.as_ref()),
-                    )
-                    .header("Content-Type", "application/json")
-                    .json(&payload)
-                    .send()
-                    .await?
-                    .error_for_status()
-            },
-            &retryable::HEAVY_LOADED_OPTIONS,
-        )
+        let resp = http::request(|| {
+            self.client
+                .post(&url)
+                .header(
+                    "Authorization",
+                    format!("Bearer {}", encoded_api_key.as_ref()),
+                )
+                .header("Content-Type", "application/json")
+                .json(&payload)
+        })
         .await
         .context("Bedrock API error")?;
 

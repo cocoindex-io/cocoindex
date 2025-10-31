@@ -4,6 +4,7 @@ pub mod concur_control;
 pub mod db;
 pub mod deser;
 pub mod fingerprint;
+pub mod http;
 pub mod immutable;
 pub mod retryable;
 pub mod str_sanitize;
