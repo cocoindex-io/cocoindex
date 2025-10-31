@@ -10,7 +10,11 @@ use crate::base::schema::*;
 use crate::base::spec::*;
 use crate::builder::plan::AnalyzedValueMapping;
 use crate::setup;
-// SourceFactoryBase
+
+////////////////////////////////////////////////////////
+// Op Args
+////////////////////////////////////////////////////////
+
 pub struct OpArgResolver<'arg> {
     name: String,
     resolved_op_arg: Option<(usize, EnrichedValueType)>,
@@ -204,6 +208,10 @@ impl<'a> OpArgsResolver<'a> {
     }
 }
 
+////////////////////////////////////////////////////////
+// Source
+////////////////////////////////////////////////////////
+
 #[async_trait]
 pub trait SourceFactoryBase: SourceFactory + Send + Sync + 'static {
     type Spec: DeserializeOwned + Send + Sync;
@@ -254,7 +262,9 @@ impl<T: SourceFactoryBase> SourceFactory for T {
     }
 }
 
-// SimpleFunctionFactoryBase
+////////////////////////////////////////////////////////
+// Function
+////////////////////////////////////////////////////////
 
 #[async_trait]
 pub trait SimpleFunctionFactoryBase: SimpleFunctionFactory + Send + Sync + 'static {
@@ -354,6 +364,70 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
         Ok((output_schema, Box::pin(executor)))
     }
 }
+
+#[async_trait]
+pub trait BatchedFunctionExecutor: Send + Sync + Sized + 'static {
+    async fn evaluate_batch(&self, args: Vec<Vec<value::Value>>) -> Result<Vec<value::Value>>;
+
+    fn enable_cache(&self) -> bool {
+        false
+    }
+
+    fn behavior_version(&self) -> Option<u32> {
+        None
+    }
+
+    fn into_fn_executor(self) -> Box<dyn SimpleFunctionExecutor> {
+        Box::new(BatchedFunctionExecutorWrapper::new(self))
+    }
+}
+
+#[async_trait]
+impl<E: BatchedFunctionExecutor> batching::Runner for E {
+    type Input = Vec<value::Value>;
+    type Output = value::Value;
+
+    async fn run(
+        &self,
+        inputs: Vec<Self::Input>,
+    ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
+        Ok(self.evaluate_batch(inputs).await?.into_iter())
+    }
+}
+
+struct BatchedFunctionExecutorWrapper<E: BatchedFunctionExecutor> {
+    batcher: batching::Batcher<E>,
+    enable_cache: bool,
+    behavior_version: Option<u32>,
+}
+
+impl<E: BatchedFunctionExecutor> BatchedFunctionExecutorWrapper<E> {
+    fn new(executor: E) -> Self {
+        Self {
+            enable_cache: executor.enable_cache(),
+            behavior_version: executor.behavior_version(),
+            batcher: batching::Batcher::new(executor),
+        }
+    }
+}
+
+#[async_trait]
+impl<E: BatchedFunctionExecutor> SimpleFunctionExecutor for BatchedFunctionExecutorWrapper<E> {
+    async fn evaluate(&self, args: Vec<value::Value>) -> Result<value::Value> {
+        self.batcher.run(args).await
+    }
+
+    fn enable_cache(&self) -> bool {
+        self.enable_cache
+    }
+    fn behavior_version(&self) -> Option<u32> {
+        self.behavior_version
+    }
+}
+
+////////////////////////////////////////////////////////
+// Target
+////////////////////////////////////////////////////////
 
 pub struct TypedExportDataCollectionBuildOutput<F: TargetFactoryBase + ?Sized> {
     pub export_context: BoxFuture<'static, Result<Arc<F::ExportContext>>>,
@@ -635,6 +709,10 @@ fn from_json_combined_state<T: Debug + Clone + Serialize + DeserializeOwned>(
         legacy_state_key: existing_states.legacy_state_key,
     })
 }
+
+////////////////////////////////////////////////////////
+// Target Attachment
+////////////////////////////////////////////////////////
 
 pub struct TypedTargetAttachmentState<F: TargetSpecificAttachmentFactoryBase + ?Sized> {
     pub setup_key: F::SetupKey,

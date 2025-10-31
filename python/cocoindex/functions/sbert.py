@@ -31,6 +31,7 @@ class SentenceTransformerEmbed(op.FunctionSpec):
 @op.executor_class(
     gpu=True,
     cache=True,
+    batching=True,
     behavior_version=1,
     arg_relationship=(op.ArgRelationship.EMBEDDING_ORIGIN_TEXT, "text"),
 )
@@ -57,7 +58,9 @@ class SentenceTransformerEmbedExecutor:
         dim = self._model.get_sentence_embedding_dimension()
         return Vector[np.float32, Literal[dim]]  # type: ignore
 
-    def __call__(self, text: str) -> NDArray[np.float32]:
+    def __call__(self, text: list[str]) -> list[NDArray[np.float32]]:
         assert self._model is not None
-        result: NDArray[np.float32] = self._model.encode(text, convert_to_numpy=True)
-        return result
+        results: list[NDArray[np.float32]] = self._model.encode(
+            text, convert_to_numpy=True
+        )
+        return results
