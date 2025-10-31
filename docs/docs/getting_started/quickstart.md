@@ -10,8 +10,8 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../src/comp
 
 In this tutorial, we’ll build an index with text embeddings, keeping it minimal and focused on the core indexing flow.
 
-
 ## Flow Overview
+
 ![Flow](/img/examples/simple_vector_index/flow.png)
 
 1. Read text files from the local filesystem
@@ -19,25 +19,24 @@ In this tutorial, we’ll build an index with text embeddings, keeping it minima
 3. For each chunk, embed it with a text embedding model
 4. Store the embeddings in a vector database for retrieval
 
-
 ## Setup
-1.  Install CocoIndex:
+
+1. Install CocoIndex:
 
     ```bash
     pip install -U 'cocoindex[embeddings]'
     ```
 
-2.  [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
+2. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
 
-3.  Create a new directory for your project:
+3. Create a new directory for your project:
 
     ```bash
     mkdir cocoindex-quickstart
     cd cocoindex-quickstart
     ```
 
-4.  Place input files in a directory `markdown_files`. You may download from [markdown_files.zip](markdown_files.zip).
-
+4. Place input files in a directory `markdown_files`. You may download from [markdown_files.zip](markdown_files.zip).
 
 ## Define a flow
 
@@ -51,7 +50,7 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
     # ... See subsections below for function body
 ```
 
-###  Add Source and Collector
+### Add Source and Collector
 
 ```python title="main.py"
 # add source
@@ -77,7 +76,6 @@ with data_scope["documents"].row() as doc:
     # ... See subsections below for function body
 ```
 
-
 #### Chunk each document
 
 ```python title="main.py"
@@ -91,8 +89,6 @@ We extend a new field `chunks` to each row by *transforming* the `content` field
 <DocumentationButton url="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" margin="0 0 16px 0" />
 
 ![Chunking](/img/examples/simple_vector_index/chunk.png)
-
-
 
 #### Embed each chunk and collect the embeddings
 
@@ -140,7 +136,6 @@ CocoIndex supports other vector databases as well, with 1-line switch.
 
 <DocumentationButton url="https://cocoindex.io/docs/targets" text="Targets" />
 
-
 ## Run the indexing pipeline
 
 - Specify the database URL by environment variable:
@@ -152,7 +147,7 @@ CocoIndex supports other vector databases as well, with 1-line switch.
 - Build the index:
 
     ```bash
-    cocoindex update --setup main
+    cocoindex update main
     ```
 
 CocoIndex will run for a few seconds and populate the target table with data as declared by the flow. It will output the following statistics:
@@ -163,15 +158,13 @@ documents: 3 added, 0 removed, 0 updated
 
 That's it for the main indexing flow.
 
-
 ## End to end: Query the index (Optional)
 
 If you want to build a end to end query flow that also searches the index, you can follow the [simple_vector_index](https://cocoindex.io/docs/examples/simple_vector_index#query-the-index) example.
-
 
 ## Next Steps
 
 Next, you may want to:
 
-*   Learn about [CocoIndex Basics](../core/basics.md).
-*   Explore more of what you can build with CocoIndex in the [examples](https://cocoindex.io/docs/examples) directory.
+- Learn about [CocoIndex Basics](../core/basics.md).
+- Explore more of what you can build with CocoIndex in the [examples](https://cocoindex.io/docs/examples) directory.

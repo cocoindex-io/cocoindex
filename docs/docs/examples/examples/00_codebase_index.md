@@ -19,9 +19,11 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 ![Codebase Index](/img/examples/codebase_index/cover.png)
 
 ## Overview
+
 In this tutorial, we will build codebase index. [CocoIndex](https://github.com/cocoindex-io/cocoindex) provides built-in support for codebase chunking, with native Tree-sitter support. It works with large codebases, and can be updated in near real-time with incremental processing - only reprocess what's changed.
 
 ## Use Cases
+
 A wide range of applications can be built with an effective codebase index that is always up-to-date.
 
 - Semantic code context for AI coding agents like Claude, Codex, Gemini CLI.
@@ -45,13 +47,16 @@ The flow is composed of the following steps:
 - Store in a vector database for retrieval
 
 ## Setup
+
 - Install Postgres, follow [installation guide](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
 - Install CocoIndex
+
   ```bash
   pip install -U cocoindex
   ```
 
-## Add the codebase as a source.
+## Add the codebase as a source
+
 We will index the CocoIndex codebase. Here we use the `LocalFile` source to ingest files from the CocoIndex codebase root directory.
 
 ```python
@@ -72,7 +77,6 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`).
 <DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" />
 
-
 ## Process each file and collect the information
 
 ### Extract the extension of a filename
@@ -90,6 +94,7 @@ def extract_extension(filename: str) -> str:
 <DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_functions" text="Custom Function" margin="0 0 16px 0" />
 
 ### Split the file into chunks
+
 We use the `SplitRecursively` function to split the file into chunks.  `SplitRecursively` is CocoIndex building block, with native integration with Tree-sitter. You need to pass in the language to the `language` parameter if you are processing code.
 
 ```python
@@ -100,11 +105,13 @@ with data_scope["files"].row() as file:
           cocoindex.functions.SplitRecursively(),
           language=file["extension"], chunk_size=1000, chunk_overlap=300)
 ```
+
 <DocumentationButton url="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" margin="0 0 16px 0" />
 
 ![SplitRecursively](/img/examples/codebase_index/chunk.png)
 
 ### Embed the chunks
+
 We use `SentenceTransformerEmbed` to embed the chunks.
 
 ```python
@@ -146,6 +153,7 @@ code_embeddings.export(
 We use [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity) to measure the similarity between the query and the indexed data.
 
 ## Query the index
+
 We match against user-provided text by a SQL query, reusing the embedding operation in the indexing flow.
 
 ```python
@@ -197,18 +205,21 @@ if __name__ == "__main__":
 ## Run the index setup & update
 
 - Install dependencies
+
     ```bash
     pip install -e .
     ```
 
 - Setup and update the index
+
     ```sh
-    cocoindex update --setup main
+    cocoindex update main
     ```
+
     You'll see the index updates state in the terminal
 
-
 ## Test the query
+
 At this point, you can start the CocoIndex server and develop your RAG runtime against the data. To test your index, you could
 
 ``` bash
@@ -219,14 +230,15 @@ When you see the prompt, you can enter your search query. for example: spec.
 The returned results - each entry contains score (Cosine Similarity), filename, and the code snippet that get matched.
 
 ## CocoInsight
+
 To get a better understanding of the indexing flow, you can use CocoInsight to help the development step by step.
 To spin up, it is super easy.
 
 ```
 cocoindex server main.py -ci
 ```
-Follow the url from the terminal - `https://cocoindex.io/cocoinsight` to access the CocoInsight.
 
+Follow the url from the terminal - `https://cocoindex.io/cocoinsight` to access the CocoInsight.
 
 ## Supported Languages
 

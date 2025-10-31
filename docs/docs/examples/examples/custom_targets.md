@@ -20,7 +20,6 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 
 Let’s walk through a simple example—exporting `.md` files as `.html` using a custom file-based target. This project monitors folder changes and continuously converts markdown to HTML incrementally. The overall flow is simple and primarily focuses on how to configure your custom target.
 
-
 ## Ingest files
 
 Ingest a list of markdown files:
@@ -30,11 +29,12 @@ Ingest a list of markdown files:
 def custom_output_files(
 flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
-	data_scope["documents"] = flow_builder.add_source(
-		cocoindex.sources.LocalFile(path="data", included_patterns=["*.md"]),
-		refresh_interval=timedelta(seconds=5),
-	)
+ data_scope["documents"] = flow_builder.add_source(
+  cocoindex.sources.LocalFile(path="data", included_patterns=["*.md"]),
+  refresh_interval=timedelta(seconds=5),
+ )
 ```
+
 This ingestion creates a table with `filename` and `content` fields.
 <DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" />
 
@@ -58,10 +58,10 @@ with data_scope["documents"].row() as doc:
     doc["html"] = doc["content"].transform(markdown_to_html)
     output_html.collect(filename=doc["filename"], html=doc["html"])
 ```
+
 ![Convert markdown to html](/img/examples/custom_targets/convert.png)
 
-
-##  Define the custom target
+## Define the custom target
 
 ### Define the target spec
 
@@ -73,7 +73,6 @@ The target spec contains a directory for output files:
 class LocalFileTarget(cocoindex.op.TargetSpec):
     directory: str
 ```
-
 
 ### Implement the connector
 
@@ -110,7 +109,6 @@ and the method is expected to update the backend setup to match the current stat
 A `None` spec indicates non-existence, so when `previous` is `None`, we need to create it,
 and when `current` is `None`, we need to delete it.
 
-
 ```python
 @staticmethod
 def apply_setup_change(
@@ -140,6 +138,7 @@ batching mutations to potentially multiple targets of the same type.
 This allows the target connector flexibility in implementation (e.g., atomic commits, or processing items with dependencies in a specific order).
 
 Each element in the batch corresponds to a specific target and is represented by a tuple containing:
+
 - the target specification
 - all mutations for the target, represented by a `dict` mapping primary keys to value fields. Value fields can be represented by a dataclass—`LocalFileTargetValues` in this case:
 
@@ -192,7 +191,7 @@ output_html.export(
 
 ```bash
 pip install -e .
-cocoindex update --setup main
+cocoindex update main
 ```
 
 You can add, modify, or remove files in the `data/` directory — CocoIndex will only reprocess the changed files and update the target accordingly.
@@ -200,7 +199,7 @@ You can add, modify, or remove files in the `data/` directory — CocoIndex will
 For **real-time updates**, run in live mode:
 
 ```bash
-cocoindex update --setup -L main.py
+cocoindex update -L main.py
 ```
 
 This keeps your knowledge graph continuously synchronized with your document source — perfect for fast-changing environments like internal wikis or technical documentation.
@@ -214,8 +213,10 @@ This keeps your knowledge graph continuously synchronized with your document sou
 ## Why Custom Targets?
 
 ### Integration with internal system
+
 Sometimes there may be an internal/homegrown tool or API (e.g. within a company) that's not publicly available.
 These can only be connected through custom targets.
 
 ### Faster adoption of new export logic
+
 When a new tool, database, or API joins your stack, simply define a Target Spec and Target Connector — start exporting right away, with no pipeline refactoring required.

@@ -6,13 +6,14 @@ We will use Graph to explore the relationships between products that can be furt
 
 Please drop [CocoIndex on Github](https://github.com/cocoindex-io/cocoindex) a star to support us and stay tuned for more updates. Thank you so much 🥥🤗. [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
-
 ## Prerequisite
-*   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres)
-*   Install [Neo4j](https://cocoindex.io/docs/targets/neo4j)
-*   [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).
+
+* [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres)
+* Install [Neo4j](https://cocoindex.io/docs/targets/neo4j)
+* [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).
 
 ## Documentation
+
 You can read the official CocoIndex Documentation for Property Graph Targets [here](https://cocoindex.io/docs/targets#property-graph-targets).
 
 ## Run
@@ -23,12 +24,6 @@ Install dependencies:
 
 ```bash
 pip install -e .
-```
-
-Setup:
-
-```bash
-cocoindex setup main
 ```
 
 Update index:
@@ -52,6 +47,7 @@ MATCH p=()-->() RETURN p
 ![Neo4j Browser Screenshot](img/neo4j.png)
 
 ## CocoInsight
+
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
@@ -59,6 +55,6 @@ It just connects to your local CocoIndex server, with Zero pipeline data retenti
 cocoindex server -ci main
 ```
 
-And then open the url https://cocoindex.io/cocoinsight.
+And then open the url <https://cocoindex.io/cocoinsight>.
 
 ![CocoInsight Screenshot](img/cocoinsight.png)
