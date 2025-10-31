@@ -18,11 +18,12 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 ![Simple Vector Index](/img/examples/simple_vector_index/cover.png)
 
 ## Overview
+
 In this tutorial, we will build index with text embeddings and query it with natural language.
 We try to keep it minimalistic and focus on the gist of the indexing flow.
 
-
 ## Flow Overview
+
 ![Flow](/img/examples/simple_vector_index/flow.png)
 
 1. Read text files from the local filesystem
@@ -34,7 +35,6 @@ We try to keep it minimalistic and focus on the gist of the indexing flow.
 
 - [Install Postgres](https://cocoindex.io/docs/getting_started/installation).
 CocoIndex uses Postgres to keep track of data lineage for incremental processing.
-
 
 ## Add Source
 
@@ -52,7 +52,6 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`)
 <DocumentationButton url="https://cocoindex.io/docs/sources" text="Source" />
-
 
 ## Process each file and collect the embeddings
 
@@ -102,6 +101,7 @@ doc_embeddings.export(
             field_name="embedding",
             metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
 ```
+
 CocoIndex supports other vector databases as well, with 1-line switch.
 <DocumentationButton url="https://cocoindex.io/docs/targets" text="Targets" />
 
@@ -141,7 +141,6 @@ This decorator marks this as a reusable transformation flow that can be called o
 CocoIndex doesn't provide additional query interface at the moment. We can write SQL or rely on the query engine by the target storage, if any.
 
 <DocumentationButton url="https://cocoindex.io/docs/targets/postgres" text="Postgres" margin="0 0 16px 0" />
-
 
 ```python
 def search(pool: ConnectionPool, query: str, top_k: int = 5):
@@ -189,34 +188,32 @@ if __name__ == "__main__":
 In the function above, most parts are standard query logic - you can use any libraries you like.
 There're two CocoIndex-specific logic:
 
-1.  Get the table name from the export target in the `text_embedding_flow` above.
+1. Get the table name from the export target in the `text_embedding_flow` above.
     Since the table name for the `Postgres` target is not explicitly specified in the `export()` call,
     CocoIndex uses a default name.
     `cocoindex.utils.get_target_default_name()` is a utility function to get the default table name for this case.
 
-2.  Evaluate the transform flow defined above with the input query, to get the embedding.
+2. Evaluate the transform flow defined above with the input query, to get the embedding.
     It's done by the `eval()` method of the transform flow `text_to_embedding`.
     The return type of this method is `NDArray[np.float32]` as declared in the `text_to_embedding()` function (`cocoindex.DataSlice[NDArray[np.float32]]`).
 
+## Time to have fun
 
-
-## Time to have fun!
 - Run the following command to setup and update the index.
 
     ```sh
-    cocoindex update --setup main
+    cocoindex update main
     ```
 
 - Start the interactive query in terminal.
+
     ```sh
     python main.py
     ```
 
-
 ## CocoInsight
 
 You can walk through the project step by step in [CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk) to see exactly how each field is constructed and what happens behind the scenes.
-
 
 ```sh
 cocoindex server -ci main

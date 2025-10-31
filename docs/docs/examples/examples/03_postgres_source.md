@@ -12,20 +12,20 @@ tags: [data-mapping, vector-index, postgres]
 ---
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/postgres_source" margin="0 0 24px 0" /
+<GitHubButton url="<https://github.com/cocoindex-io/cocoindex/tree/main/examples/postgres_source>" margin="0 0 24px 0" /
 >
 ![PostgreSQL Product Indexing Flow](/img/examples/postgres_source/cover.png)
 
 [CocoIndex](https://github.com/cocoindex-io/cocoindex) is one framework for building **incremental** data flows across **structured and unstructured** sources. This tutorial shows how to take data from PostgreSQL table as source, transform with both AI and non-AI data mappings, and write them into a new PostgreSQL table with PgVector for semantic + structured search.
 
 ## PostgreSQL Product Indexing Flow
+
 ![PostgreSQL Product Indexing Flow](/img/examples/postgres_source/flow.png)
 
 - Reading data from a PostgreSQL table `source_products`.
 - Computing additional fields (`total_value`, `full_description`).
 - Generating embeddings for semantic search.
 - Storing the results in another PostgreSQL table with a vector index using pgvector
-
 
 ### Connect to source
 
@@ -50,6 +50,7 @@ def postgres_product_indexing_flow(flow_builder: cocoindex.FlowBuilder, data_sco
         ),
     )
 ```
+
 This step adds source data from PostgreSQL table `source_products` to the flow as a `KTable`.
 
 ![Add PostgreSQL Source](/img/examples/postgres_source/source.png)
@@ -150,7 +151,6 @@ This takes each product row, and does the following:
 
     ![Collect Embedding](/img/examples/postgres_source/collector.png)
 
-
 ## Export
 
 ```python
@@ -169,15 +169,14 @@ indexed_product.export(
 
 All transformed rows are collected and exported to a new PostgreSQL table with a vector index, ready for semantic search.
 
-
 ## Field lineage
+
 When the transform flow starts to getting complex, it's hard to understand how each field is derived.
 CocoIndex provides a way to visualize the lineage of each field, to make it easier to trace and troubleshoot field origins and downstream dependencies.
 
 For example, the following image shows the lineage of the `embedding` field, you can click from the final output backward all the way to the source fields, step by step.
 
 ![Field Lineage](/img/examples/postgres_source/lineage.png)
-
 
 ## Running the Pipeline
 
@@ -196,7 +195,7 @@ For example, the following image shows the lineage of the `embedding` field, you
 3. Setup tables and update the index:
 
     ```bash
-    cocoindex update --setup main
+    cocoindex update main
     ```
 
 4. Run CocoInsight:
@@ -204,8 +203,8 @@ For example, the following image shows the lineage of the `embedding` field, you
     ```bash
     cocoindex server -ci main
     ```
-    You can walk through the project step by step in CocoInsight to see exactly how each field is constructed and what happens behind the scenes. It connects to your local CocoIndex server, with zero pipeline data retention.
 
+    You can walk through the project step by step in CocoInsight to see exactly how each field is constructed and what happens behind the scenes. It connects to your local CocoIndex server, with zero pipeline data retention.
 
 ## Continuous Updating
 
@@ -214,6 +213,7 @@ For continuous updating when the source changes, add `-L`:
 ```bash
 cocoindex server -ci -L main
 ```
+
 Check [live updates](https://cocoindex.io/docs/tutorials/live_updates) for more details.
 
 ## Search and Query the Index
@@ -251,6 +251,7 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
             )
             return cur.fetchall()
 ```
+
 This function
 
 - Converts the query text into an embedding (`query_vector`).
@@ -289,7 +290,6 @@ if __name__ == "__main__":
 ### Run as a Service
 
 This [example](https://cocoindex.io/docs/examples/image_search#fast-api-application) runs as a service using Fast API.
-
 
 ## Why One Framework for Structured + Unstructured?
 

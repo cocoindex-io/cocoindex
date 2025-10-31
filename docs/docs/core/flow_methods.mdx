@@ -13,9 +13,9 @@ After a flow is defined as discussed in [Flow Definition](/docs/core/flow_def), 
 
 It can be achieved in two ways:
 
-*   Use [CocoIndex CLI](/docs/core/cli).
+* Use [CocoIndex CLI](/docs/core/cli).
 
-*   Use APIs provided by the library.
+* Use APIs provided by the library.
     You have a `cocoindex.Flow` object after defining the flow in your code, and you can interact with it later.
 
 The following sections assume you have a flow `demo_flow`:
@@ -38,20 +38,20 @@ It creates a `demo_flow` object in `cocoindex.Flow` type.
 
 For a flow, its persistent backends need to be ready before it can run, including:
 
-*   [Internal storage](/docs/core/basics#internal-storage) for CocoIndex.
-*   Backend resources for targets exported by the flow, e.g. a table (in relational databases), a collection (in some vector databases), etc.
+* [Internal storage](/docs/core/basics#internal-storage) for CocoIndex.
+* Backend resources for targets exported by the flow, e.g. a table (in relational databases), a collection (in some vector databases), etc.
 
 The desired state of the backends for a flow is derived based on the flow definition itself.
 CocoIndex supports two types of actions to manage the persistent backends automatically:
 
-*   *Setup* a flow, which will change the backends owned by the flow to the desired state, e.g. create new tables for new flow, drop an existing table if the corresponding target is gone, add new column to a target table if a new field is collected, etc. It's no-op if the backend states are already in the desired state.
+* *Setup* a flow, which will change the backends owned by the flow to the desired state, e.g. create new tables for new flow, drop an existing table if the corresponding target is gone, add new column to a target table if a new field is collected, etc. It's no-op if the backend states are already in the desired state.
 
-*   *Drop* a flow, which will drop all backends owned by the flow. It's no-op if there are no existing backends owned by the flow (e.g. never setup or already dropped).
+* *Drop* a flow, which will drop all backends owned by the flow. It's no-op if there are no existing backends owned by the flow (e.g. never setup or already dropped).
 
 ### CLI
 
 `cocoindex setup` subcommand will setup all flows.
-`cocoindex update` and `cocoindex server` also provide a `--setup` option to setup the flow if needed before performing the main action of updating or starting the server.
+`cocoindex update` and `cocoindex server` also also setup the flow if needed before performing the main action of updating or starting the server, with prompt confirmation.
 
 `cocoindex drop` subcommand will drop all flows.
 
@@ -62,8 +62,8 @@ CocoIndex supports two types of actions to manage the persistent backends automa
 
 `Flow` provides the following APIs to setup / drop individual flows:
 
-*   `setup(report_to_stdout: bool = False)`: Setup the flow.
-*   `drop(report_to_stdout: bool = False)`: Drop the flow.
+* `setup(report_to_stdout: bool = False)`: Setup the flow.
+* `drop(report_to_stdout: bool = False)`: Drop the flow.
 
 For example:
 
@@ -74,8 +74,8 @@ demo_flow.drop(report_to_stdout=True)
 
 We also provide the following asynchronous versions of the APIs:
 
-*   `setup_async(report_to_stdout: bool = False)`: Setup the flow asynchronously.
-*   `drop_async(report_to_stdout: bool = False)`: Drop the flow asynchronously.
+* `setup_async(report_to_stdout: bool = False)`: Setup the flow asynchronously.
+* `drop_async(report_to_stdout: bool = False)`: Drop the flow asynchronously.
 
 For example:
 
@@ -84,11 +84,10 @@ await demo_flow.setup_async(report_to_stdout=True)
 await demo_flow.drop_async(report_to_stdout=True)
 ```
 
-
 Besides, CocoIndex also provides APIs to setup / drop all flows at once:
 
-*   `setup_all_flows(report_to_stdout: bool = False)`: Setup all flows.
-*   `drop_all_flows(report_to_stdout: bool = False)`: Drop all flows.
+* `setup_all_flows(report_to_stdout: bool = False)`: Setup all flows.
+* `drop_all_flows(report_to_stdout: bool = False)`: Drop all flows.
 
 For example:
 
@@ -113,12 +112,12 @@ If you want to remove the flow from the current process, you can call `demo_flow
 The major goal of a flow is to perform the transformations on source data and build/update data in the target.
 This action has two modes:
 
-*   **One time update.**
+* **One time update.**
     It builds/update the target data based on source data up to the current moment.
     After the target data is at least as fresh as the source data when update starts, it's done.
     It fits into situations that you need to access the fresh target data at certain time points.
 
-*   **Live update.**
+* **Live update.**
     During live update, a one time update is performed first, then it continuously captures changes from the source data and updates the target data accordingly.
     It's long-running and only stops when being aborted explicitly.
     It fits into situations that you need to access the fresh target data continuously in most of the time.
@@ -133,7 +132,7 @@ This is to achieve best efficiency.
 
 Besides major update modes, CocoIndex also support the following options:
 
-*   **Reexport targets**.
+* **Reexport targets**.
     When this is enabled, even if both of the source data and flow definition are not changed, CocoIndex will still reprocess and reexport the targets.
     It's helpful when you want to reload the target data, e.g. after some data loss.
     Note that when this is enabled on live update mode, reexport only happens for the initial one time update.
@@ -153,7 +152,7 @@ cocoindex update main
 With a `--setup` option, it will also setup the flow first if needed.
 
 ```sh
-cocoindex update --setup main
+cocoindex update main
 ```
 
 With a `--reexport` option, it will reexport the targets even if there's no change.
@@ -168,7 +167,6 @@ cocoindex update --reexport main.py
 <TabItem value="python" label="Python">
 
 The `Flow.update()` method creates/updates data in the target.
-
 
 ```python
 stats = demo_flow.update()
@@ -207,9 +205,9 @@ await demo_flow.update_async(reexport_targets=True)
 
 A data source may enable one or multiple *change capture mechanisms*:
 
-*   Configured with a [refresh interval](flow_def#refresh-interval), which is generally applicable to all data sources.
+* Configured with a [refresh interval](flow_def#refresh-interval), which is generally applicable to all data sources.
 
-*   Specific data sources also provide their specific change capture mechanisms.
+* Specific data sources also provide their specific change capture mechanisms.
     For example, [`Postgres` source](../sources/postgres) listens to PostgreSQL's change notifications, [`AmazonS3` source](../sources/amazons3) watches S3 bucket's change events, and [`GoogleDrive` source](../sources/googledrive) allows polling recent modified files.
     See documentations for specific data sources.
 
@@ -236,13 +234,13 @@ Otherwise, it falls back to the same behavior as one time update, and will finis
 To perform live update, you need to create a `cocoindex.FlowLiveUpdater` object using the `cocoindex.Flow` object.
 It takes an optional `cocoindex.FlowLiveUpdaterOptions` option, with the following fields:
 
-*   `live_mode` (type: `bool`, default: `True`):
+* `live_mode` (type: `bool`, default: `True`):
      Whether to perform live update for data sources with change capture mechanisms.
      It has no effect for data sources without any change capture mechanism.
 
-*   `print_stats` (type: `bool`, default: `False`): Whether to print stats during update.
+* `print_stats` (type: `bool`, default: `False`): Whether to print stats during update.
 
-*   `reexport_targets` (type: `bool`, default: `False`): Whether to reexport the targets even if there's no change.
+* `reexport_targets` (type: `bool`, default: `False`): Whether to reexport the targets even if there's no change.
 
 Note that `cocoindex.FlowLiveUpdater` provides a unified interface for both one-time update and live update.
 It only performs live update when `live_mode` is `True`, and only for sources with change capture mechanisms enabled.
@@ -257,26 +255,26 @@ my_updater = cocoindex.FlowLiveUpdater(
 
 A `FlowLiveUpdater` object supports the following methods:
 
-*   `start()`: Start the updater.
+* `start()`: Start the updater.
     CocoIndex will continuously capture changes from the source data and update the target data accordingly in background threads managed by the engine.
 
-*   `abort()`: Abort the updater.
+* `abort()`: Abort the updater.
 
-*   `wait()`: Wait for the updater to finish. It only unblocks in one of the following cases:
-    *   The updater was aborted.
-    *   A one time update is done, and live update is not enabled:
+* `wait()`: Wait for the updater to finish. It only unblocks in one of the following cases:
+  * The updater was aborted.
+  * A one time update is done, and live update is not enabled:
         either `live_mode` is `False`, or all data sources have no change capture mechanisms enabled.
 
-*   `next_status_updates()`: Get the next status updates.
+* `next_status_updates()`: Get the next status updates.
     It blocks until there's a new status updates, including the processing finishes for a bunch of source updates, and live updater stops (aborted, or no more sources to process).
     You can continuously call this method in a loop to get the latest status updates and react accordingly.
 
     It returns a `cocoindex.FlowUpdaterStatusUpdates` object, with the following properties:
-    *   `active_sources`: Names of sources that are still active, i.e. not stopped processing. If it's empty, it means the updater is stopped.
-    *   `updated_sources`: Names of sources with updates since last time.
+  * `active_sources`: Names of sources that are still active, i.e. not stopped processing. If it's empty, it means the updater is stopped.
+  * `updated_sources`: Names of sources with updates since last time.
         You can check this to see which sources have recent updates and get processed.
 
-*   `update_stats()`: It returns the stats of the updater.
+* `update_stats()`: It returns the stats of the updater.
 
 This snippets shows the lifecycle of a live updater:
 
@@ -331,7 +329,7 @@ with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
 
 CocoIndex also provides asynchronous versions of APIs for blocking operations, including:
 
-*   `start_async()` and `wait_async()`, e.g.
+* `start_async()` and `wait_async()`, e.g.
 
     ```python
     my_updater = cocoindex.FlowLiveUpdater(demo_flow)
@@ -347,7 +345,7 @@ CocoIndex also provides asynchronous versions of APIs for blocking operations, i
     print(my_updater.update_stats())
     ```
 
-*   `next_status_updates_async()`, e.g.
+* `next_status_updates_async()`, e.g.
 
     ```python
     while True:
@@ -356,7 +354,7 @@ CocoIndex also provides asynchronous versions of APIs for blocking operations, i
         ...
     ```
 
-*   Async context manager, e.g.
+* Async context manager, e.g.
 
     ```python
     async with cocoindex.FlowLiveUpdater(demo_flow) as my_updater:
@@ -376,8 +374,8 @@ CocoIndex allows you to run the transformations defined by the flow without upda
 The `cocoindex evaluate` subcommand runs the transformation and dumps flow outputs.
 It takes the following options:
 
-*   `--output-dir` (optional): The directory to dump the result to. If not provided, it will use `eval_{flow_name}_{timestamp}`.
-*   `--no-cache` (optional): By default, we use already-cached intermediate data if available.
+* `--output-dir` (optional): The directory to dump the result to. If not provided, it will use `eval_{flow_name}_{timestamp}`.
+* `--no-cache` (optional): By default, we use already-cached intermediate data if available.
     This flag will turn it off.
     Note that we only read existing cached data without updating the cache, even if it's turned on.
 
@@ -396,8 +394,8 @@ The `evaluate_and_dump()` method runs the transformation and dumps flow outputs 
 
 It takes a `EvaluateAndDumpOptions` dataclass as input to configure, with the following fields:
 
-*   `output_dir` (type: `str`, required): The directory to dump the result to.
-*   `use_cache` (type: `bool`, default: `True`): Use already-cached intermediate data if available.
+* `output_dir` (type: `str`, required): The directory to dump the result to.
+* `use_cache` (type: `bool`, default: `True`): Use already-cached intermediate data if available.
     Note that we only read existing cached data without updating the cache, even if it's turned on.
 
 Example:

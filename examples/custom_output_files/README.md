@@ -1,4 +1,5 @@
 # Export markdown files to local Html with Custom Targets
+
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
 In this example, we will build index flow to load data from a local directory, convert them to HTML, and save the data to another local directory powered by [CocoIndex Custom Targets](https://cocoindex.io/docs/custom_ops/custom_targets).
@@ -28,7 +29,7 @@ pip install -e .
 Update the target:
 
 ```bash
-cocoindex update --setup main
+cocoindex update main
 ```
 
 You can add new files to the `data/` directory, delete or update existing files.
@@ -37,7 +38,7 @@ Each time when you run the `update` command, cocoindex will only re-process the 
 You can also run `update` command in live mode, which will keep the target in sync with the source in real-time:
 
 ```bash
-cocoindex update --setup -L main.py
+cocoindex update -L main.py
 ```
 
 ## CocoInsight

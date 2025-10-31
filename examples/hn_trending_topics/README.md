@@ -43,7 +43,7 @@ pip install -e .
 Update the target:
 
 ```bash
-cocoindex update --setup main
+cocoindex update main
 ```
 
 Each time when you run the `update` command, cocoindex will only re-process threads that have changed, and keep the target in sync with the recent 500 threads from HackerNews.
@@ -51,7 +51,7 @@ Each time when you run the `update` command, cocoindex will only re-process thre
 You can also run `update` command in live mode, which will keep the target in sync with the source continuously:
 
 ```bash
-cocoindex update --setup -L main.py
+cocoindex update -L main.py
 ```
 
 ## Query Examples
