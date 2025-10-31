@@ -59,7 +59,7 @@ struct OllamaResponse {
 #[derive(Debug, Serialize)]
 struct OllamaEmbeddingRequest<'a> {
     pub model: &'a str,
-    pub input: &'a str,
+    pub input: Vec<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,9 +130,10 @@ impl LlmEmbeddingClient for Client {
         &self,
         request: super::LlmEmbeddingRequest<'req>,
     ) -> Result<super::LlmEmbeddingResponse> {
+        let texts: Vec<&str> = request.texts.iter().map(|t| t.as_ref()).collect();
         let req = OllamaEmbeddingRequest {
             model: request.model,
-            input: request.text.as_ref(),
+            input: texts,
         };
         let resp = http::request(|| self.reqwest_client.post(self.embed_url.as_str()).json(&req))
             .await
@@ -140,14 +141,9 @@ impl LlmEmbeddingClient for Client {
 
         let embedding_resp: OllamaEmbeddingResponse = resp.json().await.context("Invalid JSON")?;
 
-        // Extract the first embedding (index 0)
-        let embedding = embedding_resp
-            .embeddings
-            .into_iter()
-            .next()
-            .context("Ollama API returned no embeddings")?;
-
-        Ok(super::LlmEmbeddingResponse { embedding })
+        Ok(super::LlmEmbeddingResponse {
+            embeddings: embedding_resp.embeddings,
+        })
     }
 
     fn get_default_embedding_dimension(&self, model: &str) -> Option<u32> {

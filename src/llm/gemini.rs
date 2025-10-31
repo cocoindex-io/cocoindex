@@ -70,36 +70,44 @@ fn remove_additional_properties(value: &mut Value) {
 impl AiStudioClient {
     fn get_api_url(&self, model: &str, api_name: &str) -> String {
         format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:{}?key={}",
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:{}",
             encode(model),
-            api_name,
-            encode(&self.api_key)
+            api_name
         )
     }
 }
 
 fn build_embed_payload(
     model: &str,
-    text: &str,
+    texts: &[&str],
     task_type: Option<&str>,
     output_dimension: Option<u32>,
 ) -> serde_json::Value {
-    let mut payload = serde_json::json!({
-        "model": model,
-        "content": { "parts": [{ "text": text }] },
-    });
-    if let Some(task_type) = task_type {
-        payload["taskType"] = serde_json::Value::String(task_type.to_string());
-    }
-    if let Some(output_dimension) = output_dimension {
-        payload["outputDimensionality"] = serde_json::json!(output_dimension);
-        if model.starts_with("gemini-embedding-") {
-            payload["config"] = serde_json::json!({
-                "outputDimensionality": output_dimension,
+    let requests: Vec<_> = texts
+        .iter()
+        .map(|text| {
+            let mut req = serde_json::json!({
+                "model": format!("models/{}", model),
+                "content": { "parts": [{ "text": text }] },
             });
-        }
-    }
-    payload
+            if let Some(task_type) = task_type {
+                req["taskType"] = serde_json::Value::String(task_type.to_string());
+            }
+            if let Some(output_dimension) = output_dimension {
+                req["outputDimensionality"] = serde_json::json!(output_dimension);
+                if model.starts_with("gemini-embedding-") {
+                    req["config"] = serde_json::json!({
+                        "outputDimensionality": output_dimension,
+                    });
+                }
+            }
+            req
+        })
+        .collect();
+
+    serde_json::json!({
+        "requests": requests,
+    })
 }
 
 #[async_trait]
@@ -182,8 +190,8 @@ struct ContentEmbedding {
     values: Vec<f32>,
 }
 #[derive(Deserialize)]
-struct EmbedContentResponse {
-    embedding: ContentEmbedding,
+struct BatchEmbedContentResponse {
+    embeddings: Vec<ContentEmbedding>,
 }
 
 #[async_trait]
@@ -192,29 +200,30 @@ impl LlmEmbeddingClient for AiStudioClient {
         &self,
         request: super::LlmEmbeddingRequest<'req>,
     ) -> Result<super::LlmEmbeddingResponse> {
-        let url = self.get_api_url(request.model, "embedContent");
+        let url = self.get_api_url(request.model, "batchEmbedContents");
+        let texts: Vec<&str> = request.texts.iter().map(|t| t.as_ref()).collect();
         let payload = build_embed_payload(
             request.model,
-            request.text.as_ref(),
+            &texts,
             request.task_type.as_deref(),
             request.output_dimension,
         );
-        let resp = retryable::run(
-            || async {
-                self.client
-                    .post(&url)
-                    .json(&payload)
-                    .send()
-                    .await?
-                    .error_for_status()
-            },
-            &retryable::HEAVY_LOADED_OPTIONS,
-        )
+        let resp = http::request(|| {
+            self.client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .json(&payload)
+        })
         .await
         .context("Gemini API error")?;
-        let embedding_resp: EmbedContentResponse = resp.json().await.context("Invalid JSON")?;
+        let embedding_resp: BatchEmbedContentResponse =
+            resp.json().await.context("Invalid JSON")?;
         Ok(super::LlmEmbeddingResponse {
-            embedding: embedding_resp.embedding.values,
+            embeddings: embedding_resp
+                .embeddings
+                .into_iter()
+                .map(|e| e.values)
+                .collect(),
         })
     }
 
@@ -381,15 +390,20 @@ impl LlmEmbeddingClient for VertexAiClient {
         request: super::LlmEmbeddingRequest<'req>,
     ) -> Result<super::LlmEmbeddingResponse> {
         // Create the instances for the request
-        let mut instance = serde_json::json!({
-            "content": request.text
-        });
-        // Add task type if specified
-        if let Some(task_type) = &request.task_type {
-            instance["task_type"] = serde_json::Value::String(task_type.to_string());
-        }
-
-        let instances = vec![instance];
+        let instances: Vec<_> = request
+            .texts
+            .iter()
+            .map(|text| {
+                let mut instance = serde_json::json!({
+                    "content": text
+                });
+                // Add task type if specified
+                if let Some(task_type) = &request.task_type {
+                    instance["task_type"] = serde_json::Value::String(task_type.to_string());
+                }
+                instance
+            })
+            .collect();
 
         // Prepare the request parameters
         let mut parameters = serde_json::json!({});
@@ -408,17 +422,20 @@ impl LlmEmbeddingClient for VertexAiClient {
             .send()
             .await?;
 
-        // Extract the embedding from the response
-        let embeddings = response
+        // Extract the embeddings from the response
+        let embeddings: Vec<Vec<f32>> = response
             .predictions
             .into_iter()
-            .next()
-            .and_then(|mut e| e.get_mut("embeddings").map(|v| v.take()))
-            .ok_or_else(|| anyhow::anyhow!("No embeddings in response"))?;
-        let embedding: ContentEmbedding = utils::deser::from_json_value(embeddings)?;
-        Ok(super::LlmEmbeddingResponse {
-            embedding: embedding.values,
-        })
+            .map(|mut prediction| {
+                let embeddings = prediction
+                    .get_mut("embeddings")
+                    .map(|v| v.take())
+                    .ok_or_else(|| anyhow::anyhow!("No embeddings in prediction"))?;
+                let embedding: ContentEmbedding = utils::deser::from_json_value(embeddings)?;
+                Ok(embedding.values)
+            })
+            .collect::<Result<_>>()?;
+        Ok(super::LlmEmbeddingResponse { embeddings })
     }
 
     fn get_default_embedding_dimension(&self, model: &str) -> Option<u32> {

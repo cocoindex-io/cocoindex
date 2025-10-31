@@ -377,8 +377,8 @@ pub trait BatchedFunctionExecutor: Send + Sync + Sized + 'static {
         None
     }
 
-    fn into_fn_executor(self) -> Box<dyn SimpleFunctionExecutor> {
-        Box::new(BatchedFunctionExecutorWrapper::new(self))
+    fn into_fn_executor(self) -> impl SimpleFunctionExecutor {
+        BatchedFunctionExecutorWrapper::new(self)
     }
 }
 

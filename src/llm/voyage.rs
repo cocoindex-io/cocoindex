@@ -66,8 +66,9 @@ impl LlmEmbeddingClient for Client {
     ) -> Result<LlmEmbeddingResponse> {
         let url = "https://api.voyageai.com/v1/embeddings";
 
+        let texts: Vec<String> = request.texts.iter().map(|t| t.to_string()).collect();
         let mut payload = serde_json::json!({
-            "input": request.text,
+            "input": texts,
             "model": request.model,
         });
 
@@ -86,12 +87,12 @@ impl LlmEmbeddingClient for Client {
 
         let embedding_resp: EmbedResponse = resp.json().await.context("Invalid JSON")?;
 
-        if embedding_resp.data.is_empty() {
-            bail!("No embedding data in response");
-        }
-
         Ok(LlmEmbeddingResponse {
-            embedding: embedding_resp.data[0].embedding.clone(),
+            embeddings: embedding_resp
+                .data
+                .into_iter()
+                .map(|d| d.embedding)
+                .collect(),
         })
     }
 
