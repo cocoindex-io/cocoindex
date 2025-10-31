@@ -184,11 +184,12 @@ impl LlmEmbeddingClient for Client {
     ) -> Result<super::LlmEmbeddingResponse> {
         let response = retryable::run(
             || async {
+                let texts: Vec<String> = request.texts.iter().map(|t| t.to_string()).collect();
                 self.client
                     .embeddings()
                     .create(CreateEmbeddingRequest {
                         model: request.model.to_string(),
-                        input: EmbeddingInput::String(request.text.to_string()),
+                        input: EmbeddingInput::StringArray(texts),
                         dimensions: request.output_dimension,
                         ..Default::default()
                     })
@@ -198,12 +199,7 @@ impl LlmEmbeddingClient for Client {
         )
         .await?;
         Ok(super::LlmEmbeddingResponse {
-            embedding: response
-                .data
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("No embedding returned from OpenAI"))?
-                .embedding,
+            embeddings: response.data.into_iter().map(|e| e.embedding).collect(),
         })
     }
 

@@ -83,13 +83,13 @@ pub trait LlmGenerationClient: Send + Sync {
 #[derive(Debug)]
 pub struct LlmEmbeddingRequest<'a> {
     pub model: &'a str,
-    pub text: Cow<'a, str>,
+    pub texts: Vec<Cow<'a, str>>,
     pub output_dimension: Option<u32>,
     pub task_type: Option<Cow<'a, str>>,
 }
 
 pub struct LlmEmbeddingResponse {
-    pub embedding: Vec<f32>,
+    pub embeddings: Vec<Vec<f32>>,
 }
 
 #[async_trait]

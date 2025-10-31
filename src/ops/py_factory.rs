@@ -260,15 +260,17 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                         Ok((prepare_fut, enable_cache, behavior_version))
                     })?;
                 prepare_fut.await?;
-                let executor = if self.batching {
-                    PyBatchedFunctionExecutor {
-                        py_function_executor: executor,
-                        py_exec_ctx,
-                        result_type,
-                        enable_cache,
-                        behavior_version,
-                    }
-                    .into_fn_executor()
+                let executor: Box<dyn interface::SimpleFunctionExecutor> = if self.batching {
+                    Box::new(
+                        PyBatchedFunctionExecutor {
+                            py_function_executor: executor,
+                            py_exec_ctx,
+                            result_type,
+                            enable_cache,
+                            behavior_version,
+                        }
+                        .into_fn_executor(),
+                    )
                 } else {
                     Box::new(Arc::new(PyFunctionExecutor {
                         py_function_executor: executor,
@@ -278,7 +280,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                         result_type,
                         enable_cache,
                         behavior_version,
-                    })) as Box<dyn interface::SimpleFunctionExecutor>
+                    }))
                 };
                 Ok(executor)
             }

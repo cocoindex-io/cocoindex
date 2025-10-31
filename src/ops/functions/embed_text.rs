@@ -27,7 +27,7 @@ struct Executor {
 }
 
 #[async_trait]
-impl SimpleFunctionExecutor for Executor {
+impl BatchedFunctionExecutor for Executor {
     fn behavior_version(&self) -> Option<u32> {
         self.args.client.behavior_version()
     }
@@ -36,11 +36,18 @@ impl SimpleFunctionExecutor for Executor {
         true
     }
 
-    async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
-        let text = self.args.text.value(&input)?.as_str()?;
+    async fn evaluate_batch(&self, args: Vec<Vec<Value>>) -> Result<Vec<Value>> {
+        let texts = args
+            .iter()
+            .map(|arg| {
+                Ok(Cow::Borrowed(
+                    self.args.text.value(&arg)?.as_str()?.as_ref(),
+                ))
+            })
+            .collect::<Result<_>>()?;
         let req = LlmEmbeddingRequest {
             model: &self.spec.model,
-            text: Cow::Borrowed(text),
+            texts,
             output_dimension: self.spec.output_dimension,
             task_type: self
                 .spec
@@ -48,25 +55,37 @@ impl SimpleFunctionExecutor for Executor {
                 .as_ref()
                 .map(|s| Cow::Borrowed(s.as_str())),
         };
-        let embedding = self.args.client.embed_text(req).await?;
-        if embedding.embedding.len() != self.args.expected_output_dimension {
-            if self.spec.output_dimension.is_some() {
-                api_bail!(
-                    "Expected output dimension {expected} but got {actual} from the embedding API. \
-                     Consider setting `output_dimension` to {actual} or leave it unset to use the default.",
-                    expected = self.args.expected_output_dimension,
-                    actual = embedding.embedding.len()
-                );
-            } else {
-                bail!(
-                    "Expected output dimension {expected} but got {actual} from the embedding API. \
-                     Consider setting `output_dimension` to {actual} as a workaround.",
-                    expected = self.args.expected_output_dimension,
-                    actual = embedding.embedding.len()
-                )
-            }
+        let resp = self.args.client.embed_text(req).await?;
+        if resp.embeddings.len() != args.len() {
+            api_bail!(
+                "Expected {expected} embeddings but got {actual} from the embedding API.",
+                expected = args.len(),
+                actual = resp.embeddings.len()
+            );
         }
-        Ok(embedding.embedding.into())
+        resp.embeddings
+            .into_iter()
+            .map(|embedding| {
+                if embedding.len() != self.args.expected_output_dimension {
+                    if self.spec.output_dimension.is_some() {
+                        api_bail!(
+                            "Expected output dimension {expected} but got {actual} from the embedding API. \
+                             Consider setting `output_dimension` to {actual} or leave it unset to use the default.",
+                            expected = self.args.expected_output_dimension,
+                            actual = embedding.len(),
+                        );
+                    } else {
+                        bail!(
+                            "Expected output dimension {expected} but got {actual} from the embedding API. \
+                             Consider setting `output_dimension` to {actual} as a workaround.",
+                            expected = self.args.expected_output_dimension,
+                            actual = embedding.len(),
+                        );
+                    }
+                };
+                Ok(embedding.into())
+            })
+            .collect::<Result<Vec<value::Value>>>()
     }
 }
 
@@ -121,7 +140,7 @@ impl SimpleFunctionFactoryBase for Factory {
         args: Args,
         _context: Arc<FlowInstanceContext>,
     ) -> Result<impl SimpleFunctionExecutor> {
-        Ok(Executor { spec, args })
+        Ok(Executor { spec, args }.into_fn_executor())
     }
 }
 
