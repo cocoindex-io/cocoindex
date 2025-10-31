@@ -1,4 +1,4 @@
-use crate::{prelude::*, py::future::from_py_future};
+use crate::{ops::sdk::BatchedFunctionExecutor, prelude::*, py::future::from_py_future};
 
 use pyo3::{
     Bound, IntoPyObjectExt, Py, PyAny, Python, pyclass, pymethods,
@@ -114,8 +114,65 @@ impl interface::SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
     }
 }
 
+struct PyBatchedFunctionExecutor {
+    py_function_executor: Py<PyAny>,
+    py_exec_ctx: Arc<py::PythonExecutionContext>,
+    result_type: schema::EnrichedValueType,
+
+    enable_cache: bool,
+    behavior_version: Option<u32>,
+}
+
+#[async_trait]
+impl BatchedFunctionExecutor for PyBatchedFunctionExecutor {
+    async fn evaluate_batch(&self, args: Vec<Vec<value::Value>>) -> Result<Vec<value::Value>> {
+        let result_fut = Python::with_gil(|py| -> pyo3::PyResult<_> {
+            let py_args = PyList::new(
+                py,
+                args.into_iter()
+                    .map(|v| {
+                        py::value_to_py_object(
+                            py,
+                            v.get(0).ok_or_else(|| {
+                                pyo3::PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                                    "Expected a list of lists",
+                                )
+                            })?,
+                        )
+                    })
+                    .collect::<pyo3::PyResult<Vec<_>>>()?,
+            )?;
+            let result_coro = self.py_function_executor.call1(py, (py_args,))?;
+            let task_locals =
+                pyo3_async_runtimes::TaskLocals::new(self.py_exec_ctx.event_loop.bind(py).clone());
+            Ok(from_py_future(
+                py,
+                &task_locals,
+                result_coro.into_bound(py),
+            )?)
+        })?;
+        let result = result_fut.await;
+        Python::with_gil(|py| -> Result<_> {
+            let result = result.to_result_with_py_trace(py)?;
+            let result_bound = result.into_bound(py);
+            let result_list = result_bound.extract::<Vec<Bound<'_, PyAny>>>()?;
+            Ok(result_list
+                .into_iter()
+                .map(|v| py::value_from_py_object(&self.result_type.typ, &v))
+                .collect::<pyo3::PyResult<Vec<_>>>()?)
+        })
+    }
+    fn enable_cache(&self) -> bool {
+        self.enable_cache
+    }
+    fn behavior_version(&self) -> Option<u32> {
+        self.behavior_version
+    }
+}
+
 pub(crate) struct PyFunctionFactory {
     pub py_function_factory: Py<PyAny>,
+    pub batching: bool,
 }
 
 #[async_trait]
@@ -203,16 +260,27 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                         Ok((prepare_fut, enable_cache, behavior_version))
                     })?;
                 prepare_fut.await?;
-                Ok(Box::new(Arc::new(PyFunctionExecutor {
-                    py_function_executor: executor,
-                    py_exec_ctx,
-                    num_positional_args,
-                    kw_args_names,
-                    result_type,
-                    enable_cache,
-                    behavior_version,
-                }))
-                    as Box<dyn interface::SimpleFunctionExecutor>)
+                let executor = if self.batching {
+                    PyBatchedFunctionExecutor {
+                        py_function_executor: executor,
+                        py_exec_ctx,
+                        result_type,
+                        enable_cache,
+                        behavior_version,
+                    }
+                    .into_fn_executor()
+                } else {
+                    Box::new(Arc::new(PyFunctionExecutor {
+                        py_function_executor: executor,
+                        py_exec_ctx,
+                        num_positional_args,
+                        kw_args_names,
+                        result_type,
+                        enable_cache,
+                        behavior_version,
+                    })) as Box<dyn interface::SimpleFunctionExecutor>
+                };
+                Ok(executor)
             }
         };
 
