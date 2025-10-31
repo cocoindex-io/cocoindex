@@ -150,18 +150,9 @@ impl LlmGenerationClient for AiStudioClient {
         }
 
         let url = self.get_api_url(request.model, "generateContent");
-        let resp = retryable::run(
-            || self.client.post(&url).json(&payload).send(),
-            &retryable::HEAVY_LOADED_OPTIONS,
-        )
-        .await?;
-        if !resp.status().is_success() {
-            bail!(
-                "Gemini API error: {:?}\n{}\n",
-                resp.status(),
-                resp.text().await?
-            );
-        }
+        let resp = http::request(|| self.client.post(&url).json(&payload))
+            .await
+            .context("Gemini API error")?;
         let resp_json: Value = resp.json().await.context("Invalid JSON")?;
 
         if let Some(error) = resp_json.get("error") {
