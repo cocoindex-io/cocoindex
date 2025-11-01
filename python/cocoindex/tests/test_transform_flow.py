@@ -205,3 +205,66 @@ def test_gpu_function() -> None:
     result = transform_flow_with_analyze_prepare.eval("Hello")
     expected = "Hello world!!"
     assert result == expected, f"Expected {expected}, got {result}"
+
+
+# Test batching behavior.
+
+
+@cocoindex.op.function(batching=True)
+def batching_append_world(text: list[str]) -> list[str]:
+    """Append ' world' to the input text."""
+    return [f"{t} world" for t in text]
+
+
+class batchingAppendSuffix(cocoindex.op.FunctionSpec):
+    suffix: str
+
+
+@cocoindex.op.executor_class(batching=True)
+class batchingAppendSuffixExecutor:
+    spec: batchingAppendSuffix
+
+    def __call__(self, text: list[str]) -> list[str]:
+        return [f"{t}{self.spec.suffix}" for t in text]
+
+
+class batchingAppendSuffixWithAnalyzePrepare(cocoindex.op.FunctionSpec):
+    suffix: str
+
+
+@cocoindex.op.executor_class(batching=True)
+class batchingAppendSuffixWithAnalyzePrepareExecutor:
+    spec: batchingAppendSuffixWithAnalyzePrepare
+    suffix: str
+
+    def analyze(self) -> Any:
+        return str
+
+    def prepare(self) -> None:
+        self.suffix = self.spec.suffix
+
+    def __call__(self, text: list[str]) -> list[str]:
+        return [f"{t}{self.suffix}" for t in text]
+
+
+def test_batching_function() -> None:
+    @cocoindex.transform_flow()
+    def transform_flow(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[str]:
+        return text.transform(batching_append_world).transform(
+            batchingAppendSuffix(suffix="!")
+        )
+
+    result = transform_flow.eval("Hello")
+    expected = "Hello world!"
+    assert result == expected, f"Expected {expected}, got {result}"
+
+    @cocoindex.transform_flow()
+    def transform_flow_with_analyze_prepare(
+        text: cocoindex.DataSlice[str],
+    ) -> cocoindex.DataSlice[str]:
+        return text.transform(batching_append_world).transform(
+            batchingAppendSuffixWithAnalyzePrepare(suffix="!!")
+        )
+
+    result = transform_flow_with_analyze_prepare.eval("Hello")
+    expected = "Hello world!!"
