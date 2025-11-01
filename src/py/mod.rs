@@ -244,6 +244,7 @@ impl FlowLiveUpdater {
             let live_updater = execution::FlowLiveUpdater::start(
                 flow,
                 lib_context.require_builtin_db_pool().into_py_result()?,
+                &lib_context.multi_progress_bar,
                 options.into_inner(),
             )
             .await
