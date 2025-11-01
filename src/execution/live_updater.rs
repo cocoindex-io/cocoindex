@@ -1,18 +1,15 @@
 use crate::{
-    execution::{
-        source_indexer::{ProcessSourceRowInput, SourceIndexingContext},
-        stats::UpdateStats,
-    },
+    execution::source_indexer::{ProcessSourceRowInput, SourceIndexingContext},
     prelude::*,
 };
 
 use super::stats;
 use futures::future::try_join_all;
-use indicatif::ProgressBar;
+use indicatif::{MultiProgress, ProgressBar, ProgressFinish};
+use log::log_enabled;
 use sqlx::PgPool;
 use std::fmt::Write;
 use tokio::{sync::watch, task::JoinSet, time::MissedTickBehavior};
-use tokio_util::task::AbortOnDropHandle;
 
 pub struct FlowLiveUpdaterUpdates {
     pub active_sources: Vec<String>,
@@ -56,7 +53,8 @@ pub struct FlowLiveUpdaterOptions {
     pub print_stats: bool,
 }
 
-const REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+const PROGRESS_BAR_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const TRACE_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 struct SharedAckFn<AckAsyncFn: AsyncFnOnce() -> Result<()>> {
     count: usize,
@@ -97,6 +95,7 @@ struct SourceUpdateTask {
 
     status_tx: watch::Sender<FlowLiveUpdaterStatus>,
     num_remaining_tasks_tx: watch::Sender<usize>,
+    multi_progress_bar: MultiProgress,
 }
 
 impl Drop for SourceUpdateTask {
@@ -111,6 +110,17 @@ impl Drop for SourceUpdateTask {
 }
 
 impl SourceUpdateTask {
+    fn maybe_new_progress_bar(&self) -> Result<Option<ProgressBar>> {
+        if !self.options.print_stats || self.multi_progress_bar.is_hidden() {
+            return Ok(None);
+        }
+        let style =
+            indicatif::ProgressStyle::default_spinner().template("{spinner}{spinner} {msg}")?;
+        let pb = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear);
+        pb.set_style(style);
+        Ok(Some(pb))
+    }
+
     async fn run(self) -> Result<()> {
         let source_indexing_context = self
             .execution_ctx
@@ -125,12 +135,16 @@ impl SourceUpdateTask {
             },
         };
 
+        let interval_progress_bar = self
+            .maybe_new_progress_bar()?
+            .map(|pb| self.multi_progress_bar.add(pb));
         if !self.options.live_mode {
             return self
                 .update_one_pass(
                     source_indexing_context,
                     "batch update",
                     initial_update_options,
+                    interval_progress_bar.as_ref(),
                 )
                 .await;
         }
@@ -142,120 +156,114 @@ impl SourceUpdateTask {
 
         // Deal with change streams.
         if let Some(change_stream) = import_op.executor.change_stream().await? {
-            let change_stream_stats = Arc::new(stats::UpdateStats::default());
-            futs.push(
-                {
-                    let change_stream_stats = change_stream_stats.clone();
-                    let status_tx = self.status_tx.clone();
-                    let operation_in_process_stats = self.operation_in_process_stats.clone();
-                    async move {
-                        let mut change_stream = change_stream;
-                        let retry_options = retryable::RetryOptions {
-                            retry_timeout: None,
-                            initial_backoff: std::time::Duration::from_secs(5),
-                            max_backoff: std::time::Duration::from_secs(60),
-                        };
-                        loop {
-                            // Workaround as AsyncFnMut isn't mature yet.
-                            // Should be changed to use AsyncFnMut once it is.
-                            let change_stream = tokio::sync::Mutex::new(&mut change_stream);
-                            let change_msg = retryable::run(
-                                || async {
-                                    let mut change_stream = change_stream.lock().await;
-                                    change_stream
-                                        .next()
-                                        .await
-                                        .transpose()
-                                        .map_err(retryable::Error::retryable)
-                                },
-                                &retry_options,
-                            )
-                            .await
-                            .map_err(Into::<anyhow::Error>::into)
-                            .with_context(|| {
-                                format!(
-                                    "Error in getting change message for flow `{}` source `{}`",
-                                    task.flow.flow_instance.name, import_op.name
-                                )
-                            });
-                            let change_msg = match change_msg {
-                                Ok(Some(change_msg)) => change_msg,
-                                Ok(None) => break,
-                                Err(err) => {
-                                    error!("{:?}", err);
-                                    continue;
-                                }
-                            };
+            let stats = Arc::new(stats::UpdateStats::default());
+            let stats_to_report = stats.clone();
 
-                            let update_stats = Arc::new(stats::UpdateStats::default());
-                            let ack_fn = {
-                                let status_tx = status_tx.clone();
-                                let update_stats = update_stats.clone();
-                                let change_stream_stats = change_stream_stats.clone();
-                                async move || {
-                                    if update_stats.has_any_change() {
-                                        status_tx.send_modify(|update| {
-                                            update.source_updates_num[source_idx] += 1;
-                                        });
-                                        change_stream_stats.merge(&update_stats);
-                                    }
-                                    if let Some(ack_fn) = change_msg.ack_fn {
-                                        ack_fn().await
-                                    } else {
-                                        Ok(())
-                                    }
-                                }
-                            };
-                            let shared_ack_fn = Arc::new(Mutex::new(SharedAckFn::new(
-                                change_msg.changes.iter().len(),
-                                ack_fn,
-                            )));
-                            for change in change_msg.changes {
-                                let shared_ack_fn = shared_ack_fn.clone();
-                                let concur_permit = import_op
-                                    .concurrency_controller
-                                    .acquire(concur_control::BYTES_UNKNOWN_YET)
-                                    .await?;
-                                tokio::spawn(
-                                    source_indexing_context.clone().process_source_row(
-                                        ProcessSourceRowInput {
-                                            key: change.key,
-                                            key_aux_info: Some(change.key_aux_info),
-                                            data: change.data,
-                                        },
-                                        super::source_indexer::UpdateMode::Normal,
-                                        update_stats.clone(),
-                                        Some(operation_in_process_stats.clone()),
-                                        concur_permit,
-                                        Some(move || async move {
-                                            SharedAckFn::ack(&shared_ack_fn).await
-                                        }),
-                                    ),
-                                );
+            let status_tx = self.status_tx.clone();
+            let operation_in_process_stats = self.operation_in_process_stats.clone();
+            let progress_bar = self
+                .maybe_new_progress_bar()?
+                .zip(interval_progress_bar.as_ref())
+                .map(|(pb, interval_progress_bar)| {
+                    self.multi_progress_bar
+                        .insert_after(interval_progress_bar, pb)
+                });
+            let process_change_stream = async move {
+                let mut change_stream = change_stream;
+                let retry_options = retryable::RetryOptions {
+                    retry_timeout: None,
+                    initial_backoff: std::time::Duration::from_secs(5),
+                    max_backoff: std::time::Duration::from_secs(60),
+                };
+                loop {
+                    // Workaround as AsyncFnMut isn't mature yet.
+                    // Should be changed to use AsyncFnMut once it is.
+                    let change_stream = tokio::sync::Mutex::new(&mut change_stream);
+                    let change_msg = retryable::run(
+                        || async {
+                            let mut change_stream = change_stream.lock().await;
+                            change_stream
+                                .next()
+                                .await
+                                .transpose()
+                                .map_err(retryable::Error::retryable)
+                        },
+                        &retry_options,
+                    )
+                    .await
+                    .map_err(Into::<anyhow::Error>::into)
+                    .with_context(|| {
+                        format!(
+                            "Error in getting change message for flow `{}` source `{}`",
+                            task.flow.flow_instance.name, import_op.name
+                        )
+                    });
+                    let change_msg = match change_msg {
+                        Ok(Some(change_msg)) => change_msg,
+                        Ok(None) => break,
+                        Err(err) => {
+                            error!("{:?}", err);
+                            continue;
+                        }
+                    };
+
+                    let update_stats = Arc::new(stats::UpdateStats::default());
+                    let ack_fn = {
+                        let status_tx = status_tx.clone();
+                        let update_stats = update_stats.clone();
+                        let change_stream_stats = stats.clone();
+                        async move || {
+                            if update_stats.has_any_change() {
+                                status_tx.send_modify(|update| {
+                                    update.source_updates_num[source_idx] += 1;
+                                });
+                                change_stream_stats.merge(&update_stats);
+                            }
+                            if let Some(ack_fn) = change_msg.ack_fn {
+                                ack_fn().await
+                            } else {
+                                Ok(())
                             }
                         }
-                        Ok(())
+                    };
+                    let shared_ack_fn = Arc::new(Mutex::new(SharedAckFn::new(
+                        change_msg.changes.iter().len(),
+                        ack_fn,
+                    )));
+                    for change in change_msg.changes {
+                        let shared_ack_fn = shared_ack_fn.clone();
+                        let concur_permit = import_op
+                            .concurrency_controller
+                            .acquire(concur_control::BYTES_UNKNOWN_YET)
+                            .await?;
+                        tokio::spawn(source_indexing_context.clone().process_source_row(
+                            ProcessSourceRowInput {
+                                key: change.key,
+                                key_aux_info: Some(change.key_aux_info),
+                                data: change.data,
+                            },
+                            super::source_indexer::UpdateMode::Normal,
+                            update_stats.clone(),
+                            Some(operation_in_process_stats.clone()),
+                            concur_permit,
+                            Some(move || async move { SharedAckFn::ack(&shared_ack_fn).await }),
+                        ));
                     }
                 }
-                .boxed(),
-            );
+                Ok(())
+            };
 
+            let slf = &self;
             futs.push(
                 async move {
-                    let mut interval = tokio::time::interval(REPORT_INTERVAL);
-                    let mut last_change_stream_stats: UpdateStats =
-                        change_stream_stats.as_ref().clone();
-                    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-                    interval.tick().await;
-                    loop {
-                        interval.tick().await;
-                        let curr_change_stream_stats = change_stream_stats.as_ref().clone();
-                        let delta = curr_change_stream_stats.delta(&last_change_stream_stats);
-                        if delta.has_any_change() {
-                            task.report_stats(&delta, "change stream", None);
-                            last_change_stream_stats = curr_change_stream_stats;
-                        }
-                    }
+                    slf.run_with_progress_report(
+                        process_change_stream,
+                        &stats_to_report,
+                        "change stream",
+                        None,
+                        progress_bar.as_ref(),
+                    )
+                    .await
                 }
                 .boxed(),
             );
@@ -274,6 +282,7 @@ impl SourceUpdateTask {
                         "batch update"
                     },
                     initial_update_options,
+                    interval_progress_bar.as_ref(),
                 )
                 .await;
 
@@ -282,6 +291,14 @@ impl SourceUpdateTask {
                     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
                     interval.tick().await;
                     loop {
+                        if let Some(progress_bar) = interval_progress_bar.as_ref() {
+                            progress_bar.set_message(format!(
+                                "{}.{}: Waiting for next interval update...",
+                                task.flow.flow_instance.name,
+                                task.import_op().name
+                            ));
+                            progress_bar.tick();
+                        }
                         interval.tick().await;
 
                         task.update_one_pass_with_error_logging(
@@ -291,6 +308,7 @@ impl SourceUpdateTask {
                                 expect_little_diff: true,
                                 mode: super::source_indexer::UpdateMode::Normal,
                             },
+                            interval_progress_bar.as_ref(),
                         )
                         .await;
                     }
@@ -304,12 +322,12 @@ impl SourceUpdateTask {
         Ok(())
     }
 
-    fn report_stats(
+    fn stats_message(
         &self,
         stats: &stats::UpdateStats,
         update_title: &str,
         start_time: Option<std::time::Instant>,
-    ) {
+    ) -> String {
         self.source_update_stats.merge(stats);
         let mut message = format!(
             "{}.{} ({update_title}): {stats}",
@@ -319,15 +337,78 @@ impl SourceUpdateTask {
         if let Some(start_time) = start_time {
             write!(
                 &mut message,
-                " [processing time: {:.3}s]",
+                " [elapsed: {:.3}s]",
                 start_time.elapsed().as_secs_f64()
             )
             .expect("Failed to write to message");
         }
+        message
+    }
+
+    fn report_stats(
+        &self,
+        stats: &stats::UpdateStats,
+        update_title: &str,
+        start_time: Option<std::time::Instant>,
+        prefix: &str,
+    ) {
+        if start_time.is_none() && !stats.has_any_change() {
+            return;
+        }
         if self.options.print_stats {
-            println!("{message}");
+            println!(
+                "{prefix}{message}",
+                message = self.stats_message(stats, update_title, start_time)
+            );
         } else {
-            trace!("{message}");
+            trace!(
+                "{prefix}{message}",
+                message = self.stats_message(stats, update_title, start_time)
+            );
+        }
+    }
+
+    fn stats_report_enabled(&self) -> bool {
+        self.options.print_stats || log_enabled!(log::Level::Trace)
+    }
+
+    async fn run_with_progress_report(
+        &self,
+        fut: impl Future<Output = Result<()>>,
+        stats: &stats::UpdateStats,
+        update_title: &str,
+        start_time: Option<std::time::Instant>,
+        progress_bar: Option<&ProgressBar>,
+    ) -> Result<()> {
+        let interval = if progress_bar.is_some() {
+            PROGRESS_BAR_REPORT_INTERVAL
+        } else if self.stats_report_enabled() {
+            TRACE_REPORT_INTERVAL
+        } else {
+            return fut.await;
+        };
+        let mut pinned_fut = Box::pin(fut);
+        let mut interval = tokio::time::interval(interval);
+
+        // Use this to skip the first tick if there's no progress bar.
+        let mut report_ready = false;
+        loop {
+            tokio::select! {
+                res = &mut pinned_fut => {
+                    return res;
+                }
+                _ = interval.tick() => {
+                    if let Some(progress_bar) = progress_bar {
+                        progress_bar.set_message(
+                            self.stats_message(stats, update_title, start_time));
+                        progress_bar.tick();
+                    } else if report_ready {
+                        self.report_stats(stats, update_title, start_time, "⏳ ");
+                    } else {
+                        report_ready = true;
+                    }
+                }
+            }
         }
     }
 
@@ -336,75 +417,27 @@ impl SourceUpdateTask {
         source_indexing_context: &Arc<SourceIndexingContext>,
         update_title: &str,
         update_options: super::source_indexer::UpdateOptions,
+        progress_bar: Option<&ProgressBar>,
     ) -> Result<()> {
-        let now = std::time::Instant::now();
+        let start_time = std::time::Instant::now();
         let update_stats = Arc::new(stats::UpdateStats::default());
 
-        // Spawn periodic stats reporting task if print_stats is enabled
-        let (reporting_handle, progress_bar) = if self.options.print_stats {
-            let update_stats_clone = update_stats.clone();
-            let update_title_owned = update_title.to_string();
-            let flow_name = self.flow.flow_instance.name.clone();
-            let import_op_name = self.import_op().name.clone();
-
-            // Create a progress bar that will overwrite the same line
-            let pb = ProgressBar::new_spinner();
-            pb.set_style(
-                indicatif::ProgressStyle::default_spinner()
-                    .template("{msg}")
-                    .unwrap(),
-            );
-            let pb_clone = pb.clone();
-
-            let report_task = async move {
-                let mut interval = tokio::time::interval(REPORT_INTERVAL);
-                interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-                interval.tick().await; // Skip first tick
-
-                loop {
-                    interval.tick().await;
-                    let current_stats = update_stats_clone.as_ref().clone();
-                    if current_stats.has_any_change() {
-                        // Show cumulative stats (always show latest total, not delta)
-                        pb_clone.set_message(format!(
-                            "{}.{} ({update_title_owned}): {}",
-                            flow_name, import_op_name, current_stats
-                        ));
-                    }
-                }
-            };
-            (
-                Some(AbortOnDropHandle::new(tokio::spawn(report_task))),
-                Some(pb),
-            )
-        } else {
-            (None, None)
-        };
-
-        // Run the actual update
-        let update_result = source_indexing_context
-            .update(&update_stats, update_options)
-            .await
-            .with_context(|| {
-                format!(
-                    "Error in processing flow `{}` source `{}` ({update_title})",
-                    self.flow.flow_instance.name,
-                    self.import_op().name
-                )
-            });
-
-        // Cancel the reporting task if it was spawned
-        if let Some(handle) = reporting_handle {
-            handle.abort();
-        }
-
-        // Clear the progress bar to ensure final stats appear on a new line
-        if let Some(pb) = progress_bar {
-            pb.finish_and_clear();
-        }
-
         // Check update result
-        update_result?;
+        self.run_with_progress_report(
+            source_indexing_context.update(&update_stats, update_options),
+            &update_stats,
+            update_title,
+            Some(start_time),
+            progress_bar,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Error in processing flow `{}` source `{}` ({update_title})",
+                self.flow.flow_instance.name,
+                self.import_op().name
+            )
+        })?;
 
         if update_stats.has_any_change() {
             self.status_tx.send_modify(|update| {
@@ -413,7 +446,11 @@ impl SourceUpdateTask {
         }
 
         // Report final stats
-        self.report_stats(&update_stats, update_title, Some(now));
+        if let Some(progress_bar) = progress_bar {
+            progress_bar.set_message("");
+        }
+        self.multi_progress_bar
+            .suspend(|| self.report_stats(&update_stats, update_title, Some(start_time), "✅ "));
         Ok(())
     }
 
@@ -422,9 +459,15 @@ impl SourceUpdateTask {
         source_indexing_context: &Arc<SourceIndexingContext>,
         update_title: &str,
         update_options: super::source_indexer::UpdateOptions,
+        progress_bar: Option<&ProgressBar>,
     ) {
         let result = self
-            .update_one_pass(source_indexing_context, update_title, update_options)
+            .update_one_pass(
+                source_indexing_context,
+                update_title,
+                update_options,
+                progress_bar,
+            )
             .await;
         if let Err(err) = result {
             error!("{:?}", err);
@@ -440,6 +483,7 @@ impl FlowLiveUpdater {
     pub async fn start(
         flow_ctx: Arc<FlowContext>,
         pool: &PgPool,
+        multi_progress_bar: &LazyLock<MultiProgress>,
         options: FlowLiveUpdaterOptions,
     ) -> Result<Self> {
         let plan = flow_ctx.flow.get_execution_plan().await?;
@@ -470,6 +514,7 @@ impl FlowLiveUpdater {
                 options: options.clone(),
                 status_tx: status_tx.clone(),
                 num_remaining_tasks_tx: num_remaining_tasks_tx.clone(),
+                multi_progress_bar: (*multi_progress_bar).clone(),
             };
             join_set.spawn(source_update_task.run());
             stats_per_task.push(source_update_stats);
