@@ -255,14 +255,84 @@ fn try_merge_collector_schemas(
     schema1: &CollectorSchema,
     schema2: &CollectorSchema,
 ) -> Result<CollectorSchema> {
-    let fields = try_merge_fields_schemas(&schema1.fields, &schema2.fields)?;
+    let schema1_fields = &schema1.fields;
+    let schema2_fields = &schema2.fields;
+
+    // Create a map from field name to index in schema1
+    let field_map: HashMap<FieldName, usize> = schema1_fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.clone(), i))
+        .collect();
+
+    let mut output_fields = Vec::new();
+    let mut next_field_id_1 = 0;
+    let mut next_field_id_2 = 0;
+
+    for (idx, field) in schema2_fields.iter().enumerate() {
+        if let Some(&idx1) = field_map.get(&field.name) {
+            if idx1 < next_field_id_1 {
+                api_bail!(
+                    "Order mismatch for field '{}': appears at position {} in first schema but expected after {}",
+                    field.name,
+                    idx1,
+                    next_field_id_1
+                );
+            }
+            // Add intervening fields from schema1
+            for i in next_field_id_1..idx1 {
+                output_fields.push(schema1_fields[i].clone());
+            }
+            // Add intervening fields from schema2
+            for i in next_field_id_2..idx {
+                output_fields.push(schema2_fields[i].clone());
+            }
+            // Merge the field
+            let merged_type =
+                try_make_common_value_type(&schema1_fields[idx1].value_type, &field.value_type)?;
+            output_fields.push(FieldSchema {
+                name: field.name.clone(),
+                value_type: merged_type,
+                description: None,
+            });
+            next_field_id_1 = idx1 + 1;
+            next_field_id_2 = idx + 1;
+        } else if matches!(field.value_type.typ, ValueType::Basic(BasicValueType::Uuid)) {
+            // For UUID, emit it immediately to ensure it appears first
+            output_fields.push(field.clone());
+            next_field_id_2 = idx + 1;
+        }
+        // Fields not in schema1 and not UUID are added at the end
+    }
+
+    // Add remaining fields from schema1
+    for i in next_field_id_1..schema1_fields.len() {
+        output_fields.push(schema1_fields[i].clone());
+    }
+
+    // Add remaining fields from schema2
+    for i in next_field_id_2..schema2_fields.len() {
+        output_fields.push(schema2_fields[i].clone());
+    }
+
+    // Handle auto_uuid_field_idx
+    let auto_uuid_field_idx = match (schema1.auto_uuid_field_idx, schema2.auto_uuid_field_idx) {
+        (Some(idx1), Some(idx2)) => {
+            let name1 = &schema1_fields[idx1].name;
+            let name2 = &schema2_fields[idx2].name;
+            if name1 == name2 {
+                // Find the position of the auto_uuid field in the merged output
+                output_fields.iter().position(|f| &f.name == name1)
+            } else {
+                None // Different auto_uuid fields, disable
+            }
+        }
+        _ => None, // If either doesn't have it, or both don't, disable
+    };
+
     Ok(CollectorSchema {
-        fields,
-        auto_uuid_field_idx: if schema1.auto_uuid_field_idx == schema2.auto_uuid_field_idx {
-            schema1.auto_uuid_field_idx
-        } else {
-            None
-        },
+        fields: output_fields,
+        auto_uuid_field_idx,
     })
 }
 
@@ -803,16 +873,42 @@ impl AnalyzerContext {
                 let (struct_mapping, fields_schema) = analyze_struct_mapping(&op.input, op_scope)?;
                 let has_auto_uuid_field = op.auto_uuid_field.is_some();
                 let fingerprinter = Fingerprinter::default().with(&fields_schema)?;
+                let input_field_names: Vec<FieldName> =
+                    fields_schema.iter().map(|f| f.name.clone()).collect();
+                let collector_ref = add_collector(
+                    &op.scope_name,
+                    op.collector_name.clone(),
+                    CollectorSchema::from_fields(fields_schema, op.auto_uuid_field.clone()),
+                    op_scope,
+                )?;
+                // Get the merged collector schema after adding
+                let collector_schema: Arc<CollectorSchema> = {
+                    let scope = find_scope(&op.scope_name, op_scope)?.1;
+                    let states = scope.states.lock().unwrap();
+                    let collector = states.collectors.get(&op.collector_name).unwrap();
+                    collector.schema.clone()
+                };
+
+                // Pre-compute field index mappings for efficient evaluation
+                let field_index_mapping: Vec<usize> = input_field_names
+                    .iter()
+                    .map(|field_name| {
+                        collector_schema
+                            .fields
+                            .iter()
+                            .position(|f| &f.name == field_name)
+                            .unwrap_or(usize::MAX)
+                    })
+                    .collect();
+
                 let collect_op = AnalyzedReactiveOp::Collect(AnalyzedCollectOp {
                     name: reactive_op.name.clone(),
                     has_auto_uuid_field,
                     input: struct_mapping,
-                    collector_ref: add_collector(
-                        &op.scope_name,
-                        op.collector_name.clone(),
-                        CollectorSchema::from_fields(fields_schema, op.auto_uuid_field.clone()),
-                        op_scope,
-                    )?,
+                    input_field_names,
+                    collector_schema,
+                    collector_ref,
+                    field_index_mapping,
                     fingerprinter,
                 });
                 async move { Ok(collect_op) }.boxed()
