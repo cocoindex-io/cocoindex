@@ -1,9 +1,15 @@
 use crate::prelude::*;
+use owo_colors::{AnsiColors, OwoColorize};
 
 use std::{
     ops::AddAssign,
     sync::atomic::{AtomicI64, Ordering::Relaxed},
 };
+
+/// Check if stdout is a TTY
+fn is_stdout_tty() -> bool {
+    atty::is(atty::Stream::Stdout)
+}
 
 #[derive(Default, Serialize)]
 pub struct Counter(pub AtomicI64);
@@ -107,6 +113,10 @@ pub struct UpdateStats {
     pub num_errors: Counter,
     /// Processing counters for tracking in-process rows.
     pub processing: ProcessingCounters,
+    /// Cumulative total count of items (for display purposes)
+    /// This represents the actual total after applying additions and deletions
+    #[serde(skip)]
+    pub cumulative_total: Counter,
 }
 
 impl UpdateStats {
@@ -119,6 +129,7 @@ impl UpdateStats {
             num_reprocesses: self.num_reprocesses.delta(&base.num_reprocesses),
             num_errors: self.num_errors.delta(&base.num_errors),
             processing: self.processing.delta(&base.processing),
+            cumulative_total: self.cumulative_total.clone(),
         }
     }
 
@@ -130,6 +141,9 @@ impl UpdateStats {
         self.num_reprocesses.merge(&delta.num_reprocesses);
         self.num_errors.merge(&delta.num_errors);
         self.processing.merge(&delta.processing);
+        // Update cumulative total: add insertions, subtract deletions
+        let net_change = delta.num_insertions.get() - delta.num_deletions.get();
+        self.cumulative_total.inc(net_change);
     }
 
     pub fn has_any_change(&self) -> bool {
@@ -193,53 +207,149 @@ impl OperationInProcessStats {
 
 impl std::fmt::Display for UpdateStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut messages = Vec::new();
-        let num_errors = self.num_errors.get();
-        if num_errors > 0 {
-            messages.push(format!("{num_errors} source rows FAILED"));
-        }
-
-        let num_skipped = self.num_no_change.get();
-        if num_skipped > 0 {
-            messages.push(format!("{num_skipped} source rows NO CHANGE"));
-        }
-
+        let mut segments = Vec::new();
         let num_insertions = self.num_insertions.get();
         let num_deletions = self.num_deletions.get();
         let num_updates = self.num_updates.get();
+        let num_no_change = self.num_no_change.get();
+        let num_errors = self.num_errors.get();
+        let num_in_process = self.processing.get_in_process();
         let num_reprocesses = self.num_reprocesses.get();
-        let num_source_rows = num_insertions + num_deletions + num_updates + num_reprocesses;
-        if num_source_rows > 0 {
-            let mut sub_messages = Vec::new();
+        let total = num_insertions + num_deletions + num_updates + num_no_change + num_reprocesses;
+
+        // Progress bar segments
+        if total > 0 {
             if num_insertions > 0 {
-                sub_messages.push(format!("{num_insertions} ADDED"));
+                segments.push((num_insertions, "+", format!("(+{} added)", num_insertions)));
             }
             if num_deletions > 0 {
-                sub_messages.push(format!("{num_deletions} REMOVED"));
-            }
-            if num_reprocesses > 0 {
-                sub_messages.push(format!(
-                    "{num_reprocesses} REPROCESSED on flow/logic changes or reexport"
-                ));
+                segments.push((num_deletions, "-", format!("(-{} removed)", num_deletions)));
             }
             if num_updates > 0 {
-                sub_messages.push(format!("{num_updates} UPDATED in source content only"));
+                segments.push((num_updates, "~", format!("(~{} updated)", num_updates)));
             }
-            messages.push(format!(
-                "{num_source_rows} source rows processed ({})",
-                sub_messages.join(", "),
-            ));
+            if num_no_change > 0 {
+                segments.push((num_no_change, " ", "".to_string()));
+            }
         }
 
-        let num_in_process = self.processing.get_in_process();
-        if num_in_process > 0 {
-            messages.push(format!("{num_in_process} source rows IN PROCESS"));
+        // Error handling
+        if num_errors > 0 {
+            let tty = is_stdout_tty();
+            if tty {
+                write!(
+                    f,
+                    "{}",
+                    format!("{} rows failed", num_errors).color(AnsiColors::White)
+                )?;
+            } else {
+                write!(f, "{} rows failed", num_errors)?;
+            }
+            if !segments.is_empty() {
+                write!(f, "; ")?;
+            }
         }
 
-        if !messages.is_empty() {
-            write!(f, "{}", messages.join("; "))?;
+        // Progress bar
+        if !segments.is_empty() {
+            let mut sorted_segments = segments.clone();
+            sorted_segments.sort_by_key(|s| s.0);
+            sorted_segments.reverse();
+
+            let bar_width = 40;
+            let mut bar = String::new();
+
+            let mut remaining_width = bar_width;
+
+            for (count, segment_type, _) in sorted_segments.iter() {
+                let segment_width = (*count * bar_width as i64 / total as i64) as usize;
+                let width = std::cmp::min(segment_width, remaining_width);
+                if width > 0 {
+                    // Calculate completed and remaining portions
+                    let completed_portion =
+                        (width as f64 * (total - num_in_process) as f64 / total as f64) as usize;
+                    let remaining_portion = width - completed_portion;
+
+                    // Add segment with appropriate characters based on type
+                    if completed_portion > 0 {
+                        let completed_char = match *segment_type {
+                            "+" => "█",
+                            "-" => "▓",
+                            "~" => "▒",
+                            _ => "░",
+                        };
+                        bar.push_str(&completed_char.repeat(completed_portion));
+                    }
+
+                    if remaining_portion > 0 {
+                        let remaining_char = match *segment_type {
+                            "+" => "▒",
+                            "-" => "░",
+                            "~" => "░",
+                            _ => " ",
+                        };
+                        bar.push_str(&remaining_char.repeat(remaining_portion));
+                    }
+
+                    remaining_width = remaining_width.saturating_sub(width);
+                }
+            }
+            if remaining_width > 0 {
+                bar.push_str(&" ".repeat(remaining_width));
+            }
+            let tty = is_stdout_tty();
+            // Use total from current operations - this represents the actual record count
+            if tty {
+                write!(
+                    f,
+                    "[{}] {}/{} records ",
+                    bar.color(AnsiColors::BrightBlack),
+                    total - num_in_process,
+                    total
+                )?;
+            } else {
+                write!(f, "[{}] {}/{} records ", bar, total - num_in_process, total)?;
+            }
+
+            // Add segment labels with different grey shades for each segment type
+            let mut first = true;
+            for (_, segment_type, label) in segments.iter() {
+                if !label.is_empty() {
+                    if !first {
+                        write!(f, " ")?;
+                    }
+                    if tty {
+                        match *segment_type {
+                            "+" => write!(f, "{}", label.color(AnsiColors::BrightBlack))?, // Lightest grey for additions
+                            "-" => write!(f, "{}", label.color(AnsiColors::White))?, // White for removals
+                            "~" => write!(f, "{}", label.color(AnsiColors::Black))?, // Dark grey for updates
+                            _ => write!(f, "{}", label.color(AnsiColors::Black))?, // Black for no-change
+                        }
+                    } else {
+                        write!(f, "{}", label)?;
+                    }
+                    first = false;
+                }
+            }
         } else {
             write!(f, "No changes")?;
+        }
+
+        // In-process info with grey coloring
+        if num_in_process > 0 {
+            if !segments.is_empty() {
+                write!(f, " ")?;
+            }
+            let tty = is_stdout_tty();
+            if tty {
+                write!(
+                    f,
+                    "{}",
+                    format!("({} in process)", num_in_process).color(AnsiColors::Black)
+                )?;
+            } else {
+                write!(f, "({} in process)", num_in_process)?;
+            }
         }
 
         Ok(())
@@ -511,17 +621,19 @@ mod tests {
         // Test with no activity
         assert_eq!(format!("{}", stats), "No changes");
 
-        // Test with in-process rows
+        // Test with in-process rows (no segments yet, so just shows in-process)
         stats.processing.start(5);
-        assert!(format!("{}", stats).contains("5 source rows IN PROCESS"));
+        let display = format!("{}", stats);
+        assert!(display.contains("5 in process"));
 
         // Test with mixed activity
         stats.num_insertions.inc(3);
         stats.num_errors.inc(1);
+        stats.cumulative_total.inc(3);
         let display = format!("{}", stats);
-        assert!(display.contains("1 source rows FAILED"));
-        assert!(display.contains("3 source rows processed"));
-        assert!(display.contains("5 source rows IN PROCESS"));
+        assert!(display.contains("1 rows failed"));
+        assert!(display.contains("(+3 added)"));
+        assert!(display.contains("5 in process"));
     }
 
     #[test]
