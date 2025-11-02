@@ -236,7 +236,11 @@ impl std::fmt::Display for UpdateStats {
         if num_errors > 0 {
             let tty = is_stdout_tty();
             if tty {
-                write!(f, "{}", format!("{} rows failed", num_errors).color(AnsiColors::White))?;
+                write!(
+                    f,
+                    "{}",
+                    format!("{} rows failed", num_errors).color(AnsiColors::White)
+                )?;
             } else {
                 write!(f, "{} rows failed", num_errors)?;
             }
@@ -262,7 +266,8 @@ impl std::fmt::Display for UpdateStats {
                 let width = std::cmp::min(segment_width, remaining_width);
                 if width > 0 {
                     // Calculate completed and remaining portions
-                    let completed_portion = (width as f64 * (total - num_in_process) as f64 / total as f64) as usize;
+                    let completed_portion =
+                        (width as f64 * (total - num_in_process) as f64 / total as f64) as usize;
                     let remaining_portion = width - completed_portion;
 
                     // Add segment with appropriate characters based on type
@@ -271,7 +276,7 @@ impl std::fmt::Display for UpdateStats {
                             "+" => "█",
                             "-" => "▓",
                             "~" => "▒",
-                            _ => "░"
+                            _ => "░",
                         };
                         bar.push_str(&completed_char.repeat(completed_portion));
                     }
@@ -281,7 +286,7 @@ impl std::fmt::Display for UpdateStats {
                             "+" => "▒",
                             "-" => "░",
                             "~" => "░",
-                            _ => " "
+                            _ => " ",
                         };
                         bar.push_str(&remaining_char.repeat(remaining_portion));
                     }
@@ -295,7 +300,13 @@ impl std::fmt::Display for UpdateStats {
             let tty = is_stdout_tty();
             // Use total from current operations - this represents the actual record count
             if tty {
-                write!(f, "[{}] {}/{} records ", bar.color(AnsiColors::BrightBlack), total - num_in_process, total)?;
+                write!(
+                    f,
+                    "[{}] {}/{} records ",
+                    bar.color(AnsiColors::BrightBlack),
+                    total - num_in_process,
+                    total
+                )?;
             } else {
                 write!(f, "[{}] {}/{} records ", bar, total - num_in_process, total)?;
             }
@@ -309,10 +320,10 @@ impl std::fmt::Display for UpdateStats {
                     }
                     if tty {
                         match *segment_type {
-                            "+" => write!(f, "{}", label.color(AnsiColors::BrightBlack))?,     // Lightest grey for additions
-                            "-" => write!(f, "{}", label.color(AnsiColors::White))?,           // White for removals
-                            "~" => write!(f, "{}", label.color(AnsiColors::Black))?,           // Dark grey for updates
-                            _ => write!(f, "{}", label.color(AnsiColors::Black))?,             // Black for no-change
+                            "+" => write!(f, "{}", label.color(AnsiColors::BrightBlack))?, // Lightest grey for additions
+                            "-" => write!(f, "{}", label.color(AnsiColors::White))?, // White for removals
+                            "~" => write!(f, "{}", label.color(AnsiColors::Black))?, // Dark grey for updates
+                            _ => write!(f, "{}", label.color(AnsiColors::Black))?, // Black for no-change
                         }
                     } else {
                         write!(f, "{}", label)?;
@@ -331,7 +342,11 @@ impl std::fmt::Display for UpdateStats {
             }
             let tty = is_stdout_tty();
             if tty {
-                write!(f, "{}", format!("({} in process)", num_in_process).color(AnsiColors::Black))?;
+                write!(
+                    f,
+                    "{}",
+                    format!("({} in process)", num_in_process).color(AnsiColors::Black)
+                )?;
             } else {
                 write!(f, "({} in process)", num_in_process)?;
             }

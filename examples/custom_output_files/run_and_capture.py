@@ -6,10 +6,7 @@ import sys
 
 # Run main.py and capture output
 result = subprocess.run(
-    [sys.executable, "main.py"],
-    capture_output=True,
-    text=True,
-    timeout=10
+    [sys.executable, "main.py"], capture_output=True, text=True, timeout=10
 )
 
 # Write both stdout and stderr to test_output.txt
