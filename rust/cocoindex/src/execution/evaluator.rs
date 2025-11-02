@@ -370,9 +370,6 @@ async fn evaluate_op_scope(
             AnalyzedReactiveOp::Transform(op) => {
                 let transform_key = format!("transform/{}{}", op_scope.scope_qualifier, op.name);
 
-                //     eprintln!("🔍 DEBUG: Transform op '{}' (function: {}) starting, timeout: {:?}",
-                //   op.name, op.op_kind, op.function_exec_info.timeout);
-
                 // Track transform operation start
                 if let Some(ref op_stats) = operation_in_process_stats {
                     op_stats.start_processing(&transform_key, 1);
@@ -393,8 +390,6 @@ async fn evaluate_op_scope(
                 let op_kind_for_warning = op.op_kind.clone();
                 let warn_handle = tokio::spawn(async move {
                     tokio::time::sleep(warn_duration).await;
-                    // eprintln!("WARNING: Function '{}' is taking longer than 30s", op_name_for_warning);
-                    // warn!("Function '{}' is taking longer than 30s", op_name_for_warning);
                     eprintln!(
                         "⚠️  WARNING: Function '{}' ({}) is taking longer than 30s",
                         op_kind_for_warning, op_name_for_warning
@@ -427,7 +422,6 @@ async fn evaluate_op_scope(
                     let timeout_result = tokio::time::timeout(timeout_duration, eval_future).await;
                     if timeout_result.is_err() {
                         Err(anyhow!(
-                            // "Function '{}' timed out after {} seconds",
                             "Function '{}' ({}) timed out after {} seconds",
                             op.op_kind,
                             op.name,
@@ -445,7 +439,6 @@ async fn evaluate_op_scope(
                     let timeout_result = tokio::time::timeout(timeout_duration, eval_future).await;
                     if timeout_result.is_err() {
                         Err(anyhow!(
-                            // "Function '{}' timed out after {} seconds",
                             "Function '{}' ({}) timed out after {} seconds",
                             op.op_kind,
                             op.name,
@@ -466,40 +459,6 @@ async fn evaluate_op_scope(
                 }
 
                 result.with_context(|| format!("Evaluating Transform op `{}`", op.name))?
-                // let result = if op.function_exec_info.enable_cache {
-                //     let output_value_cell = memory.get_cache_entry(
-                //         || {
-                //             Ok(op
-                //                 .function_exec_info
-                //                 .fingerprinter
-                //                 .clone()
-                //                 .with(&input_values)?
-                //                 .into_fingerprint())
-                //         },
-                //         &op.function_exec_info.output_type,
-                //         /*ttl=*/ None,
-                //     )?;
-                //     evaluate_with_cell(output_value_cell.as_ref(), move || {
-                //         op.executor.evaluate(input_values)
-                //     })
-                //     .await
-                //     .and_then(|v| head_scope.define_field(&op.output, &v))
-                // } else {
-                //     op.executor
-                //         .evaluate(input_values)
-                //         .await
-                //         .and_then(|v| head_scope.define_field(&op.output, &v))
-                // }
-                // .with_context(|| format!("Evaluating Transform op `{}`", op.name,));
-
-                // // Track transform operation completion
-                // if let Some(ref op_stats) = operation_in_process_stats {
-                //     let transform_key =
-                //         format!("transform/{}{}", op_scope.scope_qualifier, op.name);
-                //     op_stats.finish_processing(&transform_key, 1);
-                // }
-
-                // result?
             }
 
             AnalyzedReactiveOp::ForEach(op) => {
