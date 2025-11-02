@@ -1,15 +1,9 @@
 use crate::prelude::*;
-use owo_colors::{AnsiColors, OwoColorize};
 
 use std::{
     ops::AddAssign,
     sync::atomic::{AtomicI64, Ordering::Relaxed},
 };
-
-/// Check if stdout is a TTY
-fn is_stdout_tty() -> bool {
-    atty::is(atty::Stream::Stdout)
-}
 
 #[derive(Default, Serialize)]
 pub struct Counter(pub AtomicI64);
@@ -235,16 +229,7 @@ impl std::fmt::Display for UpdateStats {
 
         // Error handling
         if num_errors > 0 {
-            let tty = is_stdout_tty();
-            if tty {
-                write!(
-                    f,
-                    "{}",
-                    format!("{} rows failed", num_errors).color(AnsiColors::White)
-                )?;
-            } else {
-                write!(f, "{} rows failed", num_errors)?;
-            }
+            write!(f, "{} rows failed", num_errors)?;
             if !segments.is_empty() {
                 write!(f, "; ")?;
             }
@@ -297,19 +282,8 @@ impl std::fmt::Display for UpdateStats {
             if remaining_width > 0 {
                 bar.push_str(&" ".repeat(remaining_width));
             }
-            let tty = is_stdout_tty();
             // Use total from current operations - this represents the actual record count
-            if tty {
-                write!(
-                    f,
-                    "[{}] {}/{} records ",
-                    bar.color(AnsiColors::BrightBlack),
-                    total - num_in_process,
-                    total
-                )?;
-            } else {
-                write!(f, "[{}] {}/{} records ", bar, total - num_in_process, total)?;
-            }
+            write!(f, "[{}] {}/{} records ", bar, total - num_in_process, total)?;
 
             // Add segment labels with different grey shades for each segment type
             let mut first = true;
@@ -318,16 +292,7 @@ impl std::fmt::Display for UpdateStats {
                     if !first {
                         write!(f, " ")?;
                     }
-                    if tty {
-                        match *segment_type {
-                            "+" => write!(f, "{}", label.color(AnsiColors::BrightBlack))?, // Lightest grey for additions
-                            "-" => write!(f, "{}", label.color(AnsiColors::White))?, // White for removals
-                            "~" => write!(f, "{}", label.color(AnsiColors::Black))?, // Dark grey for updates
-                            _ => write!(f, "{}", label.color(AnsiColors::Black))?, // Black for no-change
-                        }
-                    } else {
-                        write!(f, "{}", label)?;
-                    }
+                    write!(f, "{}", label)?;
                     first = false;
                 }
             }
@@ -340,16 +305,7 @@ impl std::fmt::Display for UpdateStats {
             if !segments.is_empty() {
                 write!(f, " ")?;
             }
-            let tty = is_stdout_tty();
-            if tty {
-                write!(
-                    f,
-                    "{}",
-                    format!("({} in process)", num_in_process).color(AnsiColors::Black)
-                )?;
-            } else {
-                write!(f, "({} in process)", num_in_process)?;
-            }
+            write!(f, "({} in process)", num_in_process)?;
         }
 
         Ok(())
