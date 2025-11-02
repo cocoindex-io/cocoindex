@@ -72,6 +72,7 @@ pub struct ResolvedOpArg {
 
 pub trait ResolvedOpArgExt: Sized {
     fn value<'a>(&self, args: &'a [value::Value]) -> Result<&'a value::Value>;
+    #[allow(dead_code)]
     fn take_value(&self, args: &mut [value::Value]) -> Result<value::Value>;
 }
 

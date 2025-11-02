@@ -1,9 +1,15 @@
 use crate::prelude::*;
+use owo_colors::{AnsiColors, OwoColorize};
 
 use std::{
     ops::AddAssign,
     sync::atomic::{AtomicI64, Ordering::Relaxed},
 };
+
+/// Check if stdout is a TTY
+fn is_stdout_tty() -> bool {
+    atty::is(atty::Stream::Stdout)
+}
 
 #[derive(Default, Serialize)]
 pub struct Counter(pub AtomicI64);
@@ -107,6 +113,10 @@ pub struct UpdateStats {
     pub num_errors: Counter,
     /// Processing counters for tracking in-process rows.
     pub processing: ProcessingCounters,
+    /// Cumulative total count of items (for display purposes)
+    /// This represents the actual total after applying additions and deletions
+    #[serde(skip)]
+    pub cumulative_total: Counter,
 }
 
 impl UpdateStats {
@@ -119,6 +129,7 @@ impl UpdateStats {
             num_reprocesses: self.num_reprocesses.delta(&base.num_reprocesses),
             num_errors: self.num_errors.delta(&base.num_errors),
             processing: self.processing.delta(&base.processing),
+            cumulative_total: self.cumulative_total.clone(),
         }
     }
 
@@ -130,6 +141,9 @@ impl UpdateStats {
         self.num_reprocesses.merge(&delta.num_reprocesses);
         self.num_errors.merge(&delta.num_errors);
         self.processing.merge(&delta.processing);
+        // Update cumulative total: add insertions, subtract deletions
+        let net_change = delta.num_insertions.get() - delta.num_deletions.get();
+        self.cumulative_total.inc(net_change);
     }
 
     pub fn has_any_change(&self) -> bool {
@@ -205,13 +219,13 @@ impl std::fmt::Display for UpdateStats {
         // Progress bar segments
         if total > 0 {
             if num_insertions > 0 {
-                segments.push((num_insertions, "+", format!("\x1B[90m(+{} added)\x1B[0m", num_insertions)));
+                segments.push((num_insertions, "+", format!("(+{} added)", num_insertions)));
             }
             if num_deletions > 0 {
-                segments.push((num_deletions, "-", format!("\x1B[90m(-{} removed)\x1B[0m", num_deletions)));
+                segments.push((num_deletions, "-", format!("(-{} removed)", num_deletions)));
             }
             if num_updates > 0 {
-                segments.push((num_updates, "~", format!("\x1B[90m(~{} updated)\x1B[0m", num_updates)));
+                segments.push((num_updates, "~", format!("(~{} updated)", num_updates)));
             }
             if num_no_change > 0 {
                 segments.push((num_no_change, " ", "".to_string()));
@@ -220,7 +234,12 @@ impl std::fmt::Display for UpdateStats {
 
         // Error handling
         if num_errors > 0 {
-            write!(f, "{} rows failed", num_errors)?;
+            let tty = is_stdout_tty();
+            if tty {
+                write!(f, "{}", format!("{} rows failed", num_errors).color(AnsiColors::White))?;
+            } else {
+                write!(f, "{} rows failed", num_errors)?;
+            }
             if !segments.is_empty() {
                 write!(f, "; ")?;
             }
@@ -235,7 +254,7 @@ impl std::fmt::Display for UpdateStats {
             let bar_width = 40;
             let mut bar = String::new();
 
-            let percentage = ((total - num_in_process) as f64 / total as f64 * 100.0) as i64;
+            let _percentage = ((total - num_in_process) as f64 / total as f64 * 100.0) as i64;
             let mut remaining_width = bar_width;
 
             for (count, segment_type, _) in sorted_segments.iter() {
@@ -273,16 +292,31 @@ impl std::fmt::Display for UpdateStats {
             if remaining_width > 0 {
                 bar.push_str(&" ".repeat(remaining_width));
             }
-            write!(f, "[{}] {}/{} records ", bar, total - num_in_process, total)?;
+            let tty = is_stdout_tty();
+            // Use total from current operations - this represents the actual record count
+            if tty {
+                write!(f, "[{}] {}/{} records ", bar.color(AnsiColors::BrightBlack), total - num_in_process, total)?;
+            } else {
+                write!(f, "[{}] {}/{} records ", bar, total - num_in_process, total)?;
+            }
 
-            // Add segment labels
+            // Add segment labels with different grey shades for each segment type
             let mut first = true;
-            for (_, _, label) in segments.iter() {
+            for (_, segment_type, label) in segments.iter() {
                 if !label.is_empty() {
                     if !first {
                         write!(f, " ")?;
                     }
-                    write!(f, "{}", label)?;
+                    if tty {
+                        match *segment_type {
+                            "+" => write!(f, "{}", label.color(AnsiColors::BrightBlack))?,     // Lightest grey for additions
+                            "-" => write!(f, "{}", label.color(AnsiColors::White))?,           // White for removals
+                            "~" => write!(f, "{}", label.color(AnsiColors::Black))?,           // Dark grey for updates
+                            _ => write!(f, "{}", label.color(AnsiColors::Black))?,             // Black for no-change
+                        }
+                    } else {
+                        write!(f, "{}", label)?;
+                    }
                     first = false;
                 }
             }
@@ -290,12 +324,17 @@ impl std::fmt::Display for UpdateStats {
             write!(f, "No changes")?;
         }
 
-        // In-process info
+        // In-process info with grey coloring
         if num_in_process > 0 {
             if !segments.is_empty() {
                 write!(f, " ")?;
             }
-            write!(f, "({} in process)", num_in_process)?;
+            let tty = is_stdout_tty();
+            if tty {
+                write!(f, "{}", format!("({} in process)", num_in_process).color(AnsiColors::Black))?;
+            } else {
+                write!(f, "({} in process)", num_in_process)?;
+            }
         }
 
         Ok(())
@@ -567,17 +606,19 @@ mod tests {
         // Test with no activity
         assert_eq!(format!("{}", stats), "No changes");
 
-        // Test with in-process rows
+        // Test with in-process rows (no segments yet, so just shows in-process)
         stats.processing.start(5);
-        assert!(format!("{}", stats).contains("5 source rows IN PROCESS"));
+        let display = format!("{}", stats);
+        assert!(display.contains("5 in process"));
 
         // Test with mixed activity
         stats.num_insertions.inc(3);
         stats.num_errors.inc(1);
+        stats.cumulative_total.inc(3);
         let display = format!("{}", stats);
-        assert!(display.contains("1 source rows FAILED"));
-        assert!(display.contains("3 source rows processed"));
-        assert!(display.contains("5 source rows IN PROCESS"));
+        assert!(display.contains("1 rows failed"));
+        assert!(display.contains("(+3 added)"));
+        assert!(display.contains("5 in process"));
     }
 
     #[test]
