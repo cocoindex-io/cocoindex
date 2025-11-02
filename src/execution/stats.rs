@@ -214,7 +214,8 @@ impl std::fmt::Display for UpdateStats {
         let num_no_change = self.num_no_change.get();
         let num_errors = self.num_errors.get();
         let num_in_process = self.processing.get_in_process();
-        let total = num_insertions + num_deletions + num_updates + num_no_change;
+        let num_reprocesses = self.num_reprocesses.get();
+        let total = num_insertions + num_deletions + num_updates + num_no_change + num_reprocesses;
 
         // Progress bar segments
         if total > 0 {
@@ -258,7 +259,6 @@ impl std::fmt::Display for UpdateStats {
             let bar_width = 40;
             let mut bar = String::new();
 
-            let _percentage = ((total - num_in_process) as f64 / total as f64 * 100.0) as i64;
             let mut remaining_width = bar_width;
 
             for (count, segment_type, _) in sorted_segments.iter() {
