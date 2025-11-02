@@ -2,6 +2,8 @@ use crate::prelude::*;
 
 use anyhow::{Context, Ok};
 use futures::future::try_join_all;
+use log::warn;
+use tokio::time::Duration;
 
 use crate::base::value::EstimatedByteSize;
 use crate::base::{schema, value};
@@ -366,10 +368,13 @@ async fn evaluate_op_scope(
     for reactive_op in op_scope.reactive_ops.iter() {
         match reactive_op {
             AnalyzedReactiveOp::Transform(op) => {
+                let transform_key = format!("transform/{}{}", op_scope.scope_qualifier, op.name);
+
+                //     eprintln!("🔍 DEBUG: Transform op '{}' (function: {}) starting, timeout: {:?}",
+                //   op.name, op.op_kind, op.function_exec_info.timeout);
+
                 // Track transform operation start
                 if let Some(ref op_stats) = operation_in_process_stats {
-                    let transform_key =
-                        format!("transform/{}{}", op_scope.scope_qualifier, op.name);
                     op_stats.start_processing(&transform_key, 1);
                 }
 
@@ -378,6 +383,28 @@ async fn evaluate_op_scope(
                     input_values.push(value?);
                 }
 
+                let timeout_duration = op
+                    .function_exec_info
+                    .timeout
+                    .unwrap_or(Duration::from_secs(300));
+                let warn_duration = Duration::from_secs(30);
+
+                let op_name_for_warning = op.name.clone();
+                let op_kind_for_warning = op.op_kind.clone();
+                let warn_handle = tokio::spawn(async move {
+                    tokio::time::sleep(warn_duration).await;
+                    // eprintln!("WARNING: Function '{}' is taking longer than 30s", op_name_for_warning);
+                    // warn!("Function '{}' is taking longer than 30s", op_name_for_warning);
+                    eprintln!(
+                        "⚠️  WARNING: Function '{}' ({}) is taking longer than 30s",
+                        op_kind_for_warning, op_name_for_warning
+                    ); // ✅ Show both
+                    warn!(
+                        "Function '{}' ({}) is taking longer than 30s",
+                        op_kind_for_warning, op_name_for_warning
+                    );
+                });
+                // Execute with timeout
                 let result = if op.function_exec_info.enable_cache {
                     let output_value_cell = memory.get_cache_entry(
                         || {
@@ -391,27 +418,88 @@ async fn evaluate_op_scope(
                         &op.function_exec_info.output_type,
                         /*ttl=*/ None,
                     )?;
-                    evaluate_with_cell(output_value_cell.as_ref(), move || {
+
+                    let eval_future = evaluate_with_cell(output_value_cell.as_ref(), move || {
                         op.executor.evaluate(input_values)
-                    })
-                    .await
-                    .and_then(|v| head_scope.define_field(&op.output, &v))
+                    });
+
+                    // Handle timeout
+                    let timeout_result = tokio::time::timeout(timeout_duration, eval_future).await;
+                    if timeout_result.is_err() {
+                        Err(anyhow!(
+                            // "Function '{}' timed out after {} seconds",
+                            "Function '{}' ({}) timed out after {} seconds",
+                            op.op_kind,
+                            op.name,
+                            timeout_duration.as_secs()
+                        ))
+                    } else {
+                        timeout_result
+                            .unwrap()
+                            .and_then(|v| head_scope.define_field(&op.output, &v))
+                    }
                 } else {
-                    op.executor
-                        .evaluate(input_values)
-                        .await
-                        .and_then(|v| head_scope.define_field(&op.output, &v))
-                }
-                .with_context(|| format!("Evaluating Transform op `{}`", op.name,));
+                    let eval_future = op.executor.evaluate(input_values);
+
+                    // Handle timeout
+                    let timeout_result = tokio::time::timeout(timeout_duration, eval_future).await;
+                    if timeout_result.is_err() {
+                        Err(anyhow!(
+                            // "Function '{}' timed out after {} seconds",
+                            "Function '{}' ({}) timed out after {} seconds",
+                            op.op_kind,
+                            op.name,
+                            timeout_duration.as_secs()
+                        ))
+                    } else {
+                        timeout_result
+                            .unwrap()
+                            .and_then(|v| head_scope.define_field(&op.output, &v))
+                    }
+                };
+
+                warn_handle.abort();
 
                 // Track transform operation completion
                 if let Some(ref op_stats) = operation_in_process_stats {
-                    let transform_key =
-                        format!("transform/{}{}", op_scope.scope_qualifier, op.name);
                     op_stats.finish_processing(&transform_key, 1);
                 }
 
-                result?
+                result.with_context(|| format!("Evaluating Transform op `{}`", op.name))?
+                // let result = if op.function_exec_info.enable_cache {
+                //     let output_value_cell = memory.get_cache_entry(
+                //         || {
+                //             Ok(op
+                //                 .function_exec_info
+                //                 .fingerprinter
+                //                 .clone()
+                //                 .with(&input_values)?
+                //                 .into_fingerprint())
+                //         },
+                //         &op.function_exec_info.output_type,
+                //         /*ttl=*/ None,
+                //     )?;
+                //     evaluate_with_cell(output_value_cell.as_ref(), move || {
+                //         op.executor.evaluate(input_values)
+                //     })
+                //     .await
+                //     .and_then(|v| head_scope.define_field(&op.output, &v))
+                // } else {
+                //     op.executor
+                //         .evaluate(input_values)
+                //         .await
+                //         .and_then(|v| head_scope.define_field(&op.output, &v))
+                // }
+                // .with_context(|| format!("Evaluating Transform op `{}`", op.name,));
+
+                // // Track transform operation completion
+                // if let Some(ref op_stats) = operation_in_process_stats {
+                //     let transform_key =
+                //         format!("transform/{}{}", op_scope.scope_qualifier, op.name);
+                //     op_stats.finish_processing(&transform_key, 1);
+                // }
+
+                // result?
             }
 
             AnalyzedReactiveOp::ForEach(op) => {

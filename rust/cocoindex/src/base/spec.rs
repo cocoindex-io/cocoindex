@@ -234,6 +234,9 @@ pub struct ExecutionOptions {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_inflight_bytes: Option<usize>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<std::time::Duration>,
 }
 
 impl ExecutionOptions {
@@ -289,6 +292,9 @@ impl fmt::Display for ImportOpSpec {
 pub struct TransformOpSpec {
     pub inputs: Vec<OpArgBinding>,
     pub op: OpSpec,
+
+    #[serde(default)]
+    pub execution_options: ExecutionOptions,
 }
 
 impl SpecFormatter for TransformOpSpec {

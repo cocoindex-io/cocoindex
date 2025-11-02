@@ -12,6 +12,7 @@ use crate::{
 };
 use futures::future::{BoxFuture, try_join3};
 use futures::{FutureExt, future::try_join_all};
+use tokio::time::Duration;
 use utils::fingerprint::Fingerprinter;
 
 #[derive(Debug)]
@@ -804,6 +805,8 @@ impl AnalyzerContext {
                 let output =
                     op_scope.add_op_output(reactive_op_name.clone(), output_enriched_type)?;
                 let op_name = reactive_op_name.clone();
+                let op_kind = op.op.kind.clone();
+                let execution_options_timeout = op.execution_options.timeout;
                 async move {
                             trace!("Start building executor for transform op `{op_name}`");
                             let executor = executor.await.with_context(|| {
@@ -811,9 +814,13 @@ impl AnalyzerContext {
                             })?;
                             let enable_cache = executor.enable_cache();
                             let behavior_version = executor.behavior_version();
+                            let timeout = executor.timeout()
+                                .or(execution_options_timeout)
+                                .or(Some(Duration::from_secs(300)));
                             trace!("Finished building executor for transform op `{op_name}`, enable cache: {enable_cache}, behavior version: {behavior_version:?}");
                             let function_exec_info = AnalyzedFunctionExecInfo {
                                 enable_cache,
+                                timeout,
                                 behavior_version,
                                 fingerprinter: logic_fingerprinter
                                     .with(&behavior_version)?,
@@ -828,6 +835,7 @@ impl AnalyzerContext {
                             }
                             Ok(AnalyzedReactiveOp::Transform(AnalyzedTransformOp {
                                 name: op_name,
+                                op_kind,
                                 inputs: input_value_mappings,
                                 function_exec_info,
                                 executor,

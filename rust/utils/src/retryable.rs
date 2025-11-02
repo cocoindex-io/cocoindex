@@ -109,6 +109,7 @@ pub fn Ok<T>(value: T) -> Result<T> {
 
 pub struct RetryOptions {
     pub retry_timeout: Option<Duration>,
+    pub per_call_timeout: Option<Duration>,
     pub initial_backoff: Duration,
     pub max_backoff: Duration,
 }
@@ -117,6 +118,7 @@ impl Default for RetryOptions {
     fn default() -> Self {
         Self {
             retry_timeout: Some(DEFAULT_RETRY_TIMEOUT),
+            per_call_timeout: None,
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(10),
         }
@@ -125,6 +127,7 @@ impl Default for RetryOptions {
 
 pub static HEAVY_LOADED_OPTIONS: RetryOptions = RetryOptions {
     retry_timeout: Some(DEFAULT_RETRY_TIMEOUT),
+    per_call_timeout: Some(Duration::from_secs(300)),
     initial_backoff: Duration::from_secs(1),
     max_backoff: Duration::from_secs(60),
 };

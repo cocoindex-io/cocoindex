@@ -185,6 +185,11 @@ pub trait SimpleFunctionExecutor: Send + Sync {
     fn behavior_version(&self) -> Option<u32> {
         None
     }
+
+    /// Returns None to use the default timeout (300s)
+    fn timeout(&self) -> Option<std::time::Duration> {
+        None
+    }
 }
 
 #[async_trait]
