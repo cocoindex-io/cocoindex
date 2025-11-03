@@ -370,7 +370,6 @@ async fn evaluate_op_scope(
             AnalyzedReactiveOp::Transform(op) => {
                 let transform_key = format!("transform/{}{}", op_scope.scope_qualifier, op.name);
 
-                // Track transform operation start
                 if let Some(ref op_stats) = operation_in_process_stats {
                     op_stats.start_processing(&transform_key, 1);
                 }
@@ -391,15 +390,14 @@ async fn evaluate_op_scope(
                 let warn_handle = tokio::spawn(async move {
                     tokio::time::sleep(warn_duration).await;
                     eprintln!(
-                        "⚠️  WARNING: Function '{}' ({}) is taking longer than 30s",
+                        "WARNING: Function '{}' ({}) is taking longer than 30s",
                         op_kind_for_warning, op_name_for_warning
-                    ); // ✅ Show both
+                    );
                     warn!(
                         "Function '{}' ({}) is taking longer than 30s",
                         op_kind_for_warning, op_name_for_warning
                     );
                 });
-                // Execute with timeout
                 let result = if op.function_exec_info.enable_cache {
                     let output_value_cell = memory.get_cache_entry(
                         || {
@@ -418,7 +416,6 @@ async fn evaluate_op_scope(
                         op.executor.evaluate(input_values)
                     });
 
-                    // Handle timeout
                     let timeout_result = tokio::time::timeout(timeout_duration, eval_future).await;
                     if timeout_result.is_err() {
                         Err(anyhow!(
@@ -435,7 +432,6 @@ async fn evaluate_op_scope(
                 } else {
                     let eval_future = op.executor.evaluate(input_values);
 
-                    // Handle timeout
                     let timeout_result = tokio::time::timeout(timeout_duration, eval_future).await;
                     if timeout_result.is_err() {
                         Err(anyhow!(
@@ -453,7 +449,6 @@ async fn evaluate_op_scope(
 
                 warn_handle.abort();
 
-                // Track transform operation completion
                 if let Some(ref op_stats) = operation_in_process_stats {
                     op_stats.finish_processing(&transform_key, 1);
                 }
