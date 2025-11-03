@@ -4,6 +4,7 @@ import dataclasses
 
 import cocoindex
 from markdown_it import MarkdownIt
+from typing import cast
 
 _markdown_it = MarkdownIt("gfm-like")
 
@@ -96,7 +97,7 @@ class LocalFileTargetConnector:
 
 @cocoindex.op.function()
 def markdown_to_html(text: str) -> str:
-    return _markdown_it.render(text)
+    return cast(str, _markdown_it.render(text))
 
 
 @cocoindex.flow_def(name="CustomOutputFiles")

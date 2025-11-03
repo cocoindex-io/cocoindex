@@ -7,7 +7,7 @@ import PIL
 from dataclasses import dataclass
 from pypdf import PdfReader
 from transformers import CLIPModel, CLIPProcessor
-from typing import Literal
+from typing import Literal, TypeAlias, Final, cast
 
 
 QDRANT_GRPC_URL = "http://localhost:6334"
@@ -15,8 +15,8 @@ QDRANT_COLLECTION_IMAGE = "PdfElementsEmbeddingImage"
 QDRANT_COLLECTION_TEXT = "PdfElementsEmbeddingText"
 
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
-CLIP_MODEL_DIMENSION = 768
-ClipVectorType = cocoindex.Vector[cocoindex.Float32, Literal[CLIP_MODEL_DIMENSION]]
+CLIP_MODEL_DIMENSION: Final = 768
+ClipVectorType: TypeAlias = cocoindex.Vector[cocoindex.Float32, Literal[768]]
 
 IMG_THUMBNAIL_SIZE = (512, 512)
 
@@ -38,7 +38,7 @@ def clip_embed_image(img_bytes: bytes) -> ClipVectorType:
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         features = model.get_image_features(**inputs)
-    return features[0].tolist()
+    return cast(ClipVectorType, features[0].tolist())
 
 
 def clip_embed_query(text: str) -> ClipVectorType:
@@ -49,7 +49,7 @@ def clip_embed_query(text: str) -> ClipVectorType:
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     with torch.no_grad():
         features = model.get_text_features(**inputs)
-    return features[0].tolist()
+    return cast(ClipVectorType, features[0].tolist())
 
 
 @cocoindex.transform_flow()

@@ -3,7 +3,7 @@ import functools
 import io
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import Any, Literal, Final, TypeAlias, cast, AsyncIterator
 
 import cocoindex
 import torch
@@ -19,7 +19,8 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearch"
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
-CLIP_MODEL_DIMENSION = 768
+CLIP_MODEL_DIMENSION: Final[int] = 768
+CLIPVector: TypeAlias = cocoindex.Vector[cocoindex.Float32, Literal[768]]
 
 
 @functools.cache
@@ -37,13 +38,13 @@ def embed_query(text: str) -> list[float]:
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     with torch.no_grad():
         features = model.get_text_features(**inputs)
-    return features[0].tolist()
+    return cast(list[float], features[0].tolist())
 
 
 @cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
 def embed_image(
     img_bytes: bytes,
-) -> cocoindex.Vector[cocoindex.Float32, Literal[CLIP_MODEL_DIMENSION]]:
+) -> CLIPVector:
     """
     Convert image to embedding using CLIP model.
     """
@@ -52,7 +53,7 @@ def embed_image(
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         features = model.get_image_features(**inputs)
-    return features[0].tolist()
+    return cast(CLIPVector, features[0].tolist())
 
 
 # CocoIndex flow: Ingest images, extract captions, embed, export to Qdrant
@@ -112,7 +113,7 @@ def image_object_embedding_flow(
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> None:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     load_dotenv()
     cocoindex.init()
     image_object_embedding_flow.setup(report_to_stdout=True)
@@ -141,11 +142,10 @@ app.mount("/img", StaticFiles(directory="img"), name="img")
 
 
 # --- Search API ---
-@app.get("/search")
 def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
-) -> Any:
+) -> dict[str, Any]:
     # Get the embedding for the query
     query_embedding = embed_query(q)
 
@@ -169,3 +169,7 @@ def search(
             for result in search_results
         ]
     }
+
+
+# Attach route without using decorator to avoid untyped-decorator when FastAPI types are unavailable
+app.get("/search")(search)

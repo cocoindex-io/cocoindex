@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, cast
 import os
 import datetime
 
@@ -134,7 +134,7 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
             """,
                 (query_vector, top_k),
             )
-            return cur.fetchall()
+            return cast(list[dict[str, Any]], cur.fetchall())
 
 
 def _main() -> None:

@@ -6,6 +6,7 @@ from fastapi import Request
 from psycopg_pool import ConnectionPool
 from contextlib import asynccontextmanager
 import os
+from typing import Any, AsyncIterator
 
 
 @cocoindex.transform_flow()
@@ -26,7 +27,7 @@ def text_to_embedding(
 @cocoindex.flow_def(name="MarkdownEmbeddingFastApiExample")
 def markdown_embedding_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-):
+) -> None:
     """
     Define an example flow that embeds markdown files into a vector database.
     """
@@ -65,7 +66,7 @@ def markdown_embedding_flow(
     )
 
 
-def search(pool: ConnectionPool, query: str, top_k: int = 5):
+def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, Any]]:
     # Get the table name, for the export target in the text_embedding_flow above.
     table_name = cocoindex.utils.get_target_default_name(
         markdown_embedding_flow, "doc_embeddings"
@@ -89,7 +90,7 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5):
 
 
 @asynccontextmanager
-def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     load_dotenv()
     cocoindex.init()
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
@@ -103,15 +104,18 @@ def lifespan(app: FastAPI):
 fastapi_app = FastAPI(lifespan=lifespan)
 
 
-@fastapi_app.get("/search")
 def search_endpoint(
     request: Request,
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
-):
+) -> dict[str, Any]:
     pool = request.app.state.pool
     results = search(pool, q, limit)
     return {"results": results}
+
+
+# Attach route without using decorator to avoid untyped-decorator when FastAPI types are unavailable
+fastapi_app.get("/search")(search_endpoint)
 
 
 if __name__ == "__main__":
