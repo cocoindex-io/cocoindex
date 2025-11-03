@@ -13,11 +13,13 @@ Please drop [Cocoindex on Github](https://github.com/cocoindex-io/cocoindex) a s
 ![example-explanation](https://github.com/user-attachments/assets/07ddbd60-106f-427f-b7cc-16b73b142d27)
 
 ## Prerequisite
-*   [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
-*   Install [Neo4j](https://cocoindex.io/docs/targets/neo4j).
-*   Install / configure LLM API. In this example we use Ollama, which runs LLM model locally. You need to get it ready following [this guide](https://cocoindex.io/docs/ai/llm#ollama). Alternatively, you can also follow the comments in source code to switch to OpenAI, and [configure OpenAI API key](https://cocoindex.io/docs/ai/llm#openai) before running the example.
+
+* [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+* Install [Neo4j](https://cocoindex.io/docs/targets/neo4j).
+* Install / configure LLM API. In this example we use Ollama, which runs LLM model locally. You need to get it ready following [this guide](https://cocoindex.io/docs/ai/llm#ollama). Alternatively, you can also follow the comments in source code to switch to OpenAI, and [configure OpenAI API key](https://cocoindex.io/docs/ai/llm#openai) before running the example.
 
 ## Documentation
+
 You can read the official CocoIndex Documentation for Property Graph Targets [here](https://cocoindex.io/docs/targets#property-graph-targets).
 
 ## Run
@@ -28,12 +30,6 @@ Install dependencies:
 
 ```bash
 pip install -e .
-```
-
-Setup:
-
-```bash
-cocoindex setup main
 ```
 
 Update index:
@@ -56,6 +52,7 @@ MATCH p=()-->() RETURN p
 <img width="1366" alt="neo4j-for-coco-docs" src="https://github.com/user-attachments/assets/3c8b6329-6fee-4533-9480-571399b57e57" />
 
 ## CocoInsight
+
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
@@ -63,6 +60,6 @@ It just connects to your local CocoIndex server, with Zero pipeline data retenti
 cocoindex server -ci main
 ```
 
-And then open the url https://cocoindex.io/cocoinsight.
+And then open the url <https://cocoindex.io/cocoinsight>.
 
 <img width="1430" alt="cocoinsight" src="https://github.com/user-attachments/assets/d5ada581-cceb-42bf-a949-132df674f3dd" />
