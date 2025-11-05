@@ -1690,3 +1690,35 @@ def test_pydantic_mixed_with_dataclass() -> None:
     order = OrderPydantic(order_id="O1", name="item1", price=10.0)
     mixed = MixedStruct(name="test", pydantic_order=order)
     validate_full_roundtrip(mixed, MixedStruct)
+
+
+def test_forward_ref_in_dataclass() -> None:
+    """Test mixing Pydantic models with dataclasses."""
+
+    @dataclass
+    class Event:
+        name: "str"
+        tag: "Tag"
+
+    validate_full_roundtrip(Event(name="E1", tag=Tag(name="T1")), Event)
+
+
+def test_forward_ref_in_namedtuple() -> None:
+    """Test mixing Pydantic models with dataclasses."""
+
+    class Event(NamedTuple):
+        name: "str"
+        tag: "Tag"
+
+    validate_full_roundtrip(Event(name="E1", tag=Tag(name="T1")), Event)
+
+
+@pytest.mark.skipif(not PYDANTIC_AVAILABLE, reason="Pydantic not available")
+def test_forward_ref_in_pydantic() -> None:
+    """Test mixing Pydantic models with dataclasses."""
+
+    class Event(BaseModel):
+        name: "str"
+        tag: "Tag"
+
+    validate_full_roundtrip(Event(name="E1", tag=Tag(name="T1")), Event)

@@ -4,10 +4,9 @@ Utilities to encode/decode values in cocoindex (for data).
 
 from __future__ import annotations
 
-import dataclasses
 import inspect
 import warnings
-from typing import Any, Callable, Mapping, TypeVar
+from typing import Any, Callable, TypeVar
 
 import numpy as np
 from .typing import (
@@ -19,8 +18,8 @@ from .typing import (
     AnalyzedTypeInfo,
     AnalyzedUnionType,
     AnalyzedUnknownType,
+    AnalyzedStructFieldInfo,
     analyze_type_info,
-    is_namedtuple_type,
     is_pydantic_model,
     is_numpy_number_type,
     ValueType,
@@ -124,69 +123,20 @@ def make_engine_value_encoder(type_info: AnalyzedTypeInfo) -> Callable[[Any], An
         return encode_struct_dict
 
     if isinstance(variant, AnalyzedStructType):
-        struct_type = variant.struct_type
+        field_encoders = [
+            (
+                field_info.name,
+                make_engine_value_encoder(analyze_type_info(field_info.type_hint)),
+            )
+            for field_info in variant.fields
+        ]
 
-        if dataclasses.is_dataclass(struct_type):
-            fields = dataclasses.fields(struct_type)
-            field_encoders = [
-                make_engine_value_encoder(analyze_type_info(f.type)) for f in fields
-            ]
-            field_names = [f.name for f in fields]
+        def encode_struct(value: Any) -> Any:
+            if value is None:
+                return None
+            return [encoder(getattr(value, name)) for name, encoder in field_encoders]
 
-            def encode_dataclass(value: Any) -> Any:
-                if value is None:
-                    return None
-                return [
-                    encoder(getattr(value, name))
-                    for encoder, name in zip(field_encoders, field_names)
-                ]
-
-            return encode_dataclass
-
-        elif is_namedtuple_type(struct_type):
-            annotations = struct_type.__annotations__
-            field_names = list(getattr(struct_type, "_fields", ()))
-            field_encoders = [
-                make_engine_value_encoder(
-                    analyze_type_info(annotations[name])
-                    if name in annotations
-                    else ANY_TYPE_INFO
-                )
-                for name in field_names
-            ]
-
-            def encode_namedtuple(value: Any) -> Any:
-                if value is None:
-                    return None
-                return [
-                    encoder(getattr(value, name))
-                    for encoder, name in zip(field_encoders, field_names)
-                ]
-
-            return encode_namedtuple
-
-        elif is_pydantic_model(struct_type):
-            # Type guard: ensure we have model_fields attribute
-            if hasattr(struct_type, "model_fields"):
-                field_names = list(struct_type.model_fields.keys())  # type: ignore[attr-defined]
-                field_encoders = [
-                    make_engine_value_encoder(
-                        analyze_type_info(struct_type.model_fields[name].annotation)  # type: ignore[attr-defined]
-                    )
-                    for name in field_names
-                ]
-            else:
-                raise ValueError(f"Invalid Pydantic model: {struct_type}")
-
-            def encode_pydantic(value: Any) -> Any:
-                if value is None:
-                    return None
-                return [
-                    encoder(getattr(value, name))
-                    for encoder, name in zip(field_encoders, field_names)
-                ]
-
-            return encode_pydantic
+        return encode_struct
 
     def encode_basic_value(value: Any) -> Any:
         if isinstance(value, np.number):
@@ -475,51 +425,12 @@ def make_engine_struct_decoder(
     src_name_to_idx = {f.name: i for i, f in enumerate(src_fields)}
     dst_struct_type = dst_type_variant.struct_type
 
-    parameters: Mapping[str, inspect.Parameter]
-    if dataclasses.is_dataclass(dst_struct_type):
-        parameters = inspect.signature(dst_struct_type).parameters
-    elif is_namedtuple_type(dst_struct_type):
-        defaults = getattr(dst_struct_type, "_field_defaults", {})
-        fields = getattr(dst_struct_type, "_fields", ())
-        parameters = {
-            name: inspect.Parameter(
-                name=name,
-                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                default=defaults.get(name, inspect.Parameter.empty),
-                annotation=dst_struct_type.__annotations__.get(
-                    name, inspect.Parameter.empty
-                ),
-            )
-            for name in fields
-        }
-    elif is_pydantic_model(dst_struct_type):
-        # For Pydantic models, we can use model_fields to get field information
-        parameters = {}
-        # Type guard: ensure we have model_fields attribute
-        if hasattr(dst_struct_type, "model_fields"):
-            model_fields = dst_struct_type.model_fields  # type: ignore[attr-defined]
-        else:
-            model_fields = {}
-        for name, field_info in model_fields.items():
-            default_value = (
-                field_info.default
-                if field_info.default is not ...
-                else inspect.Parameter.empty
-            )
-            parameters[name] = inspect.Parameter(
-                name=name,
-                kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                default=default_value,
-                annotation=field_info.annotation,
-            )
-    else:
-        raise ValueError(f"Unsupported struct type: {dst_struct_type}")
-
     def make_closure_for_field(
-        name: str, param: inspect.Parameter
+        field_info: AnalyzedStructFieldInfo,
     ) -> Callable[[list[Any]], Any]:
+        name = field_info.name
         src_idx = src_name_to_idx.get(name)
-        type_info = analyze_type_info(param.annotation)
+        type_info = analyze_type_info(field_info.type_hint)
 
         with ChildFieldPath(field_path, f".{name}"):
             if src_idx is not None:
@@ -531,14 +442,14 @@ def make_engine_struct_decoder(
                 )
                 return lambda values: field_decoder(values[src_idx])
 
-            default_value = param.default
+            default_value = field_info.default_value
             if default_value is not inspect.Parameter.empty:
                 return lambda _: default_value
 
             auto_default, is_supported = get_auto_default_for_type(type_info)
             if is_supported:
                 warnings.warn(
-                    f"Field '{name}' (type {param.annotation}) without default value is missing in input: "
+                    f"Field '{name}' (type {field_info.type_hint}) without default value is missing in input: "
                     f"{''.join(field_path)}. Auto-assigning default value: {auto_default}",
                     UserWarning,
                     stacklevel=4,
@@ -546,27 +457,29 @@ def make_engine_struct_decoder(
                 return lambda _: auto_default
 
             raise ValueError(
-                f"Field '{name}' (type {param.annotation}) without default value is missing in input: {''.join(field_path)}"
+                f"Field '{name}' (type {field_info.type_hint}) without default value is missing in input: {''.join(field_path)}"
             )
-
-    field_value_decoder = [
-        make_closure_for_field(name, param) for (name, param) in parameters.items()
-    ]
 
     # Different construction for different struct types
     if is_pydantic_model(dst_struct_type):
         # Pydantic models prefer keyword arguments
-        field_names = list(parameters.keys())
+        pydantic_fields_decoder = [
+            (field_info.name, make_closure_for_field(field_info))
+            for field_info in dst_type_variant.fields
+        ]
         return lambda values: dst_struct_type(
             **{
-                field_names[i]: decoder(values)
-                for i, decoder in enumerate(field_value_decoder)
+                field_name: decoder(values)
+                for field_name, decoder in pydantic_fields_decoder
             }
         )
     else:
+        struct_fields_decoder = [
+            make_closure_for_field(field_info) for field_info in dst_type_variant.fields
+        ]
         # Dataclasses and NamedTuples can use positional arguments
         return lambda values: dst_struct_type(
-            *(decoder(values) for decoder in field_value_decoder)
+            *(decoder(values) for decoder in struct_fields_decoder)
         )
 
 

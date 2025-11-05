@@ -5,7 +5,6 @@ Utilities to dump/load objects (for configs, specs).
 from __future__ import annotations
 
 import datetime
-import dataclasses
 from enum import Enum
 from typing import Any, Mapping, TypeVar, overload, get_origin
 
@@ -24,17 +23,11 @@ from .typing import (
     analyze_type_info,
     encode_enriched_type,
     is_namedtuple_type,
-    is_pydantic_model,
     extract_ndarray_elem_dtype,
 )
 
 
 T = TypeVar("T")
-
-try:
-    import pydantic, pydantic_core
-except ImportError:
-    pass
 
 
 def get_auto_default_for_type(
@@ -175,67 +168,16 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
     if isinstance(variant, AnalyzedStructType):
         struct_type = variant.struct_type
         init_kwargs: dict[str, Any] = {}
-        missing_fields: list[tuple[str, Any]] = []
-        if dataclasses.is_dataclass(struct_type):
-            if not isinstance(v, Mapping):
-                raise ValueError(f"Expected dict for dataclass, got {type(v)}")
-
-            for dc_field in dataclasses.fields(struct_type):
-                if dc_field.name in v:
-                    init_kwargs[dc_field.name] = load_engine_object(
-                        dc_field.type, v[dc_field.name]
-                    )
-                else:
-                    if (
-                        dc_field.default is dataclasses.MISSING
-                        and dc_field.default_factory is dataclasses.MISSING
-                    ):
-                        missing_fields.append((dc_field.name, dc_field.type))
-
-        elif is_namedtuple_type(struct_type):
-            if not isinstance(v, Mapping):
-                raise ValueError(f"Expected dict for NamedTuple, got {type(v)}")
-            # Dict format (from dump/load functions)
-            annotations = getattr(struct_type, "__annotations__", {})
-            field_names = list(getattr(struct_type, "_fields", ()))
-            field_defaults = getattr(struct_type, "_field_defaults", {})
-
-            for name in field_names:
-                f_type = annotations.get(name, Any)
-                if name in v:
-                    init_kwargs[name] = load_engine_object(f_type, v[name])
-                elif name not in field_defaults:
-                    missing_fields.append((name, f_type))
-
-        elif is_pydantic_model(struct_type):
-            if not isinstance(v, Mapping):
-                raise ValueError(f"Expected dict for Pydantic model, got {type(v)}")
-
-            model_fields: dict[str, pydantic.fields.FieldInfo]
-            if hasattr(struct_type, "model_fields"):
-                model_fields = struct_type.model_fields  # type: ignore[attr-defined]
+        for field_info in variant.fields:
+            if field_info.name in v:
+                init_kwargs[field_info.name] = load_engine_object(
+                    field_info.type_hint, v[field_info.name]
+                )
             else:
-                model_fields = {}
-
-            for name, pyd_field in model_fields.items():
-                if name in v:
-                    init_kwargs[name] = load_engine_object(
-                        pyd_field.annotation, v[name]
-                    )
-                elif (
-                    getattr(pyd_field, "default", pydantic_core.PydanticUndefined)
-                    is pydantic_core.PydanticUndefined
-                    and getattr(pyd_field, "default_factory") is None
-                ):
-                    missing_fields.append((name, pyd_field.annotation))
-        else:
-            assert False, "Unsupported struct type"
-
-        for name, f_type in missing_fields:
-            type_info = analyze_type_info(f_type)
-            auto_default, is_supported = get_auto_default_for_type(type_info)
-            if is_supported:
-                init_kwargs[name] = auto_default
+                type_info = analyze_type_info(field_info.type_hint)
+                auto_default, is_supported = get_auto_default_for_type(type_info)
+                if is_supported:
+                    init_kwargs[field_info.name] = auto_default
         return struct_type(**init_kwargs)
 
     # Union with discriminator support via "kind"

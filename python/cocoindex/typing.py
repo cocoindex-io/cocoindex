@@ -10,12 +10,14 @@ from typing import (
     Annotated,
     Any,
     Generic,
+    Iterator,
     Literal,
     NamedTuple,
     Protocol,
     TypeVar,
     overload,
     Self,
+    get_type_hints,
 )
 
 import numpy as np
@@ -192,12 +194,59 @@ class AnalyzedListType(NamedTuple):
     vector_info: VectorInfo | None
 
 
+class AnalyzedStructFieldInfo(NamedTuple):
+    """
+    Info about a field in a struct type.
+    """
+
+    name: str
+    type_hint: Any
+    default_value: Any
+    description: str | None
+
+
 class AnalyzedStructType(NamedTuple):
     """
     Any struct type, e.g. dataclass, NamedTuple, etc.
     """
 
     struct_type: type
+
+    @property
+    def fields(self) -> Iterator[AnalyzedStructFieldInfo]:
+        type_hints = get_type_hints(self.struct_type, include_extras=True)
+        if dataclasses.is_dataclass(self.struct_type):
+            parameters = inspect.signature(self.struct_type).parameters
+            for name, parameter in parameters.items():
+                yield AnalyzedStructFieldInfo(
+                    name=name,
+                    type_hint=type_hints.get(name, Any),
+                    default_value=parameter.default,
+                    description=None,
+                )
+        elif is_namedtuple_type(self.struct_type):
+            fields = getattr(self.struct_type, "_fields", ())
+            defaults = getattr(self.struct_type, "_field_defaults", {})
+            for name in fields:
+                yield AnalyzedStructFieldInfo(
+                    name=name,
+                    type_hint=type_hints.get(name, Any),
+                    default_value=defaults.get(name, inspect.Parameter.empty),
+                    description=None,
+                )
+        elif is_pydantic_model(self.struct_type):
+            model_fields = getattr(self.struct_type, "model_fields", {})
+            for name, field_info in model_fields.items():
+                yield AnalyzedStructFieldInfo(
+                    name=name,
+                    type_hint=type_hints.get(name, Any),
+                    default_value=field_info.default
+                    if field_info.default is not ...
+                    else inspect.Parameter.empty,
+                    description=field_info.description,
+                )
+        else:
+            raise ValueError(f"Unsupported struct type: {self.struct_type}")
 
 
 class AnalyzedUnionType(NamedTuple):
@@ -355,7 +404,7 @@ def analyze_type_info(t: Any) -> AnalyzedTypeInfo:
 
 
 def _encode_struct_schema(
-    struct_type: type, key_type: type | None = None
+    struct_info: AnalyzedStructType, key_type: type | None = None
 ) -> tuple[dict[str, Any], int | None]:
     fields = []
 
@@ -367,7 +416,7 @@ def _encode_struct_schema(
         except ValueError as e:
             e.add_note(
                 f"Failed to encode annotation for field - "
-                f"{struct_type.__name__}.{name}: {analyzed_type.core_type}"
+                f"{struct_info.struct_type.__name__}.{name}: {analyzed_type.core_type}"
             )
             raise
         type_info["name"] = name
@@ -375,26 +424,9 @@ def _encode_struct_schema(
             type_info["description"] = description
         fields.append(type_info)
 
-    def add_fields_from_struct(struct_type: type) -> None:
-        if dataclasses.is_dataclass(struct_type):
-            for field in dataclasses.fields(struct_type):
-                add_field(field.name, analyze_type_info(field.type))
-        elif is_namedtuple_type(struct_type):
-            for name, field_type in struct_type.__annotations__.items():
-                add_field(name, analyze_type_info(field_type))
-        elif is_pydantic_model(struct_type):
-            # Type guard: ensure we have pydantic available and struct_type has model_fields
-            if hasattr(struct_type, "model_fields"):
-                for name, field_info in struct_type.model_fields.items():  # type: ignore[attr-defined]
-                    # Get the annotation from the field info
-                    field_type = field_info.annotation
-                    # Extract description from Pydantic field info
-                    description = getattr(field_info, "description", None)
-                    add_field(name, analyze_type_info(field_type), description)
-            else:
-                raise ValueError(f"Invalid Pydantic model: {struct_type}")
-        else:
-            raise ValueError(f"Unsupported struct type: {struct_type}")
+    def add_fields_from_struct(struct_info: AnalyzedStructType) -> None:
+        for field in struct_info.fields:
+            add_field(field.name, analyze_type_info(field.type_hint), field.description)
 
     result: dict[str, Any] = {}
     num_key_parts = None
@@ -404,15 +436,15 @@ def _encode_struct_schema(
             add_field(KEY_FIELD_NAME, key_type_info)
             num_key_parts = 1
         elif isinstance(key_type_info.variant, AnalyzedStructType):
-            add_fields_from_struct(key_type_info.variant.struct_type)
+            add_fields_from_struct(key_type_info.variant)
             num_key_parts = len(fields)
         else:
             raise ValueError(f"Unsupported key type: {key_type}")
 
-    add_fields_from_struct(struct_type)
+    add_fields_from_struct(struct_info)
 
     result["fields"] = fields
-    if doc := inspect.getdoc(struct_type):
+    if doc := inspect.getdoc(struct_info):
         result["description"] = doc
     return result, num_key_parts
 
@@ -430,7 +462,7 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         return {"kind": variant.kind}
 
     if isinstance(variant, AnalyzedStructType):
-        encoded_type, _ = _encode_struct_schema(variant.struct_type)
+        encoded_type, _ = _encode_struct_schema(variant)
         encoded_type["kind"] = "Struct"
         return encoded_type
 
@@ -440,7 +472,7 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
         if isinstance(elem_type_info.variant, AnalyzedStructType):
             if variant.vector_info is not None:
                 raise ValueError("LTable type must not have a vector info")
-            row_type, _ = _encode_struct_schema(elem_type_info.variant.struct_type)
+            row_type, _ = _encode_struct_schema(elem_type_info.variant)
             return {"kind": "LTable", "row": row_type}
         else:
             vector_info = variant.vector_info
@@ -457,7 +489,7 @@ def _encode_type(type_info: AnalyzedTypeInfo) -> dict[str, Any]:
                 f"KTable value must have a Struct type, got {value_type_info.core_type}"
             )
         row_type, num_key_parts = _encode_struct_schema(
-            value_type_info.variant.struct_type,
+            value_type_info.variant,
             variant.key_type,
         )
         return {
