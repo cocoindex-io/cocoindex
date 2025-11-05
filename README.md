@@ -202,6 +202,7 @@ It defines an index flow like this:
 | [Custom Output Files](examples/custom_output_files) | Convert markdown files to HTML files and save them to a local directory, using *CocoIndex Custom Targets* |
 | [Patient intake form extraction](examples/patient_intake_extraction) | Use LLM to extract structured data from patient intake forms with different formats |
 | [HackerNews Trending Topics](examples/hn_trending_topics) | Extract trending topics from HackerNews threads and comments, using *CocoIndex Custom Source* and LLM |
+| [Patient Intake Form Extraction with BAML](examples/patient_intake_extraction_baml) | Extract structured data from patient intake forms using BAML |
 
 More coming and stay tuned 👀!
 
