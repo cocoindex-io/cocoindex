@@ -268,3 +268,33 @@ def test_batching_function() -> None:
 
     result = transform_flow_with_analyze_prepare.eval("Hello")
     expected = "Hello world!!"
+
+
+@cocoindex.op.function()
+async def async_custom_function(text: str) -> str:
+    """Append ' world' to the input text."""
+    return f"{text} world"
+
+
+class AsyncCustomFunctionSpec(cocoindex.op.FunctionSpec):
+    suffix: str
+
+
+@cocoindex.op.executor_class()
+class AsyncAppendSuffixExecutor:
+    spec: AsyncCustomFunctionSpec
+
+    async def __call__(self, text: str) -> str:
+        return f"{text}{self.spec.suffix}"
+
+
+def test_async_custom_function() -> None:
+    @cocoindex.transform_flow()
+    def transform_flow(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[str]:
+        return text.transform(async_custom_function).transform(
+            AsyncCustomFunctionSpec(suffix="!")
+        )
+
+    result = transform_flow.eval("Hello")
+    expected = "Hello world!"
+    assert result == expected, f"Expected {expected}, got {result}"
