@@ -55,6 +55,7 @@ class AmazonS3(op.SourceSpec):
     binary: bool = False
     included_patterns: list[str] | None = None
     excluded_patterns: list[str] | None = None
+    max_file_size: int | None = None
     sqs_queue_url: str | None = None
     redis: RedisNotification | None = None
 
