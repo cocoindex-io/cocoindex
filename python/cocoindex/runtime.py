@@ -69,6 +69,10 @@ execution_context = _ExecutionContext()
 
 
 def to_async_call(call: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
-    if inspect.iscoroutinefunction(call):
+    if isinstance(call, (staticmethod, classmethod)):
+        base_call = call.__func__
+    else:
+        base_call = call
+    if inspect.iscoroutinefunction(base_call):
         return call
     return lambda *args, **kwargs: asyncio.to_thread(lambda: call(*args, **kwargs))
