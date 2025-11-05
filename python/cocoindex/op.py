@@ -37,7 +37,6 @@ from .typing import (
     StructSchema,
     StructType,
     TableType,
-    TypeAttr,
     encode_enriched_type_info,
     resolve_forward_ref,
     analyze_type_info,
