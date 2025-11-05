@@ -77,6 +77,7 @@ class AzureBlob(op.SourceSpec):
     binary: bool = False
     included_patterns: list[str] | None = None
     excluded_patterns: list[str] | None = None
+    max_file_size: int | None = None
 
     sas_token: TransientAuthEntryReference[str] | None = None
     account_access_key: TransientAuthEntryReference[str] | None = None

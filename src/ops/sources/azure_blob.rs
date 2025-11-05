@@ -19,6 +19,7 @@ pub struct Spec {
     binary: bool,
     included_patterns: Option<Vec<String>>,
     excluded_patterns: Option<Vec<String>>,
+    max_file_size: Option<i64>,
 
     /// SAS token for authentication. Takes precedence over account_access_key.
     sas_token: Option<AuthEntryReference<String>>,
@@ -32,6 +33,7 @@ struct Executor {
     prefix: Option<String>,
     binary: bool,
     pattern_matcher: PatternMatcher,
+    max_file_size: Option<i64>,
 }
 
 fn datetime_to_ordinal(dt: &time::OffsetDateTime) -> Ordinal {
@@ -73,6 +75,15 @@ impl SourceExecutor for Executor {
                     // Only include files (not directories)
                     if key.ends_with('/') { continue; }
 
+                    // Check file size limit
+                    if let Some(max_size) = self.max_file_size {
+                        if let Some(size) = blob.properties.content_length {
+                            if size > max_size {
+                                continue;
+                            }
+                        }
+                    }
+
                     if self.pattern_matcher.is_file_included(key) {
                         let ordinal = Some(datetime_to_ordinal(&blob.properties.last_modified));
                         batch.push(PartialSourceRow {
@@ -113,6 +124,24 @@ impl SourceExecutor for Executor {
                 ordinal: Some(Ordinal::unavailable()),
                 content_version_fp: None,
             });
+        }
+
+        // Check file size limit
+        if let Some(max_size) = self.max_file_size {
+            let blob_client = self
+                .client
+                .container_client(&self.container_name)
+                .blob_client(key_str.as_ref());
+            let properties = blob_client.get_properties().await?;
+            if let Some(size) = properties.blob.properties.content_length {
+                if size > max_size {
+                    return Ok(PartialSourceRowData {
+                        value: Some(SourceValue::NonExistence),
+                        ordinal: Some(Ordinal::unavailable()),
+                        content_version_fp: None,
+                    });
+                }
+            }
         }
 
         let blob_client = self
@@ -238,6 +267,7 @@ impl SourceFactoryBase for Factory {
             prefix: spec.prefix,
             binary: spec.binary,
             pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
+            max_file_size: spec.max_file_size,
         }))
     }
 }

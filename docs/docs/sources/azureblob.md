@@ -63,14 +63,18 @@ The spec takes the following fields:
 *   `excluded_patterns` (`list[str]`, optional): a list of glob patterns to exclude files, e.g. `["*.tmp", "**/*.log"]`.
     Any file or directory matching these patterns will be excluded even if they match `included_patterns`.
     If not specified, no files will be excluded.
-*   `sas_token` (`cocoindex.TransientAuthEntryReference[str]`, optional): a SAS token for authentication.
-*   `account_access_key` (`cocoindex.TransientAuthEntryReference[str]`, optional): an account access key for authentication.
 
     :::info
 
     `included_patterns` and `excluded_patterns` are using Unix-style glob syntax. See [globset syntax](https://docs.rs/globset/latest/globset/index.html#syntax) for the details.
 
     :::
+
+*   `max_file_size` (`int`, optional): if provided, files exceeding this size in bytes will be treated as non-existent and skipped during processing.
+    This is useful to avoid processing large files that are not relevant to your use case, such as videos or backups.
+    If not specified, no size limit is applied.
+*   `sas_token` (`cocoindex.TransientAuthEntryReference[str]`, optional): a SAS token for authentication.
+*   `account_access_key` (`cocoindex.TransientAuthEntryReference[str]`, optional): an account access key for authentication.
 
 ### Schema
 
