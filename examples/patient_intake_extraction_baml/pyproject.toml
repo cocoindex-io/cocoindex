@@ -1,0 +1,9 @@
+[project]
+name = "patient-intake-extraction-baml"
+version = "0.1.0"
+description = "Extract structured information from patient intake forms using BAML."
+requires-python = ">=3.10"
+dependencies = ["cocoindex>=0.3.2", "python-dotenv>=1.0.1", "baml-py>=0.212.0"]
+
+[tool.setuptools]
+packages = []
