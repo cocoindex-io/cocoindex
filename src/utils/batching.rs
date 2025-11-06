@@ -98,7 +98,7 @@ impl<R: Runner + 'static> BatcherData<R> {
 
 pub struct Batcher<R: Runner + 'static> {
     data: Arc<BatcherData<R>>,
-    options: BatcherOptions,
+    options: BatchingOptions,
 }
 
 enum BatchExecutionAction<R: Runner + 'static> {
@@ -111,12 +111,12 @@ enum BatchExecutionAction<R: Runner + 'static> {
     },
 }
 
-#[derive(Default)]
-pub struct BatcherOptions {
+#[derive(Default, Clone, Serialize, Deserialize)]
+pub struct BatchingOptions {
     pub max_batch_size: Option<usize>,
 }
 impl<R: Runner + 'static> Batcher<R> {
-    pub fn new(runner: R, options: BatcherOptions) -> Self {
+    pub fn new(runner: R, options: BatchingOptions) -> Self {
         Self {
             data: Arc::new(BatcherData {
                 runner,
@@ -316,7 +316,7 @@ mod tests {
         let runner = TestRunner {
             recorded_calls: recorded_calls.clone(),
         };
-        let batcher = Arc::new(Batcher::new(runner, BatcherOptions::default()));
+        let batcher = Arc::new(Batcher::new(runner, BatchingOptions::default()));
 
         let (n1_tx, n1_rx) = oneshot::channel::<()>();
         let (n2_tx, n2_rx) = oneshot::channel::<()>();
@@ -381,7 +381,7 @@ mod tests {
         };
         let batcher = Arc::new(Batcher::new(
             runner,
-            BatcherOptions {
+            BatchingOptions {
                 max_batch_size: Some(2),
             },
         ));
@@ -483,7 +483,7 @@ mod tests {
         };
         let batcher = Arc::new(Batcher::new(
             runner,
-            BatcherOptions {
+            BatchingOptions {
                 max_batch_size: Some(2),
             },
         ));

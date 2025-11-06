@@ -145,6 +145,8 @@ Custom functions take the following additional parameters:
 * `batching: bool`: Whether the executor will consume requests in batch.
     See the [Batching](#batching) section below for details.
 
+* `max_batch_size: int | None`: The maximum batch size for the executor.
+
 * `behavior_version: int`: The version of the behavior of the function.
     When the version is changed, the function will be re-executed even if cache is enabled.
     It's required to be set if `cache` is `True`.
@@ -220,6 +222,26 @@ class ComputeSomethingExecutor:
     def __call__(self, args: list[str]) -> list[str]:
         ...
 ```
+
+### Controlling Batch Size
+
+You can control the maximum batch size using the `max_batch_size` parameter. This is useful for:
+* Limiting memory usage when processing large batches
+* Reducing latency by flushing batches before they grow too large
+* Working with APIs that have request size limits
+
+```python
+@cocoindex.op.function(batching=True, max_batch_size=32)
+def compute_something(args: list[str]) -> list[str]:
+    ...
+```
+
+With `max_batch_size` set, a batch will be flushed when either:
+
+1. No ongoing batches are running
+2. The pending batch size reaches `max_batch_size`
+
+This ensures that requests don't wait indefinitely for a batch to fill up, while still allowing efficient batch processing.
 
 </TabItem>
 </Tabs>

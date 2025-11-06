@@ -36,6 +36,14 @@ impl BatchedFunctionExecutor for Executor {
         true
     }
 
+    fn batching_options(&self) -> batching::BatchingOptions {
+        // A safe default for most embeddings providers.
+        // May tune it for specific providers later.
+        batching::BatchingOptions {
+            max_batch_size: Some(64),
+        }
+    }
+
     async fn evaluate_batch(&self, args: Vec<Vec<Value>>) -> Result<Vec<Value>> {
         let texts = args
             .iter()

@@ -156,14 +156,9 @@ fn register_source_connector(name: String, py_source_connector: Py<PyAny>) -> Py
 }
 
 #[pyfunction]
-fn register_function_factory(
-    name: String,
-    py_function_factory: Py<PyAny>,
-    batching: bool,
-) -> PyResult<()> {
+fn register_function_factory(name: String, py_function_factory: Py<PyAny>) -> PyResult<()> {
     let factory = PyFunctionFactory {
         py_function_factory,
-        batching,
     };
     register_factory(name, ExecutorFactory::SimpleFunction(Arc::new(factory))).into_py_result()
 }

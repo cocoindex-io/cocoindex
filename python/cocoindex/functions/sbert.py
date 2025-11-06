@@ -31,6 +31,7 @@ class SentenceTransformerEmbed(op.FunctionSpec):
     gpu=True,
     cache=True,
     batching=True,
+    max_batch_size=512,
     behavior_version=1,
     arg_relationship=(op.ArgRelationship.EMBEDDING_ORIGIN_TEXT, "text"),
 )

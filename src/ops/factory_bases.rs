@@ -381,6 +381,8 @@ pub trait BatchedFunctionExecutor: Send + Sync + Sized + 'static {
     fn into_fn_executor(self) -> impl SimpleFunctionExecutor {
         BatchedFunctionExecutorWrapper::new(self)
     }
+
+    fn batching_options(&self) -> batching::BatchingOptions;
 }
 
 #[async_trait]
@@ -404,10 +406,11 @@ struct BatchedFunctionExecutorWrapper<E: BatchedFunctionExecutor> {
 
 impl<E: BatchedFunctionExecutor> BatchedFunctionExecutorWrapper<E> {
     fn new(executor: E) -> Self {
+        let batching_options = executor.batching_options();
         Self {
             enable_cache: executor.enable_cache(),
             behavior_version: executor.behavior_version(),
-            batcher: batching::Batcher::new(executor, batching::BatcherOptions::default()),
+            batcher: batching::Batcher::new(executor, batching_options),
         }
     }
 }

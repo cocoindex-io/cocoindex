@@ -306,7 +306,7 @@ impl SourceIndexingContext {
             setup_execution_ctx,
             update_once_batcher: batching::Batcher::new(
                 UpdateOnceRunner,
-                batching::BatcherOptions::default(),
+                batching::BatchingOptions::default(),
             ),
         }))
     }
