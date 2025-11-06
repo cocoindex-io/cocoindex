@@ -125,6 +125,7 @@ class ColPaliEmbedImage(op.FunctionSpec):
     gpu=True,
     cache=True,
     batching=True,
+    max_batch_size=32,
     behavior_version=1,
 )
 class ColPaliEmbedImageExecutor:
@@ -204,6 +205,7 @@ class ColPaliEmbedQuery(op.FunctionSpec):
     cache=True,
     behavior_version=1,
     batching=True,
+    max_batch_size=32,
 )
 class ColPaliEmbedQueryExecutor:
     """Executor for ColVision query embedding (ColPali, ColQwen2, ColSmol, etc.)."""

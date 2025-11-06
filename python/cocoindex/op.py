@@ -151,6 +151,7 @@ class OpArgs:
     - gpu: Whether the executor will be executed on GPU.
     - cache: Whether the executor will be cached.
     - batching: Whether the executor will be batched.
+    - max_batch_size: The maximum batch size for the executor. Only valid if `batching` is True.
     - behavior_version: The behavior version of the executor. Cache will be invalidated if it
       changes. Must be provided if `cache` is True.
     - arg_relationship: It specifies the relationship between an input argument and the output,
@@ -161,6 +162,7 @@ class OpArgs:
     gpu: bool = False
     cache: bool = False
     batching: bool = False
+    max_batch_size: int | None = None
     behavior_version: int | None = None
     arg_relationship: tuple[ArgRelationship, str] | None = None
 
@@ -389,11 +391,17 @@ def _register_op_factory(
         def behavior_version(self) -> int | None:
             return op_args.behavior_version
 
+        def batching_options(self) -> dict[str, Any] | None:
+            if op_args.batching:
+                return {
+                    "max_batch_size": op_args.max_batch_size,
+                }
+            else:
+                return None
+
     if category == OpCategory.FUNCTION:
         _engine.register_function_factory(
-            op_kind,
-            _EngineFunctionExecutorFactory(spec_loader, _WrappedExecutor),
-            op_args.batching,
+            op_kind, _EngineFunctionExecutorFactory(spec_loader, _WrappedExecutor)
         )
     else:
         raise ValueError(f"Unsupported executor type {category}")

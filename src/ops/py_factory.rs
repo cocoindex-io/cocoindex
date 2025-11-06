@@ -121,6 +121,7 @@ struct PyBatchedFunctionExecutor {
 
     enable_cache: bool,
     behavior_version: Option<u32>,
+    batching_options: batching::BatchingOptions,
 }
 
 #[async_trait]
@@ -168,11 +169,13 @@ impl BatchedFunctionExecutor for PyBatchedFunctionExecutor {
     fn behavior_version(&self) -> Option<u32> {
         self.behavior_version
     }
+    fn batching_options(&self) -> batching::BatchingOptions {
+        self.batching_options.clone()
+    }
 }
 
 pub(crate) struct PyFunctionFactory {
     pub py_function_factory: Py<PyAny>,
-    pub batching: bool,
 }
 
 #[async_trait]
@@ -237,7 +240,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                     .as_ref()
                     .ok_or_else(|| anyhow!("Python execution context is missing"))?
                     .clone();
-                let (prepare_fut, enable_cache, behavior_version) =
+                let (prepare_fut, enable_cache, behavior_version, batching_options) =
                     Python::with_gil(|py| -> anyhow::Result<_> {
                         let prepare_coro = executor
                             .call_method(py, "prepare", (), None)
@@ -257,31 +260,45 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                             .call_method(py, "behavior_version", (), None)
                             .to_result_with_py_trace(py)?
                             .extract::<Option<u32>>(py)?;
-                        Ok((prepare_fut, enable_cache, behavior_version))
+                        let batching_options = executor
+                            .call_method(py, "batching_options", (), None)
+                            .to_result_with_py_trace(py)?
+                            .extract::<crate::py::Pythonized<Option<batching::BatchingOptions>>>(
+                                py,
+                            )?
+                            .into_inner();
+                        Ok((
+                            prepare_fut,
+                            enable_cache,
+                            behavior_version,
+                            batching_options,
+                        ))
                     })?;
                 prepare_fut.await?;
-                let executor: Box<dyn interface::SimpleFunctionExecutor> = if self.batching {
-                    Box::new(
-                        PyBatchedFunctionExecutor {
+                let executor: Box<dyn interface::SimpleFunctionExecutor> =
+                    if let Some(batching_options) = batching_options {
+                        Box::new(
+                            PyBatchedFunctionExecutor {
+                                py_function_executor: executor,
+                                py_exec_ctx,
+                                result_type,
+                                enable_cache,
+                                behavior_version,
+                                batching_options,
+                            }
+                            .into_fn_executor(),
+                        )
+                    } else {
+                        Box::new(Arc::new(PyFunctionExecutor {
                             py_function_executor: executor,
                             py_exec_ctx,
+                            num_positional_args,
+                            kw_args_names,
                             result_type,
                             enable_cache,
                             behavior_version,
-                        }
-                        .into_fn_executor(),
-                    )
-                } else {
-                    Box::new(Arc::new(PyFunctionExecutor {
-                        py_function_executor: executor,
-                        py_exec_ctx,
-                        num_positional_args,
-                        kw_args_names,
-                        result_type,
-                        enable_cache,
-                        behavior_version,
-                    }))
-                };
+                        }))
+                    };
                 Ok(executor)
             }
         };
