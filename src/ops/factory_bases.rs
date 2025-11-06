@@ -407,7 +407,7 @@ impl<E: BatchedFunctionExecutor> BatchedFunctionExecutorWrapper<E> {
         Self {
             enable_cache: executor.enable_cache(),
             behavior_version: executor.behavior_version(),
-            batcher: batching::Batcher::new(executor),
+            batcher: batching::Batcher::new(executor, batching::BatcherOptions::default()),
         }
     }
 }
