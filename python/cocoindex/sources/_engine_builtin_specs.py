@@ -23,6 +23,9 @@ class LocalFile(op.SourceSpec):
     # See https://docs.rs/globset/latest/globset/index.html#syntax for the syntax of the patterns.
     excluded_patterns: list[str] | None = None
 
+    # If provided, files exceeding this size in bytes will be treated as non-existent.
+    max_file_size: int | None = None
+
 
 class GoogleDrive(op.SourceSpec):
     """Import data from Google Drive."""

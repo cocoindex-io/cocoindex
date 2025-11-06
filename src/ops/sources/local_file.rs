@@ -13,12 +13,14 @@ pub struct Spec {
     binary: bool,
     included_patterns: Option<Vec<String>>,
     excluded_patterns: Option<Vec<String>>,
+    max_file_size: Option<i64>,
 }
 
 struct Executor {
     root_path: PathBuf,
     binary: bool,
     pattern_matcher: PatternMatcher,
+    max_file_size: Option<i64>,
 }
 
 #[async_trait]
@@ -49,6 +51,14 @@ impl SourceExecutor for Executor {
                             new_dirs.push(Cow::Owned(path));
                         }
                     } else if self.pattern_matcher.is_file_included(relative_path) {
+                        // Check file size limit
+                        if let Some(max_size) = self.max_file_size {
+                            if let Ok(metadata) = path.metadata() {
+                                if metadata.len() > max_size as u64 {
+                                    continue;
+                                }
+                            }
+                        }
                         let ordinal: Option<Ordinal> = if options.include_ordinal {
                             Some(path.metadata()?.modified()?.try_into()?)
                         } else {
@@ -86,6 +96,18 @@ impl SourceExecutor for Executor {
             });
         }
         let path = self.root_path.join(path);
+        // Check file size limit
+        if let Some(max_size) = self.max_file_size {
+            if let Ok(metadata) = path.metadata() {
+                if metadata.len() > max_size as u64 {
+                    return Ok(PartialSourceRowData {
+                        value: Some(SourceValue::NonExistence),
+                        ordinal: Some(Ordinal::unavailable()),
+                        content_version_fp: None,
+                    });
+                }
+            }
+        }
         let ordinal = if options.include_ordinal {
             Some(path.metadata()?.modified()?.try_into()?)
         } else {
@@ -172,6 +194,7 @@ impl SourceFactoryBase for Factory {
             root_path: PathBuf::from(spec.path),
             binary: spec.binary,
             pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
+            max_file_size: spec.max_file_size,
         }))
     }
 }
