@@ -32,6 +32,7 @@ The spec takes the following fields:
 *   `recent_changes_poll_interval` (`datetime.timedelta`, optional): when set, this source provides a change capture mechanism by polling Google Drive for recent modified files periodically.
 *   `included_patterns` (`list[str]`, optional): a list of glob patterns to include files, e.g. `["*.txt", "docs/**/*.md"]`. If not specified, all files will be included.
 *   `excluded_patterns` (`list[str]`, optional): a list of glob patterns to exclude files, e.g. `["tmp", "**/node_modules"]`. Any file or directory matching these patterns will be excluded even if they match `included_patterns`. If not specified, no files will be excluded.
+*   `max_file_size` (`int`, optional): when set, any source file exceeding the limit (in bytes) will be ignored.
 
     :::info
 

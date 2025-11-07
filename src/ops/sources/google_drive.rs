@@ -62,6 +62,7 @@ pub struct Spec {
     recent_changes_poll_interval: Option<std::time::Duration>,
     included_patterns: Option<Vec<String>>,
     excluded_patterns: Option<Vec<String>>,
+    max_file_size: Option<i64>,
 }
 
 struct Executor {
@@ -70,6 +71,7 @@ struct Executor {
     root_folder_ids: IndexSet<Arc<str>>,
     recent_updates_poll_interval: Option<std::time::Duration>,
     pattern_matcher: PatternMatcher,
+    max_file_size: Option<i64>,
 }
 
 impl Executor {
@@ -97,6 +99,7 @@ impl Executor {
             root_folder_ids: spec.root_folder_ids.into_iter().map(Arc::from).collect(),
             recent_updates_poll_interval: spec.recent_changes_poll_interval,
             pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
+            max_file_size: spec.max_file_size,
         })
     }
 }
@@ -303,7 +306,7 @@ impl SourceExecutor for Executor {
         let mut seen_ids = HashSet::new();
         let mut folder_ids = self.root_folder_ids.clone();
         let fields = format!(
-            "files(id,name,mimeType,trashed{})",
+            "files(id,name,mimeType,trashed,size{})",
             optional_modified_time(options.include_ordinal)
         );
         let mut new_folder_ids = Vec::new();
@@ -319,6 +322,12 @@ impl SourceExecutor for Executor {
                         if !file.name.as_deref().is_some_and(|name| self.pattern_matcher.is_file_included(name)){
                             continue
                         }
+                        if let Some(max_size) = self.max_file_size
+                        && let Some(file_size) = file.size
+                        && file_size > max_size {
+                                // Skip files over the specified limit
+                                continue;
+                            }
                         curr_rows.extend(self.visit_file(file, &mut new_folder_ids, &mut seen_ids)?);
                     }
                     if !curr_rows.is_empty() {
@@ -342,7 +351,7 @@ impl SourceExecutor for Executor {
     ) -> Result<PartialSourceRowData> {
         let file_id = key.single_part()?.str_value()?;
         let fields = format!(
-            "id,name,mimeType,trashed{}",
+            "id,name,mimeType,trashed,size{}",
             optional_modified_time(options.include_ordinal)
         );
         let resp = self
@@ -368,6 +377,16 @@ impl SourceExecutor for Executor {
             .name
             .as_deref()
             .is_some_and(|name| self.pattern_matcher.is_file_included(name))
+        {
+            return Ok(PartialSourceRowData {
+                value: Some(SourceValue::NonExistence),
+                ordinal: Some(Ordinal::unavailable()),
+                content_version_fp: None,
+            });
+        }
+        if let Some(max_size) = self.max_file_size
+            && let Some(file_size) = file.size
+            && file_size > max_size
         {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
