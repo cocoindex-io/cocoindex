@@ -522,13 +522,15 @@ async fn evaluate_op_scope(
                         .collect::<Result<Vec<_>>>()?;
 
                 // Create field_values vector for all fields in the merged schema
-                let mut field_values: Vec<value::Value> =
-                    vec![value::Value::Null; op.collector_schema.fields.len()];
-
-                // Use pre-computed field index mappings for O(1) field placement
-                for (&collector_idx, &input_idx) in op.field_index_mapping.iter() {
-                    field_values[collector_idx] = input_values[input_idx].clone();
-                }
+                let mut field_values = op
+                    .field_index_mapping
+                    .iter()
+                    .map(|idx| {
+                        idx.map_or(value::Value::Null, |input_idx| {
+                            input_values[input_idx].clone()
+                        })
+                    })
+                    .collect::<Vec<_>>();
 
                 // Handle auto_uuid_field (assumed to be at position 0 for efficiency)
                 if op.has_auto_uuid_field {
