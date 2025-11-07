@@ -1,6 +1,7 @@
 use crate::prelude::*;
 
 use crate::{lib_context::LibContext, service};
+use axum::response::Json;
 use axum::{Router, routing};
 use tower::ServiceBuilder;
 use tower_http::{
@@ -37,6 +38,7 @@ pub async fn init_server(
             .allow_headers([axum::http::header::CONTENT_TYPE]);
     }
     let app = Router::new()
+        .route("/healthz", routing::get(healthz))
         .route(
             "/cocoindex",
             routing::get(|| async { "CocoIndex is running!" }),
@@ -91,4 +93,11 @@ pub async fn init_server(
     );
     let serve_fut = async { axum::serve(listener, app).await.unwrap() };
     Ok(serve_fut.boxed())
+}
+
+async fn healthz() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
