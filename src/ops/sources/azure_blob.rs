@@ -77,10 +77,8 @@ impl SourceExecutor for Executor {
 
                     // Check file size limit
                     if let Some(max_size) = self.max_file_size {
-                        if let Some(size) = blob.properties.content_length {
-                            if size > max_size {
-                                continue;
-                            }
+                        if blob.properties.content_length > max_size as u64 {
+                            continue;
                         }
                     }
 
@@ -133,14 +131,12 @@ impl SourceExecutor for Executor {
                 .container_client(&self.container_name)
                 .blob_client(key_str.as_ref());
             let properties = blob_client.get_properties().await?;
-            if let Some(size) = properties.blob.properties.content_length {
-                if size > max_size {
-                    return Ok(PartialSourceRowData {
-                        value: Some(SourceValue::NonExistence),
-                        ordinal: Some(Ordinal::unavailable()),
-                        content_version_fp: None,
-                    });
-                }
+            if properties.blob.properties.content_length > max_size as u64 {
+                return Ok(PartialSourceRowData {
+                    value: Some(SourceValue::NonExistence),
+                    ordinal: Some(Ordinal::unavailable()),
+                    content_version_fp: None,
+                });
             }
         }
 
