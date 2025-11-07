@@ -314,14 +314,12 @@ impl SourceExecutor for Executor {
                         .list_files(&folder_id, &fields, &mut next_page_token)
                         .await?;
                     for file in files {
-                        if let Some(max_size) = self.max_file_size {
-                            if let Some(file_size) = file.size {
-                                if file_size > max_size {
+                        if let Some(max_size) = self.max_file_size
+                            && let Some(file_size) = file.size
+                            && file_size > max_size {
                                     // Skip files over the specified limit
                                     continue;
                                 }
-                            }
-                        }
                         curr_rows.extend(self.visit_file(file, &mut new_folder_ids, &mut seen_ids)?);
                     }
                     if !curr_rows.is_empty() {
@@ -368,16 +366,15 @@ impl SourceExecutor for Executor {
             }
         };
         // Check file size limit
-        if let Some(max_size) = self.max_file_size {
-            if let Some(file_size) = file.size {
-                if file_size > max_size {
-                    return Ok(PartialSourceRowData {
-                        value: Some(SourceValue::NonExistence),
-                        ordinal: Some(Ordinal::unavailable()),
-                        content_version_fp: None,
-                    });
-                }
-            }
+        if let Some(max_size) = self.max_file_size
+            && let Some(file_size) = file.size
+            && file_size > max_size
+        {
+            return Ok(PartialSourceRowData {
+                value: Some(SourceValue::NonExistence),
+                ordinal: Some(Ordinal::unavailable()),
+                content_version_fp: None,
+            });
         }
         let ordinal = if options.include_ordinal {
             file.modified_time.map(|t| t.try_into()).transpose()?
