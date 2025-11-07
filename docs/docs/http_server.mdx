@@ -1,6 +1,6 @@
 ---
 title: HTTP Server
-description: Run the built-in HTTP server to expose CocoIndex APIs
+description: Run the built-in HTTP server for CocoInsight and health check
 ---
 
 ## Start the server
@@ -65,7 +65,8 @@ start_server(server_settings)
 
 - **CocoInsight access**: Enable with CLI `-ci`, or by API set `ServerSettings.cors_origins` to `"https://cocoindex.io"`. Then open `https://cocoindex.io/cocoinsight` and point it to your server address.
 
-- **Live updates from the CLI**: When running with `-L`, the server performs live updates while it’s up (similar to `cocoindex update -L`).
+- **Live updates from the CLI**: When running with `-L`, the server performs live updates while it’s up.
+  It's doing same thing as `cocoindex update -L` while the HTTP server is running.
 
 - **Health check**: `GET /healthz` responds with `application/json`:
 
