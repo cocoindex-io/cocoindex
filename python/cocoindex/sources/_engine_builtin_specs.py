@@ -36,6 +36,7 @@ class GoogleDrive(op.SourceSpec):
     root_folder_ids: list[str]
     binary: bool = False
     recent_changes_poll_interval: datetime.timedelta | None = None
+    max_file_size: int | None = None
 
 
 @dataclass

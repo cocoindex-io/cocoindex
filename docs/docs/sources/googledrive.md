@@ -45,6 +45,7 @@ The spec takes the following fields:
     In reality, configure them based on your requirement: how fresh do you need the target index to be?
 
     :::
+*   `max_file_size` (`int`, optional): when set, any source file exceeding the limit (in bytes) will be ignored.
 
 ### Schema
 
