@@ -899,25 +899,16 @@ impl AnalyzerContext {
                     };
 
                     // Pre-compute field index mappings for efficient evaluation
-                    let field_name_to_index: HashMap<&FieldName, usize> = collector_schema
-                        .fields
+                    let field_name_to_index: HashMap<&FieldName, usize> = input_field_names
                         .iter()
                         .enumerate()
-                        .map(|(i, f)| (&f.name, i))
+                        .map(|(i, n)| (n, i))
                         .collect();
-                    let mut field_index_mapping: HashMap<usize, usize> = HashMap::new();
-                    for (input_idx, field_name) in input_field_names.iter().enumerate() {
-                        let collector_idx = field_name_to_index
-                            .get(field_name)
-                            .copied()
-                            .ok_or_else(|| {
-                                anyhow!(
-                                    "field `{}` not found in merged collector schema",
-                                    field_name
-                                )
-                            })?;
-                        field_index_mapping.insert(collector_idx, input_idx);
-                    }
+                    let field_index_mapping = collector_schema
+                        .fields
+                        .iter()
+                        .map(|field| field_name_to_index.get(&field.name).copied())
+                        .collect::<Vec<Option<usize>>>();
 
                     let collect_op = AnalyzedReactiveOp::Collect(AnalyzedCollectOp {
                         name: reactive_op_name,
