@@ -85,6 +85,11 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'doc',
+      id: 'http_server',
+      label: 'HTTP Server',
+    },
+    {
+      type: 'doc',
       id: 'query',
       label: 'Query Support',
     },
