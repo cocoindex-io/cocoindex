@@ -444,7 +444,7 @@ def _encode_struct_schema(
     add_fields_from_struct(struct_info)
 
     result["fields"] = fields
-    if doc := inspect.getdoc(struct_info):
+    if doc := inspect.getdoc(struct_info.struct_type):
         result["description"] = doc
     return result, num_key_parts
 
