@@ -13,6 +13,9 @@ use utils::immutable::RefList;
 
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, evaluate_with_cell};
 
+const TIMEOUT_THRESHOLD: u64 = 1800;
+const WARNING_THRESHOLD: u64 = 30;
+
 #[derive(Debug)]
 pub struct ScopeValueBuilder {
     // TODO: Share the same lock for values produced in the same execution scope, for stricter atomicity.
@@ -379,25 +382,20 @@ async fn evaluate_op_scope(
                     input_values.push(value?);
                 }
 
+                // let timeout_duration = op
+                //     .function_exec_info
+                //     .timeout
+                //     .unwrap_or(Duration::from_secs(300));
+                // let warn_duration = Duration::from_secs(30);
                 let timeout_duration = op
                     .function_exec_info
                     .timeout
-                    .unwrap_or(Duration::from_secs(300));
-                let warn_duration = Duration::from_secs(30);
+                    .unwrap_or(Duration::from_secs(TIMEOUT_THRESHOLD));
+                let warn_duration = Duration::from_secs(WARNING_THRESHOLD);
 
                 let op_name_for_warning = op.name.clone();
                 let op_kind_for_warning = op.op_kind.clone();
-                let warn_handle = tokio::spawn(async move {
-                    tokio::time::sleep(warn_duration).await;
-                    eprintln!(
-                        "WARNING: Function '{}' ({}) is taking longer than 30s",
-                        op_kind_for_warning, op_name_for_warning
-                    );
-                    warn!(
-                        "Function '{}' ({}) is taking longer than 30s",
-                        op_kind_for_warning, op_name_for_warning
-                    );
-                });
+
                 let result = if op.function_exec_info.enable_cache {
                     let output_value_cell = memory.get_cache_entry(
                         || {
@@ -416,38 +414,152 @@ async fn evaluate_op_scope(
                         op.executor.evaluate(input_values)
                     });
 
-                    let timeout_result = tokio::time::timeout(timeout_duration, eval_future).await;
-                    if timeout_result.is_err() {
-                        Err(anyhow!(
-                            "Function '{}' ({}) timed out after {} seconds",
-                            op.op_kind,
-                            op.name,
-                            timeout_duration.as_secs()
-                        ))
-                    } else {
-                        timeout_result
-                            .unwrap()
-                            .and_then(|v| head_scope.define_field(&op.output, &v))
-                    }
+                    // Warning + timeout logic
+                    let mut eval_future = Box::pin(eval_future);
+                    let mut warned = false;
+                    let timeout_future = tokio::time::sleep(timeout_duration);
+                    tokio::pin!(timeout_future);
+
+                    let res = loop {
+                        tokio::select! {
+                            res = &mut eval_future => {
+                                break Ok(res?);
+                            }
+                            _ = &mut timeout_future => {
+                                break Err(anyhow!(
+                                    "Function '{}' ({}) timed out after {} seconds",
+                                    op.op_kind, op.name, timeout_duration.as_secs()
+                                ));
+                            }
+                            _ = tokio::time::sleep(warn_duration), if !warned => {
+                                eprintln!(
+                                    "WARNING: Function '{}' ({}) is taking longer than 30s",
+                                    op_kind_for_warning, op_name_for_warning
+                                );
+                                warn!(
+                                    "Function '{}' ({}) is taking longer than {}s",
+                                    op_kind_for_warning, op_name_for_warning, WARNING_THRESHOLD
+                                );
+                                warned = true;
+                            }
+                        }
+                    };
+
+                    res.and_then(|v| head_scope.define_field(&op.output, &v))
                 } else {
                     let eval_future = op.executor.evaluate(input_values);
 
-                    let timeout_result = tokio::time::timeout(timeout_duration, eval_future).await;
-                    if timeout_result.is_err() {
-                        Err(anyhow!(
-                            "Function '{}' ({}) timed out after {} seconds",
-                            op.op_kind,
-                            op.name,
-                            timeout_duration.as_secs()
-                        ))
-                    } else {
-                        timeout_result
-                            .unwrap()
-                            .and_then(|v| head_scope.define_field(&op.output, &v))
-                    }
-                };
+                    // Warning + timeout logic
+                    let mut eval_future = Box::pin(eval_future);
+                    let mut warned = false;
+                    let timeout_future = tokio::time::sleep(timeout_duration);
+                    tokio::pin!(timeout_future);
 
-                warn_handle.abort();
+                    let res = loop {
+                        tokio::select! {
+                            res = &mut eval_future => {
+                                break Ok(res?);
+                            }
+                            _ = &mut timeout_future => {
+                                break Err(anyhow!(
+                                    "Function '{}' ({}) timed out after {} seconds",
+                                    op.op_kind, op.name, timeout_duration.as_secs()
+                                ));
+                            }
+                            _ = tokio::time::sleep(warn_duration), if !warned => {
+                                eprintln!(
+                                    "WARNING: Function '{}' ({}) is taking longer than 30s",
+                                    op_kind_for_warning, op_name_for_warning
+                                );
+                                warn!(
+                                    "Function '{}' ({}) is taking longer than {}s",
+                                    op_kind_for_warning, op_name_for_warning, WARNING_THRESHOLD
+                                );
+                                warned = true;
+                            }
+                        }
+                    };
+
+                    res.and_then(|v| head_scope.define_field(&op.output, &v))
+                };
+                // let warn_handle = tokio::spawn(async move {
+                //     tokio::time::sleep(warn_duration).await;
+                //     eprintln!(
+                //         "WARNING: Function '{}' ({}) is taking longer than 30s",
+                //         op_kind_for_warning, op_name_for_warning
+                //     );
+                // warn!(
+                //     "Function '{}' ({}) is taking longer than 30s",
+                //     op_kind_for_warning, op_name_for_warning
+                // );
+                // });
+
+                // let mut op_future = Box::pin(op.executor.evaluate(input_values));
+                // let mut warned = false;
+                // let warn_handle = loop{
+                //     tokio::select!{
+                //         res = &mut op_future => {
+                //             break res;
+                //         }
+                //         _ = tokio::time::sleep(warn_duration), if !warned => {
+                //             warn!(
+                //                 "Function '{}' ({}) is taking longer than {}s",
+                //                 op_kind_for_warning, op_name_for_warning, WARNING_THRESHOLD
+                //             );
+                //             warned = true;
+                //         }
+                //     }
+                // };
+                // let result = if op.function_exec_info.enable_cache {
+                //     let output_value_cell = memory.get_cache_entry(
+                //         || {
+                //             Ok(op
+                //                 .function_exec_info
+                //                 .fingerprinter
+                //                 .clone()
+                //                 .with(&input_values)?
+                //                 .into_fingerprint())
+                //         },
+                //         &op.function_exec_info.output_type,
+                //         /*ttl=*/ None,
+                //     )?;
+
+                //     let eval_future = evaluate_with_cell(output_value_cell.as_ref(), move || {
+                //         op.executor.evaluate(input_values)
+                //     });
+
+                //     let timeout_result = tokio::time::timeout(timeout_duration, eval_future).await;
+                //     if timeout_result.is_err() {
+                //         Err(anyhow!(
+                //             "Function '{}' ({}) timed out after {} seconds",
+                //             op.op_kind,
+                //             op.name,
+                //             timeout_duration.as_secs()
+                //         ))
+                //     } else {
+                //         timeout_result
+                //             .unwrap()
+                //             .and_then(|v| head_scope.define_field(&op.output, &v))
+                //     }
+                // } else {
+                //     let eval_future = op.executor.evaluate(input_values);
+
+                //     let timeout_result = tokio::time::timeout(timeout_duration, eval_future).await;
+                //     if timeout_result.is_err() {
+                //         Err(anyhow!(
+                //             "Function '{}' ({}) timed out after {} seconds",
+                //             op.op_kind,
+                //             op.name,
+                //             timeout_duration.as_secs()
+                //         ))
+                //     } else {
+                //         timeout_result
+                //             .unwrap()
+                //             .and_then(|v| head_scope.define_field(&op.output, &v))
+                //     }
+                // };
+
+                // warn_handle.abort();
 
                 if let Some(ref op_stats) = operation_in_process_stats {
                     op_stats.finish_processing(&transform_key, 1);

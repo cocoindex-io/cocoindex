@@ -15,6 +15,9 @@ use futures::{FutureExt, future::try_join_all};
 use tokio::time::Duration;
 use utils::fingerprint::Fingerprinter;
 
+const TIMEOUT_THRESHOLD: u64 = 1800;
+const WARNING_THRESHOLD: u64 = 30;
+
 #[derive(Debug)]
 pub(super) enum ValueTypeBuilder {
     Basic(BasicValueType),
@@ -814,9 +817,12 @@ impl AnalyzerContext {
                             })?;
                             let enable_cache = executor.enable_cache();
                             let behavior_version = executor.behavior_version();
+                            // let timeout = executor.timeout()
+                            //     .or(execution_options_timeout)
+                            //     .or(Some(Duration::from_secs(300)));
                             let timeout = executor.timeout()
                                 .or(execution_options_timeout)
-                                .or(Some(Duration::from_secs(300)));
+                                .or(Some(Duration::from_secs(TIMEOUT_THRESHOLD)));
                             trace!("Finished building executor for transform op `{op_name}`, enable cache: {enable_cache}, behavior version: {behavior_version:?}");
                             let function_exec_info = AnalyzedFunctionExecInfo {
                                 enable_cache,
