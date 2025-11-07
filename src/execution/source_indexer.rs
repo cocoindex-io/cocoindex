@@ -304,7 +304,10 @@ impl SourceIndexingContext {
                 rows_to_retry,
             }),
             setup_execution_ctx,
-            update_once_batcher: batching::Batcher::new(UpdateOnceRunner),
+            update_once_batcher: batching::Batcher::new(
+                UpdateOnceRunner,
+                batching::BatchingOptions::default(),
+            ),
         }))
     }
 

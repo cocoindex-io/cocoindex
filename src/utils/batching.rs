@@ -36,7 +36,10 @@ impl<I, O> Default for Batch<I, O> {
 enum BatcherState<I, O> {
     #[default]
     Idle,
-    Busy(Option<Batch<I, O>>),
+    Busy {
+        pending_batch: Option<Batch<I, O>>,
+        ongoing_count: usize,
+    },
 }
 
 struct BatcherData<R: Runner + 'static> {
@@ -95,6 +98,7 @@ impl<R: Runner + 'static> BatcherData<R> {
 
 pub struct Batcher<R: Runner + 'static> {
     data: Arc<BatcherData<R>>,
+    options: BatchingOptions,
 }
 
 enum BatchExecutionAction<R: Runner + 'static> {
@@ -106,13 +110,19 @@ enum BatchExecutionAction<R: Runner + 'static> {
         num_cancelled_tx: watch::Sender<usize>,
     },
 }
+
+#[derive(Default, Clone, Serialize, Deserialize)]
+pub struct BatchingOptions {
+    pub max_batch_size: Option<usize>,
+}
 impl<R: Runner + 'static> Batcher<R> {
-    pub fn new(runner: R) -> Self {
+    pub fn new(runner: R, options: BatchingOptions) -> Self {
         Self {
             data: Arc::new(BatcherData {
                 runner,
                 state: Mutex::new(BatcherState::Idle),
             }),
+            options,
         }
     }
     pub async fn run(&self, input: R::Input) -> Result<R::Output> {
@@ -120,19 +130,42 @@ impl<R: Runner + 'static> Batcher<R> {
             let mut state = self.data.state.lock().unwrap();
             match &mut *state {
                 state @ BatcherState::Idle => {
-                    *state = BatcherState::Busy(None);
+                    *state = BatcherState::Busy {
+                        pending_batch: None,
+                        ongoing_count: 1,
+                    };
                     BatchExecutionAction::Inline { input }
                 }
-                BatcherState::Busy(batch) => {
-                    let batch = batch.get_or_insert_default();
+                BatcherState::Busy {
+                    pending_batch,
+                    ongoing_count,
+                } => {
+                    let batch = pending_batch.get_or_insert_default();
                     batch.inputs.push(input);
 
                     let (output_tx, output_rx) = oneshot::channel();
                     batch.output_txs.push(output_tx);
 
+                    let num_cancelled_tx = batch.num_cancelled_tx.clone();
+
+                    // Check if we've reached max_batch_size and need to flush immediately
+                    let should_flush = self
+                        .options
+                        .max_batch_size
+                        .map(|max_size| batch.inputs.len() >= max_size)
+                        .unwrap_or(false);
+
+                    if should_flush {
+                        // Take the batch and trigger execution
+                        let batch_to_run = pending_batch.take().unwrap();
+                        *ongoing_count += 1;
+                        let data = self.data.clone();
+                        tokio::spawn(async move { data.run_batch(batch_to_run).await });
+                    }
+
                     BatchExecutionAction::Batched {
                         output_rx,
-                        num_cancelled_tx: batch.num_cancelled_tx.clone(),
+                        num_cancelled_tx,
                     }
                 }
             }
@@ -173,13 +206,33 @@ struct BatchKickOffNext<'a, R: Runner + 'static> {
 impl<'a, R: Runner + 'static> Drop for BatchKickOffNext<'a, R> {
     fn drop(&mut self) {
         let mut state = self.batcher_data.state.lock().unwrap();
-        let existing_state = std::mem::take(&mut *state);
-        let BatcherState::Busy(Some(batch)) = existing_state else {
-            return;
-        };
-        *state = BatcherState::Busy(None);
-        let data = self.batcher_data.clone();
-        tokio::spawn(async move { data.run_batch(batch).await });
+
+        match &mut *state {
+            BatcherState::Idle => {
+                // Nothing to do, already idle
+                return;
+            }
+            BatcherState::Busy {
+                pending_batch,
+                ongoing_count,
+            } => {
+                // Decrement the ongoing count first
+                *ongoing_count -= 1;
+
+                if *ongoing_count == 0 {
+                    // All batches done, check if there's a pending batch
+                    if let Some(batch) = pending_batch.take() {
+                        // Kick off the pending batch and set ongoing_count to 1
+                        *ongoing_count = 1;
+                        let data = self.batcher_data.clone();
+                        tokio::spawn(async move { data.run_batch(batch).await });
+                    } else {
+                        // No pending batch, transition to Idle
+                        *state = BatcherState::Idle;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -263,7 +316,7 @@ mod tests {
         let runner = TestRunner {
             recorded_calls: recorded_calls.clone(),
         };
-        let batcher = Arc::new(Batcher::new(runner));
+        let batcher = Arc::new(Batcher::new(runner, BatchingOptions::default()));
 
         let (n1_tx, n1_rx) = oneshot::channel::<()>();
         let (n2_tx, n2_rx) = oneshot::channel::<()>();
@@ -316,6 +369,218 @@ mod tests {
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0], vec![1]);
         assert_eq!(calls[1], vec![2, 3]);
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn respects_max_batch_size() -> Result<()> {
+        let recorded_calls = Arc::new(Mutex::new(Vec::<Vec<i64>>::new()));
+        let runner = TestRunner {
+            recorded_calls: recorded_calls.clone(),
+        };
+        let batcher = Arc::new(Batcher::new(
+            runner,
+            BatchingOptions {
+                max_batch_size: Some(2),
+            },
+        ));
+
+        let (n1_tx, n1_rx) = oneshot::channel::<()>();
+        let (n2_tx, n2_rx) = oneshot::channel::<()>();
+        let (n3_tx, n3_rx) = oneshot::channel::<()>();
+        let (n4_tx, n4_rx) = oneshot::channel::<()>();
+
+        // Submit first call; it should execute inline and block on n1
+        let b1 = batcher.clone();
+        let f1 = tokio::spawn(async move { b1.run((1_i64, n1_rx)).await });
+
+        // Wait until the runner has recorded the first inline call
+        wait_until_len(&recorded_calls, 1).await;
+
+        // Submit second call; it should be batched
+        let b2 = batcher.clone();
+        let f2 = tokio::spawn(async move { b2.run((2_i64, n2_rx)).await });
+
+        // Submit third call; this should trigger a flush because max_batch_size=2
+        // The batch [2, 3] should be executed immediately
+        let b3 = batcher.clone();
+        let f3 = tokio::spawn(async move { b3.run((3_i64, n3_rx)).await });
+
+        // Wait for the second batch to be recorded
+        wait_until_len(&recorded_calls, 2).await;
+
+        // Verify that the second batch was triggered by max_batch_size
+        {
+            let calls = recorded_calls.lock().unwrap();
+            assert_eq!(calls.len(), 2, "second batch should have started");
+            assert_eq!(calls[1], vec![2, 3], "second batch should contain [2, 3]");
+        }
+
+        // Submit fourth call; it should wait because there are still ongoing batches
+        let b4 = batcher.clone();
+        let f4 = tokio::spawn(async move { b4.run((4_i64, n4_rx)).await });
+
+        // Give it a moment to ensure no new batch starts
+        sleep(Duration::from_millis(50)).await;
+        {
+            let len_now = recorded_calls.lock().unwrap().len();
+            assert_eq!(
+                len_now, 2,
+                "third batch should not start until all ongoing batches complete"
+            );
+        }
+
+        // Unblock the first inline call
+        let _ = n1_tx.send(());
+
+        // Wait for first result
+        let v1 = f1.await??;
+        assert_eq!(v1, 2);
+
+        // Batch [2,3] is still running, so batch [4] shouldn't start yet
+        sleep(Duration::from_millis(50)).await;
+        {
+            let len_now = recorded_calls.lock().unwrap().len();
+            assert_eq!(
+                len_now, 2,
+                "third batch should not start until all ongoing batches complete"
+            );
+        }
+
+        // Unblock batch [2,3] - this should trigger batch [4] to start
+        let _ = n2_tx.send(());
+        let _ = n3_tx.send(());
+
+        let v2 = f2.await??;
+        let v3 = f3.await??;
+        assert_eq!(v2, 4);
+        assert_eq!(v3, 6);
+
+        // Now batch [4] should start since all previous batches are done
+        wait_until_len(&recorded_calls, 3).await;
+
+        // Unblock batch [4]
+        let _ = n4_tx.send(());
+        let v4 = f4.await??;
+        assert_eq!(v4, 8);
+
+        // Validate the call recording: [1], [2, 3] (flushed by max_batch_size), [4]
+        let calls = recorded_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0], vec![1]);
+        assert_eq!(calls[1], vec![2, 3]);
+        assert_eq!(calls[2], vec![4]);
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tracks_multiple_concurrent_batches() -> Result<()> {
+        let recorded_calls = Arc::new(Mutex::new(Vec::<Vec<i64>>::new()));
+        let runner = TestRunner {
+            recorded_calls: recorded_calls.clone(),
+        };
+        let batcher = Arc::new(Batcher::new(
+            runner,
+            BatchingOptions {
+                max_batch_size: Some(2),
+            },
+        ));
+
+        let (n1_tx, n1_rx) = oneshot::channel::<()>();
+        let (n2_tx, n2_rx) = oneshot::channel::<()>();
+        let (n3_tx, n3_rx) = oneshot::channel::<()>();
+        let (n4_tx, n4_rx) = oneshot::channel::<()>();
+        let (n5_tx, n5_rx) = oneshot::channel::<()>();
+        let (n6_tx, n6_rx) = oneshot::channel::<()>();
+
+        // Submit first call - executes inline
+        let b1 = batcher.clone();
+        let f1 = tokio::spawn(async move { b1.run((1_i64, n1_rx)).await });
+        wait_until_len(&recorded_calls, 1).await;
+
+        // Submit calls 2-3 - should batch and flush at max_batch_size
+        let b2 = batcher.clone();
+        let f2 = tokio::spawn(async move { b2.run((2_i64, n2_rx)).await });
+        let b3 = batcher.clone();
+        let f3 = tokio::spawn(async move { b3.run((3_i64, n3_rx)).await });
+        wait_until_len(&recorded_calls, 2).await;
+
+        // Submit calls 4-5 - should batch and flush at max_batch_size
+        let b4 = batcher.clone();
+        let f4 = tokio::spawn(async move { b4.run((4_i64, n4_rx)).await });
+        let b5 = batcher.clone();
+        let f5 = tokio::spawn(async move { b5.run((5_i64, n5_rx)).await });
+        wait_until_len(&recorded_calls, 3).await;
+
+        // Submit call 6 - should be batched but not flushed yet
+        let b6 = batcher.clone();
+        let f6 = tokio::spawn(async move { b6.run((6_i64, n6_rx)).await });
+
+        // Give it a moment to ensure no new batch starts
+        sleep(Duration::from_millis(50)).await;
+        {
+            let len_now = recorded_calls.lock().unwrap().len();
+            assert_eq!(
+                len_now, 3,
+                "fourth batch should not start with ongoing batches"
+            );
+        }
+
+        // Unblock batch [2, 3] - should not cause [6] to execute yet (batch 1 still ongoing)
+        let _ = n2_tx.send(());
+        let _ = n3_tx.send(());
+        let v2 = f2.await??;
+        let v3 = f3.await??;
+        assert_eq!(v2, 4);
+        assert_eq!(v3, 6);
+
+        sleep(Duration::from_millis(50)).await;
+        {
+            let len_now = recorded_calls.lock().unwrap().len();
+            assert_eq!(
+                len_now, 3,
+                "batch [6] should still not start (batch 1 and batch [4,5] still ongoing)"
+            );
+        }
+
+        // Unblock batch [4, 5] - should not cause [6] to execute yet (batch 1 still ongoing)
+        let _ = n4_tx.send(());
+        let _ = n5_tx.send(());
+        let v4 = f4.await??;
+        let v5 = f5.await??;
+        assert_eq!(v4, 8);
+        assert_eq!(v5, 10);
+
+        sleep(Duration::from_millis(50)).await;
+        {
+            let len_now = recorded_calls.lock().unwrap().len();
+            assert_eq!(
+                len_now, 3,
+                "batch [6] should still not start (batch 1 still ongoing)"
+            );
+        }
+
+        // Unblock batch 1 - NOW batch [6] should start
+        let _ = n1_tx.send(());
+        let v1 = f1.await??;
+        assert_eq!(v1, 2);
+
+        wait_until_len(&recorded_calls, 4).await;
+
+        // Unblock batch [6]
+        let _ = n6_tx.send(());
+        let v6 = f6.await??;
+        assert_eq!(v6, 12);
+
+        // Validate the call recording
+        let calls = recorded_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[0], vec![1]);
+        assert_eq!(calls[1], vec![2, 3]);
+        assert_eq!(calls[2], vec![4, 5]);
+        assert_eq!(calls[3], vec![6]);
 
         Ok(())
     }

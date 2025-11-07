@@ -34,6 +34,7 @@ pub struct Spec {
     binary: bool,
     included_patterns: Option<Vec<String>>,
     excluded_patterns: Option<Vec<String>>,
+    max_file_size: Option<i64>,
     sqs_queue_url: Option<String>,
     redis: Option<RedisConfig>,
 }
@@ -82,6 +83,7 @@ struct Executor {
     prefix: Option<String>,
     binary: bool,
     pattern_matcher: PatternMatcher,
+    max_file_size: Option<i64>,
     sqs_context: Option<Arc<SqsContext>>,
     redis_context: Option<Arc<RedisContext>>,
 }
@@ -115,6 +117,14 @@ impl SourceExecutor for Executor {
                         if let Some(key) = obj.key() {
                             // Only include files (not folders)
                             if key.ends_with('/') { continue; }
+                            // Check file size limit
+                            if let Some(max_size) = self.max_file_size {
+                                if let Some(size) = obj.size() {
+                                    if size > max_size {
+                                        continue;
+                                    }
+                                }
+                            }
                             if self.pattern_matcher.is_file_included(key) {
                                 batch.push(PartialSourceRow {
                                     key: KeyValue::from_single_part(key.to_string()),
@@ -155,6 +165,25 @@ impl SourceExecutor for Executor {
                 ordinal: Some(Ordinal::unavailable()),
                 content_version_fp: None,
             });
+        }
+        // Check file size limit
+        if let Some(max_size) = self.max_file_size {
+            let head_result = self
+                .client
+                .head_object()
+                .bucket(&self.bucket_name)
+                .key(key_str.as_ref())
+                .send()
+                .await?;
+            if let Some(size) = head_result.content_length() {
+                if size > max_size {
+                    return Ok(PartialSourceRowData {
+                        value: Some(SourceValue::NonExistence),
+                        ordinal: Some(Ordinal::unavailable()),
+                        content_version_fp: None,
+                    });
+                }
+            }
         }
         let resp = self
             .client
@@ -457,6 +486,7 @@ impl SourceFactoryBase for Factory {
             prefix: spec.prefix,
             binary: spec.binary,
             pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
+            max_file_size: spec.max_file_size,
             sqs_context: spec.sqs_queue_url.map(|url| {
                 Arc::new(SqsContext {
                     client: aws_sdk_sqs::Client::new(&config),

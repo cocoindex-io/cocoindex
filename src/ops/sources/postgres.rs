@@ -12,6 +12,7 @@ use std::fmt::Write;
 
 type PgValueDecoder = fn(&sqlx::postgres::PgRow, usize) -> Result<Value>;
 
+const LISTENER_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
 #[derive(Clone)]
 struct FieldSchemaInfo {
     schema: FieldSchema,
@@ -527,12 +528,41 @@ impl SourceExecutor for PostgresSourceExecutor {
         listener.listen(&notification_ctx.channel_name).await?;
 
         let stream = stream! {
-            while let Ok(notification) = listener.recv().await {
-                let change = self.parse_notification_payload(&notification);
-                yield change.map(|change| SourceChangeMessage {
-                    changes: vec![change],
-                    ack_fn: None,
-                });
+            loop {
+                let mut heartbeat = tokio::time::interval(LISTENER_HEARTBEAT_INTERVAL);
+                loop {
+                    tokio::select! {
+                        notification = listener.recv() => {
+                            let notification = match notification {
+                                Ok(notification) => notification,
+                                Err(e) => {
+                                    warn!("Failed to receive notification from channel {}: {e:?}", notification_ctx.channel_name);
+                                    break;
+                                }
+                            };
+                            let change = self.parse_notification_payload(&notification);
+                            yield change.map(|change| SourceChangeMessage {
+                                changes: vec![change],
+                                ack_fn: None,
+                            });
+                        }
+
+                        _ = heartbeat.tick() => {
+                            let ok = tokio::time::timeout(std::time::Duration::from_secs(5),
+                                sqlx::query("SELECT 1").execute(&mut listener)
+                            ).await.is_ok();
+                            if !ok {
+                                warn!("Listener heartbeat failed for channel {}", notification_ctx.channel_name);
+                                break;
+                            }
+
+                        }
+                    }
+                }
+                std::mem::drop(listener);
+                info!("Reconnecting to listener {}", notification_ctx.channel_name);
+                listener = PgListener::connect_with(&self.db_pool).await?;
+                listener.listen(&notification_ctx.channel_name).await?;
             }
         };
 
