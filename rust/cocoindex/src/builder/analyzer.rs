@@ -817,9 +817,6 @@ impl AnalyzerContext {
                             })?;
                             let enable_cache = executor.enable_cache();
                             let behavior_version = executor.behavior_version();
-                            // let timeout = executor.timeout()
-                            //     .or(execution_options_timeout)
-                            //     .or(Some(Duration::from_secs(300)));
                             let timeout = executor.timeout()
                                 .or(execution_options_timeout)
                                 .or(Some(Duration::from_secs(TIMEOUT_THRESHOLD)));
