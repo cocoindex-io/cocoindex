@@ -515,6 +515,43 @@ async fn evaluate_op_scope(
                 let collector_entry = scoped_entries
                     .headn(op.collector_ref.scope_up_level as usize)
                     .ok_or_else(|| anyhow::anyhow!("Collector level out of bound"))?;
+
+                // Assemble input values
+                let input_values: Vec<value::Value> =
+                    assemble_input_values(&op.input.fields, scoped_entries)
+                        .collect::<Result<Vec<_>>>()?;
+
+                // Create field_values vector for all fields in the merged schema
+                let mut field_values = op
+                    .field_index_mapping
+                    .iter()
+                    .map(|idx| {
+                        idx.map_or(value::Value::Null, |input_idx| {
+                            input_values[input_idx].clone()
+                        })
+                    })
+                    .collect::<Vec<_>>();
+
+                // Handle auto_uuid_field (assumed to be at position 0 for efficiency)
+                if op.has_auto_uuid_field {
+                    if let Some(uuid_idx) = op.collector_schema.auto_uuid_field_idx {
+                        let uuid = memory.next_uuid(
+                            op.fingerprinter
+                                .clone()
+                                .with(
+                                    &field_values
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(i, _)| *i != uuid_idx)
+                                        .map(|(_, v)| v)
+                                        .collect::<Vec<_>>(),
+                                )?
+                                .into_fingerprint(),
+                        )?;
+                        field_values[uuid_idx] = value::Value::Basic(value::BasicValue::Uuid(uuid));
+                    }
+                }
+
                 {
                     let mut collected_records = collector_entry.collected_values
                         [op.collector_ref.local.collector_idx as usize]

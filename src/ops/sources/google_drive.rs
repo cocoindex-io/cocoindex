@@ -1,3 +1,4 @@
+use super::shared::pattern_matcher::PatternMatcher;
 use chrono::Duration;
 use google_drive3::{
     DriveHub,
@@ -60,6 +61,8 @@ pub struct Spec {
     root_folder_ids: Vec<String>,
     recent_changes_poll_interval: Option<std::time::Duration>,
     max_file_size: Option<i64>,
+    included_patterns: Option<Vec<String>>,
+    excluded_patterns: Option<Vec<String>>,
 }
 
 struct Executor {
@@ -68,6 +71,7 @@ struct Executor {
     root_folder_ids: IndexSet<Arc<str>>,
     recent_updates_poll_interval: Option<std::time::Duration>,
     max_file_size: Option<i64>,
+    pattern_matcher: PatternMatcher,
 }
 
 impl Executor {
@@ -95,6 +99,7 @@ impl Executor {
             root_folder_ids: spec.root_folder_ids.into_iter().map(Arc::from).collect(),
             recent_updates_poll_interval: spec.recent_changes_poll_interval,
             max_file_size: spec.max_file_size,
+            pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
         })
     }
 }
@@ -314,6 +319,9 @@ impl SourceExecutor for Executor {
                         .list_files(&folder_id, &fields, &mut next_page_token)
                         .await?;
                     for file in files {
+                        if !file.name.as_deref().is_some_and(|name| self.pattern_matcher.is_file_included(name)){
+                            continue
+                        }
                         if let Some(max_size) = self.max_file_size
                             && let Some(file_size) = file.size
                             && file_size > max_size {
@@ -365,10 +373,10 @@ impl SourceExecutor for Executor {
                 });
             }
         };
-        // Check file size limit
-        if let Some(max_size) = self.max_file_size
-            && let Some(file_size) = file.size
-            && file_size > max_size
+        if !file
+            .name
+            .as_deref()
+            .is_some_and(|name| self.pattern_matcher.is_file_included(name))
         {
             return Ok(PartialSourceRowData {
                 value: Some(SourceValue::NonExistence),
@@ -376,6 +384,10 @@ impl SourceExecutor for Executor {
                 content_version_fp: None,
             });
         }
+        // Check file size limit
+        if let Some(max_size) = self.max_file_size
+            && let Some(file_size) = file.size
+            && file_size > max_size
         let ordinal = if options.include_ordinal {
             file.modified_time.map(|t| t.try_into()).transpose()?
         } else {

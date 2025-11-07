@@ -255,14 +255,88 @@ fn try_merge_collector_schemas(
     schema1: &CollectorSchema,
     schema2: &CollectorSchema,
 ) -> Result<CollectorSchema> {
-    let fields = try_merge_fields_schemas(&schema1.fields, &schema2.fields)?;
+    let schema1_fields = &schema1.fields;
+    let schema2_fields = &schema2.fields;
+
+    // Create a map from field name to index in schema1
+    let field_map: HashMap<FieldName, usize> = schema1_fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.clone(), i))
+        .collect();
+
+    let mut output_fields = Vec::new();
+    let mut next_field_id_1 = 0;
+    let mut next_field_id_2 = 0;
+
+    for (idx, field) in schema2_fields.iter().enumerate() {
+        if let Some(&idx1) = field_map.get(&field.name) {
+            if idx1 < next_field_id_1 {
+                api_bail!(
+                    "Common fields are expected to have consistent order across different `collect()` calls, but got different orders between fields '{}' and '{}'",
+                    field.name,
+                    schema1_fields[next_field_id_1 - 1].name
+                );
+            }
+            // Add intervening fields from schema1
+            for i in next_field_id_1..idx1 {
+                output_fields.push(schema1_fields[i].clone());
+            }
+            // Add intervening fields from schema2
+            for i in next_field_id_2..idx {
+                output_fields.push(schema2_fields[i].clone());
+            }
+            // Merge the field
+            let merged_type =
+                try_make_common_value_type(&schema1_fields[idx1].value_type, &field.value_type)?;
+            output_fields.push(FieldSchema {
+                name: field.name.clone(),
+                value_type: merged_type,
+                description: None,
+            });
+            next_field_id_1 = idx1 + 1;
+            next_field_id_2 = idx + 1;
+            // Fields not in schema1 and not UUID are added at the end
+        }
+    }
+
+    // Add remaining fields from schema1
+    for i in next_field_id_1..schema1_fields.len() {
+        output_fields.push(schema1_fields[i].clone());
+    }
+
+    // Add remaining fields from schema2
+    for i in next_field_id_2..schema2_fields.len() {
+        output_fields.push(schema2_fields[i].clone());
+    }
+
+    // Handle auto_uuid_field_idx
+    let auto_uuid_field_idx = match (schema1.auto_uuid_field_idx, schema2.auto_uuid_field_idx) {
+        (Some(idx1), Some(idx2)) => {
+            let name1 = &schema1_fields[idx1].name;
+            let name2 = &schema2_fields[idx2].name;
+            if name1 == name2 {
+                // Find the position of the auto_uuid field in the merged output
+                output_fields.iter().position(|f| &f.name == name1)
+            } else {
+                api_bail!(
+                    "Generated UUID fields must have the same name across different `collect()` calls, got different names: '{}' vs '{}'",
+                    name1,
+                    name2
+                );
+            }
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            api_bail!(
+                "The generated UUID field, once present for one `collect()`, must be consistently present for other `collect()` calls for the same collector"
+            );
+        }
+        (None, None) => None,
+    };
+
     Ok(CollectorSchema {
-        fields,
-        auto_uuid_field_idx: if schema1.auto_uuid_field_idx == schema2.auto_uuid_field_idx {
-            schema1.auto_uuid_field_idx
-        } else {
-            None
-        },
+        fields: output_fields,
+        auto_uuid_field_idx,
     })
 }
 
@@ -704,11 +778,14 @@ impl AnalyzerContext {
         op_scope: &Arc<OpScope>,
         reactive_op: &NamedSpec<ReactiveOpSpec>,
     ) -> Result<BoxFuture<'static, Result<AnalyzedReactiveOp>>> {
-        let result_fut = match &reactive_op.spec {
+        let op_scope_clone = op_scope.clone();
+        let reactive_op_clone = reactive_op.clone();
+        let reactive_op_name = reactive_op.name.clone();
+        let result_fut = match reactive_op_clone.spec {
             ReactiveOpSpec::Transform(op) => {
                 let input_field_schemas =
                     analyze_input_fields(&op.inputs, op_scope).with_context(|| {
-                        format!("Preparing inputs for transform op: {}", reactive_op.name)
+                        format!("Preparing inputs for transform op: {}", reactive_op_name)
                     })?;
                 let spec = serde_json::Value::Object(op.op.spec.clone());
 
@@ -725,8 +802,8 @@ impl AnalyzerContext {
                     .with(&output_enriched_type.without_attrs())?;
                 let output_type = output_enriched_type.typ.clone();
                 let output =
-                    op_scope.add_op_output(reactive_op.name.clone(), output_enriched_type)?;
-                let op_name = reactive_op.name.clone();
+                    op_scope.add_op_output(reactive_op_name.clone(), output_enriched_type)?;
+                let op_name = reactive_op_name.clone();
                 async move {
                             trace!("Start building executor for transform op `{op_name}`");
                             let executor = executor.await.with_context(|| {
@@ -777,10 +854,10 @@ impl AnalyzerContext {
                         .lock()
                         .unwrap()
                         .sub_scopes
-                        .insert(reactive_op.name.clone(), Arc::new(sub_op_scope_schema));
+                        .insert(reactive_op_name.clone(), Arc::new(sub_op_scope_schema));
                     analyzed_op_scope_fut
                 };
-                let op_name = reactive_op.name.clone();
+                let op_name = reactive_op_name.clone();
 
                 let concur_control_options =
                     foreach_op.execution_options.get_concur_control_options();
@@ -800,22 +877,52 @@ impl AnalyzerContext {
             }
 
             ReactiveOpSpec::Collect(op) => {
-                let (struct_mapping, fields_schema) = analyze_struct_mapping(&op.input, op_scope)?;
+                let (struct_mapping, fields_schema) =
+                    analyze_struct_mapping(&op.input, &op_scope_clone)?;
                 let has_auto_uuid_field = op.auto_uuid_field.is_some();
                 let fingerprinter = Fingerprinter::default().with(&fields_schema)?;
-                let collect_op = AnalyzedReactiveOp::Collect(AnalyzedCollectOp {
-                    name: reactive_op.name.clone(),
-                    has_auto_uuid_field,
-                    input: struct_mapping,
-                    collector_ref: add_collector(
-                        &op.scope_name,
-                        op.collector_name.clone(),
-                        CollectorSchema::from_fields(fields_schema, op.auto_uuid_field.clone()),
-                        op_scope,
-                    )?,
-                    fingerprinter,
-                });
-                async move { Ok(collect_op) }.boxed()
+                let input_field_names: Vec<FieldName> =
+                    fields_schema.iter().map(|f| f.name.clone()).collect();
+                let collector_ref = add_collector(
+                    &op.scope_name,
+                    op.collector_name.clone(),
+                    CollectorSchema::from_fields(fields_schema, op.auto_uuid_field.clone()),
+                    &op_scope_clone,
+                )?;
+                async move {
+                    // Get the merged collector schema after adding
+                    let collector_schema: Arc<CollectorSchema> = {
+                        let scope = find_scope(&op.scope_name, &op_scope_clone)?.1;
+                        let states = scope.states.lock().unwrap();
+                        let collector = states.collectors.get(&op.collector_name).unwrap();
+                        collector.schema.clone()
+                    };
+
+                    // Pre-compute field index mappings for efficient evaluation
+                    let field_name_to_index: HashMap<&FieldName, usize> = input_field_names
+                        .iter()
+                        .enumerate()
+                        .map(|(i, n)| (n, i))
+                        .collect();
+                    let field_index_mapping = collector_schema
+                        .fields
+                        .iter()
+                        .map(|field| field_name_to_index.get(&field.name).copied())
+                        .collect::<Vec<Option<usize>>>();
+
+                    let collect_op = AnalyzedReactiveOp::Collect(AnalyzedCollectOp {
+                        name: reactive_op_name,
+                        has_auto_uuid_field,
+                        input: struct_mapping,
+                        input_field_names,
+                        collector_schema,
+                        collector_ref,
+                        field_index_mapping,
+                        fingerprinter,
+                    });
+                    Ok(collect_op)
+                }
+                .boxed()
             }
         };
         Ok(result_fut)

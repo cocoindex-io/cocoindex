@@ -30,6 +30,8 @@ The spec takes the following fields:
 *   `root_folder_ids` (`list[str]`): a list of Google Drive folder IDs to import files from.
 *   `binary` (`bool`, optional): whether reading files as binary (instead of text).
 *   `recent_changes_poll_interval` (`datetime.timedelta`, optional): when set, this source provides a change capture mechanism by polling Google Drive for recent modified files periodically.
+*   `included_patterns` (`list[str]`, optional): a list of glob patterns to include files, e.g. `["*.txt", "docs/**/*.md"]`. If not specified, all files will be included.
+*   `excluded_patterns` (`list[str]`, optional): a list of glob patterns to exclude files, e.g. `["tmp", "**/node_modules"]`. Any file or directory matching these patterns will be excluded even if they match `included_patterns`. If not specified, no files will be excluded.
 
     :::info
 
