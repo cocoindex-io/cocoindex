@@ -148,7 +148,7 @@ impl LlmGenerationClient for Client {
 
             if let Some(json) = extracted_json {
                 // Return the structured output as JSON
-                serde_json::to_string(&json)?
+                return Ok(LlmGenerateResponse::Json(json));
             } else {
                 // Fall back to text content
                 let mut text_parts = Vec::new();
@@ -165,7 +165,7 @@ impl LlmGenerationClient for Client {
             return Err(anyhow::anyhow!("No content found in Bedrock response"));
         };
 
-        Ok(LlmGenerateResponse { text })
+        Ok(LlmGenerateResponse::Text(text))
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {

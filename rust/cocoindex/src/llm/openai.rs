@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{llm::OutputFormat, prelude::*};
 use base64::prelude::*;
 
 use super::{LlmEmbeddingClient, LlmGenerationClient, detect_image_mime_type};
@@ -145,15 +145,29 @@ impl LlmGenerationClient for Client {
         )
         .await?;
 
-        // Extract the response text from the first choice
-        let text = response
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|choice| choice.message.content)
-            .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
+        let mut response_iter = response.choices.into_iter();
 
-        Ok(super::LlmGenerateResponse { text })
+        match request.output_format {
+            Some(OutputFormat::JsonSchema { .. }) => {
+                // Extract the response json from the first choice
+                let response_json = serde_json::json!(
+                    response_iter
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?
+                );
+
+                Ok(super::LlmGenerateResponse::Json(response_json))
+            }
+            None => {
+                // Extract the response text from the first choice
+                let text = response_iter
+                    .next()
+                    .and_then(|choice| choice.message.content)
+                    .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
+
+                Ok(super::LlmGenerateResponse::Text(text))
+            }
+        }
     }
 
     fn json_schema_options(&self) -> super::ToJsonSchemaOptions {

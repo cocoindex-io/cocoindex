@@ -123,7 +123,7 @@ impl LlmGenerationClient for Client {
         }
         let text = if let Some(json) = extracted_json {
             // Try strict JSON serialization first
-            serde_json::to_string(&json)?
+            return Ok(LlmGenerateResponse::Json(json));
         } else {
             // Fallback: try text if no tool output found
             match &mut resp_json["content"][0]["text"] {
@@ -155,7 +155,7 @@ impl LlmGenerationClient for Client {
             }
         };
 
-        Ok(LlmGenerateResponse { text })
+        Ok(LlmGenerateResponse::Text(text))
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {

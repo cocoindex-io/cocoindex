@@ -113,7 +113,10 @@ impl SimpleFunctionExecutor for Executor {
             }),
         };
         let res = self.client.generate(req).await?;
-        let json_value: serde_json::Value = utils::deser::from_json_str(res.text.as_str())?;
+        let json_value = match res {
+            crate::llm::LlmGenerateResponse::Text(text) => utils::deser::from_json_str(&text)?,
+            crate::llm::LlmGenerateResponse::Json(value) => value,
+        };
         let value = self.value_extractor.extract_value(json_value)?;
         Ok(value)
     }

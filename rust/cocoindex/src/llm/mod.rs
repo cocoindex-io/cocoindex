@@ -66,8 +66,9 @@ pub struct LlmGenerateRequest<'a> {
 }
 
 #[derive(Debug)]
-pub struct LlmGenerateResponse {
-    pub text: String,
+pub enum LlmGenerateResponse {
+    Text(String),
+    Json(serde_json::Value),
 }
 
 #[async_trait]

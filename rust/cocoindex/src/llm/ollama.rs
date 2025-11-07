@@ -108,10 +108,8 @@ impl LlmGenerationClient for Client {
         })
         .await
         .context("Ollama API error")?;
-        let json: OllamaResponse = res.json().await?;
-        Ok(super::LlmGenerateResponse {
-            text: json.response,
-        })
+
+        Ok(super::LlmGenerateResponse::Json(res.json().await?))
     }
 
     fn json_schema_options(&self) -> super::ToJsonSchemaOptions {
