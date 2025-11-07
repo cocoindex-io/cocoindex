@@ -1,3 +1,4 @@
+use super::shared::pattern_matcher::PatternMatcher;
 use chrono::Duration;
 use google_drive3::{
     DriveHub,
@@ -59,6 +60,8 @@ pub struct Spec {
     binary: bool,
     root_folder_ids: Vec<String>,
     recent_changes_poll_interval: Option<std::time::Duration>,
+    included_patterns: Option<Vec<String>>,
+    excluded_patterns: Option<Vec<String>>,
 }
 
 struct Executor {
@@ -66,6 +69,7 @@ struct Executor {
     binary: bool,
     root_folder_ids: IndexSet<Arc<str>>,
     recent_updates_poll_interval: Option<std::time::Duration>,
+    pattern_matcher: PatternMatcher,
 }
 
 impl Executor {
@@ -92,6 +96,7 @@ impl Executor {
             binary: spec.binary,
             root_folder_ids: spec.root_folder_ids.into_iter().map(Arc::from).collect(),
             recent_updates_poll_interval: spec.recent_changes_poll_interval,
+            pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
         })
     }
 }
@@ -311,6 +316,9 @@ impl SourceExecutor for Executor {
                         .list_files(&folder_id, &fields, &mut next_page_token)
                         .await?;
                     for file in files {
+                        if !file.name.as_deref().is_some_and(|name| self.pattern_matcher.is_file_included(name)){
+                            continue
+                        }
                         curr_rows.extend(self.visit_file(file, &mut new_folder_ids, &mut seen_ids)?);
                     }
                     if !curr_rows.is_empty() {
@@ -356,6 +364,17 @@ impl SourceExecutor for Executor {
                 });
             }
         };
+        if !file
+            .name
+            .as_deref()
+            .is_some_and(|name| self.pattern_matcher.is_file_included(name))
+        {
+            return Ok(PartialSourceRowData {
+                value: Some(SourceValue::NonExistence),
+                ordinal: Some(Ordinal::unavailable()),
+                content_version_fp: None,
+            });
+        }
         let ordinal = if options.include_ordinal {
             file.modified_time.map(|t| t.try_into()).transpose()?
         } else {
