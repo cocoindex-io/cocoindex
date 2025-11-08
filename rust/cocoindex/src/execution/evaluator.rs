@@ -361,6 +361,43 @@ async fn evaluate_child_op_scope(
     })
 }
 
+async fn evaluate_with_timeout_and_warning<F, T>(
+    eval_future: F,
+    timeout_duration: Duration,
+    warn_duration: Duration,
+    op_kind: String,
+    op_name: String,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    let mut eval_future = Box::pin(eval_future);
+    let mut warned = false;
+    let timeout_future = tokio::time::sleep(timeout_duration);
+    tokio::pin!(timeout_future);
+
+    loop {
+        tokio::select! {
+            res = &mut eval_future => {
+                return res;
+            }
+            _ = &mut timeout_future => {
+                return Err(anyhow!(
+                    "Function '{}' ({}) timed out after {} seconds",
+                    op_kind, op_name, timeout_duration.as_secs()
+                ));
+            }
+            _ = tokio::time::sleep(warn_duration), if !warned => {
+                warn!(
+                    "Function '{}' ({}) is taking longer than {}s",
+                    op_kind, op_name, WARNING_THRESHOLD
+                );
+                warned = true;
+            }
+        }
+    }
+}
+
 async fn evaluate_op_scope(
     op_scope: &AnalyzedOpScope,
     scoped_entries: RefList<'_, &ScopeEntry<'_>>,
@@ -407,70 +444,28 @@ async fn evaluate_op_scope(
                     let eval_future = evaluate_with_cell(output_value_cell.as_ref(), move || {
                         op.executor.evaluate(input_values)
                     });
-                    let mut eval_future = Box::pin(eval_future);
-                    let mut warned = false;
-                    let timeout_future = tokio::time::sleep(timeout_duration);
-                    tokio::pin!(timeout_future);
+                    let v = evaluate_with_timeout_and_warning(
+                        eval_future,
+                        timeout_duration,
+                        warn_duration,
+                        op_kind_for_warning,
+                        op_name_for_warning,
+                    )
+                    .await?;
 
-                    let res = loop {
-                        tokio::select! {
-                            res = &mut eval_future => {
-                                break Ok(res?);
-                            }
-                            _ = &mut timeout_future => {
-                                break Err(anyhow!(
-                                    "Function '{}' ({}) timed out after {} seconds",
-                                    op.op_kind, op.name, timeout_duration.as_secs()
-                                ));
-                            }
-                            _ = tokio::time::sleep(warn_duration), if !warned => {
-                                eprintln!(
-                                    "WARNING: Function '{}' ({}) is taking longer than 30s",
-                                    op_kind_for_warning, op_name_for_warning
-                                );
-                                warn!(
-                                    "Function '{}' ({}) is taking longer than {}s",
-                                    op_kind_for_warning, op_name_for_warning, WARNING_THRESHOLD
-                                );
-                                warned = true;
-                            }
-                        }
-                    };
-
-                    res.and_then(|v| head_scope.define_field(&op.output, &v))
+                    head_scope.define_field(&op.output, &v)
                 } else {
                     let eval_future = op.executor.evaluate(input_values);
-                    let mut eval_future = Box::pin(eval_future);
-                    let mut warned = false;
-                    let timeout_future = tokio::time::sleep(timeout_duration);
-                    tokio::pin!(timeout_future);
+                    let v = evaluate_with_timeout_and_warning(
+                        eval_future,
+                        timeout_duration,
+                        warn_duration,
+                        op_kind_for_warning,
+                        op_name_for_warning,
+                    )
+                    .await?;
 
-                    let res = loop {
-                        tokio::select! {
-                            res = &mut eval_future => {
-                                break Ok(res?);
-                            }
-                            _ = &mut timeout_future => {
-                                break Err(anyhow!(
-                                    "Function '{}' ({}) timed out after {} seconds",
-                                    op.op_kind, op.name, timeout_duration.as_secs()
-                                ));
-                            }
-                            _ = tokio::time::sleep(warn_duration), if !warned => {
-                                eprintln!(
-                                    "WARNING: Function '{}' ({}) is taking longer than 30s",
-                                    op_kind_for_warning, op_name_for_warning
-                                );
-                                warn!(
-                                    "Function '{}' ({}) is taking longer than {}s",
-                                    op_kind_for_warning, op_name_for_warning, WARNING_THRESHOLD
-                                );
-                                warned = true;
-                            }
-                        }
-                    };
-
-                    res.and_then(|v| head_scope.define_field(&op.output, &v))
+                    head_scope.define_field(&op.output, &v)
                 };
 
                 if let Some(ref op_stats) = operation_in_process_stats {
@@ -579,43 +574,6 @@ async fn evaluate_op_scope(
                 let collector_entry = scoped_entries
                     .headn(op.collector_ref.scope_up_level as usize)
                     .ok_or_else(|| anyhow::anyhow!("Collector level out of bound"))?;
-
-                // Assemble input values
-                let input_values: Vec<value::Value> =
-                    assemble_input_values(&op.input.fields, scoped_entries)
-                        .collect::<Result<Vec<_>>>()?;
-
-                // Create field_values vector for all fields in the merged schema
-                let mut field_values = op
-                    .field_index_mapping
-                    .iter()
-                    .map(|idx| {
-                        idx.map_or(value::Value::Null, |input_idx| {
-                            input_values[input_idx].clone()
-                        })
-                    })
-                    .collect::<Vec<_>>();
-
-                // Handle auto_uuid_field (assumed to be at position 0 for efficiency)
-                if op.has_auto_uuid_field {
-                    if let Some(uuid_idx) = op.collector_schema.auto_uuid_field_idx {
-                        let uuid = memory.next_uuid(
-                            op.fingerprinter
-                                .clone()
-                                .with(
-                                    &field_values
-                                        .iter()
-                                        .enumerate()
-                                        .filter(|(i, _)| *i != uuid_idx)
-                                        .map(|(_, v)| v)
-                                        .collect::<Vec<_>>(),
-                                )?
-                                .into_fingerprint(),
-                        )?;
-                        field_values[uuid_idx] = value::Value::Basic(value::BasicValue::Uuid(uuid));
-                    }
-                }
-
                 {
                     let mut collected_records = collector_entry.collected_values
                         [op.collector_ref.local.collector_idx as usize]

@@ -16,7 +16,6 @@ use tokio::time::Duration;
 use utils::fingerprint::Fingerprinter;
 
 const TIMEOUT_THRESHOLD: u64 = 1800;
-const WARNING_THRESHOLD: u64 = 30;
 
 #[derive(Debug)]
 pub(super) enum ValueTypeBuilder {
