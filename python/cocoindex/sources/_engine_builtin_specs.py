@@ -44,6 +44,7 @@ class GoogleDrive(op.SourceSpec):
     # See https://docs.rs/globset/latest/globset/index.html#syntax for the syntax of the patterns.
     excluded_patterns: list[str] | None = None
 
+    max_file_size: int | None = None
     recent_changes_poll_interval: datetime.timedelta | None = None
 
 
