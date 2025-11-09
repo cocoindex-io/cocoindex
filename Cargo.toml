@@ -1,26 +1,14 @@
-[package]
-name = "cocoindex"
-# Version used for local development is always higher than others to take precedence.
-# Will be overridden for specific release versions.
+[workspace]
+members = ["rust/cocoindex"]
+resolver = "2"
+
+[workspace.package]
 version = "999.0.0"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0"
 
-[profile.release]
-codegen-units = 1
-strip = "symbols"
-lto = true
-
-[lib]
-name = "cocoindex_engine"
-crate-type = ["cdylib"]
-
-[features]
-default = ["legacy-states-v0"]
-legacy-states-v0 = []
-
-[dependencies]
+[workspace.dependencies]
 pyo3 = { version = "0.25.1", features = [
     "abi3-py311",
     "auto-initialize",
@@ -157,3 +145,8 @@ redis = { version = "0.31.0", features = ["tokio-comp", "connection-manager"] }
 expect-test = "1.5.0"
 encoding_rs = "0.8.35"
 tokio-util = { version = "0.7.16", features = ["rt"] }
+
+[profile.release]
+codegen-units = 1
+strip = "symbols"
+lto = true

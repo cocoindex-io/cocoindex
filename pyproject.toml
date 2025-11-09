@@ -60,6 +60,8 @@ python-source = "python"
 module-name = "cocoindex._engine"
 features = ["pyo3/extension-module"]
 include = ["THIRD_PARTY_NOTICES.html"]
+# Point to the crate within the workspace
+manifest-path = "rust/cocoindex/Cargo.toml"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "pre-commit"]
