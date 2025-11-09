@@ -1409,6 +1409,7 @@ dependencies = [
  "anyhow",
  "async-openai",
  "async-trait",
+ "axum 0.8.4",
  "base64 0.22.1",
  "blake2",
  "encoding_rs",

@@ -11,6 +11,9 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 log = { workspace = true }
 
+# Web framework
+axum = { workspace = true }
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
