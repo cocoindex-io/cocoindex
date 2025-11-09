@@ -2,6 +2,12 @@
 members = ["rust/cocoindex"]
 resolver = "2"
 
+[workspace.package]
+version = "999.0.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+
 [workspace.dependencies]
 pyo3 = { version = "0.25.1", features = [
     "abi3-py311",
