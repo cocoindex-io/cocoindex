@@ -186,7 +186,7 @@ pub trait SimpleFunctionExecutor: Send + Sync {
         None
     }
 
-    /// Returns None to use the default timeout (300s)
+    /// Returns None to use the default timeout (1800s)
     fn timeout(&self) -> Option<std::time::Duration> {
         None
     }

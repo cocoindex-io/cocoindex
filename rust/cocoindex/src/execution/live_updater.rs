@@ -172,7 +172,6 @@ impl SourceUpdateTask {
                 let mut change_stream = change_stream;
                 let retry_options = retryable::RetryOptions {
                     retry_timeout: None,
-                    per_call_timeout: None,
                     initial_backoff: std::time::Duration::from_secs(5),
                     max_backoff: std::time::Duration::from_secs(60),
                 };

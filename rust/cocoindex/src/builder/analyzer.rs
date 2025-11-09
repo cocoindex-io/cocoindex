@@ -12,10 +12,10 @@ use crate::{
 };
 use futures::future::{BoxFuture, try_join3};
 use futures::{FutureExt, future::try_join_all};
-use tokio::time::Duration;
+use std::time::Duration;
 use utils::fingerprint::Fingerprinter;
 
-const TIMEOUT_THRESHOLD: u64 = 1800;
+const TIMEOUT_THRESHOLD: Duration = Duration::from_secs(1800);
 
 #[derive(Debug)]
 pub(super) enum ValueTypeBuilder {
@@ -818,7 +818,7 @@ impl AnalyzerContext {
                             let behavior_version = executor.behavior_version();
                             let timeout = executor.timeout()
                                 .or(execution_options_timeout)
-                                .or(Some(Duration::from_secs(TIMEOUT_THRESHOLD)));
+                                .or(Some(TIMEOUT_THRESHOLD));
                             trace!("Finished building executor for transform op `{op_name}`, enable cache: {enable_cache}, behavior version: {behavior_version:?}");
                             let function_exec_info = AnalyzedFunctionExecInfo {
                                 enable_cache,

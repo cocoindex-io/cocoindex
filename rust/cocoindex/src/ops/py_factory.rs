@@ -281,7 +281,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                         Ok((
                             prepare_fut,
                             enable_cache,
-                            behavior_version, 
+                            behavior_version,
                             timeout,
                             batching_options,
                         ))

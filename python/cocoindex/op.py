@@ -49,6 +49,7 @@ from .typing import (
 )
 from .runtime import to_async_call
 from .index import IndexOptions
+import datetime
 
 
 class OpCategory(Enum):
@@ -165,7 +166,7 @@ class OpArgs:
     batching: bool = False
     max_batch_size: int | None = None
     behavior_version: int | None = None
-    timeout: int | None = None
+    timeout: datetime.timedelta | None = None
     arg_relationship: tuple[ArgRelationship, str] | None = None
 
 
@@ -394,7 +395,7 @@ def _register_op_factory(
         def behavior_version(self) -> int | None:
             return op_args.behavior_version
 
-        def timeout(self) -> int | None:
+        def timeout(self) -> datetime.timedelta | None:
             if op_args.timeout is not None:
                 return op_args.timeout
 

@@ -13,8 +13,8 @@ use utils::immutable::RefList;
 
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, evaluate_with_cell};
 
-const TIMEOUT_THRESHOLD: u64 = 1800;
-const WARNING_THRESHOLD: u64 = 30;
+const TIMEOUT_THRESHOLD: Duration = Duration::from_secs(1800);
+const WARNING_THRESHOLD: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub struct ScopeValueBuilder {
@@ -390,7 +390,7 @@ where
             _ = tokio::time::sleep(warn_duration), if !warned => {
                 warn!(
                     "Function '{}' ({}) is taking longer than {}s",
-                    op_kind, op_name, WARNING_THRESHOLD
+                    op_kind, op_name, WARNING_THRESHOLD.as_secs()
                 );
                 warned = true;
             }
@@ -408,9 +408,10 @@ async fn evaluate_op_scope(
     for reactive_op in op_scope.reactive_ops.iter() {
         match reactive_op {
             AnalyzedReactiveOp::Transform(op) => {
-                let transform_key = format!("transform/{}{}", op_scope.scope_qualifier, op.name);
-
+                // Track transform operation start
                 if let Some(ref op_stats) = operation_in_process_stats {
+                    let transform_key =
+                        format!("transform/{}{}", op_scope.scope_qualifier, op.name);
                     op_stats.start_processing(&transform_key, 1);
                 }
 
@@ -418,11 +419,9 @@ async fn evaluate_op_scope(
                 for value in assemble_input_values(&op.inputs, scoped_entries) {
                     input_values.push(value?);
                 }
-                let timeout_duration = op
-                    .function_exec_info
-                    .timeout
-                    .unwrap_or(Duration::from_secs(TIMEOUT_THRESHOLD));
-                let warn_duration = Duration::from_secs(WARNING_THRESHOLD);
+
+                let timeout_duration = op.function_exec_info.timeout.unwrap_or(TIMEOUT_THRESHOLD);
+                let warn_duration = WARNING_THRESHOLD;
 
                 let op_name_for_warning = op.name.clone();
                 let op_kind_for_warning = op.op_kind.clone();
@@ -468,7 +467,10 @@ async fn evaluate_op_scope(
                     head_scope.define_field(&op.output, &v)
                 };
 
+                // Track transform operation completion
                 if let Some(ref op_stats) = operation_in_process_stats {
+                    let transform_key =
+                        format!("transform/{}{}", op_scope.scope_qualifier, op.name);
                     op_stats.finish_processing(&transform_key, 1);
                 }
 
@@ -574,6 +576,43 @@ async fn evaluate_op_scope(
                 let collector_entry = scoped_entries
                     .headn(op.collector_ref.scope_up_level as usize)
                     .ok_or_else(|| anyhow::anyhow!("Collector level out of bound"))?;
+
+                // Assemble input values
+                let input_values: Vec<value::Value> =
+                    assemble_input_values(&op.input.fields, scoped_entries)
+                        .collect::<Result<Vec<_>>>()?;
+
+                // Create field_values vector for all fields in the merged schema
+                let mut field_values = op
+                    .field_index_mapping
+                    .iter()
+                    .map(|idx| {
+                        idx.map_or(value::Value::Null, |input_idx| {
+                            input_values[input_idx].clone()
+                        })
+                    })
+                    .collect::<Vec<_>>();
+
+                // Handle auto_uuid_field (assumed to be at position 0 for efficiency)
+                if op.has_auto_uuid_field {
+                    if let Some(uuid_idx) = op.collector_schema.auto_uuid_field_idx {
+                        let uuid = memory.next_uuid(
+                            op.fingerprinter
+                                .clone()
+                                .with(
+                                    &field_values
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(i, _)| *i != uuid_idx)
+                                        .map(|(_, v)| v)
+                                        .collect::<Vec<_>>(),
+                                )?
+                                .into_fingerprint(),
+                        )?;
+                        field_values[uuid_idx] = value::Value::Basic(value::BasicValue::Uuid(uuid));
+                    }
+                }
+
                 {
                     let mut collected_records = collector_entry.collected_values
                         [op.collector_ref.local.collector_idx as usize]
