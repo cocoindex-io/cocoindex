@@ -9,14 +9,14 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - src/**
+      - rust/**
       - python/**
       - "*.toml"
       - ".github/workflows/*.yml"
   push:
     branches: [main]
     paths:
-      - src/**
+      - rust/**
       - python/**
       - "*.toml"
       - ".github/workflows/*.yml"
