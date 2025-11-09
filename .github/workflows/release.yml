@@ -24,8 +24,8 @@ jobs:
       - run: ./.github/scripts/update_version.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: Cargo.toml
-          path: Cargo.toml
+          name: rust/cocoindex/Cargo.toml
+          path: rust/cocoindex/Cargo.toml
 
   generate-3p-notices:
     runs-on: ubuntu-latest
