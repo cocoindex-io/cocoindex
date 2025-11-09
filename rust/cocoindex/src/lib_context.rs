@@ -4,11 +4,11 @@ use crate::prelude::*;
 
 use crate::builder::AnalyzedFlow;
 use crate::execution::source_indexer::SourceIndexingContext;
-use crate::service::error::ApiError;
 use crate::service::query_handler::{QueryHandler, QueryHandlerSpec};
 use crate::settings;
 use crate::setup::ObjectSetupChange;
 use axum::http::StatusCode;
+use cocoindex_utils::error::ApiError;
 use indicatif::MultiProgress;
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};

@@ -5,7 +5,6 @@ use std::hash::Hash;
 
 use super::interface::*;
 use super::registry::*;
-use crate::api_bail;
 use crate::base::schema::*;
 use crate::base::spec::*;
 use crate::builder::plan::AnalyzedValueMapping;

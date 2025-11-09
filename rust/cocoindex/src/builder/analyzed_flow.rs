@@ -1,7 +1,7 @@
 use crate::{ops::interface::FlowInstanceContext, prelude::*};
 
 use super::{analyzer, plan};
-use crate::service::error::{SharedError, SharedResultExt, shared_ok};
+use cocoindex_utils::error::{SharedError, SharedResultExt, shared_ok};
 
 pub struct AnalyzedFlow {
     pub flow_instance: spec::FlowInstanceSpec,

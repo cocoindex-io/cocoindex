@@ -1,4 +1,10 @@
 use anyhow;
+use axum::{
+    Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use serde::Serialize;
 use std::{
     error::Error,
     fmt::{Debug, Display},
@@ -133,4 +139,74 @@ impl<'a, T> SharedResultExtRef<'a, T> for &'a Result<T, SharedError> {
 
 pub fn invariance_violation() -> anyhow::Error {
     anyhow::anyhow!("Invariance violation")
+}
+
+// API Error types for HTTP responses
+
+#[derive(Debug)]
+pub struct ApiError {
+    pub err: anyhow::Error,
+    pub status_code: StatusCode,
+}
+
+impl ApiError {
+    pub fn new(message: &str, status_code: StatusCode) -> Self {
+        Self {
+            err: anyhow::anyhow!("{}", message),
+            status_code,
+        }
+    }
+}
+
+impl Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        Display::fmt(&self.err, f)
+    }
+}
+
+impl Error for ApiError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.err.source()
+    }
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        log::debug!("Internal server error:\n{:?}", self.err);
+        let error_response = ErrorResponse {
+            error: format!("{:?}", self.err),
+        };
+        (self.status_code, Json(error_response)).into_response()
+    }
+}
+
+impl From<anyhow::Error> for ApiError {
+    fn from(err: anyhow::Error) -> ApiError {
+        if err.is::<ApiError>() {
+            return err.downcast::<ApiError>().unwrap();
+        }
+        Self {
+            err,
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! api_bail {
+    ( $fmt:literal $(, $($arg:tt)*)?) => {
+        return Err($crate::error::ApiError::new(&format!($fmt $(, $($arg)*)?), axum::http::StatusCode::BAD_REQUEST).into())
+    };
+}
+
+#[macro_export]
+macro_rules! api_error {
+    ( $fmt:literal $(, $($arg:tt)*)?) => {
+        $crate::error::ApiError::new(&format!($fmt $(, $($arg)*)?), axum::http::StatusCode::BAD_REQUEST)
+    };
 }

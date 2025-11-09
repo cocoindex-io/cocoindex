@@ -7,10 +7,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{
-    base::{schema, value},
-    service::error::{SharedError, SharedResultExtRef},
-};
+use crate::base::{schema, value};
+use cocoindex_utils::error::{SharedError, SharedResultExtRef};
 use cocoindex_utils::fingerprint::{Fingerprint, Fingerprinter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
