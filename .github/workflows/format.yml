@@ -9,13 +9,13 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - src/**
+      - rust/**
       - python/**
       - examples/**
   push:
     branches: [main]
     paths:
-      - src/**
+      - rust/**
       - python/**
       - examples/**
   workflow_dispatch:
