@@ -55,5 +55,5 @@ Check out our [examples documentation](https://cocoindex.io/docs/examples) for m
 ---
 
 > **Note**: New to CocoIndex? Check out the [Getting Started](https://cocoindex.io/docs/getting_started) guide first!
-> 
+>
 > **Contribute**: We welcome contributions! Submit a [pull request](https://github.com/cocoindex-io/cocoindex/pulls) to add more examples.
