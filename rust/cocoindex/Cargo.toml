@@ -51,36 +51,37 @@ env_logger = { workspace = true }
 reqwest = { workspace = true }
 async-openai = { workspace = true }
 
-tree-sitter = { workspace = true }
-tree-sitter-language = { workspace = true }
+tree-sitter = "0.25.8"
+tree-sitter-language = "0.1.5"
 # Per language tree-sitter parsers
-tree-sitter-c = { workspace = true }
-tree-sitter-cpp = { workspace = true }
-tree-sitter-c-sharp = { workspace = true }
-tree-sitter-css = { workspace = true }
-tree-sitter-fortran = { workspace = true }
-tree-sitter-go = { workspace = true }
-tree-sitter-html = { workspace = true }
-tree-sitter-java = { workspace = true }
-tree-sitter-javascript = { workspace = true }
-tree-sitter-json = { workspace = true }
+tree-sitter-c = "0.24.1"
+tree-sitter-cpp = "0.23.4"
+tree-sitter-c-sharp = "0.23.1"
+tree-sitter-css = "0.23.2"
+tree-sitter-fortran = "0.5.1"
+tree-sitter-go = "0.23.4"
+tree-sitter-html = "0.23.2"
+tree-sitter-java = "0.23.5"
+tree-sitter-javascript = "0.23.1"
+tree-sitter-json = "0.24.8"
 # The other more popular crate tree-sitter-kotlin requires tree-sitter < 0.23 for now
-tree-sitter-kotlin-ng = { workspace = true }
-tree-sitter-md = { workspace = true }
-tree-sitter-pascal = { workspace = true }
-tree-sitter-php = { workspace = true }
-tree-sitter-python = { workspace = true }
-tree-sitter-r = { workspace = true }
-tree-sitter-ruby = { workspace = true }
-tree-sitter-rust = { workspace = true }
-tree-sitter-scala = { workspace = true }
-tree-sitter-sequel = { workspace = true }
-tree-sitter-swift = { workspace = true }
-tree-sitter-toml-ng = { workspace = true }
-tree-sitter-typescript = { workspace = true }
-tree-sitter-xml = { workspace = true }
-tree-sitter-yaml = { workspace = true }
-tree-sitter-solidity = { workspace = true }
+tree-sitter-kotlin-ng = "1.1.0"
+tree-sitter-md = "0.5.1"
+tree-sitter-pascal = "0.10.0"
+tree-sitter-php = "0.23.11"
+tree-sitter-python = "0.23.6"
+tree-sitter-r = "1.2.0"
+tree-sitter-ruby = "0.23.1"
+tree-sitter-rust = "0.24.0"
+tree-sitter-scala = "0.24.0"
+tree-sitter-sequel = "0.3.8"
+tree-sitter-swift = "0.7.1"
+tree-sitter-toml-ng = "0.7.0"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-xml = "0.7.0"
+tree-sitter-yaml = "0.7.1"
+tree-sitter-solidity = "1.2.13"
+
 
 globset = { workspace = true }
 unicase = { workspace = true }
