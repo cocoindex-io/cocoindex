@@ -1,12 +1,12 @@
 use crate::prelude::*;
 
 use super::{db_tracking_setup::TrackingTableSetupState, memoization::StoredMemoizationInfo};
-use crate::utils::{db::WriteAction, fingerprint::Fingerprint};
 use futures::Stream;
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use serde::ser::SerializeSeq;
 use sqlx::PgPool;
 use std::fmt;
+use utils::{db::WriteAction, fingerprint::Fingerprint};
 
 ////////////////////////////////////////////////////////////
 // Access for the row tracking table

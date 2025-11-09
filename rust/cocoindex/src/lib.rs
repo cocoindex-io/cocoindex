@@ -10,4 +10,3 @@ mod server;
 mod service;
 mod settings;
 mod setup;
-mod utils;

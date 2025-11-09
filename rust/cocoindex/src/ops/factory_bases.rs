@@ -385,8 +385,10 @@ pub trait BatchedFunctionExecutor: Send + Sync + Sized + 'static {
     fn batching_options(&self) -> batching::BatchingOptions;
 }
 
+struct BatchedFunctionExecutorRunner<E: BatchedFunctionExecutor>(E);
+
 #[async_trait]
-impl<E: BatchedFunctionExecutor> batching::Runner for E {
+impl<E: BatchedFunctionExecutor> batching::Runner for BatchedFunctionExecutorRunner<E> {
     type Input = Vec<value::Value>;
     type Output = value::Value;
 
@@ -394,12 +396,12 @@ impl<E: BatchedFunctionExecutor> batching::Runner for E {
         &self,
         inputs: Vec<Self::Input>,
     ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
-        Ok(self.evaluate_batch(inputs).await?.into_iter())
+        Ok(self.0.evaluate_batch(inputs).await?.into_iter())
     }
 }
 
 struct BatchedFunctionExecutorWrapper<E: BatchedFunctionExecutor> {
-    batcher: batching::Batcher<E>,
+    batcher: batching::Batcher<BatchedFunctionExecutorRunner<E>>,
     enable_cache: bool,
     behavior_version: Option<u32>,
 }
@@ -407,10 +409,15 @@ struct BatchedFunctionExecutorWrapper<E: BatchedFunctionExecutor> {
 impl<E: BatchedFunctionExecutor> BatchedFunctionExecutorWrapper<E> {
     fn new(executor: E) -> Self {
         let batching_options = executor.batching_options();
+        let enable_cache = executor.enable_cache();
+        let behavior_version = executor.behavior_version();
         Self {
-            enable_cache: executor.enable_cache(),
-            behavior_version: executor.behavior_version(),
-            batcher: batching::Batcher::new(executor, batching_options),
+            enable_cache,
+            behavior_version,
+            batcher: batching::Batcher::new(
+                BatchedFunctionExecutorRunner(executor),
+                batching_options,
+            ),
         }
     }
 }

@@ -26,8 +26,9 @@ pub(crate) use crate::ops::interface;
 pub(crate) use crate::service::error::{ApiError, invariance_violation};
 pub(crate) use crate::setup;
 pub(crate) use crate::setup::AuthRegistry;
-pub(crate) use crate::utils::{self, batching, concur_control, http, retryable};
 pub(crate) use crate::{api_bail, api_error};
+pub(crate) use cocoindex_utils as utils;
+pub(crate) use cocoindex_utils::{batching, concur_control, http, retryable};
 
 pub(crate) use anyhow::{anyhow, bail};
 pub(crate) use async_stream::{stream, try_stream};

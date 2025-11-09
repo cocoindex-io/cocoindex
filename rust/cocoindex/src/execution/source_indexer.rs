@@ -1,6 +1,5 @@
-use crate::{
-    execution::row_indexer::ContentHashBasedCollapsingBaseline, prelude::*, utils::batching,
-};
+use crate::{execution::row_indexer::ContentHashBasedCollapsingBaseline, prelude::*};
+use utils::batching;
 
 use futures::future::Ready;
 use sqlx::PgPool;

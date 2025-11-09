@@ -4,12 +4,10 @@ use anyhow::{Context, Ok};
 use futures::future::try_join_all;
 
 use crate::base::value::EstimatedByteSize;
+use crate::base::{schema, value};
 use crate::builder::{AnalyzedTransientFlow, plan::*};
 use crate::py::AnyhowIntoPyResult;
-use crate::{
-    base::{schema, value},
-    utils::immutable::RefList,
-};
+use utils::immutable::RefList;
 
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, evaluate_with_cell};
 

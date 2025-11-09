@@ -14,6 +14,8 @@ default = ["legacy-states-v0"]
 legacy-states-v0 = []
 
 [dependencies]
+cocoindex-utils = { path = "../utils" }
+
 pyo3 = { workspace = true }
 pythonize = { workspace = true }
 pyo3-async-runtimes = { workspace = true }

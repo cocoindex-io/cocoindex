@@ -1,4 +1,4 @@
-use crate::utils::retryable::{self, IsRetryable};
+use crate::retryable::{self, IsRetryable};
 
 pub async fn request(
     req_builder: impl Fn() -> reqwest::RequestBuilder,

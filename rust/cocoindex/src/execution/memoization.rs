@@ -10,8 +10,8 @@ use std::{
 use crate::{
     base::{schema, value},
     service::error::{SharedError, SharedResultExtRef},
-    utils::fingerprint::{Fingerprint, Fingerprinter},
 };
+use cocoindex_utils::fingerprint::{Fingerprint, Fingerprinter};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredCacheEntry {

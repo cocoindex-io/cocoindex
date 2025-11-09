@@ -1,9 +1,9 @@
 use crate::prelude::*;
 
 use super::{ResourceSetupChange, ResourceSetupInfo, SetupChangeType, StateChange};
-use crate::utils::db::WriteAction;
 use axum::http::StatusCode;
 use sqlx::PgPool;
+use utils::db::WriteAction;
 
 const SETUP_METADATA_TABLE_NAME: &str = "cocoindex_setup_metadata";
 pub const FLOW_VERSION_RESOURCE_TYPE: &str = "__FlowVersion";

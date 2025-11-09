@@ -5,7 +5,6 @@ use super::{LlmEmbeddingClient, LlmGenerationClient, detect_image_mime_type};
 use async_openai::{
     Client as OpenAIClient,
     config::OpenAIConfig,
-    error::OpenAIError,
     types::{
         ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartImage,
         ChatCompletionRequestMessageContentPartText, ChatCompletionRequestSystemMessage,
@@ -58,15 +57,6 @@ impl Client {
             // OpenAI client will use OPENAI_API_KEY and OPENAI_API_BASE env variables by default
             client: OpenAIClient::with_config(openai_config),
         })
-    }
-}
-
-impl utils::retryable::IsRetryable for OpenAIError {
-    fn is_retryable(&self) -> bool {
-        match self {
-            OpenAIError::Reqwest(e) => e.is_retryable(),
-            _ => false,
-        }
     }
 }
 
