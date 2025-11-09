@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/cocoindex"]
+members = ["rust/cocoindex", "rust/utils"]
 resolver = "2"
 
 [workspace.package]

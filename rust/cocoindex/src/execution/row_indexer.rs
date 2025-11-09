@@ -18,8 +18,8 @@ use crate::builder::plan::*;
 use crate::ops::interface::{
     ExportTargetMutation, ExportTargetUpsertEntry, Ordinal, SourceExecutorReadOptions,
 };
-use crate::utils::db::WriteAction;
-use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
+use utils::db::WriteAction;
+use utils::fingerprint::{Fingerprint, Fingerprinter};
 
 pub fn extract_primary_key_for_export(
     primary_key_def: &AnalyzedPrimaryKeyDef,
@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn test_content_hash_computation() {
         use crate::base::value::{BasicValue, FieldValues, Value};
-        use crate::utils::fingerprint::Fingerprinter;
+        use utils::fingerprint::Fingerprinter;
 
         // Test that content hash is computed correctly from source data
         let source_data1 = FieldValues {
@@ -999,7 +999,7 @@ mod tests {
         // This test documents the exact requirements for GitHub Actions scenario
         // where file modification times change but content remains the same
 
-        use crate::utils::fingerprint::Fingerprinter;
+        use utils::fingerprint::Fingerprinter;
 
         // Simulate file content that remains the same across GitHub Actions checkout
         let file_content = "const hello = 'world';\nexport default hello;";

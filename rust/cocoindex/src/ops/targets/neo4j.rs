@@ -51,16 +51,6 @@ impl GraphKey {
     }
 }
 
-impl retryable::IsRetryable for neo4rs::Error {
-    fn is_retryable(&self) -> bool {
-        match self {
-            neo4rs::Error::ConnectionError => true,
-            neo4rs::Error::Neo4j(e) => e.kind() == neo4rs::Neo4jErrorKind::Transient,
-            _ => false,
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct GraphPool {
     graphs: Mutex<HashMap<GraphKey, Arc<OnceCell<Arc<Graph>>>>>,

@@ -39,6 +39,27 @@ impl IsRetryable for reqwest::Error {
     }
 }
 
+// OpenAI errors - retryable if the underlying reqwest error is retryable
+impl IsRetryable for async_openai::error::OpenAIError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            async_openai::error::OpenAIError::Reqwest(e) => e.is_retryable(),
+            _ => false,
+        }
+    }
+}
+
+// Neo4j errors - retryable on connection errors and transient errors
+impl IsRetryable for neo4rs::Error {
+    fn is_retryable(&self) -> bool {
+        match self {
+            neo4rs::Error::ConnectionError => true,
+            neo4rs::Error::Neo4j(e) => e.kind() == neo4rs::Neo4jErrorKind::Transient,
+            _ => false,
+        }
+    }
+}
+
 impl Error {
     pub fn retryable<E: Into<anyhow::Error>>(error: E) -> Self {
         Self {

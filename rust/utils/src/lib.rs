@@ -3,6 +3,7 @@ pub mod bytes_decode;
 pub mod concur_control;
 pub mod db;
 pub mod deser;
+pub mod error;
 pub mod fingerprint;
 pub mod http;
 pub mod immutable;

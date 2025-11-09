@@ -3,7 +3,7 @@ use crate::base::spec::FieldName;
 use crate::prelude::*;
 
 use crate::ops::interface::*;
-use crate::utils::fingerprint::{Fingerprint, Fingerprinter};
+use utils::fingerprint::{Fingerprint, Fingerprinter};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AnalyzedLocalFieldReference {

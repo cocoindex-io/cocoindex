@@ -6,13 +6,13 @@ use crate::prelude::*;
 
 use super::plan::*;
 use crate::lib_context::get_auth_registry;
-use crate::utils::fingerprint::Fingerprinter;
 use crate::{
     base::{schema::*, spec::*},
     ops::interface::*,
 };
 use futures::future::{BoxFuture, try_join3};
 use futures::{FutureExt, future::try_join_all};
+use utils::fingerprint::Fingerprinter;
 
 #[derive(Debug)]
 pub(super) enum ValueTypeBuilder {

@@ -13,7 +13,7 @@ use super::row_indexer;
 use crate::base::{schema, value};
 use crate::builder::plan::{AnalyzedImportOp, ExecutionPlan};
 use crate::ops::interface::SourceExecutorReadOptions;
-use crate::utils::yaml_ser::YamlSerializer;
+use utils::yaml_ser::YamlSerializer;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EvaluateAndDumpOptions {

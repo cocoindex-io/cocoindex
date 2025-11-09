@@ -1317,6 +1317,7 @@ dependencies = [
  "blake2",
  "bytes",
  "chrono",
+ "cocoindex-utils",
  "config",
  "const_format",
  "derivative",
@@ -1399,6 +1400,35 @@ dependencies = [
  "uuid",
  "yaml-rust2",
  "yup-oauth2 12.1.0",
+]
+
+[[package]]
+name = "cocoindex-utils"
+version = "999.0.0"
+dependencies = [
+ "anyhow",
+ "async-openai",
+ "async-trait",
+ "base64 0.22.1",
+ "blake2",
+ "encoding_rs",
+ "futures",
+ "hex",
+ "indenter",
+ "indexmap 2.10.0",
+ "itertools 0.14.0",
+ "log",
+ "neo4rs",
+ "rand 0.9.2",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "sqlx",
+ "tokio",
+ "tokio-util",
+ "yaml-rust2",
 ]
 
 [[package]]

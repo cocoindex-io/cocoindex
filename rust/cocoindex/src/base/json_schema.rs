@@ -1,11 +1,11 @@
 use crate::prelude::*;
 
-use crate::utils::immutable::RefList;
 use schemars::schema::{
     ArrayValidation, InstanceType, ObjectValidation, Schema, SchemaObject, SingleOrVec,
     SubschemaValidation,
 };
 use std::fmt::Write;
+use utils::immutable::RefList;
 
 pub struct ToJsonSchemaOptions {
     /// If true, mark all fields as required.
