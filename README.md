@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="https://cocoindex.io/images/github.svg" alt="CocoIndex">
+    <img src="https://cocoindex.io/docs/static/img/cocoboyCop.png" alt="CocoIndex">
 </p>
 
 <h1 align="center">Data transformation for AI</h1>
