@@ -1,7 +1,5 @@
-# 📜 Contributor Covenant Code of Conduct
-<p align="center">
-    <img src="docs/static/img/cocoboyCop.png" height = 100px>
-</p>
+<h1>📜 Contributor Covenant Code of Conduct   <img src="docs/static/img/cocoboyCop.png" height = 100px></h1>
+
 
 ## 🤝 Our Pledge
 
