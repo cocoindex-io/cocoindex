@@ -1,4 +1,7 @@
 # 📜 Contributor Covenant Code of Conduct
+<p align="center">
+    <img src="https://gemini.google.com/app/8edc102777f0c95d">
+</p>
 
 ## 🤝 Our Pledge
 
