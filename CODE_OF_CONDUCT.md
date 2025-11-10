@@ -7,7 +7,7 @@ We as members, contributors, and leaders pledge to make participation in our com
 
 We pledge to act and interact in ways that contribute to an open, welcoming, diverse, inclusive, and healthy community.
 
-<h1> <img src="docs/static/img/cocoboyAnnouncer.png" height = 100px>Our Standards ✨</h1>
+<h1> <img src="docs/static/img/cocoboyKing.png" height = 100px>Our Standards ✨</h1>
 
 Examples of behavior that contributes to a positive environment for our community include:
 
@@ -34,7 +34,7 @@ Community leaders have the right and responsibility to remove, edit, or reject c
 <h1> <img src="docs/static/img/cocoboyExplorer.png"  height = 100px> Scope 🌍</h1> 
 This Code of Conduct applies within all community spaces, and also applies when an individual is officially representing the community in public spaces. Examples of representing our community include using an official e-mail address, posting via an official social media account, or acting as an appointed representative at an online or offline event.
 
-<h1> <img src="docs/static/img/cocoboyEvaluator.png"  height = 100px> Enforcement 📢</h1>
+<h1> <img src="docs/static/img/cocoboyAnnouncer.png"  height = 100px> Enforcement 📢</h1>
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at [conduct@cocoindex.io](mailto:conduct@cocoindex.io).
 
