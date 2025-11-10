@@ -7,7 +7,7 @@ We as members, contributors, and leaders pledge to make participation in our com
 
 We pledge to act and interact in ways that contribute to an open, welcoming, diverse, inclusive, and healthy community.
 
-<h1> <img src="docs/static/img/cocoboyKing.png" height = 100px>Our Standards ✨</h1>
+<h1> <img src="docs/static/img/cocoboyAnnouncer.png" height = 100px>Our Standards ✨</h1>
 
 Examples of behavior that contributes to a positive environment for our community include:
 
