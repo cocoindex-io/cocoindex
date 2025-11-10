@@ -104,6 +104,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 fastapi_app = FastAPI(lifespan=lifespan)
 
 
+@fastapi_app.get("/search")  # type: ignore
 def search_endpoint(
     request: Request,
     q: str = Query(..., description="Search query"),
@@ -112,10 +113,6 @@ def search_endpoint(
     pool = request.app.state.pool
     results = search(pool, q, limit)
     return {"results": results}
-
-
-# Attach route without using decorator to avoid untyped-decorator when FastAPI types are unavailable
-fastapi_app.get("/search")(search_endpoint)
 
 
 if __name__ == "__main__":

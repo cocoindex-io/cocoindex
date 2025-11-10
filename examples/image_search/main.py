@@ -3,7 +3,7 @@ import functools
 import io
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Literal, Final, TypeAlias, cast, AsyncIterator
+from typing import Any, cast, AsyncIterator
 
 import cocoindex
 import torch
@@ -19,8 +19,7 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearch"
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
-CLIP_MODEL_DIMENSION: Final[int] = 768
-CLIPVector: TypeAlias = cocoindex.Vector[cocoindex.Float32, Literal[768]]
+# Using simple list[float] for embeddings for readability in example code.
 
 
 @functools.cache
@@ -44,7 +43,7 @@ def embed_query(text: str) -> list[float]:
 @cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
 def embed_image(
     img_bytes: bytes,
-) -> CLIPVector:
+) -> list[float]:
     """
     Convert image to embedding using CLIP model.
     """
@@ -53,7 +52,7 @@ def embed_image(
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         features = model.get_image_features(**inputs)
-    return cast(CLIPVector, features[0].tolist())
+    return cast(list[float], features[0].tolist())
 
 
 # CocoIndex flow: Ingest images, extract captions, embed, export to Qdrant
@@ -142,6 +141,7 @@ app.mount("/img", StaticFiles(directory="img"), name="img")
 
 
 # --- Search API ---
+@app.get("/search")  # type: ignore
 def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
@@ -171,5 +171,4 @@ def search(
     }
 
 
-# Attach route without using decorator to avoid untyped-decorator when FastAPI types are unavailable
-app.get("/search")(search)
+# Route attached via decorator above for readability
