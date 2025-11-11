@@ -8,8 +8,8 @@ import TabItem from '@theme/TabItem';
 
 A custom function can be defined in one of the following ways:
 
-*   A standalone function. It's simpler and doesn't allow additional configurations and setup logic.
-*   A function spec and an executor. It's more powerful, allows additional configurations and setup logic.
+* A standalone function. It's simpler and doesn't allow additional configurations and setup logic.
+* A function spec and an executor. It's more powerful, allows additional configurations and setup logic.
 
 ## Option 1: By a standalone function
 
@@ -31,9 +31,9 @@ def compute_something(arg1: str, arg2: int | None = None) -> str:
 
 Notes:
 
-*   The `cocoindex.op.function()` function decorator also takes optional parameters.
+* The `cocoindex.op.function()` function decorator also takes optional parameters.
     See [Parameters for custom functions](#parameters-for-custom-functions) for details.
-*   Types of arguments and the return value must be annotated, so that CocoIndex will have information about data types of the operation's output fields.
+* Types of arguments and the return value must be annotated, so that CocoIndex will have information about data types of the operation's output fields.
     See [Data Types](/docs/core/data_types) for supported types.
 
 </TabItem>
@@ -43,11 +43,10 @@ Notes:
 
 The cocoindex repository contains the following examples of custom functions defined in this way:
 
-*   In the [code_embedding](https://github.com/cocoindex-io/cocoindex/blob/main/examples/code_embedding/main.py) example,
+* In the [code_embedding](https://github.com/cocoindex-io/cocoindex/blob/main/examples/code_embedding/main.py) example,
     `extract_extension` is a custom function to extract the extension of a file name.
-*   In the [manuals_llm_extraction](https://github.com/cocoindex-io/cocoindex/blob/main/examples/manuals_llm_extraction/main.py) example,
+* In the [manuals_llm_extraction](https://github.com/cocoindex-io/cocoindex/blob/main/examples/manuals_llm_extraction/main.py) example,
     `summarize_manuals` is a custom function to summarize structured information of a manual page.
-
 
 ## Option 2: By a function spec and an executor
 
@@ -75,12 +74,12 @@ class ComputeSomething(cocoindex.op.FunctionSpec):
 ```
 
 Notes:
-*   All fields of the spec must have a type serializable / deserializable by the `json` module.
-*   All subclasses of `FunctionSpec` can be instantiated similar to a dataclass, i.e. `ClassName(param1=value1, param2=value2, ...)`.
+
+* All fields of the spec must have a type serializable / deserializable by the `json` module.
+* All subclasses of `FunctionSpec` can be instantiated similar to a dataclass, i.e. `ClassName(param1=value1, param2=value2, ...)`.
 
 </TabItem>
 </Tabs>
-
 
 ### Function Executor
 
@@ -88,16 +87,15 @@ A function executor defines behavior of a function. It's instantiated for each o
 
 The function executor is responsible for:
 
-*   *Prepare* for the function execution, based on the spec.
+* *Prepare* for the function execution, based on the spec.
     It happens once and only once before execution.
     e.g. if the function calls a machine learning model, the model name can be a parameter as a field of the spec, and we may load the model in this phase.
-*   *Run* the function, for each specific input arguments. This happens multiple times, for each specific row of data.
+* *Run* the function, for each specific input arguments. This happens multiple times, for each specific row of data.
 
 <Tabs>
 <TabItem value="python" label="Python" default>
 
 A function executor is defined as a class decorated by `@cocoindex.op.executor_class()`.
-
 
 ```python
 @cocoindex.op.executor_class(...)
@@ -114,12 +112,12 @@ class ComputeSomethingExecutor:
 
 Notes:
 
-*   The `cocoindex.op.executor_class()` class decorator also takes optional parameters.
+* The `cocoindex.op.executor_class()` class decorator also takes optional parameters.
     See [Parameters for custom functions](#parameters-for-custom-functions) for details.
 
-*   A `spec` field must be present in the class, and must be annotated with the spec class name.
-*   The `prepare()` method is optional. It's executed once and only once before any `__call__` execution, to prepare the function execution.
-*   The `__call__()` method is required. It's executed for each specific rows of data.
+* A `spec` field must be present in the class, and must be annotated with the spec class name.
+* The `prepare()` method is optional. It's executed once and only once before any `__call__` execution, to prepare the function execution.
+* The `__call__()` method is required. It's executed for each specific rows of data.
     Types of arugments and the return value must be decorated, so that CocoIndex will have information about data types of the operation's output fields.
     See [Data Types](/docs/core/data_types) for supported types.
 
@@ -130,34 +128,39 @@ Notes:
 
 The cocoindex repository contains the following examples of custom functions defined in this way:
 
-*   In the [pdf_embedding](https://github.com/cocoindex-io/cocoindex/blob/main/examples/pdf_embedding/main.py) example, we define a custom function `PdfToMarkdown`
-*   The `SentenceTransformerEmbed` function shipped with the CocoIndex Python package is defined by Python SDK.
+* In the [pdf_embedding](https://github.com/cocoindex-io/cocoindex/blob/main/examples/pdf_embedding/main.py) example, we define a custom function `PdfToMarkdown`
+* The `SentenceTransformerEmbed` function shipped with the CocoIndex Python package is defined by Python SDK.
     Search for [`SentenceTransformerEmbedExecutor`](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex+lang%3Apython+SentenceTransformerEmbedExecutor&type=code) to see the code.
 
 ## Parameters for custom functions
 
 Custom functions take the following additional parameters:
 
-*   `gpu: bool`: Whether the executor will use GPU. It will affect the way the function is scheduled.
+* `gpu: bool`: Whether the executor will use GPU. It will affect the way the function is scheduled.
 
-*   `cache: bool`: Whether the executor will enable cache for this function.
+* `cache: bool`: Whether the executor will enable cache for this function.
      When `True`, the executor will cache the result of the function for reuse during reprocessing.
      We recommend to set this to `True` for any function that is computationally intensive.
 
-*   `behavior_version: int`: The version of the behavior of the function.
+* `batching: bool`: Whether the executor will consume requests in batch.
+    See the [Batching](#batching) section below for details.
+
+* `max_batch_size: int | None`: The maximum batch size for the executor.
+
+* `behavior_version: int`: The version of the behavior of the function.
     When the version is changed, the function will be re-executed even if cache is enabled.
     It's required to be set if `cache` is `True`.
 
-*   `arg_relationship: tuple[ArgRelationship, str]`: It specifies the relationship between an input argument and the output,
+* `arg_relationship: tuple[ArgRelationship, str]`: It specifies the relationship between an input argument and the output,
     e.g. `(ArgRelationship.CHUNKS_BASE_TEXT, "content")` means the output is chunks for the text represented by the
     input argument with name `content`.
     This provides metadata for tools, e.g. CocoInsight.
     Currently the following attributes are supported:
 
-    *   `ArgRelationship.CHUNKS_BASE_TEXT`:
+  * `ArgRelationship.CHUNKS_BASE_TEXT`:
         The output is chunks for the text represented by the input argument. In this case, the output is expected to be a *Table*, whose each row represents a text chunk, and the first column has type *Range*, representing the range of the text chunk.
-    *   `ArgRelationship.EMBEDDING_ORIGIN_TEXT`: The output is embedding vector for the text represented by the input argument. The output is expected to be a *Vector*.
-    *   `ArgRelationship.RECTS_BASE_IMAGE`: The output is rectangles for the image represented by the input argument. The output is expected to be a *Table*, whose each row represents a rectangle, and the first column has type *Struct*, with fields `min_x`, `min_y`, `max_x`, `max_y` to represent the coordinates of the rectangle.
+  * `ArgRelationship.EMBEDDING_ORIGIN_TEXT`: The output is embedding vector for the text represented by the input argument. The output is expected to be a *Vector*.
+  * `ArgRelationship.RECTS_BASE_IMAGE`: The output is rectangles for the image represented by the input argument. The output is expected to be a *Table*, whose each row represents a rectangle, and the first column has type *Struct*, with fields `min_x`, `min_y`, `max_x`, `max_y` to represent the coordinates of the rectangle.
 
 For example:
 
@@ -184,6 +187,61 @@ class ComputeSomethingExecutor:
 
     ...
 ```
+
+</TabItem>
+</Tabs>
+
+## Batching
+
+Batching allows a function executor to process multiple function calls in batch.
+Sometimes batching is more efficient than processing them one by one, e.g. running inference on GPU, calling remote APIs with quota limits, etc.
+
+Batching can be enabled by setting the `batching` parameter to `True` in custom function parameters.
+Once it's set to `True`, type of the argument and return value must be a `list`.
+Currently we only support batching functions taking a single argument.
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+For example, for a CocoIndex custom function taking `str` as argument and returning `str` as result, it can be defined as:
+
+```python
+@cocoindex.op.function(batching=True)
+def compute_something(args: list[str]) -> list[str]:
+    ...
+```
+
+or for such a function defined by an executor:
+
+```python
+@cocoindex.op.executor_class(batching=True)
+class ComputeSomethingExecutor:
+    spec: ComputeSomething
+    ...
+
+    def __call__(self, args: list[str]) -> list[str]:
+        ...
+```
+
+### Controlling Batch Size
+
+You can control the maximum batch size using the `max_batch_size` parameter. This is useful for:
+* Limiting memory usage when processing large batches
+* Reducing latency by flushing batches before they grow too large
+* Working with APIs that have request size limits
+
+```python
+@cocoindex.op.function(batching=True, max_batch_size=32)
+def compute_something(args: list[str]) -> list[str]:
+    ...
+```
+
+With `max_batch_size` set, a batch will be flushed when either:
+
+1. No ongoing batches are running
+2. The pending batch size reaches `max_batch_size`
+
+This ensures that requests don't wait indefinitely for a batch to fill up, while still allowing efficient batch processing.
 
 </TabItem>
 </Tabs>

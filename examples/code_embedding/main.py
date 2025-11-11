@@ -16,12 +16,12 @@ def code_to_embedding(
     Embed the text using a SentenceTransformer model.
     """
     # You can also switch to Voyage embedding model:
-    #    return text.transform(
-    #        cocoindex.functions.EmbedText(
-    #            api_type=cocoindex.LlmApiType.VOYAGE,
-    #            model="voyage-code-3",
-    #        )
-    #    )
+    # return text.transform(
+    #     cocoindex.functions.EmbedText(
+    #         api_type=cocoindex.LlmApiType.GEMINI,
+    #         model="text-embedding-004",
+    #     )
+    # )
     return text.transform(
         cocoindex.functions.SentenceTransformerEmbed(
             model="sentence-transformers/all-MiniLM-L6-v2"

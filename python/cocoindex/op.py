@@ -32,11 +32,11 @@ from .engine_value import (
 )
 from .typing import (
     KEY_FIELD_NAME,
+    AnalyzedListType,
     AnalyzedTypeInfo,
     StructSchema,
     StructType,
     TableType,
-    TypeAttr,
     encode_enriched_type_info,
     resolve_forward_ref,
     analyze_type_info,
@@ -45,6 +45,7 @@ from .typing import (
     EnrichedValueType,
     decode_engine_field_schemas,
     FieldSchema,
+    ValueType,
 )
 from .runtime import to_async_call
 from .index import IndexOptions
@@ -149,6 +150,8 @@ class OpArgs:
     """
     - gpu: Whether the executor will be executed on GPU.
     - cache: Whether the executor will be cached.
+    - batching: Whether the executor will be batched.
+    - max_batch_size: The maximum batch size for the executor. Only valid if `batching` is True.
     - behavior_version: The behavior version of the executor. Cache will be invalidated if it
       changes. Must be provided if `cache` is True.
     - arg_relationship: It specifies the relationship between an input argument and the output,
@@ -158,6 +161,8 @@ class OpArgs:
 
     gpu: bool = False
     cache: bool = False
+    batching: bool = False
+    max_batch_size: int | None = None
     behavior_version: int | None = None
     arg_relationship: tuple[ArgRelationship, str] | None = None
 
@@ -166,6 +171,16 @@ class OpArgs:
 class _ArgInfo:
     decoder: Callable[[Any], Any]
     is_required: bool
+
+
+def _make_batched_engine_value_decoder(
+    field_path: list[str], src_type: ValueType, dst_type_info: AnalyzedTypeInfo
+) -> Callable[[Any], Any]:
+    if not isinstance(dst_type_info.variant, AnalyzedListType):
+        raise ValueError("Expected arguments for batching function to be a list type")
+    elem_type_info = analyze_type_info(dst_type_info.variant.elem_type)
+    base_decoder = make_engine_value_decoder(field_path, src_type, elem_type_info)
+    return lambda value: [base_decoder(v) for v in value]
 
 
 def _register_op_factory(
@@ -180,6 +195,10 @@ def _register_op_factory(
     """
     Register an op factory.
     """
+
+    if op_args.batching:
+        if len(expected_args) != 1:
+            raise ValueError("Batching is only supported for single argument functions")
 
     class _WrappedExecutor:
         _executor: Any
@@ -208,7 +227,7 @@ def _register_op_factory(
             """
             self._args_info = []
             self._kwargs_info = {}
-            attributes = []
+            attributes = {}
             potentially_missing_required_arg = False
 
             def process_arg(
@@ -220,14 +239,17 @@ def _register_op_factory(
                 if op_args.arg_relationship is not None:
                     related_attr, related_arg_name = op_args.arg_relationship
                     if related_arg_name == arg_name:
-                        attributes.append(
-                            TypeAttr(related_attr.value, actual_arg.analyzed_value)
-                        )
+                        attributes[related_attr.value] = actual_arg.analyzed_value
                 type_info = analyze_type_info(arg_param.annotation)
                 enriched = EnrichedValueType.decode(actual_arg.value_type)
-                decoder = make_engine_value_decoder(
-                    [arg_name], enriched.type, type_info
-                )
+                if op_args.batching:
+                    decoder = _make_batched_engine_value_decoder(
+                        [arg_name], enriched.type, type_info
+                    )
+                else:
+                    decoder = make_engine_value_decoder(
+                        [arg_name], enriched.type, type_info
+                    )
                 is_required = not type_info.nullable
                 if is_required and actual_arg.value_type.get("nullable", False):
                     potentially_missing_required_arg = True
@@ -302,20 +324,32 @@ def _register_op_factory(
             if len(missing_args) > 0:
                 raise ValueError(f"Missing arguments: {', '.join(missing_args)}")
 
+            analyzed_expected_return_type = analyze_type_info(expected_return)
+            self._result_encoder = make_engine_value_encoder(
+                analyzed_expected_return_type
+            )
+
             base_analyze_method = getattr(self._executor, "analyze", None)
             if base_analyze_method is not None:
-                result_type = base_analyze_method()
+                analyzed_result_type = analyze_type_info(base_analyze_method())
             else:
-                result_type = expected_return
+                if op_args.batching:
+                    if not isinstance(
+                        analyzed_expected_return_type.variant, AnalyzedListType
+                    ):
+                        raise ValueError(
+                            "Expected return type for batching function to be a list type"
+                        )
+                    analyzed_result_type = analyze_type_info(
+                        analyzed_expected_return_type.variant.elem_type
+                    )
+                else:
+                    analyzed_result_type = analyzed_expected_return_type
             if len(attributes) > 0:
-                result_type = Annotated[result_type, *attributes]
-
-            analyzed_result_type_info = analyze_type_info(result_type)
-            encoded_type = encode_enriched_type_info(analyzed_result_type_info)
+                analyzed_result_type.attrs = attributes
             if potentially_missing_required_arg:
-                encoded_type["nullable"] = True
-
-            self._result_encoder = make_engine_value_encoder(analyzed_result_type_info)
+                analyzed_result_type.nullable = True
+            encoded_type = encode_enriched_type_info(analyzed_result_type)
 
             return encoded_type
 
@@ -356,6 +390,14 @@ def _register_op_factory(
 
         def behavior_version(self) -> int | None:
             return op_args.behavior_version
+
+        def batching_options(self) -> dict[str, Any] | None:
+            if op_args.batching:
+                return {
+                    "max_batch_size": op_args.max_batch_size,
+                }
+            else:
+                return None
 
     if category == OpCategory.FUNCTION:
         _engine.register_function_factory(

@@ -1,26 +1,14 @@
-[package]
-name = "cocoindex"
-# Version used for local development is always higher than others to take precedence.
-# Will be overridden for specific release versions.
+[workspace]
+members = ["rust/cocoindex", "rust/utils"]
+resolver = "2"
+
+[workspace.package]
 version = "999.0.0"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0"
 
-[profile.release]
-codegen-units = 1
-strip = "symbols"
-lto = true
-
-[lib]
-name = "cocoindex_engine"
-crate-type = ["cdylib"]
-
-[features]
-default = ["legacy-states-v0"]
-legacy-states-v0 = []
-
-[dependencies]
+[workspace.dependencies]
 pyo3 = { version = "0.25.1", features = [
     "abi3-py311",
     "auto-initialize",
@@ -77,37 +65,6 @@ reqwest = { version = "0.12.23", default-features = false, features = [
 ] }
 async-openai = "0.29.0"
 
-tree-sitter = "0.25.8"
-tree-sitter-language = "0.1.5"
-# Per language tree-sitter parsers
-tree-sitter-c = "0.24.1"
-tree-sitter-cpp = "0.23.4"
-tree-sitter-c-sharp = "0.23.1"
-tree-sitter-css = "0.23.2"
-tree-sitter-fortran = "0.5.1"
-tree-sitter-go = "0.23.4"
-tree-sitter-html = "0.23.2"
-tree-sitter-java = "0.23.5"
-tree-sitter-javascript = "0.23.1"
-tree-sitter-json = "0.24.8"
-# The other more popular crate tree-sitter-kotlin requires tree-sitter < 0.23 for now
-tree-sitter-kotlin-ng = "1.1.0"
-tree-sitter-md = "0.5.1"
-tree-sitter-pascal = "0.10.0"
-tree-sitter-php = "0.23.11"
-tree-sitter-python = "0.23.6"
-tree-sitter-r = "1.2.0"
-tree-sitter-ruby = "0.23.1"
-tree-sitter-rust = "0.24.0"
-tree-sitter-scala = "0.24.0"
-tree-sitter-sequel = "0.3.8"
-tree-sitter-swift = "0.7.1"
-tree-sitter-toml-ng = "0.7.0"
-tree-sitter-typescript = "0.23.2"
-tree-sitter-xml = "0.7.0"
-tree-sitter-yaml = "0.7.1"
-tree-sitter-solidity = "1.2.13"
-
 globset = "0.4.16"
 unicase = "2.8.1"
 google-drive3 = "6.0.0"
@@ -157,3 +114,8 @@ redis = { version = "0.31.0", features = ["tokio-comp", "connection-manager"] }
 expect-test = "1.5.0"
 encoding_rs = "0.8.35"
 tokio-util = { version = "0.7.16", features = ["rt"] }
+
+[profile.release]
+codegen-units = 1
+strip = "symbols"
+lto = true

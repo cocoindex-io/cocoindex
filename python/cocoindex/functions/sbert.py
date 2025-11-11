@@ -1,7 +1,6 @@
 """SentenceTransformer embedding functionality."""
 
-import dataclasses
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -31,6 +30,8 @@ class SentenceTransformerEmbed(op.FunctionSpec):
 @op.executor_class(
     gpu=True,
     cache=True,
+    batching=True,
+    max_batch_size=512,
     behavior_version=1,
     arg_relationship=(op.ArgRelationship.EMBEDDING_ORIGIN_TEXT, "text"),
 )
@@ -57,7 +58,20 @@ class SentenceTransformerEmbedExecutor:
         dim = self._model.get_sentence_embedding_dimension()
         return Vector[np.float32, Literal[dim]]  # type: ignore
 
-    def __call__(self, text: str) -> NDArray[np.float32]:
+    def __call__(self, text: list[str]) -> list[NDArray[np.float32]]:
         assert self._model is not None
-        result: NDArray[np.float32] = self._model.encode(text, convert_to_numpy=True)
-        return result
+
+        # Sort the text by length to minimize the number of padding tokens.
+        text_with_idx = [(idx, t) for idx, t in enumerate(text)]
+        text_with_idx.sort(key=lambda x: len(x[1]))
+
+        results: list[NDArray[np.float32]] = self._model.encode(
+            [t for _, t in text_with_idx], convert_to_numpy=True
+        )
+        final_results: list[NDArray[np.float32] | None] = [
+            None for _ in range(len(text))
+        ]
+        for (idx, _), result in zip(text_with_idx, results):
+            final_results[idx] = result
+
+        return cast(list[NDArray[np.float32]], final_results)

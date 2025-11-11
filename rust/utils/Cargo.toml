@@ -1,0 +1,32 @@
+[package]
+name = "cocoindex-utils"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+log = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+blake2 = { workspace = true }
+reqwest = { workspace = true }
+async-openai = { workspace = true }
+neo4rs = { workspace = true }
+sqlx = { workspace = true }
+encoding_rs = { workspace = true }
+regex = { workspace = true }
+itertools = { workspace = true }
+indexmap = { workspace = true }
+hex = { workspace = true }
+serde_path_to_error = { workspace = true }
+rand = { workspace = true }
+yaml-rust2 = { workspace = true }
+indenter = { workspace = true }

@@ -9,7 +9,9 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 <img width="860" alt="CocoIndex supports Qdrant" src="https://github.com/user-attachments/assets/a9deecfa-dd94-4b97-a1b1-90488d8178df" />
 
 ## Steps
+
 ### Indexing Flow
+
 <img width="480" alt="Index flow for text embedding" src="https://github.com/user-attachments/assets/44d47b5e-b49b-4f05-9a00-dcb8027602a1" />
 
 1. We will ingest a list of local files.
@@ -17,6 +19,7 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 3. We will save the embeddings and the metadata in Postgres with PGVector.
 
 ### Query
+
 We use Qdrant client to query the index, and reuse the embedding operation in the indexing flow.
 
 ## Pre-requisites
@@ -37,21 +40,14 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
    pip install -e .
    ```
 
-
-- Setup:
-
-   ```bash
-   cocoindex setup main
-   ```
-
-   It will automatically create a collection in Qdrant.
-   You can view the collections and data with the Qdrant dashboard at <http://localhost:6333/dashboard>.
-
 - Update index:
 
    ```bash
    cocoindex update main
    ```
+
+   It will automatically create a collection in Qdrant.
+   You can view the collections and data with the Qdrant dashboard at <http://localhost:6333/dashboard>.
 
 - Run:
 
@@ -60,6 +56,7 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
    ```
 
 ## CocoInsight
+
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 

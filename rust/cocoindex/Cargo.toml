@@ -1,0 +1,124 @@
+[package]
+name = "cocoindex"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[lib]
+name = "cocoindex_engine"
+crate-type = ["cdylib"]
+
+[features]
+default = ["legacy-states-v0"]
+legacy-states-v0 = []
+
+[dependencies]
+cocoindex-utils = { path = "../utils" }
+
+pyo3 = { workspace = true }
+pythonize = { workspace = true }
+pyo3-async-runtimes = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+config = { workspace = true }
+const_format = { workspace = true }
+futures = { workspace = true }
+log = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+indexmap = { workspace = true }
+blake2 = { workspace = true }
+pgvector = { workspace = true }
+phf = { workspace = true }
+indenter = { workspace = true }
+indicatif = { workspace = true }
+itertools = { workspace = true }
+derivative = { workspace = true }
+hex = { workspace = true }
+schemars = { workspace = true }
+env_logger = { workspace = true }
+reqwest = { workspace = true }
+async-openai = { workspace = true }
+
+tree-sitter = "0.25.8"
+tree-sitter-language = "0.1.5"
+# Per language tree-sitter parsers
+tree-sitter-c = "0.24.1"
+tree-sitter-cpp = "0.23.4"
+tree-sitter-c-sharp = "0.23.1"
+tree-sitter-css = "0.23.2"
+tree-sitter-fortran = "0.5.1"
+tree-sitter-go = "0.23.4"
+tree-sitter-html = "0.23.2"
+tree-sitter-java = "0.23.5"
+tree-sitter-javascript = "0.23.1"
+tree-sitter-json = "0.24.8"
+# The other more popular crate tree-sitter-kotlin requires tree-sitter < 0.23 for now
+tree-sitter-kotlin-ng = "1.1.0"
+tree-sitter-md = "0.5.1"
+tree-sitter-pascal = "0.10.0"
+tree-sitter-php = "0.23.11"
+tree-sitter-python = "0.23.6"
+tree-sitter-r = "1.2.0"
+tree-sitter-ruby = "0.23.1"
+tree-sitter-rust = "0.24.0"
+tree-sitter-scala = "0.24.0"
+tree-sitter-sequel = "0.3.8"
+tree-sitter-swift = "0.7.1"
+tree-sitter-toml-ng = "0.7.0"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-xml = "0.7.0"
+tree-sitter-yaml = "0.7.1"
+tree-sitter-solidity = "1.2.13"
+
+
+globset = { workspace = true }
+unicase = { workspace = true }
+google-drive3 = { workspace = true }
+hyper-util = { workspace = true }
+hyper-rustls = { workspace = true }
+yup-oauth2 = { workspace = true }
+rustls = { workspace = true }
+http-body-util = { workspace = true }
+yaml-rust2 = { workspace = true }
+urlencoding = { workspace = true }
+qdrant-client = { workspace = true }
+uuid = { workspace = true }
+tokio-stream = { workspace = true }
+async-stream = { workspace = true }
+neo4rs = { workspace = true }
+bytes = { workspace = true }
+rand = { workspace = true }
+indoc = { workspace = true }
+owo-colors = { workspace = true }
+json5 = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-sdk-sqs = { workspace = true }
+time = { workspace = true }
+numpy = { workspace = true }
+infer = { workspace = true }
+serde_with = { workspace = true }
+google-cloud-aiplatform-v1 = { workspace = true }
+google-cloud-gax = { workspace = true }
+
+azure_identity = { workspace = true }
+azure_core = { workspace = true }
+azure_storage = { workspace = true }
+azure_storage_blobs = { workspace = true }
+serde_path_to_error = { workspace = true }
+redis = { workspace = true }
+expect-test = { workspace = true }
+encoding_rs = { workspace = true }
+tokio-util = { workspace = true }

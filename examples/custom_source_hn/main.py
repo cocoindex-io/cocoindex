@@ -211,7 +211,6 @@ def hackernews_flow(
                 content_type="comment",
                 author=comment["author"],
                 text=comment["text"],
-                url="",
                 created_at=comment["created_at"],
             )
 
