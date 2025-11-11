@@ -268,9 +268,15 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                             .extract::<Option<u32>>(py)?;
                         let timeout = executor
                             .call_method(py, "timeout", (), None)
-                            .to_result_with_py_trace(py)?
-                            .extract::<Option<u64>>(py)?
-                            .map(std::time::Duration::from_secs);
+                            .to_result_with_py_trace(py)?;
+                        let timeout = if timeout.is_none(py) {
+                            None
+                        } else {
+                            let td = timeout.into_bound(py);
+                            let total_seconds =
+                                td.call_method0("total_seconds")?.extract::<f64>()?;
+                            Some(std::time::Duration::from_secs_f64(total_seconds))
+                        };
                         let batching_options = executor
                             .call_method(py, "batching_options", (), None)
                             .to_result_with_py_trace(py)?

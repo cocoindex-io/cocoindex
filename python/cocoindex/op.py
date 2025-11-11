@@ -396,10 +396,7 @@ def _register_op_factory(
             return op_args.behavior_version
 
         def timeout(self) -> datetime.timedelta | None:
-            if op_args.timeout is not None:
-                return op_args.timeout
-
-            return None
+            return op_args.timeout
 
         def batching_options(self) -> dict[str, Any] | None:
             if op_args.batching:
