@@ -1404,6 +1404,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cocoindex-core"
+version = "999.0.0"
+dependencies = [
+ "cocoindex-utils",
+]
+
+
+[[package]]
 name = "cocoindex_py_utils"
 version = "999.0.0"
 dependencies = [
