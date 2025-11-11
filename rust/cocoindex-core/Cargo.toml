@@ -7,3 +7,5 @@ license = { workspace = true }
 
 [dependencies]
 cocoindex-utils = { path = "../utils" }
+heed = "0.22.0"
+storekey = { version = "0.9.0", features = ["uuid"] }
