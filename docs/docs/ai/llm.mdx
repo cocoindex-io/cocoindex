@@ -234,6 +234,12 @@ To use the Vertex AI API:
     gcloud auth application-default login
     ```
 
+:::note API Key Not Supported
+
+Vertex AI does **not** support the `api_key` parameter. Vertex AI uses Application Default Credentials (ADC) for authentication instead of API keys. If you provide an `api_key` parameter when using `LlmApiType.VERTEX_AI`, an error will be raised.
+
+:::
+
 Spec for Vertex AI takes additional `api_config` field, in type `cocoindex.llm.VertexAiConfig` with the following fields:
 -   `project` (type: `str`, required): The project ID of the Google Cloud project.
 -   `region` (type: `str`, optional): The region of the Google Cloud project. Use `global` if not specified.
