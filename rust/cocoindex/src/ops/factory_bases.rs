@@ -377,6 +377,10 @@ pub trait BatchedFunctionExecutor: Send + Sync + Sized + 'static {
         None
     }
 
+    fn timeout(&self) -> Option<std::time::Duration> {
+        None
+    }
+
     fn into_fn_executor(self) -> impl SimpleFunctionExecutor {
         BatchedFunctionExecutorWrapper::new(self)
     }
@@ -403,6 +407,7 @@ struct BatchedFunctionExecutorWrapper<E: BatchedFunctionExecutor> {
     batcher: batching::Batcher<BatchedFunctionExecutorRunner<E>>,
     enable_cache: bool,
     behavior_version: Option<u32>,
+    timeout: Option<std::time::Duration>,
 }
 
 impl<E: BatchedFunctionExecutor> BatchedFunctionExecutorWrapper<E> {
@@ -410,9 +415,11 @@ impl<E: BatchedFunctionExecutor> BatchedFunctionExecutorWrapper<E> {
         let batching_options = executor.batching_options();
         let enable_cache = executor.enable_cache();
         let behavior_version = executor.behavior_version();
+        let timeout = executor.timeout();
         Self {
             enable_cache,
             behavior_version,
+            timeout,
             batcher: batching::Batcher::new(
                 BatchedFunctionExecutorRunner(executor),
                 batching_options,
@@ -432,6 +439,9 @@ impl<E: BatchedFunctionExecutor> SimpleFunctionExecutor for BatchedFunctionExecu
     }
     fn behavior_version(&self) -> Option<u32> {
         self.behavior_version
+    }
+    fn timeout(&self) -> Option<std::time::Duration> {
+        self.timeout
     }
 }
 
