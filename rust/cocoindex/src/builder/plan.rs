@@ -3,6 +3,7 @@ use crate::base::spec::FieldName;
 use crate::prelude::*;
 
 use crate::ops::interface::*;
+use std::time::Duration;
 use utils::fingerprint::{Fingerprint, Fingerprinter};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -64,6 +65,7 @@ pub struct AnalyzedImportOp {
 
 pub struct AnalyzedFunctionExecInfo {
     pub enable_cache: bool,
+    pub timeout: Option<Duration>,
     pub behavior_version: Option<u32>,
 
     /// Fingerprinter of the function's behavior.
@@ -74,6 +76,7 @@ pub struct AnalyzedFunctionExecInfo {
 
 pub struct AnalyzedTransformOp {
     pub name: String,
+    pub op_kind: String,
     pub inputs: Vec<AnalyzedValueMapping>,
     pub function_exec_info: AnalyzedFunctionExecInfo,
     pub executor: Box<dyn SimpleFunctionExecutor>,

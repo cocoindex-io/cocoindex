@@ -461,6 +461,7 @@ impl FlowBuilder {
                     })
                     .collect(),
                 op: spec,
+                execution_options: Default::default(),
             }),
         };
 

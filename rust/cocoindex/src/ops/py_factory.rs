@@ -43,6 +43,7 @@ struct PyFunctionExecutor {
 
     enable_cache: bool,
     behavior_version: Option<u32>,
+    timeout: Option<std::time::Duration>,
 }
 
 impl PyFunctionExecutor {
@@ -112,6 +113,10 @@ impl interface::SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
     fn behavior_version(&self) -> Option<u32> {
         self.behavior_version
     }
+
+    fn timeout(&self) -> Option<std::time::Duration> {
+        self.timeout
+    }
 }
 
 struct PyBatchedFunctionExecutor {
@@ -121,6 +126,7 @@ struct PyBatchedFunctionExecutor {
 
     enable_cache: bool,
     behavior_version: Option<u32>,
+    timeout: Option<std::time::Duration>,
     batching_options: batching::BatchingOptions,
 }
 
@@ -240,7 +246,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                     .as_ref()
                     .ok_or_else(|| anyhow!("Python execution context is missing"))?
                     .clone();
-                let (prepare_fut, enable_cache, behavior_version, batching_options) =
+                let (prepare_fut, enable_cache, behavior_version, timeout, batching_options) =
                     Python::with_gil(|py| -> anyhow::Result<_> {
                         let prepare_coro = executor
                             .call_method(py, "prepare", (), None)
@@ -260,6 +266,17 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                             .call_method(py, "behavior_version", (), None)
                             .to_result_with_py_trace(py)?
                             .extract::<Option<u32>>(py)?;
+                        let timeout = executor
+                            .call_method(py, "timeout", (), None)
+                            .to_result_with_py_trace(py)?;
+                        let timeout = if timeout.is_none(py) {
+                            None
+                        } else {
+                            let td = timeout.into_bound(py);
+                            let total_seconds =
+                                td.call_method0("total_seconds")?.extract::<f64>()?;
+                            Some(std::time::Duration::from_secs_f64(total_seconds))
+                        };
                         let batching_options = executor
                             .call_method(py, "batching_options", (), None)
                             .to_result_with_py_trace(py)?
@@ -271,6 +288,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                             prepare_fut,
                             enable_cache,
                             behavior_version,
+                            timeout,
                             batching_options,
                         ))
                     })?;
@@ -284,6 +302,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                                 result_type,
                                 enable_cache,
                                 behavior_version,
+                                timeout,
                                 batching_options,
                             }
                             .into_fn_executor(),
@@ -297,6 +316,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                             result_type,
                             enable_cache,
                             behavior_version,
+                            timeout,
                         }))
                     };
                 Ok(executor)
