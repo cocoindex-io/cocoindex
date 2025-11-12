@@ -175,6 +175,9 @@ impl BatchedFunctionExecutor for PyBatchedFunctionExecutor {
     fn behavior_version(&self) -> Option<u32> {
         self.behavior_version
     }
+    fn timeout(&self) -> Option<std::time::Duration> {
+        self.timeout
+    }
     fn batching_options(&self) -> batching::BatchingOptions {
         self.batching_options.clone()
     }
