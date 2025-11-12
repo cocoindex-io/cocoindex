@@ -13,7 +13,7 @@ tags: [vector-index, custom-building-block]
 import { GitHubButton, DocumentationButton, ExampleButton } from '../../../src/components/GitHubButton';
 
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/document_ai" margin="0 0 24px 0" />
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex-etl-with-document-ai" margin="0 0 24px 0" />
 
 ![Document AI](/img/examples/document_ai/cover.png)
 
