@@ -12,7 +12,7 @@ tags: [data-mapping, vector-index, postgres]
 ---
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
-<GitHubButton url="<https://github.com/cocoindex-io/cocoindex/tree/main/examples/postgres_source>" margin="0 0 24px 0" /
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/postgres_source" margin="0 0 24px 0" /
 >
 ![PostgreSQL Product Indexing Flow](/img/examples/postgres_source/cover.png)
 
