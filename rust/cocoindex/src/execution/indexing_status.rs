@@ -3,6 +3,41 @@ use crate::prelude::*;
 use super::db_tracking;
 use super::evaluator;
 use futures::try_join;
+use utils::fingerprint::{Fingerprint, Fingerprinter};
+
+pub struct SourceLogicFingerprint {
+    pub current: Fingerprint,
+    pub legacy: Vec<Fingerprint>,
+}
+
+impl SourceLogicFingerprint {
+    pub fn new(
+        exec_plan: &plan::ExecutionPlan,
+        source_idx: usize,
+        export_exec_ctx: &[exec_ctx::ExportOpExecutionContext],
+        legacy: Vec<Fingerprint>,
+    ) -> Result<Self> {
+        let import_op = &exec_plan.import_ops[source_idx];
+        let mut fp = Fingerprinter::default();
+        for (export_op, export_op_exec_ctx) in
+            std::iter::zip(exec_plan.export_ops.iter(), export_exec_ctx.iter())
+        {
+            if export_op.def_fp.source_op_names.contains(&import_op.name) {
+                fp = fp.with(&export_op_exec_ctx.target_id)?;
+                fp = fp.with(&export_op.def_fp.fingerprint)?;
+            }
+        }
+        Ok(Self {
+            current: fp.into_fingerprint(),
+            legacy,
+        })
+    }
+
+    pub fn matches(&self, other: impl AsRef<[u8]>) -> bool {
+        self.current.as_slice() == other.as_ref()
+            || self.legacy.iter().any(|fp| fp.as_slice() == other.as_ref())
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct SourceRowLastProcessedInfo {
@@ -54,7 +89,7 @@ pub async fn get_source_row_indexing_status(
         is_logic_current: l
             .process_logic_fingerprint
             .as_ref()
-            .map_or(false, |fp| src_eval_ctx.plan.logic_fingerprint.matches(fp)),
+            .map_or(false, |fp| src_eval_ctx.source_logic_fp.matches(fp)),
     });
     let current = SourceRowInfo {
         ordinal: current.ordinal,
