@@ -53,9 +53,12 @@ pub struct AnalyzedOpOutput {
     pub field_idx: u32,
 }
 
+/// Tracks which affects value of the field, to detect changes of logic.
 #[derive(Debug, Clone)]
 pub struct FieldDefFingerprint {
+    /// Name of sources that affect value of the field.
     pub source_op_names: HashSet<String>,
+    /// Fingerprint of the logic that affects value of the field.
     pub fingerprint: Fingerprint,
 }
 
