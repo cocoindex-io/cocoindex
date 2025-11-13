@@ -52,8 +52,6 @@ Check out our [examples documentation](https://cocoindex.io/docs/examples) for m
 
 - 🛍️ [**product_recommendation**](./product_recommendation) - Build real-time recommendation engine with LLM and graph database
 
----
-
-> **Note**: New to CocoIndex? Check out the [Getting Started](https://cocoindex.io/docs/getting_started) guide first!
->
-> **Contribute**: We welcome contributions! Submit a [pull request](https://github.com/cocoindex-io/cocoindex/pulls) to add more examples.
+> [!NOTE]
+> New to CocoIndex? Check out the [Getting Started](https://cocoindex.io/docs/getting_started) guide first!
+We also welcome contributions! Submit a [pull request](https://github.com/cocoindex-io/cocoindex/pulls) to add more examples.
