@@ -138,12 +138,12 @@ impl SimpleFunctionFactoryBase for Factory {
         "SplitBySeparators"
     }
 
-    async fn resolve_schema<'a>(
+    async fn analyze<'a>(
         &'a self,
         _spec: &'a Spec,
         args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
-    ) -> Result<(Args, EnrichedValueType)> {
+    ) -> Result<SimpleFunctionAnalysisOutput<Args>> {
         // one required arg: text: Str
         let args = Args {
             text: args_resolver
@@ -153,7 +153,11 @@ impl SimpleFunctionFactoryBase for Factory {
         };
 
         let output_schema = make_common_chunk_schema(args_resolver, &args.text)?;
-        Ok((args, output_schema))
+        Ok(SimpleFunctionAnalysisOutput {
+            resolved_args: args,
+            output_schema,
+            behavior_version: None,
+        })
     }
 
     async fn build_executor(

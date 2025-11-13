@@ -42,7 +42,6 @@ struct PyFunctionExecutor {
     result_type: schema::EnrichedValueType,
 
     enable_cache: bool,
-    behavior_version: Option<u32>,
     timeout: Option<std::time::Duration>,
 }
 
@@ -110,10 +109,6 @@ impl interface::SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
         self.enable_cache
     }
 
-    fn behavior_version(&self) -> Option<u32> {
-        self.behavior_version
-    }
-
     fn timeout(&self) -> Option<std::time::Duration> {
         self.timeout
     }
@@ -125,7 +120,6 @@ struct PyBatchedFunctionExecutor {
     result_type: schema::EnrichedValueType,
 
     enable_cache: bool,
-    behavior_version: Option<u32>,
     timeout: Option<std::time::Duration>,
     batching_options: batching::BatchingOptions,
 }
@@ -172,9 +166,6 @@ impl BatchedFunctionExecutor for PyBatchedFunctionExecutor {
     fn enable_cache(&self) -> bool {
         self.enable_cache
     }
-    fn behavior_version(&self) -> Option<u32> {
-        self.behavior_version
-    }
     fn timeout(&self) -> Option<std::time::Duration> {
         self.timeout
     }
@@ -194,11 +185,8 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
         spec: serde_json::Value,
         input_schema: Vec<schema::OpArgSchema>,
         context: Arc<interface::FlowInstanceContext>,
-    ) -> Result<(
-        schema::EnrichedValueType,
-        BoxFuture<'static, Result<Box<dyn interface::SimpleFunctionExecutor>>>,
-    )> {
-        let (result_type, executor, kw_args_names, num_positional_args) =
+    ) -> Result<interface::SimpleFunctionBuildOutput> {
+        let (result_type, executor, kw_args_names, num_positional_args, behavior_version) =
             Python::with_gil(|py| -> anyhow::Result<_> {
                 let mut args = vec![pythonize(py, &spec)?];
                 let mut kwargs = vec![];
@@ -233,11 +221,16 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                     .to_result_with_py_trace(py)?;
                 let (result_type, executor) = result
                     .extract::<(crate::py::Pythonized<schema::EnrichedValueType>, Py<PyAny>)>(py)?;
+                let behavior_version = executor
+                    .call_method(py, "behavior_version", (), None)
+                    .to_result_with_py_trace(py)?
+                    .extract::<Option<u32>>(py)?;
                 Ok((
                     result_type.into_inner(),
                     executor,
                     kw_args_names,
                     num_positional_args,
+                    behavior_version,
                 ))
             })?;
 
@@ -249,7 +242,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                     .as_ref()
                     .ok_or_else(|| anyhow!("Python execution context is missing"))?
                     .clone();
-                let (prepare_fut, enable_cache, behavior_version, timeout, batching_options) =
+                let (prepare_fut, enable_cache, timeout, batching_options) =
                     Python::with_gil(|py| -> anyhow::Result<_> {
                         let prepare_coro = executor
                             .call_method(py, "prepare", (), None)
@@ -265,10 +258,6 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                             .call_method(py, "enable_cache", (), None)
                             .to_result_with_py_trace(py)?
                             .extract::<bool>(py)?;
-                        let behavior_version = executor
-                            .call_method(py, "behavior_version", (), None)
-                            .to_result_with_py_trace(py)?
-                            .extract::<Option<u32>>(py)?;
                         let timeout = executor
                             .call_method(py, "timeout", (), None)
                             .to_result_with_py_trace(py)?;
@@ -287,13 +276,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                                 py,
                             )?
                             .into_inner();
-                        Ok((
-                            prepare_fut,
-                            enable_cache,
-                            behavior_version,
-                            timeout,
-                            batching_options,
-                        ))
+                        Ok((prepare_fut, enable_cache, timeout, batching_options))
                     })?;
                 prepare_fut.await?;
                 let executor: Box<dyn interface::SimpleFunctionExecutor> =
@@ -304,7 +287,6 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                                 py_exec_ctx,
                                 result_type,
                                 enable_cache,
-                                behavior_version,
                                 timeout,
                                 batching_options,
                             }
@@ -318,7 +300,6 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                             kw_args_names,
                             result_type,
                             enable_cache,
-                            behavior_version,
                             timeout,
                         }))
                     };
@@ -326,7 +307,11 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
             }
         };
 
-        Ok((result_type, executor_fut.boxed()))
+        Ok(interface::SimpleFunctionBuildOutput {
+            output_type: result_type,
+            behavior_version,
+            executor: executor_fut.boxed(),
+        })
     }
 }
 

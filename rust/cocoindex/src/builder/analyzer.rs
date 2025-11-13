@@ -797,25 +797,28 @@ impl AnalyzerContext {
                     .iter()
                     .map(|field| field.analyzed_value.clone())
                     .collect();
-                let (output_enriched_type, executor) = fn_executor
+                let build_output = fn_executor
                     .build(spec, input_field_schemas, self.flow_ctx.clone())
                     .await?;
+                let output_type = build_output.output_type.typ.clone();
                 let logic_fingerprinter = Fingerprinter::default()
                     .with(&op.op)?
-                    .with(&output_enriched_type.without_attrs())?;
-                let output_type = output_enriched_type.typ.clone();
+                    .with(&build_output.output_type.without_attrs())?
+                    .with(&build_output.behavior_version)?;
                 let output =
-                    op_scope.add_op_output(reactive_op_name.clone(), output_enriched_type)?;
+                    op_scope.add_op_output(reactive_op_name.clone(), build_output.output_type)?;
                 let op_name = reactive_op_name.clone();
                 let op_kind = op.op.kind.clone();
+
                 let execution_options_timeout = op.execution_options.timeout;
+
+                let behavior_version = build_output.behavior_version;
                 async move {
                             trace!("Start building executor for transform op `{op_name}`");
-                            let executor = executor.await.with_context(|| {
+                            let executor = build_output.executor.await.with_context(|| {
                                 format!("Preparing for transform op: {op_name}")
                             })?;
                             let enable_cache = executor.enable_cache();
-                            let behavior_version = executor.behavior_version();
                             let timeout = executor.timeout()
                                 .or(execution_options_timeout)
                                 .or(Some(TIMEOUT_THRESHOLD));
@@ -824,8 +827,7 @@ impl AnalyzerContext {
                                 enable_cache,
                                 timeout,
                                 behavior_version,
-                                fingerprinter: logic_fingerprinter
-                                    .with(&behavior_version)?,
+                                fingerprinter: logic_fingerprinter,
                                 output_type
                             };
                             if function_exec_info.enable_cache

@@ -180,16 +180,20 @@ pub trait SimpleFunctionExecutor: Send + Sync {
         false
     }
 
-    /// Must be Some if `enable_cache` is true.
-    /// If it changes, the cache will be invalidated.
-    fn behavior_version(&self) -> Option<u32> {
-        None
-    }
-
     /// Returns None to use the default timeout (1800s)
     fn timeout(&self) -> Option<std::time::Duration> {
         None
     }
+}
+
+pub struct SimpleFunctionBuildOutput {
+    pub output_type: EnrichedValueType,
+
+    /// Must be Some if `enable_cache` is true.
+    /// If it changes, the cache will be invalidated.
+    pub behavior_version: Option<u32>,
+
+    pub executor: BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
 }
 
 #[async_trait]
@@ -199,10 +203,7 @@ pub trait SimpleFunctionFactory {
         spec: serde_json::Value,
         input_schema: Vec<OpArgSchema>,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<(
-        EnrichedValueType,
-        BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
-    )>;
+    ) -> Result<SimpleFunctionBuildOutput>;
 }
 
 #[derive(Debug)]
