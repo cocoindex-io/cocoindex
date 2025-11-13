@@ -37,6 +37,7 @@ pub struct Spec {
     max_file_size: Option<i64>,
     sqs_queue_url: Option<String>,
     redis: Option<RedisConfig>,
+    force_path_style: Option<bool>,
 }
 
 struct SqsContext {
@@ -470,7 +471,13 @@ impl SourceFactoryBase for Factory {
         spec: Spec,
         _context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SourceExecutor>> {
-        let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
+        let base_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
+
+        let mut s3_config_builder = aws_sdk_s3::config::Builder::from(&base_config);
+        if let Some(force_path_style) = spec.force_path_style {
+            s3_config_builder = s3_config_builder.force_path_style(force_path_style);
+        }
+        let s3_config = s3_config_builder.build();
 
         let redis_context = if let Some(redis_config) = &spec.redis {
             Some(Arc::new(
@@ -480,19 +487,21 @@ impl SourceFactoryBase for Factory {
             None
         };
 
+        let sqs_context = spec.sqs_queue_url.map(|url| {
+            Arc::new(SqsContext {
+                client: aws_sdk_sqs::Client::new(&base_config),
+                queue_url: url,
+            })
+        });
+
         Ok(Box::new(Executor {
-            client: Client::new(&config),
+            client: Client::from_conf(s3_config),
             bucket_name: spec.bucket_name,
             prefix: spec.prefix,
             binary: spec.binary,
             pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
             max_file_size: spec.max_file_size,
-            sqs_context: spec.sqs_queue_url.map(|url| {
-                Arc::new(SqsContext {
-                    client: aws_sdk_sqs::Client::new(&config),
-                    queue_url: url,
-                })
-            }),
+            sqs_context,
             redis_context,
         }))
     }
