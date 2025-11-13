@@ -101,7 +101,7 @@ fn basic_type_to_kuzu(basic_type: &BasicValueType) -> Result<String> {
     Ok(match basic_type {
         BasicValueType::Bytes => "BLOB".to_string(),
         BasicValueType::Str => "STRING".to_string(),
-        BasicValueType::Enum => "STRING".to_string(),
+        BasicValueType::Enum(_) => "STRING".to_string(),
         BasicValueType::Bool => "BOOL".to_string(),
         BasicValueType::Int64 => "INT64".to_string(),
         BasicValueType::Float32 => "FLOAT".to_string(),

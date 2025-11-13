@@ -474,7 +474,7 @@ fn to_column_type_sql(column_type: &ValueType) -> String {
         ValueType::Basic(basic_type) => match basic_type {
             BasicValueType::Bytes => "bytea".into(),
             BasicValueType::Str => "text".into(),
-            BasicValueType::Enum => "text".into(),
+            BasicValueType::Enum(_) => "text".into(),
             BasicValueType::Bool => "boolean".into(),
             BasicValueType::Int64 => "bigint".into(),
             BasicValueType::Float32 => "real".into(),

@@ -13,6 +13,10 @@ pub struct VectorTypeSchema {
 pub struct UnionTypeSchema {
     pub types: Vec<BasicValueType>,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct EnumTypeSchema {
+    pub variants: Vec<Arc<str>>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
@@ -24,7 +28,7 @@ pub enum BasicValueType {
     Str,
 
     /// Enumerated symbolic value.
-    Enum,
+    Enum(EnumTypeSchema),
 
     /// A boolean value.
     Bool,
@@ -74,7 +78,7 @@ impl std::fmt::Display for BasicValueType {
         match self {
             BasicValueType::Bytes => write!(f, "Bytes"),
             BasicValueType::Str => write!(f, "Str"),
-            BasicValueType::Enum => write!(f, "Enum"),
+            BasicValueType::Enum(_) => write!(f, "Enum"),
             BasicValueType::Bool => write!(f, "Bool"),
             BasicValueType::Int64 => write!(f, "Int64"),
             BasicValueType::Float32 => write!(f, "Float32"),

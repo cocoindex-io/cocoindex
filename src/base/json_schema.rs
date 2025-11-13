@@ -74,7 +74,7 @@ impl JsonSchemaBuilder {
             schema::BasicValueType::Str => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
             }
-            schema::BasicValueType::Enum => {
+            schema::BasicValueType::Enum(_) => {
                 schema.instance_type = Some(SingleOrVec::Single(Box::new(InstanceType::String)));
             }
             schema::BasicValueType::Bytes => {
@@ -322,19 +322,32 @@ impl JsonSchemaBuilder {
     ) -> SchemaObject {
         let mut out = self.for_value_type(schema_base, &enriched_value_type.typ, field_path);
 
-        if let schema::ValueType::Basic(schema::BasicValueType::Enum) = &enriched_value_type.typ {
-            if let Some(variants) = enriched_value_type.attrs.get("variants") {
-                if let Some(arr) = variants.as_array() {
-                    let enum_values: Vec<serde_json::Value> = arr
+        if let schema::ValueType::Basic(schema::BasicValueType::Enum(enum_t)) =
+            &enriched_value_type.typ
+        {
+            let mut vals: Vec<serde_json::Value> = enum_t
+                .variants
+                .iter()
+                .map(|s| serde_json::Value::String(s.to_string()))
+                .collect();
+
+            if vals.is_empty() {
+                if let Some(a) = enriched_value_type
+                    .attrs
+                    .get("variants")
+                    .and_then(|v| v.as_array())
+                {
+                    vals = a
                         .iter()
                         .filter_map(|v| {
                             v.as_str().map(|s| serde_json::Value::String(s.to_string()))
                         })
                         .collect();
-                    if !enum_values.is_empty() {
-                        out.enum_values = Some(enum_values);
-                    }
                 }
+            }
+
+            if !vals.is_empty() {
+                out.enum_values = Some(vals);
             }
         }
 
@@ -500,10 +513,11 @@ mod tests {
     #[test]
     fn test_basic_types_enum_without_variants() {
         let value_type = EnrichedValueType {
-            typ: ValueType::Basic(BasicValueType::Enum),
+            typ: ValueType::Basic(BasicValueType::Enum(EnumTypeSchema::default())),
             nullable: false,
             attrs: Arc::new(BTreeMap::new()),
         };
+
         let options = create_test_options();
         let result = build_json_schema(value_type, options).unwrap();
         let json_schema = schema_to_json(&result.schema);
@@ -524,10 +538,13 @@ mod tests {
         );
 
         let value_type = EnrichedValueType {
-            typ: ValueType::Basic(BasicValueType::Enum),
+            typ: ValueType::Basic(BasicValueType::Enum(EnumTypeSchema {
+                variants: vec!["red".into(), "green".into(), "blue".into()],
+            })),
             nullable: false,
-            attrs: Arc::new(attrs),
+            attrs: Arc::new(BTreeMap::new()),
         };
+
         let options = create_test_options();
         let result = build_json_schema(value_type, options).unwrap();
         let json_schema = schema_to_json(&result.schema);
