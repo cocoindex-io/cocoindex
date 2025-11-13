@@ -23,8 +23,11 @@ impl SourceLogicFingerprint {
             std::iter::zip(exec_plan.export_ops.iter(), export_exec_ctx.iter())
         {
             if export_op.def_fp.source_op_names.contains(&import_op.name) {
-                fp = fp.with(&export_op_exec_ctx.target_id)?;
-                fp = fp.with(&export_op.def_fp.fingerprint)?;
+                fp = fp.with(&(
+                    &export_op.def_fp.fingerprint,
+                    &export_op_exec_ctx.target_id,
+                    &export_op_exec_ctx.schema_version_id,
+                ))?;
             }
         }
         Ok(Self {

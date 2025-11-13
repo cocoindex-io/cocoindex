@@ -478,9 +478,7 @@ impl DataScopeBuilder {
                 def_fp = added_def_fp.clone();
             } else {
                 def_fp.fingerprint = Fingerprinter::default()
-                    .with("field")?
-                    .with(&def_fp.fingerprint)?
-                    .with(field_name)?
+                    .with(&("field", &def_fp.fingerprint, field_name))?
                     .into_fingerprint();
             };
             indices.push(field_idx);
@@ -753,9 +751,7 @@ fn analyze_value_mapping(
             let def_fp = FieldDefFingerprint {
                 source_op_names: HashSet::new(),
                 fingerprint: Fingerprinter::default()
-                    .with("constant")?
-                    .with(&v.value)?
-                    .with(&v.schema.without_attrs())?
+                    .with(&("constant", &v.value, &v.schema.without_attrs()))?
                     .into_fingerprint(),
             };
             (value_mapping, v.schema.clone(), def_fp)
@@ -849,8 +845,7 @@ impl AnalyzerContext {
         let def_fp = FieldDefFingerprint {
             source_op_names: HashSet::from([op_name.clone()]),
             fingerprint: Fingerprinter::default()
-                .with("import")?
-                .with(&op_name)?
+                .with(&("import", &op_name))?
                 .into_fingerprint(),
         };
         let output = op_scope.add_op_output(op_name.clone(), output_type, def_fp)?;
@@ -913,10 +908,12 @@ impl AnalyzerContext {
                 let def_fp = FieldDefFingerprint {
                     source_op_names: input_def_fp.source_op_names,
                     fingerprint: Fingerprinter::default()
-                        .with("transform")?
-                        .with(&op.op)?
-                        .with(&input_def_fp.fingerprint)?
-                        .with(&build_output.behavior_version)?
+                        .with(&(
+                            "transform",
+                            &op.op,
+                            &input_def_fp.fingerprint,
+                            &build_output.behavior_version,
+                        ))?
                         .into_fingerprint(),
                 };
                 let output = op_scope.add_op_output(
@@ -1010,10 +1007,12 @@ impl AnalyzerContext {
                     analyze_struct_mapping(&op.input, op_scope)?;
                 let has_auto_uuid_field = op.auto_uuid_field.is_some();
                 def_fp.fingerprint = Fingerprinter::default()
-                    .with("collect")?
-                    .with(&def_fp.fingerprint)?
-                    .with(&fields_schema)?
-                    .with(&has_auto_uuid_field)?
+                    .with(&(
+                        "collect",
+                        &def_fp.fingerprint,
+                        &fields_schema,
+                        &has_auto_uuid_field,
+                    ))?
                     .into_fingerprint();
                 let fingerprinter = Fingerprinter::default().with(&fields_schema)?;
 
