@@ -10,6 +10,8 @@ use super::stats;
 use futures::future::try_join_all;
 use indicatif::ProgressBar;
 use sqlx::PgPool;
+use std::collections::VecDeque;
+use std::time::Instant;
 use tokio::{sync::watch, task::JoinSet, time::MissedTickBehavior};
 
 pub struct FlowLiveUpdaterUpdates {
@@ -95,8 +97,9 @@ struct SourceUpdateTask {
 
     status_tx: watch::Sender<FlowLiveUpdaterStatus>,
     num_remaining_tasks_tx: watch::Sender<usize>,
+    start_time: Instant,
+    rate_history: std::sync::Mutex<VecDeque<(Instant, i64)>>,
 }
-
 impl Drop for SourceUpdateTask {
     fn drop(&mut self) {
         self.status_tx.send_modify(|update| {
@@ -303,23 +306,83 @@ impl SourceUpdateTask {
         try_join_all(futs).await?;
         Ok(())
     }
+    fn rate_bracket(&self) -> String {
+        let now = std::time::Instant::now();
+        let total = self.source_update_stats.num_insertions.get()
+            + self.source_update_stats.num_deletions.get()
+            + self.source_update_stats.num_reprocesses.get();
+
+        let mut hist = self.rate_history.lock().unwrap();
+
+        // Drop entries older than 60s, but keep at least one
+        while let Some((t, _)) = hist.front().copied() {
+            if now.duration_since(t) > std::time::Duration::from_secs(60) && hist.len() > 1 {
+                hist.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        // Push current sample
+        hist.push_back((now, total));
+
+        // Baseline is earliest kept sample (or now)
+        let (base_t, base_c) = hist.front().copied().unwrap_or((now, total));
+        let secs = now.duration_since(base_t).as_secs_f64();
+        let rate = if secs > 0.0 {
+            (total - base_c) as f64 / secs
+        } else {
+            0.0
+        };
+
+        format!(
+            " [elapsed: {:.0}s, {:.3}/s now]",
+            self.start_time.elapsed().as_secs_f64(),
+            rate
+        )
+    }
 
     fn report_stats(&self, stats: &stats::UpdateStats, update_title: &str) {
         self.source_update_stats.merge(stats);
+        let bracket = self.rate_bracket();
+
         if self.options.print_stats {
             println!(
-                "{}.{} ({update_title}): {}",
+                "{}.{} ({update_title}): {}{bracket}",
                 self.flow.flow_instance.name,
                 self.import_op().name,
                 stats
             );
         } else {
             trace!(
-                "{}.{} ({update_title}): {}",
+                "{}.{} ({update_title}): {}{bracket}",
                 self.flow.flow_instance.name,
                 self.import_op().name,
                 stats
             );
+        }
+    }
+
+    fn report_stats_with_extras(
+        &self,
+        stats: &stats::UpdateStats,
+        update_title: &str,
+        elapsed_secs: f64,
+        recent_rate: f64,
+    ) {
+        self.source_update_stats.merge(stats);
+        let line = format!(
+            "{}.{} ({update_title}): {} [elapsed: {:.3}s, {:.3}/s now]",
+            self.flow.flow_instance.name,
+            self.import_op().name,
+            stats,
+            elapsed_secs,
+            recent_rate
+        );
+        if self.options.print_stats {
+            println!("{line}");
+        } else {
+            trace!("{line}");
         }
     }
 
@@ -458,6 +521,8 @@ impl FlowLiveUpdater {
                 options: options.clone(),
                 status_tx: status_tx.clone(),
                 num_remaining_tasks_tx: num_remaining_tasks_tx.clone(),
+                start_time: Instant::now(),
+                rate_history: std::sync::Mutex::new(VecDeque::from([(Instant::now(), 0)])),
             };
             join_set.spawn(source_update_task.run());
             stats_per_task.push(source_update_stats);
