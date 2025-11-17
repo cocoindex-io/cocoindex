@@ -16,8 +16,6 @@ conn_spec = cocoindex.add_auth_entry(
     ),
 )
 
-GraphDbSpec = cocoindex.targets.Neo4j
-
 
 @dataclass
 class Person:
@@ -110,7 +108,7 @@ def meeting_notes_graph_flow(
 
     meeting_nodes.export(
         "meeting_nodes",
-        GraphDbSpec(
+        cocoindex.targets.Neo4j(
             connection=conn_spec, mapping=cocoindex.targets.Nodes(label="Meeting")
         ),
         primary_key_fields=["note_file", "time"],
@@ -131,7 +129,7 @@ def meeting_notes_graph_flow(
     )
     attended_rels.export(
         "attended_rels",
-        GraphDbSpec(
+        cocoindex.targets.Neo4j(
             connection=conn_spec,
             mapping=cocoindex.targets.Relationships(
                 rel_type="ATTENDED",
@@ -156,7 +154,7 @@ def meeting_notes_graph_flow(
     )
     decided_tasks_rels.export(
         "decided_tasks_rels",
-        GraphDbSpec(
+        cocoindex.targets.Neo4j(
             connection=conn_spec,
             mapping=cocoindex.targets.Relationships(
                 rel_type="DECIDED",
@@ -179,7 +177,7 @@ def meeting_notes_graph_flow(
     )
     assigned_rels.export(
         "assigned_rels",
-        GraphDbSpec(
+        cocoindex.targets.Neo4j(
             connection=conn_spec,
             mapping=cocoindex.targets.Relationships(
                 rel_type="ASSIGNED_TO",
