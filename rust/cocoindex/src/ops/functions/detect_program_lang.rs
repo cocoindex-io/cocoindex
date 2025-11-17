@@ -35,12 +35,12 @@ impl SimpleFunctionFactoryBase for Factory {
         "DetectProgrammingLanguage"
     }
 
-    async fn resolve_schema<'a>(
+    async fn analyze<'a>(
         &'a self,
         _spec: &'a EmptySpec,
         args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
-    ) -> Result<(Args, EnrichedValueType)> {
+    ) -> Result<SimpleFunctionAnalysisOutput<Args>> {
         let args = Args {
             filename: args_resolver
                 .next_arg("filename")?
@@ -49,7 +49,11 @@ impl SimpleFunctionFactoryBase for Factory {
         };
 
         let output_schema = make_output_type(BasicValueType::Str);
-        Ok((args, output_schema))
+        Ok(SimpleFunctionAnalysisOutput {
+            resolved_args: args,
+            output_schema,
+            behavior_version: None,
+        })
     }
 
     async fn build_executor(

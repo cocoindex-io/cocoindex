@@ -28,10 +28,6 @@ struct Executor {
 
 #[async_trait]
 impl BatchedFunctionExecutor for Executor {
-    fn behavior_version(&self) -> Option<u32> {
-        self.args.client.behavior_version()
-    }
-
     fn enable_cache(&self) -> bool {
         true
     }
@@ -108,12 +104,12 @@ impl SimpleFunctionFactoryBase for Factory {
         "EmbedText"
     }
 
-    async fn resolve_schema<'a>(
+    async fn analyze<'a>(
         &'a self,
         spec: &'a Spec,
         args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
-    ) -> Result<(Self::ResolvedArgs, EnrichedValueType)> {
+    ) -> Result<SimpleFunctionAnalysisOutput<Self::ResolvedArgs>> {
         let text = args_resolver
             .next_arg("text")?
             .expect_type(&ValueType::Basic(BasicValueType::Str))?
@@ -132,14 +128,15 @@ impl SimpleFunctionFactoryBase for Factory {
             dimension: Some(output_dimension as usize),
             element_type: Box::new(BasicValueType::Float32),
         }));
-        Ok((
-            Args {
+        Ok(SimpleFunctionAnalysisOutput {
+            behavior_version: client.behavior_version(),
+            resolved_args: Args {
                 client,
                 text,
                 expected_output_dimension: output_dimension as usize,
             },
             output_schema,
-        ))
+        })
     }
 
     async fn build_executor(

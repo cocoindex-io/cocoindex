@@ -1,3 +1,4 @@
+use crate::execution::indexing_status::SourceLogicFingerprint;
 use crate::prelude::*;
 
 use base64::Engine;
@@ -55,7 +56,7 @@ impl SourceVersion {
     pub fn from_stored(
         stored_ordinal: Option<i64>,
         stored_fp: &Option<Vec<u8>>,
-        curr_fp: &ExecutionPlanLogicFingerprint,
+        curr_fp: &SourceLogicFingerprint,
     ) -> Self {
         Self {
             ordinal: Ordinal(stored_ordinal),
@@ -74,7 +75,7 @@ impl SourceVersion {
 
     pub fn from_stored_processing_info(
         info: &db_tracking::SourceTrackingInfoForProcessing,
-        curr_fp: &ExecutionPlanLogicFingerprint,
+        curr_fp: &SourceLogicFingerprint,
     ) -> Self {
         Self::from_stored(
             info.processed_source_ordinal,
@@ -85,7 +86,7 @@ impl SourceVersion {
 
     pub fn from_stored_precommit_info(
         info: &db_tracking::SourceTrackingInfoForPrecommit,
-        curr_fp: &ExecutionPlanLogicFingerprint,
+        curr_fp: &SourceLogicFingerprint,
     ) -> Self {
         Self::from_stored(
             info.processed_source_ordinal,
@@ -240,7 +241,7 @@ impl<'a> RowIndexer<'a> {
             Some(info) => {
                 let existing_version = SourceVersion::from_stored_processing_info(
                     info,
-                    &self.src_eval_ctx.plan.logic_fingerprint,
+                    &self.src_eval_ctx.source_logic_fp,
                 );
 
                 // First check ordinal-based skipping
@@ -486,7 +487,7 @@ impl<'a> RowIndexer<'a> {
         // Check 1: Same check as precommit - verify no newer version exists
         let existing_source_version = SourceVersion::from_stored_precommit_info(
             &existing_tracking_info,
-            &self.src_eval_ctx.plan.logic_fingerprint,
+            &self.src_eval_ctx.source_logic_fp,
         );
         if existing_source_version.should_skip(source_version, Some(self.update_stats)) {
             return Ok(Some(SkippedOr::Skipped(
@@ -537,7 +538,6 @@ impl<'a> RowIndexer<'a> {
         let db_setup = &self.setup_execution_ctx.setup_state.tracking_table;
         let export_ops = &self.src_eval_ctx.plan.export_ops;
         let export_ops_exec_ctx = &self.setup_execution_ctx.export_ops;
-        let logic_fp = &self.src_eval_ctx.plan.logic_fingerprint;
 
         let mut txn = self.pool.begin().await?;
 
@@ -551,8 +551,10 @@ impl<'a> RowIndexer<'a> {
         if self.mode == super::source_indexer::UpdateMode::Normal
             && let Some(tracking_info) = &tracking_info
         {
-            let existing_source_version =
-                SourceVersion::from_stored_precommit_info(&tracking_info, logic_fp);
+            let existing_source_version = SourceVersion::from_stored_precommit_info(
+                &tracking_info,
+                &self.src_eval_ctx.source_logic_fp,
+            );
             if existing_source_version.should_skip(source_version, Some(self.update_stats)) {
                 return Ok(SkippedOr::Skipped(
                     existing_source_version,
@@ -834,7 +836,7 @@ impl<'a> RowIndexer<'a> {
                 cleaned_staging_target_keys,
                 source_version.ordinal.into(),
                 source_fp,
-                &self.src_eval_ctx.plan.logic_fingerprint.current.0,
+                &self.src_eval_ctx.source_logic_fp.current.0,
                 precommit_metadata.process_ordinal,
                 self.process_time.timestamp_micros(),
                 precommit_metadata.new_target_keys,

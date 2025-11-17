@@ -48,11 +48,11 @@ pub async fn test_flow_function(
         auth_registry: Arc::new(AuthRegistry::default()),
         py_exec_ctx: None,
     });
-    let (_, exec_fut) = factory
+    let build_output = factory
         .clone()
         .build(serde_json::to_value(spec)?, op_arg_schemas, context)
         .await?;
-    let executor = exec_fut.await?;
+    let executor = build_output.executor.await?;
 
     // 3. Evaluate
     let result = executor.evaluate(input_arg_values).await?;

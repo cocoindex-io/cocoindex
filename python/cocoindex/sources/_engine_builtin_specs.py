@@ -71,6 +71,7 @@ class AmazonS3(op.SourceSpec):
     max_file_size: int | None = None
     sqs_queue_url: str | None = None
     redis: RedisNotification | None = None
+    force_path_style: bool = False
 
 
 class AzureBlob(op.SourceSpec):

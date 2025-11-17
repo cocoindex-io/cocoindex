@@ -1,7 +1,9 @@
 use crate::{
-    base::schema::EnrichedValueType, prelude::*, py::Pythonized, setup::ObjectSetupChange,
+    base::schema::EnrichedValueType, builder::plan::FieldDefFingerprint, prelude::*,
+    py::Pythonized, setup::ObjectSetupChange,
 };
 
+use cocoindex_utils::fingerprint::Fingerprinter;
 use pyo3::{exceptions::PyException, prelude::*};
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::{collections::btree_map, ops::Deref};
@@ -119,8 +121,8 @@ impl DataSlice {
             spec::ValueMapping::Field(spec::FieldMapping { scope, field_path }) => {
                 let data_scope_builder = self.scope.data.lock().unwrap();
                 let struct_schema = {
-                    let (_, val_type) = data_scope_builder
-                        .analyze_field_path(field_path)
+                    let (_, val_type, _) = data_scope_builder
+                        .analyze_field_path(field_path, self.scope.base_value_def_fp.clone())
                         .into_py_result()?;
                     match &val_type.typ {
                         ValueTypeBuilder::Struct(struct_type) => struct_type,
@@ -171,7 +173,8 @@ impl DataSlice {
             spec::ValueMapping::Constant(c) => c.schema.clone(),
             spec::ValueMapping::Field(v) => {
                 let data_scope_builder = self.scope.data.lock().unwrap();
-                let (_, val_type) = data_scope_builder.analyze_field_path(&v.field_path)?;
+                let (_, val_type, _) = data_scope_builder
+                    .analyze_field_path(&v.field_path, self.scope.base_value_def_fp.clone())?;
                 EnrichedValueType::from_alternative(val_type)?
             }
         };
@@ -257,6 +260,7 @@ impl FlowBuilder {
             spec::ROOT_SCOPE_NAME.to_string(),
             None,
             Arc::new(Mutex::new(DataScopeBuilder::new())),
+            FieldDefFingerprint::default(),
         );
         let flow_inst_context = build_flow_instance_context(
             name,
@@ -366,7 +370,19 @@ impl FlowBuilder {
         {
             let mut root_data_scope = self.root_op_scope.data.lock().unwrap();
             root_data_scope
-                .add_field(name.clone(), &value_type)
+                .add_field(
+                    name.clone(),
+                    &value_type,
+                    FieldDefFingerprint {
+                        source_op_names: HashSet::from([name.clone()]),
+                        fingerprint: Fingerprinter::default()
+                            .with("input")
+                            .into_py_result()?
+                            .with(&name)
+                            .into_py_result()?
+                            .into_fingerprint(),
+                    },
+                )
                 .into_py_result()?;
         }
         let result = Self::last_field_to_data_slice(&self.root_op_scope).into_py_result()?;
@@ -545,11 +561,17 @@ impl FlowBuilder {
             auto_uuid_field,
         );
         {
+            // TODO: Pass in the right field def fingerprint
             let mut collector = collector.collector.lock().unwrap();
             if let Some(collector) = collector.as_mut() {
-                collector.merge_schema(&collector_schema).into_py_result()?;
+                collector
+                    .collect(&collector_schema, FieldDefFingerprint::default())
+                    .into_py_result()?;
             } else {
-                *collector = Some(CollectorBuilder::new(Arc::new(collector_schema)));
+                *collector = Some(CollectorBuilder::new(
+                    Arc::new(collector_schema),
+                    FieldDefFingerprint::default(),
+                ));
             }
         }
 
