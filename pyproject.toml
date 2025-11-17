@@ -69,16 +69,13 @@ dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "pre-commit"]
 embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0"]
-pydantic = ["pydantic>=2.11.9"]
 
 # We need to repeat the dependency above to make it available for the `all` feature.
 # Indirect dependencies such as "cocoindex[embeddings]" will not work for local development.
-all = [
-    "sentence-transformers>=3.3.1",
-    "colpali-engine",
-    "lancedb>=0.25.0",
-    "pydantic>=2.11.9",
-]
+all = ["sentence-transformers>=3.3.1", "colpali-engine", "lancedb>=0.25.0"]
+
+# This is the set of dependencies that needs to be installed for the CI workflow.
+all-ci = ["pytest", "pytest-asyncio", "mypy", "pydantic>=2.11.9"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -87,10 +84,5 @@ files = "python/cocoindex"
 exclude = "(\\.venv|site-packages)"
 disable_error_code = ["unused-ignore"]
 [[tool.mypy.overrides]]
-module = [
-    "sentence_transformers",
-    "torch",
-    "colpali_engine",
-    "PIL",
-]
+module = ["sentence_transformers", "torch", "colpali_engine", "PIL"]
 ignore_missing_imports = true
