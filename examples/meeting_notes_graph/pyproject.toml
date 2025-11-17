@@ -1,0 +1,9 @@
+[project]
+name = "cocoindex-ecommerce-taxonomy"
+version = "0.1.0"
+description = "Simple example for CocoIndex: extract taxonomy from e-commerce products and build knowledge graph."
+requires-python = ">=3.11"
+dependencies = ["cocoindex>=0.2.8", "jinja2>=3.1.6"]
+
+[tool.setuptools]
+packages = []
