@@ -32,6 +32,7 @@ Check out our [examples documentation](https://cocoindex.io/docs/examples) for m
 - 🏥 [**patient_intake_extraction_baml**](./patient_intake_extraction_baml) - Extract structured data from patient intake PDFs using BAML
 - 📖 [**manuals_llm_extraction**](./manuals_llm_extraction) - Extract structured information from PDF manuals using Ollama
 - 📄 [**paper_metadata**](./paper_metadata) - Extract metadata (title, authors, abstract) from research papers in PDF
+- 📝 [**meeting_notes_graph**](./meeting_notes_graph) - Extract structured meeting info from Google Drive and build a knowledge graph
 
 ## Custom Sources & Targets
 

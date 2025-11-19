@@ -1,0 +1,17 @@
+[package]
+name = "cocoindex_py_utils"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+cocoindex_utils = { path = "../utils" }
+
+anyhow = { workspace = true }
+futures = { workspace = true }
+pyo3 = { workspace = true }
+pyo3-async-runtimes = { workspace = true }
+pythonize = { workspace = true }
+serde = { workspace = true }
+log = { workspace = true }
