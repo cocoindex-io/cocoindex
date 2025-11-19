@@ -1,4 +1,4 @@
-use crate::{ops::sdk::BatchedFunctionExecutor, prelude::*, py::future::from_py_future};
+use crate::{ops::sdk::BatchedFunctionExecutor, prelude::*};
 
 use pyo3::{
     Bound, IntoPyObjectExt, Py, PyAny, Python, pyclass, pymethods,
@@ -13,6 +13,7 @@ use crate::{
     py::{self, ToResultWithPyTrace},
 };
 use anyhow::{Result, anyhow};
+use py_utils::from_py_future;
 
 #[pyclass(name = "OpArgSchema")]
 pub struct PyOpArgSchema {

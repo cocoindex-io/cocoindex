@@ -1,7 +1,8 @@
+use crate::prelude::*;
+
 use std::time::SystemTime;
 
 use crate::base::{schema::*, spec::IndexOptions, value::*};
-use crate::prelude::*;
 use crate::setup;
 use chrono::TimeZone;
 use serde::Serialize;
@@ -9,7 +10,7 @@ use serde::Serialize;
 pub struct FlowInstanceContext {
     pub flow_instance_name: String,
     pub auth_registry: Arc<AuthRegistry>,
-    pub py_exec_ctx: Option<Arc<crate::py::PythonExecutionContext>>,
+    pub py_exec_ctx: Option<Arc<py_utils::PythonExecutionContext>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

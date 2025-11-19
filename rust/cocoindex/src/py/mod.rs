@@ -13,90 +13,14 @@ use crate::service::query_handler::QueryHandlerSpec;
 use crate::settings::Settings;
 use crate::setup::{self};
 use pyo3::IntoPyObjectExt;
-use pyo3::types::{PyDict, PyModule, PyString};
-use pyo3::{exceptions::PyException, prelude::*};
+use pyo3::prelude::*;
+use pyo3::types::PyModule;
 use pyo3_async_runtimes::tokio::future_into_py;
-use std::fmt::Write;
 use std::sync::Arc;
 
 mod convert;
 pub(crate) use convert::*;
-pub mod future;
-
-pub struct PythonExecutionContext {
-    pub event_loop: Py<PyAny>,
-}
-
-impl PythonExecutionContext {
-    pub fn new(_py: Python<'_>, event_loop: Py<PyAny>) -> Self {
-        Self { event_loop }
-    }
-}
-
-pub trait ToResultWithPyTrace<T> {
-    fn to_result_with_py_trace(self, py: Python<'_>) -> anyhow::Result<T>;
-}
-
-impl<T> ToResultWithPyTrace<T> for Result<T, PyErr> {
-    fn to_result_with_py_trace(self, py: Python<'_>) -> anyhow::Result<T> {
-        match self {
-            Ok(value) => Ok(value),
-            Err(err) => {
-                // Attempt to render a full Python-style traceback including cause/context chain
-                let full_trace: PyResult<String> = (|| {
-                    let exc = err.value(py);
-                    let traceback = PyModule::import(py, "traceback")?;
-                    let tbe_class = traceback.getattr("TracebackException")?;
-                    let tbe = tbe_class.call_method1("from_exception", (exc,))?;
-                    let kwargs = PyDict::new(py);
-                    kwargs.set_item("chain", true)?;
-                    let lines = tbe.call_method("format", (), Some(&kwargs))?;
-                    let joined = PyString::new(py, "").call_method1("join", (lines,))?;
-                    joined.extract::<String>()
-                })();
-
-                let err_str = match full_trace {
-                    Ok(trace) => format!("Error calling Python function:\n{trace}"),
-                    Err(_) => {
-                        // Fallback: include the PyErr display and available traceback formatting
-                        let mut s = format!("Error calling Python function: {err}");
-                        if let Some(tb) = err.traceback(py) {
-                            write!(&mut s, "\n{}", tb.format()?).ok();
-                        }
-                        s
-                    }
-                };
-
-                Err(anyhow::anyhow!(err_str))
-            }
-        }
-    }
-}
-pub trait IntoPyResult<T> {
-    fn into_py_result(self) -> PyResult<T>;
-}
-
-impl<T, E: std::error::Error> IntoPyResult<T> for Result<T, E> {
-    fn into_py_result(self) -> PyResult<T> {
-        match self {
-            Ok(value) => Ok(value),
-            Err(err) => Err(PyException::new_err(format!("{err:?}"))),
-        }
-    }
-}
-
-pub trait AnyhowIntoPyResult<T> {
-    fn into_py_result(self) -> PyResult<T>;
-}
-
-impl<T> AnyhowIntoPyResult<T> for anyhow::Result<T> {
-    fn into_py_result(self) -> PyResult<T> {
-        match self {
-            Ok(value) => Ok(value),
-            Err(err) => Err(PyException::new_err(format!("{err:?}"))),
-        }
-    }
-}
+pub(crate) use py_utils::*;
 
 #[pyfunction]
 fn set_settings_fn(get_settings_fn: Py<PyAny>) -> PyResult<()> {
@@ -480,7 +404,7 @@ impl Flow {
                     let task_locals = pyo3_async_runtimes::TaskLocals::new(
                         py_exec_ctx.event_loop.bind(py).clone(),
                     );
-                    Ok(future::from_py_future(
+                    Ok(py_utils::from_py_future(
                         py,
                         &task_locals,
                         result_coro.into_bound(py),
