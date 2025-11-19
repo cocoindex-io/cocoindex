@@ -1413,14 +1413,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "cocoindex-core"
+name = "cocoindex_core"
 version = "999.0.0"
 dependencies = [
- "cocoindex-utils",
+ "anyhow",
+ "cocoindex_utils",
  "heed",
+ "serde",
  "storekey",
 ]
 
+[[package]]
+name = "cocoindex_py"
+version = "999.0.0"
+dependencies = [
+ "cocoindex_core",
+ "cocoindex_py_utils",
+ "cocoindex_utils",
+ "pyo3",
+]
 
 [[package]]
 name = "cocoindex_py_utils"

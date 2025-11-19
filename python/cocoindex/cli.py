@@ -1,3 +1,5 @@
+# mypy: ignore-errors
+# Ignore all errors from the cli module before it's fully migrated.
 import atexit
 import asyncio
 import datetime

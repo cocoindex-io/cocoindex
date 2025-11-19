@@ -2,28 +2,24 @@
 Library level functions and states.
 """
 
+import atexit
 import threading
 import warnings
 
-from . import _engine  # type: ignore
-from . import flow, setting
+from . import _core  # type: ignore
+from . import setting
 from .engine_object import dump_engine_object
-from .validation import validate_app_namespace_name
 from typing import Any, Callable, overload
 
 
 def prepare_settings(settings: setting.Settings) -> Any:
     """Prepare the settings for the engine."""
-    if settings.app_namespace:
-        validate_app_namespace_name(settings.app_namespace)
     return dump_engine_object(settings)
 
 
-_engine.set_settings_fn(lambda: prepare_settings(setting.Settings.from_env()))
-
-
-_prev_settings_fn: Callable[[], setting.Settings] | None = None
-_prev_settings_fn_lock: threading.Lock = threading.Lock()
+_settings_fn: Callable[[], setting.Settings] | None = None
+_init_called: bool = False
+_global_init_lock: threading.Lock = threading.Lock()
 
 
 @overload
@@ -39,14 +35,13 @@ def settings(fn: Callable[[], setting.Settings] | None = None) -> Any:
     """
 
     def _inner(fn: Callable[[], setting.Settings]) -> Callable[[], setting.Settings]:
-        global _prev_settings_fn  # pylint: disable=global-statement
-        with _prev_settings_fn_lock:
-            if _prev_settings_fn is not None:
+        global _settings_fn  # pylint: disable=global-statement
+        with _global_init_lock:
+            if _settings_fn is not None:
                 warnings.warn(
-                    f"Setting a new settings function will override the previous one {_prev_settings_fn}."
+                    f"Setting a new settings function will override the previous one {_settings_fn}."
                 )
-            _prev_settings_fn = fn
-        _engine.set_settings_fn(lambda: prepare_settings(fn()))
+            _settings_fn = fn
         return fn
 
     if fn is not None:
@@ -61,15 +56,20 @@ def init(settings: setting.Settings | None = None) -> None:
 
     If the settings are not provided, they are loaded from the environment variables.
     """
-    _engine.init(prepare_settings(settings) if settings is not None else None)
+    global _init_called
 
+    with _global_init_lock:
+        if _init_called:
+            if settings is None:
+                return
+            raise ValueError("CocoIndex library already initialized")
 
-def start_server(settings: setting.ServerSettings) -> None:
-    """Start the cocoindex server."""
-    flow.ensure_all_flows_built()
-    _engine.start_server(settings.__dict__)
+        effective_settings = settings
+        if settings and _settings_fn is not None:
+            effective_settings = _settings_fn()
+        if effective_settings is None:
+            raise ValueError("No settings provided")
 
-
-def stop() -> None:
-    """Stop the cocoindex library."""
-    _engine.stop()
+        _core.init_planet(prepare_settings(effective_settings))
+        atexit.register(_core.close_planet)
+        _init_called = True

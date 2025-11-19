@@ -1,11 +1,14 @@
 [package]
-name = "cocoindex-core"
+name = "cocoindex_core"
 version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 license = { workspace = true }
 
 [dependencies]
-cocoindex-utils = { path = "../utils" }
+cocoindex_utils = { path = "../utils" }
+
 heed = "0.22.0"
 storekey = { version = "0.9.0", features = ["uuid"] }
+anyhow = { workspace = true }
+serde = { workspace = true }

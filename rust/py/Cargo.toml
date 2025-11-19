@@ -1,0 +1,16 @@
+[package]
+name = "cocoindex_py"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+cocoindex_core = { path = "../core" }
+cocoindex_utils = { path = "../utils" }
+cocoindex_py_utils = { path = "../py_utils" }
+
+pyo3 = { workspace = true }
