@@ -9,52 +9,8 @@ use pyo3::types::PyAny;
 use pyo3::types::{PyList, PyTuple};
 use pyo3::{exceptions::PyException, prelude::*};
 use pythonize::{depythonize, pythonize};
-use serde::de::DeserializeOwned;
-use std::ops::Deref;
 
-use super::{AnyhowIntoPyResult, IntoPyResult};
-
-#[derive(Debug)]
-pub struct Pythonized<T>(pub T);
-
-impl<'py, T: DeserializeOwned> FromPyObject<'py> for Pythonized<T> {
-    fn extract_bound(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
-        Ok(Pythonized(depythonize(obj).into_py_result()?))
-    }
-}
-
-impl<'py, T: Serialize> IntoPyObject<'py> for &Pythonized<T> {
-    type Target = PyAny;
-    type Output = Bound<'py, PyAny>;
-    type Error = PyErr;
-
-    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
-        pythonize(py, &self.0).into_py_result()
-    }
-}
-
-impl<'py, T: Serialize> IntoPyObject<'py> for Pythonized<T> {
-    type Target = PyAny;
-    type Output = Bound<'py, PyAny>;
-    type Error = PyErr;
-
-    fn into_pyobject(self, py: Python<'py>) -> PyResult<Self::Output> {
-        (&self).into_pyobject(py)
-    }
-}
-
-impl<T> Pythonized<T> {
-    pub fn into_inner(self) -> T {
-        self.0
-    }
-}
-
-impl<T> Deref for Pythonized<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+use py_utils::{AnyhowIntoPyResult, IntoPyResult};
 
 fn basic_value_to_py_object<'py>(
     py: Python<'py>,

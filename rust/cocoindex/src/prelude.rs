@@ -35,3 +35,5 @@ pub(crate) use async_stream::{stream, try_stream};
 pub(crate) use log::{debug, error, info, trace, warn};
 
 pub(crate) use derivative::Derivative;
+
+pub(crate) use cocoindex_py_utils as py_utils;
