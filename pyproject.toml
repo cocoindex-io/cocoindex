@@ -57,11 +57,11 @@ cocoindex = "cocoindex.cli:cli"
 [tool.maturin]
 bindings = "pyo3"
 python-source = "python"
-module-name = "cocoindex._engine"
+module-name = "cocoindex._core"
 features = ["pyo3/extension-module"]
 include = ["THIRD_PARTY_NOTICES.html"]
 # Point to the crate within the workspace
-manifest-path = "rust/cocoindex/Cargo.toml"
+manifest-path = "rust/py/Cargo.toml"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "pre-commit"]
