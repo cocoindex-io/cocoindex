@@ -70,13 +70,12 @@ repos:
         types: [python]
         pass_filenames: true
   
-  # Disable until we have real tests.
-  # - repo: https://github.com/christophmeissner/pytest-pre-commit
-  #   rev: 1.0.0
-  #   hooks:
-  #     - id: pytest
-  #       language: system
-  #       types: [python]
-  #       pass_filenames: false
-  #       always_run: false
-  #       args: ["python"]
+  - repo: https://github.com/christophmeissner/pytest-pre-commit
+    rev: 1.0.0
+    hooks:
+      - id: pytest
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: false
+        args: ["python"]

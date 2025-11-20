@@ -2,46 +2,88 @@
 Library level functions and states.
 """
 
-import atexit
 import threading
 import warnings
 
 from . import _core  # type: ignore
 from . import setting
 from .engine_object import dump_engine_object
-from typing import Any, Callable, overload
+from typing import Any, Callable, Iterator, overload
 
 
-def prepare_settings(settings: setting.Settings) -> Any:
-    """Prepare the settings for the engine."""
-    return dump_engine_object(settings)
+class EnvironmentBuilder:
+    """Builder for the Environment."""
+
+    _settings: setting.Settings
+
+    def __init__(self, settings: setting.Settings | None = None):
+        self._settings = settings or setting.Settings.from_env()
+
+    @property
+    def settings(self) -> setting.Settings:
+        return self._settings
 
 
-_settings_fn: Callable[[], setting.Settings] | None = None
-_init_called: bool = False
-_global_init_lock: threading.Lock = threading.Lock()
+LifespanFn = Callable[[EnvironmentBuilder], Iterator[None]]
+
+
+def _noop_lifespan_fn(_builder: EnvironmentBuilder) -> Iterator[None]:
+    yield
+
+
+class Environment:
+    _core_env: _core.Environment | None
+    _lifespan_iter: Iterator[None] | None
+
+    def __init__(self, lifespan_fn: LifespanFn | None = None):
+        lifespan_fn = lifespan_fn or _noop_lifespan_fn
+        env_builder = EnvironmentBuilder()
+        lifespan_iter = lifespan_fn(env_builder)
+        next(lifespan_iter)
+
+        settings = env_builder.settings
+        if not settings.db_path:
+            raise ValueError("EnvironmentBuilder.Settings.db_path must be provided")
+
+        self._core_env = _core.Environment(dump_engine_object(env_builder.settings))
+        self._lifespan_iter = lifespan_iter
+
+    def __del__(self) -> None:
+        if self._lifespan_iter is not None:
+            try:
+                next(self._lifespan_iter)
+            except StopIteration:
+                pass
+
+
+_default_env_lock: threading.Lock = threading.Lock()
+_default_env: Environment | None = None
+_default_env_lifespan_fn: LifespanFn | None = None
 
 
 @overload
-def settings(fn: Callable[[], setting.Settings]) -> Callable[[], setting.Settings]: ...
+def lifespan(fn: LifespanFn) -> LifespanFn: ...
 @overload
-def settings(
-    fn: None,
-) -> Callable[[Callable[[], setting.Settings]], Callable[[], setting.Settings]]: ...
-def settings(fn: Callable[[], setting.Settings] | None = None) -> Any:
+def lifespan(fn: None) -> Callable[[LifespanFn], LifespanFn]: ...
+def lifespan(fn: LifespanFn | None = None) -> Any:
     """
-    Decorate a function that returns a settings.Settings object.
-    It registers the function as a settings provider.
+    Decorate a function that returns a lifespan.
+    It registers the function as a lifespan provider.
     """
 
-    def _inner(fn: Callable[[], setting.Settings]) -> Callable[[], setting.Settings]:
-        global _settings_fn  # pylint: disable=global-statement
-        with _global_init_lock:
-            if _settings_fn is not None:
+    def _inner(fn: LifespanFn) -> LifespanFn:
+        global _default_env_lifespan_fn  # pylint: disable=global-statement
+        with _default_env_lock:
+            if _default_env is not None:
                 warnings.warn(
-                    f"Setting a new settings function will override the previous one {_settings_fn}."
+                    f"Default environment already initialized with lifespan function {_default_env_lifespan_fn}. "
+                    f"Setting a lifespan function will be a no-op."
                 )
-            _settings_fn = fn
+            if _default_env_lifespan_fn is not None:
+                warnings.warn(
+                    f"Overriding the default lifespan function {_default_env_lifespan_fn} with {fn}."
+                )
+            _default_env_lifespan_fn = fn
         return fn
 
     if fn is not None:
@@ -50,26 +92,12 @@ def settings(fn: Callable[[], setting.Settings] | None = None) -> Any:
         return _inner
 
 
-def init(settings: setting.Settings | None = None) -> None:
+def default_env() -> Environment:
     """
-    Initialize the cocoindex library.
-
-    If the settings are not provided, they are loaded from the environment variables.
+    Get the default environment.
     """
-    global _init_called
-
-    with _global_init_lock:
-        if _init_called:
-            if settings is None:
-                return
-            raise ValueError("CocoIndex library already initialized")
-
-        effective_settings = settings
-        if settings and _settings_fn is not None:
-            effective_settings = _settings_fn()
-        if effective_settings is None:
-            raise ValueError("No settings provided")
-
-        _core.init_planet(prepare_settings(effective_settings))
-        atexit.register(_core.close_planet)
-        _init_called = True
+    global _default_env  # pylint: disable=global-statement
+    with _default_env_lock:
+        if _default_env is None:
+            _default_env = Environment(_default_env_lifespan_fn)
+        return _default_env

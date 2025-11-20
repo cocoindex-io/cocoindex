@@ -1,24 +1,24 @@
-use cocoindex_core::engine::planet::PlanetSettings;
+use cocoindex_core::engine::environment::{Environment, EnvironmentSettings};
 
 use cocoindex_py_utils::{AnyhowIntoPyResult, Pythonized};
-use pyo3::prelude::*;
+use pyo3::{prelude::*, pyclass};
 
-#[pyfunction]
-fn init_planet(options: Pythonized<PlanetSettings>) -> PyResult<()> {
-    cocoindex_core::engine::planet::init_planet(options.into_inner()).into_py_result()?;
-    Ok(())
-}
+#[pyclass(name = "Environment")]
+struct PyEnvironment(Environment);
 
-#[pyfunction]
-fn close_planet() -> PyResult<()> {
-    cocoindex_core::engine::planet::close_planet().into_py_result()?;
-    Ok(())
+#[pymethods]
+impl PyEnvironment {
+    #[new]
+    pub fn new(settings: Pythonized<EnvironmentSettings>) -> PyResult<Self> {
+        let settings = settings.into_inner();
+        let environment = Environment::new(settings).into_py_result()?;
+        Ok(Self(environment))
+    }
 }
 
 #[pymodule]
 #[pyo3(name = "_core")]
 fn core_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(init_planet, m)?)?;
-    m.add_function(wrap_pyfunction!(close_planet, m)?)?;
+    m.add_class::<PyEnvironment>()?;
     Ok(())
 }

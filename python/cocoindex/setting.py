@@ -44,11 +44,11 @@ def _load_field(
 class Settings:
     """Settings for the cocoindex library."""
 
-    db_path: os.PathLike[str]
+    db_path: os.PathLike[str] | None = None
     global_execution_options: GlobalExecutionOptions | None = None
 
     @classmethod
-    def from_env(cls, db_path: os.PathLike[str]) -> Self:
+    def from_env(cls, db_path: os.PathLike[str] | None = None) -> Self:
         """Load settings from environment variables."""
 
         exec_kwargs: dict[str, Any] = dict()
