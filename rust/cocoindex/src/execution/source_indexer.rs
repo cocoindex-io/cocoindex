@@ -1,4 +1,9 @@
-use crate::{execution::row_indexer::ContentHashBasedCollapsingBaseline, prelude::*};
+use crate::{
+    execution::{
+        indexing_status::SourceLogicFingerprint, row_indexer::ContentHashBasedCollapsingBaseline,
+    },
+    prelude::*,
+};
 use utils::batching;
 
 use futures::future::Ready;
@@ -62,6 +67,7 @@ pub struct SourceIndexingContext {
     needs_to_track_rows_to_retry: bool,
 
     update_once_batcher: batching::Batcher<UpdateOnceRunner>,
+    source_logic_fp: SourceLogicFingerprint,
 }
 
 pub const NO_ACK: Option<fn() -> Ready<Result<()>>> = None;
@@ -258,6 +264,12 @@ impl SourceIndexingContext {
         let mut rows = HashMap::new();
         let mut rows_to_retry: Option<HashSet<value::KeyValue>> = None;
         let scan_generation = 0;
+        let source_logic_fp = SourceLogicFingerprint::new(
+            &plan,
+            source_idx,
+            &setup_execution_ctx.export_ops,
+            plan.legacy_fingerprint.clone(),
+        )?;
         {
             let mut key_metadata_stream = list_state.list(
                 setup_execution_ctx.import_ops[source_idx].source_id,
@@ -282,7 +294,7 @@ impl SourceIndexingContext {
                             source_version: SourceVersion::from_stored(
                                 key_metadata.processed_source_ordinal,
                                 &key_metadata.process_logic_fingerprint,
-                                &plan.logic_fingerprint,
+                                &source_logic_fp,
                             ),
                             content_version_fp: key_metadata.processed_source_fp,
                         },
@@ -307,6 +319,7 @@ impl SourceIndexingContext {
                 UpdateOnceRunner,
                 batching::BatchingOptions::default(),
             ),
+            source_logic_fp,
         }))
     }
 
@@ -347,6 +360,7 @@ impl SourceIndexingContext {
                 schema,
                 key: &row_input.key,
                 import_op_idx: self.source_idx,
+                source_logic_fp: &self.source_logic_fp,
             };
             let process_time = chrono::Utc::now();
             let operation_in_process_stats_cloned = operation_in_process_stats.clone();

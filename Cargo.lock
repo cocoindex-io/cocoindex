@@ -1317,7 +1317,8 @@ dependencies = [
  "blake2",
  "bytes",
  "chrono",
- "cocoindex-utils",
+ "cocoindex_py_utils",
+ "cocoindex_utils",
  "config",
  "const_format",
  "derivative",
@@ -1403,7 +1404,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "cocoindex-utils"
+name = "cocoindex_py_utils"
+version = "999.0.0"
+dependencies = [
+ "anyhow",
+ "cocoindex_utils",
+ "futures",
+ "log",
+ "pyo3",
+ "pyo3-async-runtimes",
+ "pythonize",
+ "serde",
+]
+
+[[package]]
+name = "cocoindex_utils"
 version = "999.0.0"
 dependencies = [
  "anyhow",

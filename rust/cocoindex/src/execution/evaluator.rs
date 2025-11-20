@@ -1,3 +1,4 @@
+use crate::execution::indexing_status::SourceLogicFingerprint;
 use crate::prelude::*;
 
 use anyhow::{Context, Ok};
@@ -634,6 +635,7 @@ pub struct SourceRowEvaluationContext<'a> {
     pub schema: &'a schema::FlowSchema,
     pub key: &'a value::KeyValue,
     pub import_op_idx: usize,
+    pub source_logic_fp: &'a SourceLogicFingerprint,
 }
 
 #[derive(Debug)]

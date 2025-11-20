@@ -64,10 +64,10 @@ jobs:
             python -m venv .venv
         - name: Install Python toolchains
           run: |
-            ${{ matrix.platform.python_exec }} -m pip install maturin mypy pytest pytest-asyncio
+            ${{ matrix.platform.python_exec }} -m pip install maturin
         - name: Python build
           run: |
-            ${{ matrix.platform.python_exec }} -m maturin develop --strip -E all
+            ${{ matrix.platform.python_exec }} -m maturin develop --strip -E all-ci
         - name: Python type check (mypy)
           run: |
             ${{ matrix.platform.python_exec }} -m mypy python
