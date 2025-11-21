@@ -8,9 +8,11 @@ import asyncio
 import inspect
 import warnings
 
-from typing import Any, Callable, Awaitable, TypeVar, Coroutine
+from typing import Any, Callable, Awaitable, TypeVar, Coroutine, ParamSpec
+from typing_extensions import TypeIs
 
 T = TypeVar("T")
+P = ParamSpec("P")
 
 
 class _ExecutionContext:
@@ -68,14 +70,16 @@ class _ExecutionContext:
 execution_context = _ExecutionContext()
 
 
-def is_coroutine_fn(fn: Callable[..., Any]) -> bool:
+def is_coroutine_fn(
+    fn: Callable[P, T] | Callable[P, Coroutine[Any, Any, T]],
+) -> TypeIs[Callable[P, Coroutine[Any, Any, T]]]:
     if isinstance(fn, (staticmethod, classmethod)):
         return inspect.iscoroutinefunction(fn.__func__)
     else:
         return inspect.iscoroutinefunction(fn)
 
 
-def to_async_call(fn: Callable[..., Any]) -> Callable[..., Awaitable[Any]]:
+def to_async_call(fn: Callable[P, T]) -> Callable[P, Awaitable[T]]:
     if is_coroutine_fn(fn):
         return fn
     return lambda *args, **kwargs: asyncio.to_thread(fn, *args, **kwargs)
