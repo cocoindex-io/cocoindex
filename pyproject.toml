@@ -10,7 +10,7 @@ authors = [{ name = "CocoIndex", email = "cocoindex.io@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "typing-extensions>=4.12; python_version < '3.13'",
+    "typing-extensions>=4.12",
     "click>=8.1.8",
     "rich>=14.0.0",
     "python-dotenv>=1.1.0",
