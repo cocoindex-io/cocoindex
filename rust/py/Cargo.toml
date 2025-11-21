@@ -13,4 +13,5 @@ cocoindex_core = { path = "../core" }
 cocoindex_utils = { path = "../utils" }
 cocoindex_py_utils = { path = "../py_utils" }
 
-pyo3 = { workspace = true }
+pyo3 = { workspace = true, features = ["uuid"] }
+uuid = { workspace = true }
