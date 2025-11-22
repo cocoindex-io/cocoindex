@@ -2,10 +2,12 @@
 Cocoindex is a framework for building and running indexing pipelines.
 """
 
-from .lib import Environment, EnvironmentBuilder, LifespanFn
-from .lib import lifespan, default_env
+from ._internal.lib import Environment, EnvironmentBuilder, LifespanFn
+from ._internal.lib import lifespan, default_env
 
-from .setting import Settings
+from ._internal.state import StatePath, StatePathPart
+
+from ._internal.setting import Settings
 
 __all__ = [
     # .lib
@@ -16,4 +18,7 @@ __all__ = [
     "default_env",
     # .setting
     "Settings",
+    # .state
+    "StatePath",
+    "StatePathPart",
 ]

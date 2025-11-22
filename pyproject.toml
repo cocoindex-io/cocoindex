@@ -57,7 +57,7 @@ cocoindex = "cocoindex.cli:cli"
 [tool.maturin]
 bindings = "pyo3"
 python-source = "python"
-module-name = "cocoindex._core"
+module-name = "cocoindex._internal._core"
 features = ["pyo3/extension-module"]
 include = ["THIRD_PARTY_NOTICES.html"]
 # Point to the crate within the workspace

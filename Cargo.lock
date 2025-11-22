@@ -1417,10 +1417,12 @@ name = "cocoindex_core"
 version = "999.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "cocoindex_utils",
  "heed",
  "serde",
  "storekey",
+ "tokio",
  "uuid",
 ]
 

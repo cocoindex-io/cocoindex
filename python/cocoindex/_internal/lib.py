@@ -7,7 +7,7 @@ import warnings
 
 from . import _core  # type: ignore
 from . import setting
-from .engine_object import dump_engine_object
+from ..engine_object import dump_engine_object
 from typing import Any, Callable, Iterator, overload
 
 
