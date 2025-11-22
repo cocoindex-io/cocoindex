@@ -21,6 +21,10 @@ pub struct ToJsonSchemaOptions {
 
     /// If true, the top level must be a JSON object.
     pub top_level_must_be_object: bool,
+
+    /// If true, include `additionalProperties: false` in object schemas.
+    /// Some LLM APIs (e.g., Gemini) do not support this constraint and will error.
+    pub supports_additional_properties: bool,
 }
 
 struct JsonSchemaBuilder {
@@ -263,7 +267,11 @@ impl JsonSchemaBuilder {
                 .filter(|&f| self.options.fields_always_required || !f.value_type.nullable)
                 .map(|f| f.name.to_string())
                 .collect(),
-            additional_properties: Some(Schema::Bool(false).into()),
+            additional_properties: if self.options.supports_additional_properties {
+                Some(Schema::Bool(false).into())
+            } else {
+                None
+            },
             ..Default::default()
         }));
         schema
@@ -406,6 +414,7 @@ mod tests {
             supports_format: true,
             extract_descriptions: false,
             top_level_must_be_object: false,
+            supports_additional_properties: true,
         }
     }
 
@@ -415,6 +424,7 @@ mod tests {
             supports_format: true,
             extract_descriptions: true,
             top_level_must_be_object: false,
+            supports_additional_properties: true,
         }
     }
 
@@ -424,6 +434,7 @@ mod tests {
             supports_format: true,
             extract_descriptions: false,
             top_level_must_be_object: false,
+            supports_additional_properties: true,
         }
     }
 
@@ -433,6 +444,7 @@ mod tests {
             supports_format: true,
             extract_descriptions: false,
             top_level_must_be_object: true,
+            supports_additional_properties: true,
         }
     }
 
@@ -1357,6 +1369,7 @@ mod tests {
             supports_format: false,
             extract_descriptions: false,
             top_level_must_be_object: false,
+            supports_additional_properties: true,
         };
         let result = build_json_schema(value_type, options).unwrap();
         let json_schema = schema_to_json(&result.schema);
@@ -1396,6 +1409,7 @@ mod tests {
             supports_format: true,
             extract_descriptions: false, // We want to see the description in the schema
             top_level_must_be_object: false,
+            supports_additional_properties: true,
         };
 
         let result = build_json_schema(enriched_value_type, options).unwrap();
