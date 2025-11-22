@@ -13,6 +13,7 @@ const TAGS = [
   'multi-modal',
   'structured-data-extraction',
   'custom-building-blocks',
+  'data-mapping'
 ];
 
 export default function DocCardList(props: Props): ReactNode {
@@ -28,16 +29,30 @@ export default function DocCardList(props: Props): ReactNode {
   // Filter items by selected tag if any
   const filteredItems = selectedTag
     ? items.filter(
-        (item) =>
-          Array.isArray(item?.customProps?.tags) &&
-          item.customProps.tags.includes(selectedTag)
-      )
+      (item) =>
+        Array.isArray(item?.customProps?.tags) &&
+        item.customProps.tags.includes(selectedTag)
+    )
     : items;
 
   return (
     <>
       <div className={styles.tagSelectorContainer}>
         <div className={styles.tagSelectorGrid}>
+          <div className={styles.tagOption}>
+            <input
+              type="radio"
+              id="tag-all"
+              name="doccard-tag-filter"
+              value=""
+              checked={selectedTag === null}
+              onChange={() => setSelectedTag(null)}
+              className={styles.allTagsRadio}
+            />
+            <label htmlFor="tag-all" className={styles.allTagsLabel}>
+              All Categories
+            </label>
+          </div>
           {TAGS.map((tag) => (
             <div key={tag} className={styles.tagOption}>
               <input
@@ -54,20 +69,7 @@ export default function DocCardList(props: Props): ReactNode {
               </label>
             </div>
           ))}
-          <div className={styles.tagOption}>
-            <input
-              type="radio"
-              id="tag-all"
-              name="doccard-tag-filter"
-              value=""
-              checked={selectedTag === null}
-              onChange={() => setSelectedTag(null)}
-              className={styles.allTagsRadio}
-            />
-            <label htmlFor="tag-all" className={styles.allTagsLabel}>
-              All Categories
-            </label>
-          </div>
+
         </div>
       </div>
       <section className={clsx('row', className)}>

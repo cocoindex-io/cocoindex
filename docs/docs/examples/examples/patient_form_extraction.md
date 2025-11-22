@@ -1,6 +1,6 @@
 ---
 title: Extract Nested Structured Data from Patient Form
-description: Extract nested structured data from patient form
+description: Extract nested structured data from patient form and performs data mapping and field level transformation.
 sidebar_class_name: hidden
 slug: /examples/patient_form_extraction
 canonicalUrl: '/examples/patient_form_extraction'
@@ -209,7 +209,7 @@ with data_scope["documents"].row() as doc:
 
 ![Extracted](/img/examples/patient_form_extraction/extraction.png)
 
-After the extraction, we collect all the fields for simplicity. You can also select any fields and also perform data mapping and field level transformation on the fields before the collection. If you have any questions, feel free to ask us in [Discord](https://discord.com/invite/zpA9S2DR7s).
+After the extraction, we collect all the fields for simplicity. You can also select any fields and also perform data mapping and field level transformation on the fields before the collection. 
 
 ## Export the extracted data to a table
 

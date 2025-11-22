@@ -4,11 +4,7 @@ from numpy import typing as npt
 from typing import Generic, Any
 from .index import VectorSimilarityMetric
 import sys
-
-if sys.version_info >= (3, 13):
-    from typing import TypeVar
-else:
-    from typing_extensions import TypeVar  # PEP 696 backport
+from typing_extensions import TypeVar
 
 
 @dataclasses.dataclass
