@@ -6,9 +6,9 @@ slug: /examples/postgres_source
 canonicalUrl: '/examples/postgres_source'
 sidebar_custom_props:
   image: /img/examples/postgres_source/cover.png
-  tags: [data-mapping, vector-index, postgres]
+  tags: [data-mapping, vector-index]
 image: /img/examples/postgres_source/cover.png
-tags: [data-mapping, vector-index, postgres]
+tags: [data-mapping, vector-index]
 ---
 import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/components/GitHubButton';
 
