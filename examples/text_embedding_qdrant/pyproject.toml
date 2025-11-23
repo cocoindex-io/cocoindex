@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Simple example for cocoindex: build embedding index based on local text files."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[embeddings]>=0.2.8",
+    "cocoindex[embeddings]>=0.3.9",
     "python-dotenv>=1.0.1",
     "qdrant-client>=1.6.0",
 ]
