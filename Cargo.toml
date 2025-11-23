@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/*"]
+members = ["rust/core", "rust/utils", "rust/py", "rust/py_utils"]
 resolver = "2"
 
 [workspace.package]
