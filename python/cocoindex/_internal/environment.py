@@ -1,11 +1,11 @@
 """
-Library level functions and states.
+Environment module.
 """
 
 import threading
 import warnings
 
-from . import _core  # type: ignore
+from . import core  # type: ignore
 from . import setting
 from ..engine_object import dump_engine_object
 from typing import Any, Callable, Iterator, overload
@@ -32,7 +32,7 @@ def _noop_lifespan_fn(_builder: EnvironmentBuilder) -> Iterator[None]:
 
 
 class Environment:
-    _core_env: _core.Environment | None
+    _core_env: core.Environment | None
     _lifespan_iter: Iterator[None] | None
 
     def __init__(self, lifespan_fn: LifespanFn | None = None):
@@ -45,7 +45,7 @@ class Environment:
         if not settings.db_path:
             raise ValueError("EnvironmentBuilder.Settings.db_path must be provided")
 
-        self._core_env = _core.Environment(dump_engine_object(env_builder.settings))
+        self._core_env = core.Environment(dump_engine_object(env_builder.settings))
         self._lifespan_iter = lifespan_iter
 
     def __del__(self) -> None:

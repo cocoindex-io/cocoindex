@@ -9,9 +9,11 @@ from typing import (
     NamedTuple,
 )
 
-from .state import StatePath
+from . import core  # type: ignore
+from .environment import Environment
 from .fn import Function
-from .lib import Environment
+from .state import StatePath
+from .environment import default_env
 
 
 P = ParamSpec("P")
@@ -25,9 +27,7 @@ class AppConfig(NamedTuple):
 
 class App(Generic[P, R]):
     _config: AppConfig
-    _main_fn: Function[Concatenate[StatePath, P], R]
-    _args: Sequence[Any]
-    _kwargs: Mapping[str, Any]
+    _core_app: core.App
 
     def __init__(
         self,
@@ -40,12 +40,17 @@ class App(Generic[P, R]):
             self._config = AppConfig(name=config)
         else:
             self._config = config
-        self._main_fn = main_fn
-        self._args = args
-        self._kwargs = kwargs
+
+        component_builder = main_fn._as_component_builder(StatePath(), *args, **kwargs)
+        env = self._config.environment or default_env()
+        self._core_app = core.App(
+            self._config.name,
+            env._core_env,
+            component_builder,
+        )
 
     def update(self) -> R:
-        return self._main_fn.call(StatePath(), *self._args, **self._kwargs)
+        return self._core_app.update()  # type: ignore
 
     async def update_async(self) -> R:
-        return await self._main_fn.acall(StatePath(), *self._args, **self._kwargs)
+        return await self._core_app.update_async()  # type: ignore

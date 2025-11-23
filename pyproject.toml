@@ -57,7 +57,7 @@ cocoindex = "cocoindex.cli:cli"
 [tool.maturin]
 bindings = "pyo3"
 python-source = "python"
-module-name = "cocoindex._internal._core"
+module-name = "cocoindex._internal.core"
 features = ["pyo3/extension-module"]
 include = ["THIRD_PARTY_NOTICES.html"]
 # Point to the crate within the workspace
@@ -86,3 +86,9 @@ disable_error_code = ["unused-ignore"]
 [[tool.mypy.overrides]]
 module = ["sentence_transformers", "torch", "colpali_engine", "PIL"]
 ignore_missing_imports = true
+
+[tool.pytest]
+log_cli = true
+log_cli_level = "INFO"
+log_format = "%(asctime)s %(levelname)s %(message)s"
+log_date_format = "%Y-%m-%d %H:%M:%S"

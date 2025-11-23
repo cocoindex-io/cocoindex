@@ -10,8 +10,8 @@ pub struct AppContext {
     pub app_reg: AppRegistration,
 }
 
-pub struct StateContext<HostStateCtx> {
+pub struct ComponentBuilderContext {
     pub app_ctx: Arc<AppContext>,
     pub state_path: StatePath,
-    pub host_state_context: HostStateCtx,
+    // TODO: Add fields to record effects, states, children components, etc.
 }

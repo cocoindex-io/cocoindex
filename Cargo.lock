@@ -1430,10 +1430,13 @@ dependencies = [
 name = "cocoindex_py"
 version = "999.0.0"
 dependencies = [
+ "anyhow",
  "cocoindex_core",
  "cocoindex_py_utils",
  "cocoindex_utils",
  "pyo3",
+ "pyo3-async-runtimes",
+ "tokio",
  "uuid",
 ]
 

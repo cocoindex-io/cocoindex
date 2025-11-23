@@ -50,11 +50,13 @@ impl std::fmt::Display for StatePathPart {
 }
 
 #[derive(Clone)]
-pub struct StatePath(pub Box<[StatePathPart]>);
+pub struct StatePath(pub Arc<[StatePathPart]>);
+
+static ROOT_PATH: LazyLock<StatePath> = LazyLock::new(|| StatePath(Arc::new([])));
 
 impl StatePath {
     pub fn root() -> Self {
-        Self(Box::new([]))
+        ROOT_PATH.clone()
     }
 
     pub fn concat(&self, part: StatePathPart) -> Self {
@@ -63,7 +65,7 @@ impl StatePath {
             .iter()
             .cloned()
             .chain(std::iter::once(part))
-            .collect::<Box<_>>();
+            .collect::<Arc<_>>();
         Self(result)
     }
 }

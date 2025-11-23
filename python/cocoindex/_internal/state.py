@@ -1,15 +1,15 @@
 import uuid
 from typing import Self, Any
 
-from . import _core  # type: ignore
+from . import core  # type: ignore
 
 StatePathPart = None | bool | int | str | bytes | uuid.UUID | list["StatePathPart"]
 
-_ROOT_PATH = _core.StatePath()
+_ROOT_PATH = core.StatePath()
 
 
 class StatePath:
-    _path: _core.StatePath
+    _path: core.StatePath
 
     def __init__(self) -> None:
         self._path = _ROOT_PATH

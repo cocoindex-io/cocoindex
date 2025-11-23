@@ -1,47 +1,54 @@
+use tokio::task::JoinHandle;
+
 use crate::prelude::*;
 
-use crate::engine::state_context::StateContext;
+use crate::engine::context::{AppContext, ComponentBuilderContext};
+use crate::state::state_path::StatePath;
 
-#[derive(Clone)]
-pub struct ComponentBuilderContext<HostStateCtx> {
-    pub state_context: Arc<StateContext<HostStateCtx>>,
-    // TODO: Add fields to record effects, states, children components, etc.
-}
-
-#[async_trait]
-pub trait ComponentBuilder: Clone + Send + 'static {
+pub trait ComponentBuilder: Send + 'static {
     type HostStateCtx: Send + Sync + Clone;
     type BuildRet: Send;
+    type BuildErr: Send;
 
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
-    async fn build(
+    fn build(
         &self,
-        context: &ComponentBuilderContext<Self::HostStateCtx>,
-    ) -> Result<Self::BuildRet>;
+        context: &Arc<ComponentBuilderContext>,
+    ) -> Result<JoinHandle<Result<Self::BuildRet, Self::BuildErr>>>;
 }
 
 pub struct Component<Bld: ComponentBuilder> {
-    state_context: Arc<StateContext<Bld::HostStateCtx>>,
+    app_ctx: Arc<AppContext>,
+    state_path: StatePath,
     builder: Bld,
 }
 
 impl<Bld: ComponentBuilder> Component<Bld> {
-    pub fn new(state_context: Arc<StateContext<Bld::HostStateCtx>>, builder: Bld) -> Self {
+    pub fn new(app_ctx: Arc<AppContext>, state_path: StatePath, builder: Bld) -> Self {
         Self {
-            state_context,
+            app_ctx,
+            state_path,
             builder,
         }
     }
 
-    pub async fn build(&self) -> Result<Bld::BuildRet> {
-        let builder_context = ComponentBuilderContext {
-            state_context: self.state_context.clone(),
-        };
-        let builder = self.builder.clone();
+    pub fn app_ctx(&self) -> &Arc<AppContext> {
+        &self.app_ctx
+    }
 
+    pub fn state_path(&self) -> &StatePath {
+        &self.state_path
+    }
+
+    pub async fn build(&self) -> Result<Result<Bld::BuildRet, Bld::BuildErr>> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
-        let result = tokio::spawn(async move { builder.build(&builder_context).await }).await??;
-        Ok(result)
+
+        let builder_context = Arc::new(ComponentBuilderContext {
+            app_ctx: self.app_ctx.clone(),
+            state_path: self.state_path.clone(),
+        });
+        let ret = self.builder.build(&builder_context)?.await?;
+        Ok(ret)
     }
 }

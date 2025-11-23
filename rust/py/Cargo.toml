@@ -14,4 +14,7 @@ cocoindex_utils = { path = "../utils" }
 cocoindex_py_utils = { path = "../py_utils" }
 
 pyo3 = { workspace = true, features = ["uuid"] }
+pyo3-async-runtimes = { workspace = true, features = ["tokio-runtime"] }
 uuid = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

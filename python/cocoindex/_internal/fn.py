@@ -12,7 +12,9 @@ from typing import (
     overload,
 )
 
+from .core import ComponentBuilder, ComponentBuilderContext  # type: ignore
 from .state import StatePath
+from .context import component_ctx_var
 from ..runtime import execution_context, is_coroutine_fn
 
 
@@ -26,6 +28,10 @@ class Function(Protocol[P, R_co]):
 
     def acall(self, *args: P.args, **kwargs: P.kwargs) -> Awaitable[R_co]: ...
 
+    def _as_component_builder(
+        self, *args: P.args, **kwargs: P.kwargs
+    ) -> ComponentBuilder: ...
+
 
 class SyncFunction(Function[P, R_co]):
     _fn: Callable[P, R_co]
@@ -35,6 +41,19 @@ class SyncFunction(Function[P, R_co]):
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return self._fn(*args, **kwargs)
+
+    def _as_component_builder(
+        self, *args: P.args, **kwargs: P.kwargs
+    ) -> ComponentBuilder:
+        def _build(builder_ctx: ComponentBuilderContext) -> R_co:
+            tok = component_ctx_var.set(builder_ctx)
+            try:
+                ret = self._fn(*args, **kwargs)
+            finally:
+                component_ctx_var.reset(tok)
+            return ret
+
+        return ComponentBuilder.new_sync(_build)
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return self._fn(*args, **kwargs)
@@ -51,6 +70,13 @@ class AsyncFunction(Function[P, R_co]):
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Coroutine[Any, Any, R_co]:
         return self._fn(*args, **kwargs)
+
+    def _as_component_builder(
+        self, *args: P.args, **kwargs: P.kwargs
+    ) -> ComponentBuilder:
+        raise NotImplementedError(
+            "Async functions cannot be converted to component builders"
+        )
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return execution_context.run(self._fn(*args, **kwargs))
