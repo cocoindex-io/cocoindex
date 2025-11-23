@@ -3,7 +3,7 @@ name = "custom-output-files"
 version = "0.1.0"
 description = "Simple example for cocoindex: convert markdown files to HTML files and save them to a local directory."
 requires-python = ">=3.11"
-dependencies = ["cocoindex>=0.2.8", "markdown-it-py[linkify,plugins]"]
+dependencies = ["cocoindex>=0.3.9", "markdown-it-py[linkify,plugins]"]
 
 [tool.setuptools]
 packages = []
