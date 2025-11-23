@@ -11,7 +11,7 @@ from typing import (
 
 from . import core  # type: ignore
 from .environment import Environment
-from .fn import Function
+from .function import Function
 from .state import StatePath
 from .environment import default_env
 

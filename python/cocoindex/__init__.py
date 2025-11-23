@@ -7,7 +7,7 @@ from ._internal.app import App, AppConfig
 from ._internal.environment import Environment, EnvironmentBuilder, LifespanFn
 from ._internal.environment import lifespan, default_env
 
-from ._internal.fn import function
+from ._internal.function import function
 
 from ._internal.state import StatePath, StatePathPart
 
