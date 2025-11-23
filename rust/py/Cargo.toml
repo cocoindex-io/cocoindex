@@ -18,3 +18,5 @@ pyo3-async-runtimes = { workspace = true, features = ["tokio-runtime"] }
 uuid = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
+log = { workspace = true }

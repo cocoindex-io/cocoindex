@@ -17,6 +17,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<component::PyComponentBuilder>()?;
     m.add_class::<context::PyComponentBuilderContext>()?;
     m.add_class::<environment::PyEnvironment>()?;
+    m.add_class::<runtime::PyAsyncContext>()?;
     m.add_class::<state_path::PyStatePath>()?;
 
     Ok(())

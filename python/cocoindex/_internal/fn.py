@@ -13,9 +13,9 @@ from typing import (
 )
 
 from .core import ComponentBuilder, ComponentBuilderContext  # type: ignore
-from .state import StatePath
+
 from .context import component_ctx_var
-from ..runtime import execution_context, is_coroutine_fn
+from .runtime import execution_context, is_coroutine_fn, get_async_context
 
 
 P = ParamSpec("P")
@@ -74,9 +74,15 @@ class AsyncFunction(Function[P, R_co]):
     def _as_component_builder(
         self, *args: P.args, **kwargs: P.kwargs
     ) -> ComponentBuilder:
-        raise NotImplementedError(
-            "Async functions cannot be converted to component builders"
-        )
+        async def _build(builder_ctx: ComponentBuilderContext) -> R_co:
+            tok = component_ctx_var.set(builder_ctx)
+            try:
+                ret = await self._fn(*args, **kwargs)
+            finally:
+                component_ctx_var.reset(tok)
+            return ret
+
+        return ComponentBuilder.new_async(_build, get_async_context())
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return execution_context.run(self._fn(*args, **kwargs))

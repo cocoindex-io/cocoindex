@@ -1,5 +1,3 @@
-use tokio::task::JoinHandle;
-
 use crate::prelude::*;
 
 use crate::engine::context::{AppContext, ComponentBuilderContext};
@@ -12,10 +10,14 @@ pub trait ComponentBuilder: Send + 'static {
 
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
-    fn build(
+    /// Run the logic to build the component.
+    ///
+    /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
+    #[allow(async_fn_in_trait)]
+    async fn build(
         &self,
         context: &Arc<ComponentBuilderContext>,
-    ) -> Result<JoinHandle<Result<Self::BuildRet, Self::BuildErr>>>;
+    ) -> Result<Result<Self::BuildRet, Self::BuildErr>>;
 }
 
 pub struct Component<Bld: ComponentBuilder> {
@@ -48,7 +50,7 @@ impl<Bld: ComponentBuilder> Component<Bld> {
             app_ctx: self.app_ctx.clone(),
             state_path: self.state_path.clone(),
         });
-        let ret = self.builder.build(&builder_context)?.await?;
+        let ret = self.builder.build(&builder_context).await?;
         Ok(ret)
     }
 }
