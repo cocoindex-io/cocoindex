@@ -147,8 +147,11 @@ impl LlmGenerationClient for AiStudioClient {
             });
         }
 
+        let mut need_json = false;
+
         // If structured output is requested, add schema and responseMimeType
         if let Some(OutputFormat::JsonSchema { schema, .. }) = &request.output_format {
+            need_json = true;
             let mut schema_json = serde_json::to_value(schema)?;
             remove_additional_properties(&mut schema_json);
             payload["generationConfig"] = serde_json::json!({
@@ -161,18 +164,24 @@ impl LlmGenerationClient for AiStudioClient {
         let resp = http::request(|| self.client.post(&url).json(&payload))
             .await
             .context("Gemini API error")?;
-        let resp_json: Value = resp.json().await.context("Invalid JSON")?;
+        let mut resp_json: Value = resp.json().await.context("Invalid JSON")?;
 
         if let Some(error) = resp_json.get("error") {
             bail!("Gemini API error: {:?}", error);
         }
-        let mut resp_json = resp_json;
+
+        if need_json {
+            return Ok(super::LlmGenerateResponse::Json(serde_json::json!(
+                resp_json["candidates"][0]
+            )));
+        }
+
         let text = match &mut resp_json["candidates"][0]["content"]["parts"][0]["text"] {
             Value::String(s) => std::mem::take(s),
             _ => bail!("No text in response"),
         };
 
-        Ok(LlmGenerateResponse { text })
+        Ok(LlmGenerateResponse::Text(text))
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {
@@ -333,9 +342,12 @@ impl LlmGenerationClient for VertexAiClient {
                 .set_parts(vec![Part::new().set_text(sys.to_string())])
         });
 
+        let mut need_json = false;
+
         // Compose generation config
         let mut generation_config = None;
         if let Some(OutputFormat::JsonSchema { schema, .. }) = &request.output_format {
+            need_json = true;
             let schema_json = serde_json::to_value(schema)?;
             generation_config = Some(
                 GenerationConfig::new()
@@ -359,6 +371,18 @@ impl LlmGenerationClient for VertexAiClient {
 
         // Call the API
         let resp = req.send().await?;
+
+        if need_json {
+            match resp.candidates.into_iter().next() {
+                Some(resp_json) => {
+                    return Ok(super::LlmGenerateResponse::Json(serde_json::json!(
+                        resp_json
+                    )));
+                }
+                None => bail!("No response"),
+            }
+        }
+
         // Extract text from response
         let Some(Data::Text(text)) = resp
             .candidates
@@ -370,7 +394,7 @@ impl LlmGenerationClient for VertexAiClient {
         else {
             bail!("No text in response");
         };
-        Ok(super::LlmGenerateResponse { text })
+        Ok(super::LlmGenerateResponse::Text(text))
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {
