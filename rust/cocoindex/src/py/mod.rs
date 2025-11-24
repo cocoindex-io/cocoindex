@@ -606,6 +606,8 @@ fn seder_roundtrip<'py>(
 #[pymodule]
 #[pyo3(name = "_engine")]
 fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+
     m.add_function(wrap_pyfunction!(init_pyo3_runtime, m)?)?;
     m.add_function(wrap_pyfunction!(init, m)?)?;
     m.add_function(wrap_pyfunction!(set_settings_fn, m)?)?;
