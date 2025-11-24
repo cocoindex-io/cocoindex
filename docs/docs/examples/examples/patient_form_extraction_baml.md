@@ -158,12 +158,9 @@ We specify `client Gemini` and a prompt template. The special variable `{{ intak
 
 In our BAML example above, there's a subtle but **crucial line**: `{{ _.role("user") }}` is added at the start of the prompt.
   
-> This ensures the **PDF content is explicitly included as part of the user message**, rather than the system prompt.
+> This ensures the PDF content is explicitly included as part of the user message*, rather than the system prompt.
 
-**Why does this matter?**  
-- For Gemini and Anthropic models, BAML can sometimes infer or adjust the prompt structure, so extraction works either way.
-- For **OpenAI models** (e.g., GPT-4/GPT-4o), if the PDF is **not** in the user role, the model doesn't see the file content — so extractions will fail or return empty fields.
-- This can easily trip you up.If you're using BAML, **always double-check your prompt roles when adding file inputs**—especially for OpenAI backends.
+For **OpenAI models**, if the PDF is not in the user role, the model doesn't see the file content — so extractions will fail or return empty fields. This can easily trip you up.
 
 :::
 

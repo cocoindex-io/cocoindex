@@ -11,6 +11,8 @@ mod state_path;
 fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
     use pyo3::prelude::*;
 
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+
     m.add_function(wrap_pyfunction!(runtime::init_runtime, m)?)?;
 
     m.add_class::<app::PyApp>()?;

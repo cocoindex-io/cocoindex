@@ -54,7 +54,7 @@ class HackerNewsSource(SourceSpec):
     """Source spec for HackerNews API."""
 
     tag: str | None = None
-    max_results: int = 100
+    max_results: int = 200
 
 
 @source_connector(
@@ -77,24 +77,16 @@ class HackerNewsConnector:
         """Create a HackerNews connector from the spec."""
         return HackerNewsConnector(spec, aiohttp.ClientSession())
 
-    async def _ensure_session(self) -> aiohttp.ClientSession:
-        """Ensure we have an active HTTP session."""
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
-        return self._session
-
     async def list(
         self,
     ) -> AsyncIterator[PartialSourceRow[_HackerNewsThreadKey, _HackerNewsThread]]:
         """List HackerNews threads using the search API."""
-        session = await self._ensure_session()
-
         # Use HackerNews search API
         search_url = "https://hn.algolia.com/api/v1/search_by_date"
         params: dict[str, Any] = {"hitsPerPage": self._spec.max_results}
         if self._spec.tag:
             params["tags"] = self._spec.tag
-        async with session.get(search_url, params=params) as response:
+        async with self._session.get(search_url, params=params) as response:
             response.raise_for_status()
             data = await response.json()
             for hit in data.get("hits", []):
@@ -114,12 +106,10 @@ class HackerNewsConnector:
         self, key: _HackerNewsThreadKey
     ) -> PartialSourceRowData[_HackerNewsThread]:
         """Get a specific HackerNews thread by ID using the items API."""
-        session = await self._ensure_session()
-
         # Use HackerNews items API to get full thread with comments
         item_url = f"https://hn.algolia.com/api/v1/items/{key.thread_id}"
 
-        async with session.get(item_url) as response:
+        async with self._session.get(item_url) as response:
             response.raise_for_status()
             data = await response.json()
 
@@ -183,7 +173,7 @@ def hackernews_flow(
 
     # Add the custom source to the flow
     data_scope["threads"] = flow_builder.add_source(
-        HackerNewsSource(tag="story", max_results=500),
+        HackerNewsSource(tag="story", max_results=200),
         refresh_interval=timedelta(minutes=1),
     )
 
