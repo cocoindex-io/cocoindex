@@ -130,7 +130,7 @@ Currently, `SplitRecursively` supports the following languages:
 
 This function requires the 'sentence-transformers' library, which is an optional dependency. Install CocoIndex with:
 
-```bash
+```sh
 pip install 'cocoindex[embeddings]'
 ```
 
@@ -215,7 +215,7 @@ These models use late interaction between image patch embeddings and text token 
 
 These functions require the `colpali-engine` library, which is an optional dependency. Install CocoIndex with:
 
-```bash
+```sh
 pip install 'cocoindex[colpali]'
 ```
 

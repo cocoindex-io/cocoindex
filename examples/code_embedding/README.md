@@ -39,19 +39,19 @@ We will match against user-provided text by a SQL query, reusing the embedding o
 
 - Install dependencies:
 
-  ```bash
+  ```sh
   pip install -e .
   ```
 
 - Update index:
 
-  ```bash
+  ```sh
   cocoindex update main
   ```
 
 - Run:
 
-  ```bash
+  ```sh
   python main.py
   ```
 

@@ -28,7 +28,7 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
 
 - Run Qdrant.
 
-   ```bash
+   ```sh
    docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
    ```
 
@@ -36,13 +36,13 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
 
 - Install dependencies:
 
-   ```bash
+   ```sh
    pip install -e .
    ```
 
 - Update index:
 
-   ```bash
+   ```sh
    cocoindex update main
    ```
 
@@ -51,7 +51,7 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
 
 - Run:
 
-   ```bash
+   ```sh
    python main.py
    ```
 
@@ -60,7 +60,7 @@ We use Qdrant client to query the index, and reuse the embedding operation in th
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

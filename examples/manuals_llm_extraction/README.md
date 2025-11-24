@@ -23,13 +23,13 @@ Before running the example, you need to:
 
 Install dependencies:
 
-```bash
+```sh
 pip install -e .
 ```
 
 Update index:
 
-```bash
+```sh
 cocoindex update main
 ```
 
@@ -37,7 +37,7 @@ cocoindex update main
 
 After index is build, you have a table with name `modules_info`. You can query it any time, e.g. start a Postgres shell:
 
-```bash
+```sh
 psql postgres://cocoindex:cocoindex@localhost/cocoindex
 ```
 

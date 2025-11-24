@@ -23,7 +23,7 @@ In this tutorial, we’ll build an index with text embeddings, keeping it minima
 
 1. Install CocoIndex:
 
-    ```bash
+    ```sh
     pip install -U 'cocoindex[embeddings]'
     ```
 
@@ -31,7 +31,7 @@ In this tutorial, we’ll build an index with text embeddings, keeping it minima
 
 3. Create a new directory for your project:
 
-    ```bash
+    ```sh
     mkdir cocoindex-quickstart
     cd cocoindex-quickstart
     ```
@@ -140,13 +140,13 @@ CocoIndex supports other vector databases as well, with 1-line switch.
 
 - Specify the database URL by environment variable:
 
-    ```bash
+    ```sh
     export COCOINDEX_DATABASE_URL="postgresql://cocoindex:cocoindex@localhost:5432/cocoindex"
     ```
 
 - Build the index:
 
-    ```bash
+    ```sh
     cocoindex update main
     ```
 

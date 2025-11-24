@@ -18,7 +18,7 @@ To follow the steps in this guide, you'll need:
 
 
 ## 🌴 Install CocoIndex
-```bash
+```sh
 pip install -U cocoindex
 ```
 
@@ -31,7 +31,7 @@ If you don't have a Postgres database:
 1. Install [Docker Compose](https://docs.docker.com/compose/install/) 🐳.
 2. Start a Postgres SQL database for cocoindex using our docker compose config:
 
-```bash
+```sh
 docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
 ```
 

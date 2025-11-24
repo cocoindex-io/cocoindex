@@ -182,25 +182,25 @@ For example, the following image shows the lineage of the `embedding` field, you
 
 1. Set up dependencies:
 
-    ```bash
+    ```sh
     pip install -e .
     ```
 
 2. Create the source table with sample data:
 
-    ```bash
+    ```sh
     psql "postgres://cocoindex:cocoindex@localhost/cocoindex" -f ./prepare_source_data.sql
     ```
 
 3. Setup tables and update the index:
 
-    ```bash
+    ```sh
     cocoindex update main
     ```
 
 4. Run CocoInsight:
 
-    ```bash
+    ```sh
     cocoindex server -ci main
     ```
 
@@ -210,8 +210,8 @@ For example, the following image shows the lineage of the `embedding` field, you
 
 For continuous updating when the source changes, add `-L`:
 
-```bash
-cocoindex server -ci -L main
+```sh
+cocoindex update -L main
 ```
 
 Check [live updates](https://cocoindex.io/docs/tutorials/live_updates) for more details.

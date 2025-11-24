@@ -51,7 +51,7 @@ The flow is composed of the following steps:
 - Install Postgres, follow [installation guide](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
 - Install CocoIndex
 
-  ```bash
+  ```sh
   pip install -U cocoindex
   ```
 
@@ -206,7 +206,7 @@ if __name__ == "__main__":
 
 - Install dependencies
 
-    ```bash
+    ```sh
     pip install -e .
     ```
 
@@ -234,8 +234,8 @@ The returned results - each entry contains score (Cosine Similarity), filename, 
 To get a better understanding of the indexing flow, you can use CocoInsight to help the development step by step.
 To spin up, it is super easy.
 
-```
-cocoindex server main.py -ci
+```sh
+cocoindex server -ci main
 ```
 
 Follow the url from the terminal - `https://cocoindex.io/cocoinsight` to access the CocoInsight.
