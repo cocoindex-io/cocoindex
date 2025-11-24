@@ -54,5 +54,5 @@ The script then starts a `FlowLiveUpdater`, which runs in the background and con
 To remove the database table created by this example, you can run:
 
 ```bash
-cocoindex drop main.py
+cocoindex drop main
 ```

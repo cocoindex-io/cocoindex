@@ -44,7 +44,7 @@ The source is Google Drive folders shared with a service account. The flow watch
 
 Set the following environment variables:
 
-```sh
+```bash
 export OPENAI_API_KEY=sk-...
 export GOOGLE_SERVICE_ACCOUNT_CREDENTIAL=/absolute/path/to/service_account.json
 export GOOGLE_DRIVE_ROOT_FOLDER_IDS=folderId1,folderId2

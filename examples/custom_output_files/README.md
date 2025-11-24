@@ -38,7 +38,7 @@ Each time when you run the `update` command, cocoindex will only re-process the 
 You can also run `update` command in live mode, which will keep the target in sync with the source in real-time:
 
 ```bash
-cocoindex update -L main.py
+cocoindex update -L main
 ```
 
 ## CocoInsight

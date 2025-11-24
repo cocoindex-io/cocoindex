@@ -44,7 +44,7 @@ cocoindex update main
 You can also run the command with `-L`, which will watch for file changes and update the index automatically.
 
 ```bash
-cocoindex update -L main.py
+cocoindex update -L main
 ```
 
 ## CocoInsight

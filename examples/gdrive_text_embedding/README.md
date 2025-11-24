@@ -44,19 +44,19 @@ Before running the example, you need to:
 
 - Install dependencies:
 
-    ```sh
+    ```bash
     pip install -e .
     ```
 
 - Setup:
 
-    ```sh
+    ```bash
     cocoindex setup main
     ```
 
 - Run:
 
-    ```sh
+    ```bash
     python main.py
     ```
 
@@ -68,14 +68,14 @@ At the same time, it accepts queries from the terminal, and performs search on t
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
-```sh
+```bash
 cocoindex server -ci main
 ```
 
 You can also add a `-L` flag to make the server keep updating the index to reflect source changes at the same time:
 
-```sh
-cocoindex server -ci -L main
+```bash
+cocoindex server -ci main
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
