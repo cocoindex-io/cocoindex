@@ -22,9 +22,6 @@ jobs:
         with:
           fetch-depth: 1
       - run: ./.github/scripts/update_version.sh
-      - uses: actions/download-artifact@v4
-        with:
-          name: Cargo.toml
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
