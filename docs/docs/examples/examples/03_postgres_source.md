@@ -211,7 +211,7 @@ For example, the following image shows the lineage of the `embedding` field, you
 For continuous updating when the source changes, add `-L`:
 
 ```bash
-cocoindex server -ci -L main
+cocoindex update -L main
 ```
 
 Check [live updates](https://cocoindex.io/docs/tutorials/live_updates) for more details.

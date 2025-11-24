@@ -206,7 +206,7 @@ CocoInsight is a tool to help you understand your data pipeline and data index. 
 
 You can walk through the project step by step in [CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk) to see exactly how each field is constructed and what happens behind the scenes.
 
-```sh
+```bash
 cocoindex server -ci main
 ```
 

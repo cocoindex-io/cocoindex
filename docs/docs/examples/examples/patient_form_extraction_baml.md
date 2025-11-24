@@ -301,7 +301,7 @@ cocoindex update main
 
 **CocoInsight**
 
-I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. It just connects to your local CocoIndex server, with zero pipeline data retention. 
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. It just connects to your local CocoIndex server, with zero pipeline data retention.
 
 ```bash
 cocoindex server -ci main

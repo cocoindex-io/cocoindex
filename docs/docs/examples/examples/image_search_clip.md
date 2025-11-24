@@ -280,7 +280,7 @@ You can check the frontend code [here](https://github.com/cocoindex-io/cocoindex
 
 - Setup indexing flow
     ```bash
-    cocoindex setup main.py
+    cocoindex setup main
     ```
     It is setup with a live updater, so you can add new files to the folder and it will be indexed within a minute.
 
@@ -306,7 +306,7 @@ Wait a minute for the new image to be processed and indexed.
 
 ![Search](/img/examples/image_search_clip/search3.png)
 
-If you want to monitor the indexing progress, you can view it in CocoInsight `cocoindex server -ci main `.
+If you want to monitor the indexing progress, you can view it in CocoInsight `cocoindex server -ci main`.
 
 ![Index Status In CocoInsight](/img/examples/image_search_clip/index-status.png)
 

@@ -231,7 +231,7 @@ patients_index.export(
 
 ### Setup and update the index
 
-    ```sh
+    ```bash
     cocoindex update main
     ```
     You'll see the index updates state in the terminal

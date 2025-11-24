@@ -225,8 +225,9 @@ modules_index.export(
 
 ## Query and test your index
 Run the following command to setup and update the index.
-```sh
-cocoindex update -L main.py
+
+```bash
+cocoindex update -L main
 ```
 You'll see the index updates state in the terminal
 
@@ -245,7 +246,7 @@ SELECT filename, module_info->'title' AS title, module_summary FROM modules_info
 ## CocoInsight
 [CocoInsight](https://www.youtube.com/watch?v=ZnmyoHslBSc) is a really cool tool to help you understand your data pipeline and data index. It is in Early Access now (Free).
 
-```sh
+```bash
 cocoindex server -ci main
 ```
 CocoInsight dashboard is here `https://cocoindex.io/cocoinsight`.  It connects to your local CocoIndex server with zero data retention.

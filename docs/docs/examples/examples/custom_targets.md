@@ -198,9 +198,9 @@ You can add, modify, or remove files in the `data/` directory — CocoIndex will
 
 For **real-time updates**, run in live mode:
 
-```bash
-cocoindex update -L main.py
-```
+    ```bash
+    cocoindex update -L main
+    ```
 
 This keeps your knowledge graph continuously synchronized with your document source — perfect for fast-changing environments like internal wikis or technical documentation.
 

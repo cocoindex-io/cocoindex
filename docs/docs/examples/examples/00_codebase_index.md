@@ -212,7 +212,7 @@ if __name__ == "__main__":
 
 - Setup and update the index
 
-    ```sh
+    ```bash
     cocoindex update main
     ```
 
@@ -234,8 +234,8 @@ The returned results - each entry contains score (Cosine Similarity), filename, 
 To get a better understanding of the indexing flow, you can use CocoInsight to help the development step by step.
 To spin up, it is super easy.
 
-```
-cocoindex server main.py -ci
+```bash
+cocoindex server -ci main
 ```
 
 Follow the url from the terminal - `https://cocoindex.io/cocoinsight` to access the CocoInsight.

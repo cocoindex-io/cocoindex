@@ -341,8 +341,7 @@ If you need assist with writing the query, please feel free to reach out to us a
 
 You can walk through the project step by step in [CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk) to see exactly how each field is constructed and what happens behind the scenes.
 
-
-```sh
+```bash
 cocoindex server -ci main
 ```
 
