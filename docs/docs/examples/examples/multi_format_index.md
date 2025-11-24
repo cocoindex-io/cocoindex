@@ -192,7 +192,7 @@ search_results = client.query_points(
 
 You can walk through the project step by step in [CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk) to see exactly how each field is constructed and what happens behind the scenes.
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

@@ -201,7 +201,7 @@ There're two CocoIndex-specific logic:
 
 - Run the following command to setup and update the index.
 
-    ```bash
+    ```sh
     cocoindex update main
     ```
 
@@ -215,7 +215,7 @@ There're two CocoIndex-specific logic:
 
 You can walk through the project step by step in [CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk) to see exactly how each field is constructed and what happens behind the scenes.
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

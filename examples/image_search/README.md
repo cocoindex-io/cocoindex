@@ -67,7 +67,7 @@ export OLLAMA_MODEL="gemma3"  # Optional, for caption generation
   ```
 
 - Configure model (optional):
-  ```bash
+  ```sh
   # All ColVision models supported by colpali-engine are available
   # See https://github.com/illuin-tech/colpali#list-of-colvision-models for the complete list
 
@@ -100,7 +100,7 @@ The current PyTorch install supports CUDA capabilities sm_37 sm_50 sm_60 sm_61 s
 
 You can install the nightly pytorch build here: https://pytorch.org/get-started/locally/
 
-```bash
+```sh
 pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu129
 ```
 

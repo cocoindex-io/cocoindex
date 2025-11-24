@@ -176,7 +176,7 @@ The entire project is available [here](https://github.com/cocoindex-io/cocoindex
 🎉 Now you are all set!
 
 #### Run the following command to setup and update the index.
-    ```bash
+    ```sh
     cocoindex update --setup main
     ```
     
@@ -189,6 +189,6 @@ The entire project is available [here](https://github.com/cocoindex-io/cocoindex
 
     CocoInsight is a comprehensive web interface to understand your data pipeline and interact with the index. CocoInsight has zero data retention with your pipeline data.
 
-    ```bash
+    ```sh
     cocoindex server -ci main
     ```

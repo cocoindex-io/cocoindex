@@ -265,7 +265,7 @@ You can check the frontend code [here](https://github.com/cocoindex-io/cocoindex
 
 ## Time to have fun!
 - Create a collection in Qdrant
-    ```bash
+    ```sh
     curl -X PUT 'http://localhost:6333/collections/image_search' \
     -H 'Content-Type: application/json' \
     -d '{
@@ -279,18 +279,18 @@ You can check the frontend code [here](https://github.com/cocoindex-io/cocoindex
     ```
 
 - Setup indexing flow
-    ```bash
+    ```sh
     cocoindex setup main
     ```
     It is setup with a live updater, so you can add new files to the folder and it will be indexed within a minute.
 
 - Run backend
-    ```bash
+    ```sh
     uvicorn main:app --reload --host 0.0.0.0 --port 8000
     ```
 
 - Run frontend
-    ```bash
+    ```sh
     cd frontend
     npm install
     npm run dev

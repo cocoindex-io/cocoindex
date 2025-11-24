@@ -14,13 +14,13 @@ This example shows how to use [BAML](https://boundaryml.com/) to extract structu
 
 2. Install dependencies
 
-   ```bash
+   ```sh
    pip install -U cocoindex baml-py
    ```
 
 3. **Generate BAML client code** (required step!)
 
-   ```bash
+   ```sh
    baml generate
    ```
 
@@ -28,7 +28,7 @@ This example shows how to use [BAML](https://boundaryml.com/) to extract structu
 
 4. Create a `.env` file. You can copy it from `.env.example` first:
 
-   ```bash
+   ```sh
    cp .env.example .env
    ```
 
@@ -38,7 +38,7 @@ This example shows how to use [BAML](https://boundaryml.com/) to extract structu
 
 Update index:
 
-```bash
+```sh
 cocoindex update main
 ```
 
@@ -46,7 +46,7 @@ cocoindex update main
 
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. It just connects to your local CocoIndex server, with zero pipeline data retention. Run following command to start CocoInsight:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

@@ -359,7 +359,7 @@ Note that different relationships may share the same source and target nodes.
 
 2. Run the following command to setup and update the index.
 
-    ```bash
+    ```sh
     cocoindex update main
     ```
 
@@ -392,7 +392,7 @@ MATCH p=()-->() RETURN p
 
 I used CocoInsight to troubleshoot the index generation and understand the data lineage of the pipeline. It is in free beta now, you can give it a try. Run following command to start CocoInsight:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

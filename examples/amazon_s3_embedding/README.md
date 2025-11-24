@@ -14,7 +14,7 @@ Before running the example, you need to:
 3.  Create a `.env` file with your Amazon S3 bucket name and (optionally) prefix.
     Start from copying the `.env.example`, and then edit it to fill in your bucket name and prefix.
 
-    ```bash
+    ```sh
     cp .env.example .env
     $EDITOR .env
     ```
@@ -33,13 +33,13 @@ Before running the example, you need to:
 
 Install dependencies:
 
-```bash
+```sh
 pip install -e .
 ```
 
 Run:
 
-```bash
+```sh
 python main.py
 ```
 
@@ -52,13 +52,13 @@ CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute vi
 
 Run CocoInsight to understand your RAG data pipeline:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 
 You can also add a `-L` flag to make the server keep updating the index to reflect source changes at the same time:
 
-```bash
+```sh
 cocoindex update -L main
 ```
 

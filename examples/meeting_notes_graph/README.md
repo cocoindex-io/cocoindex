@@ -44,7 +44,7 @@ The source is Google Drive folders shared with a service account. The flow watch
 
 Set the following environment variables:
 
-```bash
+```sh
 export OPENAI_API_KEY=sk-...
 export GOOGLE_SERVICE_ACCOUNT_CREDENTIAL=/absolute/path/to/service_account.json
 export GOOGLE_DRIVE_ROOT_FOLDER_IDS=folderId1,folderId2
@@ -61,13 +61,13 @@ Notes:
 
 Install dependencies:
 
-```bash
+```sh
 pip install -e .
 ```
 
 Update the index (run the flow once to build/update the graph):
 
-```bash
+```sh
 cocoindex update main
 ```
 
@@ -100,7 +100,7 @@ I used CocoInsight (Free beta now) to troubleshoot the index generation and unde
 
 Start CocoInsight:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

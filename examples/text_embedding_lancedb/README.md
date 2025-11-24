@@ -36,13 +36,13 @@ LanceDB will automatically create a local database directory when you run the ex
 
 Update index, which will also setup LanceDB tables at the first time:
 
-```bash
+```sh
 cocoindex update main
 ```
 
 You can also run the command with `-L`, which will watch for file changes and update the index automatically.
 
-```bash
+```sh
 cocoindex update -L main
 ```
 
@@ -51,7 +51,7 @@ cocoindex update -L main
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

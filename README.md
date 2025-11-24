@@ -116,7 +116,7 @@ If you're new to CocoIndex, we recommend checking out
 
 1. Install CocoIndex Python library
 
-```bash
+```sh
 pip install -U cocoindex
 ```
 

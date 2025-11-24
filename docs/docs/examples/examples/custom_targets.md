@@ -189,7 +189,7 @@ output_html.export(
 
 ## Run the example
 
-```bash
+```sh
 pip install -e .
 cocoindex update main
 ```
@@ -198,7 +198,7 @@ You can add, modify, or remove files in the `data/` directory — CocoIndex will
 
 For **real-time updates**, run in live mode:
 
-    ```bash
+    ```sh
     cocoindex update -L main
     ```
 

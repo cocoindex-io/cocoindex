@@ -35,7 +35,7 @@ Before running the example, you need to:
 3.  Create `.env` file with your credential file and folder IDs.
     Starting from copying the `.env.example`, and then edit it to fill in your credential file path and folder IDs.
 
-    ```bash
+    ```sh
     cp .env.exmaple .env
     $EDITOR .env
     ```
@@ -44,19 +44,19 @@ Before running the example, you need to:
 
 - Install dependencies:
 
-    ```bash
+    ```sh
     pip install -e .
     ```
 
 - Setup:
 
-    ```bash
+    ```sh
     cocoindex setup main
     ```
 
 - Run:
 
-    ```bash
+    ```sh
     python main.py
     ```
 
@@ -68,13 +68,13 @@ At the same time, it accepts queries from the terminal, and performs search on t
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 
 You can also add a `-L` flag to make the server keep updating the index to reflect source changes at the same time:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

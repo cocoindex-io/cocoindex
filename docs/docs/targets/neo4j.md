@@ -37,7 +37,7 @@ Neo4j also provides a declaration spec `Neo4jDeclaration`, to configure indexing
 
 If you don't have a Neo4j database, you can start a Neo4j database using our docker compose config:
 
-```bash
+```sh
 docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/neo4j.yaml) up -d
 ```
 

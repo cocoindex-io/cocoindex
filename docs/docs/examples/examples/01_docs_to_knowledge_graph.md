@@ -335,13 +335,13 @@ It creates relationships by:
 
 1. Install the dependencies:
 
-    ```bash
+    ```sh
     pip install -e .
     ```
 
 2. Run following commands to setup and update the index.
 
-    ```bash
+    ```sh
     cocoindex update main
     ```
 
@@ -355,7 +355,7 @@ It creates relationships by:
 
 I used CocoInsight to troubleshoot the index generation and understand the data lineage of the pipeline.  It is in free beta now, you can give it a try.
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

@@ -226,14 +226,14 @@ modules_index.export(
 ## Query and test your index
 Run the following command to setup and update the index.
 
-```bash
+```sh
 cocoindex update -L main
 ```
 You'll see the index updates state in the terminal
 
 After the index is built, you have a table with the name `modules_info`. You can query it at any time, e.g., start a Postgres shell:
 
-```bash
+```sh
 psql postgres://cocoindex:cocoindex@localhost/cocoindex
 ```
 
@@ -246,7 +246,7 @@ SELECT filename, module_info->'title' AS title, module_summary FROM modules_info
 ## CocoInsight
 [CocoInsight](https://www.youtube.com/watch?v=ZnmyoHslBSc) is a really cool tool to help you understand your data pipeline and data index. It is in Early Access now (Free).
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 CocoInsight dashboard is here `https://cocoindex.io/cocoinsight`.  It connects to your local CocoIndex server with zero data retention.
