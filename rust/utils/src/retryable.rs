@@ -33,6 +33,7 @@ impl IsRetryable for Error {
     }
 }
 
+#[cfg(feature = "reqwest")]
 impl IsRetryable for reqwest::Error {
     fn is_retryable(&self) -> bool {
         self.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS)
@@ -40,6 +41,7 @@ impl IsRetryable for reqwest::Error {
 }
 
 // OpenAI errors - retryable if the underlying reqwest error is retryable
+#[cfg(feature = "openai")]
 impl IsRetryable for async_openai::error::OpenAIError {
     fn is_retryable(&self) -> bool {
         match self {
@@ -50,6 +52,7 @@ impl IsRetryable for async_openai::error::OpenAIError {
 }
 
 // Neo4j errors - retryable on connection errors and transient errors
+#[cfg(feature = "neo4rs")]
 impl IsRetryable for neo4rs::Error {
     fn is_retryable(&self) -> bool {
         match self {

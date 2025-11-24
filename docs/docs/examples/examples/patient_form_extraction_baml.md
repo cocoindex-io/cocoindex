@@ -142,6 +142,7 @@ function ExtractPatientInfo(intake_form: pdf) -> Patient {
     Extract all patient information from the following intake form document.
     Please be thorough and extract all available information accurately.
 
+    {{ _.role("user") }}
     {{ intake_form }}
 
     Fill in with "N/A" for required fields if the information is not available.
@@ -152,6 +153,18 @@ function ExtractPatientInfo(intake_form: pdf) -> Patient {
 ```
 
 We specify `client Gemini` and a prompt template. The special variable `{{ intake_form }}` injects the PDF, and `{{ ctx.output_format }}` tells BAML to expect the structured format defined by the return type. The prompt explicitly asks Gemini to extract all fields, filling “N/A” if missing.
+
+:::tip Why `role("user")` Matters in BAML Extraction
+
+In our BAML example above, there's a subtle but **crucial line**: `{{ _.role("user") }}` is added at the start of the prompt.
+  
+> This ensures the PDF content is explicitly included as part of the user message*, rather than the system prompt.
+
+For **OpenAI models**, if the PDF is not in the user role, the model doesn't see the file content — so extractions will fail or return empty fields. This can easily trip you up.
+
+:::
+
+
 
 ## Configure the LLM client to use Google’s Gemini model
 
