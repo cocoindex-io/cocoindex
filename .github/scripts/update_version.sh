@@ -20,3 +20,4 @@ fi
 
 # Update Cargo.toml
 sed "${SED_INLINE[@]}" "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+echo "__version__ = \"$VERSION\"" > python/cocoindex/_version.py
