@@ -29,9 +29,9 @@ Product taxonomy is a way to organize product catalogs in a logical and hierarch
 
 ## Prerequisites
 
-* [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
+- [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
 - [Install Neo4j](https://cocoindex.io/docs/targets/neo4j), a graph database.
-- - [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai). Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
+- [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai). Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
 
 Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
@@ -134,44 +134,43 @@ It performs the following transformations:
 
 ### Product Taxonomy Definition
 
-Since we are using LLM to extract product taxonomy, we need to provide a detailed instruction at the class-level docstring.
+Since we are using LLM to extract product taxonomy, we need to provide a detailed instruction at the field-level description.
 
 ```python
-@dataclasses.dataclass
-class ProductTaxonomy:
-    """
-    Taxonomy for the product.
+class ProductTaxonomy(BaseModel):
+   """
+   Taxonomy for the product.
+   """
 
-    A taxonomy is a concise noun (or short noun phrase), based on its core functionality, without specific details such as branding, style, etc.
-
-    Always use the most common words in US English.
-
-    Use lowercase without punctuation, unless it's a proper noun or acronym.
-
-    A product may have multiple taxonomies. Avoid large categories like "office supplies" or "electronics". Use specific ones, like "pen" or "printer".
-    """
-    name: str
+   name: str = Field(
+      description="A taxonomy is a concise noun (or short noun phrase), based on its core functionality, "
+                  "without specific details such as branding, style, etc. Always use the most common words in US "
+                  "English. Use lowercase without punctuation, unless it's a proper noun or acronym. A product may "
+                  "have multiple taxonomies. Avoid large categories like 'office supplies' or 'electronics'. Use "
+                  "specific ones, like 'pen' or 'printer'."
+   )
 ```
 
 ### Define Product Taxonomy Info
 
-Basically we want to extract all possible taxonomies for a product, and think about what other products are likely to be bought together with the current product.
+Basically, we want to extract all possible taxonomies for a product and think about what other products are likely to be bought together with the current product.
 
 ```python
-@dataclasses.dataclass
-class ProductTaxonomyInfo:
-    """
-    Taxonomy information for the product.
+class ProductTaxonomyInfo(BaseModel):
+   """
+   Taxonomy information for the product.
+   """
 
-    Fields:
-    - taxonomies: Taxonomies for the current product.
-    - complementary_taxonomies: Think about when customers buy this product, what else they might need as complementary products. Put labels for these complentary products.
-    """
-    taxonomies: list[ProductTaxonomy]
-    complementary_taxonomies: list[ProductTaxonomy]
+   taxonomies: list[ProductTaxonomy] = Field(
+      description="Taxonomies for the current product."
+   )
+   complementary_taxonomies: list[ProductTaxonomy] = Field(
+      "Think about when customers buy this product, what else they might need as complementary products. Put labels "
+      "for these complementary products."
+   )
 ```
 
-For each product, we want some insight about its taxonomy and complementary taxonomy and we could use that as bridge to find related product using knowledge graph.
+For each product, we want some insight about its taxonomy and complementary taxonomy, and we could use that as a bridge to find a related product using the knowledge graph.
 
 ### LLM Extraction
 
