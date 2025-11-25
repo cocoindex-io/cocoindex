@@ -264,7 +264,9 @@ impl VertexAiClient {
             api_bail!("VertexAi API address is not supported for VertexAi API type");
         }
         if api_key.is_some() {
-            api_bail!("VertexAi API key is not supported for VertexAi API type. Vertex AI uses Application Default Credentials (ADC) for authentication. Please set up ADC using 'gcloud auth application-default login' instead.");
+            api_bail!(
+                "VertexAi API key is not supported for VertexAi API type. Vertex AI uses Application Default Credentials (ADC) for authentication. Please set up ADC using 'gcloud auth application-default login' instead."
+            );
         }
         let Some(super::LlmApiConfig::VertexAi(config)) = api_config else {
             api_bail!("VertexAi API config is required for VertexAi API type");
