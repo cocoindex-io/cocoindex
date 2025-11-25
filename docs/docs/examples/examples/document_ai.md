@@ -6,14 +6,14 @@ slug: /examples/document_ai
 canonicalUrl: '/examples/document_ai'
 sidebar_custom_props:
   image: /img/examples/document_ai/cover.png
-  tags: [vector-index, custom-building-block]
+  tags: [vector-index, custom-building-blocks]
 image: /img/examples/document_ai/cover.png
-tags: [vector-index, custom-building-block]
+tags: [vector-index, custom-building-blocks]
 ---
 import { GitHubButton, DocumentationButton, ExampleButton } from '../../../src/components/GitHubButton';
 
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/document_ai" margin="0 0 24px 0" />
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex-etl-with-document-ai" margin="0 0 24px 0" />
 
 ![Document AI](/img/examples/document_ai/cover.png)
 

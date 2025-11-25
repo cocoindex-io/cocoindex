@@ -1,6 +1,6 @@
 ---
 title: Extract Nested Structured Data from Patient Form
-description: Extract nested structured data from patient form
+description: Extract nested structured data from patient form and performs data mapping and field level transformation.
 sidebar_class_name: hidden
 slug: /examples/patient_form_extraction
 canonicalUrl: '/examples/patient_form_extraction'
@@ -209,7 +209,7 @@ with data_scope["documents"].row() as doc:
 
 ![Extracted](/img/examples/patient_form_extraction/extraction.png)
 
-After the extraction, we collect all the fields for simplicity. You can also select any fields and also perform data mapping and field level transformation on the fields before the collection. If you have any questions, feel free to ask us in [Discord](https://discord.com/invite/zpA9S2DR7s).
+After the extraction, we collect all the fields for simplicity. You can also select any fields and also perform data mapping and field level transformation on the fields before the collection. 
 
 ## Export the extracted data to a table
 
@@ -225,7 +225,7 @@ patients_index.export(
 
 ### Install dependencies
 
-    ```bash
+    ```sh
     pip install -e .
     ```
 
@@ -240,7 +240,7 @@ patients_index.export(
 
 After the index is built, you have a table with the name `patients_info`. You can query it at any time, e.g., start a Postgres shell:
 
-```bash
+```sh
 psql postgres://cocoindex:cocoindex@localhost/cocoindex
 ```
 
@@ -258,7 +258,7 @@ For mission-critical use cases, it is important to evaluate the quality of the e
 
 1. Dump the extracted data to YAML files.
 
-    ```bash
+    ```sh
     python3 main.py cocoindex evaluate
     ```
 
@@ -269,7 +269,7 @@ For mission-critical use cases, it is important to evaluate the quality of the e
 
     You can run the following command to see the diff:
 
-    ```bash
+    ```sh
     diff -r data/eval_PatientIntakeExtraction_golden data/eval_PatientIntakeExtraction_output
     ```
 
@@ -290,7 +290,7 @@ We could troubleshoot in two steps:
 
 I also use CocoInsight to help me troubleshoot.
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

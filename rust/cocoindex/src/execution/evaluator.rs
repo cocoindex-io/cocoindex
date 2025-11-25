@@ -1,7 +1,10 @@
+use crate::execution::indexing_status::SourceLogicFingerprint;
 use crate::prelude::*;
 
 use anyhow::{Context, Ok};
 use futures::future::try_join_all;
+use log::warn;
+use tokio::time::Duration;
 
 use crate::base::value::EstimatedByteSize;
 use crate::base::{schema, value};
@@ -10,6 +13,9 @@ use crate::py::AnyhowIntoPyResult;
 use utils::immutable::RefList;
 
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, evaluate_with_cell};
+
+const TIMEOUT_THRESHOLD: Duration = Duration::from_secs(1800);
+const WARNING_THRESHOLD: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub struct ScopeValueBuilder {
@@ -356,6 +362,43 @@ async fn evaluate_child_op_scope(
     })
 }
 
+async fn evaluate_with_timeout_and_warning<F, T>(
+    eval_future: F,
+    timeout_duration: Duration,
+    warn_duration: Duration,
+    op_kind: String,
+    op_name: String,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    let mut eval_future = Box::pin(eval_future);
+    let mut warned = false;
+    let timeout_future = tokio::time::sleep(timeout_duration);
+    tokio::pin!(timeout_future);
+
+    loop {
+        tokio::select! {
+            res = &mut eval_future => {
+                return res;
+            }
+            _ = &mut timeout_future => {
+                return Err(anyhow!(
+                    "Function '{}' ({}) timed out after {} seconds",
+                    op_kind, op_name, timeout_duration.as_secs()
+                ));
+            }
+            _ = tokio::time::sleep(warn_duration), if !warned => {
+                warn!(
+                    "Function '{}' ({}) is taking longer than {}s",
+                    op_kind, op_name, WARNING_THRESHOLD.as_secs()
+                );
+                warned = true;
+            }
+        }
+    }
+}
+
 async fn evaluate_op_scope(
     op_scope: &AnalyzedOpScope,
     scoped_entries: RefList<'_, &ScopeEntry<'_>>,
@@ -378,6 +421,12 @@ async fn evaluate_op_scope(
                     input_values.push(value?);
                 }
 
+                let timeout_duration = op.function_exec_info.timeout.unwrap_or(TIMEOUT_THRESHOLD);
+                let warn_duration = WARNING_THRESHOLD;
+
+                let op_name_for_warning = op.name.clone();
+                let op_kind_for_warning = op.op_kind.clone();
+
                 let result = if op.function_exec_info.enable_cache {
                     let output_value_cell = memory.get_cache_entry(
                         || {
@@ -391,18 +440,33 @@ async fn evaluate_op_scope(
                         &op.function_exec_info.output_type,
                         /*ttl=*/ None,
                     )?;
-                    evaluate_with_cell(output_value_cell.as_ref(), move || {
+
+                    let eval_future = evaluate_with_cell(output_value_cell.as_ref(), move || {
                         op.executor.evaluate(input_values)
-                    })
-                    .await
-                    .and_then(|v| head_scope.define_field(&op.output, &v))
+                    });
+                    let v = evaluate_with_timeout_and_warning(
+                        eval_future,
+                        timeout_duration,
+                        warn_duration,
+                        op_kind_for_warning,
+                        op_name_for_warning,
+                    )
+                    .await?;
+
+                    head_scope.define_field(&op.output, &v)
                 } else {
-                    op.executor
-                        .evaluate(input_values)
-                        .await
-                        .and_then(|v| head_scope.define_field(&op.output, &v))
-                }
-                .with_context(|| format!("Evaluating Transform op `{}`", op.name,));
+                    let eval_future = op.executor.evaluate(input_values);
+                    let v = evaluate_with_timeout_and_warning(
+                        eval_future,
+                        timeout_duration,
+                        warn_duration,
+                        op_kind_for_warning,
+                        op_name_for_warning,
+                    )
+                    .await?;
+
+                    head_scope.define_field(&op.output, &v)
+                };
 
                 // Track transform operation completion
                 if let Some(ref op_stats) = operation_in_process_stats {
@@ -411,7 +475,7 @@ async fn evaluate_op_scope(
                     op_stats.finish_processing(&transform_key, 1);
                 }
 
-                result?
+                result.with_context(|| format!("Evaluating Transform op `{}`", op.name))?
             }
 
             AnalyzedReactiveOp::ForEach(op) => {
@@ -571,6 +635,7 @@ pub struct SourceRowEvaluationContext<'a> {
     pub schema: &'a schema::FlowSchema,
     pub key: &'a value::KeyValue,
     pub import_op_idx: usize,
+    pub source_logic_fp: &'a SourceLogicFingerprint,
 }
 
 #[derive(Debug)]

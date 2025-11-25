@@ -1,3 +1,4 @@
+use crate::execution::indexing_status::SourceLogicFingerprint;
 use crate::prelude::*;
 
 use futures::{StreamExt, future::try_join_all};
@@ -71,6 +72,7 @@ impl<'a> Dumper<'a> {
         import_op: &'a AnalyzedImportOp,
         key: &value::KeyValue,
         key_aux_info: &serde_json::Value,
+        source_logic_fp: &SourceLogicFingerprint,
         collected_values_buffer: &'b mut Vec<Vec<value::FieldValues>>,
     ) -> Result<Option<IndexMap<&'b str, TargetExportData<'b>>>>
     where
@@ -83,6 +85,7 @@ impl<'a> Dumper<'a> {
                 schema: self.schema,
                 key,
                 import_op_idx,
+                source_logic_fp,
             },
             key_aux_info,
             self.setup_execution_ctx,
@@ -139,6 +142,12 @@ impl<'a> Dumper<'a> {
         key_aux_info: serde_json::Value,
         file_path: PathBuf,
     ) -> Result<()> {
+        let source_logic_fp = SourceLogicFingerprint::new(
+            self.plan,
+            import_op_idx,
+            &self.setup_execution_ctx.export_ops,
+            self.plan.legacy_fingerprint.clone(),
+        )?;
         let _permit = import_op
             .concurrency_controller
             .acquire(concur_control::BYTES_UNKNOWN_YET)
@@ -150,6 +159,7 @@ impl<'a> Dumper<'a> {
                 import_op,
                 &key,
                 &key_aux_info,
+                &source_logic_fp,
                 &mut collected_values_buffer,
             )
             .await

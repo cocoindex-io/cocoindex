@@ -21,7 +21,7 @@ The script then starts a `FlowLiveUpdater`, which runs in the background and con
 
 2. **Install the dependencies:**
 
-    ```bash
+    ```sh
     pip install -e .
     ```
 
@@ -33,7 +33,7 @@ The script then starts a `FlowLiveUpdater`, which runs in the background and con
 
     This method uses CocoIndex [Library API](https://cocoindex.io/docs/core/flow_methods#library-api-2) to perform live updates.
 
-    ```bash
+    ```sh
     python main.py
     ```
 
@@ -41,7 +41,7 @@ The script then starts a `FlowLiveUpdater`, which runs in the background and con
 
     This method is useful for managing your indexes from the command line, through CocoIndex [CLI](https://cocoindex.io/docs/core/flow_methods#cli-2).
 
-    ```bash
+    ```sh
     cocoindex update main -L --setup
     ```
 
@@ -53,6 +53,6 @@ The script then starts a `FlowLiveUpdater`, which runs in the background and con
 
 To remove the database table created by this example, you can run:
 
-```bash
-cocoindex drop main.py
+```sh
+cocoindex drop main
 ```

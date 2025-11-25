@@ -24,6 +24,7 @@ const config: Config = {
 
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
+  onBrokenAnchors: 'throw',
 
   // Even if you don't use internationalization, you can use this field to set
   // useful metadata like html lang. For example, if your site is Chinese, you
@@ -130,6 +131,12 @@ const config: Config = {
           label: 'Examples',
           type: 'doc',
           docId: 'examples/index',
+          position: 'left',
+        },
+        {
+          label: 'Tutorials',
+          type: 'doc',
+          docId: 'tutorials/live_updates',
           position: 'left',
         },
         { to: 'https://cocoindex.io/blogs/', label: 'Blog', position: 'left', target: '_self' },

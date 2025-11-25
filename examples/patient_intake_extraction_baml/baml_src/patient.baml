@@ -74,6 +74,7 @@ function ExtractPatientInfo(intake_form: pdf) -> Patient {
     Extract all patient information from the following intake form document.
     Please be thorough and extract all available information accurately.
 
+    {{ _.role("user") }}
     {{ intake_form }}
 
     Fill in with "N/A" for required fields if the information is not available.

@@ -1,4 +1,4 @@
-use crate::{ops::sdk::BatchedFunctionExecutor, prelude::*, py::future::from_py_future};
+use crate::{ops::sdk::BatchedFunctionExecutor, prelude::*};
 
 use pyo3::{
     Bound, IntoPyObjectExt, Py, PyAny, Python, pyclass, pymethods,
@@ -13,6 +13,7 @@ use crate::{
     py::{self, ToResultWithPyTrace},
 };
 use anyhow::{Result, anyhow};
+use py_utils::from_py_future;
 
 #[pyclass(name = "OpArgSchema")]
 pub struct PyOpArgSchema {
@@ -42,7 +43,7 @@ struct PyFunctionExecutor {
     result_type: schema::EnrichedValueType,
 
     enable_cache: bool,
-    behavior_version: Option<u32>,
+    timeout: Option<std::time::Duration>,
 }
 
 impl PyFunctionExecutor {
@@ -80,7 +81,8 @@ impl PyFunctionExecutor {
                     .transpose()?
                     .as_ref(),
             )
-            .to_result_with_py_trace(py)?;
+            .to_result_with_py_trace(py)
+            .with_context(|| format!("while calling user-configured function"))?;
         Ok(result.into_bound(py))
     }
 }
@@ -109,8 +111,8 @@ impl interface::SimpleFunctionExecutor for Arc<PyFunctionExecutor> {
         self.enable_cache
     }
 
-    fn behavior_version(&self) -> Option<u32> {
-        self.behavior_version
+    fn timeout(&self) -> Option<std::time::Duration> {
+        self.timeout
     }
 }
 
@@ -120,7 +122,7 @@ struct PyBatchedFunctionExecutor {
     result_type: schema::EnrichedValueType,
 
     enable_cache: bool,
-    behavior_version: Option<u32>,
+    timeout: Option<std::time::Duration>,
     batching_options: batching::BatchingOptions,
 }
 
@@ -166,8 +168,8 @@ impl BatchedFunctionExecutor for PyBatchedFunctionExecutor {
     fn enable_cache(&self) -> bool {
         self.enable_cache
     }
-    fn behavior_version(&self) -> Option<u32> {
-        self.behavior_version
+    fn timeout(&self) -> Option<std::time::Duration> {
+        self.timeout
     }
     fn batching_options(&self) -> batching::BatchingOptions {
         self.batching_options.clone()
@@ -185,11 +187,8 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
         spec: serde_json::Value,
         input_schema: Vec<schema::OpArgSchema>,
         context: Arc<interface::FlowInstanceContext>,
-    ) -> Result<(
-        schema::EnrichedValueType,
-        BoxFuture<'static, Result<Box<dyn interface::SimpleFunctionExecutor>>>,
-    )> {
-        let (result_type, executor, kw_args_names, num_positional_args) =
+    ) -> Result<interface::SimpleFunctionBuildOutput> {
+        let (result_type, executor, kw_args_names, num_positional_args, behavior_version) =
             Python::with_gil(|py| -> anyhow::Result<_> {
                 let mut args = vec![pythonize(py, &spec)?];
                 let mut kwargs = vec![];
@@ -221,14 +220,20 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                         PyTuple::new(py, args.into_iter())?,
                         Some(&kwargs.into_py_dict(py)?),
                     )
-                    .to_result_with_py_trace(py)?;
+                    .to_result_with_py_trace(py)
+                    .with_context(|| format!("while building user-configured function"))?;
                 let (result_type, executor) = result
                     .extract::<(crate::py::Pythonized<schema::EnrichedValueType>, Py<PyAny>)>(py)?;
+                let behavior_version = executor
+                    .call_method(py, "behavior_version", (), None)
+                    .to_result_with_py_trace(py)?
+                    .extract::<Option<u32>>(py)?;
                 Ok((
                     result_type.into_inner(),
                     executor,
                     kw_args_names,
                     num_positional_args,
+                    behavior_version,
                 ))
             })?;
 
@@ -240,11 +245,12 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                     .as_ref()
                     .ok_or_else(|| anyhow!("Python execution context is missing"))?
                     .clone();
-                let (prepare_fut, enable_cache, behavior_version, batching_options) =
+                let (prepare_fut, enable_cache, timeout, batching_options) =
                     Python::with_gil(|py| -> anyhow::Result<_> {
                         let prepare_coro = executor
                             .call_method(py, "prepare", (), None)
-                            .to_result_with_py_trace(py)?;
+                            .to_result_with_py_trace(py)
+                            .with_context(|| format!("while preparing user-configured function"))?;
                         let prepare_fut = from_py_future(
                             py,
                             &pyo3_async_runtimes::TaskLocals::new(
@@ -256,10 +262,17 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                             .call_method(py, "enable_cache", (), None)
                             .to_result_with_py_trace(py)?
                             .extract::<bool>(py)?;
-                        let behavior_version = executor
-                            .call_method(py, "behavior_version", (), None)
-                            .to_result_with_py_trace(py)?
-                            .extract::<Option<u32>>(py)?;
+                        let timeout = executor
+                            .call_method(py, "timeout", (), None)
+                            .to_result_with_py_trace(py)?;
+                        let timeout = if timeout.is_none(py) {
+                            None
+                        } else {
+                            let td = timeout.into_bound(py);
+                            let total_seconds =
+                                td.call_method0("total_seconds")?.extract::<f64>()?;
+                            Some(std::time::Duration::from_secs_f64(total_seconds))
+                        };
                         let batching_options = executor
                             .call_method(py, "batching_options", (), None)
                             .to_result_with_py_trace(py)?
@@ -267,12 +280,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                                 py,
                             )?
                             .into_inner();
-                        Ok((
-                            prepare_fut,
-                            enable_cache,
-                            behavior_version,
-                            batching_options,
-                        ))
+                        Ok((prepare_fut, enable_cache, timeout, batching_options))
                     })?;
                 prepare_fut.await?;
                 let executor: Box<dyn interface::SimpleFunctionExecutor> =
@@ -283,7 +291,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                                 py_exec_ctx,
                                 result_type,
                                 enable_cache,
-                                behavior_version,
+                                timeout,
                                 batching_options,
                             }
                             .into_fn_executor(),
@@ -296,14 +304,18 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                             kw_args_names,
                             result_type,
                             enable_cache,
-                            behavior_version,
+                            timeout,
                         }))
                     };
                 Ok(executor)
             }
         };
 
-        Ok((result_type, executor_fut.boxed()))
+        Ok(interface::SimpleFunctionBuildOutput {
+            output_type: result_type,
+            behavior_version,
+            executor: executor_fut.boxed(),
+        })
     }
 }
 
@@ -337,6 +349,7 @@ impl interface::SourceExecutor for PySourceExecutor {
             py_source_executor
                 .call_method(py, "list_async", (pythonize(py, options)?,), None)
                 .to_result_with_py_trace(py)
+                .with_context(|| format!("while listing user-configured source"))
         })?;
 
         // Create a stream that pulls from the Python async iterator one item at a time
@@ -376,7 +389,13 @@ impl interface::SourceExecutor for PySourceExecutor {
                     ),
                     None,
                 )
-                .to_result_with_py_trace(py)?;
+                .to_result_with_py_trace(py)
+                .with_context(|| {
+                    format!(
+                        "while fetching user-configured source for key: {:?}",
+                        &key_clone
+                    )
+                })?;
             let task_locals =
                 pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
             Ok(from_py_future(
@@ -416,7 +435,8 @@ impl PySourceExecutor {
         let next_item_coro = Python::with_gil(|py| -> Result<_> {
             let coro = py_async_iter
                 .call_method0(py, "__anext__")
-                .to_result_with_py_trace(py)?;
+                .to_result_with_py_trace(py)
+                .with_context(|| format!("while iterating over user-configured source"))?;
             let task_locals =
                 pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
             Ok(from_py_future(py, &task_locals, coro.into_bound(py))?)
@@ -549,7 +569,7 @@ impl PySourceExecutor {
 impl interface::SourceFactory for PySourceConnectorFactory {
     async fn build(
         self: Arc<Self>,
-        _source_name: &str,
+        source_name: &str,
         spec: serde_json::Value,
         context: Arc<interface::FlowInstanceContext>,
     ) -> Result<(
@@ -567,7 +587,13 @@ impl interface::SourceFactory for PySourceConnectorFactory {
             let value_type_result = self
                 .py_source_connector
                 .call_method(py, "get_table_type", (), None)
-                .to_result_with_py_trace(py)?;
+                .to_result_with_py_trace(py)
+                .with_context(|| {
+                    format!(
+                        "while fetching table type from user-configured source `{}`",
+                        source_name
+                    )
+                })?;
             let table_type: schema::EnrichedValueType =
                 depythonize(&value_type_result.into_bound(py))?;
             Ok(table_type)
@@ -596,14 +622,20 @@ impl interface::SourceFactory for PySourceConnectorFactory {
                 table_type.typ
             ),
         };
-
+        let source_name = source_name.to_string();
         let executor_fut = async move {
             // Create the executor using the async create_executor method
             let create_future = Python::with_gil(|py| -> Result<_> {
                 let create_coro = self
                     .py_source_connector
                     .call_method(py, "create_executor", (pythonize(py, &spec)?,), None)
-                    .to_result_with_py_trace(py)?;
+                    .to_result_with_py_trace(py)
+                    .with_context(|| {
+                        format!(
+                            "while constructing executor for user-configured source `{}`",
+                            source_name
+                        )
+                    })?;
                 let task_locals =
                     pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
                 let create_future = from_py_future(py, &task_locals, create_coro.into_bound(py))?;
@@ -614,13 +646,25 @@ impl interface::SourceFactory for PySourceConnectorFactory {
 
             let (py_source_executor_context, provides_ordinal) =
                 Python::with_gil(|py| -> Result<_> {
-                    let executor_context =
-                        py_executor_context_result.to_result_with_py_trace(py)?;
+                    let executor_context = py_executor_context_result
+                        .to_result_with_py_trace(py)
+                        .with_context(|| {
+                        format!(
+                            "while getting executor context for user-configured source `{}`",
+                            source_name
+                        )
+                    })?;
 
                     // Get provides_ordinal from the executor context
                     let provides_ordinal = executor_context
                         .call_method(py, "provides_ordinal", (), None)
-                        .to_result_with_py_trace(py)?
+                        .to_result_with_py_trace(py)
+                        .with_context(|| {
+                            format!(
+                                "while calling provides_ordinal for user-configured source `{}`",
+                                source_name
+                            )
+                        })?
                         .extract::<bool>(py)?;
 
                     Ok((executor_context, provides_ordinal))
@@ -720,20 +764,38 @@ impl interface::TargetFactory for PyExportTargetFactory {
                         ),
                         None,
                     )
-                    .to_result_with_py_trace(py)?;
+                    .to_result_with_py_trace(py)
+                    .with_context(|| {
+                        format!(
+                            "while setting up export context for user-configured target `{}`",
+                            &data_collection.name
+                        )
+                    })?;
 
                 // Call the `get_persistent_key` method to get the persistent key.
                 let persistent_key = self
                     .py_target_connector
                     .call_method(py, "get_persistent_key", (&py_export_ctx,), None)
-                    .to_result_with_py_trace(py)?;
+                    .to_result_with_py_trace(py)
+                    .with_context(|| {
+                        format!(
+                            "while getting persistent key for user-configured target `{}`",
+                            &data_collection.name
+                        )
+                    })?;
                 let persistent_key: serde_json::Value =
                     depythonize(&persistent_key.into_bound(py))?;
 
                 let setup_state = self
                     .py_target_connector
                     .call_method(py, "get_setup_state", (&py_export_ctx,), None)
-                    .to_result_with_py_trace(py)?;
+                    .to_result_with_py_trace(py)
+                    .with_context(|| {
+                        format!(
+                            "while getting setup state for user-configured target `{}`",
+                            &data_collection.name
+                        )
+                    })?;
                 let setup_state: serde_json::Value = depythonize(&setup_state.into_bound(py))?;
 
                 anyhow::Ok((py_export_ctx, persistent_key, setup_state))
@@ -747,7 +809,13 @@ impl interface::TargetFactory for PyExportTargetFactory {
                         let prepare_coro = factory
                             .py_target_connector
                             .call_method(py, "prepare_async", (&py_export_ctx,), None)
-                            .to_result_with_py_trace(py)?;
+                            .to_result_with_py_trace(py)
+                            .with_context(|| {
+                                format!(
+                                    "while preparing user-configured target `{}`",
+                                    &data_collection.name
+                                )
+                            })?;
                         let task_locals = pyo3_async_runtimes::TaskLocals::new(
                             py_exec_ctx.event_loop.bind(py).clone(),
                         );
@@ -816,7 +884,10 @@ impl interface::TargetFactory for PyExportTargetFactory {
                     ),
                     None,
                 )
-                .to_result_with_py_trace(py)?;
+                .to_result_with_py_trace(py)
+                .with_context(|| {
+                    format!("while calling check_state_compatibility in user-configured target")
+                })?;
             let compatibility: SetupStateCompatibility = depythonize(&result.into_bound(py))?;
             Ok(compatibility)
         })?;
@@ -828,7 +899,10 @@ impl interface::TargetFactory for PyExportTargetFactory {
             let result = self
                 .py_target_connector
                 .call_method(py, "describe_resource", (pythonize(py, key)?,), None)
-                .to_result_with_py_trace(py)?;
+                .to_result_with_py_trace(py)
+                .with_context(|| {
+                    format!("while calling describe_resource in user-configured target")
+                })?;
             let description = result.extract::<String>(py)?;
             Ok(description)
         })
@@ -885,7 +959,10 @@ impl interface::TargetFactory for PyExportTargetFactory {
                     (pythonize(py, &setup_changes)?,),
                     None,
                 )
-                .to_result_with_py_trace(py)?;
+                .to_result_with_py_trace(py)
+                .with_context(|| {
+                    format!("while calling apply_setup_changes_async in user-configured target")
+                })?;
             let task_locals =
                 pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
             Ok(from_py_future(
@@ -895,7 +972,11 @@ impl interface::TargetFactory for PyExportTargetFactory {
             )?)
         })?
         .await;
-        Python::with_gil(move |py| py_result.to_result_with_py_trace(py))?;
+        Python::with_gil(move |py| {
+            py_result
+                .to_result_with_py_trace(py)
+                .with_context(|| format!("while applying setup changes in user-configured target"))
+        })?;
 
         Ok(())
     }
@@ -946,7 +1027,8 @@ impl interface::TargetFactory for PyExportTargetFactory {
             let result_coro = self
                 .py_target_connector
                 .call_method(py, "mutate_async", (py_args,), None)
-                .to_result_with_py_trace(py)?;
+                .to_result_with_py_trace(py)
+                .with_context(|| format!("while calling mutate_async in user-configured target"))?;
             let task_locals =
                 pyo3_async_runtimes::TaskLocals::new(py_exec_ctx.event_loop.bind(py).clone());
             Ok(from_py_future(
@@ -957,7 +1039,11 @@ impl interface::TargetFactory for PyExportTargetFactory {
         })?
         .await;
 
-        Python::with_gil(move |py| py_result.to_result_with_py_trace(py))?;
+        Python::with_gil(move |py| {
+            py_result
+                .to_result_with_py_trace(py)
+                .with_context(|| format!("while applying mutations in user-configured target"))
+        })?;
         Ok(())
     }
 }

@@ -2,6 +2,10 @@
 Cocoindex is a framework for building and running indexing pipelines.
 """
 
+from ._version import __version__
+
+from . import _version_check
+
 from . import _engine  # type: ignore
 from . import functions, sources, targets, cli, utils
 
@@ -46,6 +50,7 @@ from .typing import (
 _engine.init_pyo3_runtime()
 
 __all__ = [
+    "__version__",
     # Submodules
     "_engine",
     "functions",

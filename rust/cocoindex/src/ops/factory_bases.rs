@@ -266,6 +266,12 @@ impl<T: SourceFactoryBase> SourceFactory for T {
 // Function
 ////////////////////////////////////////////////////////
 
+pub struct SimpleFunctionAnalysisOutput<T: Send + Sync> {
+    pub resolved_args: T,
+    pub output_schema: EnrichedValueType,
+    pub behavior_version: Option<u32>,
+}
+
 #[async_trait]
 pub trait SimpleFunctionFactoryBase: SimpleFunctionFactory + Send + Sync + 'static {
     type Spec: DeserializeOwned + Send + Sync;
@@ -273,17 +279,17 @@ pub trait SimpleFunctionFactoryBase: SimpleFunctionFactory + Send + Sync + 'stat
 
     fn name(&self) -> &str;
 
-    async fn resolve_schema<'a>(
+    async fn analyze<'a>(
         &'a self,
         spec: &'a Self::Spec,
         args_resolver: &mut OpArgsResolver<'a>,
         context: &FlowInstanceContext,
-    ) -> Result<(Self::ResolvedArgs, EnrichedValueType)>;
+    ) -> Result<SimpleFunctionAnalysisOutput<Self::ResolvedArgs>>;
 
     async fn build_executor(
         self: Arc<Self>,
         spec: Self::Spec,
-        resolved_input_schema: Self::ResolvedArgs,
+        resolved_args: Self::ResolvedArgs,
         context: Arc<FlowInstanceContext>,
     ) -> Result<impl SimpleFunctionExecutor>;
 
@@ -317,10 +323,6 @@ impl<E: SimpleFunctionExecutor> SimpleFunctionExecutor for FunctionExecutorWrapp
     fn enable_cache(&self) -> bool {
         self.executor.enable_cache()
     }
-
-    fn behavior_version(&self) -> Option<u32> {
-        self.executor.behavior_version()
-    }
 }
 
 #[async_trait]
@@ -330,10 +332,7 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
         spec: serde_json::Value,
         input_schema: Vec<OpArgSchema>,
         context: Arc<FlowInstanceContext>,
-    ) -> Result<(
-        EnrichedValueType,
-        BoxFuture<'static, Result<Box<dyn SimpleFunctionExecutor>>>,
-    )> {
+    ) -> Result<SimpleFunctionBuildOutput> {
         let spec: T::Spec = utils::deser::from_json_value(spec)
             .with_context(|| format!("Failed in parsing spec for function `{}`", self.name()))?;
         let mut nonnull_args_idx = vec![];
@@ -343,9 +342,11 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
             &mut nonnull_args_idx,
             &mut may_nullify_output,
         )?;
-        let (resolved_input_schema, mut output_schema) = self
-            .resolve_schema(&spec, &mut args_resolver, &context)
-            .await?;
+        let SimpleFunctionAnalysisOutput {
+            resolved_args,
+            mut output_schema,
+            behavior_version,
+        } = self.analyze(&spec, &mut args_resolver, &context).await?;
         args_resolver.done()?;
 
         // If any required argument is nullable, the output schema should be nullable.
@@ -355,13 +356,15 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
 
         let executor = async move {
             Ok(Box::new(FunctionExecutorWrapper {
-                executor: self
-                    .build_executor(spec, resolved_input_schema, context)
-                    .await?,
+                executor: self.build_executor(spec, resolved_args, context).await?,
                 nonnull_args_idx,
             }) as Box<dyn SimpleFunctionExecutor>)
         };
-        Ok((output_schema, Box::pin(executor)))
+        Ok(SimpleFunctionBuildOutput {
+            output_type: output_schema,
+            behavior_version,
+            executor: Box::pin(executor),
+        })
     }
 }
 
@@ -373,7 +376,7 @@ pub trait BatchedFunctionExecutor: Send + Sync + Sized + 'static {
         false
     }
 
-    fn behavior_version(&self) -> Option<u32> {
+    fn timeout(&self) -> Option<std::time::Duration> {
         None
     }
 
@@ -402,17 +405,17 @@ impl<E: BatchedFunctionExecutor> batching::Runner for BatchedFunctionExecutorRun
 struct BatchedFunctionExecutorWrapper<E: BatchedFunctionExecutor> {
     batcher: batching::Batcher<BatchedFunctionExecutorRunner<E>>,
     enable_cache: bool,
-    behavior_version: Option<u32>,
+    timeout: Option<std::time::Duration>,
 }
 
 impl<E: BatchedFunctionExecutor> BatchedFunctionExecutorWrapper<E> {
     fn new(executor: E) -> Self {
         let batching_options = executor.batching_options();
         let enable_cache = executor.enable_cache();
-        let behavior_version = executor.behavior_version();
+        let timeout = executor.timeout();
         Self {
             enable_cache,
-            behavior_version,
+            timeout,
             batcher: batching::Batcher::new(
                 BatchedFunctionExecutorRunner(executor),
                 batching_options,
@@ -430,8 +433,8 @@ impl<E: BatchedFunctionExecutor> SimpleFunctionExecutor for BatchedFunctionExecu
     fn enable_cache(&self) -> bool {
         self.enable_cache
     }
-    fn behavior_version(&self) -> Option<u32> {
-        self.behavior_version
+    fn timeout(&self) -> Option<std::time::Duration> {
+        self.timeout
     }
 }
 

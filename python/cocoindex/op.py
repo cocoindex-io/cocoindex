@@ -49,6 +49,7 @@ from .typing import (
 )
 from .runtime import to_async_call
 from .index import IndexOptions
+import datetime
 
 
 class OpCategory(Enum):
@@ -154,6 +155,7 @@ class OpArgs:
     - max_batch_size: The maximum batch size for the executor. Only valid if `batching` is True.
     - behavior_version: The behavior version of the executor. Cache will be invalidated if it
       changes. Must be provided if `cache` is True.
+    - timeout: Timeout in seconds for this function execution. None means use default (300s).
     - arg_relationship: It specifies the relationship between an input argument and the output,
       e.g. `(ArgRelationship.CHUNKS_BASE_TEXT, "content")` means the output is chunks for the
       input argument with name `content`.
@@ -164,6 +166,7 @@ class OpArgs:
     batching: bool = False
     max_batch_size: int | None = None
     behavior_version: int | None = None
+    timeout: datetime.timedelta | None = None
     arg_relationship: tuple[ArgRelationship, str] | None = None
 
 
@@ -202,6 +205,7 @@ def _register_op_factory(
 
     class _WrappedExecutor:
         _executor: Any
+        _spec: Any
         _args_info: list[_ArgInfo]
         _kwargs_info: dict[str, _ArgInfo]
         _result_encoder: Callable[[Any], Any]
@@ -390,6 +394,9 @@ def _register_op_factory(
 
         def behavior_version(self) -> int | None:
             return op_args.behavior_version
+
+        def timeout(self) -> datetime.timedelta | None:
+            return op_args.timeout
 
         def batching_options(self) -> dict[str, Any] | None:
             if op_args.batching:

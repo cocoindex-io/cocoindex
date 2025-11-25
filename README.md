@@ -116,7 +116,7 @@ If you're new to CocoIndex, we recommend checking out
 
 1. Install CocoIndex Python library
 
-```bash
+```sh
 pip install -U cocoindex
 ```
 
@@ -189,6 +189,7 @@ It defines an index flow like this:
 | [Amazon S3 Embedding](examples/amazon_s3_embedding) | Index text documents from Amazon S3 |
 | [Azure Blob Storage Embedding](examples/azure_blob_embedding) | Index text documents from Azure Blob Storage |
 | [Google Drive Text Embedding](examples/gdrive_text_embedding) | Index text documents from Google Drive |
+| [Meeting Notes to Knowledge Graph](examples/meeting_notes_graph) | Extract structured meeting info from Google Drive and build a knowledge graph |
 | [Docs to Knowledge Graph](examples/docs_to_knowledge_graph) | Extract relationships from Markdown documents and build a knowledge graph |
 | [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |
 | [Embeddings to LanceDB](examples/text_embedding_lancedb) | Index documents in a LanceDB collection for semantic search |

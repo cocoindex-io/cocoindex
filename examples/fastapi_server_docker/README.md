@@ -16,25 +16,25 @@ COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
 
 - Install dependencies:
 
-    ```bash
+    ```sh
     pip install -e .
     ```
 
 - Update index:
 
-    ```bash
+    ```sh
     cocoindex update main
     ```
 
 - Run:
 
-    ```bash
+    ```sh
     uvicorn main:fastapi_app --reload --host 0.0.0.0 --port 8000
     ```
 
 ## Query the endpoint
 
-    ```bash
+    ```sh
     curl "http://localhost:8000/search?q=model&limit=3"
     ```
 
@@ -48,12 +48,12 @@ COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@coco_db:5436/cocoindex
 
 Build the docker container via:
 
-```bash
+```sh
 docker compose up --build
 ```
 
 Test the endpoint:
 
-```bash
+```sh
 curl "http://0.0.0.0:8080/search?q=model&limit=3"
 ```

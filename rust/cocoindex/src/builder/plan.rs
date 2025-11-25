@@ -3,6 +3,7 @@ use crate::base::spec::FieldName;
 use crate::prelude::*;
 
 use crate::ops::interface::*;
+use std::time::Duration;
 use utils::fingerprint::{Fingerprint, Fingerprinter};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -52,6 +53,24 @@ pub struct AnalyzedOpOutput {
     pub field_idx: u32,
 }
 
+/// Tracks which affects value of the field, to detect changes of logic.
+#[derive(Debug, Clone)]
+pub struct FieldDefFingerprint {
+    /// Name of sources that affect value of the field.
+    pub source_op_names: HashSet<String>,
+    /// Fingerprint of the logic that affects value of the field.
+    pub fingerprint: Fingerprint,
+}
+
+impl Default for FieldDefFingerprint {
+    fn default() -> Self {
+        Self {
+            source_op_names: HashSet::new(),
+            fingerprint: Fingerprinter::default().into_fingerprint(),
+        }
+    }
+}
+
 pub struct AnalyzedImportOp {
     pub name: String,
     pub executor: Box<dyn SourceExecutor>,
@@ -64,6 +83,7 @@ pub struct AnalyzedImportOp {
 
 pub struct AnalyzedFunctionExecInfo {
     pub enable_cache: bool,
+    pub timeout: Option<Duration>,
     pub behavior_version: Option<u32>,
 
     /// Fingerprinter of the function's behavior.
@@ -74,6 +94,7 @@ pub struct AnalyzedFunctionExecInfo {
 
 pub struct AnalyzedTransformOp {
     pub name: String,
+    pub op_kind: String,
     pub inputs: Vec<AnalyzedValueMapping>,
     pub function_exec_info: AnalyzedFunctionExecInfo,
     pub executor: Box<dyn SimpleFunctionExecutor>,
@@ -118,6 +139,7 @@ pub struct AnalyzedExportOp {
     pub value_stable: bool,
     /// Fingerprinter of the output value.
     pub output_value_fingerprinter: Fingerprinter,
+    pub def_fp: FieldDefFingerprint,
 }
 
 pub struct AnalyzedExportTargetOpGroup {
@@ -138,20 +160,8 @@ pub struct AnalyzedOpScope {
     pub scope_qualifier: String,
 }
 
-pub struct ExecutionPlanLogicFingerprint {
-    pub current: Fingerprint,
-    pub legacy: Fingerprint,
-}
-
-impl ExecutionPlanLogicFingerprint {
-    pub fn matches(&self, other: impl AsRef<[u8]>) -> bool {
-        self.current.as_slice() == other.as_ref() || self.legacy.as_slice() == other.as_ref()
-    }
-}
-
 pub struct ExecutionPlan {
-    pub logic_fingerprint: ExecutionPlanLogicFingerprint,
-
+    pub legacy_fingerprint: Vec<Fingerprint>,
     pub import_ops: Vec<AnalyzedImportOp>,
     pub op_scope: AnalyzedOpScope,
     pub export_ops: Vec<AnalyzedExportOp>,

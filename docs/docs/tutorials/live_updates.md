@@ -42,7 +42,7 @@ You can enable live updates using either the CocoIndex CLI or the Python library
 
 To start a live update process from the command line, use the `update` command with the `-L` or `--live` flag:
 
-```bash
+```sh
 cocoindex update -L your_flow_definition_file.py
 ```
 

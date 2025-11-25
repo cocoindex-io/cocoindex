@@ -91,7 +91,7 @@ AWS's [Guide of Configuring a Bucket for Notifications](https://docs.aws.amazon.
 For MinIO setups that don't use AWS SQS, you can configure MinIO to publish event notifications to Redis:
 
 *   Configure MinIO to publish events to Redis by setting environment variables:
-    ```bash
+    ```sh
     export MINIO_NOTIFY_REDIS_ENABLE="on"
     export MINIO_NOTIFY_REDIS_ADDRESS="redis-endpoint.example.net:6379"
     export MINIO_NOTIFY_REDIS_KEY="bucketevents"
@@ -100,7 +100,7 @@ For MinIO setups that don't use AWS SQS, you can configure MinIO to publish even
     Replace the values with your Redis server details.
 
 *   Alternatively, use the `mc` command-line tool:
-    ```bash
+    ```sh
     mc alias set myminio http://minio.example.com:9000 ACCESSKEY SECRETKEY
     mc admin config set myminio/ notify_redis \
       address="redis-endpoint.example.net:6379" \

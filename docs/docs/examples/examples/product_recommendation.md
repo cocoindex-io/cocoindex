@@ -392,7 +392,7 @@ MATCH p=()-->() RETURN p
 
 I used CocoInsight to troubleshoot the index generation and understand the data lineage of the pipeline. It is in free beta now, you can give it a try. Run following command to start CocoInsight:
 
-```
+```sh
 cocoindex server -ci main
 ```
 

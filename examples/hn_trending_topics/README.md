@@ -36,13 +36,13 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 Install dependencies:
 
-```bash
+```sh
 pip install -e .
 ```
 
 Update the target:
 
-```bash
+```sh
 cocoindex update main
 ```
 
@@ -50,7 +50,7 @@ Each time when you run the `update` command, cocoindex will only re-process thre
 
 You can also run `update` command in live mode, which will keep the target in sync with the source continuously:
 
-```bash
+```sh
 cocoindex update -L main.py
 ```
 
@@ -58,7 +58,7 @@ cocoindex update -L main.py
 
 After running the pipeline, you can query the extracted topics:
 
-```bash
+```sh
 # Get trending topics
 cocoindex query main.py get_trending_topics --limit 20
 

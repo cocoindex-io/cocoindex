@@ -14,7 +14,15 @@ default = ["legacy-states-v0"]
 legacy-states-v0 = []
 
 [dependencies]
-cocoindex-utils = { path = "../utils" }
+cocoindex_utils = { path = "../utils", features = [
+    "bytes_decode",
+    "reqwest",
+    "openai",
+    "neo4rs",
+    "sqlx",
+    "yaml",
+] }
+cocoindex_py_utils = { path = "../py_utils" }
 
 pyo3 = { workspace = true }
 pythonize = { workspace = true }

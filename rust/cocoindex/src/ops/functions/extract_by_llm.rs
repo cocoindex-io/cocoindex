@@ -80,10 +80,6 @@ impl Executor {
 
 #[async_trait]
 impl SimpleFunctionExecutor for Executor {
-    fn behavior_version(&self) -> Option<u32> {
-        Some(1)
-    }
-
     fn enable_cache(&self) -> bool {
         true
     }
@@ -138,12 +134,12 @@ impl SimpleFunctionFactoryBase for Factory {
         "ExtractByLlm"
     }
 
-    async fn resolve_schema<'a>(
+    async fn analyze<'a>(
         &'a self,
         spec: &'a Spec,
         args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
-    ) -> Result<(Args, EnrichedValueType)> {
+    ) -> Result<SimpleFunctionAnalysisOutput<Args>> {
         let args = Args {
             text: args_resolver
                 .next_arg("text")?
@@ -165,7 +161,11 @@ impl SimpleFunctionFactoryBase for Factory {
         {
             output_type.nullable = true;
         }
-        Ok((args, output_type))
+        Ok(SimpleFunctionAnalysisOutput {
+            resolved_args: args,
+            output_schema: output_type,
+            behavior_version: Some(1),
+        })
     }
 
     async fn build_executor(

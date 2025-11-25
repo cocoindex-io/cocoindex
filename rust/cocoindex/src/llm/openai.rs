@@ -169,6 +169,7 @@ impl LlmGenerationClient for Client {
             supports_format: false,
             extract_descriptions: false,
             top_level_must_be_object: true,
+            supports_additional_properties: true,
         }
     }
 }

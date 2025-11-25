@@ -53,24 +53,6 @@ impl AiStudioClient {
     }
 }
 
-// Recursively remove all `additionalProperties` fields from a JSON value
-fn remove_additional_properties(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            map.remove("additionalProperties");
-            for v in map.values_mut() {
-                remove_additional_properties(v);
-            }
-        }
-        Value::Array(arr) => {
-            for v in arr {
-                remove_additional_properties(v);
-            }
-        }
-        _ => {}
-    }
-}
-
 impl AiStudioClient {
     fn get_api_url(&self, model: &str, api_name: &str) -> String {
         format!(
@@ -153,8 +135,7 @@ impl LlmGenerationClient for AiStudioClient {
 
         // If structured output is requested, add schema and responseMimeType
         if let Some(OutputFormat::JsonSchema { schema, .. }) = &request.output_format {
-            let mut schema_json = serde_json::to_value(schema)?;
-            remove_additional_properties(&mut schema_json);
+            let schema_json = serde_json::to_value(schema)?;
             payload["generationConfig"] = serde_json::json!({
                 "responseMimeType": "application/json",
                 "responseSchema": schema_json
@@ -185,6 +166,7 @@ impl LlmGenerationClient for AiStudioClient {
             supports_format: false,
             extract_descriptions: false,
             top_level_must_be_object: true,
+            supports_additional_properties: false,
         }
     }
 }
@@ -387,6 +369,7 @@ impl LlmGenerationClient for VertexAiClient {
             supports_format: false,
             extract_descriptions: false,
             top_level_must_be_object: true,
+            supports_additional_properties: false,
         }
     }
 }

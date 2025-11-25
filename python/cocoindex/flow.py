@@ -486,6 +486,7 @@ class _SourceRefreshOptions:
 class _ExecutionOptions:
     max_inflight_rows: int | None = None
     max_inflight_bytes: int | None = None
+    timeout: datetime.timedelta | None = None
 
 
 class FlowBuilder:

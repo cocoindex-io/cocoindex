@@ -1,5 +1,5 @@
 [package]
-name = "cocoindex-utils"
+name = "cocoindex_utils"
 version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
@@ -17,16 +17,25 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
 blake2 = { workspace = true }
-reqwest = { workspace = true }
-async-openai = { workspace = true }
-neo4rs = { workspace = true }
-sqlx = { workspace = true }
-encoding_rs = { workspace = true }
-regex = { workspace = true }
 itertools = { workspace = true }
 indexmap = { workspace = true }
 hex = { workspace = true }
 serde_path_to_error = { workspace = true }
 rand = { workspace = true }
-yaml-rust2 = { workspace = true }
 indenter = { workspace = true }
+
+encoding_rs = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+async-openai = { workspace = true, optional = true }
+neo4rs = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+yaml-rust2 = { workspace = true, optional = true }
+
+[features]
+default = []
+reqwest = ["dep:reqwest"]
+openai = ["dep:async-openai", "reqwest"]
+neo4rs = ["dep:neo4rs"]
+sqlx = ["dep:sqlx"]
+yaml = ["dep:yaml-rust2"]
+bytes_decode = ["dep:encoding_rs"]

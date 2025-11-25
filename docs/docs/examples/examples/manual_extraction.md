@@ -225,14 +225,15 @@ modules_index.export(
 
 ## Query and test your index
 Run the following command to setup and update the index.
+
 ```sh
-cocoindex update -L main.py
+cocoindex update -L main
 ```
 You'll see the index updates state in the terminal
 
 After the index is built, you have a table with the name `modules_info`. You can query it at any time, e.g., start a Postgres shell:
 
-```bash
+```sh
 psql postgres://cocoindex:cocoindex@localhost/cocoindex
 ```
 

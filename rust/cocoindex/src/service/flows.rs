@@ -1,7 +1,8 @@
+use crate::execution::indexing_status::SourceLogicFingerprint;
 use crate::prelude::*;
 
 use crate::execution::{evaluator, indexing_status, memoization, row_indexer, stats};
-use crate::lib_context::LibContext;
+use crate::lib_context::{FlowExecutionContext, LibContext};
 use crate::service::query_handler::{QueryHandlerSpec, QueryInput, QueryOutput};
 use crate::{base::schema::FlowSchema, ops::interface::SourceExecutorReadOptions};
 use axum::{
@@ -150,10 +151,15 @@ struct SourceRowKeyContextHolder<'a> {
     schema: &'a FlowSchema,
     key: value::KeyValue,
     key_aux_info: serde_json::Value,
+    source_logic_fp: SourceLogicFingerprint,
 }
 
 impl<'a> SourceRowKeyContextHolder<'a> {
-    async fn create(flow_ctx: &'a FlowContext, source_row_key: SourceRowKeyParams) -> Result<Self> {
+    async fn create(
+        flow_ctx: &'a FlowContext,
+        execution_ctx: &FlowExecutionContext,
+        source_row_key: SourceRowKeyParams,
+    ) -> Result<Self> {
         let schema = &flow_ctx.flow.data_schema;
         let import_op_idx = flow_ctx
             .flow
@@ -181,12 +187,19 @@ impl<'a> SourceRowKeyContextHolder<'a> {
             .map(|s| utils::deser::from_json_str(&s))
             .transpose()?
             .unwrap_or_default();
+        let source_logic_fp = SourceLogicFingerprint::new(
+            &plan,
+            import_op_idx,
+            &execution_ctx.setup_execution_context.export_ops,
+            plan.legacy_fingerprint.clone(),
+        )?;
         Ok(Self {
             plan,
             import_op_idx,
             schema,
             key,
             key_aux_info,
+            source_logic_fp,
         })
     }
 
@@ -197,6 +210,7 @@ impl<'a> SourceRowKeyContextHolder<'a> {
             schema: self.schema,
             key: &self.key,
             import_op_idx: self.import_op_idx,
+            source_logic_fp: &self.source_logic_fp,
         }
     }
 }
@@ -207,8 +221,9 @@ pub async fn evaluate_data(
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<EvaluateDataResponse>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
-    let source_row_key_ctx = SourceRowKeyContextHolder::create(&flow_ctx, query).await?;
     let execution_ctx = flow_ctx.use_execution_ctx().await?;
+    let source_row_key_ctx =
+        SourceRowKeyContextHolder::create(&flow_ctx, &execution_ctx, query).await?;
     let evaluate_output = row_indexer::evaluate_source_entry_with_memory(
         &source_row_key_ctx.as_context(),
         &source_row_key_ctx.key_aux_info,
@@ -258,9 +273,9 @@ pub async fn get_row_indexing_status(
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<indexing_status::SourceRowIndexingStatus>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
-    let source_row_key_ctx = SourceRowKeyContextHolder::create(&flow_ctx, query).await?;
-
     let execution_ctx = flow_ctx.use_execution_ctx().await?;
+    let source_row_key_ctx =
+        SourceRowKeyContextHolder::create(&flow_ctx, &execution_ctx, query).await?;
     let indexing_status = indexing_status::get_source_row_indexing_status(
         &source_row_key_ctx.as_context(),
         &source_row_key_ctx.key_aux_info,

@@ -74,12 +74,12 @@ impl SimpleFunctionFactoryBase for Factory {
         "ParseJson"
     }
 
-    async fn resolve_schema<'a>(
+    async fn analyze<'a>(
         &'a self,
         _spec: &'a EmptySpec,
         args_resolver: &mut OpArgsResolver<'a>,
         _context: &FlowInstanceContext,
-    ) -> Result<(Args, EnrichedValueType)> {
+    ) -> Result<SimpleFunctionAnalysisOutput<Args>> {
         let args = Args {
             text: args_resolver
                 .next_arg("text")?
@@ -92,7 +92,11 @@ impl SimpleFunctionFactoryBase for Factory {
         };
 
         let output_schema = make_output_type(BasicValueType::Json);
-        Ok((args, output_schema))
+        Ok(SimpleFunctionAnalysisOutput {
+            resolved_args: args,
+            output_schema,
+            behavior_version: None,
+        })
     }
 
     async fn build_executor(
