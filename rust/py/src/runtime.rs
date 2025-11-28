@@ -2,7 +2,7 @@ use crate::prelude::*;
 
 use cocoindex_core::engine::runtime::get_runtime;
 use cocoindex_py_utils::from_py_future;
-use pyo3::{exceptions::PyException, types::PyTuple};
+use pyo3::{call::PyCallArgs, exceptions::PyException};
 use pyo3_async_runtimes::TaskLocals;
 use tokio_util::task::AbortOnDropHandle;
 
@@ -40,22 +40,22 @@ pub enum PyCallback {
 impl PyCallback {
     pub async fn call<A>(&self, args: A) -> Result<PyResult<Py<PyAny>>>
     where
-        A: for<'py> IntoPyObject<'py, Target = PyTuple> + Send + 'static,
+        A: for<'py> PyCallArgs<'py> + Send + 'static,
     {
         let ret = match self {
             PyCallback::Sync(sync_fn) => {
                 let sync_fn = sync_fn.clone();
-                let result_fut =
-                    AbortOnDropHandle::new(get_runtime().spawn_blocking(move || {
-                        Python::with_gil(|py| sync_fn.call(py, args, None))
-                    }));
+                let result_fut = AbortOnDropHandle::new(
+                    get_runtime()
+                        .spawn_blocking(move || Python::attach(|py| sync_fn.call(py, args, None))),
+                );
                 result_fut.await?
             }
             PyCallback::Async {
                 async_fn,
                 async_context,
             } => {
-                let result_fut = Python::with_gil(|py| {
+                let result_fut = Python::attach(|py| {
                     let result_coro = async_fn.call(py, args, None)?;
                     from_py_future(py, &async_context.0, result_coro.into_bound(py))
                 })?;

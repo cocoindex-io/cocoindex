@@ -28,8 +28,6 @@ impl PyApp {
 
     pub fn update<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         let app = self.0.clone();
-        py.allow_threads(|| {
-            get_runtime().block_on(async move { app.update().await.into_py_result()? })
-        })
+        py.detach(|| get_runtime().block_on(async move { app.update().await.into_py_result()? }))
     }
 }

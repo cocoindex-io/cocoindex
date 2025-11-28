@@ -109,7 +109,7 @@ impl EffectReconciler for PyEffectReconciler {
         prev_possible_states: &[Self::State],
         prev_may_be_missing: bool,
     ) -> Result<EffectReconcileOutput<Self>> {
-        let output = Python::with_gil(|py| -> PyResult<_> {
+        let output = Python::attach(|py| -> PyResult<_> {
             let prev_possible_states =
                 PyList::new(py, prev_possible_states.iter().map(|s| s.bind(py)))?;
             let desired_effect = match &desired_effect {

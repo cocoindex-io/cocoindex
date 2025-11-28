@@ -13,7 +13,7 @@ impl PartialEq for PyKey {
         if self.value.is(other.value.as_ref()) {
             return true;
         }
-        Python::with_gil(|py| self.value.bind(py).eq(other.value.bind(py)))
+        Python::attach(|py| self.value.bind(py).eq(other.value.bind(py)))
             .expect("failed to compare keys")
     }
 }

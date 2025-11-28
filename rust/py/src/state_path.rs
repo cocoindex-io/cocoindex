@@ -6,8 +6,10 @@ use pyo3::types::{PyBool, PyBytes, PyInt, PyList, PyString, PyTuple};
 use cocoindex_core::state::state_path::{StateKey, StatePath};
 pub struct PyStateKey(StateKey);
 
-impl<'py> FromPyObject<'py> for PyStateKey {
-    fn extract_bound(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
+impl FromPyObject<'_, '_> for PyStateKey {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
         let part = if obj.is_none() {
             StateKey::Null
         } else if obj.is_instance_of::<PyBool>() {
@@ -23,7 +25,7 @@ impl<'py> FromPyObject<'py> for PyStateKey {
             let mut parts = Vec::with_capacity(len);
             for i in 0..len {
                 let item = obj.get_item(i)?;
-                parts.push(PyStateKey::extract_bound(&item)?.0);
+                parts.push(PyStateKey::extract(item.as_borrowed())?.0);
             }
             StateKey::Array(Arc::from(parts))
         } else if let Ok(uuid_value) = obj.extract::<uuid::Uuid>() {
