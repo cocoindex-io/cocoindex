@@ -9,14 +9,15 @@ rust-version = "1.89"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-pyo3 = { version = "0.25.1", features = [
+pyo3 = { version = "0.27.1", features = [
     "abi3-py311",
     "auto-initialize",
     "chrono",
     "uuid",
 ] }
-pythonize = "0.25.0"
-pyo3-async-runtimes = { version = "0.25.0", features = ["tokio-runtime"] }
+pythonize = "0.27.0"
+pyo3-async-runtimes = { version = "0.27.0", features = ["tokio-runtime"] }
+numpy = "0.27.0"
 
 anyhow = { version = "1.0.100", features = ["std"] }
 async-trait = "0.1.89"
@@ -89,7 +90,6 @@ aws-config = "1.8.11"
 aws-sdk-s3 = "1.115.0"
 aws-sdk-sqs = "1.90.0"
 time = { version = "0.3", features = ["macros", "serde"] }
-numpy = "0.25.0"
 infer = "0.19.0"
 serde_with = { version = "3.16.0", features = ["base64"] }
 google-cloud-aiplatform-v1 = { version = "0.4.5", default-features = false, features = [

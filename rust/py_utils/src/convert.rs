@@ -1,4 +1,4 @@
-use pyo3::prelude::*;
+use pyo3::{BoundObject, prelude::*};
 use pythonize::{depythonize, pythonize};
 use serde::{Serialize, de::DeserializeOwned};
 use std::ops::Deref;
@@ -8,9 +8,12 @@ use crate::error::IntoPyResult;
 #[derive(Debug)]
 pub struct Pythonized<T>(pub T);
 
-impl<'py, T: DeserializeOwned> FromPyObject<'py> for Pythonized<T> {
-    fn extract_bound(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
-        Ok(Pythonized(depythonize(obj).into_py_result()?))
+impl<'py, T: DeserializeOwned> FromPyObject<'_, '_> for Pythonized<T> {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
+        let bound = obj.into_bound();
+        Ok(Pythonized(depythonize(&bound).into_py_result()?))
     }
 }
 
