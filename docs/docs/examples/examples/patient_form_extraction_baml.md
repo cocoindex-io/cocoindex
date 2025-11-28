@@ -287,7 +287,7 @@ Exports the index to Postgres as the `patients` table, with automatic updates an
 
 **Generate BAML client code** (required step, in case you didn’t do it earlier. )
 
-```bash
+```sh
 baml generate
 ```
 
@@ -295,15 +295,15 @@ This generates the `baml_client/` directory with Python code to call your BAML
 
 Update the index:
 
-```bash
+```sh
 cocoindex update main
 ```
 
 **CocoInsight**
 
-I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. It just connects to your local CocoIndex server, with zero pipeline data retention. 
+I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. It just connects to your local CocoIndex server, with zero pipeline data retention.
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

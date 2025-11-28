@@ -61,13 +61,13 @@ Notes:
 
 Install dependencies:
 
-```bash
+```sh
 pip install -e .
 ```
 
 Update the index (run the flow once to build/update the graph):
 
-```bash
+```sh
 cocoindex update main
 ```
 
@@ -100,7 +100,7 @@ I used CocoInsight (Free beta now) to troubleshoot the index generation and unde
 
 Start CocoInsight:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

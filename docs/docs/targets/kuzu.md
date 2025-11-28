@@ -36,7 +36,7 @@ Kuzu also provides a declaration spec `KuzuDeclaration`, to configure indexing o
 
 If you don't have a Kuzu instance yet, you can bring up a Kuzu API server locally by running:
 
-```bash
+```sh
 KUZU_DB_DIR=$HOME/.kuzudb
 KUZU_PORT=8123
 docker run -d --name kuzu -p ${KUZU_PORT}:8000 -v ${KUZU_DB_DIR}:/database kuzudb/api-server:latest
@@ -47,7 +47,7 @@ Currently Kuzu API server and the explorer cannot be up at the same time. So you
 
 To start the instance of the explorer, run:
 
-```bash
+```sh
 KUZU_EXPLORER_PORT=8124
 docker run -d --name kuzu-explorer -p ${KUZU_EXPLORER_PORT}:8000  -v ${KUZU_DB_DIR}:/database -e MODE=READ_ONLY  kuzudb/explorer:latest
 ```

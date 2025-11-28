@@ -13,6 +13,7 @@ struct Spec {
     api_config: Option<LlmApiConfig>,
     output_dimension: Option<u32>,
     task_type: Option<String>,
+    api_key: Option<AuthEntryReference<String>>,
 }
 
 struct Args {
@@ -108,15 +109,26 @@ impl SimpleFunctionFactoryBase for Factory {
         &'a self,
         spec: &'a Spec,
         args_resolver: &mut OpArgsResolver<'a>,
-        _context: &FlowInstanceContext,
+        context: &FlowInstanceContext,
     ) -> Result<SimpleFunctionAnalysisOutput<Self::ResolvedArgs>> {
         let text = args_resolver
             .next_arg("text")?
             .expect_type(&ValueType::Basic(BasicValueType::Str))?
             .required()?;
-        let client =
-            new_llm_embedding_client(spec.api_type, spec.address.clone(), spec.api_config.clone())
-                .await?;
+
+        let api_key = spec
+            .api_key
+            .as_ref()
+            .map(|key_ref| context.auth_registry.get(key_ref))
+            .transpose()?;
+
+        let client = new_llm_embedding_client(
+            spec.api_type,
+            spec.address.clone(),
+            api_key,
+            spec.api_config.clone(),
+        )
+        .await?;
         let output_dimension = match spec.output_dimension {
             Some(output_dimension) => output_dimension,
             None => {
@@ -168,6 +180,7 @@ mod tests {
             api_config: None,
             output_dimension: None,
             task_type: None,
+            api_key: None,
         };
 
         let factory = Arc::new(Factory);

@@ -19,13 +19,13 @@ CocoIndex supports multiple [sources](https://cocoindex.io/docs/sources) and [LL
 
 2. Install CocoIndex
 
-   ```bash
+   ```sh
    pip install -U cocoindex
    ```
 
 3. Install MarkItDown
 
-   ```bash
+   ```sh
    pip install 'markitdown[all]'
    ```
 
@@ -35,19 +35,19 @@ CocoIndex supports multiple [sources](https://cocoindex.io/docs/sources) and [LL
 
 Update index:
 
-```bash
+```sh
 cocoindex update main
 ```
 
 Run query:
 
-```bash
+```sh
 python main.py
 ```
 
 Run with CocoInsight:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

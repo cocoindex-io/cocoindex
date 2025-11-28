@@ -19,7 +19,7 @@ jobs:
                   # Disabled since GitHub doesn't support Ubuntu on arm64 on non-public repos.
                   # - { runner: ubuntu-24.04-arm, python_exec: ".venv/bin/python" }
                   - { runner: macos-latest, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
-                  - { runner: macos-13, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
+                  - { runner: macos-15-intel, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
                   - { runner: windows-latest, python_exec: ".venv\\Scripts\\python" }
         runs-on: ${{ matrix.platform.runner }}
         env:

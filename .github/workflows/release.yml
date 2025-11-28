@@ -46,7 +46,7 @@ jobs:
           - { os: linux, runner: ubuntu-latest, target: x86_64, container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64" }
           - { os: linux, runner: ubuntu-24.04-arm, target: aarch64, container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64" }
           - { os: macos, runner: macos-latest, target: aarch64 }
-          - { os: macos, runner: macos-13, target: x86_64 }
+          - { os: macos, runner: macos-15-intel, target: x86_64 }
           - { os: windows, runner: windows-latest, target: x64 }
     steps:
       - uses: actions/checkout@v4

@@ -122,7 +122,7 @@ cocoindex.functions.EmbedText(
 
 *   [Download](https://ollama.com/download) and install Ollama.
 *   Pull your favorite LLM models by the `ollama pull` command, e.g.
-    ```bash
+    ```sh
     ollama pull llama3.2
     ```
 You can find the [list of models](https://ollama.com/library) supported by Ollama.
@@ -146,7 +146,7 @@ cocoindex.LlmSpec(
 
 For text embedding with Ollama, you'll need to pull an embedding model first:
 
-```bash
+```sh
 ollama pull nomic-embed-text
 ```
 
@@ -233,6 +233,12 @@ To use the Vertex AI API:
     ```sh
     gcloud auth application-default login
     ```
+
+:::note API Key Not Supported
+
+Vertex AI does **not** support the `api_key` parameter. Vertex AI uses Application Default Credentials (ADC) for authentication instead of API keys. If you provide an `api_key` parameter when using `LlmApiType.VERTEX_AI`, an error will be raised.
+
+:::
 
 Spec for Vertex AI takes additional `api_config` field, in type `cocoindex.llm.VertexAiConfig` with the following fields:
 -   `project` (type: `str`, required): The project ID of the Google Cloud project.
@@ -330,7 +336,7 @@ To use the LiteLLM API, you need to set the environment variable `LITELLM_API_KE
 
 #### 1. Install LiteLLM Proxy
 
-```bash
+```sh
 pip install 'litellm[proxy]'
 ```
 
@@ -367,7 +373,7 @@ You need to set the environment variable `GROQ_API_KEY` to your Groq API key.
 
 #### 3. Run LiteLLM Proxy
 
-```bash
+```sh
 litellm --config config.yml
 ```
 
@@ -415,13 +421,13 @@ You can find the full list of models supported by OpenRouter [here](https://open
 
 Install vLLM:
 
-```bash
+```sh
 pip install vllm
 ```
 
 Run vLLM Server
 
-```bash
+```sh
 vllm serve deepseek-ai/deepseek-coder-1.3b-instruct
 ```
 

@@ -22,13 +22,13 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 Install dependencies:
 
-```bash
+```sh
 pip install -e .
 ```
 
 Update the target:
 
-```bash
+```sh
 cocoindex update main
 ```
 
@@ -36,8 +36,8 @@ Each time when you run the `update` command, cocoindex will only re-process thre
 
 You can also run `update` command in live mode, which will keep the target in sync with the source continuously:
 
-```bash
-cocoindex update -L main.py
+```sh
+cocoindex update -L main
 ```
 
 ## CocoInsight
@@ -45,8 +45,8 @@ cocoindex update -L main.py
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
 It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
-```
-cocoindex server -ci -L main
+```sh
+cocoindex server -ci main
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).

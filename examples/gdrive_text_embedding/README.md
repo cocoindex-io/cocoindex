@@ -35,7 +35,7 @@ Before running the example, you need to:
 3.  Create `.env` file with your credential file and folder IDs.
     Starting from copying the `.env.example`, and then edit it to fill in your credential file path and folder IDs.
 
-    ```bash
+    ```sh
     cp .env.exmaple .env
     $EDITOR .env
     ```
@@ -75,7 +75,7 @@ cocoindex server -ci main
 You can also add a `-L` flag to make the server keep updating the index to reflect source changes at the same time:
 
 ```sh
-cocoindex server -ci -L main
+cocoindex server -ci main
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
