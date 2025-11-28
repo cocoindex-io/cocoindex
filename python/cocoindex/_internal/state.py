@@ -1,32 +1,33 @@
 import uuid
-from typing import Self, Any
 
 from . import core  # type: ignore
 
-StatePathPart = None | bool | int | str | bytes | uuid.UUID | list["StatePathPart"]
+StateKey = None | bool | int | str | bytes | uuid.UUID | list["StateKey"]
 
 _ROOT_PATH = core.StatePath()
 
 
 class StatePath:
-    _path: core.StatePath
+    __slots__ = ("_core",)
+
+    _core: core.StatePath
 
     def __init__(self) -> None:
-        self._path = _ROOT_PATH
+        self._core = _ROOT_PATH
 
-    def concat(self, part: StatePathPart) -> "StatePath":
+    def concat(self, part: StateKey) -> "StatePath":
         result = StatePath()
-        result._path = self._path.concat(part)
+        result._core = self._core.concat(part)
         return result
 
-    def __div__(self, part: StatePathPart) -> "StatePath":
+    def __div__(self, part: StateKey) -> "StatePath":
         return self.concat(part)
 
-    def __truediv__(self, part: StatePathPart) -> "StatePath":
+    def __truediv__(self, part: StateKey) -> "StatePath":
         return self.concat(part)
 
     def __str__(self) -> str:
-        return self._path.to_string()  # type: ignore
+        return self._core.to_string()  # type: ignore
 
     def __repr__(self) -> str:
         return str(self)

@@ -2,7 +2,7 @@ use crate::prelude::*;
 use std::fmt::Write as FmtWrite;
 
 #[derive(Clone)]
-pub enum StatePathPart {
+pub enum StateKey {
     Null,
     Bool(bool),
     Int(i64),
@@ -11,21 +11,21 @@ pub enum StatePathPart {
     Str(Arc<String>),
     Bytes(Arc<Vec<u8>>),
     Uuid(Arc<uuid::Uuid>),
-    Array(Arc<Vec<StatePathPart>>),
+    Array(Arc<Vec<StateKey>>),
 }
 
-impl std::fmt::Display for StatePathPart {
+impl std::fmt::Display for StateKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StatePathPart::Null => write!(f, "null"),
-            StatePathPart::Bool(b) => write!(f, "{}", b),
-            StatePathPart::Int(i) => write!(f, "{}", i),
-            StatePathPart::Str(s) => {
+            StateKey::Null => write!(f, "null"),
+            StateKey::Bool(b) => write!(f, "{}", b),
+            StateKey::Int(i) => write!(f, "{}", i),
+            StateKey::Str(s) => {
                 f.write_char('"')?;
                 f.write_str(s.escape_default().to_string().as_str())?;
                 f.write_char('"')
             }
-            StatePathPart::Bytes(b) => {
+            StateKey::Bytes(b) => {
                 f.write_str("b\"")?;
                 for &byte in b.as_slice() {
                     for esc in std::ascii::escape_default(byte) {
@@ -34,8 +34,8 @@ impl std::fmt::Display for StatePathPart {
                 }
                 f.write_char('"')
             }
-            StatePathPart::Uuid(u) => write!(f, "{}", u.to_string()),
-            StatePathPart::Array(a) => {
+            StateKey::Uuid(u) => write!(f, "{}", u.to_string()),
+            StateKey::Array(a) => {
                 f.write_char('[')?;
                 for (i, part) in a.iter().enumerate() {
                     if i > 0 {
@@ -50,7 +50,7 @@ impl std::fmt::Display for StatePathPart {
 }
 
 #[derive(Clone)]
-pub struct StatePath(pub Arc<[StatePathPart]>);
+pub struct StatePath(pub Arc<[StateKey]>);
 
 static ROOT_PATH: LazyLock<StatePath> = LazyLock::new(|| StatePath(Arc::new([])));
 
@@ -59,7 +59,7 @@ impl StatePath {
         ROOT_PATH.clone()
     }
 
-    pub fn concat(&self, part: StatePathPart) -> Self {
+    pub fn concat(&self, part: StateKey) -> Self {
         let result = self
             .0
             .iter()

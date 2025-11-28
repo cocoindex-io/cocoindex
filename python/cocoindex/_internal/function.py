@@ -12,7 +12,7 @@ from typing import (
     overload,
 )
 
-from .core import ComponentBuilder, ComponentBuilderContext  # type: ignore
+from . import core
 
 from .context import component_ctx_var
 from .runtime import execution_context, is_coroutine_fn, get_async_context
@@ -28,9 +28,9 @@ class Function(Protocol[P, R_co]):
 
     def acall(self, *args: P.args, **kwargs: P.kwargs) -> Awaitable[R_co]: ...
 
-    def _as_component_builder(
+    def _as_core_component_builder(
         self, *args: P.args, **kwargs: P.kwargs
-    ) -> ComponentBuilder: ...
+    ) -> core.ComponentBuilder: ...
 
 
 class SyncFunction(Function[P, R_co]):
@@ -42,10 +42,10 @@ class SyncFunction(Function[P, R_co]):
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return self._fn(*args, **kwargs)
 
-    def _as_component_builder(
+    def _as_core_component_builder(
         self, *args: P.args, **kwargs: P.kwargs
-    ) -> ComponentBuilder:
-        def _build(builder_ctx: ComponentBuilderContext) -> R_co:
+    ) -> core.ComponentBuilder:
+        def _build(builder_ctx: core.ComponentBuilderContext) -> R_co:
             tok = component_ctx_var.set(builder_ctx)
             try:
                 ret = self._fn(*args, **kwargs)
@@ -53,7 +53,7 @@ class SyncFunction(Function[P, R_co]):
                 component_ctx_var.reset(tok)
             return ret
 
-        return ComponentBuilder.new_sync(_build)
+        return core.ComponentBuilder.new_sync(_build)
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return self._fn(*args, **kwargs)
@@ -71,10 +71,10 @@ class AsyncFunction(Function[P, R_co]):
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Coroutine[Any, Any, R_co]:
         return self._fn(*args, **kwargs)
 
-    def _as_component_builder(
+    def _as_core_component_builder(
         self, *args: P.args, **kwargs: P.kwargs
-    ) -> ComponentBuilder:
-        async def _build(builder_ctx: ComponentBuilderContext) -> R_co:
+    ) -> core.ComponentBuilder:
+        async def _build(builder_ctx: core.ComponentBuilderContext) -> R_co:
             tok = component_ctx_var.set(builder_ctx)
             try:
                 ret = await self._fn(*args, **kwargs)
@@ -82,7 +82,7 @@ class AsyncFunction(Function[P, R_co]):
                 component_ctx_var.reset(tok)
             return ret
 
-        return ComponentBuilder.new_async(_build, get_async_context())
+        return core.ComponentBuilder.new_async(_build, get_async_context())
 
     def call(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return execution_context.run(self._fn(*args, **kwargs))

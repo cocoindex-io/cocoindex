@@ -13,7 +13,7 @@ from ._internal.environment import lifespan, default_env
 
 from ._internal.function import function
 
-from ._internal.state import StatePath, StatePathPart
+from ._internal.state import StatePath, StateKey
 
 from ._internal.setting import Settings
 
@@ -32,7 +32,7 @@ __all__ = [
     "function",
     # .state
     "StatePath",
-    "StatePathPart",
+    "StateKey",
     # .setting
     "Settings",
 ]

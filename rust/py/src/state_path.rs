@@ -3,34 +3,34 @@ use crate::prelude::*;
 use pyo3::exceptions::PyTypeError;
 use pyo3::types::{PyBool, PyBytes, PyInt, PyList, PyString, PyTuple};
 
-use cocoindex_core::state::state_path::{StatePath, StatePathPart};
-pub struct PyStatePathPart(StatePathPart);
+use cocoindex_core::state::state_path::{StateKey, StatePath};
+pub struct PyStateKey(StateKey);
 
-impl<'py> FromPyObject<'py> for PyStatePathPart {
+impl<'py> FromPyObject<'py> for PyStateKey {
     fn extract_bound(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
         let part = if obj.is_none() {
-            StatePathPart::Null
+            StateKey::Null
         } else if obj.is_instance_of::<PyBool>() {
-            StatePathPart::Bool(obj.extract::<bool>()?)
+            StateKey::Bool(obj.extract::<bool>()?)
         } else if obj.is_instance_of::<PyInt>() {
-            StatePathPart::Int(obj.extract::<i64>()?)
+            StateKey::Int(obj.extract::<i64>()?)
         } else if obj.is_instance_of::<PyString>() {
-            StatePathPart::Str(Arc::from(obj.extract::<String>()?))
+            StateKey::Str(Arc::from(obj.extract::<String>()?))
         } else if obj.is_instance_of::<PyBytes>() {
-            StatePathPart::Bytes(Arc::from(obj.extract::<Vec<u8>>()?))
+            StateKey::Bytes(Arc::from(obj.extract::<Vec<u8>>()?))
         } else if obj.is_instance_of::<PyTuple>() || obj.is_instance_of::<PyList>() {
             let len = obj.len()?;
             let mut parts = Vec::with_capacity(len);
             for i in 0..len {
                 let item = obj.get_item(i)?;
-                parts.push(PyStatePathPart::extract_bound(&item)?.0);
+                parts.push(PyStateKey::extract_bound(&item)?.0);
             }
-            StatePathPart::Array(Arc::from(parts))
+            StateKey::Array(Arc::from(parts))
         } else if let Ok(uuid_value) = obj.extract::<uuid::Uuid>() {
-            StatePathPart::Uuid(Arc::from(uuid_value))
+            StateKey::Uuid(Arc::from(uuid_value))
         } else {
             return Err(PyTypeError::new_err(
-                "Unsupported StatePathPart Python type. Only support None, bool, int, str, bytes, tuple, list, and uuid",
+                "Unsupported StateKey Python type. Only support None, bool, int, str, bytes, tuple, list, and uuid",
             ));
         };
         Ok(Self(part))
@@ -46,7 +46,7 @@ impl PyStatePath {
         Self(StatePath::root())
     }
 
-    pub fn concat(&self, part: PyStatePathPart) -> Self {
+    pub fn concat(&self, part: PyStateKey) -> Self {
         Self(self.0.concat(part.0))
     }
 

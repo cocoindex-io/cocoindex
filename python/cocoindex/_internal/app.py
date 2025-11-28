@@ -41,7 +41,9 @@ class App(Generic[P, R]):
         else:
             self._config = config
 
-        component_builder = main_fn._as_component_builder(StatePath(), *args, **kwargs)
+        component_builder = main_fn._as_core_component_builder(
+            StatePath(), *args, **kwargs
+        )
         env = self._config.environment or default_env()
         self._core_app = core.App(
             self._config.name,
