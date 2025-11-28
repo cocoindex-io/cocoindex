@@ -9,6 +9,7 @@ from marker.models import create_model_dict
 from marker.output import text_from_rendered
 from psycopg_pool import ConnectionPool
 from jinja2 import Template
+from typing import Any, cast
 
 
 class PdfToMarkdown(cocoindex.op.FunctionSpec):
@@ -22,7 +23,7 @@ class PdfToMarkdownExecutor:
     spec: PdfToMarkdown
     _converter: PdfConverter
 
-    def prepare(self):
+    def prepare(self) -> None:
         config_parser = ConfigParser({})
         self._converter = PdfConverter(
             create_model_dict(), config=config_parser.generate_config_dict()
@@ -32,7 +33,8 @@ class PdfToMarkdownExecutor:
         with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as temp_file:
             temp_file.write(content)
             temp_file.flush()
-            text, _, _ = text_from_rendered(self._converter(temp_file.name))
+            text_any, _, _ = text_from_rendered(self._converter(temp_file.name))
+            text: str = cast(str, text_any)
             return text
 
 
@@ -54,7 +56,7 @@ def text_to_embedding(
 @cocoindex.flow_def(name="PdfEmbedding")
 def pdf_embedding_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-):
+) -> None:
     """
     Define an example flow that embeds files into a vector database.
     """
@@ -96,7 +98,7 @@ def pdf_embedding_flow(
     )
 
 
-def search(pool: ConnectionPool, query: str, top_k: int = 5):
+def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, Any]]:
     # Get the table name, for the export target in the pdf_embedding_flow above.
     table_name = cocoindex.utils.get_target_default_name(
         pdf_embedding_flow, "pdf_embeddings"
@@ -130,7 +132,7 @@ Search results:
 """)
 
 
-def _main():
+def _main() -> None:
     # Initialize the database connection pool.
     pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
     # Run queries in a loop to demonstrate the query capabilities.
