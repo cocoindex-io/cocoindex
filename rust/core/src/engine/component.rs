@@ -1,13 +1,10 @@
+use crate::engine::profile::EngineProfile;
 use crate::prelude::*;
 
 use crate::engine::context::{AppContext, ComponentBuilderContext};
 use crate::state::state_path::StatePath;
 
-pub trait ComponentBuilder: Send + 'static {
-    type HostStateCtx: Send + Sync + Clone;
-    type BuildRet: Send;
-    type BuildErr: Send;
-
+pub trait ComponentBuilder<Prof: EngineProfile>: Send + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
     /// Run the logic to build the component.
@@ -16,18 +13,22 @@ pub trait ComponentBuilder: Send + 'static {
     #[allow(async_fn_in_trait)]
     async fn build(
         &self,
-        context: &Arc<ComponentBuilderContext>,
-    ) -> Result<Result<Self::BuildRet, Self::BuildErr>>;
+        context: &Arc<ComponentBuilderContext<Prof>>,
+    ) -> Result<Result<Prof::ComponentBuildRet, Prof::ComponentBuildErr>>;
 }
 
-pub struct Component<Bld: ComponentBuilder> {
-    app_ctx: Arc<AppContext>,
+pub struct Component<Prof: EngineProfile> {
+    app_ctx: Arc<AppContext<Prof>>,
     state_path: StatePath,
-    builder: Bld,
+    builder: Prof::ComponentBld,
 }
 
-impl<Bld: ComponentBuilder> Component<Bld> {
-    pub fn new(app_ctx: Arc<AppContext>, state_path: StatePath, builder: Bld) -> Self {
+impl<Prof: EngineProfile> Component<Prof> {
+    pub fn new(
+        app_ctx: Arc<AppContext<Prof>>,
+        state_path: StatePath,
+        builder: Prof::ComponentBld,
+    ) -> Self {
         Self {
             app_ctx,
             state_path,
@@ -35,7 +36,7 @@ impl<Bld: ComponentBuilder> Component<Bld> {
         }
     }
 
-    pub fn app_ctx(&self) -> &Arc<AppContext> {
+    pub fn app_ctx(&self) -> &Arc<AppContext<Prof>> {
         &self.app_ctx
     }
 
@@ -43,7 +44,7 @@ impl<Bld: ComponentBuilder> Component<Bld> {
         &self.state_path
     }
 
-    pub async fn build(&self) -> Result<Result<Bld::BuildRet, Bld::BuildErr>> {
+    pub async fn build(&self) -> Result<Result<Prof::ComponentBuildRet, Prof::ComponentBuildErr>> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
 
         let builder_context = Arc::new(ComponentBuilderContext {

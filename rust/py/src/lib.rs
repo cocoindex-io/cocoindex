@@ -4,6 +4,7 @@ mod context;
 mod effect;
 mod environment;
 mod prelude;
+mod profile;
 mod runtime;
 mod state_path;
 mod value;
@@ -23,11 +24,12 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     m.add_class::<context::PyComponentBuilderContext>()?;
 
-    m.add_function(wrap_pyfunction!(effect::init_module, m)?)?;
+    m.add_function(wrap_pyfunction!(effect::init_effect_module, m)?)?;
     m.add_class::<effect::PyEffectSink>()?;
     m.add_class::<effect::PyEffectReconciler>()?;
     m.add_class::<effect::PyEffectProvider>()?;
     m.add_function(wrap_pyfunction!(effect::declare_effect, m)?)?;
+    m.add_function(wrap_pyfunction!(effect::register_root_effect_provider, m)?)?;
 
     m.add_class::<environment::PyEnvironment>()?;
 

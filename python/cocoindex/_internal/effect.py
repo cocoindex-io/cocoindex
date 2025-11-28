@@ -146,4 +146,11 @@ def declare_effect_with_child(
     return provider
 
 
+def register_root_effect_provider(
+    name: str, reconciler: EffectReconciler[Decl, Key]
+) -> EffectProvider[Decl, Key]:
+    provider = core.register_root_effect_provider(name, reconciler._core)
+    return EffectProvider(provider)
+
+
 core.init_effect_module(NonExistence())

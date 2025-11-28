@@ -6,7 +6,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use crate::{component::PyComponentBuilder, environment::PyEnvironment};
 
 #[pyclass(name = "App")]
-pub struct PyApp(Arc<App<PyComponentBuilder>>);
+pub struct PyApp(Arc<App<PyEngineProfile>>);
 
 #[pymethods]
 impl PyApp {

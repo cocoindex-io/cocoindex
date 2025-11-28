@@ -1,54 +1,102 @@
-use crate::{engine::context::ComponentBuilderContext, prelude::*, state::state_path::StatePath};
+use crate::{
+    engine::{context::ComponentBuilderContext, profile::EngineProfile},
+    prelude::*,
+    state::state_path::{StateKey, StatePath},
+};
 
-use std::hash::Hash;
+use std::{collections::HashMap, hash::Hash, ops::Deref};
 
-pub trait EffectSink<Action: Send + 'static>: Send + Sync + Eq + Hash + 'static {
+pub trait EffectSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
     /// Run the logic to apply the action.
     ///
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
     #[allow(async_fn_in_trait)]
-    async fn apply(&self, actions: Vec<Action>) -> Result<()>;
+    async fn apply(&self, actions: Vec<Prof::EffectAction>) -> Result<()>;
 }
 
-pub struct EffectReconcileOutput<ERcl: EffectReconciler> {
-    pub state: ERcl::State,
-    pub action: ERcl::Action,
-    pub sink: ERcl::Sink,
+pub struct EffectReconcileOutput<Prof: EngineProfile> {
+    pub state: Prof::EffectState,
+    pub action: Prof::EffectAction,
+    pub sink: Prof::EffectSink,
     // TODO: Add fields to indicate compatibility, especially for containers (tables)
     // - Whether or not irreversible (e.g. delete a column from a table)
     // - Whether or not destructive (all children effect should be deleted)
 }
 
-pub trait EffectReconciler: Send + Sync + Sized + 'static {
-    type Key: Clone + Send + Eq + Hash + 'static;
-    type State: Clone + Send + 'static;
-    type Action: Send + 'static;
-    type Sink: EffectSink<Self::Action>;
-    type Decl;
-
+pub trait EffectReconciler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
     fn reconcile(
         &self,
-        key: Self::Key,
-        desired_effect: Option<Self::Decl>,
-        prev_possible_states: &[Self::State],
+        key: Prof::EffectKey,
+        desired_effect: Option<Prof::EffectDecl>,
+        prev_possible_states: &[Prof::EffectState],
         prev_may_be_missing: bool,
-    ) -> Result<EffectReconcileOutput<Self>>;
+    ) -> Result<EffectReconcileOutput<Prof>>;
 }
 
-pub struct EffectProvider<ERcl: EffectReconciler> {
-    pub(crate) effect_state_path: StatePath,
-    pub(crate) reconciler: ERcl,
+pub(crate) struct EffectProviderInner<Prof: EngineProfile> {
+    pub effect_state_path: StatePath,
+    pub reconciler: Prof::EffectRcl,
 }
 
-pub fn declare_effect<ERcl: EffectReconciler>(
+#[derive(Clone)]
+pub struct EffectProvider<Prof: EngineProfile> {
+    pub(crate) inner: Arc<EffectProviderInner<Prof>>,
+}
+
+impl<Prof: EngineProfile> EffectProvider<Prof> {
+    pub(crate) fn new(inner: EffectProviderInner<Prof>) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+}
+
+impl<Prof: EngineProfile> EffectProvider<Prof> {
+    pub fn effect_state_path(&self) -> &StatePath {
+        &self.inner.effect_state_path
+    }
+
+    pub fn reconciler(&self) -> &Prof::EffectRcl {
+        &self.inner.reconciler
+    }
+}
+
+#[derive(Clone)]
+pub struct RootEffectProviderRegistry<Prof: EngineProfile> {
+    providers: Arc<Mutex<HashMap<String, EffectProvider<Prof>>>>,
+}
+
+impl<Prof: EngineProfile> RootEffectProviderRegistry<Prof> {
+    pub fn new() -> Self {
+        Self {
+            providers: Default::default(),
+        }
+    }
+
+    pub fn register(
+        &self,
+        name: String,
+        reconciler: Prof::EffectRcl,
+    ) -> Result<EffectProvider<Prof>> {
+        let provider = EffectProvider::new(EffectProviderInner {
+            effect_state_path: StatePath::root().concat(StateKey::Str(Arc::new(name.clone()))),
+            reconciler,
+        });
+        let mut providers = self.providers.lock().unwrap();
+        providers.insert(name, provider.clone());
+        Ok(provider)
+    }
+}
+
+pub fn declare_effect<Prof: EngineProfile>(
     state_path: &StatePath,
-    context: &ComponentBuilderContext,
-    provider: &EffectProvider<ERcl>,
-    decl: ERcl::Decl,
-    key: ERcl::Key,
-    child_reconciler: Option<ERcl>,
-) -> Result<Option<EffectProvider<ERcl>>> {
+    context: &ComponentBuilderContext<Prof>,
+    provider: &EffectProvider<Prof>,
+    decl: Prof::EffectDecl,
+    key: Prof::EffectKey,
+    child_reconciler: Option<Prof::EffectRcl>,
+) -> Result<Option<EffectProvider<Prof>>> {
     unimplemented!()
 }

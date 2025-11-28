@@ -1,8 +1,8 @@
 use std::hash::{Hash, Hasher};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 use cocoindex_core::engine::effect::{
-    EffectProvider, EffectReconcileOutput, EffectReconciler, EffectSink,
+    EffectProvider, EffectReconcileOutput, EffectReconciler, EffectSink, RootEffectProviderRegistry,
 };
 use pyo3::exceptions::PyException;
 use pyo3::types::PyList;
@@ -17,7 +17,7 @@ use crate::value::PyKey;
 static NON_EXISTENCE: OnceLock<Py<PyAny>> = OnceLock::new();
 
 #[pyfunction]
-pub fn init_module(non_existence: Py<PyAny>) -> PyResult<()> {
+pub fn init_effect_module(non_existence: Py<PyAny>) -> PyResult<()> {
     NON_EXISTENCE.set(non_existence).map_err(|_| {
         PyException::new_err("Failed to initialize effect module: already initialized")
     })?;
@@ -67,7 +67,7 @@ impl Hash for PyEffectSink {
     }
 }
 
-impl EffectSink<Py<PyAny>> for PyEffectSink {
+impl EffectSink<PyEngineProfile> for PyEffectSink {
     async fn apply(&self, actions: Vec<Py<PyAny>>) -> Result<()> {
         self.callback.call((actions,)).await??;
         Ok(())
@@ -95,20 +95,14 @@ impl PyEffectReconciler {
     }
 }
 
-impl EffectReconciler for PyEffectReconciler {
-    type Key = crate::value::PyKey;
-    type State = Arc<Py<PyAny>>;
-    type Action = Py<PyAny>;
-    type Sink = PyEffectSink;
-    type Decl = Py<PyAny>;
-
+impl EffectReconciler<PyEngineProfile> for PyEffectReconciler {
     fn reconcile(
         &self,
-        key: Self::Key,
-        desired_effect: Option<Self::Decl>,
-        prev_possible_states: &[Self::State],
+        key: PyKey,
+        desired_effect: Option<Py<PyAny>>,
+        prev_possible_states: &[Arc<Py<PyAny>>],
         prev_may_be_missing: bool,
-    ) -> Result<EffectReconcileOutput<Self>> {
+    ) -> Result<EffectReconcileOutput<PyEngineProfile>> {
         let output = Python::attach(|py| -> PyResult<_> {
             let prev_possible_states =
                 PyList::new(py, prev_possible_states.iter().map(|s| s.bind(py)))?;
@@ -128,7 +122,8 @@ impl EffectReconciler for PyEffectReconciler {
                 ),
                 None,
             )?;
-            let (state, action, sink) = output.extract::<(Py<PyAny>, Py<PyAny>, Self::Sink)>(py)?;
+            let (state, action, sink) =
+                output.extract::<(Py<PyAny>, Py<PyAny>, PyEffectSink)>(py)?;
             Ok(EffectReconcileOutput {
                 state: Arc::new(state),
                 action,
@@ -140,7 +135,7 @@ impl EffectReconciler for PyEffectReconciler {
 }
 
 #[pyclass(name = "EffectProvider")]
-pub struct PyEffectProvider(EffectProvider<PyEffectReconciler>);
+pub struct PyEffectProvider(EffectProvider<PyEngineProfile>);
 
 #[pyfunction]
 pub fn declare_effect<'py>(
@@ -163,4 +158,23 @@ pub fn declare_effect<'py>(
     )
     .into_py_result()?;
     Ok(output.map(|p| PyEffectProvider(p)))
+}
+
+static ROOT_EFFECT_PROVIDER_REGISTRY: LazyLock<RootEffectProviderRegistry<PyEngineProfile>> =
+    LazyLock::new(|| RootEffectProviderRegistry::new());
+
+pub fn root_effect_provider_registry() -> &'static RootEffectProviderRegistry<PyEngineProfile> {
+    &ROOT_EFFECT_PROVIDER_REGISTRY
+}
+
+#[pyfunction]
+pub fn register_root_effect_provider(
+    py: Python<'_>,
+    name: String,
+    reconciler: &PyEffectReconciler,
+) -> PyResult<PyEffectProvider> {
+    let provider = root_effect_provider_registry()
+        .register(name, reconciler.clone_ref(py))
+        .into_py_result()?;
+    Ok(PyEffectProvider(provider))
 }

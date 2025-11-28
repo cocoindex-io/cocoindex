@@ -4,7 +4,7 @@ use crate::{environment::PyEnvironment, state_path::PyStatePath};
 use cocoindex_core::engine::context::ComponentBuilderContext;
 
 #[pyclass(name = "ComponentBuilderContext")]
-pub struct PyComponentBuilderContext(pub Arc<ComponentBuilderContext>);
+pub struct PyComponentBuilderContext(pub Arc<ComponentBuilderContext<PyEngineProfile>>);
 
 #[pymethods]
 impl PyComponentBuilderContext {

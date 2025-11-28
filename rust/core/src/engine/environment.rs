@@ -1,4 +1,10 @@
-use crate::prelude::*;
+use crate::{
+    engine::{
+        effect::{EffectReconciler, RootEffectProviderRegistry},
+        profile::EngineProfile,
+    },
+    prelude::*,
+};
 
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::PathBuf};
@@ -8,41 +14,46 @@ pub struct EnvironmentSettings {
     pub db_path: PathBuf,
 }
 
-struct EnvironmentState {
+struct EnvironmentInner<Prof: EngineProfile> {
     db_env: heed::Env<heed::WithoutTls>,
     app_names: Mutex<BTreeSet<String>>,
+    effect_providers: RootEffectProviderRegistry<Prof>,
 }
 
 #[derive(Clone)]
-pub struct Environment {
-    state: Arc<EnvironmentState>,
+pub struct Environment<Prof: EngineProfile> {
+    inner: Arc<EnvironmentInner<Prof>>,
 }
 
-impl Environment {
-    pub fn new(settings: EnvironmentSettings) -> Result<Self> {
+impl<Prof: EngineProfile> Environment<Prof> {
+    pub fn new(
+        settings: EnvironmentSettings,
+        effect_providers: RootEffectProviderRegistry<Prof>,
+    ) -> Result<Self> {
         // Create the directory if not exists.
         std::fs::create_dir_all(&settings.db_path)?;
 
-        let state = Arc::new(EnvironmentState {
+        let state = Arc::new(EnvironmentInner {
             db_env: unsafe {
                 heed::EnvOpenOptions::new()
                     .read_txn_without_tls()
                     .open(settings.db_path.clone())
             }?,
             app_names: Mutex::new(BTreeSet::new()),
+            effect_providers,
         });
-        Ok(Self { state })
+        Ok(Self { inner: state })
     }
 }
 
-pub struct AppRegistration {
+pub struct AppRegistration<Prof: EngineProfile> {
     name: String,
-    env: Environment,
+    env: Environment<Prof>,
 }
 
-impl AppRegistration {
-    pub fn new(name: &str, env: &Environment) -> Result<Self> {
-        let mut app_names = env.state.app_names.lock().unwrap();
+impl<Prof: EngineProfile> AppRegistration<Prof> {
+    pub fn new(name: &str, env: &Environment<Prof>) -> Result<Self> {
+        let mut app_names = env.inner.app_names.lock().unwrap();
         if !app_names.insert(name.to_string()) {
             bail!("App name already registered: {}", name);
         }
@@ -57,9 +68,9 @@ impl AppRegistration {
     }
 }
 
-impl Drop for AppRegistration {
+impl<Prof: EngineProfile> Drop for AppRegistration<Prof> {
     fn drop(&mut self) {
-        let mut app_names = self.env.state.app_names.lock().unwrap();
+        let mut app_names = self.env.inner.app_names.lock().unwrap();
         app_names.remove(&self.name);
     }
 }

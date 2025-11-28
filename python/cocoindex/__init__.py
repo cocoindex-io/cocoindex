@@ -8,6 +8,17 @@ from . import _version_check
 
 from ._internal.app import App, AppConfig
 
+from ._internal.effect import (
+    Effect,
+    EffectProvider,
+    EffectReconcileOutput,
+    EffectReconciler,
+    EffectSink,
+    declare_effect,
+    declare_effect_with_child,
+    register_root_effect_provider,
+)
+
 from ._internal.environment import Environment, EnvironmentBuilder, LifespanFn
 from ._internal.environment import lifespan, default_env
 
@@ -22,6 +33,15 @@ __all__ = [
     # .app
     "App",
     "AppConfig",
+    # .effect
+    "Effect",
+    "EffectProvider",
+    "EffectReconcileOutput",
+    "EffectReconciler",
+    "EffectSink",
+    "declare_effect",
+    "declare_effect_with_child",
+    "register_root_effect_provider",
     # .environment
     "Environment",
     "EnvironmentBuilder",

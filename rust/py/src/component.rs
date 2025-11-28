@@ -32,15 +32,11 @@ impl PyComponentBuilder {
     }
 }
 
-impl ComponentBuilder for PyComponentBuilder {
-    type HostStateCtx = Arc<Py<PyAny>>;
-    type BuildRet = Py<PyAny>;
-    type BuildErr = PyErr;
-
+impl ComponentBuilder<PyEngineProfile> for PyComponentBuilder {
     async fn build(
         &self,
-        context: &Arc<ComponentBuilderContext>,
-    ) -> Result<Result<Self::BuildRet, Self::BuildErr>> {
+        context: &Arc<ComponentBuilderContext<PyEngineProfile>>,
+    ) -> Result<PyResult<Py<PyAny>>> {
         let py_context = PyComponentBuilderContext(context.clone());
         self.builder_fn.call((py_context,)).await
     }

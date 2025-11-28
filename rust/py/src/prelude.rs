@@ -8,3 +8,5 @@ pub use pyo3::prelude::*;
 pub use cocoindex_py_utils::{AnyhowIntoPyResult, IntoPyResult};
 
 pub use log::{debug, error, info, trace, warn};
+
+pub use crate::profile::PyEngineProfile;
