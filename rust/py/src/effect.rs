@@ -33,7 +33,7 @@ pub struct PyEffectSink {
 
 #[pymethods]
 impl PyEffectSink {
-    #[new]
+    #[staticmethod]
     pub fn new_sync(callback: Py<PyAny>) -> Self {
         Self {
             key: callback.as_ptr() as usize,
@@ -122,12 +122,12 @@ impl EffectReconciler<PyEngineProfile> for PyEffectReconciler {
                 ),
                 None,
             )?;
-            let (state, action, sink) =
-                output.extract::<(Py<PyAny>, Py<PyAny>, PyEffectSink)>(py)?;
+            let (action, sink, state) =
+                output.extract::<(Py<PyAny>, PyEffectSink, Py<PyAny>)>(py)?;
             Ok(EffectReconcileOutput {
-                state: Arc::new(state),
                 action,
                 sink,
+                state: Arc::new(state),
             })
         })?;
         Ok(output)
@@ -143,8 +143,8 @@ pub fn declare_effect<'py>(
     state_path: &'py PyStatePath,
     context: &'py PyComponentBuilderContext,
     provider: &PyEffectProvider,
-    decl: Py<PyAny>,
     key: Py<PyAny>,
+    decl: Py<PyAny>,
     child_reconciler: Option<&'py PyEffectReconciler>,
 ) -> PyResult<Option<PyEffectProvider>> {
     let py_key = PyKey::new(py, Arc::new(key))?;
@@ -152,8 +152,8 @@ pub fn declare_effect<'py>(
         &state_path.0,
         &context.0,
         &provider.0,
-        decl,
         py_key,
+        decl,
         child_reconciler.map(|r| r.clone_ref(py)),
     )
     .into_py_result()?;

@@ -17,9 +17,9 @@ pub trait EffectSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
 }
 
 pub struct EffectReconcileOutput<Prof: EngineProfile> {
-    pub state: Prof::EffectState,
     pub action: Prof::EffectAction,
     pub sink: Prof::EffectSink,
+    pub state: Prof::EffectState,
     // TODO: Add fields to indicate compatibility, especially for containers (tables)
     // - Whether or not irreversible (e.g. delete a column from a table)
     // - Whether or not destructive (all children effect should be deleted)
@@ -94,8 +94,8 @@ pub fn declare_effect<Prof: EngineProfile>(
     state_path: &StatePath,
     context: &ComponentBuilderContext<Prof>,
     provider: &EffectProvider<Prof>,
-    decl: Prof::EffectDecl,
     key: Prof::EffectKey,
+    decl: Prof::EffectDecl,
     child_reconciler: Option<Prof::EffectRcl>,
 ) -> Result<Option<EffectProvider<Prof>>> {
     unimplemented!()

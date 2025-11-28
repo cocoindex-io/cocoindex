@@ -2,7 +2,7 @@ import uuid
 
 from . import core  # type: ignore
 
-StateKey = None | bool | int | str | bytes | uuid.UUID | list["StateKey"]
+StateKey = None | bool | int | str | bytes | uuid.UUID | tuple["StateKey", ...]
 
 _ROOT_PATH = core.StatePath()
 

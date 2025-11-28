@@ -1,6 +1,6 @@
 import pytest
 
-import cocoindex
+import cocoindex as coco
 from .environment import create_test_env
 
 coco_env = create_test_env("trivial_app")
@@ -8,14 +8,14 @@ coco_env = create_test_env("trivial_app")
 # === Sync App ===
 
 
-@cocoindex.function()
-def trivial_fn_sync(csp: cocoindex.StatePath, s: str, i: int) -> str:
+@coco.function()
+def trivial_fn_sync(csp: coco.StatePath, s: str, i: int) -> str:
     return f"{s} {i}"
 
 
-sync_app = cocoindex.App(
+sync_app = coco.App(
     trivial_fn_sync,
-    cocoindex.AppConfig(name="sync_app", environment=coco_env),
+    coco.AppConfig(name="sync_app", environment=coco_env),
     "Hello sync_app",
     1,
 )
@@ -33,14 +33,14 @@ async def test_sync_app_async_update() -> None:
 # === Sync Bare App ===
 
 
-@cocoindex.function
-def trivial_fn_sync_bare(csp: cocoindex.StatePath, s: str, i: int) -> str:
+@coco.function
+def trivial_fn_sync_bare(csp: coco.StatePath, s: str, i: int) -> str:
     return f"{s} {i}"
 
 
-sync_bare_app = cocoindex.App(
+sync_bare_app = coco.App(
     trivial_fn_sync_bare,
-    cocoindex.AppConfig(name="sync_bare_app", environment=coco_env),
+    coco.AppConfig(name="sync_bare_app", environment=coco_env),
     "Hello sync_bare_app",
     2,
 )
@@ -58,14 +58,14 @@ async def test_sync_bare_app_async_update() -> None:
 # === Async App ===
 
 
-@cocoindex.function()
-async def trivial_fn_async(csp: cocoindex.StatePath, s: str, i: int) -> str:
+@coco.function()
+async def trivial_fn_async(csp: coco.StatePath, s: str, i: int) -> str:
     return f"{s} {i}"
 
 
-async_app = cocoindex.App(
+async_app = coco.App(
     trivial_fn_async,
-    cocoindex.AppConfig(name="async_app", environment=coco_env),
+    coco.AppConfig(name="async_app", environment=coco_env),
     "Hello async_app",
     3,
 )

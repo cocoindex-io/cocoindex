@@ -9,6 +9,8 @@ from . import _version_check
 from ._internal.app import App, AppConfig
 
 from ._internal.effect import (
+    NonExistenceType,
+    NON_EXISTENCE,
     Effect,
     EffectProvider,
     EffectReconcileOutput,
@@ -16,6 +18,7 @@ from ._internal.effect import (
     EffectSink,
     declare_effect,
     declare_effect_with_child,
+    is_non_existence,
     register_root_effect_provider,
 )
 
@@ -34,6 +37,8 @@ __all__ = [
     "App",
     "AppConfig",
     # .effect
+    "NonExistenceType",
+    "NON_EXISTENCE",
     "Effect",
     "EffectProvider",
     "EffectReconcileOutput",
@@ -41,6 +46,7 @@ __all__ = [
     "EffectSink",
     "declare_effect",
     "declare_effect_with_child",
+    "is_non_existence",
     "register_root_effect_provider",
     # .environment
     "Environment",

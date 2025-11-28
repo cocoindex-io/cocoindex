@@ -1,6 +1,7 @@
 from typing import (
+    Collection,
     Generic,
-    Iterable,
+    Hashable,
     NamedTuple,
     Protocol,
     Any,
@@ -9,35 +10,44 @@ from cocoindex._internal.context import component_ctx_var
 from typing_extensions import TypeIs, TypeVar
 
 from . import core, state
-from .runtime import get_async_context, is_coroutine_fn
+from .runtime import get_async_context
 
 
-class NonExistence:
+class NonExistenceType:
     __slots__ = ()
+    _instance: "NonExistenceType | None" = None
+
+    def __new__(cls) -> "NonExistenceType":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __repr__(self) -> str:
-        return "NonExistence"
+        return "NON_EXISTENCE"
 
 
-def is_non_existence(obj: Any) -> TypeIs[NonExistence]:
-    return isinstance(obj, NonExistence)
+NON_EXISTENCE = NonExistenceType()
+
+
+def is_non_existence(obj: Any) -> TypeIs[NonExistenceType]:
+    return obj is NON_EXISTENCE
 
 
 Action = TypeVar("Action")
 Action_contra = TypeVar("Action_contra", contravariant=True)
-Key = TypeVar("Key", default=state.StateKey)
-Key_contra = TypeVar("Key_contra", contravariant=True)
-State = TypeVar("State", default=None)
+Key = TypeVar("Key", bound=Hashable)
+Key_contra = TypeVar("Key_contra", contravariant=True, bound=Hashable)
 Decl = TypeVar("Decl")
 Decl_contra = TypeVar("Decl_contra", contravariant=True)
+State = TypeVar("State", default=None)
 
 
 class EffectSinkFn(Protocol[Action_contra]):
-    def __call__(self, actions: Iterable[Action_contra]) -> None: ...
+    def __call__(self, actions: Collection[Action_contra]) -> None: ...
 
 
 class AsyncEffectSinkFn(Protocol[Action_contra]):
-    async def __call__(self, actions: Iterable[Action_contra]) -> None: ...
+    async def __call__(self, actions: Collection[Action_contra]) -> None: ...
 
 
 class EffectSink(Generic[Action_contra]):
@@ -59,22 +69,22 @@ class EffectSink(Generic[Action_contra]):
 
 
 class EffectReconcileOutput(Generic[Action, State], NamedTuple):
-    state: State
     action: Action
     sink: EffectSink[Action]
+    state: State | NonExistenceType = NON_EXISTENCE
 
 
-class EffectReconcilerFn(Protocol[Decl_contra, Key_contra]):
+class EffectReconcilerFn(Protocol[Action, Key_contra, Decl_contra, State]):
     def __call__(
         self,
         key: Key_contra,
-        desired_effect: Decl_contra | NonExistence,
-        prev_possible_states: Iterable[State],
+        desired_effect: Decl_contra | NonExistenceType,
+        prev_possible_states: Collection[State],
         prev_may_be_missing: bool,
     ) -> EffectReconcileOutput[Action, State]: ...
 
 
-class EffectReconciler(Generic[Decl_contra, Key_contra]):
+class EffectReconciler(Generic[Action, Key_contra, Decl_contra, State]):
     __slots__ = ("_core",)
     _core: core.EffectReconciler
 
@@ -83,49 +93,53 @@ class EffectReconciler(Generic[Decl_contra, Key_contra]):
 
     @staticmethod
     def from_fn(
-        fn: EffectReconcilerFn[Decl_contra, Key_contra],
-    ) -> "EffectReconciler[Decl_contra, Key_contra]":
+        fn: EffectReconcilerFn[Action, Key_contra, Decl_contra, State],
+    ) -> "EffectReconciler[Action, Key_contra, Decl_contra, State]":
         return EffectReconciler(core.EffectReconciler.new_sync(fn))
 
 
-class EffectProvider(Generic[Decl, Key]):
+class EffectProvider(Generic[Key, Decl]):
     __slots__ = ("_core",)
     _core: core.EffectProvider
 
     def __init__(self, core_effect_provider: core.EffectProvider):
         self._core = core_effect_provider
 
+    def effect(self, key: Key, decl: Decl) -> "Effect":
+        return Effect(self, key, decl)
+
 
 class Effect:
-    __slots__ = ("_provider", "_decl", "_key")
+    __slots__ = ("_provider", "_key", "_decl")
     _provider: EffectProvider[Any, Any]
-    _decl: Any
     _key: Any
+    _decl: Any
 
     def __init__(
         self,
-        provider: EffectProvider[Decl, Key],
-        decl: Decl,
+        provider: EffectProvider[Key, Decl],
         key: Key,
+        decl: Decl,
     ):
         self._provider = provider
-        self._decl = decl
         self._key = key
+        self._decl = decl
 
 
 def _declare_effect(
     csp: state.StatePath,
     effect: Effect,
-    child_reconciler: EffectReconciler[Decl, Key] | None,
-) -> EffectProvider[Decl, Key] | None:
+    child_reconciler: EffectReconciler[Action, Key, Decl, State] | None,
+) -> EffectProvider[Key, Decl] | None:
     context = component_ctx_var.get()
     if context is None:
         raise RuntimeError("declare_effect* must be called within a component")
     provider = core.declare_effect(
         csp._core,
+        context,
         effect._provider._core,
-        effect._decl,
         effect._key,
+        effect._decl,
         child_reconciler._core if child_reconciler is not None else None,
     )
     return EffectProvider(provider) if provider is not None else None
@@ -138,8 +152,8 @@ def declare_effect(csp: state.StatePath, effect: Effect) -> None:
 def declare_effect_with_child(
     csp: state.StatePath,
     effect: Effect,
-    child_reconciler: EffectReconciler[Decl, Key],
-) -> EffectProvider[Decl, Key]:
+    child_reconciler: EffectReconciler[Action, Key, Decl, State],
+) -> EffectProvider[Key, Decl]:
     provider = _declare_effect(csp, effect, child_reconciler)
     if provider is None:
         raise RuntimeError("core.declare_effect is expected to return a provider")
@@ -147,10 +161,10 @@ def declare_effect_with_child(
 
 
 def register_root_effect_provider(
-    name: str, reconciler: EffectReconciler[Decl, Key]
-) -> EffectProvider[Decl, Key]:
+    name: str, reconciler: EffectReconciler[Action, Key, Decl, State]
+) -> EffectProvider[Key, Decl]:
     provider = core.register_root_effect_provider(name, reconciler._core)
     return EffectProvider(provider)
 
 
-core.init_effect_module(NonExistence())
+core.init_effect_module(NON_EXISTENCE)
