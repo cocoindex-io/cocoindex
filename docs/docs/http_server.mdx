@@ -40,9 +40,9 @@ Flags of interest:
 You can also start the server programmatically via the API.
 
 ```python
-from cocoindex import start_server, settings
+from cocoindex import start_server, ServerSettings
 
-server_settings = settings.ServerSettings(
+server_settings = ServerSettings(
     # Default: "127.0.0.1:49344" — local only for safety
     address="127.0.0.1:49344",
     # Allow CocoInsight front-end
@@ -55,7 +55,7 @@ start_server(server_settings)
 To expose to all IPs:
 
 ```python
-server_settings = settings.ServerSettings(
+server_settings = ServerSettings(
     address="0.0.0.0:49344",
 )
 start_server(server_settings)
