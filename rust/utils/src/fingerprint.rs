@@ -30,7 +30,7 @@ impl serde::ser::Error for FingerprinterError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Fingerprint(pub [u8; 16]);
 
 impl Fingerprint {

@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use crate::prelude::*;
 
 use cocoindex_core::engine::runtime::get_runtime;
@@ -6,14 +8,49 @@ use pyo3::{call::PyCallArgs, exceptions::PyException};
 use pyo3_async_runtimes::TaskLocals;
 use tokio_util::task::AbortOnDropHandle;
 
+pub struct PythonFunctions {
+    pub serialize_fn: Py<PyAny>,
+    pub deserialize_fn: Py<PyAny>,
+}
+
+impl PythonFunctions {
+    pub fn serialize<'py>(
+        &self,
+        py: Python<'py>,
+        value: &Bound<'py, PyAny>,
+    ) -> PyResult<bytes::Bytes> {
+        self.serialize_fn
+            .call(py, (value,), None)?
+            .extract::<bytes::Bytes>(py)
+            .into_py_result()
+    }
+    pub fn deserialize<'py>(&self, py: Python<'py>, value: &[u8]) -> PyResult<Py<PyAny>> {
+        self.deserialize_fn.call(py, (value,), None)
+    }
+}
+
+static PY_FUNCTIONS: OnceLock<PythonFunctions> = OnceLock::new();
+
 #[pyfunction]
-pub fn init_runtime() -> PyResult<()> {
+pub fn init_runtime(serialize_fn: Py<PyAny>, deserialize_fn: Py<PyAny>) -> PyResult<()> {
     if let Err(_) = pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()) {
         return Err(PyException::new_err(
             "Failed to initialize Tokio runtime: already initialized",
         ));
     }
+    PY_FUNCTIONS
+        .set(PythonFunctions {
+            serialize_fn,
+            deserialize_fn,
+        })
+        .map_err(|_| PyException::new_err("Failed to set Python functions: already initialized"))?;
     Ok(())
+}
+
+pub fn python_functions() -> &'static PythonFunctions {
+    PY_FUNCTIONS
+        .get()
+        .expect("Python functions not initialized")
 }
 
 #[pyclass(name = "AsyncContext")]

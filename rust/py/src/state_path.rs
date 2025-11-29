@@ -17,19 +17,18 @@ impl FromPyObject<'_, '_> for PyStateKey {
         } else if obj.is_instance_of::<PyInt>() {
             StateKey::Int(obj.extract::<i64>()?)
         } else if obj.is_instance_of::<PyString>() {
-            StateKey::Str(Arc::from(obj.extract::<String>()?))
+            StateKey::Str(Arc::from(obj.extract::<&str>()?))
         } else if obj.is_instance_of::<PyBytes>() {
-            StateKey::Bytes(Arc::from(obj.extract::<Vec<u8>>()?))
+            StateKey::Bytes(Arc::from(obj.extract::<&[u8]>()?))
         } else if obj.is_instance_of::<PyTuple>() || obj.is_instance_of::<PyList>() {
             let len = obj.len()?;
             let mut parts = Vec::with_capacity(len);
-            for i in 0..len {
-                let item = obj.get_item(i)?;
-                parts.push(PyStateKey::extract(item.as_borrowed())?.0);
+            for item in obj.try_iter()? {
+                parts.push(PyStateKey::extract(item?.as_borrowed())?.0);
             }
             StateKey::Array(Arc::from(parts))
         } else if let Ok(uuid_value) = obj.extract::<uuid::Uuid>() {
-            StateKey::Uuid(Arc::from(uuid_value))
+            StateKey::Uuid(uuid_value)
         } else {
             return Err(PyTypeError::new_err(
                 "Unsupported StateKey Python type. Only support None, bool, int, str, bytes, tuple, list, and uuid",

@@ -14,7 +14,7 @@ impl EngineProfile for PyEngineProfile {
 
     type ComponentBld = PyComponentBuilder;
     type ComponentBuildRet = Py<PyAny>;
-    type ComponentBuildErr = PyErr;
+    type Error = PyErr;
 
     type EffectRcl = PyEffectReconciler;
     type EffectKey = crate::value::PyKey;

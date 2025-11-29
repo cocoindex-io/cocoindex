@@ -74,6 +74,10 @@ class EffectReconcileOutput(Generic[Action, State], NamedTuple):
     state: State | NonExistenceType = NON_EXISTENCE
 
 
+def _unwrap_reconcile_output(recon_output: EffectReconcileOutput[Action, State]) -> Any:
+    return (recon_output.action, recon_output.sink._core, recon_output.state)
+
+
 class EffectReconcilerFn(Protocol[Action, Key_contra, Decl_contra, State]):
     def __call__(
         self,
@@ -95,7 +99,11 @@ class EffectReconciler(Generic[Action, Key_contra, Decl_contra, State]):
     def from_fn(
         fn: EffectReconcilerFn[Action, Key_contra, Decl_contra, State],
     ) -> "EffectReconciler[Action, Key_contra, Decl_contra, State]":
-        return EffectReconciler(core.EffectReconciler.new_sync(fn))
+        return EffectReconciler(
+            core.EffectReconciler.new_sync(
+                lambda *args: _unwrap_reconcile_output(fn(*args))
+            )
+        )
 
 
 class EffectProvider(Generic[Key, Decl]):

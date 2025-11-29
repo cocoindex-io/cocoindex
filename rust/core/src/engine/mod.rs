@@ -2,6 +2,7 @@ pub mod app;
 pub mod component;
 pub mod context;
 pub mod effect;
+pub mod effect_exec;
 pub mod environment;
 pub mod fn_info;
 pub mod profile;

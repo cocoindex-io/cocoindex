@@ -1,17 +1,17 @@
 use crate::prelude::*;
 use std::fmt::Write as FmtWrite;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StateKey {
     Null,
     Bool(bool),
     Int(i64),
 
-    // Note: we use Arc<String> instead of Arc<str> to keep the inlined size small. Similar for other `Arc<T>` types below.
-    Str(Arc<String>),
-    Bytes(Arc<Vec<u8>>),
-    Uuid(Arc<uuid::Uuid>),
-    Array(Arc<Vec<StateKey>>),
+    Str(Arc<str>),
+    Bytes(Arc<[u8]>),
+    Uuid(uuid::Uuid),
+    Array(Arc<[StateKey]>),
+    Fingerprint(utils::fingerprint::Fingerprint),
 }
 
 impl std::fmt::Display for StateKey {
@@ -27,7 +27,7 @@ impl std::fmt::Display for StateKey {
             }
             StateKey::Bytes(b) => {
                 f.write_str("b\"")?;
-                for &byte in b.as_slice() {
+                for &byte in b.iter() {
                     for esc in std::ascii::escape_default(byte) {
                         f.write_char(esc as char)?;
                     }
@@ -45,11 +45,12 @@ impl std::fmt::Display for StateKey {
                 }
                 f.write_char(']')
             }
+            StateKey::Fingerprint(fp) => write!(f, "#{:x?}", fp.as_slice()),
         }
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StatePath(pub Arc<[StateKey]>);
 
 static ROOT_PATH: LazyLock<StatePath> = LazyLock::new(|| StatePath(Arc::new([])));

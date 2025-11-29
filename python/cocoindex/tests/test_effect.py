@@ -82,10 +82,23 @@ declare_global_map_entries_app = coco.App(
 )
 
 
+def test_global_map_effect_insert() -> None:
+    _global_map_effect_data.clear()
+    _source_data.clear()
+
+    _source_data["a"] = 1
+    _source_data["b"] = 2
+    declare_global_map_entries_app.update()
+    assert _global_map_effect_data == {
+        "a": _MapDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+
+
 @pytest.mark.skip(
     reason="TODO: Enable this test after implementing effect logic on the engine side."
 )
-def test_global_map_effect_upserts() -> None:
+def test_global_map_effect_upsert() -> None:
     _global_map_effect_data.clear()
     _source_data.clear()
 
@@ -108,7 +121,7 @@ def test_global_map_effect_upserts() -> None:
 @pytest.mark.skip(
     reason="TODO: Enable this test after implementing effect logic on the engine side with respect to deletion."
 )
-def test_global_map_effect_deletes() -> None:
+def test_global_map_effect_delete() -> None:
     _global_map_effect_data.clear()
     _source_data.clear()
 

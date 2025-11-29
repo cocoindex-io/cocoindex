@@ -2,6 +2,15 @@
 Library level functions and states.
 """
 
-from .core import init_runtime  # type: ignore
 
-init_runtime()
+def _init() -> None:
+    from .core import init_runtime  # type: ignore
+    from .seder import serialize, deserialize
+
+    init_runtime(
+        serialize_fn=serialize,
+        deserialize_fn=deserialize,
+    )
+
+
+_init()

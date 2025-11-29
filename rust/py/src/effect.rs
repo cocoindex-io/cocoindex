@@ -1,6 +1,7 @@
 use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, OnceLock};
 
+use cocoindex_core::engine::context::DeclaredEffect;
 use cocoindex_core::engine::effect::{
     EffectProvider, EffectReconcileOutput, EffectReconciler, EffectSink, RootEffectProviderRegistry,
 };
@@ -68,9 +69,12 @@ impl Hash for PyEffectSink {
 }
 
 impl EffectSink<PyEngineProfile> for PyEffectSink {
-    async fn apply(&self, actions: Vec<Py<PyAny>>) -> Result<()> {
-        self.callback.call((actions,)).await??;
-        Ok(())
+    async fn apply(&self, actions: Vec<Py<PyAny>>) -> PyResult<()> {
+        let ret = self.callback.call((actions,)).await;
+        match ret {
+            Ok(ret) => ret.map(|_| ()),
+            Err(e) => Err(PyException::new_err(format!("{e:?}"))),
+        }
     }
 }
 
@@ -102,7 +106,7 @@ impl EffectReconciler<PyEngineProfile> for PyEffectReconciler {
         desired_effect: Option<Py<PyAny>>,
         prev_possible_states: &[Arc<Py<PyAny>>],
         prev_may_be_missing: bool,
-    ) -> Result<EffectReconcileOutput<PyEngineProfile>> {
+    ) -> PyResult<EffectReconcileOutput<PyEngineProfile>> {
         let output = Python::attach(|py| -> PyResult<_> {
             let prev_possible_states =
                 PyList::new(py, prev_possible_states.iter().map(|s| s.bind(py)))?;
@@ -147,13 +151,15 @@ pub fn declare_effect<'py>(
     decl: Py<PyAny>,
     child_reconciler: Option<&'py PyEffectReconciler>,
 ) -> PyResult<Option<PyEffectProvider>> {
-    let py_key = PyKey::new(py, Arc::new(key))?;
-    let output = cocoindex_core::engine::effect::declare_effect(
-        &state_path.0,
+    let py_key = PyKey::new(py, key)?;
+    let output = cocoindex_core::engine::effect_exec::declare_effect(
         &context.0,
-        &provider.0,
-        py_key,
-        decl,
+        DeclaredEffect {
+            mounted_state_path: state_path.0.clone(),
+            provider: provider.0.clone(),
+            key: py_key,
+            decl,
+        },
         child_reconciler.map(|r| r.clone_ref(py)),
     )
     .into_py_result()?;

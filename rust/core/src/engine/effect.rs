@@ -1,5 +1,5 @@
 use crate::{
-    engine::{context::ComponentBuilderContext, profile::EngineProfile},
+    engine::profile::EngineProfile,
     prelude::*,
     state::state_path::{StateKey, StatePath},
 };
@@ -13,7 +13,7 @@ pub trait EffectSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
     ///
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
     #[allow(async_fn_in_trait)]
-    async fn apply(&self, actions: Vec<Prof::EffectAction>) -> Result<()>;
+    async fn apply(&self, actions: Vec<Prof::EffectAction>) -> Result<(), Prof::Error>;
 }
 
 pub struct EffectReconcileOutput<Prof: EngineProfile> {
@@ -32,7 +32,7 @@ pub trait EffectReconciler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
         desired_effect: Option<Prof::EffectDecl>,
         prev_possible_states: &[Prof::EffectState],
         prev_may_be_missing: bool,
-    ) -> Result<EffectReconcileOutput<Prof>>;
+    ) -> Result<EffectReconcileOutput<Prof>, Prof::Error>;
 }
 
 pub(crate) struct EffectProviderInner<Prof: EngineProfile> {
@@ -43,14 +43,6 @@ pub(crate) struct EffectProviderInner<Prof: EngineProfile> {
 #[derive(Clone)]
 pub struct EffectProvider<Prof: EngineProfile> {
     pub(crate) inner: Arc<EffectProviderInner<Prof>>,
-}
-
-impl<Prof: EngineProfile> EffectProvider<Prof> {
-    pub(crate) fn new(inner: EffectProviderInner<Prof>) -> Self {
-        Self {
-            inner: Arc::new(inner),
-        }
-    }
 }
 
 impl<Prof: EngineProfile> EffectProvider<Prof> {
@@ -80,23 +72,15 @@ impl<Prof: EngineProfile> RootEffectProviderRegistry<Prof> {
         name: String,
         reconciler: Prof::EffectRcl,
     ) -> Result<EffectProvider<Prof>> {
-        let provider = EffectProvider::new(EffectProviderInner {
-            effect_state_path: StatePath::root().concat(StateKey::Str(Arc::new(name.clone()))),
-            reconciler,
-        });
+        let provider = EffectProvider {
+            inner: Arc::new(EffectProviderInner {
+                effect_state_path: StatePath::root()
+                    .concat(StateKey::Str(Arc::from(name.as_str()))),
+                reconciler,
+            }),
+        };
         let mut providers = self.providers.lock().unwrap();
         providers.insert(name, provider.clone());
         Ok(provider)
     }
-}
-
-pub fn declare_effect<Prof: EngineProfile>(
-    state_path: &StatePath,
-    context: &ComponentBuilderContext<Prof>,
-    provider: &EffectProvider<Prof>,
-    key: Prof::EffectKey,
-    decl: Prof::EffectDecl,
-    child_reconciler: Option<Prof::EffectRcl>,
-) -> Result<Option<EffectProvider<Prof>>> {
-    unimplemented!()
 }

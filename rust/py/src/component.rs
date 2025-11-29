@@ -35,7 +35,7 @@ impl PyComponentBuilder {
 impl ComponentBuilder<PyEngineProfile> for PyComponentBuilder {
     async fn build(
         &self,
-        context: &Arc<ComponentBuilderContext<PyEngineProfile>>,
+        context: &ComponentBuilderContext<PyEngineProfile>,
     ) -> Result<PyResult<Py<PyAny>>> {
         let py_context = PyComponentBuilderContext(context.clone());
         self.builder_fn.call((py_context,)).await
