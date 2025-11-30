@@ -12,6 +12,10 @@ tags: [custom-building-blocks, structured-data-extraction]
 authors: [linghua]
 ---
 
+import { DocumentationButton, GitHubButton } from '../../../src/components/GitHubButton';
+
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/hn_trending_topics" margin="0 0 24px 0" />
+
 ![Building a Real-Time HackerNews Trending Topics Detector with CocoIndex: A Deep Dive into Custom Sources and AI](/img/examples/hackernews-trending-topics/cover.png)
 
 
@@ -102,6 +106,8 @@ CocoInsight UI / API Clients
 
 ## Custom Source
 
+<DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_sources" text="Custom Sources" margin="0 0 16px 0" />
+
 ### Defining the Data Model
 ![HackerNews Data Model](/img/examples/hackernews-trending-topics/hackernews.png)
 
@@ -168,6 +174,8 @@ A `SourceSpec` holds config for the source:
 
 When the flow is created, these parameters feed into the connector.
 
+<DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_sources#source-spec" text="Source Spec" margin="0 0 16px 0" />
+
 #### Defining the Connector
 
 This is the core of the custom source.
@@ -206,6 +214,8 @@ class HackerNewsConnector:
 - Creates an async HTTP session
 
 CocoIndex calls `create` once when building the flow.
+
+<DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_sources#source-connector" text="Source Connector" margin="0 0 16px 0" />
 
 #### Listing Available Threads
 
@@ -255,6 +265,8 @@ This enables incremental refresh:
 - CocoIndex remembers ordinals
 - Only fetches full items when ordinals change
 
+<DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_sources#async-def-listoptions-required" text="list() method" margin="8px 0 16px 0" />
+
 #### Fetching Full Thread Content
 
 This async method fetches a **single HackerNews thread** (including its comments) from the **API**, and wraps the result in a `PartialSourceRowData` object — the structure CocoIndex uses for row-level ingestion.
@@ -287,6 +299,9 @@ async def get_value(
 - Parses the raw JSON into structured Python objects (`_HackerNewsThread` + `_HackerNewsComment`).
 - Returns a `PartialSourceRowData` containing the full thread.
 
+<DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_sources#async-def-get_valuekey-options-required" text="get_value() method" margin="8px 0 16px 0" />
+
+
 #### Ordinal Support
 
 Tells CocoIndex that this source provides ordinals. You can use any property that increases monotonically on change as an ordinal. We use a timestamp here. E.g., a timestamp or a version number.
@@ -313,6 +328,8 @@ Sync 2 (30s later):
 ```
 
 This is why ordinals (timestamps) matter. Without them, you'd fetch everything every time.
+
+<DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_sources#def-provides_ordinal-optional" text="provides_ordinal() method" margin="8px 0 16px 0" />
 
 #### Parsing JSON into Structured Data
 
@@ -403,7 +420,11 @@ def hackernews_trending_topics_flow(
 
 This block sets up a CocoIndex flow that fetches HackerNews stories and prepares them for indexing. It registers a flow called **HackerNewsTrendingTopics**, then adds a `HackerNewsSource` that retrieves up to 200 stories and refreshes every 30 seconds, storing the result in `data_scope["threads"]` for downstream steps. 
 
+<DocumentationButton url="https://cocoindex.io/docs/core/flow_def" text="Flow Definition Docs" margin="0 0 16px 0" />
+
 Finally, it creates two collectors—one for storing indexed messages and another for extracted topics—providing the core storage layers the rest of the pipeline will build on.
+
+<DocumentationButton url="https://cocoindex.io/docs/core/flow_def#data-collector" text="Data Collector" margin="0 0 16px 0" />
 
 ![Ingesting Data](/img/examples/hackernews-trending-topics/ingest.png)
 
@@ -442,7 +463,8 @@ class Topic:
     topic: str
 ```
 
-This dataclass defines a **Topic**, representing a single normalized concept extracted from text—such as a product, technology, company, person, or domain. It provides a prompt for the LLM to extract topics into structured information. Here we used a simple string. You could also generate [knowledge graphs](https://cocoindex.io/docs/examples/knowledge-graph-for-docs), or use it to extract other information too. 
+This dataclass defines a **Topic**, representing a single normalized concept extracted from text—such as a product, technology, company, person, or domain. It provides a prompt for the LLM to extract topics into structured information. Here we used a simple string. You could also generate [knowledge graphs](https://cocoindex.io/docs/examples/knowledge-graph-for-docs), or use it to extract other information too.
+
 
 #### Process Each Thread and Use LLM for Extraction
 
@@ -485,6 +507,8 @@ This block processes each HackerNews thread as it flows through the pipeline. In
 - We use an LLM (`gpt-5-mini`) to extract semantic **topics** from the thread's text by applying `ExtractByLlm`, which returns a list of `Topic` objects.
 - We use `message_index` to collect relevant metadata for this thread.
 - We use `topic_index` to collect extracted topics and their relationships with threads.
+
+<DocumentationButton url="https://cocoindex.io/docs/ops/functions#extractbyllm" text="ExtractByLlm" margin="0 0 16px 0" />
 
 ![Extract topic](/img/examples/hackernews-trending-topics/topic.png)
 
@@ -552,6 +576,8 @@ In short, this block enriches every comment with LLM-derived topics, indexes the
     )
 ```
 
+<DocumentationButton url="https://cocoindex.io/docs/targets/postgres" text="Postgres Target" margin="0 0 16px 0" />
+
 ## Query Handlers
 
 ### search_by_topic(query) → Find discussions about X
@@ -609,6 +635,8 @@ This block adds a query interface to the flow so users can search HackerNews con
 The `@hackernews_trending_topics_flow.query_handler()` decorator registers `search_by_topic()` as a query endpoint for the flow.
 
 When a topic string is provided, the function determines the actual database table names for the topics and messages collectors, then connects to the database and runs a SQL query that finds all topic records matching the search term (case-insensitive) and joins them with their corresponding message entries.
+
+<DocumentationButton url="https://cocoindex.io/docs/query#query-handler" text="Query Handler" margin="0 0 16px 0" />
 
 ### get_threads_for_topic(topic) → Threads discussing X
 
