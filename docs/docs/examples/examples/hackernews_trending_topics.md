@@ -1,17 +1,16 @@
 ---
 title: "Building a Real-Time HackerNews Trending Topics Detector with CocoIndex: A Deep Dive into Custom Sources and AI"
-description: "Building a Real-Time HackerNews Trending Topics Detector with CocoIndex: A Deep Dive into Custom Sources and AI"
+description: "Build a real-time trending topics detector by indexing HackerNews threads and comments, extracting structured topics using LLM-powered extraction, and querying trending discussions with CocoIndex's Custom Sources and Postgres."
 sidebar_class_name: hidden
 slug: /examples/hackernews-trending-topics
 canonicalUrl: '/examples/hackernews-trending-topics'
 sidebar_custom_props:
   image: /img/examples/hackernews-trending-topics/cover.png
-  tags: [examples, custom-source]
+  tags: [custom-building-blocks, structured-data-extraction]
 image: /img/examples/hackernews-trending-topics/cover.png
-tags: [examples, custom-source]
+tags: [custom-building-blocks, structured-data-extraction]
 authors: [linghua]
 ---
-
 
 ![Building a Real-Time HackerNews Trending Topics Detector with CocoIndex: A Deep Dive into Custom Sources and AI](/img/examples/hackernews-trending-topics/cover.png)
 
@@ -23,7 +22,6 @@ combined with [LLM-powered extraction](https://cocoindex.io/docs/ai/llm).
 
 In this post, we'll explore the **HackerNews Trending Topics** example, a production-ready pipeline that demonstrates some of the most powerful concepts in CocoIndex: incremental data syncing, LLM-powered information extraction, and queryable indexes.
 
-<!-- truncate -->
 
 ## Why build from HackerNews?
 
