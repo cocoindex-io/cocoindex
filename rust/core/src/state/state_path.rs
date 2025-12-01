@@ -1,7 +1,7 @@
 use crate::prelude::*;
-use std::fmt::Write as FmtWrite;
+use std::{fmt::Write as FmtWrite, io::Write};
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StateKey {
     Null,
     Bool(bool),
@@ -50,8 +50,92 @@ impl std::fmt::Display for StateKey {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+impl storekey::Encode for StateKey {
+    fn encode<W: Write>(&self, e: &mut storekey::Writer<W>) -> Result<(), storekey::EncodeError> {
+        match self {
+            StateKey::Null => {
+                e.write_u8(2)?;
+            }
+            StateKey::Bool(false) => {
+                e.write_u8(3)?;
+            }
+            StateKey::Bool(true) => {
+                e.write_u8(4)?;
+            }
+            StateKey::Int(i) => {
+                e.write_u8(5)?;
+                e.write_i64(*i)?;
+            }
+            StateKey::Str(s) => {
+                e.write_u8(6)?;
+                e.write_slice(s.as_bytes())?;
+            }
+            StateKey::Bytes(b) => {
+                e.write_u8(7)?;
+                e.write_slice(b.as_ref())?;
+            }
+            StateKey::Uuid(u) => {
+                e.write_u8(8)?;
+                e.write_array(*u.as_bytes())?;
+            }
+            StateKey::Array(a) => {
+                e.write_u8(9)?;
+                storekey::Encode::encode(a.as_ref(), e)?;
+            }
+            StateKey::Fingerprint(fp) => {
+                e.write_u8(10)?;
+                storekey::Encode::encode(fp, e)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl storekey::Decode for StateKey {
+    fn decode<D: std::io::BufRead>(
+        d: &mut storekey::Reader<D>,
+    ) -> Result<Self, storekey::DecodeError> {
+        match d.read_u8()? {
+            2 => Ok(StateKey::Null),
+            3 => Ok(StateKey::Bool(false)),
+            4 => Ok(StateKey::Bool(true)),
+            5 => Ok(StateKey::Int(d.read_i64()?)),
+            6 => Ok(StateKey::Str(d.read_string()?.into())),
+            7 => Ok(StateKey::Bytes(Arc::from(d.read_vec()?))),
+            8 => {
+                let bytes: [u8; 16] = d.read_array()?;
+                Ok(StateKey::Uuid(uuid::Uuid::from_bytes(bytes)))
+            }
+            9 => {
+                let v: Vec<StateKey> = storekey::Decode::decode(d)?;
+                Ok(StateKey::Array(Arc::from(v)))
+            }
+            10 => {
+                let fp: utils::fingerprint::Fingerprint = storekey::Decode::decode(d)?;
+                Ok(StateKey::Fingerprint(fp))
+            }
+            _ => Err(storekey::DecodeError::InvalidFormat),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StatePath(pub Arc<[StateKey]>);
+
+impl storekey::Encode for StatePath {
+    fn encode<W: Write>(&self, e: &mut storekey::Writer<W>) -> Result<(), storekey::EncodeError> {
+        storekey::Encode::encode(self.0.as_ref(), e)
+    }
+}
+
+impl storekey::Decode for StatePath {
+    fn decode<D: std::io::BufRead>(
+        d: &mut storekey::Reader<D>,
+    ) -> Result<Self, storekey::DecodeError> {
+        let items: Vec<StateKey> = storekey::Decode::decode(d)?;
+        Ok(StatePath(Arc::from(items)))
+    }
+}
 
 static ROOT_PATH: LazyLock<StatePath> = LazyLock::new(|| StatePath(Arc::new([])));
 
@@ -81,5 +165,65 @@ impl std::fmt::Display for StatePath {
             part.fmt(f)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn roundtrip<T>(value: &T) -> T
+    where
+        T: storekey::Encode + storekey::Decode + PartialEq + std::fmt::Debug,
+    {
+        let buf = storekey::encode_vec(value).expect("encode");
+        let decoded: T = storekey::decode(Cursor::new(&buf)).expect("decode");
+        decoded
+    }
+
+    #[test]
+    fn state_key_roundtrip() {
+        let uuid = uuid::Uuid::from_bytes([3u8; 16]);
+        let fp = utils::fingerprint::Fingerprint([7u8; 16]);
+        let cases = vec![
+            StateKey::Null,
+            StateKey::Bool(false),
+            StateKey::Bool(true),
+            StateKey::Int(0),
+            StateKey::Int(-1),
+            StateKey::Int(i64::MIN / 2),
+            StateKey::Int(i64::MAX / 2),
+            StateKey::Str(Arc::from("hello")),
+            StateKey::Str(Arc::from("nul\0inside")),
+            StateKey::Bytes(Arc::from(&b"bytes\x00with\x01escapes"[..])),
+            StateKey::Uuid(uuid),
+            StateKey::Array(Arc::from([
+                StateKey::Int(1),
+                StateKey::Str(Arc::from("a")),
+                StateKey::Bytes(Arc::from(&b"\0"[..])),
+            ])),
+            StateKey::Fingerprint(fp),
+        ];
+
+        for original in cases {
+            let decoded = roundtrip(&original);
+            assert_eq!(decoded, original);
+        }
+    }
+
+    #[test]
+    fn state_path_roundtrip() {
+        let path = StatePath(Arc::from(vec![
+            StateKey::Int(42),
+            StateKey::Str(Arc::from("part")),
+            StateKey::Bytes(Arc::from(&b"\0term"[..])),
+        ]));
+        let decoded = roundtrip(&path);
+        assert_eq!(decoded, path);
+
+        let empty = StatePath::root();
+        let decoded_empty = roundtrip(&empty);
+        assert_eq!(decoded_empty, empty);
     }
 }

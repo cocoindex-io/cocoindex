@@ -9,10 +9,17 @@ license = { workspace = true }
 cocoindex_utils = { path = "../utils" }
 
 heed = "0.22.0"
-storekey = { version = "0.9.0", features = ["uuid"] }
+storekey = { workspace = true }
 anyhow = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["rc", "derive"] }
 uuid = { workspace = true }
 tokio = { workspace = true }
 env_logger = { workspace = true }
 bytes = { workspace = true }
+
+rmp = { workspace = true }
+rmp-serde = { workspace = true }
+serde_with = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

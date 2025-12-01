@@ -1,13 +1,11 @@
 use crate::{
-    engine::{
-        effect::{EffectReconciler, RootEffectProviderRegistry},
-        profile::EngineProfile,
-    },
-    prelude::*,
+    engine::effect::RootEffectProviderRegistry, engine::profile::EngineProfile, prelude::*,
 };
 
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{collections::BTreeSet, path::PathBuf, u32};
+
+const MAX_DBS: u32 = 1024;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct EnvironmentSettings {
@@ -37,12 +35,21 @@ impl<Prof: EngineProfile> Environment<Prof> {
             db_env: unsafe {
                 heed::EnvOpenOptions::new()
                     .read_txn_without_tls()
+                    .max_dbs(MAX_DBS)
                     .open(settings.db_path.clone())
             }?,
             app_names: Mutex::new(BTreeSet::new()),
             effect_providers,
         });
         Ok(Self { inner: state })
+    }
+
+    pub fn db_env(&self) -> &heed::Env<heed::WithoutTls> {
+        &self.inner.db_env
+    }
+
+    pub fn effect_providers(&self) -> &RootEffectProviderRegistry<Prof> {
+        &self.inner.effect_providers
     }
 }
 

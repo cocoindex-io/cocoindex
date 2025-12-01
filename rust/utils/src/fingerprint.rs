@@ -2,11 +2,12 @@ use anyhow::bail;
 use base64::prelude::*;
 use blake2::digest::typenum;
 use blake2::{Blake2b, Digest};
-use serde::Deserialize;
 use serde::ser::{
-    Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
+    SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
     SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
+use serde::{Deserialize, Serialize};
+use serde_with::{Bytes, IfIsHumanReadable, base64::Base64, serde_as};
 
 #[derive(Debug)]
 pub struct FingerprinterError {
@@ -30,10 +31,23 @@ impl serde::ser::Error for FingerprinterError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Fingerprint(pub [u8; 16]);
+#[serde_as]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Fingerprint(#[serde_as(as = "IfIsHumanReadable<Base64, Bytes>")] pub [u8; 16]);
 
 impl Fingerprint {
+    pub fn from<T: Serialize + ?Sized>(data: &T) -> anyhow::Result<Self> {
+        let mut fingerprinter = Fingerprinter::default();
+        fingerprinter.write(data)?;
+        Ok(fingerprinter.into_fingerprint())
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let mut fingerprinter = Fingerprinter::default();
+        fingerprinter.write_raw_bytes(bytes);
+        fingerprinter.into_fingerprint()
+    }
+
     pub fn to_base64(self) -> String {
         BASE64_STANDARD.encode(self.0)
     }
@@ -71,22 +85,21 @@ impl std::hash::Hash for Fingerprint {
     }
 }
 
-impl Serialize for Fingerprint {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_base64())
+impl storekey::Encode for Fingerprint {
+    fn encode<W: std::io::Write>(
+        &self,
+        e: &mut storekey::Writer<W>,
+    ) -> Result<(), storekey::EncodeError> {
+        e.write_array(self.0)
     }
 }
 
-impl<'de> Deserialize<'de> for Fingerprint {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Self::from_base64(&s).map_err(serde::de::Error::custom)
+impl storekey::Decode for Fingerprint {
+    fn decode<D: std::io::BufRead>(
+        d: &mut storekey::Reader<D>,
+    ) -> Result<Self, storekey::DecodeError> {
+        let bytes: [u8; 16] = d.read_array()?;
+        Ok(Fingerprint(bytes))
     }
 }
 #[derive(Clone, Default)]
@@ -346,6 +359,10 @@ impl Serializer for &mut Fingerprinter {
         self.write_varlen_bytes(name.as_bytes());
         self.write_varlen_bytes(variant.as_bytes());
         Ok(self)
+    }
+
+    fn is_human_readable(&self) -> bool {
+        false
     }
 }
 

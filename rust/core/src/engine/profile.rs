@@ -11,7 +11,7 @@ pub trait Persist: Sized {
 
     fn to_bytes(&self) -> Result<bytes::Bytes, Self::Error>;
 
-    fn from_bytes(data: bytes::Bytes) -> Result<Self, Self::Error>;
+    fn from_bytes(data: &[u8]) -> Result<Self, Self::Error>;
 }
 
 pub trait StableFingerprint {
@@ -28,13 +28,14 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash {
 
     type EffectRcl: EffectReconciler<Self>;
     type EffectKey: Clone
+        + std::fmt::Debug
         + Send
         + Eq
         + Hash
         + Persist<Error = Self::Error>
         + StableFingerprint
         + 'static;
-    type EffectState: Clone + Send + 'static;
+    type EffectState: Clone + Send + Persist<Error = Self::Error> + 'static;
     type EffectAction: Send + 'static;
     type EffectSink: EffectSink<Self>;
     type EffectDecl;

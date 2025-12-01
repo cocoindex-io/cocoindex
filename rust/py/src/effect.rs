@@ -13,7 +13,7 @@ use crate::prelude::*;
 
 use crate::runtime::{PyAsyncContext, PyCallback};
 use crate::state_path::PyStatePath;
-use crate::value::PyKey;
+use crate::value::{PyKey, PyValue};
 
 static NON_EXISTENCE: OnceLock<Py<PyAny>> = OnceLock::new();
 
@@ -104,23 +104,20 @@ impl EffectReconciler<PyEngineProfile> for PyEffectReconciler {
         &self,
         key: PyKey,
         desired_effect: Option<Py<PyAny>>,
-        prev_possible_states: &[Arc<Py<PyAny>>],
+        prev_possible_states: &[PyValue],
         prev_may_be_missing: bool,
     ) -> PyResult<EffectReconcileOutput<PyEngineProfile>> {
         let output = Python::attach(|py| -> PyResult<_> {
             let prev_possible_states =
-                PyList::new(py, prev_possible_states.iter().map(|s| s.bind(py)))?;
-            let desired_effect = match &desired_effect {
-                Some(d) => d,
-                None => NON_EXISTENCE
-                    .get()
-                    .ok_or_else(|| PyException::new_err("Effect module not initialized"))?,
-            };
+                PyList::new(py, prev_possible_states.iter().map(|s| s.value().bind(py)))?;
+            let non_existence = NON_EXISTENCE
+                .get()
+                .ok_or_else(|| PyException::new_err("Effect module not initialized"))?;
             let output = self.sync_fn.call(
                 py,
                 (
                     key.value().bind(py),
-                    desired_effect,
+                    desired_effect.as_ref().unwrap_or(non_existence).bind(py),
                     prev_possible_states,
                     prev_may_be_missing,
                 ),
@@ -131,7 +128,11 @@ impl EffectReconciler<PyEngineProfile> for PyEffectReconciler {
             Ok(EffectReconcileOutput {
                 action,
                 sink,
-                state: Arc::new(state),
+                state: if non_existence.is(&state) {
+                    None
+                } else {
+                    Some(PyValue::new(Arc::new(state)))
+                },
             })
         })?;
         Ok(output)

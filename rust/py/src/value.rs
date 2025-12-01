@@ -29,6 +29,12 @@ impl std::hash::Hash for PyKey {
     }
 }
 
+impl std::fmt::Debug for PyKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_py_any(f, &self.data.value)
+    }
+}
+
 impl PyKey {
     pub fn new(py: Python<'_>, value: Py<PyAny>) -> PyResult<Self> {
         let serialized = python_functions().serialize(py, &value.bind(py))?;
@@ -61,9 +67,12 @@ impl Persist for PyKey {
         Ok(self.data.serialized.clone())
     }
 
-    fn from_bytes(data: bytes::Bytes) -> PyResult<Self> {
-        let value = Python::attach(|py| python_functions().deserialize(py, &data))?;
-        Ok(Self::from_value_and_bytes(value, data))
+    fn from_bytes(data: &[u8]) -> PyResult<Self> {
+        let value = Python::attach(|py| python_functions().deserialize(py, data))?;
+        Ok(Self::from_value_and_bytes(
+            value,
+            bytes::Bytes::copy_from_slice(data),
+        ))
     }
 }
 
@@ -71,4 +80,61 @@ impl StableFingerprint for PyKey {
     fn stable_fingerprint(&self) -> utils::fingerprint::Fingerprint {
         self.data.fingerprint
     }
+}
+
+#[derive(Clone)]
+pub struct PyValue {
+    data: Arc<Py<PyAny>>,
+}
+
+impl PyValue {
+    pub fn new(data: Arc<Py<PyAny>>) -> Self {
+        Self { data }
+    }
+
+    pub fn value(&self) -> &Py<PyAny> {
+        &self.data
+    }
+}
+
+impl std::fmt::Debug for PyValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        debug_py_any(f, &self.data)
+    }
+}
+
+impl Persist for PyValue {
+    type Error = PyErr;
+
+    fn to_bytes(&self) -> PyResult<bytes::Bytes> {
+        let serialized =
+            Python::attach(|py| python_functions().serialize(py, &self.data.bind(py)))?;
+        Ok(serialized)
+    }
+
+    fn from_bytes(data: &[u8]) -> PyResult<Self> {
+        let value = Python::attach(|py| python_functions().deserialize(py, data))?;
+        Ok(Self {
+            data: Arc::new(value),
+        })
+    }
+}
+
+fn debug_py_any(f: &mut std::fmt::Formatter<'_>, value: &Py<PyAny>) -> std::fmt::Result {
+    Python::attach(|py| {
+        let value = value.bind(py);
+        match value.repr() {
+            Ok(repr) => match repr.to_str() {
+                Ok(repr_str) => f.write_str(repr_str),
+                Err(err) => {
+                    error!("Error getting repr: {:?}", err);
+                    f.write_str("<error getting repr>")
+                }
+            },
+            Err(err) => {
+                error!("Error getting repr: {:?}", err);
+                f.write_str("<error getting repr>")
+            }
+        }
+    })
 }

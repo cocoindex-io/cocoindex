@@ -18,7 +18,7 @@ impl EngineProfile for PyEngineProfile {
 
     type EffectRcl = PyEffectReconciler;
     type EffectKey = crate::value::PyKey;
-    type EffectState = Arc<Py<PyAny>>;
+    type EffectState = crate::value::PyValue;
     type EffectAction = Py<PyAny>;
     type EffectSink = PyEffectSink;
     type EffectDecl = Py<PyAny>;

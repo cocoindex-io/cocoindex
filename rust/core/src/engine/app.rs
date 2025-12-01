@@ -1,7 +1,7 @@
 use crate::engine::profile::EngineProfile;
 use crate::prelude::*;
 
-use crate::engine::component::{Component, ComponentBuilder};
+use crate::engine::component::Component;
 use crate::engine::context::AppContext;
 
 use crate::engine::environment::{AppRegistration, Environment};
@@ -18,7 +18,21 @@ impl<Prof: EngineProfile> App<Prof> {
         root_component_builder: Prof::ComponentBld,
     ) -> Result<Self> {
         let app_reg = AppRegistration::new(name, &env)?;
-        let app_ctx = Arc::new(AppContext { env, app_reg });
+
+        let existing_db = {
+            let rtxn = env.db_env().read_txn()?;
+            env.db_env().open_database(&rtxn, Some(name))?
+        };
+        let db = if let Some(db) = existing_db {
+            db
+        } else {
+            let mut wtxn = env.db_env().write_txn()?;
+            let db = env.db_env().create_database(&mut wtxn, Some(name))?;
+            wtxn.commit()?;
+            db
+        };
+
+        let app_ctx = Arc::new(AppContext { env, db, app_reg });
         let root_component =
             Component::new(app_ctx.clone(), StatePath::root(), root_component_builder);
         Ok(Self { root_component })

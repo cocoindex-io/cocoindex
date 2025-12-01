@@ -31,6 +31,9 @@ neo4rs = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
 yaml-rust2 = { workspace = true, optional = true }
 
+serde_with = { workspace = true, features = ["base64"] }
+storekey = { workspace = true }
+
 [features]
 default = []
 reqwest = ["dep:reqwest"]

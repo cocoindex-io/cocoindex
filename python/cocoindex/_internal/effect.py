@@ -79,6 +79,7 @@ def _unwrap_reconcile_output(recon_output: EffectReconcileOutput[Action, State])
 
 
 class EffectReconcilerFn(Protocol[Action, Key_contra, Decl_contra, State]):
+    # TODO: Change output type to optional, to represent no-change.
     def __call__(
         self,
         key: Key_contra,

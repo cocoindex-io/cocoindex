@@ -76,65 +76,68 @@ def declare_global_map_entries(csp: coco.StatePath) -> None:
         coco.declare_effect(csp, _global_map_entry_effect(key, value))
 
 
-declare_global_map_entries_app = coco.App(
-    declare_global_map_entries,
-    coco.AppConfig(name="declare_global_map_entries_app", environment=coco_env),
-)
-
-
 def test_global_map_effect_insert() -> None:
     _global_map_effect_data.clear()
     _source_data.clear()
 
+    app = coco.App(
+        declare_global_map_entries,
+        coco.AppConfig(name="test_global_map_effect_insert", environment=coco_env),
+    )
+
     _source_data["a"] = 1
     _source_data["b"] = 2
-    declare_global_map_entries_app.update()
+    app.update()
     assert _global_map_effect_data == {
         "a": _MapDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
 
 
-@pytest.mark.skip(
-    reason="TODO: Enable this test after implementing effect logic on the engine side."
-)
 def test_global_map_effect_upsert() -> None:
     _global_map_effect_data.clear()
     _source_data.clear()
 
+    app = coco.App(
+        declare_global_map_entries,
+        coco.AppConfig(name="test_global_map_effect_upsert", environment=coco_env),
+    )
+
     _source_data["a"] = 1
     _source_data["b"] = 2
-    declare_global_map_entries_app.update()
+    app.update()
     assert _global_map_effect_data == {
         "a": _MapDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
 
     _source_data["a"] = 3
-    declare_global_map_entries_app.update()
+    app.update()
     assert _global_map_effect_data == {
-        "a": _MapDataWithPrev(data=3, prev=[1], prev_may_be_missing=True),
-        "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        "a": _MapDataWithPrev(data=3, prev=[1], prev_may_be_missing=False),
+        "b": _MapDataWithPrev(data=2, prev=[2], prev_may_be_missing=False),
     }
 
 
-@pytest.mark.skip(
-    reason="TODO: Enable this test after implementing effect logic on the engine side with respect to deletion."
-)
 def test_global_map_effect_delete() -> None:
     _global_map_effect_data.clear()
     _source_data.clear()
 
+    app = coco.App(
+        declare_global_map_entries,
+        coco.AppConfig(name="test_global_map_effect_delete", environment=coco_env),
+    )
+
     _source_data["a"] = 1
     _source_data["b"] = 2
-    declare_global_map_entries_app.update()
+    app.update()
     assert _global_map_effect_data == {
         "a": _MapDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
 
     del _source_data["a"]
-    declare_global_map_entries_app.update()
+    app.update()
     assert _global_map_effect_data == {
-        "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        "b": _MapDataWithPrev(data=2, prev=[2], prev_may_be_missing=False),
     }

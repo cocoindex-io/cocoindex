@@ -4,6 +4,7 @@ use crate::engine::effect::EffectProvider;
 use crate::engine::profile::EngineProfile;
 use crate::prelude::*;
 
+use crate::state::effect_path::EffectPath;
 use crate::{
     engine::environment::{AppRegistration, Environment},
     state::state_path::StatePath,
@@ -11,6 +12,7 @@ use crate::{
 
 pub struct AppContext<Prof: EngineProfile> {
     pub env: Environment<Prof>,
+    pub db: heed::Database<db_schema::DbEntryKey, heed::types::Bytes>,
     pub app_reg: AppRegistration<Prof>,
 }
 
@@ -27,7 +29,7 @@ pub(crate) struct ComponentBuilderContextInner<Prof: EngineProfile> {
     pub app_ctx: Arc<AppContext<Prof>>,
     pub state_path: StatePath,
 
-    pub declared_effects: Mutex<BTreeMap<StatePath, DeclaredEffect<Prof>>>,
+    pub declared_effects: Mutex<BTreeMap<EffectPath, DeclaredEffect<Prof>>>,
     // TODO: Add fields to record states, children components, etc.
 }
 
