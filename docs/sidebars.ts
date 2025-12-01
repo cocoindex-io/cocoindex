@@ -76,8 +76,8 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'doc',
-      id: 'http_server',
-      label: 'HTTP Server',
+      id: 'cocoinsight_access',
+      label: 'CocoInsight Access',
     },
     {
       type: 'doc',
