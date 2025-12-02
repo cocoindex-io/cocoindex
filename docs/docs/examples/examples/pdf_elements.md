@@ -106,7 +106,7 @@ def multi_format_indexing_flow(
     image_output = data_scope.add_collector()
 ```
 
-We define the flow, add a source, and add data collectors. 
+We define the flow, add a source, and add data collectors.
 
 For flow definition, the decorator
 
@@ -114,7 +114,7 @@ For flow definition, the decorator
 @cocoindex.flow_def(name="PdfElementsEmbedding")
 ```
 
-marks the function as a CocoIndex flow definition, registering it as part of the data indexing system. When executed via CocoIndex runtime, it orchestrates data ingestion, transformation, and collection.  
+marks the function as a CocoIndex flow definition, registering it as part of the data indexing system. When executed via CocoIndex runtime, it orchestrates data ingestion, transformation, and collection.
 
 ### Process Each Document
 
@@ -172,11 +172,11 @@ def extract_pdf_elements(content: bytes) -> list[PdfPage]:
     return result
 ```
 
-The `extract_pdf_elements` function reads a PDF file from bytes and extracts both text and images from each page in a structured way. 
+The `extract_pdf_elements` function reads a PDF file from bytes and extracts both text and images from each page in a structured way.
 
-- It parses every page to retrieve text content and any embedded images, skipping empty or very small images to avoid noise. 
+- It parses every page to retrieve text content and any embedded images, skipping empty or very small images to avoid noise.
 
-- Each image is resized to a consistent thumbnail size (up to 512×512) and converted into bytes for downstream use. 
+- Each image is resized to a consistent thumbnail size (up to 512×512) and converted into bytes for downstream use.
 
 The result is a clean, per-page data structure (`PdfPage`) that contains the page number, extracted text, and processed images — making it easy to embed and index PDFs for multimodal search.
 
@@ -250,7 +250,7 @@ with page["images"].row() as image:
 ```
 ![embed-image](/img/examples/pdf_elements/embed-image.png)
 
-When we collect image outputs, we also want to preserve relevant metadata alongside the embeddings. 
+When we collect image outputs, we also want to preserve relevant metadata alongside the embeddings.
 
 For each image, we store not only its embedding and raw image data, but also important metadata like the source file name and page number. This metadata ensures you can always identify which document and page an embedded image came from when retrieving or analyzing results.
 
@@ -295,7 +295,7 @@ Then open the UI 👉 `https://cocoindex.io/cocoinsight`
 
 ## 💡 Why This Matters
 
-Traditional document search only scratches the surface — it’s text-only and often brittle across document layouts. 
+Traditional document search only scratches the surface — it’s text-only and often brittle across document layouts.
 This flow gives you **multimodal recall**, meaning you can:
 
 - Search PDFs by text *or* image similarity

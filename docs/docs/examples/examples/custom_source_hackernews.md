@@ -35,7 +35,7 @@ In many scenarios, pipelines don't just read from clean tables. They depend on:
 - Legacy systems
 - Non-standard data models that don’t fit traditional connectors
 
-CocoIndex’s Custom Source API makes these integrations *declarative*, incremental, and safe by default. 
+CocoIndex’s Custom Source API makes these integrations *declarative*, incremental, and safe by default.
 
 ## Overview
 
@@ -50,7 +50,7 @@ The pipeline consists of three major parts:
 2. Build an index with CocoIndex Flow
     - Collect thread content
     - Collect all comments recursively
-    - Export to a Postgres table 
+    - Export to a Postgres table
 3. Add a lightweight query handler
     - Uses PostgreSQL full-text search
     - Returns ranked matches for a keyword query
@@ -68,7 +68,7 @@ Every custom source defines two lightweight data types:
 - Key Type → uniquely identifies an item
 - Value Type → the full content for that item
 
-In hacker news, each news is a thread, and each thread can have multiple comments. 
+In hacker news, each news is a thread, and each thread can have multiple comments.
 ![HackerNews Thread and Comments](/img/examples/custom_source_hackernews/hackernews.png)
 
 For HackerNews, let’s define keys like this:
@@ -189,7 +189,7 @@ async def list(
     # Use HackerNews search API
     search_url = "https://hn.algolia.com/api/v1/search_by_date"
     params: dict[str, Any] = {"hitsPerPage": self._spec.max_results}
-    
+
     if self._spec.tag:
         params["tags"] = self._spec.tag
     async with self._session.get(search_url, params=params) as response:
@@ -390,9 +390,9 @@ Your app can now query it as a real-time search index.
 
 ## Querying & Searching the HackerNews Index
 
-With the index flow complete, the next step is to add a query handler. 
+With the index flow complete, the next step is to add a query handler.
 This allows you to search and explore your indexed HackerNews data directly in CocoInsight.
-You can implement the query logic using any preferred library or framework. 
+You can implement the query logic using any preferred library or framework.
 
 <DocumentationButton url="https://cocoindex.io/docs/query#query-handler" text="Query Handler" margin="0 0 16px 0" />
 
@@ -433,9 +433,9 @@ def search_text(query: str) -> cocoindex.QueryOutput:
             return cocoindex.QueryOutput(results=results)
 ```
 
-This example shows how to create a query handler that lets you search HackerNews threads and comments stored in CocoIndex. 
+This example shows how to create a query handler that lets you search HackerNews threads and comments stored in CocoIndex.
 - The handler looks up the correct database table, then uses PostgreSQL’s full-text search functions (`to_tsvector` and `plainto_tsquery`) to find entries that match your search terms.
-- Matching results are sorted by their relevance (`ts_rank`) and by creation time, then converted to dictionaries. 
+- Matching results are sorted by their relevance (`ts_rank`) and by creation time, then converted to dictionaries.
 - Finally, these results are returned in a `cocoindex.QueryOutput` object—making it easy to perform fast, ranked searches across your indexed HackerNews content.
 
 ##  Running Your HackerNews Custom Source
@@ -480,7 +480,7 @@ cocoindex update -L main
 
 ## 3. Troubleshoot & Inspect with CocoInsight
 
-CocoInsight lets you **visualize and debug your flow**, see the lineage of your data, and understand what’s happening under the hood. 
+CocoInsight lets you **visualize and debug your flow**, see the lineage of your data, and understand what’s happening under the hood.
 
 Start the server:
 
@@ -491,9 +491,9 @@ cocoindex server -ci main
 Then open the UI in your browser: [`https://cocoindex.io/cocoinsight`](https://cocoindex.io/cocoinsight)
 
 > CocoInsight has zero pipeline data retention — it’s safe for debugging and inspecting your flows locally.
-> 
+>
 
-Note that this requires QueryHandler setup in previous step. 
+Note that this requires QueryHandler setup in previous step.
 
 
 ## What You Can Build Next
@@ -547,7 +547,7 @@ Custom Sources extend this model to *any* API — internal, external, legacy, or
 This unlocks a simple but powerful pattern:
 
 > If you can fetch it, CocoIndex can index it, diff it, and sync it.
-> 
+>
 
 ## ⭐ Try It, Fork It, Star It
 
