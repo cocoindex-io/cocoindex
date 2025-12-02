@@ -182,10 +182,7 @@ pub async fn new_llm_embedding_client(
             Box::new(gemini::VertexAiClient::new(address, api_key, api_config).await?)
                 as Box<dyn LlmEmbeddingClient>
         }
-        LlmApiType::LiteLlm
-        | LlmApiType::Vllm
-        | LlmApiType::Anthropic
-        | LlmApiType::Bedrock => {
+        LlmApiType::LiteLlm | LlmApiType::Vllm | LlmApiType::Anthropic | LlmApiType::Bedrock => {
             api_bail!("Embedding is not supported for API type {:?}", api_type)
         }
     };
