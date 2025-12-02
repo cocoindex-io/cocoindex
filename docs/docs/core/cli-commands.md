@@ -13,7 +13,7 @@ Modes of operation:
 
 **Usage:**
 
-```sh
+```bash
 cocoindex drop [OPTIONS] [APP_TARGET] [FLOW_NAME]...
 ```
 
@@ -45,7 +45,7 @@ flow.
 
 **Usage:**
 
-```sh
+```bash
 cocoindex evaluate [OPTIONS] APP_FLOW_SPECIFIER
 ```
 
@@ -72,7 +72,7 @@ the backend.
 
 **Usage:**
 
-```sh
+```bash
 cocoindex ls [OPTIONS] [APP_TARGET]
 ```
 
@@ -95,7 +95,7 @@ It will allow tools like CocoInsight to access the server.
 
 **Usage:**
 
-```sh
+```bash
 cocoindex server [OPTIONS] APP_TARGET
 ```
 
@@ -128,7 +128,7 @@ storage and target (to export to).
 
 **Usage:**
 
-```sh
+```bash
 cocoindex setup [OPTIONS] APP_TARGET
 ```
 
@@ -160,7 +160,7 @@ flow.
 
 **Usage:**
 
-```sh
+```bash
 cocoindex show [OPTIONS] APP_FLOW_SPECIFIER
 ```
 
@@ -184,7 +184,7 @@ or `module:FlowName`. If `:FlowName` is omitted, updates all flows.
 
 **Usage:**
 
-```sh
+```bash
 cocoindex update [OPTIONS] APP_FLOW_SPECIFIER
 ```
 

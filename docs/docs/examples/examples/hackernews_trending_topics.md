@@ -21,7 +21,7 @@ import { DocumentationButton, GitHubButton } from '../../../src/components/GitHu
 
 In the age of information overload, understanding what's trending—and why—is crucial for developers, researchers, and data engineers. HackerNews is one of the most influential tech communities, but manually tracking emerging topics across thousands of threads and comments is practically impossible.
 
-What if you could automatically index HackerNews content, extract topics using AI, and query trending discussions in real-time? That's exactly what CocoIndex enables through its [**Custom Sources**](https://cocoindex.io/blogs/custom-source) framework 
+What if you could automatically index HackerNews content, extract topics using AI, and query trending discussions in real-time? That's exactly what CocoIndex enables through its [**Custom Sources**](https://cocoindex.io/blogs/custom-source) framework
 combined with [LLM-powered extraction](https://cocoindex.io/docs/ai/llm).
 
 In this post, we'll explore the **HackerNews Trending Topics** example, a production-ready pipeline that demonstrates some of the most powerful concepts in CocoIndex: incremental data syncing, LLM-powered information extraction, and queryable indexes.
@@ -120,7 +120,7 @@ class _HackerNewsThreadKey(NamedTuple):
     thread_id: str
 ```
 
-CocoIndex recommends to use stable keys. HN thread IDs are perfect keys.
+CocoIndex recommends using stable keys. HN thread IDs are perfect keys.
 
 #### Value Type
 
@@ -319,7 +319,7 @@ The genius of Custom Sources is the **separation of discovery from fetching**.
 Sync 1:
   list()      → 200 thread IDs + timestamps (fast)
   get_value() → 200 full threads (expensive)
-  
+
 Sync 2 (30s later):
   list()      → 200 thread IDs + timestamps (fast)
   [CocoIndex detects only 15 changed]
@@ -418,7 +418,7 @@ def hackernews_trending_topics_flow(
 
 ```
 
-This block sets up a CocoIndex flow that fetches HackerNews stories and prepares them for indexing. It registers a flow called **HackerNewsTrendingTopics**, then adds a `HackerNewsSource` that retrieves up to 200 stories and refreshes every 30 seconds, storing the result in `data_scope["threads"]` for downstream steps. 
+This block sets up a CocoIndex flow that fetches HackerNews stories and prepares them for indexing. It registers a flow called **HackerNewsTrendingTopics**, then adds a `HackerNewsSource` that retrieves up to 200 stories and refreshes every 30 seconds, storing the result in `data_scope["threads"]` for downstream steps.
 
 <DocumentationButton url="https://cocoindex.io/docs/core/flow_def" text="Flow Definition Docs" margin="0 0 16px 0" />
 
@@ -502,7 +502,7 @@ with data_scope["threads"].row() as thread:
         )
 ```
 
-This block processes each HackerNews thread as it flows through the pipeline. Inside `data_scope["threads"].row()`, each `thread` represents a single story record. 
+This block processes each HackerNews thread as it flows through the pipeline. Inside `data_scope["threads"].row()`, each `thread` represents a single story record.
 
 - We use an LLM (`gpt-5-mini`) to extract semantic **topics** from the thread's text by applying `ExtractByLlm`, which returns a list of `Topic` objects.
 - We use `message_index` to collect relevant metadata for this thread.
@@ -630,7 +630,7 @@ def search_by_topic(topic: str) -> cocoindex.QueryOutput:
 
 ```
 
-This block adds a query interface to the flow so users can search HackerNews content by topic. 
+This block adds a query interface to the flow so users can search HackerNews content by topic.
 
 The `@hackernews_trending_topics_flow.query_handler()` decorator registers `search_by_topic()` as a query endpoint for the flow.
 
@@ -668,7 +668,7 @@ def get_threads_for_topic(topic: str) -> list[dict[str, Any]]:
             ]
 ```
 
-This function finds all HackerNews threads related to a given topic and ranks them. It looks up the topic table in the database, calculates a **score** for each thread (higher for main threads, lower for comments), and finds the most recent mention. 
+This function finds all HackerNews threads related to a given topic and ranks them. It looks up the topic table in the database, calculates a **score** for each thread (higher for main threads, lower for comments), and finds the most recent mention.
 
 It then returns a list of threads with their URL, score, and latest mention time, so you can see which threads are most relevant or trending for that topic.
 
@@ -681,7 +681,7 @@ By weighting 5:1, the system prioritizes original discussions over tangential me
 
 ### get_trending_topics(limit) → Top 20 topics by score
 
-This function finds the **most popular topics** on HackerNews. 
+This function finds the **most popular topics** on HackerNews.
 
 ```python
 @hackernews_trending_topics_flow.query_handler()
@@ -755,7 +755,7 @@ cocoindex server -ci main
 Then open the UI in your browser: [**`https://cocoindex.io/cocoinsight`**](https://cocoindex.io/cocoinsight)
 
 > CocoInsight has zero pipeline data retention — it’s safe for debugging and inspecting your flows locally.
-> 
+>
 
 Note that this requires QueryHandler setup in previous step.
 
@@ -823,23 +823,23 @@ By integrating with an AI agent framework, the indexed topics and threads become
 ## Why Use CocoIndex for This?
 
 1. **Incremental Sync**
-    
+
     Traditional pipelines fetch everything repeatedly. CocoIndex fetches only new or updated threads, dramatically reducing API calls and latency.
-    
+
 2. **Declarative & Modular**
-    
+
     Flows, collectors, and query handlers are modular. You can add new sources (Reddit, Twitter, internal chat logs) or new transformations (summaries, sentiment analysis, embeddings) without rewriting the entire pipeline.
-    
+
 3. **LLM Integration is Seamless**
-    
+
     CocoIndex treats LLMs as first-class citizens for structured extraction. You don’t need complex glue code — the framework handles transformation, type enforcement, and storage.
-    
+
 4. **Queryable Structured Index**
-    
+
     Topics and messages are stored in Postgres, ready for SQL queries or API-based search. You can serve both analytics dashboards and AI agents from the same structured store.
-    
+
 5. **Supports Continuous Workflows**
-    
+
     CocoIndex pipelines can run live, with real-time updates every few seconds. Combine this with AI agents, and you have a **self-updating knowledge system** that reasons over the latest information.
 
 
