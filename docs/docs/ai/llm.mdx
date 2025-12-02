@@ -26,7 +26,7 @@ We support the following types of LLM APIs:
 | [Anthropic](#anthropic) | `LlmApiType.ANTHROPIC` | ✅ | ❌ |
 | [Voyage](#voyage) | `LlmApiType.VOYAGE` | ❌ | ✅ |
 | [LiteLLM](#litellm) | `LlmApiType.LITE_LLM` | ✅ | ❌ |
-| [OpenRouter](#openrouter) | `LlmApiType.OPEN_ROUTER` | ✅ | ❌ |
+| [OpenRouter](#openrouter) | `LlmApiType.OPEN_ROUTER` | ✅ | ✅ |
 | [vLLM](#vllm) | `LlmApiType.VLLM` | ✅ | ❌ |
 | [Bedrock](#bedrock) | `LlmApiType.BEDROCK` | ✅ | ❌ |
 
@@ -400,7 +400,7 @@ You can find the full list of models supported by LiteLLM [here](https://docs.li
 To use the OpenRouter API, you need to set the environment variable `OPENROUTER_API_KEY`.
 You can generate the API key from [here](https://openrouter.ai/settings/keys).
 
-A spec for OpenRouter looks like this:
+A text generation spec for OpenRouter looks like this:
 
 <Tabs>
 <TabItem value="python" label="Python" default>
@@ -409,6 +409,27 @@ A spec for OpenRouter looks like this:
 cocoindex.LlmSpec(
     api_type=cocoindex.LlmApiType.OPEN_ROUTER,
     model="deepseek/deepseek-r1:free",
+)
+```
+
+</TabItem>
+</Tabs>
+
+OpenRouter also supports some text embedding models. Note that for OpenRouter embedding
+models, you need to explicitly provide the `output_dimension` parameter in the spec.
+Here's how you can define the spec to use an OpenRouter embedding model:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.OPEN_ROUTER,
+    model="openai/text-embedding-3-small",
+    # Task type for embedding model
+    task_type="SEMANTICS_SIMILARITY",
+    # Required: the number of output dimensions for the embedding model
+    output_dimension=1536,
 )
 ```
 

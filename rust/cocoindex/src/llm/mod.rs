@@ -166,6 +166,10 @@ pub async fn new_llm_embedding_client(
         LlmApiType::Ollama => {
             Box::new(ollama::Client::new(address).await?) as Box<dyn LlmEmbeddingClient>
         }
+        LlmApiType::OpenRouter => {
+            Box::new(openrouter::Client::new_openrouter(address, api_key).await?)
+                as Box<dyn LlmEmbeddingClient>
+        }
         LlmApiType::Gemini => {
             Box::new(gemini::AiStudioClient::new(address, api_key)?) as Box<dyn LlmEmbeddingClient>
         }
@@ -178,11 +182,7 @@ pub async fn new_llm_embedding_client(
             Box::new(gemini::VertexAiClient::new(address, api_key, api_config).await?)
                 as Box<dyn LlmEmbeddingClient>
         }
-        LlmApiType::OpenRouter
-        | LlmApiType::LiteLlm
-        | LlmApiType::Vllm
-        | LlmApiType::Anthropic
-        | LlmApiType::Bedrock => {
+        LlmApiType::LiteLlm | LlmApiType::Vllm | LlmApiType::Anthropic | LlmApiType::Bedrock => {
             api_bail!("Embedding is not supported for API type {:?}", api_type)
         }
     };
