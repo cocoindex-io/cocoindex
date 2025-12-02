@@ -27,6 +27,7 @@ from .flow import update_all_flows_async, setup_all_flows, drop_all_flows
 from .lib import settings, init, start_server, stop
 from .llm import LlmSpec, LlmApiType
 from .index import (
+    FtsIndexDef,
     VectorSimilarityMetric,
     VectorIndexDef,
     IndexOptions,
@@ -95,6 +96,7 @@ __all__ = [
     # Index
     "VectorSimilarityMetric",
     "VectorIndexDef",
+    "FtsIndexDef",
     "IndexOptions",
     "HnswVectorIndexMethod",
     "IvfFlatVectorIndexMethod",

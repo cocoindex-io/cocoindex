@@ -384,6 +384,9 @@ impl SetupState {
         index_options: &IndexOptions,
         column_options: &HashMap<String, ColumnOptions>,
     ) -> Result<Self> {
+        if !index_options.fts_indexes.is_empty() {
+            api_bail!("FTS indexes are not supported for Postgres target");
+        }
         Ok(Self {
             columns: TableColumnsSchema {
                 key_columns: key_fields_schema

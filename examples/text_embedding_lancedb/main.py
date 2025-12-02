@@ -76,6 +76,11 @@ def text_embedding_flow(
         coco_lancedb.LanceDB(db_uri=LANCEDB_URI, table_name=LANCEDB_TABLE),
         primary_key_fields=["id"],
         vector_indexes=vector_indexes,
+        fts_indexes=[
+            cocoindex.FtsIndexDef(
+                field_name="text", parameters={"tokenizer_name": "simple"}
+            )
+        ],
     )
 
 

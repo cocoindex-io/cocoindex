@@ -20,7 +20,7 @@ from ..typing import (
     VectorTypeSchema,
     TableType,
 )
-from ..index import VectorIndexDef, IndexOptions, VectorSimilarityMetric
+from ..index import VectorIndexDef, FtsIndexDef, IndexOptions, VectorSimilarityMetric
 
 _logger = logging.getLogger(__name__)
 
@@ -49,10 +49,18 @@ class _VectorIndex:
 
 
 @dataclasses.dataclass
+class _FtsIndex:
+    name: str
+    field_name: str
+    parameters: dict[str, Any] | None = None
+
+
+@dataclasses.dataclass
 class _State:
     key_field_schema: FieldSchema
     value_fields_schema: list[FieldSchema]
     vector_indexes: list[_VectorIndex] | None = None
+    fts_indexes: list[_FtsIndex] | None = None
     db_options: DatabaseOptions | None = None
 
 
@@ -318,6 +326,18 @@ class _Connector:
                 if index_options.vector_indexes is not None
                 else None
             ),
+            fts_indexes=(
+                [
+                    _FtsIndex(
+                        name=f"__{index.field_name}__fts__idx",
+                        field_name=index.field_name,
+                        parameters=index.parameters,
+                    )
+                    for index in index_options.fts_indexes
+                ]
+                if index_options.fts_indexes is not None
+                else None
+            ),
         )
 
     @staticmethod
@@ -411,6 +431,30 @@ class _Connector:
         for vector_index_name in unseen_prev_vector_indexes:
             if vector_index_name in existing_vector_indexes:
                 await table.drop_index(vector_index_name)
+
+        # Handle FTS indexes
+        unseen_prev_fts_indexes = {
+            index.name for index in (previous and previous.fts_indexes) or []
+        }
+        existing_fts_indexes = {index.name for index in await table.list_indices()}
+
+        for fts_index in current.fts_indexes or []:
+            if fts_index.name in unseen_prev_fts_indexes:
+                unseen_prev_fts_indexes.remove(fts_index.name)
+            else:
+                try:
+                    # Create FTS index using create_fts_index() API
+                    # Pass parameters as kwargs to support any future FTS index options
+                    kwargs = fts_index.parameters if fts_index.parameters else {}
+                    await table.create_fts_index(fts_index.field_name, **kwargs)
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    raise RuntimeError(
+                        f"Exception in creating FTS index on field {fts_index.field_name}: {e}"
+                    ) from e
+
+        for fts_index_name in unseen_prev_fts_indexes:
+            if fts_index_name in existing_fts_indexes:
+                await table.drop_index(fts_index_name)
 
     @staticmethod
     async def prepare(
