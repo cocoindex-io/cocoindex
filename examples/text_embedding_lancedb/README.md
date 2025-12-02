@@ -46,6 +46,13 @@ You can also run the command with `-L`, which will watch for file changes and up
 cocoindex update -L main
 ```
 
+By default, the vector index is not enabled, because LanceDB requires at least 256 rows to be there before it can build the index (see [this issue](https://github.com/lance-format/lance/issues/4034) for more details).
+After your LanceDB target table has enough data, you can update `.env` file with the following environment variable to enable the vector index from there on:
+
+```sh
+ENABLE_LANCEDB_VECTOR_INDEX=true
+```
+
 ## CocoInsight
 
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
