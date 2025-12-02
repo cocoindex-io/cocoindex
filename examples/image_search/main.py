@@ -3,7 +3,7 @@ import functools
 import io
 import os
 from contextlib import asynccontextmanager
-from typing import Any, cast, AsyncIterator
+from typing import Any, cast, AsyncIterator, Literal, Final, TYPE_CHECKING
 
 import cocoindex
 import torch
@@ -19,7 +19,11 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearch"
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
-# Using simple list[float] for embeddings for readability in example code.
+CLIP_MODEL_DIMENSION: Final[int] = 768
+if TYPE_CHECKING:
+    ClipDim = Literal[768]
+else:
+    ClipDim = int
 
 
 @functools.cache
@@ -29,7 +33,7 @@ def get_clip_model() -> tuple[CLIPModel, CLIPProcessor]:
     return model, processor
 
 
-def embed_query(text: str) -> list[float]:
+def embed_query(text: str) -> cocoindex.Vector[cocoindex.Float32, ClipDim]:
     """
     Embed the caption using CLIP model.
     """
@@ -37,13 +41,16 @@ def embed_query(text: str) -> list[float]:
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     with torch.no_grad():
         features = model.get_text_features(**inputs)
-    return cast(list[float], features[0].tolist())
+    return cast(
+        cocoindex.Vector[cocoindex.Float32, ClipDim],
+        features[0].tolist(),
+    )
 
 
 @cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
 def embed_image(
     img_bytes: bytes,
-) -> list[float]:
+) -> cocoindex.Vector[cocoindex.Float32, ClipDim]:
     """
     Convert image to embedding using CLIP model.
     """
@@ -52,7 +59,10 @@ def embed_image(
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         features = model.get_image_features(**inputs)
-    return cast(list[float], features[0].tolist())
+    return cast(
+        cocoindex.Vector[cocoindex.Float32, ClipDim],
+        features[0].tolist(),
+    )
 
 
 # CocoIndex flow: Ingest images, extract captions, embed, export to Qdrant
@@ -141,7 +151,7 @@ app.mount("/img", StaticFiles(directory="img"), name="img")
 
 
 # --- Search API ---
-@app.get("/search")  # type: ignore
+@app.get("/search")  # type: ignore[untyped-decorator]
 def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
@@ -170,5 +180,3 @@ def search(
         ]
     }
 
-
-# Route attached via decorator above for readability

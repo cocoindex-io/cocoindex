@@ -9,7 +9,7 @@ from marker.models import create_model_dict
 from marker.output import text_from_rendered
 from psycopg_pool import ConnectionPool
 from jinja2 import Template
-from typing import Any, cast
+from typing import Any
 
 
 class PdfToMarkdown(cocoindex.op.FunctionSpec):
@@ -34,8 +34,7 @@ class PdfToMarkdownExecutor:
             temp_file.write(content)
             temp_file.flush()
             text_any, _, _ = text_from_rendered(self._converter(temp_file.name))
-            text: str = cast(str, text_any)
-            return text
+            return text_any  # type: ignore
 
 
 @cocoindex.transform_flow()

@@ -100,6 +100,7 @@ app.mount("/img", StaticFiles(directory="img"), name="img")
 
 
 # --- Search API ---
+@app.get("/search")  # type: ignore
 def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
@@ -133,5 +134,3 @@ def search(
     }
 
 
-# Attach route without using decorator to avoid untyped-decorator when FastAPI types are unavailable
-app.get("/search")(search)
