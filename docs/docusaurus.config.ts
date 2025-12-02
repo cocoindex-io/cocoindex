@@ -78,6 +78,10 @@ const config: Config = {
             from: '/ops/sources',
             to: '/sources',
           },
+          {
+            from: '/http_server',
+            to: '/cocoinsight_access',
+          },
         ],
       },
     ],
