@@ -557,6 +557,9 @@ impl SetupState {
             .iter()
             .map(|f| (f.name.as_str(), &f.value_type.typ))
             .collect::<HashMap<_, _>>();
+        if !index_options.fts_indexes.is_empty() {
+            api_bail!("FTS indexes are not supported for Neo4j target");
+        }
         for index_def in index_options.vector_indexes.iter() {
             sub_components.push(ComponentState {
                 object_label: schema.elem_type.clone(),
