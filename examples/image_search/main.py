@@ -179,4 +179,3 @@ def search(
             for result in search_results
         ]
     }
-
