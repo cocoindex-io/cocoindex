@@ -1,4 +1,4 @@
-from dotenv import load_dotenv
+import os
 import datetime
 import cocoindex
 import math
@@ -31,6 +31,10 @@ def text_embedding_flow(
     """
     Define an example flow that embeds text into a vector database.
     """
+    ENABLE_LANCEDB_VECTOR_INDEX = os.environ.get(
+        "ENABLE_LANCEDB_VECTOR_INDEX", "0"
+    ).lower() in ("true", "1")
+
     data_scope["documents"] = flow_builder.add_source(
         cocoindex.sources.LocalFile(path="markdown_files"),
         refresh_interval=datetime.timedelta(seconds=5),
@@ -57,18 +61,26 @@ def text_embedding_flow(
                 text_embedding=chunk["embedding"],
             )
 
+    # We cannot enable index when the table has no data yet, as LanceDB requires data to train the index.
+    # See: https://github.com/lancedb/lance/issues/4034
+    # Guard it with ENABLE_LANCEDB_VECTOR_INDEX environment variable.
+    vector_indexes = []
+    if ENABLE_LANCEDB_VECTOR_INDEX:
+        vector_indexes.append(
+            cocoindex.VectorIndexDef(
+                "text_embedding", cocoindex.VectorSimilarityMetric.L2_DISTANCE
+            )
+        )
     doc_embeddings.export(
         "doc_embeddings",
         coco_lancedb.LanceDB(db_uri=LANCEDB_URI, table_name=LANCEDB_TABLE),
         primary_key_fields=["id"],
-        # We cannot enable it when the table has no data yet, as LanceDB requires data to train the index.
-        # See: https://github.com/lancedb/lance/issues/4034
-        #
-        #   vector_indexes=[
-        #       cocoindex.VectorIndexDef(
-        #           "text_embedding", cocoindex.VectorSimilarityMetric.L2_DISTANCE
-        #       ),
-        #   ],
+        vector_indexes=vector_indexes,
+        fts_indexes=[
+            cocoindex.FtsIndexDef(
+                field_name="text", parameters={"tokenizer_name": "simple"}
+            )
+        ],
     )
 
 

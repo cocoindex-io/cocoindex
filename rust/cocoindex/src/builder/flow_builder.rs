@@ -252,7 +252,7 @@ impl FlowBuilder {
     #[new]
     pub fn new(py: Python<'_>, name: &str, py_event_loop: Py<PyAny>) -> PyResult<Self> {
         let lib_context = py
-            .allow_threads(|| -> anyhow::Result<Arc<LibContext>> {
+            .detach(|| -> anyhow::Result<Arc<LibContext>> {
                 get_runtime().block_on(get_lib_context())
             })
             .into_py_result()?;
@@ -331,7 +331,7 @@ impl FlowBuilder {
             flow_ctx: self.flow_inst_context.clone(),
         };
         let analyzed = py
-            .allow_threads(|| {
+            .detach(|| {
                 get_runtime().block_on(
                     analyzer_ctx.analyze_import_op(&self.root_op_scope, import_op.clone()),
                 )
@@ -486,7 +486,7 @@ impl FlowBuilder {
             flow_ctx: self.flow_inst_context.clone(),
         };
         let analyzed = py
-            .allow_threads(|| {
+            .detach(|| {
                 get_runtime().block_on(analyzer_ctx.analyze_reactive_op(op_scope, &reactive_op))
             })
             .into_py_result()?;
@@ -536,7 +536,7 @@ impl FlowBuilder {
             flow_ctx: self.flow_inst_context.clone(),
         };
         let analyzed = py
-            .allow_threads(|| {
+            .detach(|| {
                 get_runtime().block_on(analyzer_ctx.analyze_reactive_op(common_scope, &reactive_op))
             })
             .into_py_result()?;
@@ -645,7 +645,7 @@ impl FlowBuilder {
         };
         let flow_instance_ctx = self.flow_inst_context.clone();
         let flow_ctx = py
-            .allow_threads(|| {
+            .detach(|| {
                 get_runtime().block_on(async move {
                     let analyzed_flow =
                         super::AnalyzedFlow::from_flow_instance(spec, flow_instance_ctx).await?;

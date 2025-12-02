@@ -30,7 +30,7 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 Start Qdrant with Docker (exposes HTTP 6333 and gRPC 6334):
 
-```bash
+```sh
 docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
 ```
 
@@ -40,7 +40,7 @@ Note: This example connects via gRPC at `http://localhost:6334`.
 
 Download a few sample PDFs (all are board game manuals) and put them into the `source_files` directory by running:
 
-```bash
+```sh
 ./fetch_manual_urls.sh
 ```
 
@@ -50,13 +50,13 @@ You can also put your favorite PDFs into the `source_files` directory.
 
 Install dependencies:
 
-```bash
+```sh
 pip install -e .
 ```
 
 Update index, which will also setup the tables at the first time:
 
-```bash
+```sh
 cocoindex update main
 ```
 
@@ -64,7 +64,7 @@ cocoindex update main
 
 I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

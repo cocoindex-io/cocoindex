@@ -2,6 +2,10 @@
 Cocoindex is a framework for building and running indexing pipelines.
 """
 
+from ._version import __version__
+
+from . import _version_check
+
 from . import _engine  # type: ignore
 from . import functions, sources, targets, cli, utils
 
@@ -23,6 +27,7 @@ from .flow import update_all_flows_async, setup_all_flows, drop_all_flows
 from .lib import settings, init, start_server, stop
 from .llm import LlmSpec, LlmApiType
 from .index import (
+    FtsIndexDef,
     VectorSimilarityMetric,
     VectorIndexDef,
     IndexOptions,
@@ -46,6 +51,7 @@ from .typing import (
 _engine.init_pyo3_runtime()
 
 __all__ = [
+    "__version__",
     # Submodules
     "_engine",
     "functions",
@@ -90,6 +96,7 @@ __all__ = [
     # Index
     "VectorSimilarityMetric",
     "VectorIndexDef",
+    "FtsIndexDef",
     "IndexOptions",
     "HnswVectorIndexMethod",
     "IvfFlatVectorIndexMethod",

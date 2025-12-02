@@ -27,7 +27,7 @@ We will match against user-provided natural language text using ColPali's text-t
 
 You can start Qdrant with Docker:
 
-```bash
+```sh
 docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
 ```
 
@@ -35,7 +35,7 @@ docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
 
 Install dependencies:
 
-```bash
+```sh
 pip install -e .
 ```
 
@@ -43,13 +43,13 @@ pip install -e .
 
 Update index:
 
-```bash
+```sh
 cocoindex update main
 ```
 
 Run:
 
-```bash
+```sh
 python main.py
 ```
 

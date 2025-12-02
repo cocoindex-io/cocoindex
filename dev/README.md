@@ -10,7 +10,7 @@ Automatically generates CLI documentation from the CocoIndex Click commands.
 
 **Usage:**
 
-```bash
+```sh
 python dev/generate_cli_docs.py
 ```
 

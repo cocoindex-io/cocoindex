@@ -1,0 +1,96 @@
+---
+title: CocoInsight Access
+description: Give CocoInsight access to your CocoIndex flows
+---
+
+## CocoInsight
+
+CocoInsight is a comprehensive web UI to help you understand your flows and interact with the index.
+
+CocoInsight itself has zero data retention with your flows schema and data.
+It talks to your CocoIndex server through HTTP APIs to retrieve flow schema and data when you're using it.
+
+CocoIndex library exposes an HTTP server, mainly for CocoInsight to access your CocoIndex flows and their schema and data.
+
+On YouTube there're a couple videos that give you a quick tour of CocoInsight:
+
+* [Introducing CocoInsight](https://www.youtube.com/watch?v=MMrpUfUcZPk)
+* [Fast Iterate Your Indexing Strategy with CocoInsight](https://www.youtube.com/watch?v=crV7odEVYTE)
+
+## Start the server
+
+There are two ways to start the server:
+
+### CLI
+
+Use the `cocoindex server` command. See more options in the [CLI](./core/cli).
+
+* Default bind address: **127.0.0.1:49344** (only exposed locally for safety)
+* Override if you need to expose to all IPs (example: `0.0.0.0:49344`)
+
+```sh
+# Start on the default local address (127.0.0.1:49344)
+cocoindex server path/to/app.py
+
+# Expose to all interfaces and allow CocoInsight
+cocoindex server path/to/app.py -a 0.0.0.0:49344 -ci
+
+# Add a custom CORS origin or allow a local frontend port
+cocoindex server path/to/app.py \
+  -c https://example.com \
+  -cl 3000
+```
+
+Flags of interest:
+
+* `-a`, `--address <IP:PORT>`: Bind address (defaults to 127.0.0.1:49344)
+* `-ci`, `--cors-cocoindex`: Allow `https://cocoindex.io` (CocoInsight) to access the server
+* `-c`, `--cors-origin <ORIGINS>`: Comma-separated list of allowed origins
+* `-cl`, `--cors-local <PORT>`: Allow `http://localhost:<PORT>`
+* `-L`, `--live-update`: Enable live updates while the server is running
+
+### Python API
+
+You can also start the server programmatically via the API.
+
+```python
+from cocoindex import start_server, ServerSettings
+
+server_settings = ServerSettings(
+    # Default: "127.0.0.1:49344" — local only for safety
+    address="127.0.0.1:49344",
+    # Allow CocoInsight front-end
+    cors_origins=["https://cocoindex.io"],
+)
+
+start_server(server_settings)
+```
+
+To expose to all IPs:
+
+```python
+server_settings = ServerSettings(
+    address="0.0.0.0:49344",
+)
+start_server(server_settings)
+```
+
+## What the server provides today
+
+* **CocoInsight access**: Enable with CLI `-ci`, or by API set `ServerSettings.cors_origins` to `"https://cocoindex.io"`. Then open [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight) and point it to your server address.
+  It'll talk to CocoIndex internal REST APIs exposed through `/cocoindex/api`.
+  The internal API is mainly designed for CocoInsight to use today, is subject to change and not considered as stable.
+
+* **Live updates from the CLI**: When running with `-L`, the server performs live updates while it’s up.
+  It's doing same thing as `cocoindex update -L` while the HTTP server is running.
+
+* **Health check**: `GET /healthz` responds with `application/json`:
+
+  * `status`: always `"ok"` when healthy
+  * `version`: the build-time package version (e.g., `"0.3.5"`)
+
+  Example response:
+
+  ```json
+  {"status":"ok","version":"0.3.5"}
+  ```

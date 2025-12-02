@@ -1,6 +1,6 @@
 from enum import Enum
 from dataclasses import dataclass
-from typing import Sequence, Union
+from typing import Sequence, Union, Any
 
 
 class VectorSimilarityMetric(Enum):
@@ -41,6 +41,19 @@ class VectorIndexDef:
 
 
 @dataclass
+class FtsIndexDef:
+    """
+    Define a full-text search index on a field.
+
+    The parameters field can contain any keyword arguments supported by the target's
+    FTS index creation API (e.g., tokenizer_name for LanceDB).
+    """
+
+    field_name: str
+    parameters: dict[str, Any] | None = None
+
+
+@dataclass
 class IndexOptions:
     """
     Options for an index.
@@ -48,3 +61,4 @@ class IndexOptions:
 
     primary_key_fields: Sequence[str]
     vector_indexes: Sequence[VectorIndexDef] = ()
+    fts_indexes: Sequence[FtsIndexDef] = ()

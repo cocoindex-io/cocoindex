@@ -193,7 +193,7 @@ fn handle_ndarray_from_py<'py>(
 ) -> PyResult<Option<value::BasicValue>> {
     macro_rules! try_convert {
         ($t:ty, $cast:expr) => {
-            if let Ok(array) = v.downcast::<PyArrayDyn<$t>>() {
+            if let Ok(array) = v.cast::<PyArrayDyn<$t>>() {
                 let data = array.readonly().as_slice()?.to_vec();
                 let vec = data.into_iter().map($cast).collect::<Vec<_>>();
                 return Ok(Some(value::BasicValue::Vector(Arc::from(vec))));
@@ -357,7 +357,7 @@ mod tests {
     use std::sync::Arc;
 
     fn assert_roundtrip_conversion(original_value: &value::Value, value_type: &schema::ValueType) {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // Convert Rust value to Python object using value_to_py_object
             let py_object = value_to_py_object(py, original_value)
                 .expect("Failed to convert Rust value to Python object");

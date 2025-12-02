@@ -93,7 +93,7 @@ The flow diagram illustrates how we'll process our codebase:
 
 Define the AWS endpoint and the SQS queue name in `.env` file:
 
-```bash
+```sh
 # Database Configuration
 DATABASE_URL=postgresql://localhost:5432/cocoindex
 
@@ -135,7 +135,7 @@ For the rest of the flow, we can follow the tutorial
 The entire project is available [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/amazon_s3_embedding).
 
 ## Run the flow with live update
-```bash
+```sh
 cocoindex update main.py -L
 ```
 

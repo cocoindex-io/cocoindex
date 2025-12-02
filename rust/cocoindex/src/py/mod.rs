@@ -25,7 +25,7 @@ pub(crate) use py_utils::*;
 #[pyfunction]
 fn set_settings_fn(get_settings_fn: Py<PyAny>) -> PyResult<()> {
     let get_settings_closure = move || {
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let obj = get_settings_fn
                 .bind(py)
                 .call0()
@@ -47,7 +47,7 @@ fn init_pyo3_runtime() {
 
 #[pyfunction]
 fn init(py: Python<'_>, settings: Pythonized<Option<Settings>>) -> PyResult<()> {
-    py.allow_threads(|| -> anyhow::Result<()> {
+    py.detach(|| -> anyhow::Result<()> {
         get_runtime().block_on(async move { init_lib_context(settings.into_inner()).await })
     })
     .into_py_result()
@@ -55,7 +55,7 @@ fn init(py: Python<'_>, settings: Pythonized<Option<Settings>>) -> PyResult<()> 
 
 #[pyfunction]
 fn start_server(py: Python<'_>, settings: Pythonized<ServerSettings>) -> PyResult<()> {
-    py.allow_threads(|| -> anyhow::Result<()> {
+    py.detach(|| -> anyhow::Result<()> {
         let server = get_runtime().block_on(async move {
             server::init_server(get_lib_context().await?, settings.into_inner()).await
         })?;
@@ -67,7 +67,7 @@ fn start_server(py: Python<'_>, settings: Pythonized<ServerSettings>) -> PyResul
 
 #[pyfunction]
 fn stop(py: Python<'_>) -> PyResult<()> {
-    py.allow_threads(|| get_runtime().block_on(clear_lib_context()));
+    py.detach(|| get_runtime().block_on(clear_lib_context()));
     Ok(())
 }
 
@@ -216,7 +216,7 @@ impl Flow {
         py: Python<'_>,
         options: Pythonized<execution::dumper::EvaluateAndDumpOptions>,
     ) -> PyResult<()> {
-        py.allow_threads(|| {
+        py.detach(|| {
             get_runtime()
                 .block_on(async {
                     let exec_plan = self.0.flow.get_execution_plan().await?;
@@ -391,7 +391,7 @@ impl Flow {
                 flow_ctx: &interface::FlowInstanceContext,
             ) -> Result<crate::service::query_handler::QueryOutput> {
                 // Call the Python async function on the flow's event loop
-                let result_fut = Python::with_gil(|py| -> Result<_> {
+                let result_fut = Python::attach(|py| -> Result<_> {
                     let handler = self.handler.clone_ref(py);
                     // Build args: pass a dict with the query input
                     let args = pyo3::types::PyTuple::new(py, [input.query])?;
@@ -413,7 +413,7 @@ impl Flow {
 
                 let py_obj = result_fut.await;
                 // Convert Python result to Rust type with proper traceback handling
-                let output = Python::with_gil(|py| -> Result<_> {
+                let output = Python::attach(|py| -> Result<_> {
                     let output_any = py_obj.to_result_with_py_trace(py)?;
                     let output: crate::py::Pythonized<crate::service::query_handler::QueryOutput> =
                         output_any.extract(py)?;
@@ -466,7 +466,7 @@ impl TransientFlow {
             let result = evaluate_transient_flow(&flow, &input_values)
                 .await
                 .into_py_result()?;
-            Python::with_gil(|py| value_to_py_object(py, &result)?.into_py_any(py))
+            Python::attach(|py| value_to_py_object(py, &result)?.into_py_any(py))
         })
     }
 }
@@ -545,7 +545,7 @@ fn make_drop_bundle(flow_names: Vec<String>) -> PyResult<SetupChangeBundle> {
 
 #[pyfunction]
 fn remove_flow_context(py: Python<'_>, flow_name: String) -> PyResult<()> {
-    py.allow_threads(|| -> anyhow::Result<()> {
+    py.detach(|| -> anyhow::Result<()> {
         get_runtime().block_on(async move {
             let lib_context = get_lib_context().await.into_py_result()?;
             lib_context.remove_flow_context(&flow_name);
@@ -580,7 +580,7 @@ fn get_auth_entry(key: String) -> PyResult<Pythonized<serde_json::Value>> {
 #[pyfunction]
 fn get_app_namespace(py: Python<'_>) -> PyResult<String> {
     let app_namespace = py
-        .allow_threads(|| -> anyhow::Result<_> {
+        .detach(|| -> anyhow::Result<_> {
             get_runtime().block_on(async move {
                 let lib_context = get_lib_context().await?;
                 Ok(lib_context.app_namespace.clone())
@@ -606,6 +606,8 @@ fn seder_roundtrip<'py>(
 #[pymodule]
 #[pyo3(name = "_engine")]
 fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+
     m.add_function(wrap_pyfunction!(init_pyo3_runtime, m)?)?;
     m.add_function(wrap_pyfunction!(init, m)?)?;
     m.add_function(wrap_pyfunction!(set_settings_fn, m)?)?;

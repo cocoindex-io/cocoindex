@@ -459,12 +459,33 @@ impl fmt::Display for VectorIndexDef {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FtsIndexDef {
+    pub field_name: FieldName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+impl fmt::Display for FtsIndexDef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.parameters {
+            None => write!(f, "{}", self.field_name),
+            Some(params) => {
+                let params_str = serde_json::to_string(params).unwrap_or_else(|_| "{}".to_string());
+                write!(f, "{}:{}", self.field_name, params_str)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_key_fields: Option<Vec<FieldName>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector_indexes: Vec<VectorIndexDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fts_indexes: Vec<FtsIndexDef>,
 }
 
 impl IndexOptions {
@@ -490,7 +511,16 @@ impl fmt::Display for IndexOptions {
             .map(|v| v.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        write!(f, "keys={primary_keys}, indexes={vector_indexes}")
+        let fts_indexes = self
+            .fts_indexes
+            .iter()
+            .map(|f| f.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        write!(
+            f,
+            "keys={primary_keys}, vector_indexes={vector_indexes}, fts_indexes={fts_indexes}"
+        )
     }
 }
 

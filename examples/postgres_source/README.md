@@ -17,7 +17,7 @@ Before running the example, you need to:
 
 1. Install dependencies:
 
-    ```bash
+    ```sh
     pip install -e .
     ```
 
@@ -25,7 +25,7 @@ Before running the example, you need to:
 
 3. Create source table `source_products` with sample data:
 
-    ```bash
+    ```sh
     psql "postgres://cocoindex:cocoindex@localhost/cocoindex" -f ./prepare_source_data.sql
     ```
 
@@ -36,7 +36,7 @@ Before running the example, you need to:
 
 Update index, which will also setup the tables at the first time:
 
-```bash
+```sh
 cocoindex update main
 ```
 
@@ -53,7 +53,7 @@ cocoindex server -ci main
 You can also add a `-L` flag to make the server keep updating the index to reflect source changes at the same time:
 
 ```sh
-cocoindex server -ci -L main
+cocoindex server -ci main
 ```
 
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
