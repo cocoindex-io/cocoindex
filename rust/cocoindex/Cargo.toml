@@ -11,7 +11,8 @@ crate-type = ["cdylib"]
 
 [features]
 default = ["legacy-states-v0"]
-legacy-states-v0 = []
+legacy-states-v0 = [ "pyo3/abi3-py311"]
+free-threaded = []
 
 [dependencies]
 cocoindex_utils = { path = "../utils", features = [
