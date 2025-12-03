@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::prelude::*;
 
 use crate::builder::AnalyzedFlow;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 use crate::execution::source_indexer::SourceIndexingContext;
 use crate::service::query_handler::{QueryHandler, QueryHandlerSpec};
 use crate::settings;
@@ -283,7 +284,14 @@ impl LibContext {
 static LIB_INIT: OnceLock<()> = OnceLock::new();
 pub async fn create_lib_context(settings: settings::Settings) -> Result<LibContext> {
     LIB_INIT.get_or_init(|| {
-        let _ = env_logger::try_init();
+        // Initialize tracing subscriber with env filter for log level control
+        // Default to "info" level if RUST_LOG is not set
+        let env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("info"));
+        let _ = tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(env_filter)
+            .try_init();
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     });
 
