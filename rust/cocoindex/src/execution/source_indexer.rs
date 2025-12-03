@@ -252,6 +252,7 @@ pub struct ProcessSourceRowInput {
 }
 
 impl SourceIndexingContext {
+    #[instrument(name = "source_indexing.load", skip_all, fields(flow_name = %flow.flow_instance.name, source_idx = %source_idx))]
     pub async fn load(
         flow: Arc<builder::AnalyzedFlow>,
         source_idx: usize,
@@ -335,6 +336,13 @@ impl SourceIndexingContext {
         _concur_permit: concur_control::CombinedConcurrencyControllerPermit,
         ack_fn: Option<AckFn>,
     ) {
+        // Note: Using trace! instead of span since this is spawned into a task
+        // and EnteredSpan is not Send-safe across await points
+        trace!(
+            flow_name = %self.flow.flow_instance.name,
+            source_idx = %self.source_idx,
+            "processing source row"
+        );
         use ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint;
 
         // Store operation name for tracking cleanup
@@ -537,6 +545,7 @@ impl SourceIndexingContext {
         }
     }
 
+    #[instrument(name = "source_indexing.update", skip_all, fields(flow_name = %self.flow.flow_instance.name, source_idx = %self.source_idx))]
     pub async fn update(
         self: &Arc<Self>,
         update_stats: &Arc<stats::UpdateStats>,
