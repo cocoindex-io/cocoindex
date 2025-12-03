@@ -1,4 +1,4 @@
-use log::trace;
+use tracing::trace;
 use std::{
     future::Future,
     time::{Duration, Instant},
