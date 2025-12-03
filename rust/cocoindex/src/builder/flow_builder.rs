@@ -641,7 +641,8 @@ impl FlowBuilder {
     }
 
     pub fn build_flow(&self, py: Python<'_>) -> PyResult<py::Flow> {
-        let _span = info_span!("flow_builder.build_flow", flow_name = %self.flow_instance_name).entered();
+        let _span =
+            info_span!("flow_builder.build_flow", flow_name = %self.flow_instance_name).entered();
         let spec = spec::FlowInstanceSpec {
             name: self.flow_instance_name.clone(),
             import_ops: self.import_ops.clone(),

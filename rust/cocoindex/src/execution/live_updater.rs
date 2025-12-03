@@ -7,9 +7,9 @@ use super::stats;
 use futures::future::try_join_all;
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish};
 use sqlx::PgPool;
-use tracing::Level;
 use std::fmt::Write;
 use tokio::{sync::watch, task::JoinSet, time::MissedTickBehavior};
+use tracing::Level;
 
 pub struct FlowLiveUpdaterUpdates {
     pub active_sources: Vec<String>,
@@ -124,7 +124,7 @@ impl SourceUpdateTask {
     async fn run(self) -> Result<()> {
         // Note: Using info! instead of span since EnteredSpan is not Send-safe across await points
         info!(
-            flow_name = %self.flow.flow_instance.name, 
+            flow_name = %self.flow.flow_instance.name,
             source_name = %self.import_op().name,
             "starting source update task"
         );
