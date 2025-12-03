@@ -6,7 +6,7 @@ description: LLMs integrated with CocoIndex for various built-in functions
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-CocoIndex provides builtin functions integrating with various LLM APIs, for various inference tasks:
+CocoIndex provides built-in functions integrating with various LLM APIs, for various inference tasks:
 *   [Text Generation](#text-generation): use LLM to generate text.
 *   [Text Embedding](#text-embedding): embed text into a vector space.
 
@@ -26,7 +26,7 @@ We support the following types of LLM APIs:
 | [Anthropic](#anthropic) | `LlmApiType.ANTHROPIC` | ✅ | ❌ |
 | [Voyage](#voyage) | `LlmApiType.VOYAGE` | ❌ | ✅ |
 | [LiteLLM](#litellm) | `LlmApiType.LITE_LLM` | ✅ | ❌ |
-| [OpenRouter](#openrouter) | `LlmApiType.OPEN_ROUTER` | ✅ | ❌ |
+| [OpenRouter](#openrouter) | `LlmApiType.OPEN_ROUTER` | ✅ | ✅ |
 | [vLLM](#vllm) | `LlmApiType.VLLM` | ✅ | ❌ |
 | [Bedrock](#bedrock) | `LlmApiType.BEDROCK` | ✅ | ❌ |
 
@@ -36,7 +36,7 @@ We support the following types of LLM APIs:
 
 Generation is used as a building block for certain CocoIndex functions that process data using LLM generation.
 
-We have one builtin functions using LLM generation for now:
+We have one built-in function using LLM generation for now:
 
 *  [`ExtractByLlm`](/docs/ops/functions#extractbyllm): it extracts information from input text.
 
@@ -56,7 +56,7 @@ It has the following fields:
 
 Embedding means converting text into a vector space, usually for similarity matching.
 
-We provide a builtin function [`EmbedText`](/docs/ops/functions#embedtext) that converts a given text into a vector space.
+We provide a built-in function [`EmbedText`](/docs/ops/functions#embedtext) that converts a given text into a vector space.
 The spec takes the following fields:
 
 *   `api_type` (type: `cocoindex.LlmApiType`, required)
@@ -171,9 +171,9 @@ cocoindex.functions.EmbedText(
 
 Google exposes Gemini through Google AI Studio APIs.
 Based on [Gemini API recommendation](https://cloud.google.com/ai/gemini?hl=en), this is recommended for experimenting and prototyping purposes.
-You may use [Vertex AI](#vertex-ai) for production usages.
+You may use [Vertex AI](#vertex-ai) for production use.
 
-To use the Gemini by Google AI Studio API, you need to set the environment variable `GEMINI_API_KEY`.
+To use Gemini via the Google AI Studio API, you need to set the environment variable `GEMINI_API_KEY`.
 You can generate the API key from [Google AI Studio](https://aistudio.google.com/apikey).
 
 You can find the full list of models supported by Gemini [here](https://ai.google.dev/gemini-api/docs/models).
@@ -400,7 +400,7 @@ You can find the full list of models supported by LiteLLM [here](https://docs.li
 To use the OpenRouter API, you need to set the environment variable `OPENROUTER_API_KEY`.
 You can generate the API key from [here](https://openrouter.ai/settings/keys).
 
-A spec for OpenRouter looks like this:
+A text generation spec for OpenRouter looks like this:
 
 <Tabs>
 <TabItem value="python" label="Python" default>
@@ -409,6 +409,27 @@ A spec for OpenRouter looks like this:
 cocoindex.LlmSpec(
     api_type=cocoindex.LlmApiType.OPEN_ROUTER,
     model="deepseek/deepseek-r1:free",
+)
+```
+
+</TabItem>
+</Tabs>
+
+OpenRouter also supports some text embedding models. Note that for OpenRouter embedding
+models, you need to explicitly provide the `output_dimension` parameter in the spec.
+Here's how you can define the spec to use an OpenRouter embedding model:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.OPEN_ROUTER,
+    model="openai/text-embedding-3-small",
+    # Task type for embedding model
+    task_type="SEMANTICS_SIMILARITY",
+    # Required: the number of output dimensions for the embedding model
+    output_dimension=1536,
 )
 ```
 

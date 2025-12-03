@@ -20,7 +20,7 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 ## Overview
 
 
-This tutorial shows how to use BAML together with CocoIndex to build a data pipeline that extracts structured patient information from PDF intake forms.  The BAML definitions describe the desired output schema and prompt logic, while CocoIndex orchestrates file input, transformation, and incremental indexing. 
+This tutorial shows how to use BAML together with CocoIndex to build a data pipeline that extracts structured patient information from PDF intake forms.  The BAML definitions describe the desired output schema and prompt logic, while CocoIndex orchestrates file input, transformation, and incremental indexing.
 
 :::info
 The extraction quality is highly dependent on the OCR quality. You can use CocoIndex with any commercial parser or open source ones that is tailored for your domain for better results. For example, Document AI from Google Cloud and more.
@@ -40,16 +40,16 @@ The flow itself is fairly simple.
 
 1. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
 2. Install dependencies
-    
+
     ```
     pip install -U cocoindex baml-py
     ```
 3. Create a `.env` file. You can copy it from `.env.example` first:
-    
+
     ```
     cp .env.example .env
     ```
-    
+
     Then edit the file to fill in your `GEMINI_API_KEY`.
 
 
@@ -157,7 +157,7 @@ We specify `client Gemini` and a prompt template. The special variable `{{ intak
 :::tip Why `role("user")` Matters in BAML Extraction
 
 In our BAML example above, there's a subtle but **crucial line**: `{{ _.role("user") }}` is added at the start of the prompt.
-  
+
 > This ensures the PDF content is explicitly included as part of the user message*, rather than the system prompt.
 
 For **OpenAI models**, if the PDF is not in the user role, the model doesn't see the file content — so extractions will fail or return empty fields. This can easily trip you up.
@@ -192,7 +192,7 @@ generator python_client {
 
 The `generator` block tells `baml-cli` to create a Python client with Pydantic models in the parent directory.
 
-When we run `baml-cli generate`  
+When we run `baml-cli generate`
 
 This will compile the `.baml` definitions into a `baml_client/` Python package in your project root. It contains:
 
@@ -227,7 +227,7 @@ def patient_intake_extraction_flow(
             path=os.path.join("data", "patient_forms"), binary=True
         )
     )
-    
+
     patients_index = data_scope.add_collector()
 ```
 

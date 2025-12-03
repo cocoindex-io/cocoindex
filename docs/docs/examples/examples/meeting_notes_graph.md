@@ -18,7 +18,7 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 ![Meeting Notes Graph](/img/examples/meeting_notes_graph/cover.png)
 
 
-Meeting notes capture decisions, action items, participant information, and the relationships between people and tasks. Yet most organizations treat them as static documents—searchable only through basic text search. 
+Meeting notes capture decisions, action items, participant information, and the relationships between people and tasks. Yet most organizations treat them as static documents—searchable only through basic text search.
 
 With a knowledge graph, you can run queries like: *"Who attended meetings where the topic was 'budget planning'?"* or *"What tasks did Sarah get assigned across all meetings?"*
 
@@ -125,7 +125,7 @@ This is one of CocoIndex's superpowers: **incremental processing with automatic 
 
 The result? In an enterprise with 1% daily churn, only 1% of documents trigger downstream processing. Unchanged files never hit your LLM API, never generate Neo4j queries, and never consume compute resources.
 
-Check out How live updates work in CocoIndex: 
+Check out How live updates work in CocoIndex:
 
 <DocumentationButton url="https://cocoindex.io/docs/tutorials/live_updates" text="How live updates work in CocoIndex" margin="16px 0 24px 0" />
 
@@ -251,21 +251,21 @@ with parsed["tasks"].row() as task:
 This block **collects nodes and relationships** from parsed meeting notes to build a knowledge graph in Neo4j using CocoIndex:
 
 - **Person → Meeting (ATTENDED)**
-    
+
     Links participants (including organizers) to the meetings they attended.
-    
+
 - **Meeting → Task (DECIDED)**
-    
+
     Links meetings to tasks or decisions that were made.
-    
+
 - **Person → Task (ASSIGNED_TO)**
-    
+
     Links tasks back to the people responsible for them.
-    
+
 
 ## Map to graph database
 
-### Overview 
+### Overview
 
 We will be creating a property graph with following nodes and relationships:
 ![Graph](/img/examples/meeting_notes_graph/graph.png)
@@ -320,7 +320,7 @@ flow_builder.declare(
 - The `declare(...)` [method](https://cocoindex.io/docs/core/flow_def) on `flow_builder` lets you **pre‐declare** node labels that may appear as source or target nodes in relationships — even if you don’t have an explicit collector exporting them as standalone node rows.
 - `Neo4jDeclaration` is the specification for such declared nodes: you give it the connection, the node label (type), and the `primary_key_fields` that uniquely identify instances of that node
 
-For example, for the `Person` Declaration, 
+For example, for the `Person` Declaration,
 
 - You tell CocoIndex: “We expect `Person`‑labeled nodes to exist in the graph. They will be referenced in relationships (e.g. a meeting’s organizer or attendees, task assignee), but we don’t have a dedicated collector exporting Person rows.”
 - By declaring `Person`, CocoIndex will handle deduplication: multiple relationships referencing the same `name` will map to the same `Person` node in Neo4j (because `name` is the primary key).
@@ -553,7 +553,7 @@ Rather than drowning in plain-text documents or reprocessing the entire corpus c
 
 This example demonstrates a broader principle: **modern data infrastructure combines AI, databases, and intelligent orchestration**. CocoIndex handles the orchestration with change detection and incremental processing, LLMs provide intelligent understanding, and Neo4j provides efficient relationship querying. Together, they form a foundation for knowledge extraction at enterprise scale.
 
-## Support CocoIndex ❤️ 
+## Support CocoIndex ❤️
 
 If this example was helpful, the easiest way to support CocoIndex is to [give the project a ⭐ on GitHub](https://github.com/cocoindex-io/cocoindex).
 
