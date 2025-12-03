@@ -1,5 +1,5 @@
 use async_stream::try_stream;
-use log::warn;
+use tracing::warn;
 use std::borrow::Cow;
 use std::{path::PathBuf, sync::Arc};
 
