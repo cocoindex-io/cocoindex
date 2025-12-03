@@ -1,6 +1,6 @@
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use log::error;
+use tracing::error;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::TaskLocals;
