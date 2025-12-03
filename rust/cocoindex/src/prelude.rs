@@ -32,7 +32,7 @@ pub(crate) use cocoindex_utils::{batching, concur_control, http, retryable};
 
 pub(crate) use anyhow::{anyhow, bail};
 pub(crate) use async_stream::{stream, try_stream};
-pub(crate) use log::{debug, error, info, trace, warn};
+pub(crate) use tracing::{debug, error, info, info_span, instrument, trace, warn, Span};
 
 pub(crate) use derivative::Derivative;
 
