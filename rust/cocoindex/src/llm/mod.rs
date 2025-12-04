@@ -19,6 +19,7 @@ pub enum LlmApiType {
     Vllm,
     VertexAi,
     Bedrock,
+    AzureOpenAi,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,10 +35,17 @@ pub struct OpenAiConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AzureOpenAiConfig {
+    pub deployment_id: String,
+    pub api_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum LlmApiConfig {
     VertexAi(VertexAiConfig),
     OpenAi(OpenAiConfig),
+    AzureOpenAi(AzureOpenAiConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +116,7 @@ pub trait LlmEmbeddingClient: Send + Sync {
 }
 
 mod anthropic;
+mod azureopenai;
 mod bedrock;
 mod gemini;
 mod litellm;
@@ -147,6 +156,10 @@ pub async fn new_llm_generation_client(
             Box::new(openrouter::Client::new_openrouter(address, api_key).await?)
                 as Box<dyn LlmGenerationClient>
         }
+        LlmApiType::AzureOpenAi => {
+            Box::new(azureopenai::Client::new_azure_openai(address, api_key, api_config).await?)
+                as Box<dyn LlmGenerationClient>
+        }
         LlmApiType::Voyage => {
             api_bail!("Voyage is not supported for generation")
         }
@@ -180,6 +193,10 @@ pub async fn new_llm_embedding_client(
         }
         LlmApiType::VertexAi => {
             Box::new(gemini::VertexAiClient::new(address, api_key, api_config).await?)
+                as Box<dyn LlmEmbeddingClient>
+        }
+        LlmApiType::AzureOpenAi => {
+            Box::new(azureopenai::Client::new_azure_openai(address, api_key, api_config).await?)
                 as Box<dyn LlmEmbeddingClient>
         }
         LlmApiType::LiteLlm | LlmApiType::Vllm | LlmApiType::Anthropic | LlmApiType::Bedrock => {

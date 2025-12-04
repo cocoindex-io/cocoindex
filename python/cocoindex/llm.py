@@ -17,6 +17,7 @@ class LlmApiType(Enum):
     VOYAGE = "Voyage"
     VLLM = "Vllm"
     BEDROCK = "Bedrock"
+    AZURE_OPENAI = "AzureOpenAi"
 
 
 @dataclass
@@ -40,6 +41,16 @@ class OpenAiConfig:
 
 
 @dataclass
+class AzureOpenAiConfig:
+    """A specification for an Azure OpenAI LLM."""
+
+    kind = "AzureOpenAi"
+
+    deployment_id: str
+    api_version: str | None = None
+
+
+@dataclass
 class LlmSpec:
     """A specification for a LLM."""
 
@@ -47,4 +58,4 @@ class LlmSpec:
     model: str
     address: str | None = None
     api_key: TransientAuthEntryReference[str] | None = None
-    api_config: VertexAiConfig | OpenAiConfig | None = None
+    api_config: VertexAiConfig | OpenAiConfig | AzureOpenAiConfig | None = None

@@ -67,7 +67,7 @@ impl Client {
     }
 }
 
-fn create_llm_generation_request(
+pub(super) fn create_llm_generation_request(
     request: &super::LlmGenerateRequest,
 ) -> Result<CreateChatCompletionRequest> {
     let mut messages = Vec::new();

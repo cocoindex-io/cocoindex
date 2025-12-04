@@ -20,6 +20,7 @@ We support the following types of LLM APIs:
 | API Name | `LlmApiType` enum | Text Generation | Text Embedding |
 |----------|---------------------|--------------------|--------------------|
 | [OpenAI](#openai) | `LlmApiType.OPENAI` | ✅ | ✅ |
+| [Azure OpenAI](#azure-openai) | `LlmApiType.AZURE_OPENAI` | ✅ | ✅ |
 | [Ollama](#ollama) | `LlmApiType.OLLAMA` | ✅ | ✅ |
 | [Google Gemini](#google-gemini) | `LlmApiType.GEMINI` | ✅ | ✅ |
 | [Vertex AI](#vertex-ai) | `LlmApiType.VERTEX_AI` | ✅ | ✅ |
@@ -115,6 +116,67 @@ cocoindex.functions.EmbedText(
 
 </TabItem>
 </Tabs>
+
+### Azure OpenAI
+
+[Azure OpenAI](https://azure.microsoft.com/en-us/products/ai-services/openai-service) is Microsoft's cloud service offering OpenAI models through Azure.
+
+To use the Azure OpenAI API:
+
+1.  Create an Azure account and set up an Azure OpenAI resource in the [Azure Portal](https://portal.azure.com/).
+2.  Deploy a model (e.g., GPT-4, text-embedding-ada-002) to your Azure OpenAI resource.
+3.  Get your API key from the Azure Portal under your Azure OpenAI resource.
+4.  Set the environment variable `AZURE_OPENAI_API_KEY` to your API key.
+
+Spec for Azure OpenAI requires:
+-   `address` (type: `str`, required): The base URL of your Azure OpenAI resource, e.g., `https://your-resource-name.openai.azure.com`.
+-   `api_config` (type: `cocoindex.llm.AzureOpenAiConfig`, required): Configuration with the following fields:
+    -   `deployment_id` (type: `str`, required): The deployment name/ID you created in Azure OpenAI Studio.
+    -   `api_version` (type: `str`, optional): The API version to use. Defaults to `2024-08-01-preview` (required for structured output support). See [API versions](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle).
+
+For text generation, a spec for Azure OpenAI looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.AZURE_OPENAI,
+    model="gpt-4o",  # This is the base model name
+    address="https://your-resource-name.openai.azure.com",
+    api_config=cocoindex.llm.AzureOpenAiConfig(
+        deployment_id="your-deployment-name",
+        api_version="2024-08-01-preview",  # Optional, defaults to 2024-08-01-preview
+    ),
+)
+```
+
+</TabItem>
+</Tabs>
+
+For text embedding, a spec for Azure OpenAI looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.AZURE_OPENAI,
+    model="text-embedding-3-small",
+    address="https://your-resource-name.openai.azure.com",
+    output_dimension=1536,  # Optional, use the default output dimension if not specified
+    api_config=cocoindex.llm.AzureOpenAiConfig(
+        deployment_id="your-embedding-deployment-name",
+    ),
+)
+```
+
+</TabItem>
+</Tabs>
+
+:::note
+Azure OpenAI uses deployment names instead of direct model names in API calls. The `deployment_id` in the config should match the deployment you created in Azure OpenAI Studio.
+:::
 
 ### Ollama
 
