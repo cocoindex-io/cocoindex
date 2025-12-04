@@ -132,7 +132,7 @@ Spec for Azure OpenAI requires:
 -   `address` (type: `str`, required): The base URL of your Azure OpenAI resource, e.g., `https://your-resource-name.openai.azure.com`.
 -   `api_config` (type: `cocoindex.llm.AzureOpenAiConfig`, required): Configuration with the following fields:
     -   `deployment_id` (type: `str`, required): The deployment name/ID you created in Azure OpenAI Studio.
-    -   `api_version` (type: `str`, optional): The API version to use. Defaults to `2024-02-01` if not specified.
+    -   `api_version` (type: `str`, optional): The API version to use. Defaults to `2024-08-01-preview` (required for structured output support). See [API versions](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle).
 
 For text generation, a spec for Azure OpenAI looks like this:
 
@@ -146,7 +146,7 @@ cocoindex.LlmSpec(
     address="https://your-resource-name.openai.azure.com",
     api_config=cocoindex.llm.AzureOpenAiConfig(
         deployment_id="your-deployment-name",
-        api_version="2024-02-01",  # Optional
+        api_version="2024-08-01-preview",  # Optional, defaults to 2024-08-01-preview
     ),
 )
 ```

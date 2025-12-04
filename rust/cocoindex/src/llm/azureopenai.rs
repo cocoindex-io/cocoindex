@@ -30,10 +30,11 @@ impl Client {
         let api_base =
             address.ok_or_else(|| anyhow::anyhow!("address is required for Azure OpenAI"))?;
 
-        // Default to latest stable API version if not specified
+        // Default to API version that supports structured outputs (json_schema).
+        // See: https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle
         let api_version = config
             .api_version
-            .unwrap_or_else(|| "2024-02-01".to_string());
+            .unwrap_or_else(|| "2024-08-01-preview".to_string());
 
         let api_key = api_key.or_else(|| std::env::var("AZURE_OPENAI_API_KEY").ok())
             .ok_or_else(|| anyhow::anyhow!("AZURE_OPENAI_API_KEY must be set either via api_key parameter or environment variable"))?;
