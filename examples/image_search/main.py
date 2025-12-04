@@ -3,7 +3,7 @@ import functools
 import io
 import os
 from contextlib import asynccontextmanager
-from typing import Any, cast, AsyncIterator, Literal, Final, TYPE_CHECKING
+from typing import Any, AsyncIterator, Literal
 
 import cocoindex
 import torch
@@ -19,11 +19,6 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearch"
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
-CLIP_MODEL_DIMENSION: Final[int] = 768
-if TYPE_CHECKING:
-    ClipDim = Literal[768]
-else:
-    ClipDim = int
 
 
 @functools.cache
@@ -33,7 +28,7 @@ def get_clip_model() -> tuple[CLIPModel, CLIPProcessor]:
     return model, processor
 
 
-def embed_query(text: str) -> cocoindex.Vector[cocoindex.Float32, ClipDim]:
+def embed_query(text: str) -> list[float]:
     """
     Embed the caption using CLIP model.
     """
@@ -41,16 +36,13 @@ def embed_query(text: str) -> cocoindex.Vector[cocoindex.Float32, ClipDim]:
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     with torch.no_grad():
         features = model.get_text_features(**inputs)
-    return cast(
-        cocoindex.Vector[cocoindex.Float32, ClipDim],
-        features[0].tolist(),
-    )
+    return features[0].tolist()  # type: ignore
 
 
 @cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
 def embed_image(
     img_bytes: bytes,
-) -> cocoindex.Vector[cocoindex.Float32, ClipDim]:
+) -> cocoindex.Vector[cocoindex.Float32, Literal[768]]:
     """
     Convert image to embedding using CLIP model.
     """
@@ -59,10 +51,7 @@ def embed_image(
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         features = model.get_image_features(**inputs)
-    return cast(
-        cocoindex.Vector[cocoindex.Float32, ClipDim],
-        features[0].tolist(),
-    )
+    return features[0].tolist()  # type: ignore
 
 
 # CocoIndex flow: Ingest images, extract captions, embed, export to Qdrant
