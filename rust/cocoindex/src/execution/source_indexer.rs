@@ -324,6 +324,7 @@ impl SourceIndexingContext {
         }))
     }
 
+    #[instrument(name = "source_indexing.process_row", skip_all, fields(flow_name = %self.flow.flow_instance.name, source_idx = %self.source_idx))]
     pub async fn process_source_row<
         AckFut: Future<Output = Result<()>> + Send + 'static,
         AckFn: FnOnce() -> AckFut,
@@ -336,13 +337,6 @@ impl SourceIndexingContext {
         _concur_permit: concur_control::CombinedConcurrencyControllerPermit,
         ack_fn: Option<AckFn>,
     ) {
-        // Note: Using trace! instead of span since this is spawned into a task
-        // and EnteredSpan is not Send-safe across await points
-        trace!(
-            flow_name = %self.flow.flow_instance.name,
-            source_idx = %self.source_idx,
-            "processing source row"
-        );
         use ContentHashBasedCollapsingBaseline::ProcessedSourceFingerprint;
 
         // Store operation name for tracking cleanup

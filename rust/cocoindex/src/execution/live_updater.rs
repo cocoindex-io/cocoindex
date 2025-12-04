@@ -121,13 +121,8 @@ impl SourceUpdateTask {
         Ok(Some(pb))
     }
 
+    #[instrument(name = "source_update_task.run", skip_all, fields(flow_name = %self.flow.flow_instance.name, source_name = %self.import_op().name))]
     async fn run(self) -> Result<()> {
-        // Note: Using info! instead of span since EnteredSpan is not Send-safe across await points
-        info!(
-            flow_name = %self.flow.flow_instance.name,
-            source_name = %self.import_op().name,
-            "starting source update task"
-        );
         let source_indexing_context = self
             .execution_ctx
             .get_source_indexing_context(&self.flow, self.source_idx, &self.pool)
