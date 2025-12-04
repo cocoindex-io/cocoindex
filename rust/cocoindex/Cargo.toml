@@ -37,6 +37,8 @@ chrono = { workspace = true }
 config = { workspace = true }
 const_format = { workspace = true }
 futures = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 log = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
@@ -55,7 +57,6 @@ itertools = { workspace = true }
 derivative = { workspace = true }
 hex = { workspace = true }
 schemars = { workspace = true }
-env_logger = { workspace = true }
 reqwest = { workspace = true }
 async-openai = { workspace = true }
 

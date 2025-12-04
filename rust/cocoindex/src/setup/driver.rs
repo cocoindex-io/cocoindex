@@ -549,6 +549,7 @@ async fn maybe_update_resource_setup<
     Ok(())
 }
 
+#[instrument(name = "setup.apply_changes_for_flow", skip_all, fields(flow_name = %flow_ctx.flow_name()))]
 async fn apply_changes_for_flow(
     write: &mut (dyn std::io::Write + Send),
     flow_ctx: &FlowContext,
@@ -734,6 +735,7 @@ async fn apply_changes_for_flow(
     Ok(())
 }
 
+#[instrument(name = "setup.apply_global_changes", skip_all)]
 async fn apply_global_changes(
     write: &mut (dyn std::io::Write + Send),
     setup_change: &GlobalSetupChange,
@@ -881,6 +883,7 @@ async fn get_flow_setup_change<'a>(
     Ok(result)
 }
 
+#[instrument(name = "setup.apply_changes_for_flow_ctx", skip_all, fields(flow_name = %flow_ctx.flow_name()))]
 pub(crate) async fn apply_changes_for_flow_ctx(
     action: FlowSetupChangeAction,
     flow_ctx: &FlowContext,
