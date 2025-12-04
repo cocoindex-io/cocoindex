@@ -2,7 +2,7 @@ import datetime
 
 import dspy
 from pydantic import BaseModel, Field
-import fitz  # PyMuPDF
+import pymupdf
 
 import cocoindex
 
@@ -106,12 +106,12 @@ def extract_patient(pdf_content: bytes) -> Patient:
     """Extract patient information from PDF content."""
 
     # Convert PDF pages to DSPy Image objects
-    pdf_doc = fitz.open(stream=pdf_content, filetype="pdf")
+    pdf_doc = pymupdf.open(stream=pdf_content, filetype="pdf")
 
     form_images = []
     for page in pdf_doc:
         # Render page to pixmap (image) at 2x resolution for better quality
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(2, 2))
         # Convert to PNG bytes
         img_bytes = pix.tobytes("png")
         # Create DSPy Image from bytes
