@@ -252,6 +252,7 @@ pub struct ProcessSourceRowInput {
 }
 
 impl SourceIndexingContext {
+    #[instrument(name = "source_indexing.load", skip_all, fields(flow_name = %flow.flow_instance.name, source_idx = %source_idx))]
     pub async fn load(
         flow: Arc<builder::AnalyzedFlow>,
         source_idx: usize,
@@ -323,6 +324,7 @@ impl SourceIndexingContext {
         }))
     }
 
+    #[instrument(name = "source_indexing.process_row", skip_all, fields(flow_name = %self.flow.flow_instance.name, source_idx = %self.source_idx))]
     pub async fn process_source_row<
         AckFut: Future<Output = Result<()>> + Send + 'static,
         AckFn: FnOnce() -> AckFut,
@@ -537,6 +539,7 @@ impl SourceIndexingContext {
         }
     }
 
+    #[instrument(name = "source_indexing.update", skip_all, fields(flow_name = %self.flow.flow_instance.name, source_idx = %self.source_idx))]
     pub async fn update(
         self: &Arc<Self>,
         update_stats: &Arc<stats::UpdateStats>,

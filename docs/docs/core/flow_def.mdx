@@ -327,6 +327,44 @@ Following metrics are supported:
 | L2Distance | [L2 distance (a.k.a. Euclidean distance)](https://en.wikipedia.org/wiki/Euclidean_distance) | Smaller is more similar |
 | InnerProduct | [Inner product](https://en.wikipedia.org/wiki/Inner_product_space) | Larger is more similar |
 
+### Full-Text Search (FTS) Index
+
+*Full-text search index* is specified by `fts_indexes` (`Sequence[FtsIndexDef]`). `FtsIndexDef` has the following fields:
+
+* `field_name`: the field to create FTS index.
+* `parameters` (optional): a dictionary of parameters to pass to the target's FTS index creation. The supported parameters vary by target.
+
+For example, with LanceDB:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+@cocoindex.flow_def(name="DemoFlow")
+def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+    ...
+    demo_collector = data_scope.add_collector()
+    ...
+    demo_collector.export(
+        "demo_target", DemoTargetSpec(...),
+        primary_key_fields=["id"],
+        fts_indexes=[
+            # Basic FTS index with default tokenizer
+            cocoindex.FtsIndexDef("content"),
+            # FTS index with custom tokenizer
+            cocoindex.FtsIndexDef("description", parameters={"language": "English"})
+        ])
+```
+
+</TabItem>
+</Tabs>
+
+:::note
+
+FTS indexes are currently only supported for LanceDB target on its enterprise edition. Other targets will raise an error if FTS indexes are specified.
+
+:::
+
 ## Miscellaneous
 
 ### Getting App Namespace

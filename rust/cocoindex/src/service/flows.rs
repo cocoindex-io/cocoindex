@@ -12,6 +12,7 @@ use axum::{
 };
 use axum_extra::extract::Query;
 
+#[instrument(name = "api.list_flows", skip(lib_context))]
 pub async fn list_flows(
     State(lib_context): State<Arc<LibContext>>,
 ) -> Result<Json<Vec<String>>, ApiError> {
@@ -20,6 +21,7 @@ pub async fn list_flows(
     ))
 }
 
+#[instrument(name = "api.get_flow_schema", skip(lib_context), fields(flow_name = %flow_name))]
 pub async fn get_flow_schema(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
@@ -42,6 +44,7 @@ pub struct GetFlowResponse {
     fingerprint: utils::fingerprint::Fingerprint,
 }
 
+#[instrument(name = "api.get_flow", skip(lib_context), fields(flow_name = %flow_name))]
 pub async fn get_flow(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
@@ -68,7 +71,7 @@ pub async fn get_flow(
     Ok(Json(GetFlowResponse { data, fingerprint }))
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct GetKeysParam {
     field: String,
 }
@@ -79,6 +82,7 @@ pub struct GetKeysResponse {
     keys: Vec<(value::KeyValue, serde_json::Value)>,
 }
 
+#[instrument(name = "api.get_keys", skip(lib_context), fields(flow_name = %flow_name, field = %query.field))]
 pub async fn get_keys(
     Path(flow_name): Path<String>,
     Query(query): Query<GetKeysParam>,
@@ -215,6 +219,7 @@ impl<'a> SourceRowKeyContextHolder<'a> {
     }
 }
 
+#[instrument(name = "api.evaluate_data", skip(lib_context, query), fields(flow_name = %flow_name))]
 pub async fn evaluate_data(
     Path(flow_name): Path<String>,
     Query(query): Query<SourceRowKeyParams>,
@@ -248,6 +253,7 @@ pub async fn evaluate_data(
     }))
 }
 
+#[instrument(name = "api.update", skip(lib_context), fields(flow_name = %flow_name))]
 pub async fn update(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
@@ -267,6 +273,7 @@ pub async fn update(
     Ok(Json(live_updater.index_update_info()))
 }
 
+#[instrument(name = "api.get_row_indexing_status", skip(lib_context, query), fields(flow_name = %flow_name))]
 pub async fn get_row_indexing_status(
     Path(flow_name): Path<String>,
     Query(query): Query<SourceRowKeyParams>,
@@ -286,6 +293,7 @@ pub async fn get_row_indexing_status(
     Ok(Json(indexing_status))
 }
 
+#[instrument(name = "api.query", skip(lib_context, query), fields(flow_name = %flow_name, query_handler = %query_handler_name))]
 pub async fn query(
     Path((flow_name, query_handler_name)): Path<(String, String)>,
     Query(query): Query<QueryInput>,

@@ -772,6 +772,9 @@ impl TargetFactoryBase for Factory {
                     if !data_coll.index_options.vector_indexes.is_empty() {
                         api_bail!("Vector indexes are not supported for Kuzu yet");
                     }
+                    if !data_coll.index_options.fts_indexes.is_empty() {
+                        api_bail!("FTS indexes are not supported for Kuzu target");
+                    }
                     fn to_dep_table(
                         field_mapping: &AnalyzedGraphElementFieldMapping,
                     ) -> Result<ReferencedNodeTable> {

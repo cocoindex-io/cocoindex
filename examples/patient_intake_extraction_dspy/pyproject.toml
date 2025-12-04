@@ -1,0 +1,14 @@
+[project]
+name = "patient-intake-extraction-dspy"
+version = "0.1.0"
+description = "Extract structured information from patient intake forms using DSPy."
+requires-python = ">=3.10"
+dependencies = [
+    "cocoindex>=0.3.9",
+    "dspy-ai>=3.0.4",
+    "pydantic>=2.0.0",
+    "pymupdf>=1.26.5",
+]
+
+[tool.setuptools]
+packages = []

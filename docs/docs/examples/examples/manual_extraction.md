@@ -41,7 +41,7 @@ This example shows how to extract structured data from Python Manuals using Olla
 
     <DocumentationButton url="https://cocoindex.io/docs/ai/llm#ollama" text="Ollama" margin="0 0 16px 0" />
 
-    Alternatively, CocoIndex have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
+    Alternatively, CocoIndex has native support for Gemini, Ollama, and LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
     <DocumentationButton url="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
 
@@ -71,7 +71,7 @@ def manual_extraction_flow(
 
 ## Parse Markdown
 
-To do this, we can plugin a custom function to convert PDF to markdown. There are so many different parsers commercially and open source available, you can bring your own parser here.
+To do this, we can plug in a custom function to convert PDF to markdown. There are so many different parsers commercially and open source available, you can bring your own parser here.
 
 ```python
 class PdfToMarkdown(cocoindex.op.FunctionSpec):
@@ -98,7 +98,7 @@ class PdfToMarkdownExecutor:
             text, _, _ = text_from_rendered(self._converter(temp_file.name))
             return text
 ```
-You may wonder why we want to define a spec + executor (instead of using a standalone function) here. The main reason is there're some heavy preparation work (initialize the parser) needs to be done before being ready to process real data.
+You may wonder why we want to define a spec + executor (instead of using a standalone function) here. The main reason is there's some heavy preparation work (initialize the parser) that needs to be done before being ready to process real data.
 
 <DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_functions" text="Custom Function" margin="0 0 16px 0" />
 
@@ -148,7 +148,7 @@ class ModuleInfo:
 
 ### Extract structured data
 
-CocoIndex provides builtin functions (e.g. ExtractByLlm) that process data using LLM.  This example uses Ollama.
+CocoIndex provides built-in functions (e.g. ExtractByLlm) that process data using LLM.  This example uses Ollama.
 
 ```python
 with data_scope["documents"].row() as doc:
@@ -204,7 +204,7 @@ with data_scope["documents"].row() as doc:
 ## Collect the data
 
 
-After the extraction, we need to cherrypick anything we like from the output using the `collect` function from the collector of a data scope defined above.
+After the extraction, we need to cherry-pick anything we like from the output using the `collect` function from the collector of a data scope defined above.
 
 ```python
 modules_index.collect(
@@ -224,7 +224,7 @@ modules_index.export(
 ```
 
 ## Query and test your index
-Run the following command to setup and update the index.
+Run the following command to set up and update the index.
 
 ```sh
 cocoindex update -L main

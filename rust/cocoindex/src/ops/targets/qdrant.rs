@@ -409,6 +409,9 @@ impl TargetFactoryBase for Factory {
                     });
                 }
 
+                if !d.index_options.fts_indexes.is_empty() {
+                    api_bail!("FTS indexes are not supported for Qdrant target");
+                }
                 let mut specified_vector_fields = HashSet::new();
                 for vector_index in d.index_options.vector_indexes {
                     match vector_def.get_mut(&vector_index.field_name) {

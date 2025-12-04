@@ -3,7 +3,6 @@ use crate::prelude::*;
 
 use anyhow::{Context, Ok};
 use futures::future::try_join_all;
-use log::warn;
 use tokio::time::Duration;
 
 use crate::base::value::EstimatedByteSize;
@@ -644,6 +643,7 @@ pub struct EvaluateSourceEntryOutput {
     pub collected_values: Vec<Vec<value::FieldValues>>,
 }
 
+#[instrument(name = "evaluate_source_entry", skip_all, fields(source_name = %src_eval_ctx.import_op.name))]
 pub async fn evaluate_source_entry(
     src_eval_ctx: &SourceRowEvaluationContext<'_>,
     source_value: value::FieldValues,
@@ -710,6 +710,7 @@ pub async fn evaluate_source_entry(
     })
 }
 
+#[instrument(name = "evaluate_transient_flow", skip_all, fields(flow_name = %flow.transient_flow_instance.name))]
 pub async fn evaluate_transient_flow(
     flow: &AnalyzedTransientFlow,
     input_values: &Vec<value::Value>,
