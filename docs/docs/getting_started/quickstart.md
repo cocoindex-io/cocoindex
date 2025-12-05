@@ -144,6 +144,12 @@ CocoIndex supports other vector databases as well, with 1-line switch.
     export COCOINDEX_DATABASE_URL="postgresql://cocoindex:cocoindex@localhost:5432/cocoindex"
     ```
 
+:::info Prerequisite
+
+Make sure your Postgres server is running before proceeding. See [how to launch CocoIndex](../core/settings#configure-cocoindex-settings) for details.
+
+:::
+
 - Build the index:
 
     ```sh
