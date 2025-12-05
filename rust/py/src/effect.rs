@@ -106,14 +106,14 @@ impl EffectReconciler<PyEngineProfile> for PyEffectReconciler {
         desired_effect: Option<Py<PyAny>>,
         prev_possible_states: &[PyValue],
         prev_may_be_missing: bool,
-    ) -> PyResult<EffectReconcileOutput<PyEngineProfile>> {
-        let output = Python::attach(|py| -> PyResult<_> {
+    ) -> PyResult<Option<EffectReconcileOutput<PyEngineProfile>>> {
+        Python::attach(|py| -> PyResult<_> {
             let prev_possible_states =
                 PyList::new(py, prev_possible_states.iter().map(|s| s.value().bind(py)))?;
             let non_existence = NON_EXISTENCE
                 .get()
                 .ok_or_else(|| PyException::new_err("Effect module not initialized"))?;
-            let output = self.sync_fn.call(
+            let py_output = self.sync_fn.call(
                 py,
                 (
                     key.value().bind(py),
@@ -123,19 +123,23 @@ impl EffectReconciler<PyEngineProfile> for PyEffectReconciler {
                 ),
                 None,
             )?;
-            let (action, sink, state) =
-                output.extract::<(Py<PyAny>, PyEffectSink, Py<PyAny>)>(py)?;
-            Ok(EffectReconcileOutput {
-                action,
-                sink,
-                state: if non_existence.is(&state) {
-                    None
-                } else {
-                    Some(PyValue::new(Arc::new(state)))
-                },
-            })
-        })?;
-        Ok(output)
+            let output = if py_output.is_none(py) {
+                None
+            } else {
+                let (action, sink, state) =
+                    py_output.extract::<(Py<PyAny>, PyEffectSink, Py<PyAny>)>(py)?;
+                Some(EffectReconcileOutput {
+                    action,
+                    sink,
+                    state: if non_existence.is(&state) {
+                        None
+                    } else {
+                        Some(PyValue::new(Arc::new(state)))
+                    },
+                })
+            };
+            Ok(output)
+        })
     }
 }
 

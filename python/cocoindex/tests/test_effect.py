@@ -1,5 +1,4 @@
 from typing import Any, Collection, NamedTuple
-import pytest
 
 import cocoindex as coco
 from cocoindex.tests.environment import create_test_env
@@ -36,9 +35,22 @@ def _global_map_effect_reconciler(
     desired_effect: Any | coco.NonExistenceType,
     prev_possible_states: Collection[Any],
     prev_may_be_missing: bool,
-) -> coco.EffectReconcileOutput[
-    tuple[str, _MapDataWithPrev | coco.NonExistenceType], Any
-]:
+) -> (
+    coco.EffectReconcileOutput[
+        tuple[str, _MapDataWithPrev | coco.NonExistenceType], Any
+    ]
+    | None
+):
+    # Short-circuit no-change case
+    if coco.is_non_existence(desired_effect):
+        if len(prev_possible_states) == 0:
+            return None
+    else:
+        if not prev_may_be_missing and all(
+            prev == desired_effect for prev in prev_possible_states
+        ):
+            return None
+
     new_value = (
         coco.NON_EXISTENCE
         if coco.is_non_existence(desired_effect)
@@ -115,7 +127,7 @@ def test_global_map_effect_upsert() -> None:
     app.update()
     assert _global_map_effect_data == {
         "a": _MapDataWithPrev(data=3, prev=[1], prev_may_be_missing=False),
-        "b": _MapDataWithPrev(data=2, prev=[2], prev_may_be_missing=False),
+        "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
 
 
@@ -139,5 +151,40 @@ def test_global_map_effect_delete() -> None:
     del _source_data["a"]
     app.update()
     assert _global_map_effect_data == {
-        "b": _MapDataWithPrev(data=2, prev=[2], prev_may_be_missing=False),
+        "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+
+
+def test_global_map_effect_no_change() -> None:
+    _global_map_effect_data.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        declare_global_map_entries,
+        coco.AppConfig(name="test_global_map_effect_no_change", environment=coco_env),
+    )
+
+    _source_data["a"] = 1
+    _source_data["b"] = 2
+    app.update()
+    assert _global_map_effect_data == {
+        "a": _MapDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+    app.update()
+    assert _global_map_effect_data == {
+        "a": _MapDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+
+    _source_data["a"] = 3
+    app.update()
+    assert _global_map_effect_data == {
+        "a": _MapDataWithPrev(data=3, prev=[1], prev_may_be_missing=False),
+        "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+    app.update()
+    assert _global_map_effect_data == {
+        "a": _MapDataWithPrev(data=3, prev=[1], prev_may_be_missing=False),
+        "b": _MapDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }

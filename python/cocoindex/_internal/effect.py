@@ -74,7 +74,11 @@ class EffectReconcileOutput(Generic[Action, State], NamedTuple):
     state: State | NonExistenceType = NON_EXISTENCE
 
 
-def _unwrap_reconcile_output(recon_output: EffectReconcileOutput[Action, State]) -> Any:
+def _unwrap_reconcile_output(
+    recon_output: EffectReconcileOutput[Action, State] | None,
+) -> Any:
+    if recon_output is None:
+        return None
     return (recon_output.action, recon_output.sink._core, recon_output.state)
 
 
@@ -86,7 +90,7 @@ class EffectReconcilerFn(Protocol[Action, Key_contra, Decl_contra, State]):
         desired_effect: Decl_contra | NonExistenceType,
         prev_possible_states: Collection[State],
         prev_may_be_missing: bool,
-    ) -> EffectReconcileOutput[Action, State]: ...
+    ) -> EffectReconcileOutput[Action, State] | None: ...
 
 
 class EffectReconciler(Generic[Action, Key_contra, Decl_contra, State]):

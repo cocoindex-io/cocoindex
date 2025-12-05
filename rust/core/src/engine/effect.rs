@@ -30,7 +30,7 @@ pub trait EffectReconciler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
         desired_effect: Option<Prof::EffectDecl>,
         prev_possible_states: &[Prof::EffectState],
         prev_may_be_missing: bool,
-    ) -> Result<EffectReconcileOutput<Prof>, Prof::Error>;
+    ) -> Result<Option<EffectReconcileOutput<Prof>>, Prof::Error>;
 }
 
 pub(crate) struct EffectProviderInner<Prof: EngineProfile> {

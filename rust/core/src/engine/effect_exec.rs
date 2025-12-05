@@ -96,29 +96,38 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
                 &prev_states,
                 prev_may_be_missing,
             )?;
-            actions_by_sinks
-                .entry(recon_output.sink)
-                .or_default()
-                .push(recon_output.action);
-            item.states.push((
-                curr_version,
-                recon_output
-                    .state
-                    .map(|s| s.to_bytes())
-                    .transpose()?
-                    .map(|s| Cow::Owned(s.into())),
-            ));
+            if let Some(recon_output) = recon_output {
+                actions_by_sinks
+                    .entry(recon_output.sink)
+                    .or_default()
+                    .push(recon_output.action);
+                item.states.push((
+                    curr_version,
+                    recon_output
+                        .state
+                        .map(|s| s.to_bytes())
+                        .transpose()?
+                        .map(|s| Cow::Owned(s.into())),
+                ));
+            } else {
+                for (version, _) in item.states.iter_mut() {
+                    *version = curr_version;
+                }
+            }
         }
 
         // Deal with new effects
         for (effect_path, effect) in declared_effects_to_process {
             let effect_key_bytes = effect.key.to_bytes()?;
-            let recon_output = effect.provider.reconciler().reconcile(
+            let Some(recon_output) = effect.provider.reconciler().reconcile(
                 effect.key,
                 Some(effect.decl),
                 /*&prev_states=*/ &[],
                 /*prev_may_be_missing=*/ true,
-            )?;
+            )?
+            else {
+                continue;
+            };
             actions_by_sinks
                 .entry(recon_output.sink)
                 .or_default()
