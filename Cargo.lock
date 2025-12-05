@@ -455,11 +455,11 @@ dependencies = [
  "cocoindex_core",
  "cocoindex_py_utils",
  "cocoindex_utils",
- "log",
  "pyo3",
  "pyo3-async-runtimes",
  "tokio",
  "tokio-util",
+ "tracing",
  "uuid",
 ]
 
