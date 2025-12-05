@@ -5,6 +5,7 @@ import os
 
 from markitdown import MarkItDown
 from openai import OpenAI
+from typing import cast
 
 import cocoindex
 
@@ -97,7 +98,7 @@ class ToMarkdownExecutor:
     spec: ToMarkdown
     _converter: MarkItDown
 
-    def prepare(self):
+    def prepare(self) -> None:
         client = OpenAI()
         self._converter = MarkItDown(llm_client=client, llm_model="gpt-4o")
 
@@ -106,14 +107,15 @@ class ToMarkdownExecutor:
         with tempfile.NamedTemporaryFile(delete=True, suffix=suffix) as temp_file:
             temp_file.write(content)
             temp_file.flush()
-            text = self._converter.convert(temp_file.name).text_content
+            text_any = self._converter.convert(temp_file.name).text_content
+            text: str = cast(str, text_any)
             return text
 
 
 @cocoindex.flow_def(name="PatientIntakeExtraction")
 def patient_intake_extraction_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-):
+) -> None:
     """
     Define a flow that extracts patient information from intake forms.
     """

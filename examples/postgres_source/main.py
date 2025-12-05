@@ -1,6 +1,5 @@
 from typing import Any
 import os
-import datetime
 
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
@@ -134,7 +133,7 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
             """,
                 (query_vector, top_k),
             )
-            return cur.fetchall()
+            return cur.fetchall()  # type: ignore
 
 
 def _main() -> None:

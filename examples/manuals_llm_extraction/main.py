@@ -5,6 +5,7 @@ from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
 from marker.config.parser import ConfigParser
+from typing import cast
 
 import cocoindex
 
@@ -20,7 +21,7 @@ class PdfToMarkdownExecutor:
     spec: PdfToMarkdown
     _converter: PdfConverter
 
-    def prepare(self):
+    def prepare(self) -> None:
         config_parser = ConfigParser({})
         self._converter = PdfConverter(
             create_model_dict(), config=config_parser.generate_config_dict()
@@ -30,8 +31,8 @@ class PdfToMarkdownExecutor:
         with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as temp_file:
             temp_file.write(content)
             temp_file.flush()
-            text, _, _ = text_from_rendered(self._converter(temp_file.name))
-            return text
+            text_any, _, _ = text_from_rendered(self._converter(temp_file.name))
+            return cast(str, text_any)
 
 
 @dataclasses.dataclass
@@ -90,7 +91,7 @@ def summarize_module(module_info: ModuleInfo) -> ModuleSummary:
 @cocoindex.flow_def(name="ManualExtraction")
 def manual_extraction_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-):
+) -> None:
     """
     Define an example flow that extracts manual information from a Markdown.
     """
