@@ -7,7 +7,6 @@ import os
 import face_recognition
 import numpy as np
 from PIL import Image
-from typing import cast
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "face_embeddings"
@@ -86,7 +85,7 @@ def extract_face_embedding(
         np.array(img),
         known_face_locations=[(0, img.width - 1, img.height - 1, 0)],
     )[0]
-    return cast(cocoindex.Vector[cocoindex.Float32], embedding)
+    return embedding  # type: ignore
 
 
 @cocoindex.flow_def(name="FaceRecognition")
