@@ -1,8 +1,8 @@
-use log::trace;
 use std::{
     future::Future,
     time::{Duration, Instant},
 };
+use tracing::trace;
 
 pub trait IsRetryable {
     fn is_retryable(&self) -> bool;

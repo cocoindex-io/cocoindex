@@ -5,7 +5,6 @@ use crate::base::duration::parse_duration;
 use base64::prelude::*;
 use bytes::Bytes;
 use chrono::Offset;
-use log::warn;
 use serde::{
     de::{SeqAccess, Visitor},
     ser::{SerializeMap, SerializeSeq, SerializeTuple},

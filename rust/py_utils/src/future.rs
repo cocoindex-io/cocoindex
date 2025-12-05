@@ -1,6 +1,5 @@
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use log::error;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::TaskLocals;
@@ -10,6 +9,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
+use tracing::error;
 
 struct CancelOnDropPy {
     inner: BoxFuture<'static, PyResult<Py<PyAny>>>,

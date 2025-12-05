@@ -6,10 +6,10 @@ use crate::{
 use super::stats;
 use futures::future::try_join_all;
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish};
-use log::log_enabled;
 use sqlx::PgPool;
 use std::fmt::Write;
 use tokio::{sync::watch, task::JoinSet, time::MissedTickBehavior};
+use tracing::Level;
 
 pub struct FlowLiveUpdaterUpdates {
     pub active_sources: Vec<String>,
@@ -121,6 +121,7 @@ impl SourceUpdateTask {
         Ok(Some(pb))
     }
 
+    #[instrument(name = "source_update_task.run", skip_all, fields(flow_name = %self.flow.flow_instance.name, source_name = %self.import_op().name))]
     async fn run(self) -> Result<()> {
         let source_indexing_context = self
             .execution_ctx
@@ -369,7 +370,7 @@ impl SourceUpdateTask {
     }
 
     fn stats_report_enabled(&self) -> bool {
-        self.options.print_stats || log_enabled!(log::Level::Trace)
+        self.options.print_stats || tracing::event_enabled!(Level::TRACE)
     }
 
     async fn run_with_progress_report(
@@ -480,6 +481,7 @@ impl SourceUpdateTask {
 }
 
 impl FlowLiveUpdater {
+    #[instrument(name = "flow_live_updater.start", skip_all, fields(flow_name = %flow_ctx.flow_name()))]
     pub async fn start(
         flow_ctx: Arc<FlowContext>,
         pool: &PgPool,

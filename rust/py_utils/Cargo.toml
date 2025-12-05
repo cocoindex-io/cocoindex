@@ -14,4 +14,4 @@ pyo3 = { workspace = true }
 pyo3-async-runtimes = { workspace = true }
 pythonize = { workspace = true }
 serde = { workspace = true }
-log = { workspace = true }
+tracing = { workspace = true }

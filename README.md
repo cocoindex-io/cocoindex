@@ -204,6 +204,7 @@ It defines an index flow like this:
 | [Patient intake form extraction](examples/patient_intake_extraction) | Use LLM to extract structured data from patient intake forms with different formats |
 | [HackerNews Trending Topics](examples/hn_trending_topics) | Extract trending topics from HackerNews threads and comments, using *CocoIndex Custom Source* and LLM |
 | [Patient Intake Form Extraction with BAML](examples/patient_intake_extraction_baml) | Extract structured data from patient intake forms using BAML |
+| [Patient Intake Form Extraction with DSPy](examples/patient_intake_extraction_dspy) | Extract structured data from patient intake forms using DSPy |
 
 More coming and stay tuned 👀!
 
