@@ -435,12 +435,9 @@ pub async fn diff_flow_setup_states(
         .await?;
 
         let desired_state = target_states_group.desired.clone();
-        let desired_target_state = target_states_group
-            .desired
-            .and_then(|state| (!state.common.setup_by_user).then_some(state.state));
         let has_tracked_state_change = target_states_group
             .existing
-            .has_state_diff(desired_target_state.as_ref(), |s| &s.state)
+            .has_state_diff(desired_state.as_ref().map(|s| &s.state), |s| &s.state)
             || attachments_change.has_tracked_state_change;
         let existing_without_setup_by_user = CombinedState {
             current: target_states_group
@@ -460,7 +457,10 @@ pub async fn diff_flow_setup_states(
                 .collect(),
             legacy_state_key: target_states_group.existing.legacy_state_key.clone(),
         };
-        let never_setup_by_sys = desired_target_state.is_none()
+        let target_state_to_setup = target_states_group
+            .desired
+            .and_then(|state| (!state.common.setup_by_user).then_some(state.state));
+        let never_setup_by_sys = target_state_to_setup.is_none()
             && existing_without_setup_by_user.current.is_none()
             && existing_without_setup_by_user.staging.is_empty();
         let setup_change = if never_setup_by_sys {
@@ -470,7 +470,7 @@ pub async fn diff_flow_setup_states(
                 target_change: factory
                     .diff_setup_states(
                         &resource_id.key,
-                        desired_target_state,
+                        target_state_to_setup,
                         existing_without_setup_by_user,
                         flow_instance_ctx.clone(),
                     )
