@@ -6,6 +6,8 @@ from typing import (
     Protocol,
     Any,
 )
+import threading
+import weakref
 from cocoindex._internal.context import component_ctx_var
 from typing_extensions import TypeIs, TypeVar
 
@@ -59,13 +61,38 @@ class EffectSink(Generic[Action_contra]):
 
     @staticmethod
     def from_fn(fn: EffectSinkFn[Action_contra]) -> "EffectSink[Action_contra]":
-        return EffectSink(core.EffectSink.new_sync(fn))
+        canonical = _SYNC_FN_DEDUPER.get_canonical(fn)
+        return EffectSink(core.EffectSink.new_sync(canonical))
 
     @staticmethod
     def from_async_fn(
         fn: AsyncEffectSinkFn[Action_contra],
     ) -> "EffectSink[Action_contra]":
-        return EffectSink(core.EffectSink.new_async(fn, get_async_context()))
+        canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
+        return EffectSink(core.EffectSink.new_async(canonical, get_async_context()))
+
+
+class _ObjectDeduper:
+    __slots__ = ("_lock", "_map")
+    _lock: threading.Lock
+    _map: weakref.WeakValueDictionary[Any, Any]
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._map = weakref.WeakValueDictionary()
+
+    def get_canonical(self, obj: Any) -> Any:
+        with self._lock:
+            value = self._map.get(obj)
+            if value is not None:
+                return value
+
+            self._map[obj] = obj
+            return obj
+
+
+_SYNC_FN_DEDUPER = _ObjectDeduper()
+_ASYNC_FN_DEDUPER = _ObjectDeduper()
 
 
 class EffectReconcileOutput(Generic[Action, State], NamedTuple):
