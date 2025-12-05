@@ -49,7 +49,7 @@ Ultra performant data transformation framework for AI, with core engine written 
 
 </br>
 
-CocoIndex makes it effortless to transform data with AI, and keep source data and target in sync. Whether you’re building a vector index for RAG, creating knowledge graphs, or performing any custom data transformations — goes beyond SQL.
+CocoIndex makes it effortless to transform data with AI, and keep source data and target in sync. Whether you’re building a vector index, creating knowledge graphs for context engineering or performing any custom data transformations — goes beyond SQL.
 
 </br>
 
