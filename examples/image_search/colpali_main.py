@@ -1,7 +1,7 @@
 import datetime
 import os
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, AsyncIterator
 
 import cocoindex
 from dotenv import load_dotenv
@@ -71,7 +71,7 @@ def image_object_embedding_flow(
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> None:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     load_dotenv()
     cocoindex.init()
     image_object_embedding_flow.setup(report_to_stdout=True)
@@ -100,11 +100,11 @@ app.mount("/img", StaticFiles(directory="img"), name="img")
 
 
 # --- Search API ---
-@app.get("/search")
+@app.get("/search")  # type: ignore
 def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
-) -> Any:
+) -> dict[str, Any]:
     # Get the multi-vector embedding for the query
     query_embedding = text_to_colpali_embedding.eval(q)
     print(
