@@ -82,6 +82,8 @@ all = [
 # This is the set of dependencies that needs to be installed for the CI workflow.
 all-ci = ["pytest", "pytest-asyncio", "mypy", "pydantic>=2.11.9"]
 
+free-threaded = ["sentence-transformers>=3.3.1", "colpali-engine"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
