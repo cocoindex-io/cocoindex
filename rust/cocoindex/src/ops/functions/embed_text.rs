@@ -12,6 +12,7 @@ struct Spec {
     address: Option<String>,
     api_config: Option<LlmApiConfig>,
     output_dimension: Option<u32>,
+    expected_output_dimension: Option<u32>,
     task_type: Option<String>,
     api_key: Option<AuthEntryReference<String>>,
 }
@@ -129,15 +130,25 @@ impl SimpleFunctionFactoryBase for Factory {
             spec.api_config.clone(),
         )
         .await?;
-        let output_dimension = match spec.output_dimension {
-            Some(output_dimension) => output_dimension,
-            None => {
-                client.get_default_embedding_dimension(spec.model.as_str())
-                    .ok_or_else(|| api_error!("model \"{}\" is unknown for {:?}, needs to specify `output_dimension` explicitly", spec.model, spec.api_type))?
+
+        // Warn if both parameters are specified but have different values
+        if let (Some(expected), Some(output)) =
+            (spec.expected_output_dimension, spec.output_dimension)
+        {
+            if expected != output {
+                warn!(
+                    "Both `expected_output_dimension` ({expected}) and `output_dimension` ({output}) are specified but have different values. \
+                     `expected_output_dimension` will be used for output schema and validation, while `output_dimension` will be sent to the embedding API."
+                );
             }
-        };
+        }
+
+        let expected_output_dimension = spec.expected_output_dimension
+            .or(spec.output_dimension)
+            .or_else(|| client.get_default_embedding_dimension(spec.model.as_str()))
+            .ok_or_else(|| api_error!("model \"{}\" is unknown for {:?}, needs to specify `expected_output_dimension` (or `output_dimension`) explicitly", spec.model, spec.api_type))? as usize;
         let output_schema = make_output_type(BasicValueType::Vector(VectorTypeSchema {
-            dimension: Some(output_dimension as usize),
+            dimension: Some(expected_output_dimension),
             element_type: Box::new(BasicValueType::Float32),
         }));
         Ok(SimpleFunctionAnalysisOutput {
@@ -145,7 +156,7 @@ impl SimpleFunctionFactoryBase for Factory {
             resolved_args: Args {
                 client,
                 text,
-                expected_output_dimension: output_dimension as usize,
+                expected_output_dimension,
             },
             output_schema,
         })
@@ -179,6 +190,7 @@ mod tests {
             address: None,
             api_config: None,
             output_dimension: None,
+            expected_output_dimension: None,
             task_type: None,
             api_key: None,
         };

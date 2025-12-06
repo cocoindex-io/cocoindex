@@ -189,10 +189,11 @@ The spec takes the following fields:
 * `api_type` ([`cocoindex.LlmApiType`](/docs/ai/llm#llm-api-types)): The type of LLM API to use for embedding.
 * `model` (`str`): The name of the embedding model to use.
 * `address` (`str`, optional): The address of the LLM API. If not specified, uses the default address for the API type.
-* `output_dimension` (`int`, optional): The expected dimension of the output embedding vector. If not specified, use the default dimension of the model.
+* `output_dimension` (`int`, optional): The dimension to request from the embedding API. Some APIs support specifying the output dimension (e.g., OpenAI's models support dimension reduction). If not specified, the API will use its default dimension.
+* `expected_output_dimension` (`int`, optional): The expected dimension of the output embedding vector for validation and type schema. If not specified, falls back to `output_dimension`, then to the default dimension of the model.
 
-    For most API types, the function internally keeps a registry for the default output dimension of known model.
-    You need to explicitly specify the `output_dimension` if you want to use a new model that is not in the registry yet.
+    For most API types, the function internally keeps a registry for the default output dimension of known models.
+    You need to explicitly specify `expected_output_dimension` (or `output_dimension`) if you want to use a new model that is not in the registry yet.
 
 * `task_type` (`str`, optional): The task type for embedding, used by some embedding models to optimize the embedding for specific use cases.
 

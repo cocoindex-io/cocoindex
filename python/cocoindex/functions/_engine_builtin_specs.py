@@ -55,6 +55,7 @@ class EmbedText(op.FunctionSpec):
     model: str
     address: str | None = None
     output_dimension: int | None = None
+    expected_output_dimension: int | None = None
     task_type: str | None = None
     api_config: llm.VertexAiConfig | None = None
     api_key: TransientAuthEntryReference[str] | None = None
