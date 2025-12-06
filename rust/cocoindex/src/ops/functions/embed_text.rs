@@ -130,6 +130,19 @@ impl SimpleFunctionFactoryBase for Factory {
             spec.api_config.clone(),
         )
         .await?;
+
+        // Warn if both parameters are specified but have different values
+        if let (Some(expected), Some(output)) =
+            (spec.expected_output_dimension, spec.output_dimension)
+        {
+            if expected != output {
+                warn!(
+                    "Both `expected_output_dimension` ({expected}) and `output_dimension` ({output}) are specified but have different values. \
+                     `expected_output_dimension` will be used for output schema and validation, while `output_dimension` will be sent to the embedding API."
+                );
+            }
+        }
+
         let expected_output_dimension = spec.expected_output_dimension
             .or(spec.output_dimension)
             .or_else(|| client.get_default_embedding_dimension(spec.model.as_str()))
