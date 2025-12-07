@@ -69,4 +69,8 @@ impl EffectPath {
     pub fn provider_path(&self) -> &[utils::fingerprint::Fingerprint] {
         &self.inner[..self.inner.len() - 1]
     }
+
+    pub fn as_slice(&self) -> &[utils::fingerprint::Fingerprint] {
+        &self.inner
+    }
 }

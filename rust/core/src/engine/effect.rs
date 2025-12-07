@@ -1,6 +1,8 @@
+use crate::prelude::*;
+
 use cocoindex_utils::fingerprint::Fingerprint;
 
-use crate::{engine::profile::EngineProfile, prelude::*, state::effect_path::EffectPath};
+use crate::{engine::profile::EngineProfile, state::effect_path::EffectPath};
 
 use std::hash::Hash;
 
@@ -11,7 +13,10 @@ pub trait EffectSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
     ///
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
     #[allow(async_fn_in_trait)]
-    async fn apply(&self, actions: Vec<Prof::EffectAction>) -> Result<(), Prof::Error>;
+    async fn apply(
+        &self,
+        actions: Vec<Prof::EffectAction>,
+    ) -> Result<Option<Vec<Option<Prof::EffectRcl>>>, Prof::Error>;
 }
 
 pub struct EffectReconcileOutput<Prof: EngineProfile> {
@@ -34,9 +39,9 @@ pub trait EffectReconciler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
 }
 
 pub(crate) struct EffectProviderInner<Prof: EngineProfile> {
-    pub effect_path: EffectPath,
-    pub reconciler: OnceLock<Prof::EffectRcl>,
-    pub orphaned: OnceLock<()>,
+    effect_path: EffectPath,
+    reconciler: OnceLock<Prof::EffectRcl>,
+    orphaned: OnceLock<()>,
 }
 
 #[derive(Clone)]
@@ -61,6 +66,17 @@ impl<Prof: EngineProfile> EffectProvider<Prof> {
     pub fn reconciler(&self) -> Option<&Prof::EffectRcl> {
         self.inner.reconciler.get()
     }
+
+    pub fn fulfill_reconciler(&self, reconciler: Prof::EffectRcl) -> Result<()> {
+        self.inner
+            .reconciler
+            .set(reconciler)
+            .map_err(|_| anyhow!("Reconciler is already fulfilled"))
+    }
+
+    pub fn is_orphaned(&self) -> bool {
+        self.inner.orphaned.get().is_some()
+    }
 }
 
 #[derive(Default)]
@@ -79,6 +95,18 @@ impl<Prof: EngineProfile> EffectProviderRegistry<Prof> {
         }
     }
 
+    pub fn add(&mut self, effect_path: EffectPath, provider: EffectProvider<Prof>) -> Result<()> {
+        if self.providers.contains_key(&effect_path) {
+            bail!(
+                "Effect provider already registered for path: {:?}",
+                effect_path
+            );
+        }
+        self.curr_effect_paths.push(effect_path.clone());
+        self.providers.insert_mut(effect_path, provider);
+        Ok(())
+    }
+
     pub fn register(
         &mut self,
         effect_path: EffectPath,
@@ -91,8 +119,19 @@ impl<Prof: EngineProfile> EffectProviderRegistry<Prof> {
                 orphaned: OnceLock::new(),
             }),
         };
-        self.curr_effect_paths.push(effect_path.clone());
-        self.providers.insert_mut(effect_path, provider.clone());
+        self.add(effect_path, provider.clone())?;
+        Ok(provider)
+    }
+
+    pub fn register_lazy(&mut self, effect_path: EffectPath) -> Result<EffectProvider<Prof>> {
+        let provider = EffectProvider {
+            inner: Arc::new(EffectProviderInner {
+                effect_path: effect_path.clone(),
+                reconciler: OnceLock::new(),
+                orphaned: OnceLock::new(),
+            }),
+        };
+        self.add(effect_path, provider.clone())?;
         Ok(provider)
     }
 

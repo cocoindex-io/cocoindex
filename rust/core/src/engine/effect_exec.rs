@@ -10,34 +10,18 @@ use crate::state::effect_path::EffectPath;
 
 pub fn declare_effect<Prof: EngineProfile>(
     context: &ComponentBuilderContext<Prof>,
-    declared_effect: DeclaredEffect<Prof>,
+    provider: EffectProvider<Prof>,
+    key: Prof::EffectKey,
+    decl: Prof::EffectDecl,
 ) -> Result<()> {
-    let effect_path = make_effect_path(&declared_effect);
-    insert_effect(context, effect_path, declared_effect)?;
-    Ok(())
-}
-
-pub fn declare_effect_with_child<Prof: EngineProfile>(
-    context: &ComponentBuilderContext<Prof>,
-    declared_effect: DeclaredEffect<Prof>,
-) -> Result<EffectProvider<Prof>> {
-    let effect_path = make_effect_path(&declared_effect);
-    let child_provider = EffectProvider::new(effect_path.clone());
-    insert_effect(context, effect_path, declared_effect)?;
-    Ok(child_provider)
-}
-
-fn make_effect_path<Prof: EngineProfile>(declared_effect: &DeclaredEffect<Prof>) -> EffectPath {
-    let fp = declared_effect.key.stable_fingerprint();
-    declared_effect.provider.effect_path().concat(fp)
-}
-
-fn insert_effect<Prof: EngineProfile>(
-    context: &ComponentBuilderContext<Prof>,
-    effect_path: EffectPath,
-    declared_effect: DeclaredEffect<Prof>,
-) -> Result<()> {
+    let effect_path = make_effect_path(&provider, &key);
     let mut effect_context = context.inner.effect.lock().unwrap();
+    let declared_effect = DeclaredEffect {
+        provider,
+        key,
+        decl,
+        child_provider: None,
+    };
     let existing = effect_context
         .declared_effects
         .insert(effect_path, declared_effect);
@@ -45,6 +29,72 @@ fn insert_effect<Prof: EngineProfile>(
         bail!("Effect already declared with key: {:?}", existing.key);
     }
     Ok(())
+}
+
+pub fn declare_effect_with_child<Prof: EngineProfile>(
+    context: &ComponentBuilderContext<Prof>,
+    provider: EffectProvider<Prof>,
+    key: Prof::EffectKey,
+    decl: Prof::EffectDecl,
+) -> Result<EffectProvider<Prof>> {
+    let effect_path = make_effect_path(&provider, &key);
+    let mut effect_context = context.inner.effect.lock().unwrap();
+    let child_provider = effect_context
+        .providers
+        .register_lazy(effect_path.clone())?;
+    let declared_effect = DeclaredEffect {
+        provider,
+        key,
+        decl,
+        child_provider: Some(child_provider.clone()),
+    };
+    let existing = effect_context
+        .declared_effects
+        .insert(effect_path, declared_effect);
+    if let Some(existing) = existing {
+        bail!("Effect already declared with key: {:?}", existing.key);
+    }
+    Ok(child_provider)
+}
+
+fn make_effect_path<Prof: EngineProfile>(
+    provider: &EffectProvider<Prof>,
+    key: &Prof::EffectKey,
+) -> EffectPath {
+    let fp = key.stable_fingerprint();
+    provider.effect_path().concat(fp)
+}
+
+struct SinkInput<Prof: EngineProfile> {
+    actions: Vec<Prof::EffectAction>,
+    child_providers: Option<Vec<Option<EffectProvider<Prof>>>>,
+}
+
+impl<Prof: EngineProfile> Default for SinkInput<Prof> {
+    fn default() -> Self {
+        Self {
+            actions: Vec::new(),
+            child_providers: None,
+        }
+    }
+}
+
+impl<Prof: EngineProfile> SinkInput<Prof> {
+    fn add_action(
+        &mut self,
+        action: Prof::EffectAction,
+        child_provider: Option<EffectProvider<Prof>>,
+    ) {
+        self.actions.push(action);
+        if let Some(child_providers) = self.child_providers.as_mut() {
+            child_providers.push(child_provider);
+        } else if let Some(child_provider) = child_provider {
+            let mut v = Vec::with_capacity(self.actions.len());
+            v.extend(std::iter::repeat(None).take(self.actions.len() - 1));
+            v.push(Some(child_provider));
+            self.child_providers = Some(v);
+        }
+    }
 }
 
 pub(crate) async fn commit_effects<Prof: EngineProfile>(
@@ -65,7 +115,7 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
         db_schema::StateEntryKey::Effects,
     );
 
-    let mut actions_by_sinks = HashMap::<Prof::EffectSink, Vec<Prof::EffectAction>>::new();
+    let mut actions_by_sinks = HashMap::<Prof::EffectSink, SinkInput<Prof>>::new();
 
     // Reconcile and precommit effects
     let curr_version = {
@@ -91,11 +141,13 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
                 .collect::<Result<Vec<_>, Prof::Error>>()?;
 
             let declared_effect = declared_effects_to_process.remove(effect_path);
-            let (effect_provider, effect_key, declared_decl) = match declared_effect {
+            let (effect_provider, effect_key, declared_decl, child_provider) = match declared_effect
+            {
                 Some(declared_effect) => (
                     Cow::Owned(declared_effect.provider),
                     declared_effect.key,
                     Some(declared_effect.decl),
+                    declared_effect.child_provider,
                 ),
                 None => {
                     let effect_provider = effect_providers
@@ -105,7 +157,7 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
                             anyhow::anyhow!("Effect provider not found for path: {effect_path}")
                         })?;
                     let effect_key = Prof::EffectKey::from_bytes(item.key.as_ref())?;
-                    (Cow::Borrowed(effect_provider), effect_key, None)
+                    (Cow::Borrowed(effect_provider), effect_key, None, None)
                 }
             };
             let recon_output = effect_provider
@@ -118,7 +170,7 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
                 actions_by_sinks
                     .entry(recon_output.sink)
                     .or_default()
-                    .push(recon_output.action);
+                    .add_action(recon_output.action, child_provider);
                 item.states.push((
                     curr_version,
                     recon_output
@@ -158,7 +210,7 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
             actions_by_sinks
                 .entry(recon_output.sink)
                 .or_default()
-                .push(recon_output.action);
+                .add_action(recon_output.action, effect.child_provider);
             let Some(new_state) = recon_output
                 .state
                 .map(|s| s.to_bytes())
@@ -182,8 +234,29 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
     };
 
     // Apply actions
-    for (sink, actions) in actions_by_sinks {
-        sink.apply(actions).await?;
+    for (sink, input) in actions_by_sinks {
+        let recons = sink.apply(input.actions).await?;
+        if let Some(child_providers) = input.child_providers {
+            let Some(recons) = recons else {
+                bail!("expect child providers returned by Sink");
+            };
+            if recons.len() != child_providers.len() {
+                bail!(
+                    "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
+                    child_providers.len(),
+                    recons.len(),
+                );
+            }
+            for (recon, child_provider) in std::iter::zip(recons, child_providers) {
+                if let Some(child_provider) = child_provider {
+                    if let Some(recon) = recon {
+                        child_provider.fulfill_reconciler(recon)?;
+                    } else {
+                        bail!("expect child provider returned by Sink to be fulfilled");
+                    }
+                }
+            }
+        }
     }
 
     // Commit effects
@@ -219,6 +292,21 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
         let data_bytes = rmp_serde::to_vec(&effect_info)?;
         db.put(&mut wtxn, &effect_info_key, data_bytes.as_slice())?;
         wtxn.commit()?;
+    }
+
+    // Merge new providers back to the parent context registry
+    if let Some(parent_context) = &context.inner.parent_context {
+        let mut parent_effect_context = parent_context.effect.lock().unwrap();
+        for effect_path in effect_providers.curr_effect_paths {
+            let Some(provider) = effect_providers.providers.get(&effect_path) else {
+                continue;
+            };
+            if !provider.is_orphaned() {
+                parent_effect_context
+                    .providers
+                    .add(effect_path, provider.clone())?;
+            }
+        }
     }
 
     Ok(())

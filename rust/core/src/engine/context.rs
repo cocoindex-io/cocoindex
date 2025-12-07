@@ -16,10 +16,11 @@ pub struct AppContext<Prof: EngineProfile> {
     pub app_reg: AppRegistration<Prof>,
 }
 
-pub struct DeclaredEffect<Prof: EngineProfile> {
+pub(crate) struct DeclaredEffect<Prof: EngineProfile> {
     pub provider: EffectProvider<Prof>,
     pub key: Prof::EffectKey,
     pub decl: Prof::EffectDecl,
+    pub child_provider: Option<EffectProvider<Prof>>,
 }
 
 pub(crate) struct ComponentEffectContext<Prof: EngineProfile> {

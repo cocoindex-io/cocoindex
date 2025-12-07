@@ -1,19 +1,17 @@
 use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
-use cocoindex_core::engine::context::DeclaredEffect;
 use cocoindex_core::engine::effect::{
     EffectProvider, EffectProviderRegistry, EffectReconcileOutput, EffectReconciler, EffectSink,
 };
 use cocoindex_core::state::effect_path::EffectPath;
 use pyo3::exceptions::PyException;
-use pyo3::types::PyList;
+use pyo3::types::{PyList, PySequence};
 
 use crate::context::PyComponentBuilderContext;
 use crate::prelude::*;
 
 use crate::runtime::{PyAsyncContext, PyCallback};
-use crate::state_path::PyStatePath;
 use crate::value::{PyKey, PyValue};
 
 static NON_EXISTENCE: OnceLock<Py<PyAny>> = OnceLock::new();
@@ -70,12 +68,32 @@ impl Hash for PyEffectSink {
 }
 
 impl EffectSink<PyEngineProfile> for PyEffectSink {
-    async fn apply(&self, actions: Vec<Py<PyAny>>) -> PyResult<()> {
-        let ret = self.callback.call((actions,)).await;
-        match ret {
-            Ok(ret) => ret.map(|_| ()),
-            Err(e) => Err(PyException::new_err(format!("{e:?}"))),
-        }
+    async fn apply(
+        &self,
+        actions: Vec<Py<PyAny>>,
+    ) -> PyResult<Option<Vec<Option<PyEffectReconciler>>>> {
+        let ret = self.callback.call((actions,)).await.into_py_result()??;
+        Python::attach(|py| {
+            if ret.is_none(py) {
+                return Ok(None);
+            }
+            let seq = ret.bind(py).cast::<PySequence>()?;
+            let len = seq.len()? as usize;
+            let mut results: Vec<Option<PyEffectReconciler>> = Vec::with_capacity(len);
+            for i in 0..len {
+                let obj = seq.get_item(i)?;
+                if obj.is_none() {
+                    results.push(None);
+                } else {
+                    // Expect a Python-side EffectReconciler wrapper with attribute `_core`
+                    let core_obj = obj.getattr("_core")?;
+                    let core_py = core_obj.extract::<Py<PyEffectReconciler>>()?;
+                    let core_ref = core_py.bind(py).borrow();
+                    results.push(Some(core_ref.clone_ref(py)));
+                }
+            }
+            Ok(Some(results))
+        })
     }
 }
 
@@ -158,11 +176,9 @@ pub fn declare_effect<'py>(
     let py_key = PyKey::new(py, key)?;
     cocoindex_core::engine::effect_exec::declare_effect(
         &context.0,
-        DeclaredEffect {
-            provider: provider.0.clone(),
-            key: py_key,
-            decl,
-        },
+        provider.0.clone(),
+        py_key,
+        decl,
     )
     .into_py_result()?;
     Ok(())
@@ -179,11 +195,9 @@ pub fn declare_effect_with_child<'py>(
     let py_key = PyKey::new(py, key)?;
     let output = cocoindex_core::engine::effect_exec::declare_effect_with_child(
         &context.0,
-        DeclaredEffect {
-            provider: provider.0.clone(),
-            key: py_key,
-            decl,
-        },
+        provider.0.clone(),
+        py_key,
+        decl,
     )
     .into_py_result()?;
     Ok(PyEffectProvider(output))
