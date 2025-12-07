@@ -2,63 +2,15 @@
 Cocoindex is a framework for building and running indexing pipelines.
 """
 
-from ._version import __version__
-
+# Version check
+from ._version import __version__ as __version__
 from . import _version_check
 
-from ._internal.app import App, AppConfig
 
-from ._internal.effect import (
-    NonExistenceType,
-    NON_EXISTENCE,
-    Effect,
-    EffectProvider,
-    EffectReconcileOutput,
-    EffectReconciler,
-    EffectSink,
-    declare_effect,
-    declare_effect_with_child,
-    is_non_existence,
-    register_root_effect_provider,
-)
+# Re-export APIs from internal modules
 
-from ._internal.environment import Environment, EnvironmentBuilder, LifespanFn
-from ._internal.environment import lifespan, default_env
+from . import _internal
+from ._internal.api import *  # noqa: F403
+from ._internal.api_sync import *  # noqa: F403
 
-from ._internal.function import function
-
-from ._internal.state import StatePath, StateKey
-
-from ._internal.setting import Settings
-
-__all__ = [
-    "__version__",
-    # .app
-    "App",
-    "AppConfig",
-    # .effect
-    "NonExistenceType",
-    "NON_EXISTENCE",
-    "Effect",
-    "EffectProvider",
-    "EffectReconcileOutput",
-    "EffectReconciler",
-    "EffectSink",
-    "declare_effect",
-    "declare_effect_with_child",
-    "is_non_existence",
-    "register_root_effect_provider",
-    # .environment
-    "Environment",
-    "EnvironmentBuilder",
-    "LifespanFn",
-    "lifespan",
-    "default_env",
-    # .fn
-    "function",
-    # .state
-    "StatePath",
-    "StateKey",
-    # .setting
-    "Settings",
-]
+__all__ = _internal.api.__all__ + _internal.api_sync.__all__

@@ -25,9 +25,9 @@ class AppConfig(NamedTuple):
     environment: Environment | None = None
 
 
-class App(Generic[P, R]):
+class AppBase(Generic[P, R]):
     _config: AppConfig
-    _core_app: core.App
+    _core: core.App
 
     def __init__(
         self,
@@ -45,14 +45,8 @@ class App(Generic[P, R]):
             StatePath(), *args, **kwargs
         )
         env = self._config.environment or default_env()
-        self._core_app = core.App(
+        self._core = core.App(
             self._config.name,
             env._core_env,
             component_builder,
         )
-
-    def update(self) -> R:
-        return self._core_app.update()  # type: ignore
-
-    async def update_async(self) -> R:
-        return await self._core_app.update_async()  # type: ignore
