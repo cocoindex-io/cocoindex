@@ -1,10 +1,11 @@
 use std::hash::{Hash, Hasher};
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use cocoindex_core::engine::context::DeclaredEffect;
 use cocoindex_core::engine::effect::{
-    EffectProvider, EffectReconcileOutput, EffectReconciler, EffectSink, RootEffectProviderRegistry,
+    EffectProvider, EffectProviderRegistry, EffectReconcileOutput, EffectReconciler, EffectSink,
 };
+use cocoindex_core::state::effect_path::EffectPath;
 use pyo3::exceptions::PyException;
 use pyo3::types::PyList;
 
@@ -149,32 +150,51 @@ pub struct PyEffectProvider(EffectProvider<PyEngineProfile>);
 #[pyfunction]
 pub fn declare_effect<'py>(
     py: Python<'py>,
-    state_path: &'py PyStatePath,
     context: &'py PyComponentBuilderContext,
     provider: &PyEffectProvider,
     key: Py<PyAny>,
     decl: Py<PyAny>,
-    child_reconciler: Option<&'py PyEffectReconciler>,
-) -> PyResult<Option<PyEffectProvider>> {
+) -> PyResult<()> {
     let py_key = PyKey::new(py, key)?;
-    let output = cocoindex_core::engine::effect_exec::declare_effect(
+    cocoindex_core::engine::effect_exec::declare_effect(
         &context.0,
         DeclaredEffect {
-            mounted_state_path: state_path.0.clone(),
             provider: provider.0.clone(),
             key: py_key,
             decl,
         },
-        child_reconciler.map(|r| r.clone_ref(py)),
     )
     .into_py_result()?;
-    Ok(output.map(|p| PyEffectProvider(p)))
+    Ok(())
 }
 
-static ROOT_EFFECT_PROVIDER_REGISTRY: LazyLock<RootEffectProviderRegistry<PyEngineProfile>> =
-    LazyLock::new(|| RootEffectProviderRegistry::new());
+#[pyfunction]
+pub fn declare_effect_with_child<'py>(
+    py: Python<'py>,
+    context: &'py PyComponentBuilderContext,
+    provider: &PyEffectProvider,
+    key: Py<PyAny>,
+    decl: Py<PyAny>,
+) -> PyResult<PyEffectProvider> {
+    let py_key = PyKey::new(py, key)?;
+    let output = cocoindex_core::engine::effect_exec::declare_effect_with_child(
+        &context.0,
+        DeclaredEffect {
+            provider: provider.0.clone(),
+            key: py_key,
+            decl,
+        },
+    )
+    .into_py_result()?;
+    Ok(PyEffectProvider(output))
+}
 
-pub fn root_effect_provider_registry() -> &'static RootEffectProviderRegistry<PyEngineProfile> {
+static ROOT_EFFECT_PROVIDER_REGISTRY: LazyLock<
+    Arc<Mutex<EffectProviderRegistry<PyEngineProfile>>>,
+> = LazyLock::new(Default::default);
+
+pub fn root_effect_provider_registry()
+-> &'static Arc<Mutex<EffectProviderRegistry<PyEngineProfile>>> {
     &ROOT_EFFECT_PROVIDER_REGISTRY
 }
 
@@ -185,7 +205,15 @@ pub fn register_root_effect_provider(
     reconciler: &PyEffectReconciler,
 ) -> PyResult<PyEffectProvider> {
     let provider = root_effect_provider_registry()
-        .register(name, reconciler.clone_ref(py))
+        .lock()
+        .unwrap()
+        .register(
+            EffectPath::new(
+                utils::fingerprint::Fingerprint::from(&name).into_py_result()?,
+                None,
+            ),
+            reconciler.clone_ref(py),
+        )
         .into_py_result()?;
     Ok(PyEffectProvider(provider))
 }

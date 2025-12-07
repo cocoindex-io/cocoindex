@@ -4,45 +4,61 @@ use std::collections::HashMap;
 use crate::prelude::*;
 
 use crate::engine::context::{ComponentBuilderContext, DeclaredEffect};
-use crate::engine::effect::{EffectProvider, EffectProviderInner, EffectReconciler, EffectSink};
+use crate::engine::effect::{EffectProvider, EffectReconciler, EffectSink};
 use crate::engine::profile::{EngineProfile, Persist, StableFingerprint};
+use crate::state::effect_path::EffectPath;
 
 pub fn declare_effect<Prof: EngineProfile>(
     context: &ComponentBuilderContext<Prof>,
     declared_effect: DeclaredEffect<Prof>,
-    child_reconciler: Option<Prof::EffectRcl>,
-) -> Result<Option<EffectProvider<Prof>>> {
-    let fp = declared_effect.key.stable_fingerprint();
-    let state_path = declared_effect.provider.effect_path().concat(fp);
-    let child_provider = child_reconciler.map(|r| EffectProvider {
-        inner: Arc::new(EffectProviderInner {
-            effect_path: state_path.clone(),
-            reconciler: r,
-        }),
-    });
+) -> Result<()> {
+    let effect_path = make_effect_path(&declared_effect);
+    insert_effect(context, effect_path, declared_effect)?;
+    Ok(())
+}
 
-    {
-        let mut declared_effects = context.inner.declared_effects.lock().unwrap();
-        let existing = declared_effects.insert(state_path, declared_effect);
-        if let Some(existing) = existing {
-            bail!("Effect already declared with key: {:?}", existing.key);
-        }
-    }
-
+pub fn declare_effect_with_child<Prof: EngineProfile>(
+    context: &ComponentBuilderContext<Prof>,
+    declared_effect: DeclaredEffect<Prof>,
+) -> Result<EffectProvider<Prof>> {
+    let effect_path = make_effect_path(&declared_effect);
+    let child_provider = EffectProvider::new(effect_path.clone());
+    insert_effect(context, effect_path, declared_effect)?;
     Ok(child_provider)
+}
+
+fn make_effect_path<Prof: EngineProfile>(declared_effect: &DeclaredEffect<Prof>) -> EffectPath {
+    let fp = declared_effect.key.stable_fingerprint();
+    declared_effect.provider.effect_path().concat(fp)
+}
+
+fn insert_effect<Prof: EngineProfile>(
+    context: &ComponentBuilderContext<Prof>,
+    effect_path: EffectPath,
+    declared_effect: DeclaredEffect<Prof>,
+) -> Result<()> {
+    let mut effect_context = context.inner.effect.lock().unwrap();
+    let existing = effect_context
+        .declared_effects
+        .insert(effect_path, declared_effect);
+    if let Some(existing) = existing {
+        bail!("Effect already declared with key: {:?}", existing.key);
+    }
+    Ok(())
 }
 
 pub(crate) async fn commit_effects<Prof: EngineProfile>(
     context: &ComponentBuilderContext<Prof>,
 ) -> Result<()> {
-    let declared_effects = {
-        let mut declared_effects = context.inner.declared_effects.lock().unwrap();
-        std::mem::take(&mut *declared_effects)
+    let (declared_effects, effect_providers) = {
+        let mut effect_context = context.inner.effect.lock().unwrap();
+        let declared_effects = std::mem::take(&mut effect_context.declared_effects);
+        let effect_providers = std::mem::take(&mut effect_context.providers);
+        (declared_effects, effect_providers)
     };
 
     let db_env = context.app_ctx().env.db_env();
     let db = context.app_ctx().db;
-    let effect_providers = context.app_ctx().env.effect_providers();
 
     let effect_info_key = db_schema::DbEntryKey::State(
         context.state_path().clone(),
@@ -74,28 +90,30 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
                 .map(|s_bytes| Prof::EffectState::from_bytes(s_bytes.as_ref()))
                 .collect::<Result<Vec<_>, Prof::Error>>()?;
 
-            let declared_effect = declared_effects_to_process.remove(&effect_path);
+            let declared_effect = declared_effects_to_process.remove(effect_path);
             let (effect_provider, effect_key, declared_decl) = match declared_effect {
                 Some(declared_effect) => (
-                    declared_effect.provider,
+                    Cow::Owned(declared_effect.provider),
                     declared_effect.key,
                     Some(declared_effect.decl),
                 ),
                 None => {
-                    let effect_provider =
-                        effect_providers.get_provider(&effect_path).ok_or_else(|| {
+                    let effect_provider = effect_providers
+                        .providers
+                        .get(effect_path.provider_path())
+                        .ok_or_else(|| {
                             anyhow::anyhow!("Effect provider not found for path: {effect_path}")
                         })?;
                     let effect_key = Prof::EffectKey::from_bytes(item.key.as_ref())?;
-                    (effect_provider, effect_key, None)
+                    (Cow::Borrowed(effect_provider), effect_key, None)
                 }
             };
-            let recon_output = effect_provider.reconciler().reconcile(
-                effect_key,
-                declared_decl,
-                &prev_states,
-                prev_may_be_missing,
-            )?;
+            let recon_output = effect_provider
+                .reconciler()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("effect provider not ready for effect with key {effect_key:?}")
+                })?
+                .reconcile(effect_key, declared_decl, &prev_states, prev_may_be_missing)?;
             if let Some(recon_output) = recon_output {
                 actions_by_sinks
                     .entry(recon_output.sink)
@@ -119,12 +137,21 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
         // Deal with new effects
         for (effect_path, effect) in declared_effects_to_process {
             let effect_key_bytes = effect.key.to_bytes()?;
-            let Some(recon_output) = effect.provider.reconciler().reconcile(
-                effect.key,
-                Some(effect.decl),
-                /*&prev_states=*/ &[],
-                /*prev_may_be_missing=*/ true,
-            )?
+            let Some(recon_output) = effect
+                .provider
+                .reconciler()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "effect provider not ready for effect with key {:?}",
+                        effect.key
+                    )
+                })?
+                .reconcile(
+                    effect.key,
+                    Some(effect.decl),
+                    /*&prev_states=*/ &[],
+                    /*prev_may_be_missing=*/ true,
+                )?
             else {
                 continue;
             };

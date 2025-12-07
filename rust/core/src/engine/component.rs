@@ -45,11 +45,17 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self.state_path
     }
 
-    pub async fn build(&self) -> Result<Result<Prof::ComponentBuildRet, Prof::Error>> {
+    pub async fn build(
+        &self,
+        parent_context: Option<Arc<ComponentBuilderContext<Prof>>>,
+    ) -> Result<Result<Prof::ComponentBuildRet, Prof::Error>> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
 
-        let builder_context =
-            ComponentBuilderContext::new(self.app_ctx.clone(), self.state_path.clone());
+        let builder_context = ComponentBuilderContext::new(
+            self.app_ctx.clone(),
+            self.state_path.clone(),
+            parent_context,
+        );
         let ret = self.builder.build(&builder_context).await?;
         commit_effects(&builder_context).await?;
         Ok(ret)

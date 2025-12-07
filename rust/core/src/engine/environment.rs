@@ -1,6 +1,4 @@
-use crate::{
-    engine::effect::RootEffectProviderRegistry, engine::profile::EngineProfile, prelude::*,
-};
+use crate::{engine::effect::EffectProviderRegistry, engine::profile::EngineProfile, prelude::*};
 
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::PathBuf, u32};
@@ -15,7 +13,7 @@ pub struct EnvironmentSettings {
 struct EnvironmentInner<Prof: EngineProfile> {
     db_env: heed::Env<heed::WithoutTls>,
     app_names: Mutex<BTreeSet<String>>,
-    effect_providers: RootEffectProviderRegistry<Prof>,
+    effect_providers: Arc<Mutex<EffectProviderRegistry<Prof>>>,
 }
 
 #[derive(Clone)]
@@ -26,7 +24,7 @@ pub struct Environment<Prof: EngineProfile> {
 impl<Prof: EngineProfile> Environment<Prof> {
     pub fn new(
         settings: EnvironmentSettings,
-        effect_providers: RootEffectProviderRegistry<Prof>,
+        effect_providers: Arc<Mutex<EffectProviderRegistry<Prof>>>,
     ) -> Result<Self> {
         // Create the directory if not exists.
         std::fs::create_dir_all(&settings.db_path)?;
@@ -48,7 +46,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
         &self.inner.db_env
     }
 
-    pub fn effect_providers(&self) -> &RootEffectProviderRegistry<Prof> {
+    pub fn effect_providers(&self) -> &Arc<Mutex<EffectProviderRegistry<Prof>>> {
         &self.inner.effect_providers
     }
 }

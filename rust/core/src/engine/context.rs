@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::engine::effect::EffectProvider;
+use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
 use crate::engine::profile::EngineProfile;
 use crate::prelude::*;
 
@@ -17,19 +17,22 @@ pub struct AppContext<Prof: EngineProfile> {
 }
 
 pub struct DeclaredEffect<Prof: EngineProfile> {
-    /// The state path for the component that mounts the effect to.
-    pub mounted_state_path: StatePath,
-
     pub provider: EffectProvider<Prof>,
     pub key: Prof::EffectKey,
     pub decl: Prof::EffectDecl,
+}
+
+pub(crate) struct ComponentEffectContext<Prof: EngineProfile> {
+    pub declared_effects: BTreeMap<EffectPath, DeclaredEffect<Prof>>,
+    pub providers: EffectProviderRegistry<Prof>,
 }
 
 pub(crate) struct ComponentBuilderContextInner<Prof: EngineProfile> {
     pub app_ctx: Arc<AppContext<Prof>>,
     pub state_path: StatePath,
 
-    pub declared_effects: Mutex<BTreeMap<EffectPath, DeclaredEffect<Prof>>>,
+    pub effect: Mutex<ComponentEffectContext<Prof>>,
+    pub parent_context: Option<Arc<ComponentBuilderContextInner<Prof>>>,
     // TODO: Add fields to record states, children components, etc.
 }
 
@@ -39,12 +42,26 @@ pub struct ComponentBuilderContext<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> ComponentBuilderContext<Prof> {
-    pub fn new(app_ctx: Arc<AppContext<Prof>>, state_path: StatePath) -> Self {
+    pub fn new(
+        app_ctx: Arc<AppContext<Prof>>,
+        state_path: StatePath,
+        parent_context: Option<Arc<ComponentBuilderContext<Prof>>>,
+    ) -> Self {
+        let providers = match &parent_context {
+            Some(c) => EffectProviderRegistry::new(Some(&c.inner.effect.lock().unwrap().providers)),
+            None => {
+                EffectProviderRegistry::new(Some(&app_ctx.env.effect_providers().lock().unwrap()))
+            }
+        };
         Self {
             inner: Arc::new(ComponentBuilderContextInner {
                 app_ctx,
                 state_path,
-                declared_effects: Default::default(),
+                effect: Mutex::new(ComponentEffectContext {
+                    declared_effects: Default::default(),
+                    providers,
+                }),
+                parent_context: parent_context.map(|c| c.inner.clone()),
             }),
         }
     }

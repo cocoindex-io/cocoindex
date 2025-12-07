@@ -29,6 +29,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<effect::PyEffectReconciler>()?;
     m.add_class::<effect::PyEffectProvider>()?;
     m.add_function(wrap_pyfunction!(effect::declare_effect, m)?)?;
+    m.add_function(wrap_pyfunction!(effect::declare_effect_with_child, m)?)?;
     m.add_function(wrap_pyfunction!(effect::register_root_effect_provider, m)?)?;
 
     m.add_class::<environment::PyEnvironment>()?;

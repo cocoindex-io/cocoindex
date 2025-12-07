@@ -6,7 +6,7 @@ use crate::{
     prelude::*,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct PyEngineProfile;
 
 impl EngineProfile for PyEngineProfile {

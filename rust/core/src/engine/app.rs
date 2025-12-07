@@ -41,6 +41,6 @@ impl<Prof: EngineProfile> App<Prof> {
 
 impl<Prof: EngineProfile> App<Prof> {
     pub async fn update(&self) -> Result<Result<Prof::ComponentBuildRet, Prof::Error>> {
-        self.root_component.build().await
+        self.root_component.build(None).await
     }
 }

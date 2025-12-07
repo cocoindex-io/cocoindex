@@ -18,7 +18,7 @@ pub trait StableFingerprint {
     fn stable_fingerprint(&self) -> utils::fingerprint::Fingerprint;
 }
 
-pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash {
+pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default {
     type Error: Send + Sync + std::error::Error + 'static;
 
     type HostStateCtx: Send + Sync + Clone;

@@ -6,6 +6,12 @@ pub struct EffectPath {
     inner: Arc<[utils::fingerprint::Fingerprint]>,
 }
 
+impl std::borrow::Borrow<[utils::fingerprint::Fingerprint]> for EffectPath {
+    fn borrow(&self) -> &[utils::fingerprint::Fingerprint] {
+        &self.inner
+    }
+}
+
 impl std::fmt::Display for EffectPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for part in self.inner.iter() {
@@ -36,10 +42,17 @@ impl storekey::Decode for EffectPath {
 }
 
 impl EffectPath {
-    pub fn new(root_part: utils::fingerprint::Fingerprint) -> Self {
-        Self {
-            inner: Arc::new([root_part]),
-        }
+    pub fn new(key_part: utils::fingerprint::Fingerprint, parent: Option<&Self>) -> Self {
+        let inner: Arc<[utils::fingerprint::Fingerprint]> = match parent {
+            Some(parent) => parent
+                .inner
+                .iter()
+                .chain(std::iter::once(&key_part))
+                .cloned()
+                .collect(),
+            None => Arc::new([key_part]),
+        };
+        Self { inner }
     }
 
     pub fn concat(&self, part: utils::fingerprint::Fingerprint) -> Self {
@@ -53,7 +66,7 @@ impl EffectPath {
         }
     }
 
-    pub fn as_slice(&self) -> &[utils::fingerprint::Fingerprint] {
-        &self.inner
+    pub fn provider_path(&self) -> &[utils::fingerprint::Fingerprint] {
+        &self.inner[..self.inner.len() - 1]
     }
 }
