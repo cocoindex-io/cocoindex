@@ -2,10 +2,10 @@ use crate::engine::effect_exec::commit_effects;
 use crate::engine::profile::EngineProfile;
 use crate::prelude::*;
 
-use crate::engine::context::{AppContext, ComponentBuilderContext};
+use crate::engine::context::{AppContext, ComponentProcessorContext};
 use crate::state::state_path::StatePath;
 
-pub trait ComponentBuilder<Prof: EngineProfile>: Send + 'static {
+pub trait ComponentProcessor<Prof: EngineProfile>: Send + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
     /// Run the logic to build the component.
@@ -14,26 +14,26 @@ pub trait ComponentBuilder<Prof: EngineProfile>: Send + 'static {
     #[allow(async_fn_in_trait)]
     async fn build(
         &self,
-        context: &ComponentBuilderContext<Prof>,
-    ) -> Result<Result<Prof::ComponentBuildRet, Prof::Error>>;
+        context: &ComponentProcessorContext<Prof>,
+    ) -> Result<Result<Prof::ComponentProcRet, Prof::Error>>;
 }
 
 pub struct Component<Prof: EngineProfile> {
     app_ctx: Arc<AppContext<Prof>>,
     state_path: StatePath,
-    builder: Prof::ComponentBld,
+    processor: Prof::ComponentProc,
 }
 
 impl<Prof: EngineProfile> Component<Prof> {
     pub fn new(
         app_ctx: Arc<AppContext<Prof>>,
         state_path: StatePath,
-        builder: Prof::ComponentBld,
+        builder: Prof::ComponentProc,
     ) -> Self {
         Self {
             app_ctx,
             state_path,
-            builder,
+            processor: builder,
         }
     }
 
@@ -45,18 +45,18 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self.state_path
     }
 
-    pub async fn build(
+    pub async fn process(
         &self,
-        parent_context: Option<Arc<ComponentBuilderContext<Prof>>>,
-    ) -> Result<Result<Prof::ComponentBuildRet, Prof::Error>> {
+        parent_context: Option<Arc<ComponentProcessorContext<Prof>>>,
+    ) -> Result<Result<Prof::ComponentProcRet, Prof::Error>> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
 
-        let builder_context = ComponentBuilderContext::new(
+        let builder_context = ComponentProcessorContext::new(
             self.app_ctx.clone(),
             self.state_path.clone(),
             parent_context,
         );
-        let ret = self.builder.build(&builder_context).await?;
+        let ret = self.processor.build(&builder_context).await?;
         commit_effects(&builder_context).await?;
         Ok(ret)
     }

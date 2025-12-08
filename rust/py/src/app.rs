@@ -3,7 +3,7 @@ use crate::prelude::*;
 use cocoindex_core::engine::{app::App, runtime::get_runtime};
 use pyo3_async_runtimes::tokio::future_into_py;
 
-use crate::{component::PyComponentBuilder, environment::PyEnvironment};
+use crate::{component::PyComponentProcessor, environment::PyEnvironment};
 
 #[pyclass(name = "App")]
 pub struct PyApp(Arc<App<PyEngineProfile>>);
@@ -14,7 +14,7 @@ impl PyApp {
     pub fn new(
         name: &str,
         env: &PyEnvironment,
-        root_component_builder: PyComponentBuilder,
+        root_component_builder: PyComponentProcessor,
     ) -> PyResult<Self> {
         let app = App::new(name, env.0.clone(), root_component_builder).into_py_result()?;
         Ok(Self(Arc::new(app)))

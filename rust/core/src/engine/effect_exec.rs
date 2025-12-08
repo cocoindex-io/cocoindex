@@ -3,13 +3,13 @@ use std::collections::HashMap;
 
 use crate::prelude::*;
 
-use crate::engine::context::{ComponentBuilderContext, DeclaredEffect};
+use crate::engine::context::{ComponentProcessorContext, DeclaredEffect};
 use crate::engine::effect::{EffectProvider, EffectReconciler, EffectSink};
 use crate::engine::profile::{EngineProfile, Persist, StableFingerprint};
 use crate::state::effect_path::EffectPath;
 
 pub fn declare_effect<Prof: EngineProfile>(
-    context: &ComponentBuilderContext<Prof>,
+    context: &ComponentProcessorContext<Prof>,
     provider: EffectProvider<Prof>,
     key: Prof::EffectKey,
     decl: Prof::EffectDecl,
@@ -32,7 +32,7 @@ pub fn declare_effect<Prof: EngineProfile>(
 }
 
 pub fn declare_effect_with_child<Prof: EngineProfile>(
-    context: &ComponentBuilderContext<Prof>,
+    context: &ComponentProcessorContext<Prof>,
     provider: EffectProvider<Prof>,
     key: Prof::EffectKey,
     decl: Prof::EffectDecl,
@@ -98,7 +98,7 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
 }
 
 pub(crate) async fn commit_effects<Prof: EngineProfile>(
-    context: &ComponentBuilderContext<Prof>,
+    context: &ComponentProcessorContext<Prof>,
 ) -> Result<()> {
     let (declared_effects, effect_providers) = {
         let mut effect_context = context.inner.effect.lock().unwrap();

@@ -1,13 +1,13 @@
 use crate::prelude::*;
 
 use crate::{environment::PyEnvironment, state_path::PyStatePath};
-use cocoindex_core::engine::context::ComponentBuilderContext;
+use cocoindex_core::engine::context::ComponentProcessorContext;
 
-#[pyclass(name = "ComponentBuilderContext")]
-pub struct PyComponentBuilderContext(pub ComponentBuilderContext<PyEngineProfile>);
+#[pyclass(name = "ComponentProcessorContext")]
+pub struct PyComponentProcessorContext(pub ComponentProcessorContext<PyEngineProfile>);
 
 #[pymethods]
-impl PyComponentBuilderContext {
+impl PyComponentProcessorContext {
     #[getter]
     fn environment(&self) -> PyEnvironment {
         PyEnvironment(self.0.app_ctx().env.clone())

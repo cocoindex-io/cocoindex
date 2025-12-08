@@ -8,7 +8,7 @@ use cocoindex_core::state::effect_path::EffectPath;
 use pyo3::exceptions::PyException;
 use pyo3::types::{PyList, PySequence};
 
-use crate::context::PyComponentBuilderContext;
+use crate::context::PyComponentProcessorContext;
 use crate::prelude::*;
 
 use crate::runtime::{PyAsyncContext, PyCallback};
@@ -168,7 +168,7 @@ pub struct PyEffectProvider(EffectProvider<PyEngineProfile>);
 #[pyfunction]
 pub fn declare_effect<'py>(
     py: Python<'py>,
-    context: &'py PyComponentBuilderContext,
+    context: &'py PyComponentProcessorContext,
     provider: &PyEffectProvider,
     key: Py<PyAny>,
     decl: Py<PyAny>,
@@ -187,7 +187,7 @@ pub fn declare_effect<'py>(
 #[pyfunction]
 pub fn declare_effect_with_child<'py>(
     py: Python<'py>,
-    context: &'py PyComponentBuilderContext,
+    context: &'py PyComponentProcessorContext,
     provider: &PyEffectProvider,
     key: Py<PyAny>,
     decl: Py<PyAny>,

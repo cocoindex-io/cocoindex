@@ -1,7 +1,7 @@
 use std::{fmt::Debug, hash::Hash};
 
 use crate::engine::{
-    component::ComponentBuilder,
+    component::ComponentProcessor,
     effect::{EffectReconciler, EffectSink},
 };
 use crate::prelude::*;
@@ -23,8 +23,8 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default {
 
     type HostStateCtx: Send + Sync + Clone;
 
-    type ComponentBld: ComponentBuilder<Self>;
-    type ComponentBuildRet: Send;
+    type ComponentProc: ComponentProcessor<Self>;
+    type ComponentProcRet: Send;
 
     type EffectRcl: EffectReconciler<Self>;
     type EffectKey: Clone

@@ -3,17 +3,17 @@ use crate::{
     runtime::{PyAsyncContext, PyCallback},
 };
 
-use crate::context::PyComponentBuilderContext;
-use cocoindex_core::engine::{component::ComponentBuilder, context::ComponentBuilderContext};
+use crate::context::PyComponentProcessorContext;
+use cocoindex_core::engine::{component::ComponentProcessor, context::ComponentProcessorContext};
 
-#[pyclass(name = "ComponentBuilder")]
+#[pyclass(name = "ComponentProcessor")]
 #[derive(Clone)]
-pub struct PyComponentBuilder {
+pub struct PyComponentProcessor {
     builder_fn: PyCallback,
 }
 
 #[pymethods]
-impl PyComponentBuilder {
+impl PyComponentProcessor {
     #[staticmethod]
     pub fn new_sync(builder_fn: Py<PyAny>) -> Self {
         Self {
@@ -32,12 +32,12 @@ impl PyComponentBuilder {
     }
 }
 
-impl ComponentBuilder<PyEngineProfile> for PyComponentBuilder {
+impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
     async fn build(
         &self,
-        context: &ComponentBuilderContext<PyEngineProfile>,
+        context: &ComponentProcessorContext<PyEngineProfile>,
     ) -> Result<PyResult<Py<PyAny>>> {
-        let py_context = PyComponentBuilderContext(context.clone());
+        let py_context = PyComponentProcessorContext(context.clone());
         self.builder_fn.call((py_context,)).await
     }
 }

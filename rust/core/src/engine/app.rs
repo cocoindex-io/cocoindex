@@ -15,7 +15,7 @@ impl<Prof: EngineProfile> App<Prof> {
     pub fn new(
         name: &str,
         env: Environment<Prof>,
-        root_component_builder: Prof::ComponentBld,
+        root_component_builder: Prof::ComponentProc,
     ) -> Result<Self> {
         let app_reg = AppRegistration::new(name, &env)?;
 
@@ -40,7 +40,7 @@ impl<Prof: EngineProfile> App<Prof> {
 }
 
 impl<Prof: EngineProfile> App<Prof> {
-    pub async fn update(&self) -> Result<Result<Prof::ComponentBuildRet, Prof::Error>> {
-        self.root_component.build(None).await
+    pub async fn update(&self) -> Result<Result<Prof::ComponentProcRet, Prof::Error>> {
+        self.root_component.process(None).await
     }
 }

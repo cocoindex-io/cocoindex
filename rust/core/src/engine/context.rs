@@ -28,25 +28,25 @@ pub(crate) struct ComponentEffectContext<Prof: EngineProfile> {
     pub providers: EffectProviderRegistry<Prof>,
 }
 
-pub(crate) struct ComponentBuilderContextInner<Prof: EngineProfile> {
+pub(crate) struct ComponentProcessorContextInner<Prof: EngineProfile> {
     pub app_ctx: Arc<AppContext<Prof>>,
     pub state_path: StatePath,
 
     pub effect: Mutex<ComponentEffectContext<Prof>>,
-    pub parent_context: Option<Arc<ComponentBuilderContextInner<Prof>>>,
+    pub parent_context: Option<Arc<ComponentProcessorContextInner<Prof>>>,
     // TODO: Add fields to record states, children components, etc.
 }
 
 #[derive(Clone)]
-pub struct ComponentBuilderContext<Prof: EngineProfile> {
-    pub(crate) inner: Arc<ComponentBuilderContextInner<Prof>>,
+pub struct ComponentProcessorContext<Prof: EngineProfile> {
+    pub(crate) inner: Arc<ComponentProcessorContextInner<Prof>>,
 }
 
-impl<Prof: EngineProfile> ComponentBuilderContext<Prof> {
+impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     pub fn new(
         app_ctx: Arc<AppContext<Prof>>,
         state_path: StatePath,
-        parent_context: Option<Arc<ComponentBuilderContext<Prof>>>,
+        parent_context: Option<Arc<ComponentProcessorContext<Prof>>>,
     ) -> Self {
         let providers = match &parent_context {
             Some(c) => EffectProviderRegistry::new(Some(&c.inner.effect.lock().unwrap().providers)),
@@ -55,7 +55,7 @@ impl<Prof: EngineProfile> ComponentBuilderContext<Prof> {
             }
         };
         Self {
-            inner: Arc::new(ComponentBuilderContextInner {
+            inner: Arc::new(ComponentProcessorContextInner {
                 app_ctx,
                 state_path,
                 effect: Mutex::new(ComponentEffectContext {

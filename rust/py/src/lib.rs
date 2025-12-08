@@ -20,9 +20,9 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     m.add_class::<app::PyApp>()?;
 
-    m.add_class::<component::PyComponentBuilder>()?;
+    m.add_class::<component::PyComponentProcessor>()?;
 
-    m.add_class::<context::PyComponentBuilderContext>()?;
+    m.add_class::<context::PyComponentProcessorContext>()?;
 
     m.add_function(wrap_pyfunction!(effect::init_effect_module, m)?)?;
     m.add_class::<effect::PyEffectSink>()?;
