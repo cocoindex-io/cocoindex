@@ -21,3 +21,4 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 bytes = { workspace = true }
+futures = { workspace = true }

@@ -23,6 +23,7 @@ uuid = { workspace = true }
 
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -72,7 +72,7 @@ impl EffectSink<PyEngineProfile> for PyEffectSink {
         &self,
         actions: Vec<Py<PyAny>>,
     ) -> PyResult<Option<Vec<Option<PyEffectReconciler>>>> {
-        let ret = self.callback.call((actions,)).await.into_py_result()??;
+        let ret = self.callback.call((actions,)).into_py_result()?.await?;
         Python::attach(|py| {
             if ret.is_none(py) {
                 return Ok(None);

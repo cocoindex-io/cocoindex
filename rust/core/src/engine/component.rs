@@ -11,11 +11,10 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + 'static {
     /// Run the logic to build the component.
     ///
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
-    #[allow(async_fn_in_trait)]
-    async fn process(
+    fn process(
         &self,
         context: &ComponentProcessorContext<Prof>,
-    ) -> Result<Result<Prof::ComponentProcRet, Prof::Error>>;
+    ) -> Result<impl Future<Output = Result<Prof::ComponentProcRet, Prof::Error>> + Send + 'static>;
 }
 
 pub struct Component<Prof: EngineProfile> {
@@ -56,7 +55,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             self.state_path.clone(),
             parent_context,
         );
-        let ret = self.processor.process(&processor_context).await?;
+        let ret = self.processor.process(&processor_context)?.await;
         commit_effects(&processor_context).await?;
         Ok(ret)
     }

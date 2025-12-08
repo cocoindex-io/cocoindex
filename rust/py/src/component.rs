@@ -33,11 +33,11 @@ impl PyComponentProcessor {
 }
 
 impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
-    async fn process(
+    fn process(
         &self,
         context: &ComponentProcessorContext<PyEngineProfile>,
-    ) -> Result<PyResult<Py<PyAny>>> {
+    ) -> Result<impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static> {
         let py_context = PyComponentProcessorContext(context.clone());
-        self.processor_fn.call((py_context,)).await
+        self.processor_fn.call((py_context,))
     }
 }
