@@ -4,7 +4,7 @@ use base64::prelude::*;
 use super::{LlmEmbeddingClient, LlmGenerationClient, detect_image_mime_type};
 use async_openai::{
     Client as OpenAIClient,
-    config::OpenAIConfig,
+    config::{OpenAIConfig, AzureConfig},
     types::{
         ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartImage,
         ChatCompletionRequestMessageContentPartText, ChatCompletionRequestSystemMessage,
@@ -22,13 +22,13 @@ static DEFAULT_EMBEDDING_DIMENSIONS: phf::Map<&str, u32> = phf_map! {
     "text-embedding-ada-002" => 1536,
 };
 
-pub struct Client {
-    client: async_openai::Client<OpenAIConfig>,
+pub struct Client<C: async_openai::config::Config = OpenAIConfig> {
+    client: async_openai::Client<C>,
 }
 
 impl Client {
-    pub(crate) fn from_parts(client: async_openai::Client<OpenAIConfig>) -> Self {
-        Self { client }
+    pub(crate) fn from_parts<C: async_openai::config::Config>(client: async_openai::Client<C>) -> Client<C> {
+        Client { client }
     }
 
     pub fn new(
@@ -63,6 +63,44 @@ impl Client {
 
         Ok(Self {
             client: OpenAIClient::with_config(openai_config),
+        })
+    }
+}
+
+impl Client<AzureConfig> {
+    pub async fn new_azure(
+        address: Option<String>,
+        api_key: Option<String>,
+        api_config: Option<super::LlmApiConfig>,
+    ) -> Result<Self> {
+        let config = match api_config {
+            Some(super::LlmApiConfig::AzureOpenAi(config)) => config,
+            Some(_) => api_bail!("unexpected config type, expected AzureOpenAiConfig"),
+            None => api_bail!("AzureOpenAiConfig is required for Azure OpenAI"),
+        };
+
+        let api_base =
+            address.ok_or_else(|| anyhow::anyhow!("address is required for Azure OpenAI"))?;
+
+        // Default to API version that supports structured outputs (json_schema).
+        let api_version = config
+            .api_version
+            .unwrap_or_else(|| "2024-08-01-preview".to_string());
+
+        let api_key = api_key
+            .or_else(|| std::env::var("AZURE_OPENAI_API_KEY").ok())
+            .ok_or_else(|| anyhow::anyhow!(
+                "AZURE_OPENAI_API_KEY must be set either via api_key parameter or environment variable"
+            ))?;
+
+        let azure_config = AzureConfig::new()
+            .with_api_base(api_base)
+            .with_api_version(api_version)
+            .with_deployment_id(config.deployment_id)
+            .with_api_key(api_key);
+
+        Ok(Self {
+            client: OpenAIClient::with_config(azure_config),
         })
     }
 }
@@ -136,7 +174,10 @@ pub(super) fn create_llm_generation_request(
 }
 
 #[async_trait]
-impl LlmGenerationClient for Client {
+impl<C> LlmGenerationClient for Client<C>
+where
+    C: async_openai::config::Config + Send + Sync,
+{
     async fn generate<'req>(
         &self,
         request: super::LlmGenerateRequest<'req>,
@@ -175,7 +216,10 @@ impl LlmGenerationClient for Client {
 }
 
 #[async_trait]
-impl LlmEmbeddingClient for Client {
+impl<C> LlmEmbeddingClient for Client<C>
+where
+    C: async_openai::config::Config + Send + Sync,
+{
     async fn embed_text<'req>(
         &self,
         request: super::LlmEmbeddingRequest<'req>,
