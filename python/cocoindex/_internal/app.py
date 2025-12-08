@@ -41,12 +41,10 @@ class AppBase(Generic[P, R]):
         else:
             self._config = config
 
-        component_builder = main_fn._as_core_component_builder(
-            StatePath(), *args, **kwargs
-        )
+        processor = main_fn._as_core_component_processor(StatePath(), *args, **kwargs)
         env = self._config.environment or default_env()
         self._core = core.App(
             self._config.name,
             env._core_env,
-            component_builder,
+            processor,
         )

@@ -28,7 +28,7 @@ class Function(Protocol[P, R_co]):
 
     def acall(self, *args: P.args, **kwargs: P.kwargs) -> Awaitable[R_co]: ...
 
-    def _as_core_component_builder(
+    def _as_core_component_processor(
         self, *args: P.args, **kwargs: P.kwargs
     ) -> core.ComponentProcessor: ...
 
@@ -42,7 +42,7 @@ class SyncFunction(Function[P, R_co]):
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return self._fn(*args, **kwargs)
 
-    def _as_core_component_builder(
+    def _as_core_component_processor(
         self, *args: P.args, **kwargs: P.kwargs
     ) -> core.ComponentProcessor:
         def _build(builder_ctx: core.ComponentProcessorContext) -> R_co:
@@ -71,7 +71,7 @@ class AsyncFunction(Function[P, R_co]):
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Coroutine[Any, Any, R_co]:
         return self._fn(*args, **kwargs)
 
-    def _as_core_component_builder(
+    def _as_core_component_processor(
         self, *args: P.args, **kwargs: P.kwargs
     ) -> core.ComponentProcessor:
         async def _build(builder_ctx: core.ComponentProcessorContext) -> R_co:

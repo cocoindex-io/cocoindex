@@ -9,23 +9,23 @@ use cocoindex_core::engine::{component::ComponentProcessor, context::ComponentPr
 #[pyclass(name = "ComponentProcessor")]
 #[derive(Clone)]
 pub struct PyComponentProcessor {
-    builder_fn: PyCallback,
+    processor_fn: PyCallback,
 }
 
 #[pymethods]
 impl PyComponentProcessor {
     #[staticmethod]
-    pub fn new_sync(builder_fn: Py<PyAny>) -> Self {
+    pub fn new_sync(processor_fn: Py<PyAny>) -> Self {
         Self {
-            builder_fn: PyCallback::Sync(Arc::new(builder_fn)),
+            processor_fn: PyCallback::Sync(Arc::new(processor_fn)),
         }
     }
 
     #[staticmethod]
-    pub fn new_async<'py>(builder_fn: Py<PyAny>, async_context: PyAsyncContext) -> Self {
+    pub fn new_async<'py>(processor_fn: Py<PyAny>, async_context: PyAsyncContext) -> Self {
         Self {
-            builder_fn: PyCallback::Async {
-                async_fn: Arc::new(builder_fn),
+            processor_fn: PyCallback::Async {
+                async_fn: Arc::new(processor_fn),
                 async_context,
             },
         }
@@ -33,11 +33,11 @@ impl PyComponentProcessor {
 }
 
 impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
-    async fn build(
+    async fn process(
         &self,
         context: &ComponentProcessorContext<PyEngineProfile>,
     ) -> Result<PyResult<Py<PyAny>>> {
         let py_context = PyComponentProcessorContext(context.clone());
-        self.builder_fn.call((py_context,)).await
+        self.processor_fn.call((py_context,)).await
     }
 }

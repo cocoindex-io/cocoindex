@@ -12,7 +12,7 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + 'static {
     ///
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
     #[allow(async_fn_in_trait)]
-    async fn build(
+    async fn process(
         &self,
         context: &ComponentProcessorContext<Prof>,
     ) -> Result<Result<Prof::ComponentProcRet, Prof::Error>>;
@@ -51,13 +51,13 @@ impl<Prof: EngineProfile> Component<Prof> {
     ) -> Result<Result<Prof::ComponentProcRet, Prof::Error>> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
 
-        let builder_context = ComponentProcessorContext::new(
+        let processor_context = ComponentProcessorContext::new(
             self.app_ctx.clone(),
             self.state_path.clone(),
             parent_context,
         );
-        let ret = self.processor.build(&builder_context).await?;
-        commit_effects(&builder_context).await?;
+        let ret = self.processor.process(&processor_context).await?;
+        commit_effects(&processor_context).await?;
         Ok(ret)
     }
 }
