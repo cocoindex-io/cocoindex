@@ -4,7 +4,7 @@ use base64::prelude::*;
 use super::{LlmEmbeddingClient, LlmGenerationClient, detect_image_mime_type};
 use async_openai::{
     Client as OpenAIClient,
-    config::{OpenAIConfig, AzureConfig},
+    config::{AzureConfig, OpenAIConfig},
     types::{
         ChatCompletionRequestMessage, ChatCompletionRequestMessageContentPartImage,
         ChatCompletionRequestMessageContentPartText, ChatCompletionRequestSystemMessage,
@@ -27,7 +27,9 @@ pub struct Client<C: async_openai::config::Config = OpenAIConfig> {
 }
 
 impl Client {
-    pub(crate) fn from_parts<C: async_openai::config::Config>(client: async_openai::Client<C>) -> Client<C> {
+    pub(crate) fn from_parts<C: async_openai::config::Config>(
+        client: async_openai::Client<C>,
+    ) -> Client<C> {
         Client { client }
     }
 
