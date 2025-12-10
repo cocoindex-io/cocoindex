@@ -116,7 +116,6 @@ pub trait LlmEmbeddingClient: Send + Sync {
 }
 
 mod anthropic;
-mod azureopenai;
 mod bedrock;
 mod gemini;
 mod litellm;
@@ -157,7 +156,7 @@ pub async fn new_llm_generation_client(
                 as Box<dyn LlmGenerationClient>
         }
         LlmApiType::AzureOpenAi => {
-            Box::new(azureopenai::Client::new_azure_openai(address, api_key, api_config).await?)
+            Box::new(openai::Client::new_azure(address, api_key, api_config).await?)
                 as Box<dyn LlmGenerationClient>
         }
         LlmApiType::Voyage => {
@@ -196,7 +195,7 @@ pub async fn new_llm_embedding_client(
                 as Box<dyn LlmEmbeddingClient>
         }
         LlmApiType::AzureOpenAi => {
-            Box::new(azureopenai::Client::new_azure_openai(address, api_key, api_config).await?)
+            Box::new(openai::Client::new_azure(address, api_key, api_config).await?)
                 as Box<dyn LlmEmbeddingClient>
         }
         LlmApiType::LiteLlm | LlmApiType::Vllm | LlmApiType::Anthropic | LlmApiType::Bedrock => {
