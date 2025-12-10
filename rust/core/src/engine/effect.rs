@@ -6,13 +6,13 @@ use crate::{engine::profile::EngineProfile, state::effect_path::EffectPath};
 
 use std::hash::Hash;
 
+#[async_trait]
 pub trait EffectSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
     /// Run the logic to apply the action.
     ///
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
-    #[allow(async_fn_in_trait)]
     async fn apply(
         &self,
         actions: Vec<Prof::EffectAction>,
@@ -86,11 +86,9 @@ pub struct EffectProviderRegistry<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> EffectProviderRegistry<Prof> {
-    pub fn new(parent_registry: Option<&Self>) -> Self {
+    pub fn new(providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>) -> Self {
         Self {
-            providers: parent_registry
-                .map(|r| r.providers.clone())
-                .unwrap_or_default(),
+            providers,
             curr_effect_paths: Vec::new(),
         }
     }

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::engine::component::ComponentBgChildReadiness;
 use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
 use crate::engine::profile::EngineProfile;
 use crate::prelude::*;
@@ -25,15 +26,16 @@ pub(crate) struct DeclaredEffect<Prof: EngineProfile> {
 
 pub(crate) struct ComponentEffectContext<Prof: EngineProfile> {
     pub declared_effects: BTreeMap<EffectPath, DeclaredEffect<Prof>>,
-    pub providers: EffectProviderRegistry<Prof>,
+    pub provider_registry: EffectProviderRegistry<Prof>,
 }
 
 pub(crate) struct ComponentProcessorContextInner<Prof: EngineProfile> {
     pub app_ctx: Arc<AppContext<Prof>>,
     pub state_path: StatePath,
+    pub parent_context: Option<Arc<ComponentProcessorContextInner<Prof>>>,
 
     pub effect: Mutex<ComponentEffectContext<Prof>>,
-    pub parent_context: Option<Arc<ComponentProcessorContextInner<Prof>>>,
+    pub components_readiness: Arc<ComponentBgChildReadiness>,
     // TODO: Add fields to record states, children components, etc.
 }
 
@@ -46,23 +48,19 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     pub fn new(
         app_ctx: Arc<AppContext<Prof>>,
         state_path: StatePath,
-        parent_context: Option<Arc<ComponentProcessorContext<Prof>>>,
+        providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
+        parent_context: Option<ComponentProcessorContext<Prof>>,
     ) -> Self {
-        let providers = match &parent_context {
-            Some(c) => EffectProviderRegistry::new(Some(&c.inner.effect.lock().unwrap().providers)),
-            None => {
-                EffectProviderRegistry::new(Some(&app_ctx.env.effect_providers().lock().unwrap()))
-            }
-        };
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 app_ctx,
                 state_path,
                 effect: Mutex::new(ComponentEffectContext {
                     declared_effects: Default::default(),
-                    providers,
+                    provider_registry: EffectProviderRegistry::new(providers),
                 }),
-                parent_context: parent_context.map(|c| c.inner.clone()),
+                parent_context: parent_context.map(|c| c.inner),
+                components_readiness: Default::default(),
             }),
         }
     }
@@ -73,5 +71,13 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
     pub fn state_path(&self) -> &StatePath {
         &self.inner.state_path
+    }
+
+    pub(crate) fn effect(&self) -> &Mutex<ComponentEffectContext<Prof>> {
+        &self.inner.effect
+    }
+
+    pub(crate) fn components_readiness(&self) -> &Arc<ComponentBgChildReadiness> {
+        &self.inner.components_readiness
     }
 }

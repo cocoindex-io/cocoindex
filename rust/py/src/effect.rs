@@ -67,6 +67,7 @@ impl Hash for PyEffectSink {
     }
 }
 
+#[async_trait]
 impl EffectSink<PyEngineProfile> for PyEffectSink {
     async fn apply(
         &self,

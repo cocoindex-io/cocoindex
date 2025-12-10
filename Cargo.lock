@@ -439,6 +439,7 @@ name = "cocoindex_core"
 version = "999.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bytes",
  "cocoindex_utils",
  "env_logger",
@@ -462,6 +463,7 @@ name = "cocoindex_py"
 version = "999.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "bytes",
  "cocoindex_core",
  "cocoindex_py_utils",

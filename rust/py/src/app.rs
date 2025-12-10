@@ -14,9 +14,9 @@ impl PyApp {
     pub fn new(
         name: &str,
         env: &PyEnvironment,
-        root_component_builder: PyComponentProcessor,
+        root_processor: PyComponentProcessor,
     ) -> PyResult<Self> {
-        let app = App::new(name, env.0.clone(), root_component_builder).into_py_result()?;
+        let app = App::new(name, env.0.clone(), root_processor).into_py_result()?;
         Ok(Self(Arc::new(app)))
     }
 

@@ -18,7 +18,7 @@ pub trait StableFingerprint {
     fn stable_fingerprint(&self) -> utils::fingerprint::Fingerprint;
 }
 
-pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default {
+pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'static {
     type Error: Send + Sync + std::error::Error + 'static;
 
     type HostStateCtx: Send + Sync + Clone;
@@ -38,5 +38,5 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default {
     type EffectState: Clone + Send + Persist<Error = Self::Error> + 'static;
     type EffectAction: Send + 'static;
     type EffectSink: EffectSink<Self>;
-    type EffectDecl;
+    type EffectDecl: Send + 'static;
 }

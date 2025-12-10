@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import (
     Collection,
     Generic,
@@ -62,14 +64,14 @@ OptChildRecon_co = TypeVar(
 
 class EffectSinkFn(Protocol[Action_contra, OptChildRecon_co]):
     def __call__(
-        self, actions: Collection[Action_contra]
-    ) -> None | Sequence[OptChildRecon_co]: ...
+        self, actions: Collection[Action_contra], /
+    ) -> Sequence[OptChildRecon_co | None] | None: ...
 
 
 class AsyncEffectSinkFn(Protocol[Action_contra, OptChildRecon_co]):
     async def __call__(
-        self, actions: Collection[Action_contra]
-    ) -> OptChildRecon_co: ...
+        self, actions: Collection[Action_contra], /
+    ) -> Sequence[OptChildRecon_co | None] | None: ...
 
 
 class EffectSink(Generic[Action_contra, OptChildRecon_co]):
@@ -140,6 +142,7 @@ class EffectReconcilerFn(
         desired_effect: Decl_contra | NonExistenceType,
         prev_possible_states: Collection[State],
         prev_may_be_missing: bool,
+        /,
     ) -> EffectReconcileOutput[Action, State, OptChildRecon_co] | None: ...
 
 
@@ -199,12 +202,12 @@ def declare_effect(effect: Effect[None]) -> None:
 
 
 def declare_effect_with_child(
-    effect: Effect[EffectReconciler[Key, Decl]],
-) -> EffectProvider[Key, Decl]:
+    effect: Effect[EffectReconciler[Key, Decl, Any]],
+) -> EffectProvider[Key, Decl, Any]:
     context = component_ctx_var.get()
     if context is None:
         raise RuntimeError("declare_effect* must be called within a component")
-    provider = core.declare_effect(
+    provider = core.declare_effect_with_child(
         context, effect._provider._core, effect._key, effect._decl
     )
     return EffectProvider(provider)

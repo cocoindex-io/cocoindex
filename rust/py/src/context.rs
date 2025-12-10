@@ -4,6 +4,7 @@ use crate::{environment::PyEnvironment, state_path::PyStatePath};
 use cocoindex_core::engine::context::ComponentProcessorContext;
 
 #[pyclass(name = "ComponentProcessorContext")]
+#[derive(Clone)]
 pub struct PyComponentProcessorContext(pub ComponentProcessorContext<PyEngineProfile>);
 
 #[pymethods]

@@ -15,7 +15,7 @@ impl<Prof: EngineProfile> App<Prof> {
     pub fn new(
         name: &str,
         env: Environment<Prof>,
-        root_component_builder: Prof::ComponentProc,
+        root_processor: Prof::ComponentProc,
     ) -> Result<Self> {
         let app_reg = AppRegistration::new(name, &env)?;
 
@@ -33,14 +33,25 @@ impl<Prof: EngineProfile> App<Prof> {
         };
 
         let app_ctx = Arc::new(AppContext { env, db, app_reg });
-        let root_component =
-            Component::new(app_ctx.clone(), StatePath::root(), root_component_builder);
+        let providers = app_ctx
+            .env
+            .effect_providers()
+            .lock()
+            .unwrap()
+            .providers
+            .clone();
+        let root_component = Component::new(
+            app_ctx.clone(),
+            StatePath::root(),
+            root_processor,
+            providers,
+        );
         Ok(Self { root_component })
     }
 }
 
 impl<Prof: EngineProfile> App<Prof> {
     pub async fn update(&self) -> Result<Result<Prof::ComponentProcRet, Prof::Error>> {
-        self.root_component.process(None).await
+        self.root_component.clone().run(None)?.result().await
     }
 }

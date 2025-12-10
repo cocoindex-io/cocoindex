@@ -38,6 +38,7 @@ impl FromPyObject<'_, '_> for PyStateKey {
     }
 }
 #[pyclass(name = "StatePath")]
+#[derive(Clone)]
 pub struct PyStatePath(pub StatePath);
 
 #[pymethods]

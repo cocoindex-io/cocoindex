@@ -40,7 +40,7 @@ pub fn declare_effect_with_child<Prof: EngineProfile>(
     let effect_path = make_effect_path(&provider, &key);
     let mut effect_context = context.inner.effect.lock().unwrap();
     let child_provider = effect_context
-        .providers
+        .provider_registry
         .register_lazy(effect_path.clone())?;
     let declared_effect = DeclaredEffect {
         provider,
@@ -103,7 +103,7 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
     let (declared_effects, effect_providers) = {
         let mut effect_context = context.inner.effect.lock().unwrap();
         let declared_effects = std::mem::take(&mut effect_context.declared_effects);
-        let effect_providers = std::mem::take(&mut effect_context.providers);
+        let effect_providers = std::mem::take(&mut effect_context.provider_registry);
         (declared_effects, effect_providers)
     };
 
@@ -303,7 +303,7 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
             };
             if !provider.is_orphaned() {
                 parent_effect_context
-                    .providers
+                    .provider_registry
                     .add(effect_path, provider.clone())?;
             }
         }

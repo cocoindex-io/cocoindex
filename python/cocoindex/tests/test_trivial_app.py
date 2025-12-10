@@ -2,9 +2,9 @@ import pytest
 
 import cocoindex as coco
 import cocoindex.aio as coco_aio
-from .environment import create_test_env
+from .common import create_test_env
 
-coco_env = create_test_env("trivial_app")
+coco_env = create_test_env(__file__)
 
 # === Sync App ===
 
