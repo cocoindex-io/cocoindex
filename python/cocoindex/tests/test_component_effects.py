@@ -1,4 +1,6 @@
 import cocoindex as coco
+import cocoindex.aio as coco_aio
+import pytest
 
 from typing import Any, Collection
 
@@ -186,6 +188,57 @@ def test_dicts_containers_together_insert() -> None:
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
     app.update()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+        "D3": {
+            "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+
+
+@coco.function
+async def _declare_dict_containers_together_async(csp: coco.StatePath) -> None:
+    providers = await coco_aio.mount_run(
+        _declare_dict_containers, csp / "setup", _source_data.keys()
+    ).result()
+    for name, provider in providers.items():
+        coco_aio.mount(_declare_one_dict_data, csp / name, name, provider)
+
+
+@pytest.mark.asyncio
+async def test_dicts_containers_together_insert_async() -> None:
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco_aio.App(
+        _declare_dict_containers_together_async,
+        coco_aio.AppConfig(
+            name="test_dicts_containers_together_insert_async", environment=coco_env
+        ),
+    )
+
+    _source_data["D1"] = {"a": 1, "b": 2}
+    _source_data["D2"] = {}
+    await app.update()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {},
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 1, "upsert": 2}
+
+    _source_data["D2"]["c"] = 3
+    _source_data["D3"] = {"a": 4}
+    await app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),

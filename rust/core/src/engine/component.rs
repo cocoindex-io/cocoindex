@@ -1,3 +1,4 @@
+use crate::engine::runtime::get_runtime;
 use crate::prelude::*;
 
 use crate::engine::context::{AppContext, ComponentProcessorContext};
@@ -187,7 +188,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         self,
         parent_context: Option<ComponentProcessorContext<Prof>>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
-        let join_handle = tokio::spawn(async move { self.build_once(parent_context).await });
+        let join_handle = get_runtime().spawn(async move { self.build_once(parent_context).await });
         Ok(ComponentMountRunHandle { join_handle })
     }
 
@@ -200,7 +201,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         let child_readiness_guard = parent_context
             .as_ref()
             .map(|c| c.components_readiness().clone().add_child());
-        let join_handle = tokio::spawn(async move {
+        let join_handle = get_runtime().spawn(async move {
             let result = self.build_once(parent_context).await;
             let shared_result = match result {
                 Ok(_) => Ok(()),
