@@ -32,9 +32,9 @@ impl<Prof: EngineProfile> App<Prof> {
             db
         };
 
-        let app_ctx = Arc::new(AppContext { env, db, app_reg });
+        let app_ctx = AppContext::new(env, db, app_reg);
         let providers = app_ctx
-            .env
+            .env()
             .effect_providers()
             .lock()
             .unwrap()

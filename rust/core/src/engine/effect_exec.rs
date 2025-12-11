@@ -107,8 +107,8 @@ pub(crate) async fn commit_effects<Prof: EngineProfile>(
         (declared_effects, effect_providers)
     };
 
-    let db_env = context.app_ctx().env.db_env();
-    let db = context.app_ctx().db;
+    let db_env = context.app_ctx().env().db_env();
+    let db = context.app_ctx().db();
 
     let effect_info_key = db_schema::DbEntryKey::State(
         context.state_path().clone(),

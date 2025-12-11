@@ -11,7 +11,7 @@ pub struct PyComponentProcessorContext(pub ComponentProcessorContext<PyEnginePro
 impl PyComponentProcessorContext {
     #[getter]
     fn environment(&self) -> PyEnvironment {
-        PyEnvironment(self.0.app_ctx().env.clone())
+        PyEnvironment(self.0.app_ctx().env().clone())
     }
 
     #[getter]

@@ -22,7 +22,7 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
 }
 
 struct ComponentInner<Prof: EngineProfile> {
-    app_ctx: Arc<AppContext<Prof>>,
+    app_ctx: AppContext<Prof>,
     state_path: StatePath,
     processor: Prof::ComponentProc,
     providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
@@ -59,13 +59,18 @@ impl ComponentBgChildReadinessState {
     }
 }
 
-pub(crate) struct ComponentBgChildReadiness {
+struct ComponentBgChildReadinessInner {
     state: Mutex<ComponentBgChildReadinessState>,
-    pub readiness: tokio::sync::SetOnce<SharedResult<()>>,
+    readiness: tokio::sync::SetOnce<SharedResult<()>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ComponentBgChildReadiness {
+    inner: Arc<ComponentBgChildReadinessInner>,
 }
 
 struct ComponentBgChildReadinessChildGuard {
-    readiness: Arc<ComponentBgChildReadiness>,
+    readiness: ComponentBgChildReadiness,
     resolved: bool,
 }
 
@@ -74,13 +79,13 @@ impl Drop for ComponentBgChildReadinessChildGuard {
         if self.resolved {
             return;
         }
-        let mut state = self.readiness.state.lock().unwrap();
+        let mut state = self.readiness.state().lock().unwrap();
         state.remaining_count -= 1;
         state.maybe_set_readiness(
             Err(SharedError::new(anyhow::anyhow!(
                 "Child component build cancelled"
             ))),
-            &self.readiness.readiness,
+            self.readiness.readiness(),
         );
     }
 }
@@ -88,9 +93,9 @@ impl Drop for ComponentBgChildReadinessChildGuard {
 impl ComponentBgChildReadinessChildGuard {
     fn resolve(mut self, result: Result<(), SharedError>) {
         {
-            let mut state = self.readiness.state.lock().unwrap();
+            let mut state = self.readiness.state().lock().unwrap();
             state.remaining_count -= 1;
-            state.maybe_set_readiness(result, &self.readiness.readiness);
+            state.maybe_set_readiness(result, self.readiness.readiness());
         }
         self.resolved = true;
     }
@@ -99,19 +104,29 @@ impl ComponentBgChildReadinessChildGuard {
 impl Default for ComponentBgChildReadiness {
     fn default() -> Self {
         Self {
-            state: Mutex::new(ComponentBgChildReadinessState {
-                remaining_count: 0,
-                is_readiness_set: false,
-                build_done: false,
+            inner: Arc::new(ComponentBgChildReadinessInner {
+                state: Mutex::new(ComponentBgChildReadinessState {
+                    remaining_count: 0,
+                    is_readiness_set: false,
+                    build_done: false,
+                }),
+                readiness: tokio::sync::SetOnce::new(),
             }),
-            readiness: tokio::sync::SetOnce::new(),
         }
     }
 }
 
 impl ComponentBgChildReadiness {
-    fn add_child(self: Arc<Self>) -> ComponentBgChildReadinessChildGuard {
-        self.state.lock().unwrap().remaining_count += 1;
+    fn state(&self) -> &Mutex<ComponentBgChildReadinessState> {
+        &self.inner.state
+    }
+
+    pub fn readiness(&self) -> &tokio::sync::SetOnce<SharedResult<()>> {
+        &self.inner.readiness
+    }
+
+    fn add_child(self) -> ComponentBgChildReadinessChildGuard {
+        self.state().lock().unwrap().remaining_count += 1;
         ComponentBgChildReadinessChildGuard {
             readiness: self,
             resolved: false,
@@ -119,9 +134,9 @@ impl ComponentBgChildReadiness {
     }
 
     fn set_build_done(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state().lock().unwrap();
         state.build_done = true;
-        state.maybe_set_readiness(Ok(()), &self.readiness);
+        state.maybe_set_readiness(Ok(()), self.readiness());
     }
 }
 
@@ -146,7 +161,7 @@ impl ComponentMountHandle {
 
 impl<Prof: EngineProfile> Component<Prof> {
     pub(crate) fn new(
-        app_ctx: Arc<AppContext<Prof>>,
+        app_ctx: AppContext<Prof>,
         state_path: StatePath,
         processor: Prof::ComponentProc,
         providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
@@ -176,7 +191,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         )
     }
 
-    pub fn app_ctx(&self) -> &Arc<AppContext<Prof>> {
+    pub fn app_ctx(&self) -> &AppContext<Prof> {
         &self.inner.app_ctx
     }
 
@@ -232,7 +247,11 @@ impl<Prof: EngineProfile> Component<Prof> {
             let Ok(ret) = ret else {
                 return Ok(ret);
             };
+
             commit_effects(&processor_context).await?;
+
+            // TODO: GC, can run in parallel with `commit_effects()`
+
             ret
         };
 
@@ -240,7 +259,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         let components_readiness = processor_context.components_readiness();
         components_readiness.set_build_done();
         components_readiness
-            .readiness
+            .readiness()
             .wait()
             .await
             .anyhow_result()?;

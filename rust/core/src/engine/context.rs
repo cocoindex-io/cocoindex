@@ -11,10 +11,39 @@ use crate::{
     state::state_path::StatePath,
 };
 
+struct AppContextInner<Prof: EngineProfile> {
+    env: Environment<Prof>,
+    db: heed::Database<db_schema::DbEntryKey, heed::types::Bytes>,
+    app_reg: AppRegistration<Prof>,
+}
+
+#[derive(Clone)]
 pub struct AppContext<Prof: EngineProfile> {
-    pub env: Environment<Prof>,
-    pub db: heed::Database<db_schema::DbEntryKey, heed::types::Bytes>,
-    pub app_reg: AppRegistration<Prof>,
+    inner: Arc<AppContextInner<Prof>>,
+}
+
+impl<Prof: EngineProfile> AppContext<Prof> {
+    pub fn new(
+        env: Environment<Prof>,
+        db: heed::Database<db_schema::DbEntryKey, heed::types::Bytes>,
+        app_reg: AppRegistration<Prof>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(AppContextInner { env, db, app_reg }),
+        }
+    }
+
+    pub fn env(&self) -> &Environment<Prof> {
+        &self.inner.env
+    }
+
+    pub fn db(&self) -> &heed::Database<db_schema::DbEntryKey, heed::types::Bytes> {
+        &self.inner.db
+    }
+
+    pub fn app_reg(&self) -> &AppRegistration<Prof> {
+        &self.inner.app_reg
+    }
 }
 
 pub(crate) struct DeclaredEffect<Prof: EngineProfile> {
@@ -30,12 +59,12 @@ pub(crate) struct ComponentEffectContext<Prof: EngineProfile> {
 }
 
 pub(crate) struct ComponentProcessorContextInner<Prof: EngineProfile> {
-    pub app_ctx: Arc<AppContext<Prof>>,
+    pub app_ctx: AppContext<Prof>,
     pub state_path: StatePath,
     pub parent_context: Option<Arc<ComponentProcessorContextInner<Prof>>>,
 
     pub effect: Mutex<ComponentEffectContext<Prof>>,
-    pub components_readiness: Arc<ComponentBgChildReadiness>,
+    pub components_readiness: ComponentBgChildReadiness,
     // TODO: Add fields to record states, children components, etc.
 }
 
@@ -46,7 +75,7 @@ pub struct ComponentProcessorContext<Prof: EngineProfile> {
 
 impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     pub fn new(
-        app_ctx: Arc<AppContext<Prof>>,
+        app_ctx: AppContext<Prof>,
         state_path: StatePath,
         providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
@@ -65,7 +94,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
-    pub fn app_ctx(&self) -> &Arc<AppContext<Prof>> {
+    pub fn app_ctx(&self) -> &AppContext<Prof> {
         &self.inner.app_ctx
     }
 
@@ -77,7 +106,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         &self.inner.effect
     }
 
-    pub(crate) fn components_readiness(&self) -> &Arc<ComponentBgChildReadiness> {
+    pub(crate) fn components_readiness(&self) -> &ComponentBgChildReadiness {
         &self.inner.components_readiness
     }
 }
