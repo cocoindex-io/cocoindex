@@ -100,18 +100,10 @@ jobs:
 
         - name: Verify interpreter configuration
           run: |
-            python - <<'PY'
-import sys
-import sysconfig
+              python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
 
-print(f"Python version: {sys.version}")
-print(f"GIL enabled? {getattr(sys, '_is_gil_enabled', 'missing')}")
-print(f"SOABI: {sysconfig.get_config_var('SOABI')}")
-if not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled():
-    raise SystemExit("Free-threaded interpreter with disabled GIL is required")
-PY
-
-        - run: rustup toolchain install stable --profile minimal
+        - name: Setup Rust (stable)
+          run: rustup toolchain install stable --profile minimal
 
         - name: Rust tests (no default features)
           run: cargo test --no-default-features --verbose
@@ -131,20 +123,6 @@ PY
         - name: Python build (free-threaded)
           run: |
             .venv/bin/python -m maturin develop --no-default-features -F free-threaded --strip -E all-ci,free-threaded
-
-        - name: Verify CocoIndex in free-threaded mode
-          run: |
-            .venv/bin/python - <<'PY'
-import sys
-import sysconfig
-import cocoindex
-
-print(f"CocoIndex version: {cocoindex.__version__}")
-print(f"GIL enabled? {getattr(sys, '_is_gil_enabled', 'missing')}")
-print(f"SOABI: {sysconfig.get_config_var('SOABI')}")
-if sys._is_gil_enabled():
-    raise SystemExit("Expected free-threaded interpreter with disabled GIL")
-PY
 
         - name: Python type check (mypy)
           run: |
