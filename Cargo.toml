@@ -21,6 +21,7 @@ numpy = "0.27.0"
 
 anyhow = { version = "1.0.100", features = ["std"] }
 async-trait = "0.1.89"
+thiserror = "1.0"
 axum = "0.8.7"
 axum-extra = { version = "0.10.3", features = ["query"] }
 base64 = "0.22.1"
