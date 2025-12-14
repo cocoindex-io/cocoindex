@@ -26,11 +26,11 @@ We are going use CocoIndex to build the indexing flow. It supports long running 
 
 
 ## CLIP ViT-L/14
-[CLIP ViT-L/14](https://huggingface.co/openai/clip-vit-large-patch14) is a powerful vision-language model that can understand both images and texts. 
+[CLIP ViT-L/14](https://huggingface.co/openai/clip-vit-large-patch14) is a powerful vision-language model that can understand both images and texts.
 It's trained to align visual and textual representations in a shared embedding space, making it perfect for our image search use case.
 
 In our project, we use CLIP to:
-1. Generate embeddings of the images directly 
+1. Generate embeddings of the images directly
 2. Convert natural language search queries into the same embedding space
 3. Enable semantic search by comparing query embeddings with caption embeddings
 
@@ -54,7 +54,7 @@ In our project, we use CLIP to:
 
 ## Flow
 
-### Define the flow and ingest the images 
+### Define the flow and ingest the images
 
 ```python
 @cocoindex.flow_def(name="ImageObjectEmbedding")
@@ -66,11 +66,11 @@ def image_object_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope:
     img_embeddings = data_scope.add_collector()
 ```
 
-`flow_builder.add_source` will create a table with sub fields (`filename`, `content`) 
+`flow_builder.add_source` will create a table with sub fields (`filename`, `content`)
 
 <DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" margin="16px 0" />
 
-**interval**  
+**interval**
 The `refresh_interval` parameter in `add_source` specifies how frequently CocoIndex will check the source directory (`img`) for new, modified, or deleted images. For example, `datetime.timedelta(minutes=1)` means the system will poll for changes every 1 minute, enabling near-real-time indexing of added or updated files.
 
 
@@ -101,15 +101,15 @@ def embed_image(img_bytes: bytes) -> cocoindex.Vector[cocoindex.Float32, Literal
     return features[0].tolist()
 ```
 
-`embed_image` is a custom function that uses the CLIP model to convert an image into a vector embedding. 
+`embed_image` is a custom function that uses the CLIP model to convert an image into a vector embedding.
 It accepts image data in bytes format and returns a list of floating-point numbers representing the image's embedding.
 
 <DocumentationButton url="https://cocoindex.io/docs/core/custom_function" text="Custom Function Documentation" margin="16px 0" />
 
 
-The function supports caching through the `cache` parameter. 
-When enabled, the executor will store the function's results for reuse during reprocessing, 
-which is particularly useful for computationally intensive operations. 
+The function supports caching through the `cache` parameter.
+When enabled, the executor will store the function's results for reuse during reprocessing,
+which is particularly useful for computationally intensive operations.
 
 
 #### Process each image and collect the information.
@@ -169,21 +169,21 @@ def embed_query(text: str) -> list[float]:
 ```
 
 
-Defines a FastAPI endpoint `/search` that performs semantic image search. 
+Defines a FastAPI endpoint `/search` that performs semantic image search.
 
 ```python
 @app.get("/search")
 def search(q: str = Query(..., description="Search query"), limit: int = Query(5, description="Number of results")):
     # Get the embedding for the query
     query_embedding = embed_query(q)
-    
+
     # Search in Qdrant
     search_results = app.state.qdrant_client.search(
         collection_name="image_search",
         query_vector=("embedding", query_embedding),
         limit=limit
     )
-    
+
 ```
 
 This searches the Qdrant vector database for similar embeddings. Returns the top `limit` results
@@ -200,7 +200,7 @@ return {"results": out}
 ```
 
 
-This endpoint enables semantic image search where users can find images by describing them in natural language, 
+This endpoint enables semantic image search where users can find images by describing them in natural language,
 rather than using exact keyword matches.
 
 
@@ -321,4 +321,3 @@ One of CocoIndex’s core strengths is its ability to connect to your existing d
 <DocumentationButton url="https://cocoindex.io/docs/sources" text="Sources" margin="0 0 16px 0" />
 
 Once connected, CocoIndex continuously watches for changes — new uploads, updates, or deletions — and applies them to your index in real time.
-

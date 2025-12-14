@@ -23,7 +23,7 @@ This guide shows how to build a real-time data pipeline with CocoIndex to transf
 If you don't have Postgres installed, please refer to the [installation guide](https://cocoindex.io/docs/getting_started/installation).
 
 ### Enable Google Drive access by service account
-CocoIndex provides native builtin to support Google Drive as a source. 
+CocoIndex provides native builtin to support Google Drive as a source.
 
 <DocumentationButton url="https://cocoindex.io/docs/sources/googledrive" text="GoogleDrive Source" margin="0 0 16px 0" />
 
@@ -122,11 +122,11 @@ Search for "Google Drive API" in Google Cloud Console and enable it.
     Create a `.env` file in the root directory and add the following:
     You can copy it from the [`.env.example`](https://github.com/cocoindex-io/cocoindex/blob/main/examples/gdrive_text_embedding/.env.example) file.
 
-    ``` 
+    ```
     # Postgres database address for cocoindex
     COCOINDEX_DATABASE_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
 
-    # Google Drive service account credential path. 
+    # Google Drive service account credential path.
     #! PLEASE FILL IN
     GOOGLE_SERVICE_ACCOUNT_CREDENTIAL=/path/to/service_account_credential.json
 
@@ -152,7 +152,7 @@ def gdrive_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: 
     """
     credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
     root_folder_ids = os.environ["GOOGLE_DRIVE_ROOT_FOLDER_IDS"].split(",")
-    
+
     data_scope["documents"] = flow_builder.add_source(
         cocoindex.sources.GoogleDrive(
             service_account_credential_path=credential_path,
@@ -167,7 +167,7 @@ def gdrive_text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: 
 
 
 ### Rest of the flow
-For the rest of the flow, we can follow the tutorial 
+For the rest of the flow, we can follow the tutorial
 [Simple Vector Index](https://cocoindex.io/docs/examples/simple_vector_index).
 The entire project is available [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/gdrive_text_embedding).
 
@@ -179,7 +179,7 @@ The entire project is available [here](https://github.com/cocoindex-io/cocoindex
     ```sh
     cocoindex update --setup main
     ```
-    
+
     You'll see the index updates state in the terminal. For example, you'll see the following output:
     ```sh
     documents: 3 added, 0 removed, 0 updated

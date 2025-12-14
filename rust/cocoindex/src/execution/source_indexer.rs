@@ -237,6 +237,7 @@ pub enum UpdateMode {
     #[default]
     Normal,
     ReexportTargets,
+    FullReprocess,
 }
 
 pub struct UpdateOptions {

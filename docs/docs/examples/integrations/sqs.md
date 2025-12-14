@@ -16,19 +16,19 @@ import { DocumentationButton } from '../../../src/components/GitHubButton';
 
 [CocoIndex](https://github.com/cocoindex-io/cocoindex) natively supports Amazon S3 as a source and integrates with AWS SQS for real-time, incremental S3 data processing.
 
-## AWS SQS 
+## AWS SQS
 
 [Amazon SQS](https://aws.amazon.com/sqs/) (Simple Queue Service) is a message queuing service that provides a reliable, highly-scalable hosted queue for storing messages as they travel between applications or microservices. When S3 files change, SQS queues event messages containing details like the event type, bucket, object key, and timestamp. Messages stay in the queue until processed, so no events are lost.
 
 ## Live update out of the box with SQS
-CocoIndex provides two modes to run your pipeline, one time update and live update, both leverage the incremental processing. Particularly with AWS SQS, you could leverage the live update mode - 
+CocoIndex provides two modes to run your pipeline, one time update and live update, both leverage the incremental processing. Particularly with AWS SQS, you could leverage the live update mode -
 where CocoIndex continuously monitors and reacts to the events in SQS, updating the target data in real-time. This is ideal for use cases where data freshness is critical.
 
 <DocumentationButton url="http://localhost:3000/docs/tutorials/live_updates" text="Live Update Tutorial" margin="0 0 16px 0" />
 
 
 ## How does it work?
-Let's take a look at simple example of how to build a real-time data transformation pipeline with S3 and CocoIndex. It builds a vector database of text embeddings from markdown files in S3. 
+Let's take a look at simple example of how to build a real-time data transformation pipeline with S3 and CocoIndex. It builds a vector database of text embeddings from markdown files in S3.
 
 ### S3 bucket and SQS setup
 Please follow the [documentation](https://cocoindex.io/docs/sources/amazons3) to setup S3 bucket and SQS queue.
@@ -39,12 +39,12 @@ Please follow the [documentation](https://cocoindex.io/docs/sources/amazons3) to
 
 #### S3 bucket
 - Creating an AWS account.
-- Configuring IAM permissions. 
-- Configure policies. You'll need at least the `AmazonS3ReadOnlyAccess` policy, and if you want to enable change notifications, you'll also need the `AmazonSQSFullAccess` policy. 
+- Configuring IAM permissions.
+- Configure policies. You'll need at least the `AmazonS3ReadOnlyAccess` policy, and if you want to enable change notifications, you'll also need the `AmazonSQSFullAccess` policy.
   ![Permission Config](/img/integrations/sqs/permission.png)
 
 #### SQS queue
-For real-time change detection, you'll need to create an SQS queue and configure it to receive notifications from your S3 bucket. 
+For real-time change detection, you'll need to create an SQS queue and configure it to receive notifications from your S3 bucket.
 Please follow the [documentation](https://cocoindex.io/docs/sources/amazons3#optional-setup-sqs-queue-for-event-notifications) to configure the S3 bucket to send event notifications to the SQS queue.
 ![SQS Queue](/img/integrations/sqs/sqs.png)
 
@@ -89,7 +89,7 @@ The flow diagram illustrates how we'll process our codebase:
 4. Store the embeddings in a vector database for retrieval
 
 
-### AWS File Ingestion 
+### AWS File Ingestion
 
 Define the AWS endpoint and the SQS queue name in `.env` file:
 
@@ -130,7 +130,7 @@ This defines a flow that reads text files from the Amazon S3 bucket.
 ![AWS File Ingestion](/img/integrations/sqs/ingest.png)
 
 ### Rest of the flow
-For the rest of the flow, we can follow the tutorial 
+For the rest of the flow, we can follow the tutorial
 [Simple Vector Index](https://cocoindex.io/docs/examples/simple_vector_index).
 The entire project is available [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/amazon_s3_embedding).
 
@@ -141,4 +141,3 @@ cocoindex update main.py -L
 
 `-L` option means live update, see the [documentation](https://cocoindex.io/docs/core/flow_methods#live-update) for more details.
 And you will have a continuous long running process that will update the vector database with any updates in the S3 bucket.
-

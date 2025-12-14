@@ -209,7 +209,7 @@ with data_scope["documents"].row() as doc:
 
 ![Extracted](/img/examples/patient_form_extraction/extraction.png)
 
-After the extraction, we collect all the fields for simplicity. You can also select any fields and also perform data mapping and field level transformation on the fields before the collection. 
+After the extraction, we collect all the fields for simplicity. You can also select any fields and also perform data mapping and field level transformation on the fields before the collection.
 
 ## Export the extracted data to a table
 
