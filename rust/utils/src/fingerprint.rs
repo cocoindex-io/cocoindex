@@ -32,7 +32,7 @@ impl serde::ser::Error for FingerprinterError {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Fingerprint(#[serde_as(as = "IfIsHumanReadable<Base64, Bytes>")] pub [u8; 16]);
 
 impl Fingerprint {
@@ -78,6 +78,12 @@ impl std::fmt::Display for Fingerprint {
             write!(f, "{:02x}", byte)?;
         }
         Ok(())
+    }
+}
+
+impl std::fmt::Debug for Fingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
     }
 }
 
