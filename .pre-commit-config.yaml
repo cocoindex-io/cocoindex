@@ -56,7 +56,7 @@ repos:
 
         - id: mypy-check
           name: mypy type check
-          entry: dmypy run python examples
+          entry: dmypy run python && dmypy run -- --namespace-packages --explicit-package-bases --ignore-missing-imports examples
           language: system
           files: ^(rust/|python/|examples/|Cargo\.toml|pyproject\.toml)
           pass_filenames: false
