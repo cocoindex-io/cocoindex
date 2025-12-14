@@ -30,7 +30,7 @@ impl serde::ser::Error for FingerprinterError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Fingerprint(pub [u8; 16]);
 
 impl Fingerprint {
@@ -64,6 +64,12 @@ impl std::fmt::Display for Fingerprint {
             write!(f, "{:02x}", byte)?;
         }
         Ok(())
+    }
+}
+
+impl std::fmt::Debug for Fingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
     }
 }
 
