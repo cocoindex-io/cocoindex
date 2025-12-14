@@ -71,6 +71,16 @@ impl Fingerprint {
     }
 }
 
+impl std::fmt::Display for Fingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#")?;
+        for byte in self.0.iter() {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
 impl AsRef<[u8]> for Fingerprint {
     fn as_ref(&self) -> &[u8] {
         &self.0
