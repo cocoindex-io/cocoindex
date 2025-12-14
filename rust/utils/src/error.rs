@@ -1,4 +1,3 @@
-use anyhow;
 use axum::{
     Json,
     http::StatusCode,
@@ -12,16 +11,22 @@ use std::{
     fmt::{Debug, Display},
     sync::{Arc, Mutex},
 };
+use thiserror::Error;
 
-pub trait HostError: Debug + Display + Send + Sync + 'static {
-    fn as_any(&self) -> &dyn Any;
-}
+pub trait HostError: Any + Debug + Display + Send + Sync + 'static {}
+impl<T: Any + Debug + Display + Send + Sync + 'static> HostError for T {}
 
 #[derive(Debug)]
 pub enum CError {
-    Context { msg: String, source: Box<CError> },
+    Context {
+        msg: String,
+        source: Box<CError>,
+    },
     HostLang(Box<dyn HostError>),
-    Client { msg: String, bt: Backtrace },
+    Client {
+        msg: String,
+        bt: Backtrace,
+    },
     Internal {
         source: Box<dyn StdError + Send + Sync>,
         bt: Backtrace,
@@ -103,16 +108,9 @@ impl CError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
+#[error("{0}")]
 struct StringError(String);
-
-impl Display for StringError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl StdError for StringError {}
 
 pub trait IntoInternal<T> {
     fn internal(self) -> CResult<T>;
@@ -445,12 +443,6 @@ mod tests {
         }
     }
 
-    impl HostError for MockHostError {
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-    }
-
     #[test]
     fn test_client_error_creation() {
         let err = CError::client("invalid input");
@@ -483,7 +475,8 @@ mod tests {
         assert!(!err.is_client_error());
 
         let host_err = err.find_host_error().unwrap();
-        let downcasted = host_err.as_any().downcast_ref::<MockHostError>();
+        let any: &dyn Any = host_err; // trait upcasting
+        let downcasted = any.downcast_ref::<MockHostError>();
         assert!(downcasted.is_some());
         assert_eq!(downcasted.unwrap().0, "test error");
     }
@@ -516,7 +509,8 @@ mod tests {
         let final_err = with_context.unwrap_err();
         assert!(final_err.is_host_error());
         let host_err = final_err.find_host_error().unwrap();
-        let downcasted = host_err.as_any().downcast_ref::<MockHostError>();
+        let any: &dyn Any = host_err;
+        let downcasted = any.downcast_ref::<MockHostError>();
         assert!(downcasted.is_some());
         assert_eq!(downcasted.unwrap().0, "original python error");
     }
