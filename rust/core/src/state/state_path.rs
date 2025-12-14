@@ -210,6 +210,12 @@ impl StatePath {
     }
 }
 
+impl<'a> From<StatePathRef<'a>> for StatePath {
+    fn from(value: StatePathRef<'a>) -> Self {
+        StatePath(value.0.to_owned().into())
+    }
+}
+
 impl std::fmt::Display for StatePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         StatePathRef(self.0.as_ref()).fmt(f)

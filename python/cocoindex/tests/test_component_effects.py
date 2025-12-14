@@ -75,6 +75,109 @@ def test_dicts_data_together_insert() -> None:
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
 
 
+def test_dicts_data_together_delete_dict() -> None:
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        "test_dicts_data_together_delete_dict",
+        _declare_dicts_data_together,
+        environment=coco_env,
+    )
+
+    _source_data["D1"] = {"a": 1, "b": 2}
+    _source_data["D2"] = {}
+    app.run()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {},
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 2, "upsert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
+    del _source_data["D1"]
+    _source_data["D2"]["c"] = 3
+    _source_data["D3"] = {"a": 4}
+    app.run()
+    assert DictsTarget.store.data == {
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+        "D3": {
+            "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 3, "upsert": 1, "delete": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+
+    # Re-insert after deletion
+    _source_data["D1"] = {"a": 3, "c": 4}
+    app.run()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+            "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+        "D3": {
+            "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 3, "upsert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
+
+def test_dicts_data_together_delete_entry() -> None:
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        "test_dicts_data_together_delete_entry",
+        _declare_dicts_data_together,
+        environment=coco_env,
+    )
+
+    _source_data["D1"] = {"a": 1, "b": 2}
+    app.run()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
+    del _source_data["D1"]["a"]
+    app.run()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "delete": 1}
+
+    # Re-insert after deletion
+    _source_data["D1"]["a"] = 3
+    _source_data["D1"]["c"] = 4
+    app.run()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+            "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
+
 ##################################################################################
 
 
@@ -173,6 +276,24 @@ def test_dicts_in_sub_components_delete_dict() -> None:
     assert DictsTarget.store.metrics.collect() == {"sink": 3, "upsert": 1, "delete": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
 
+    # Re-insert after deletion
+    _source_data["D1"] = {"a": 3, "c": 4}
+    app.run()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+            "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+        "D3": {
+            "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 3, "upsert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
 
 def test_dicts_in_sub_components_delete_entry() -> None:
     DictsTarget.store.clear()
@@ -204,6 +325,20 @@ def test_dicts_in_sub_components_delete_entry() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "delete": 1}
+
+    # Re-insert after deletion
+    _source_data["D1"]["a"] = 3
+    _source_data["D1"]["c"] = 4
+    app.run()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+            "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
 
 
 ##################################################################################
@@ -317,6 +452,24 @@ def test_dicts_containers_together_delete_dict() -> None:
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "upsert": 1, "delete": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
 
+    # Re-insert after deletion
+    _source_data["D1"] = {"a": 3, "c": 4}
+    app.run()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+            "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+        "D3": {
+            "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
 
 def test_dicts_containers_together_delete_entry() -> None:
     DictsTarget.store.clear()
@@ -348,6 +501,20 @@ def test_dicts_containers_together_delete_entry() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "delete": 1}
+
+    # Re-insert after deletion
+    _source_data["D1"]["a"] = 3
+    _source_data["D1"]["c"] = 4
+    app.run()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+            "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
 
 
 @coco.function
@@ -434,6 +601,24 @@ async def test_dicts_containers_together_delete_dict_async() -> None:
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "upsert": 1, "delete": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
 
+    # Re-insert after deletion
+    _source_data["D1"] = {"a": 3, "c": 4}
+    await app.run()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+            "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+        "D3": {
+            "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
 
 @pytest.mark.asyncio
 async def test_dicts_containers_together_delete_entry_async() -> None:
@@ -466,3 +651,17 @@ async def test_dicts_containers_together_delete_entry_async() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "delete": 1}
+
+    # Re-insert after deletion
+    _source_data["D1"]["a"] = 3
+    _source_data["D1"]["c"] = 4
+    await app.run()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+            "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}

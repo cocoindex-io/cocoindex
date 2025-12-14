@@ -630,3 +630,30 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     Ok(provider_registry)
 }
+
+pub(crate) fn cleanup_tombstone<Prof: EngineProfile>(
+    context: &ComponentProcessorContext<Prof>,
+) -> Result<()> {
+    let Some(parent_ctx) = context.parent_context() else {
+        return Ok(());
+    };
+    let parent_state_path = parent_ctx.state_path();
+    let relative_state_path = context
+        .state_path()
+        .as_ref()
+        .strip_parent(parent_state_path.as_ref())?;
+    let tombstone_key = db_schema::DbEntryKey::State(
+        parent_state_path.clone(),
+        db_schema::StateEntryKey::ChildComponentTombstone(relative_state_path.into()),
+    );
+    let encoded_tombstone_key = tombstone_key.encode()?;
+
+    let db_env = context.app_ctx().env().db_env();
+    let db = context.app_ctx().db();
+    {
+        let mut wtxn = db_env.write_txn()?;
+        db.delete(&mut wtxn, encoded_tombstone_key.as_ref())?;
+        wtxn.commit()?;
+    }
+    Ok(())
+}

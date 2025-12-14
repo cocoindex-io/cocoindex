@@ -3,7 +3,7 @@ use crate::prelude::*;
 
 use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
 use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
-use crate::engine::execution::submit;
+use crate::engine::execution::{cleanup_tombstone, submit};
 use crate::engine::profile::EngineProfile;
 use crate::state::effect_path::EffectPath;
 use crate::state::state_path::StatePath;
@@ -277,7 +277,13 @@ impl<Prof: EngineProfile> Component<Prof> {
             ComponentProcessingMode::Delete,
         );
         get_runtime().spawn(async move {
-            let result = self.execute_once(&processor_context, None).await;
+            let result = self
+                .execute_once(&processor_context, None)
+                .await
+                .and_then(|ret| {
+                    cleanup_tombstone(&processor_context)?;
+                    Ok(ret)
+                });
             let shared_result = match result {
                 Ok(_) => Ok(()),
                 Err(err) => Err(SharedError::new(err)),
