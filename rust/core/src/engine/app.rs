@@ -5,7 +5,7 @@ use crate::engine::component::Component;
 use crate::engine::context::AppContext;
 
 use crate::engine::environment::{AppRegistration, Environment};
-use crate::state::state_path::StatePath;
+use crate::state::stable_path::StablePath;
 
 pub struct App<Prof: EngineProfile> {
     root_component: Component<Prof>,
@@ -29,7 +29,7 @@ impl<Prof: EngineProfile> App<Prof> {
         };
 
         let app_ctx = AppContext::new(env, db, app_reg);
-        let root_component = Component::new(app_ctx, StatePath::root());
+        let root_component = Component::new(app_ctx, StablePath::root());
         Ok(Self { root_component })
     }
 }
@@ -44,5 +44,9 @@ impl<Prof: EngineProfile> App<Prof> {
             .run(root_processor, None)?
             .result(None)
             .await
+    }
+
+    pub fn app_ctx(&self) -> &AppContext<Prof> {
+        self.root_component.app_ctx()
     }
 }

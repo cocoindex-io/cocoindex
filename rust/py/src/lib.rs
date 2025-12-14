@@ -3,10 +3,11 @@ mod component;
 mod context;
 mod effect;
 mod environment;
+mod inspect;
 mod prelude;
 mod profile;
 mod runtime;
-mod state_path;
+mod stable_path;
 mod value;
 
 #[pyo3::pymodule]
@@ -38,8 +39,10 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     m.add_class::<environment::PyEnvironment>()?;
 
+    m.add_function(wrap_pyfunction!(inspect::list_stable_paths, m)?)?;
+
     m.add_class::<runtime::PyAsyncContext>()?;
 
-    m.add_class::<state_path::PyStatePath>()?;
+    m.add_class::<stable_path::PyStablePath>()?;
     Ok(())
 }

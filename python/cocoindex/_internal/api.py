@@ -17,7 +17,7 @@ from .environment import lifespan, default_env
 
 from .function import function
 
-from .state import StatePath, StateKey
+from .stable_path import ROOT_PATH, StablePath, StableKey
 
 from .setting import Settings
 
@@ -42,9 +42,10 @@ __all__ = [
     "default_env",
     # .fn
     "function",
-    # .state
-    "StatePath",
-    "StateKey",
+    # .stable_path
+    "ROOT_PATH",
+    "StablePath",
+    "StableKey",
     # .setting
     "Settings",
 ]

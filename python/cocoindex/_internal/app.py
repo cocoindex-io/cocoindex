@@ -8,7 +8,7 @@ from typing import (
 from . import core  # type: ignore
 from .environment import Environment
 from .function import Function
-from .state import StatePath
+from .stable_path import StablePath
 from .environment import default_env
 
 
@@ -18,14 +18,14 @@ R = TypeVar("R")
 
 class AppBase(Generic[P, R]):
     _name: str
-    _main_fn: Function[Concatenate[StatePath, P], R]
+    _main_fn: Function[Concatenate[StablePath, P], R]
 
     _core: core.App
 
     def __init__(
         self,
         name: str,
-        main_fn: Function[Concatenate[StatePath, P], R],
+        main_fn: Function[Concatenate[StablePath, P], R],
         /,
         *,
         environment: Environment | None = None,

@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use crate::{environment::PyEnvironment, state_path::PyStatePath};
+use crate::{environment::PyEnvironment, stable_path::PyStablePath};
 use cocoindex_core::engine::context::ComponentProcessorContext;
 
 #[pyclass(name = "ComponentProcessorContext")]
@@ -15,7 +15,7 @@ impl PyComponentProcessorContext {
     }
 
     #[getter]
-    fn state_path(&self) -> PyStatePath {
-        PyStatePath(self.0.state_path().clone())
+    fn stable_path(&self) -> PyStablePath {
+        PyStablePath(self.0.stable_path().clone())
     }
 }

@@ -22,7 +22,7 @@ class NonExistenceType:
     __slots__ = ()
     _instance: "NonExistenceType | None" = None
 
-    def __new__(cls) -> "NonExistenceType":
+    def __new__(cls) -> NonExistenceType:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance

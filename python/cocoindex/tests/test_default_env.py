@@ -18,7 +18,7 @@ def test_default_env() -> None:
 
 
 @coco.function()
-def trivial_fn(csp: coco.StatePath, s: str, i: int) -> str:
+def trivial_fn(csp: coco.StablePath, s: str, i: int) -> str:
     return f"{s} {i}"
 
 

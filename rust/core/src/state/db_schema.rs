@@ -1,4 +1,7 @@
-use crate::prelude::*;
+use crate::{
+    prelude::*,
+    state::stable_path::{StablePathPrefix, StablePathRef},
+};
 
 use std::{borrow::Cow, collections::BTreeMap, io::Write};
 
@@ -6,37 +9,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{
     effect_path::EffectPath,
-    state_path::{StateKey, StatePath},
+    stable_path::{StableKey, StablePath},
 };
 
 pub type Database = heed::Database<heed::types::Bytes, heed::types::Bytes>;
 
 #[derive(Debug)]
-pub enum StateEntryKey {
+pub enum StablePathEntryKey {
     Metadata,
 
     ChildExistencePrefix,
-    ChildExistence(StateKey),
+    ChildExistence(StableKey),
 
     Effects,
 
     ChildComponentTombstonePrefix,
-    ChildComponentTombstone(StatePath),
+    ChildComponentTombstone(StablePath),
 }
 
-impl storekey::Encode for StateEntryKey {
+impl storekey::Encode for StablePathEntryKey {
     fn encode<W: Write>(&self, e: &mut storekey::Writer<W>) -> Result<(), storekey::EncodeError> {
         match self {
             // Should not be less than 2.
-            StateEntryKey::Metadata => e.write_u8(0x10),
-            StateEntryKey::ChildExistencePrefix => e.write_u8(0x20),
-            StateEntryKey::ChildExistence(key) => {
+            StablePathEntryKey::Metadata => e.write_u8(0x10),
+            StablePathEntryKey::ChildExistencePrefix => e.write_u8(0x20),
+            StablePathEntryKey::ChildExistence(key) => {
                 e.write_u8(0x20)?;
                 key.encode(e)
             }
-            StateEntryKey::Effects => e.write_u8(0x30),
-            StateEntryKey::ChildComponentTombstonePrefix => e.write_u8(0xa0),
-            StateEntryKey::ChildComponentTombstone(path) => {
+            StablePathEntryKey::Effects => e.write_u8(0x30),
+            StablePathEntryKey::ChildComponentTombstonePrefix => e.write_u8(0xa0),
+            StablePathEntryKey::ChildComponentTombstone(path) => {
                 e.write_u8(0xa0)?;
                 path.encode(e)
             }
@@ -44,20 +47,20 @@ impl storekey::Encode for StateEntryKey {
     }
 }
 
-impl storekey::Decode for StateEntryKey {
+impl storekey::Decode for StablePathEntryKey {
     fn decode<D: std::io::BufRead>(
         d: &mut storekey::Reader<D>,
     ) -> Result<Self, storekey::DecodeError> {
         let key = match d.read_u8()? {
-            0x10 => StateEntryKey::Metadata,
+            0x10 => StablePathEntryKey::Metadata,
             0x20 => {
-                let key: StateKey = storekey::Decode::decode(d)?;
-                StateEntryKey::ChildExistence(key)
+                let key: StableKey = storekey::Decode::decode(d)?;
+                StablePathEntryKey::ChildExistence(key)
             }
-            0x30 => StateEntryKey::Effects,
+            0x30 => StablePathEntryKey::Effects,
             0xa0 => {
-                let path: StatePath = storekey::Decode::decode(d)?;
-                StateEntryKey::ChildComponentTombstone(path)
+                let path: StablePath = storekey::Decode::decode(d)?;
+                StablePathEntryKey::ChildComponentTombstone(path)
             }
             _ => return Err(storekey::DecodeError::InvalidFormat),
         };
@@ -66,20 +69,31 @@ impl storekey::Decode for StateEntryKey {
 }
 
 #[derive(Debug)]
-pub enum DbEntryKey {
-    State(StatePath, StateEntryKey),
+pub enum DbEntryKey<'a> {
+    StablePathPrefixPrefix(StablePathPrefix<'a>),
+    StablePathPrefix(StablePathRef<'a>),
+    StablePath(StablePath, StablePathEntryKey),
     Effect(EffectPath),
 }
 
-impl storekey::Encode for DbEntryKey {
+impl<'a> storekey::Encode for DbEntryKey<'a> {
     fn encode<W: Write>(&self, e: &mut storekey::Writer<W>) -> Result<(), storekey::EncodeError> {
         match self {
             // Should not be less than 2.
-            DbEntryKey::State(path, key) => {
+            DbEntryKey::StablePathPrefixPrefix(prefix) => {
+                e.write_u8(0x10)?;
+                prefix.encode(e)?;
+            }
+            DbEntryKey::StablePathPrefix(prefix) => {
+                e.write_u8(0x10)?;
+                prefix.encode(e)?;
+            }
+            DbEntryKey::StablePath(path, key) => {
                 e.write_u8(0x10)?;
                 path.encode(e)?;
                 key.encode(e)?;
             }
+
             DbEntryKey::Effect(path) => {
                 e.write_u8(0x20)?;
                 path.encode(e)?;
@@ -89,15 +103,15 @@ impl storekey::Encode for DbEntryKey {
     }
 }
 
-impl storekey::Decode for DbEntryKey {
+impl<'a> storekey::Decode for DbEntryKey<'a> {
     fn decode<D: std::io::BufRead>(
         d: &mut storekey::Reader<D>,
     ) -> Result<Self, storekey::DecodeError> {
         let key = match d.read_u8()? {
             0x10 => {
-                let path: StatePath = storekey::Decode::decode(d)?;
-                let key: StateEntryKey = storekey::Decode::decode(d)?;
-                DbEntryKey::State(path, key)
+                let path: StablePath = storekey::Decode::decode(d)?;
+                let key: StablePathEntryKey = storekey::Decode::decode(d)?;
+                DbEntryKey::StablePath(path, key)
             }
             0x20 => {
                 let path: EffectPath = storekey::Decode::decode(d)?;
@@ -109,7 +123,7 @@ impl storekey::Decode for DbEntryKey {
     }
 }
 
-impl DbEntryKey {
+impl<'a> DbEntryKey<'a> {
     pub fn encode(&self) -> Result<Vec<u8>> {
         storekey::encode_vec(self)
             .map_err(|e| anyhow::anyhow!("Failed to encode DbEntryKey: {}", e))
@@ -129,7 +143,7 @@ pub struct EffectInfoItem<'a> {
 }
 
 #[derive(Serialize, Deserialize, Default, Debug)]
-pub struct StateEntryEffectInfo<'a> {
+pub struct StablePathEntryEffectInfo<'a> {
     #[serde(rename = "V")]
     pub version: u64,
     #[serde(rename = "I", borrow)]
@@ -137,7 +151,7 @@ pub struct StateEntryEffectInfo<'a> {
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
-pub enum StatePathNodeType {
+pub enum StablePathNodeType {
     #[serde(rename = "D")]
     Directory,
     #[serde(rename = "C")]
@@ -147,7 +161,7 @@ pub enum StatePathNodeType {
 #[derive(Serialize, Deserialize)]
 pub struct ChildExistenceInfo {
     #[serde(rename = "T")]
-    pub node_type: StatePathNodeType,
+    pub node_type: StablePathNodeType,
     // TODO: Add a generation, to avoid race conditions during deletion,
     // e.g. when the parent is cleaning up the child asynchronously, there's
     // incremental reinsertion (based on change stream) for the child, which

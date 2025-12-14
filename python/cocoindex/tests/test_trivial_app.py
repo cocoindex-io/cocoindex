@@ -10,7 +10,7 @@ coco_env = create_test_env(__file__)
 
 
 @coco.function()
-def trivial_fn_sync(csp: coco.StatePath, s: str, i: int) -> str:
+def trivial_fn_sync(csp: coco.StablePath, s: str, i: int) -> str:
     return f"{s} {i}"
 
 
@@ -29,7 +29,7 @@ async def test_sync_app_async_client() -> None:
 
 
 @coco.function
-def trivial_fn_sync_bare(csp: coco.StatePath, s: str, i: int) -> str:
+def trivial_fn_sync_bare(csp: coco.StablePath, s: str, i: int) -> str:
     return f"{s} {i}"
 
 
@@ -52,7 +52,7 @@ async def test_sync_bare_app_async_client() -> None:
 
 
 @coco.function()
-async def trivial_fn_async(csp: coco.StatePath, s: str, i: int) -> str:
+async def trivial_fn_async(csp: coco.StablePath, s: str, i: int) -> str:
     return f"{s} {i}"
 
 

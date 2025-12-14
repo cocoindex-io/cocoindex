@@ -7,13 +7,13 @@ use std::collections::{HashMap, VecDeque, btree_map};
 use heed::{RoTxn, RwTxn};
 
 use crate::engine::context::{
-    ComponentProcessingAction, ComponentProcessorContext, DeclaredEffect,
+    ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext, DeclaredEffect,
 };
 use crate::engine::effect::{EffectProvider, EffectProviderRegistry, EffectReconciler, EffectSink};
 use crate::engine::profile::{EngineProfile, Persist, StableFingerprint};
 use crate::state::effect_path::EffectPath;
-use crate::state::state_path::{StateKey, StatePath, StatePathRef};
-use crate::state::state_path_set::{ChildStatePathSet, StatePathSet};
+use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
+use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 
 pub fn declare_effect<Prof: EngineProfile>(
     context: &ComponentProcessorContext<Prof>,
@@ -80,15 +80,15 @@ fn make_effect_path<Prof: EngineProfile>(
 }
 
 struct ChildrenPathInfo {
-    path: StatePath,
-    child_path_set: Option<ChildStatePathSet>,
+    path: StablePath,
+    child_path_set: Option<ChildStablePathSet>,
 }
 
 struct ChildPathInfo {
     encoded_db_key: Vec<u8>,
     encoded_db_value: Vec<u8>,
-    state_key: StateKey,
-    state_path_set: StatePathSet,
+    stable_key: StableKey,
+    path_set: StablePathSet,
 }
 
 struct Committer<'a, Prof: EngineProfile> {
@@ -96,81 +96,86 @@ struct Committer<'a, Prof: EngineProfile> {
     db: &'a db_schema::Database,
     effect_providers: &'a rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
 
-    component_state_path: &'a StatePath,
+    component_path: &'a StablePath,
 
     encoded_tombstone_key_prefix: Vec<u8>,
 
     existence_processing_queue: VecDeque<ChildrenPathInfo>,
-    buffered_state_paths_for_tombstone: Vec<StatePath>,
+    buffered_paths_for_tombstone: Vec<StablePath>,
 }
 
 impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
     fn new(
         component_ctx: &'a ComponentProcessorContext<Prof>,
-        component_state_path: &'a StatePath,
+        component_path: &'a StablePath,
         effect_providers: &'a rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
     ) -> Result<Self> {
-        let tombstone_key_prefix = db_schema::DbEntryKey::State(
-            component_state_path.clone(),
-            db_schema::StateEntryKey::ChildComponentTombstonePrefix,
+        let tombstone_key_prefix = db_schema::DbEntryKey::StablePath(
+            component_path.clone(),
+            db_schema::StablePathEntryKey::ChildComponentTombstonePrefix,
         );
         let encoded_tombstone_key_prefix = tombstone_key_prefix.encode()?;
         Ok(Self {
             component_ctx,
             db: component_ctx.app_ctx().db(),
             effect_providers,
-            component_state_path,
+            component_path,
             encoded_tombstone_key_prefix,
             existence_processing_queue: VecDeque::new(),
-            buffered_state_paths_for_tombstone: Vec::new(),
+            buffered_paths_for_tombstone: Vec::new(),
         })
     }
 
     fn commit(
         &mut self,
-        child_state_path_set: Option<ChildStatePathSet>,
+        child_path_set: Option<ChildStablePathSet>,
         effect_info_key: &db_schema::DbEntryKey,
         curr_version: u64,
     ) -> Result<()> {
+        let encoded_effect_info_key = effect_info_key.encode()?;
         let db_env = self.component_ctx.app_ctx().env().db_env();
         {
             let mut wtxn = db_env.write_txn()?;
-            let mut effect_info: db_schema::StateEntryEffectInfo = self
-                .db
-                .get(&wtxn, effect_info_key.encode()?.as_ref())?
-                .map(|data| rmp_serde::from_slice(&data))
-                .transpose()?
-                .unwrap_or_default();
+            if self.component_ctx.mode() == ComponentProcessingMode::Delete {
+                self.db
+                    .delete(&mut wtxn, encoded_effect_info_key.as_ref())?;
+            } else {
+                let mut effect_info: db_schema::StablePathEntryEffectInfo = self
+                    .db
+                    .get(&wtxn, encoded_effect_info_key.as_ref())?
+                    .map(|data| rmp_serde::from_slice(&data))
+                    .transpose()?
+                    .unwrap_or_default();
 
-            for item in effect_info.items.values_mut() {
-                item.states.retain(|(version, state)| {
-                    *version > curr_version || *version == curr_version && state.is_some()
-                });
-            }
-            effect_info.items.retain(|_, item| !item.states.is_empty());
-
-            let is_version_converged = effect_info.items.iter().all(|(_, item)| {
-                item.states
-                    .iter()
-                    .all(|(version, _)| *version == curr_version)
-            });
-            if is_version_converged {
-                effect_info.version = 1;
                 for item in effect_info.items.values_mut() {
-                    for (version, _) in item.states.iter_mut() {
-                        *version = 1;
+                    item.states.retain(|(version, state)| {
+                        *version > curr_version || *version == curr_version && state.is_some()
+                    });
+                }
+                effect_info.items.retain(|_, item| !item.states.is_empty());
+                let is_version_converged = effect_info.items.iter().all(|(_, item)| {
+                    item.states
+                        .iter()
+                        .all(|(version, _)| *version == curr_version)
+                });
+                if is_version_converged {
+                    effect_info.version = 1;
+                    for item in effect_info.items.values_mut() {
+                        for (version, _) in item.states.iter_mut() {
+                            *version = 1;
+                        }
                     }
                 }
+
+                let data_bytes = rmp_serde::to_vec(&effect_info)?;
+                self.db.put(
+                    &mut wtxn,
+                    encoded_effect_info_key.as_ref(),
+                    data_bytes.as_slice(),
+                )?;
             }
 
-            let data_bytes = rmp_serde::to_vec(&effect_info)?;
-            self.db.put(
-                &mut wtxn,
-                effect_info_key.encode()?.as_ref(),
-                data_bytes.as_slice(),
-            )?;
-
-            self.update_existence(&mut wtxn, child_state_path_set)?;
+            self.update_existence(&mut wtxn, child_path_set)?;
             wtxn.commit()?;
         }
 
@@ -185,10 +190,10 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
     fn update_existence(
         &mut self,
         wtxn: &mut RwTxn<'_>,
-        child_path_set: Option<ChildStatePathSet>,
+        child_path_set: Option<ChildStablePathSet>,
     ) -> Result<()> {
         self.existence_processing_queue.push_back(ChildrenPathInfo {
-            path: self.component_state_path.clone(),
+            path: self.component_path.clone(),
             child_path_set,
         });
         while let Some(path_info) = self.existence_processing_queue.pop_front() {
@@ -200,16 +205,16 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                     .flat_map(|set| set.children.into_iter());
 
                 let mut curr_iter_next = || -> Result<Option<ChildPathInfo>> {
-                    let v = if let Some((state_key, state_path_set)) = curr_iter.next() {
-                        let db_key = db_schema::DbEntryKey::State(
+                    let v = if let Some((stable_key, path_set)) = curr_iter.next() {
+                        let db_key = db_schema::DbEntryKey::StablePath(
                             path_info.path.clone(),
-                            db_schema::StateEntryKey::ChildExistence(state_key.clone()),
+                            db_schema::StablePathEntryKey::ChildExistence(stable_key.clone()),
                         );
                         Some(ChildPathInfo {
                             encoded_db_key: db_key.encode()?,
-                            encoded_db_value: Self::encode_child_existence_info(&state_path_set)?,
-                            state_key,
-                            state_path_set,
+                            encoded_db_value: Self::encode_child_existence_info(&path_set)?,
+                            stable_key,
+                            path_set,
                         })
                     } else {
                         None
@@ -219,9 +224,9 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
 
                 let mut curr_next = curr_iter_next()?;
 
-                let db_key_prefix = db_schema::DbEntryKey::State(
+                let db_key_prefix = db_schema::DbEntryKey::StablePath(
                     path_info.path.clone(),
-                    db_schema::StateEntryKey::ChildExistencePrefix,
+                    db_schema::StablePathEntryKey::ChildExistencePrefix,
                 );
                 let encoded_db_key_prefix = db_key_prefix.encode()?;
                 let mut db_prefix_iter = self
@@ -282,25 +287,26 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                                 }
                             }
 
-                            match curr_next_v.state_path_set {
-                                StatePathSet::Directory(curr_dir_set) => {
+                            match curr_next_v.path_set {
+                                StablePathSet::Directory(curr_dir_set) => {
                                     let db_value: db_schema::ChildExistenceInfo =
                                         rmp_serde::from_slice(db_next_entry.1)?;
-                                    if db_value.node_type == db_schema::StatePathNodeType::Component
+                                    if db_value.node_type
+                                        == db_schema::StablePathNodeType::Component
                                     {
-                                        self.buffered_state_paths_for_tombstone.push(
+                                        self.buffered_paths_for_tombstone.push(
                                             self.relative_path(path_info.path.as_ref())?
-                                                .concat_part(curr_next_v.state_key.clone()),
+                                                .concat_part(curr_next_v.stable_key.clone()),
                                         );
                                     }
                                     self.existence_processing_queue.push_back(ChildrenPathInfo {
                                         path: path_info
                                             .path
-                                            .concat_part(curr_next_v.state_key.clone()),
+                                            .concat_part(curr_next_v.stable_key.clone()),
                                         child_path_set: Some(curr_dir_set),
                                     });
                                 }
-                                StatePathSet::Component => {
+                                StablePathSet::Component => {
                                     // No-op. Everything should be handled by the sub component.
                                 }
                             }
@@ -313,9 +319,9 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
             }
 
             for child_to_add in children_to_add {
-                if let StatePathSet::Directory(child_path_set) = child_to_add.state_path_set {
+                if let StablePathSet::Directory(child_path_set) = child_to_add.path_set {
                     self.existence_processing_queue.push_back(ChildrenPathInfo {
-                        path: path_info.path.concat_part(child_to_add.state_key),
+                        path: path_info.path.concat_part(child_to_add.stable_key),
                         child_path_set: Some(child_path_set),
                     });
                 }
@@ -337,12 +343,10 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
             .prefix_iter(rtxn, self.encoded_tombstone_key_prefix.as_ref())?;
         for tombstone_entry in tombstone_key_prefix_iter {
             let (ts_key, _) = tombstone_entry?;
-            let relative_state_path: StatePath =
+            let relative_path: StablePath =
                 storekey::decode(&ts_key[self.encoded_tombstone_key_prefix.len()..])?;
-            let state_path = self
-                .component_state_path
-                .concat(relative_state_path.as_ref());
-            let component = self.component_ctx.component().get_child(state_path);
+            let stable_path = self.component_path.concat(relative_path.as_ref());
+            let component = self.component_ctx.component().get_child(stable_path);
             component.delete(
                 Some(self.component_ctx.clone()),
                 self.effect_providers.clone(),
@@ -354,56 +358,56 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
     fn del_child(
         &mut self,
         db_entry: (&[u8], &[u8]),
-        path: &StatePath,
+        path: &StablePath,
         encoded_db_key_prefix: &[u8],
     ) -> Result<()> {
         let (raw_db_key, raw_db_value) = db_entry;
-        let state_key: StateKey =
+        let stable_key: StableKey =
             storekey::decode(raw_db_key[encoded_db_key_prefix.len()..].as_ref())?;
         let db_value: db_schema::ChildExistenceInfo = rmp_serde::from_slice(raw_db_value)?;
         match db_value.node_type {
-            db_schema::StatePathNodeType::Directory => {
+            db_schema::StablePathNodeType::Directory => {
                 self.existence_processing_queue.push_back(ChildrenPathInfo {
-                    path: path.concat_part(state_key),
+                    path: path.concat_part(stable_key),
                     child_path_set: None,
                 });
             }
-            db_schema::StatePathNodeType::Component => {
-                self.buffered_state_paths_for_tombstone
-                    .push(self.relative_path(path.as_ref())?.concat_part(state_key));
+            db_schema::StablePathNodeType::Component => {
+                self.buffered_paths_for_tombstone
+                    .push(self.relative_path(path.as_ref())?.concat_part(stable_key));
             }
         }
         Ok(())
     }
 
     fn flush_component_tombstones(&mut self, wtxn: &mut RwTxn<'_>) -> Result<()> {
-        if self.buffered_state_paths_for_tombstone.is_empty() {
+        if self.buffered_paths_for_tombstone.is_empty() {
             return Ok(());
         }
         let mut encoded_tombstone_key = self.encoded_tombstone_key_prefix.clone();
         let prefix_len = encoded_tombstone_key.len();
-        for state_path in std::mem::take(&mut self.buffered_state_paths_for_tombstone) {
+        for stable_path in std::mem::take(&mut self.buffered_paths_for_tombstone) {
             encoded_tombstone_key.truncate(prefix_len);
-            storekey::encode(&mut encoded_tombstone_key, &state_path)?;
+            storekey::encode(&mut encoded_tombstone_key, &stable_path)?;
             self.db.put(wtxn, encoded_tombstone_key.as_slice(), &[])?;
         }
         Ok(())
     }
 
-    fn encode_child_existence_info(state_path_set: &StatePathSet) -> Result<Vec<u8>> {
-        let existence_info = match state_path_set {
-            StatePathSet::Directory(_) => db_schema::ChildExistenceInfo {
-                node_type: db_schema::StatePathNodeType::Directory,
+    fn encode_child_existence_info(path_set: &StablePathSet) -> Result<Vec<u8>> {
+        let existence_info = match path_set {
+            StablePathSet::Directory(_) => db_schema::ChildExistenceInfo {
+                node_type: db_schema::StablePathNodeType::Directory,
             },
-            StatePathSet::Component => db_schema::ChildExistenceInfo {
-                node_type: db_schema::StatePathNodeType::Component,
+            StablePathSet::Component => db_schema::ChildExistenceInfo {
+                node_type: db_schema::StablePathNodeType::Component,
             },
         };
         Ok(rmp_serde::to_vec(&existence_info)?)
     }
 
-    fn relative_path<'p>(&self, path: StatePathRef<'p>) -> Result<StatePathRef<'p>> {
-        path.strip_parent(self.component_state_path.as_ref())
+    fn relative_path<'p>(&self, path: StablePathRef<'p>) -> Result<StablePathRef<'p>> {
+        path.strip_parent(self.component_path.as_ref())
     }
 }
 
@@ -443,35 +447,34 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     context: &ComponentProcessorContext<Prof>,
 ) -> Result<Option<EffectProviderRegistry<Prof>>> {
     let mut provider_registry: Option<EffectProviderRegistry<Prof>> = None;
-    let (effect_providers, declared_effects, child_state_path_set) =
-        match context.processing_state() {
-            ComponentProcessingAction::Build(building_state) => {
-                let mut building_state = building_state.lock().unwrap();
-                let Some(building_state) = building_state.take() else {
-                    bail!(
-                        "Processing for the component at {} is already finished",
-                        context.state_path()
-                    );
-                };
-                (
-                    &provider_registry
-                        .insert(building_state.effect.provider_registry)
-                        .providers,
-                    building_state.effect.declared_effects,
-                    Some(building_state.child_state_path_set),
-                )
-            }
-            ComponentProcessingAction::Delete(delete_context) => {
-                (&delete_context.providers, Default::default(), None)
-            }
-        };
+    let (effect_providers, declared_effects, child_path_set) = match context.processing_state() {
+        ComponentProcessingAction::Build(building_state) => {
+            let mut building_state = building_state.lock().unwrap();
+            let Some(building_state) = building_state.take() else {
+                bail!(
+                    "Processing for the component at {} is already finished",
+                    context.stable_path()
+                );
+            };
+            (
+                &provider_registry
+                    .insert(building_state.effect.provider_registry)
+                    .providers,
+                building_state.effect.declared_effects,
+                Some(building_state.child_path_set),
+            )
+        }
+        ComponentProcessingAction::Delete(delete_context) => {
+            (&delete_context.providers, Default::default(), None)
+        }
+    };
 
     let db_env = context.app_ctx().env().db_env();
     let db = context.app_ctx().db();
 
-    let effect_info_key = db_schema::DbEntryKey::State(
-        context.state_path().clone(),
-        db_schema::StateEntryKey::Effects,
+    let effect_info_key = db_schema::DbEntryKey::StablePath(
+        context.stable_path().clone(),
+        db_schema::StablePathEntryKey::Effects,
     );
 
     let mut actions_by_sinks = HashMap::<Prof::EffectSink, SinkInput<Prof>>::new();
@@ -480,7 +483,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let curr_version = {
         let mut wtxn = db_env.write_txn()?;
 
-        let mut effect_info: db_schema::StateEntryEffectInfo = db
+        let mut effect_info: db_schema::StablePathEntryEffectInfo = db
             .get(&wtxn, effect_info_key.encode()?.as_ref())?
             .map(|data| rmp_serde::from_slice(&data))
             .transpose()?
@@ -514,7 +517,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         // TODO: Verify the parent is gone.
                         trace!(
                             "skip deleting effect with path {effect_path} in {} because effect provider not found",
-                            context.state_path()
+                            context.stable_path()
                         );
                         continue;
                     };
@@ -625,8 +628,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         }
     }
 
-    let mut committer = Committer::new(context, context.state_path(), &effect_providers)?;
-    committer.commit(child_state_path_set, &effect_info_key, curr_version)?;
+    let mut committer = Committer::new(context, context.stable_path(), &effect_providers)?;
+    committer.commit(child_path_set, &effect_info_key, curr_version)?;
 
     Ok(provider_registry)
 }
@@ -637,14 +640,14 @@ pub(crate) fn cleanup_tombstone<Prof: EngineProfile>(
     let Some(parent_ctx) = context.parent_context() else {
         return Ok(());
     };
-    let parent_state_path = parent_ctx.state_path();
-    let relative_state_path = context
-        .state_path()
+    let parent_path = parent_ctx.stable_path();
+    let relative_path = context
+        .stable_path()
         .as_ref()
-        .strip_parent(parent_state_path.as_ref())?;
-    let tombstone_key = db_schema::DbEntryKey::State(
-        parent_state_path.clone(),
-        db_schema::StateEntryKey::ChildComponentTombstone(relative_state_path.into()),
+        .strip_parent(parent_path.as_ref())?;
+    let tombstone_key = db_schema::DbEntryKey::StablePath(
+        parent_path.clone(),
+        db_schema::StablePathEntryKey::ChildComponentTombstone(relative_path.into()),
     );
     let encoded_tombstone_key = tombstone_key.encode()?;
 

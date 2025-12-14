@@ -6,10 +6,10 @@ use crate::engine::profile::EngineProfile;
 use crate::prelude::*;
 
 use crate::state::effect_path::EffectPath;
-use crate::state::state_path_set::ChildStatePathSet;
+use crate::state::stable_path_set::ChildStablePathSet;
 use crate::{
     engine::environment::{AppRegistration, Environment},
-    state::state_path::StatePath,
+    state::stable_path::StablePath,
 };
 
 struct AppContextInner<Prof: EngineProfile> {
@@ -61,7 +61,7 @@ pub(crate) struct ComponentEffectContext<Prof: EngineProfile> {
 
 pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub effect: ComponentEffectContext<Prof>,
-    pub child_state_path_set: ChildStatePathSet,
+    pub child_path_set: ChildStablePathSet,
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
@@ -105,7 +105,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                     declared_effects: Default::default(),
                     provider_registry: EffectProviderRegistry::new(providers),
                 },
-                child_state_path_set: Default::default(),
+                child_path_set: Default::default(),
             })))
         } else {
             ComponentProcessingAction::Delete(ComponentDeleteContext { providers })
@@ -128,8 +128,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.component.app_ctx()
     }
 
-    pub fn state_path(&self) -> &StatePath {
-        self.inner.component.state_path()
+    pub fn stable_path(&self) -> &StablePath {
+        self.inner.component.stable_path()
     }
 
     pub(crate) fn parent_context(&self) -> Option<&ComponentProcessorContext<Prof>> {
@@ -146,7 +146,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 let Some(building_state) = &mut *building_state else {
                     bail!(
                         "Processing for the component at {} is already finished",
-                        self.state_path()
+                        self.stable_path()
                     );
                 };
                 f(building_state)
@@ -154,7 +154,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             ComponentProcessingAction::Delete { .. } => {
                 bail!(
                     "Processing for the component at {} is for deletion only",
-                    self.state_path()
+                    self.stable_path()
                 )
             }
         }

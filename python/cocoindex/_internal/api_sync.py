@@ -10,7 +10,7 @@ from . import core
 from .app import AppBase
 from .context import component_ctx_var
 from .function import Function
-from .state import StatePath
+from .stable_path import StablePath
 
 
 P = ParamSpec("P")
@@ -65,8 +65,8 @@ class ComponentMountHandle:
 
 
 def mount_run(
-    processor_fn: Function[Concatenate[StatePath, P], R],
-    state_path: StatePath,
+    processor_fn: Function[Concatenate[StablePath, P], R],
+    stable_path: StablePath,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[R]:
@@ -75,7 +75,7 @@ def mount_run(
 
     Args:
         processor_fn: The function to run as the component processor.
-        state_path: The state path for the component.
+        stable_path: The stable path for the component.
         *args: Arguments to pass to the function.
         **kwargs: Keyword arguments to pass to the function.
 
@@ -83,14 +83,14 @@ def mount_run(
         A handle that can be used to get the result.
     """
     parent_ctx = component_ctx_var.get()
-    processor = processor_fn._as_core_component_processor(state_path, *args, **kwargs)
-    core_handle = core.mount_run(processor, state_path._core, parent_ctx)
+    processor = processor_fn._as_core_component_processor(stable_path, *args, **kwargs)
+    core_handle = core.mount_run(processor, stable_path._core, parent_ctx)
     return ComponentMountRunHandle(core_handle)
 
 
 def mount(
-    processor_fn: Function[Concatenate[StatePath, P], R],
-    state_path: StatePath,
+    processor_fn: Function[Concatenate[StablePath, P], R],
+    stable_path: StablePath,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountHandle:
@@ -99,7 +99,7 @@ def mount(
 
     Args:
         processor_fn: The function to run as the component processor.
-        state_path: The state path for the component.
+        stable_path: The stable path for the component.
         *args: Arguments to pass to the function.
         **kwargs: Keyword arguments to pass to the function.
 
@@ -107,15 +107,15 @@ def mount(
         A handle that can be used to wait until the component is ready.
     """
     parent_ctx = component_ctx_var.get()
-    processor = processor_fn._as_core_component_processor(state_path, *args, **kwargs)
-    core_handle = core.mount(processor, state_path._core, parent_ctx)
+    processor = processor_fn._as_core_component_processor(stable_path, *args, **kwargs)
+    core_handle = core.mount(processor, stable_path._core, parent_ctx)
     return ComponentMountHandle(core_handle)
 
 
 class App(AppBase[P, R]):
     def run(self, *args: P.args, **kwargs: P.kwargs) -> R:
         processor = self._main_fn._as_core_component_processor(
-            StatePath(), *args, **kwargs
+            StablePath(), *args, **kwargs
         )
         return self._core.run(processor)  # type: ignore
 

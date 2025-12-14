@@ -2,15 +2,15 @@ use std::collections::btree_map;
 
 use crate::prelude::*;
 
-use crate::state::state_path::{StateKey, StatePathRef};
+use crate::state::stable_path::{StableKey, StablePathRef};
 
 #[derive(Default)]
-pub struct ChildStatePathSet {
-    pub children: BTreeMap<StateKey, StatePathSet>,
+pub struct ChildStablePathSet {
+    pub children: BTreeMap<StableKey, StablePathSet>,
 }
 
-impl ChildStatePathSet {
-    pub fn add_child(&mut self, path: StatePathRef, info: StatePathSet) -> Result<()> {
+impl ChildStablePathSet {
+    pub fn add_child(&mut self, path: StablePathRef, info: StablePathSet) -> Result<()> {
         let Some((last, dir)) = path.split_last() else {
             bail!("Path is empty");
         };
@@ -19,12 +19,12 @@ impl ChildStatePathSet {
             match current
                 .children
                 .entry(key.clone())
-                .or_insert_with(|| StatePathSet::directory())
+                .or_insert_with(|| StablePathSet::directory())
             {
-                StatePathSet::Directory(dir) => {
+                StablePathSet::Directory(dir) => {
                     current = dir;
                 }
-                StatePathSet::Component => {
+                StablePathSet::Component => {
                     bail!("{key} is not a directory in path {path}");
                 }
             }
@@ -41,13 +41,13 @@ impl ChildStatePathSet {
     }
 }
 
-pub enum StatePathSet {
-    Directory(ChildStatePathSet),
+pub enum StablePathSet {
+    Directory(ChildStablePathSet),
     Component,
 }
 
-impl StatePathSet {
+impl StablePathSet {
     pub fn directory() -> Self {
-        Self::Directory(ChildStatePathSet::default())
+        Self::Directory(ChildStablePathSet::default())
     }
 }

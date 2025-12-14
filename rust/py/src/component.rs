@@ -1,7 +1,7 @@
 use crate::{
     prelude::*,
     runtime::{PyAsyncContext, PyCallback},
-    state_path::PyStatePath,
+    stable_path::PyStablePath,
 };
 
 use crate::context::PyComponentProcessorContext;
@@ -51,10 +51,10 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
 #[pyfunction]
 pub fn mount_run(
     processor: PyComponentProcessor,
-    state_path: PyStatePath,
+    stable_path: PyStablePath,
     parent_ctx: PyComponentProcessorContext,
 ) -> PyResult<PyComponentMountRunHandle> {
-    let component = parent_ctx.0.component().get_child(state_path.0);
+    let component = parent_ctx.0.component().get_child(stable_path.0);
     let handle = component
         .run(processor, Some(parent_ctx.0))
         .into_py_result()?;
@@ -64,10 +64,10 @@ pub fn mount_run(
 #[pyfunction]
 pub fn mount(
     processor: PyComponentProcessor,
-    state_path: PyStatePath,
+    stable_path: PyStablePath,
     parent_ctx: PyComponentProcessorContext,
 ) -> PyResult<PyComponentMountHandle> {
-    let component = parent_ctx.0.component().get_child(state_path.0);
+    let component = parent_ctx.0.component().get_child(stable_path.0);
     let handle = component
         .run_in_background(processor, Some(parent_ctx.0))
         .into_py_result()?;

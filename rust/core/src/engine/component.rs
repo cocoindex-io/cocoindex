@@ -6,8 +6,8 @@ use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
 use crate::engine::execution::{cleanup_tombstone, submit};
 use crate::engine::profile::EngineProfile;
 use crate::state::effect_path::EffectPath;
-use crate::state::state_path::StatePath;
-use crate::state::state_path_set::StatePathSet;
+use crate::state::stable_path::StablePath;
+use crate::state::stable_path_set::StablePathSet;
 use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt, SharedResultExtRef};
 
 pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
@@ -24,9 +24,9 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
 
 struct ComponentInner<Prof: EngineProfile> {
     app_ctx: AppContext<Prof>,
-    state_path: StatePath,
+    stable_path: StablePath,
     // For check existence / dedup
-    //   live_sub_components: HashMap<StatePath, std::rc::Weak<ComponentInner<Prof>>>,
+    //   live_sub_components: HashMap<StablePath, std::rc::Weak<ComponentInner<Prof>>>,
     /// Semaphore to ensure `process()` and `commit_effects()` calls cannot happen in parallel.
     build_semaphore: tokio::sync::Semaphore,
 }
@@ -193,27 +193,27 @@ struct ComponentBuildOutput<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> Component<Prof> {
-    pub(crate) fn new(app_ctx: AppContext<Prof>, state_path: StatePath) -> Self {
+    pub(crate) fn new(app_ctx: AppContext<Prof>, stable_path: StablePath) -> Self {
         Self {
             inner: Arc::new(ComponentInner {
                 app_ctx,
-                state_path,
+                stable_path,
                 build_semaphore: tokio::sync::Semaphore::const_new(1),
             }),
         }
     }
 
-    pub fn get_child(&self, state_path: StatePath) -> Self {
+    pub fn get_child(&self, stable_path: StablePath) -> Self {
         // TODO: Get the child component directly if it already exists.
-        Self::new(self.app_ctx().clone(), state_path)
+        Self::new(self.app_ctx().clone(), stable_path)
     }
 
     pub fn app_ctx(&self) -> &AppContext<Prof> {
         &self.inner.app_ctx
     }
 
-    pub fn state_path(&self) -> &StatePath {
-        &self.inner.state_path
+    pub fn stable_path(&self) -> &StablePath {
+        &self.inner.stable_path
     }
 
     pub fn run(
@@ -266,7 +266,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         parent_context: Option<ComponentProcessorContext<Prof>>,
         providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
     ) -> Result<()> {
-        trace!("deleting component at {}", self.state_path());
+        trace!("deleting component at {}", self.stable_path());
         let child_readiness_guard = parent_context
             .as_ref()
             .map(|c| c.components_readiness().clone().add_child());
@@ -342,14 +342,14 @@ impl<Prof: EngineProfile> Component<Prof> {
         parent_ctx: Option<ComponentProcessorContext<Prof>>,
     ) -> Result<ComponentProcessorContext<Prof>> {
         let providers = if let Some(parent_ctx) = &parent_ctx {
-            let sub_state_path = self
-                .state_path()
+            let sub_path = self
+                .stable_path()
                 .as_ref()
-                .strip_parent(parent_ctx.state_path().as_ref())?;
+                .strip_parent(parent_ctx.stable_path().as_ref())?;
             parent_ctx.update_building_state(|building_state| {
                 building_state
-                    .child_state_path_set
-                    .add_child(sub_state_path, StatePathSet::Component)?;
+                    .child_path_set
+                    .add_child(sub_path, StablePathSet::Component)?;
                 Ok(building_state.effect.provider_registry.providers.clone())
             })?
         } else {
