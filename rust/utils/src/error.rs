@@ -11,10 +11,9 @@ use std::{
     fmt::{Debug, Display},
     sync::{Arc, Mutex},
 };
-use thiserror::Error;
 
-pub trait HostError: Any + Debug + Display + Send + Sync + 'static {}
-impl<T: Any + Debug + Display + Send + Sync + 'static> HostError for T {}
+pub trait HostError: Any + StdError + Send + Sync + 'static {}
+impl<T: Any + StdError + Send + Sync + 'static> HostError for T {}
 
 #[derive(Debug)]
 pub enum CError {
@@ -48,8 +47,9 @@ impl StdError for CError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             CError::Context { source, .. } => Some(source.as_ref()),
+            CError::HostLang(e) => Some(e.as_ref()),
             CError::Internal { source, .. } => Some(source.as_ref()),
-            _ => None,
+            CError::Client { .. } => None,
         }
     }
 }
@@ -103,14 +103,28 @@ impl CError {
         self.find_host_error().is_some()
     }
 
+    pub fn without_contexts(&self) -> &CError {
+        match self {
+            CError::Context { source, .. } => source.without_contexts(),
+            other => other,
+        }
+    }
+
     pub fn is_client_error(&self) -> bool {
-        matches!(self, CError::Client { .. })
+        matches!(self.without_contexts(), CError::Client { .. })
     }
 }
 
-#[derive(Debug, Error)]
-#[error("{0}")]
+#[derive(Debug)]
 struct StringError(String);
+
+impl Display for StringError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl StdError for StringError {}
 
 pub trait IntoInternal<T> {
     fn internal(self) -> CResult<T>;
@@ -442,6 +456,8 @@ mod tests {
             write!(f, "MockHostError: {}", self.0)
         }
     }
+
+    impl StdError for MockHostError {}
 
     #[test]
     fn test_client_error_creation() {
