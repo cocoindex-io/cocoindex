@@ -34,21 +34,33 @@ impl Display for PyErrWrapper {
     }
 }
 
+impl std::error::Error for PyErrWrapper {}
+
 pub fn cerror_to_pyerr(err: CError) -> PyErr {
     if let Some(host_err) = err.find_host_error() {
-        let any: &dyn Any = host_err; // trait upcasting
+        let any: &dyn Any = host_err;
         if let Some(wrapper) = any.downcast_ref::<PyErrWrapper>() {
             return Python::attach(|py| wrapper.0.clone_ref(py));
         }
     }
 
-    match &err {
+    match err.without_contexts() {
         CError::Client { msg, .. } => PyValueError::new_err(msg.clone()),
-        CError::HostLang(e) => PyRuntimeError::new_err(e.to_string()),
-        CError::Context { .. } | CError::Internal { .. } => {
-            PyRuntimeError::new_err(format!("{:?}", err))
-        }
+        _ => PyRuntimeError::new_err(format_error_chain(&err)),
     }
+}
+
+fn format_error_chain(err: &CError) -> String {
+    let mut s = err.to_string();
+    let mut current = err;
+    while let CError::Context { source, .. } = current {
+        write!(&mut s, "\nCaused by: {}", source).ok();
+        current = source;
+    }
+    if let Some(bt) = err.backtrace() {
+        write!(&mut s, "\n\n{}", bt).ok();
+    }
+    s
 }
 
 pub trait ToCResult<T> {
