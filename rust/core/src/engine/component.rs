@@ -154,12 +154,10 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
                 if let Some(parent_context) = parent_context {
                     parent_context.update_building_state(|building_state| {
                         for effect_path in output.provider_registry.curr_effect_paths {
-                            let Some(provider) = building_state
-                                .effect
-                                .provider_registry
-                                .providers
-                                .get(&effect_path)
+                            let Some(provider) =
+                                output.provider_registry.providers.get(&effect_path)
                             else {
+                                error!("effect provider not found for path {}", effect_path);
                                 continue;
                             };
                             if !provider.is_orphaned() {

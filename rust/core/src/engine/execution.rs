@@ -513,7 +513,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     else {
                         // TODO: Verify the parent is gone.
                         trace!(
-                            "skipping effect with path {effect_path} because effect provider not found"
+                            "skip deleting effect with path {effect_path} in {} because effect provider not found",
+                            context.state_path()
                         );
                         continue;
                     };

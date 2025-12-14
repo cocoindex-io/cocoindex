@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from re import M
 from typing import Any, Collection, Literal, NamedTuple
 import threading
 import cocoindex as coco
@@ -13,24 +16,38 @@ MetricsName = Literal["sink", "upsert", "delete"]
 
 
 class Metrics:
-    _data: dict[MetricsName, int]
+    data: dict[MetricsName, int]
 
-    def __init__(self) -> None:
-        self._data = {}
+    def __init__(self, data: dict[MetricsName, int] | None = None) -> None:
+        self.data = data or {}
 
     def increment(self, metric: MetricsName) -> None:
-        self._data[metric] = self._data.get(metric, 0) + 1
+        self.data[metric] = self.data.get(metric, 0) + 1
 
     def collect(self) -> dict[MetricsName, int]:
-        m = self._data
-        self._data = {}
+        m = self.data
+        self.data = {}
         return m
 
     def __repr__(self) -> str:
-        return f"Metrics{self._data}"
+        return f"Metrics{self.data}"
+
+    def __add__(self, other: Metrics) -> Metrics:
+        result = {**self.data}
+        for k, v in other.data.items():
+            result[k] = result.get(k, 0) + v
+        return Metrics(result)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Metrics):
+            return self.data == other.data
+        elif isinstance(other, dict):
+            return self.data == other
+        else:
+            return False
 
     def clear(self) -> None:
-        self._data.clear()
+        self.data.clear()
 
 
 class DictEffectStore:
@@ -164,6 +181,12 @@ class DictsEffectStore:
     def clear(self) -> None:
         self._stores.clear()
         self.metrics.clear()
+
+    def collect_child_metrics(self) -> dict[MetricsName, int]:
+        return sum(
+            (Metrics(store.metrics.collect()) for store in self._stores.values()),
+            Metrics(),
+        ).data
 
     @property
     def data(self) -> dict[str, dict[str, DictDataWithPrev]]:
