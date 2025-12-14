@@ -1,4 +1,4 @@
-use cocoindex_utils::error::{CError, CResult, HostError};
+use cocoindex_utils::error::{CError, CResult};
 use pyo3::exceptions::{PyException, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule, PyString};
@@ -34,15 +34,10 @@ impl Display for PyErrWrapper {
     }
 }
 
-impl HostError for PyErrWrapper {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 pub fn cerror_to_pyerr(err: CError) -> PyErr {
     if let Some(host_err) = err.find_host_error() {
-        if let Some(wrapper) = host_err.as_any().downcast_ref::<PyErrWrapper>() {
+        let any: &dyn Any = host_err; // trait upcasting
+        if let Some(wrapper) = any.downcast_ref::<PyErrWrapper>() {
             return Python::attach(|py| wrapper.0.clone_ref(py));
         }
     }
