@@ -29,6 +29,9 @@ class Metrics:
     def __repr__(self) -> str:
         return f"Metrics{self._data}"
 
+    def clear(self) -> None:
+        self._data.clear()
+
 
 class DictEffectStore:
     data: dict[str, DictDataWithPrev]
@@ -148,18 +151,19 @@ class DictsEffectStore:
             return coco.EffectReconcileOutput(
                 action=(key, True),
                 sink=coco.EffectSink.from_fn(self._sink),
-                state=coco.NON_EXISTENCE,
+                state=None,
             )
         if len(prev_possible_states) == 0:
             return None
         return coco.EffectReconcileOutput(
             action=(key, False),
             sink=coco.EffectSink.from_fn(self._sink),
-            state=None,
+            state=coco.NON_EXISTENCE,
         )
 
     def clear(self) -> None:
         self._stores.clear()
+        self.metrics.clear()
 
     @property
     def data(self) -> dict[str, dict[str, DictDataWithPrev]]:

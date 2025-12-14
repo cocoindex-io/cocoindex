@@ -1,5 +1,3 @@
-from .app import AppConfig
-
 from .effect import (
     NonExistenceType,
     NON_EXISTENCE,
@@ -24,8 +22,6 @@ from .state import StatePath, StateKey
 from .setting import Settings
 
 __all__ = [
-    # .app
-    "AppConfig",
     # .effect
     "NonExistenceType",
     "NON_EXISTENCE",

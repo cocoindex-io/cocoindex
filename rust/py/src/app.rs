@@ -11,23 +11,31 @@ pub struct PyApp(Arc<App<PyEngineProfile>>);
 #[pymethods]
 impl PyApp {
     #[new]
-    pub fn new(
-        name: &str,
-        env: &PyEnvironment,
-        root_processor: PyComponentProcessor,
-    ) -> PyResult<Self> {
-        let app = App::new(name, env.0.clone(), root_processor).into_py_result()?;
+    pub fn new(name: &str, env: &PyEnvironment) -> PyResult<Self> {
+        let app = App::new(name, env.0.clone()).into_py_result()?;
         Ok(Self(Arc::new(app)))
     }
 
-    pub fn update_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    pub fn run_async<'py>(
+        &self,
+        py: Python<'py>,
+        root_processor: PyComponentProcessor,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let app = self.0.clone();
-        let fut = future_into_py(py, async move { app.update().await.into_py_result()? })?;
+        let fut = future_into_py(py, async move {
+            app.run(root_processor).await.into_py_result()?
+        })?;
         Ok(fut)
     }
 
-    pub fn update<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+    pub fn run<'py>(
+        &self,
+        py: Python<'py>,
+        root_processor: PyComponentProcessor,
+    ) -> PyResult<Py<PyAny>> {
         let app = self.0.clone();
-        py.detach(|| get_runtime().block_on(async move { app.update().await.into_py_result()? }))
+        py.detach(|| {
+            get_runtime().block_on(async move { app.run(root_processor).await.into_py_result()? })
+        })
     }
 }

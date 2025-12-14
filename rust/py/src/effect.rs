@@ -175,13 +175,8 @@ pub fn declare_effect<'py>(
     decl: Py<PyAny>,
 ) -> PyResult<()> {
     let py_key = PyKey::new(py, key)?;
-    cocoindex_core::engine::effect_exec::declare_effect(
-        &context.0,
-        provider.0.clone(),
-        py_key,
-        decl,
-    )
-    .into_py_result()?;
+    cocoindex_core::engine::execution::declare_effect(&context.0, provider.0.clone(), py_key, decl)
+        .into_py_result()?;
     Ok(())
 }
 
@@ -194,7 +189,7 @@ pub fn declare_effect_with_child<'py>(
     decl: Py<PyAny>,
 ) -> PyResult<PyEffectProvider> {
     let py_key = PyKey::new(py, key)?;
-    let output = cocoindex_core::engine::effect_exec::declare_effect_with_child(
+    let output = cocoindex_core::engine::execution::declare_effect_with_child(
         &context.0,
         provider.0.clone(),
         py_key,

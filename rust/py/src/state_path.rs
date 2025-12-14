@@ -49,7 +49,7 @@ impl PyStatePath {
     }
 
     pub fn concat(&self, part: PyStateKey) -> Self {
-        Self(self.0.concat(part.0))
+        Self(self.0.concat_part(part.0))
     }
 
     pub fn to_string(&self) -> String {

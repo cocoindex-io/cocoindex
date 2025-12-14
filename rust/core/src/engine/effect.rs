@@ -1,7 +1,5 @@
 use crate::prelude::*;
 
-use cocoindex_utils::fingerprint::Fingerprint;
-
 use crate::{engine::profile::EngineProfile, state::effect_path::EffectPath};
 
 use std::hash::Hash;
@@ -131,9 +129,5 @@ impl<Prof: EngineProfile> EffectProviderRegistry<Prof> {
         };
         self.add(effect_path, provider.clone())?;
         Ok(provider)
-    }
-
-    pub fn get_provider(&self, effect_path: &[Fingerprint]) -> Option<EffectProvider<Prof>> {
-        self.providers.get(effect_path).cloned()
     }
 }

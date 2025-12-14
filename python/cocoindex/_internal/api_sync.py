@@ -35,9 +35,10 @@ class ComponentMountRunHandle(Generic[R]):
 
     def result(self) -> R:
         """Get the result of the component. Can be called multiple times."""
+        parent_ctx = component_ctx_var.get()
         with self._lock:
             if self._cached_result is _NOT_SET:
-                self._cached_result = self._core.result()
+                self._cached_result = self._core.result(parent_ctx)
             return self._cached_result  # type: ignore
 
 
@@ -112,8 +113,11 @@ def mount(
 
 
 class App(AppBase[P, R]):
-    def update(self) -> R:
-        return self._core.update()  # type: ignore
+    def run(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        processor = self._main_fn._as_core_component_processor(
+            StatePath(), *args, **kwargs
+        )
+        return self._core.run(processor)  # type: ignore
 
 
 __all__ = [

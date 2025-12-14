@@ -23,5 +23,5 @@ def trivial_fn(csp: coco.StatePath, s: str, i: int) -> str:
 
 
 def test_app_in_default_env() -> None:
-    app = coco.App(trivial_fn, "trivial_app", "Hello", 1)
-    assert app.update() == "Hello 1"
+    app = coco.App("trivial_app", trivial_fn)
+    assert app.run("Hello", 1) == "Hello 1"

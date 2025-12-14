@@ -1,12 +1,8 @@
 from typing import (
-    Any,
     Concatenate,
     Generic,
-    Mapping,
     ParamSpec,
-    Sequence,
     TypeVar,
-    NamedTuple,
 )
 
 from . import core  # type: ignore
@@ -20,31 +16,24 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-class AppConfig(NamedTuple):
-    name: str
-    environment: Environment | None = None
-
-
 class AppBase(Generic[P, R]):
-    _config: AppConfig
+    _name: str
+    _main_fn: Function[Concatenate[StatePath, P], R]
+
     _core: core.App
 
     def __init__(
         self,
+        name: str,
         main_fn: Function[Concatenate[StatePath, P], R],
-        config: str | AppConfig,
-        *args: P.args,
-        **kwargs: P.kwargs,
+        /,
+        *,
+        environment: Environment | None = None,
     ):
-        if isinstance(config, str):
-            self._config = AppConfig(name=config)
-        else:
-            self._config = config
-
-        processor = main_fn._as_core_component_processor(StatePath(), *args, **kwargs)
-        env = self._config.environment or default_env()
+        self._name = name
+        self._main_fn = main_fn
+        env = environment or default_env()
         self._core = core.App(
-            self._config.name,
+            name,
             env._core_env,
-            processor,
         )

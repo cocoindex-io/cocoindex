@@ -45,7 +45,7 @@ impl std::fmt::Display for StateKey {
                 }
                 f.write_char(']')
             }
-            StateKey::Fingerprint(fp) => write!(f, "#{:x?}", fp.as_slice()),
+            StateKey::Fingerprint(fp) => write!(f, "{fp}"),
         }
     }
 }
@@ -119,6 +119,59 @@ impl storekey::Decode for StateKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StatePathRef<'a>(pub &'a [StateKey]);
+
+impl<'a> std::fmt::Display for StatePathRef<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_empty() {
+            return f.write_char('/');
+        }
+        for part in self.0.iter() {
+            f.write_str("/")?;
+            part.fmt(f)?;
+        }
+        Ok(())
+    }
+}
+
+impl<'a> From<&'a [StateKey]> for StatePathRef<'a> {
+    fn from(value: &'a [StateKey]) -> Self {
+        StatePathRef(value)
+    }
+}
+
+impl<'a> std::ops::Deref for StatePathRef<'a> {
+    type Target = [StateKey];
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl<'p> StatePathRef<'p> {
+    pub fn strip_parent(&self, parent: StatePathRef) -> Result<Self> {
+        if self.0.len() < parent.0.len() || &self.0[..parent.0.len()] != parent.0 {
+            bail!("Path {self} is not a child of parent {parent}");
+        }
+        Ok(StatePathRef(&self.0[parent.0.len()..]))
+    }
+
+    pub fn concat(&self, other: StatePathRef) -> StatePath {
+        StatePath(self.0.iter().chain(other.0.iter()).cloned().collect())
+    }
+
+    pub fn concat_part(&self, part: StateKey) -> StatePath {
+        StatePath(
+            self.0
+                .iter()
+                .cloned()
+                .chain(std::iter::once(part))
+                .collect(),
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StatePath(pub Arc<[StateKey]>);
 
@@ -144,27 +197,36 @@ impl StatePath {
         ROOT_PATH.clone()
     }
 
-    pub fn concat(&self, part: StateKey) -> Self {
-        let result = self
-            .0
-            .iter()
-            .cloned()
-            .chain(std::iter::once(part))
-            .collect::<Arc<_>>();
-        Self(result)
+    pub fn concat_part(&self, part: StateKey) -> Self {
+        self.as_ref().concat_part(part)
+    }
+
+    pub fn concat(&self, other: StatePathRef) -> StatePath {
+        self.as_ref().concat(other)
+    }
+
+    pub fn as_ref<'a>(&'a self) -> StatePathRef<'a> {
+        StatePathRef(self.0.as_ref())
     }
 }
 
 impl std::fmt::Display for StatePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0.is_empty() {
-            return f.write_char('/');
-        }
-        for part in self.0.iter() {
-            f.write_str("/")?;
-            part.fmt(f)?;
-        }
-        Ok(())
+        StatePathRef(self.0.as_ref()).fmt(f)
+    }
+}
+
+impl std::ops::Deref for StatePath {
+    type Target = [StateKey];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> std::borrow::Borrow<[StateKey]> for StatePath {
+    fn borrow(&self) -> &[StateKey] {
+        &self.0
     }
 }
 

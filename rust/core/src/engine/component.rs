@@ -1,12 +1,13 @@
 use crate::engine::runtime::get_runtime;
 use crate::prelude::*;
 
-use crate::engine::context::{AppContext, ComponentProcessorContext};
-use crate::engine::effect::EffectProvider;
-use crate::engine::effect_exec::commit_effects;
+use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
+use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
+use crate::engine::execution::submit;
 use crate::engine::profile::EngineProfile;
 use crate::state::effect_path::EffectPath;
 use crate::state::state_path::StatePath;
+use crate::state::state_path_set::StatePathSet;
 use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt, SharedResultExtRef};
 
 pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
@@ -24,8 +25,6 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
 struct ComponentInner<Prof: EngineProfile> {
     app_ctx: AppContext<Prof>,
     state_path: StatePath,
-    processor: Prof::ComponentProc,
-    providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
     // For check existence / dedup
     //   live_sub_components: HashMap<StatePath, std::rc::Weak<ComponentInner<Prof>>>,
     /// Semaphore to ensure `process()` and `commit_effects()` calls cannot happen in parallel.
@@ -141,12 +140,43 @@ impl ComponentBgChildReadiness {
 }
 
 pub struct ComponentMountRunHandle<Prof: EngineProfile> {
-    join_handle: tokio::task::JoinHandle<Result<Result<Prof::ComponentProcRet, Prof::Error>>>,
+    join_handle: tokio::task::JoinHandle<Result<Result<ComponentBuildOutput<Prof>, Prof::Error>>>,
 }
 
 impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
-    pub async fn result(self) -> Result<Result<Prof::ComponentProcRet, Prof::Error>> {
-        self.join_handle.await?
+    pub async fn result(
+        self,
+        parent_context: Option<&ComponentProcessorContext<Prof>>,
+    ) -> Result<Result<Prof::ComponentProcRet, Prof::Error>> {
+        let result = self.join_handle.await??;
+        let ret = match result {
+            Ok(output) => {
+                if let Some(parent_context) = parent_context {
+                    parent_context.update_building_state(|building_state| {
+                        for effect_path in output.provider_registry.curr_effect_paths {
+                            let Some(provider) = building_state
+                                .effect
+                                .provider_registry
+                                .providers
+                                .get(&effect_path)
+                            else {
+                                continue;
+                            };
+                            if !provider.is_orphaned() {
+                                building_state
+                                    .effect
+                                    .provider_registry
+                                    .add(effect_path, provider.clone())?;
+                            }
+                        }
+                        Ok(())
+                    })?;
+                }
+                Ok(output.ret)
+            }
+            Err(err) => Err(err),
+        };
+        Ok(ret)
     }
 }
 pub struct ComponentMountHandle {
@@ -159,36 +189,25 @@ impl ComponentMountHandle {
     }
 }
 
+struct ComponentBuildOutput<Prof: EngineProfile> {
+    ret: Prof::ComponentProcRet,
+    provider_registry: EffectProviderRegistry<Prof>,
+}
+
 impl<Prof: EngineProfile> Component<Prof> {
-    pub(crate) fn new(
-        app_ctx: AppContext<Prof>,
-        state_path: StatePath,
-        processor: Prof::ComponentProc,
-        providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
-    ) -> Self {
+    pub(crate) fn new(app_ctx: AppContext<Prof>, state_path: StatePath) -> Self {
         Self {
             inner: Arc::new(ComponentInner {
                 app_ctx,
                 state_path,
-                processor,
-                providers,
                 build_semaphore: tokio::sync::Semaphore::const_new(1),
             }),
         }
     }
 
-    pub fn from_parent_context(
-        state_path: StatePath,
-        parent_ctx: &ComponentProcessorContext<Prof>,
-        processor: Prof::ComponentProc,
-    ) -> Self {
-        let effect = parent_ctx.effect().lock().unwrap();
-        Self::new(
-            parent_ctx.app_ctx().clone(),
-            state_path,
-            processor,
-            effect.provider_registry.providers.clone(),
-        )
+    pub fn get_child(&self, state_path: StatePath) -> Self {
+        // TODO: Get the child component directly if it already exists.
+        Self::new(self.app_ctx().clone(), state_path)
     }
 
     pub fn app_ctx(&self) -> &AppContext<Prof> {
@@ -201,14 +220,29 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     pub fn run(
         self,
+        processor: Prof::ComponentProc,
         parent_context: Option<ComponentProcessorContext<Prof>>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
-        let join_handle = get_runtime().spawn(async move { self.build_once(parent_context).await });
+        let processor_context = self.new_processor_context_for_build(parent_context)?;
+        let join_handle = get_runtime().spawn(async move {
+            let output = self
+                .execute_once(&processor_context, Some(processor))
+                .await?;
+            let ret = match output {
+                Ok(Some(output)) => Ok(output),
+                Ok(None) => {
+                    bail!("component deletion can only run in background");
+                }
+                Err(err) => Err(err),
+            };
+            Ok(ret)
+        });
         Ok(ComponentMountRunHandle { join_handle })
     }
 
     pub fn run_in_background(
         self,
+        processor: Prof::ComponentProc,
         parent_context: Option<ComponentProcessorContext<Prof>>,
     ) -> Result<ComponentMountHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
@@ -216,8 +250,9 @@ impl<Prof: EngineProfile> Component<Prof> {
         let child_readiness_guard = parent_context
             .as_ref()
             .map(|c| c.components_readiness().clone().add_child());
+        let processor_context = self.new_processor_context_for_build(parent_context)?;
         let join_handle = get_runtime().spawn(async move {
-            let result = self.build_once(parent_context).await;
+            let result = self.execute_once(&processor_context, Some(processor)).await;
             let shared_result = match result {
                 Ok(_) => Ok(()),
                 Err(err) => Err(SharedError::new(err)),
@@ -228,31 +263,62 @@ impl<Prof: EngineProfile> Component<Prof> {
         Ok(ComponentMountHandle { join_handle })
     }
 
-    async fn build_once(
-        &self,
+    pub fn delete(
+        self,
         parent_context: Option<ComponentProcessorContext<Prof>>,
-    ) -> Result<Result<Prof::ComponentProcRet, Prof::Error>> {
+        providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
+    ) -> Result<()> {
+        trace!("deleting component at {}", self.state_path());
+        let child_readiness_guard = parent_context
+            .as_ref()
+            .map(|c| c.components_readiness().clone().add_child());
         let processor_context = ComponentProcessorContext::new(
-            self.inner.app_ctx.clone(),
-            self.inner.state_path.clone(),
-            self.inner.providers.clone(),
+            self.clone(),
+            providers,
             parent_context,
+            ComponentProcessingMode::Delete,
         );
+        get_runtime().spawn(async move {
+            let result = self.execute_once(&processor_context, None).await;
+            let shared_result = match result {
+                Ok(_) => Ok(()),
+                Err(err) => Err(SharedError::new(err)),
+            };
+            child_readiness_guard.map(|guard| guard.resolve(shared_result.clone()));
+            shared_result
+        });
+        Ok(())
+    }
 
+    async fn execute_once(
+        &self,
+        processor_context: &ComponentProcessorContext<Prof>,
+        processor: Option<Prof::ComponentProc>,
+    ) -> Result<Result<Option<ComponentBuildOutput<Prof>>, Prof::Error>> {
         // Acquire the semaphore to ensure `process()` and `commit_effects()` cannot happen in parallel.
-        let ret = {
+        let output = {
             let _permit = self.inner.build_semaphore.acquire().await?;
 
-            let ret = self.inner.processor.process(&processor_context)?.await;
-            let Ok(ret) = ret else {
-                return Ok(ret);
+            let ret = match processor {
+                Some(processor) => processor.process(&processor_context)?.await.map(Some),
+                None => Ok(None),
             };
-
-            commit_effects(&processor_context).await?;
-
-            // TODO: GC, can run in parallel with `commit_effects()`
-
-            ret
+            match ret {
+                Ok(ret) => {
+                    let provider_registry = submit(&processor_context).await?;
+                    if let Some(ret) = ret {
+                        Ok(Some(ComponentBuildOutput {
+                            ret,
+                            provider_registry: provider_registry.ok_or_else(|| {
+                                anyhow::anyhow!("expect a provider registry for component build")
+                            })?,
+                        }))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                Err(err) => Err(err),
+            }
         };
 
         // Wait until children components ready.
@@ -264,6 +330,38 @@ impl<Prof: EngineProfile> Component<Prof> {
             .await
             .anyhow_result()?;
 
-        Ok(Ok(ret))
+        Ok(output)
+    }
+
+    fn new_processor_context_for_build(
+        &self,
+        parent_ctx: Option<ComponentProcessorContext<Prof>>,
+    ) -> Result<ComponentProcessorContext<Prof>> {
+        let providers = if let Some(parent_ctx) = &parent_ctx {
+            let sub_state_path = self
+                .state_path()
+                .as_ref()
+                .strip_parent(parent_ctx.state_path().as_ref())?;
+            parent_ctx.update_building_state(|building_state| {
+                building_state
+                    .child_state_path_set
+                    .add_child(sub_state_path, StatePathSet::Component)?;
+                Ok(building_state.effect.provider_registry.providers.clone())
+            })?
+        } else {
+            self.app_ctx()
+                .env()
+                .effect_providers()
+                .lock()
+                .unwrap()
+                .providers
+                .clone()
+        };
+        Ok(ComponentProcessorContext::new(
+            self.clone(),
+            providers,
+            parent_ctx,
+            ComponentProcessingMode::Build,
+        ))
     }
 }

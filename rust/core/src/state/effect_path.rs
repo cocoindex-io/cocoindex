@@ -15,7 +15,7 @@ impl std::borrow::Borrow<[utils::fingerprint::Fingerprint]> for EffectPath {
 impl std::fmt::Display for EffectPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for part in self.inner.iter() {
-            write!(f, "/#{:x?}", part.as_slice())?;
+            write!(f, "/{part}")?;
         }
         Ok(())
     }
