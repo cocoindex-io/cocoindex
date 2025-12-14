@@ -22,9 +22,8 @@ impl Client {
         let api_key = if let Some(key) = api_key {
             key
         } else {
-            std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
-                anyhow::anyhow!("ANTHROPIC_API_KEY environment variable must be set")
-            })?
+            std::env::var("ANTHROPIC_API_KEY")
+                .map_err(|_| client_error!("ANTHROPIC_API_KEY environment variable must be set"))?
         };
 
         Ok(Self {
@@ -105,7 +104,7 @@ impl LlmGenerationClient for Client {
 
         let mut resp_json: serde_json::Value = resp.json().await.context("Invalid JSON")?;
         if let Some(error) = resp_json.get("error") {
-            bail!("Anthropic API error: {:?}", error);
+            client_bail!("Anthropic API error: {:?}", error);
         }
 
         // Debug print full response
@@ -144,16 +143,16 @@ impl LlmGenerationClient for Client {
                                     serde_json::to_string(&value)?
                                 }
                                 Err(e2) => {
-                                    return Err(anyhow::anyhow!(format!(
+                                    return Err(client_error!(
                                         "No structured tool output or text found in response, and permissive JSON5 parsing also failed: {e}; {e2}"
-                                    )));
+                                    ));
                                 }
                             }
                         }
                     }
                 }
                 _ => {
-                    return Err(anyhow::anyhow!(
+                    return Err(client_error!(
                         "No structured tool output or text found in response"
                     ));
                 }

@@ -43,7 +43,7 @@ impl AiStudioClient {
             key
         } else {
             std::env::var("GEMINI_API_KEY")
-                .map_err(|_| anyhow::anyhow!("GEMINI_API_KEY environment variable must be set"))?
+                .map_err(|_| client_error!("GEMINI_API_KEY environment variable must be set"))?
         };
 
         Ok(Self {
@@ -154,12 +154,12 @@ impl LlmGenerationClient for AiStudioClient {
         let resp_json: Value = resp.json().await.context("Invalid JSON")?;
 
         if let Some(error) = resp_json.get("error") {
-            bail!("Gemini API error: {:?}", error);
+            client_bail!("Gemini API error: {:?}", error);
         }
         let mut resp_json = resp_json;
         let text = match &mut resp_json["candidates"][0]["content"]["parts"][0]["text"] {
             Value::String(s) => std::mem::take(s),
-            _ => bail!("No text in response"),
+            _ => client_bail!("No text in response"),
         };
 
         Ok(LlmGenerateResponse { text })
@@ -365,7 +365,7 @@ impl LlmGenerationClient for VertexAiClient {
             .and_then(|content| content.parts.into_iter().next())
             .and_then(|part| part.data)
         else {
-            bail!("No text in response");
+            client_bail!("No text in response");
         };
         Ok(super::LlmGenerateResponse { text })
     }
@@ -428,7 +428,7 @@ impl LlmEmbeddingClient for VertexAiClient {
                 let embeddings = prediction
                     .get_mut("embeddings")
                     .map(|v| v.take())
-                    .ok_or_else(|| anyhow::anyhow!("No embeddings in prediction"))?;
+                    .ok_or_else(|| client_error!("No embeddings in prediction"))?;
                 let embedding: ContentEmbedding = utils::deser::from_json_value(embeddings)?;
                 Ok(embedding.values)
             })

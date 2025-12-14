@@ -42,7 +42,7 @@ impl Client {
             key
         } else {
             std::env::var("VOYAGE_API_KEY")
-                .map_err(|_| anyhow::anyhow!("VOYAGE_API_KEY environment variable must be set"))?
+                .map_err(|_| client_error!("VOYAGE_API_KEY environment variable must be set"))?
         };
 
         Ok(Self {

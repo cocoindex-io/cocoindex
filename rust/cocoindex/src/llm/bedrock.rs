@@ -123,7 +123,7 @@ impl LlmGenerationClient for Client {
 
         // Check for errors in the response
         if let Some(error) = resp_json.get("error") {
-            bail!("Bedrock API error: {:?}", error);
+            client_bail!("Bedrock API error: {:?}", error);
         }
 
         // Debug print full response (uncomment for debugging)
@@ -162,7 +162,7 @@ impl LlmGenerationClient for Client {
                 text_parts.join("")
             }
         } else {
-            return Err(anyhow::anyhow!("No content found in Bedrock response"));
+            return Err(client_error!("No content found in Bedrock response"));
         };
 
         Ok(LlmGenerateResponse { text })

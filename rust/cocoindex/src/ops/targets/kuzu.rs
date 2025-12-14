@@ -362,7 +362,7 @@ fn append_basic_value(cypher: &mut CypherBuilder, basic_value: &BasicValue) -> R
             write!(cypher.query_mut(), "]")?;
         }
         v @ (BasicValue::UnionVariant { .. } | BasicValue::Time(_) | BasicValue::Json(_)) => {
-            bail!("value types are not supported in Kuzu: {}", v.kind());
+            client_bail!("value types are not supported in Kuzu: {}", v.kind());
         }
     }
     Ok(())

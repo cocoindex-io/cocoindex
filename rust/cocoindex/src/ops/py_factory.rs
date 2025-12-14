@@ -12,7 +12,7 @@ use crate::{
     ops::sdk::SetupStateCompatibility,
     py::{self, ToResultWithPyTrace},
 };
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use py_utils::from_py_future;
 
 #[pyclass(name = "OpArgSchema")]
@@ -243,7 +243,7 @@ impl interface::SimpleFunctionFactory for PyFunctionFactory {
                 let py_exec_ctx = context
                     .py_exec_ctx
                     .as_ref()
-                    .ok_or_else(|| anyhow!("Python execution context is missing"))?
+                    .ok_or_else(|| internal_error!("Python execution context is missing"))?
                     .clone();
                 let (prepare_fut, enable_cache, timeout, batching_options) =
                     Python::attach(|py| -> anyhow::Result<_> {
@@ -473,7 +473,7 @@ impl PySourceExecutor {
         // Each item should be a tuple of (key, data)
         let tuple = bound_item
             .cast::<PyTuple>()
-            .map_err(|e| anyhow!("Failed to downcast to PyTuple: {}", e))?;
+            .map_err(|e| client_error!("Failed to downcast to PyTuple: {}", e))?;
         if tuple.len() != 2 {
             api_bail!("Expected tuple of length 2 from Python source iterator");
         }
@@ -579,7 +579,7 @@ impl interface::SourceFactory for PySourceConnectorFactory {
         let py_exec_ctx = context
             .py_exec_ctx
             .as_ref()
-            .ok_or_else(|| anyhow!("Python execution context is missing"))?
+            .ok_or_else(|| internal_error!("Python execution context is missing"))?
             .clone();
 
         // First get the table type (this doesn't require executor)
@@ -745,7 +745,7 @@ impl interface::TargetFactory for PyExportTargetFactory {
         let py_exec_ctx = context
             .py_exec_ctx
             .as_ref()
-            .ok_or_else(|| anyhow!("Python execution context is missing"))?
+            .ok_or_else(|| internal_error!("Python execution context is missing"))?
             .clone();
         for data_collection in data_collections.into_iter() {
             let (py_export_ctx, persistent_key, setup_state) = Python::attach(|py| {
@@ -948,7 +948,7 @@ impl interface::TargetFactory for PyExportTargetFactory {
         let py_exec_ctx = context
             .py_exec_ctx
             .as_ref()
-            .ok_or_else(|| anyhow!("Python execution context is missing"))?
+            .ok_or_else(|| internal_error!("Python execution context is missing"))?
             .clone();
         let py_result = Python::attach(move |py| -> Result<_> {
             let result_coro = self

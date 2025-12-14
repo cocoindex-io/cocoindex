@@ -321,7 +321,7 @@ pub fn value_from_py_object<'py>(
                                 .map(|v| {
                                     let mut iter = v.fields.into_iter();
                                     if iter.len() < num_key_parts {
-                                        anyhow::bail!(
+                                        client_bail!(
                                             "Invalid KTable value: expect at least {} fields, got {}",
                                             num_key_parts,
                                             iter.len()

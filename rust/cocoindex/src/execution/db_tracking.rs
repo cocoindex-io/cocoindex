@@ -411,7 +411,7 @@ pub async fn read_source_state(
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<Option<serde_json::Value>> {
     let Some(table_name) = db_setup.source_state_table_name.as_ref() else {
-        bail!("Source state table not enabled for this flow");
+        client_bail!("Source state table not enabled for this flow");
     };
 
     let query_str = format!(
@@ -435,7 +435,7 @@ pub async fn upsert_source_state(
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<()> {
     let Some(table_name) = db_setup.source_state_table_name.as_ref() else {
-        bail!("Source state table not enabled for this flow");
+        client_bail!("Source state table not enabled for this flow");
     };
 
     let query_str = format!(

@@ -60,7 +60,7 @@ impl StructSchemaBuilder {
         let field_idx = self.fields.len() as u32;
         match self.field_name_idx.entry(field.name.clone()) {
             std::collections::hash_map::Entry::Occupied(_) => {
-                bail!("Field name already exists: {}", field.name);
+                client_bail!("Field name already exists: {}", field.name);
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(field_idx);
@@ -465,7 +465,7 @@ impl DataScopeBuilder {
         let mut def_fp = base_def_fp;
 
         if field_path.is_empty() {
-            bail!("Field path is empty");
+            client_bail!("Field path is empty");
         }
 
         let mut i = 0;
@@ -1096,7 +1096,7 @@ impl AnalyzerContext {
                                     .fields
                                     .iter()
                                     .position(|field| &field.name == f)
-                                    .ok_or_else(|| anyhow!("field not found: {}", f))
+                                    .ok_or_else(|| client_error!("field not found: {}", f))
                             })
                             .collect::<Result<Vec<_>>>()?;
 
@@ -1396,7 +1396,7 @@ pub async fn analyze_flow(
         targets: targets_analyzed_ss
             .into_iter()
             .enumerate()
-            .map(|(idx, v)| v.ok_or_else(|| anyhow!("target op `{}` not found", idx)))
+            .map(|(idx, v)| v.ok_or_else(|| internal_error!("target op `{}` not found", idx)))
             .collect::<Result<Vec<_>>>()?,
         declarations: declarations_analyzed_ss,
     };

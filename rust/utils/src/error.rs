@@ -115,6 +115,94 @@ impl CError {
     }
 }
 
+impl From<std::fmt::Error> for CError {
+    fn from(e: std::fmt::Error) -> Self {
+        CError::internal(e)
+    }
+}
+
+impl From<std::io::Error> for CError {
+    fn from(e: std::io::Error) -> Self {
+        CError::internal(e)
+    }
+}
+
+impl From<serde_json::Error> for CError {
+    fn from(e: serde_json::Error) -> Self {
+        CError::internal(e)
+    }
+}
+
+// Wrapper for anyhow::Error to implement StdError
+#[derive(Debug)]
+pub struct AnyhowWrapper(anyhow::Error);
+
+impl Display for AnyhowWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
+impl StdError for AnyhowWrapper {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        self.0.source()
+    }
+}
+
+impl From<anyhow::Error> for CError {
+    fn from(e: anyhow::Error) -> Self {
+        CError::Internal {
+            source: Box::new(AnyhowWrapper(e)),
+            bt: Backtrace::capture(),
+        }
+    }
+}
+
+impl From<ApiError> for CError {
+    fn from(e: ApiError) -> Self {
+        if e.status_code == StatusCode::BAD_REQUEST {
+            CError::Client {
+                msg: e.err.to_string(),
+                bt: Backtrace::capture(),
+            }
+        } else {
+            CError::Internal {
+                source: Box::new(AnyhowWrapper(e.err)),
+                bt: Backtrace::capture(),
+            }
+        }
+    }
+}
+
+impl From<crate::retryable::Error> for CError {
+    fn from(e: crate::retryable::Error) -> Self {
+        CError::Internal {
+            source: Box::new(AnyhowWrapper(e.error)),
+            bt: Backtrace::capture(),
+        }
+    }
+}
+
+impl From<crate::fingerprint::FingerprinterError> for CError {
+    fn from(e: crate::fingerprint::FingerprinterError) -> Self {
+        CError::internal(e)
+    }
+}
+
+#[cfg(feature = "sqlx")]
+impl From<sqlx::Error> for CError {
+    fn from(e: sqlx::Error) -> Self {
+        CError::internal(e)
+    }
+}
+
+#[cfg(feature = "neo4rs")]
+impl From<neo4rs::Error> for CError {
+    fn from(e: neo4rs::Error) -> Self {
+        CError::internal(e)
+    }
+}
+
 #[derive(Debug)]
 struct StringError(String);
 
@@ -218,28 +306,28 @@ impl IntoResponse for CError {
 #[macro_export]
 macro_rules! client_bail {
     ( $fmt:literal $(, $($arg:tt)*)?) => {
-        return Err($crate::error::CError::client(format!($fmt $(, $($arg)*)?)))
+        return Err(anyhow::Error::from($crate::error::CError::client(format!($fmt $(, $($arg)*)?))))
     };
 }
 
 #[macro_export]
 macro_rules! client_error {
     ( $fmt:literal $(, $($arg:tt)*)?) => {
-        $crate::error::CError::client(format!($fmt $(, $($arg)*)?))
+        anyhow::Error::from($crate::error::CError::client(format!($fmt $(, $($arg)*)?)))
     };
 }
 
 #[macro_export]
 macro_rules! internal_bail {
     ( $fmt:literal $(, $($arg:tt)*)?) => {
-        return Err($crate::error::CError::internal_msg(format!($fmt $(, $($arg)*)?)))
+        return Err(anyhow::Error::from($crate::error::CError::internal_msg(format!($fmt $(, $($arg)*)?))))
     };
 }
 
 #[macro_export]
 macro_rules! internal_error {
     ( $fmt:literal $(, $($arg:tt)*)?) => {
-        $crate::error::CError::internal_msg(format!($fmt $(, $($arg)*)?))
+        anyhow::Error::from($crate::error::CError::internal_msg(format!($fmt $(, $($arg)*)?)))
     };
 }
 

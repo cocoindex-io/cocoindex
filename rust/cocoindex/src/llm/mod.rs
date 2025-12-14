@@ -209,6 +209,6 @@ pub fn detect_image_mime_type(bytes: &[u8]) -> Result<&'static str> {
     let infer = &*INFER;
     match infer.get(bytes) {
         Some(info) if info.mime_type().starts_with("image/") => Ok(info.mime_type()),
-        _ => bail!("Unknown or unsupported image format"),
+        _ => client_bail!("Unknown or unsupported image format"),
     }
 }

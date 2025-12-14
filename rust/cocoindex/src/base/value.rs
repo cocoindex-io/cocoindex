@@ -279,56 +279,56 @@ impl KeyPart {
     pub fn bytes_value(&self) -> Result<&Bytes> {
         match self {
             KeyPart::Bytes(v) => Ok(v),
-            _ => anyhow::bail!("expected bytes value, but got {}", self.kind_str()),
+            _ => client_bail!("expected bytes value, but got {}", self.kind_str()),
         }
     }
 
     pub fn str_value(&self) -> Result<&Arc<str>> {
         match self {
             KeyPart::Str(v) => Ok(v),
-            _ => anyhow::bail!("expected str value, but got {}", self.kind_str()),
+            _ => client_bail!("expected str value, but got {}", self.kind_str()),
         }
     }
 
     pub fn bool_value(&self) -> Result<bool> {
         match self {
             KeyPart::Bool(v) => Ok(*v),
-            _ => anyhow::bail!("expected bool value, but got {}", self.kind_str()),
+            _ => client_bail!("expected bool value, but got {}", self.kind_str()),
         }
     }
 
     pub fn int64_value(&self) -> Result<i64> {
         match self {
             KeyPart::Int64(v) => Ok(*v),
-            _ => anyhow::bail!("expected int64 value, but got {}", self.kind_str()),
+            _ => client_bail!("expected int64 value, but got {}", self.kind_str()),
         }
     }
 
     pub fn range_value(&self) -> Result<RangeValue> {
         match self {
             KeyPart::Range(v) => Ok(*v),
-            _ => anyhow::bail!("expected range value, but got {}", self.kind_str()),
+            _ => client_bail!("expected range value, but got {}", self.kind_str()),
         }
     }
 
     pub fn uuid_value(&self) -> Result<uuid::Uuid> {
         match self {
             KeyPart::Uuid(v) => Ok(*v),
-            _ => anyhow::bail!("expected uuid value, but got {}", self.kind_str()),
+            _ => client_bail!("expected uuid value, but got {}", self.kind_str()),
         }
     }
 
     pub fn date_value(&self) -> Result<chrono::NaiveDate> {
         match self {
             KeyPart::Date(v) => Ok(*v),
-            _ => anyhow::bail!("expected date value, but got {}", self.kind_str()),
+            _ => client_bail!("expected date value, but got {}", self.kind_str()),
         }
     }
 
     pub fn struct_value(&self) -> Result<&Vec<KeyPart>> {
         match self {
             KeyPart::Struct(v) => Ok(v),
-            _ => anyhow::bail!("expected struct value, but got {}", self.kind_str()),
+            _ => client_bail!("expected struct value, but got {}", self.kind_str()),
         }
     }
 
@@ -438,7 +438,7 @@ impl KeyValue {
                 serde_json::Value::Array(arr) => std::iter::zip(arr.into_iter(), schema)
                     .map(|(v, s)| Value::<ScopeValue>::from_json(v, &s.value_type.typ)?.into_key())
                     .collect::<Result<Box<[_]>>>()?,
-                _ => anyhow::bail!("expected array value, but got {}", value),
+                _ => client_bail!("expected array value, but got {}", value),
             }
         };
         Ok(Self(field_values))
@@ -848,7 +848,7 @@ impl<VS> Value<VS> {
                     .collect::<Result<Vec<_>>>()?,
             ),
             Value::Null | Value::UTable(_) | Value::KTable(_) | Value::LTable(_) => {
-                anyhow::bail!("invalid key value type")
+                client_bail!("invalid key value type")
             }
         };
         Ok(result)
@@ -864,7 +864,7 @@ impl<VS> Value<VS> {
                     .collect::<Result<Vec<_>>>()?,
             ),
             Value::Null | Value::UTable(_) | Value::KTable(_) | Value::LTable(_) => {
-                anyhow::bail!("invalid key value type")
+                client_bail!("invalid key value type")
             }
         };
         Ok(result)
@@ -891,70 +891,70 @@ impl<VS> Value<VS> {
     pub fn as_bytes(&self) -> Result<&Bytes> {
         match self {
             Value::Basic(BasicValue::Bytes(v)) => Ok(v),
-            _ => anyhow::bail!("expected bytes value, but got {}", self.kind()),
+            _ => client_bail!("expected bytes value, but got {}", self.kind()),
         }
     }
 
     pub fn as_str(&self) -> Result<&Arc<str>> {
         match self {
             Value::Basic(BasicValue::Str(v)) => Ok(v),
-            _ => anyhow::bail!("expected str value, but got {}", self.kind()),
+            _ => client_bail!("expected str value, but got {}", self.kind()),
         }
     }
 
     pub fn as_bool(&self) -> Result<bool> {
         match self {
             Value::Basic(BasicValue::Bool(v)) => Ok(*v),
-            _ => anyhow::bail!("expected bool value, but got {}", self.kind()),
+            _ => client_bail!("expected bool value, but got {}", self.kind()),
         }
     }
 
     pub fn as_int64(&self) -> Result<i64> {
         match self {
             Value::Basic(BasicValue::Int64(v)) => Ok(*v),
-            _ => anyhow::bail!("expected int64 value, but got {}", self.kind()),
+            _ => client_bail!("expected int64 value, but got {}", self.kind()),
         }
     }
 
     pub fn as_float32(&self) -> Result<f32> {
         match self {
             Value::Basic(BasicValue::Float32(v)) => Ok(*v),
-            _ => anyhow::bail!("expected float32 value, but got {}", self.kind()),
+            _ => client_bail!("expected float32 value, but got {}", self.kind()),
         }
     }
 
     pub fn as_float64(&self) -> Result<f64> {
         match self {
             Value::Basic(BasicValue::Float64(v)) => Ok(*v),
-            _ => anyhow::bail!("expected float64 value, but got {}", self.kind()),
+            _ => client_bail!("expected float64 value, but got {}", self.kind()),
         }
     }
 
     pub fn as_range(&self) -> Result<RangeValue> {
         match self {
             Value::Basic(BasicValue::Range(v)) => Ok(*v),
-            _ => anyhow::bail!("expected range value, but got {}", self.kind()),
+            _ => client_bail!("expected range value, but got {}", self.kind()),
         }
     }
 
     pub fn as_json(&self) -> Result<&Arc<serde_json::Value>> {
         match self {
             Value::Basic(BasicValue::Json(v)) => Ok(v),
-            _ => anyhow::bail!("expected json value, but got {}", self.kind()),
+            _ => client_bail!("expected json value, but got {}", self.kind()),
         }
     }
 
     pub fn as_vector(&self) -> Result<&Arc<[BasicValue]>> {
         match self {
             Value::Basic(BasicValue::Vector(v)) => Ok(v),
-            _ => anyhow::bail!("expected vector value, but got {}", self.kind()),
+            _ => client_bail!("expected vector value, but got {}", self.kind()),
         }
     }
 
     pub fn as_struct(&self) -> Result<&FieldValues<VS>> {
         match self {
             Value::Struct(v) => Ok(v),
-            _ => anyhow::bail!("expected struct value, but got {}", self.kind()),
+            _ => client_bail!("expected struct value, but got {}", self.kind()),
         }
     }
 }
@@ -1138,16 +1138,15 @@ impl BasicValue {
             (serde_json::Value::Bool(v), BasicValueType::Bool) => BasicValue::Bool(v),
             (serde_json::Value::Number(v), BasicValueType::Int64) => BasicValue::Int64(
                 v.as_i64()
-                    .ok_or_else(|| anyhow::anyhow!("invalid int64 value {v}"))?,
+                    .ok_or_else(|| client_error!("invalid int64 value {v}"))?,
             ),
             (serde_json::Value::Number(v), BasicValueType::Float32) => BasicValue::Float32(
                 v.as_f64()
-                    .ok_or_else(|| anyhow::anyhow!("invalid fp32 value {v}"))?
-                    as f32,
+                    .ok_or_else(|| client_error!("invalid fp32 value {v}"))? as f32,
             ),
             (serde_json::Value::Number(v), BasicValueType::Float64) => BasicValue::Float64(
                 v.as_f64()
-                    .ok_or_else(|| anyhow::anyhow!("invalid fp64 value {v}"))?,
+                    .ok_or_else(|| client_error!("invalid fp64 value {v}"))?,
             ),
             (v, BasicValueType::Range) => BasicValue::Range(utils::deser::from_json_value(v)?),
             (serde_json::Value::String(v), BasicValueType::Uuid) => BasicValue::Uuid(v.parse()?),
@@ -1193,11 +1192,11 @@ impl BasicValue {
             (v, BasicValueType::Union(typ)) => {
                 let arr = match v {
                     serde_json::Value::Array(arr) => arr,
-                    _ => anyhow::bail!("Invalid JSON value for union, expect array"),
+                    _ => client_bail!("Invalid JSON value for union, expect array"),
                 };
 
                 if arr.len() != 2 {
-                    anyhow::bail!(
+                    client_bail!(
                         "Invalid union tuple: expect 2 values, received {}",
                         arr.len()
                     );
@@ -1217,7 +1216,7 @@ impl BasicValue {
                 let cur_type = typ
                     .types
                     .get(tag_id)
-                    .ok_or_else(|| anyhow::anyhow!("No type in `tag_id` \"{tag_id}\" found"))?;
+                    .ok_or_else(|| client_error!("No type in `tag_id` \"{tag_id}\" found"))?;
 
                 BasicValue::UnionVariant {
                     tag_id,
@@ -1225,7 +1224,7 @@ impl BasicValue {
                 }
             }
             (v, t) => {
-                anyhow::bail!("Value and type not matched.\nTarget type {t:?}\nJSON value: {v}\n")
+                client_bail!("Value and type not matched.\nTarget type {t:?}\nJSON value: {v}\n")
             }
         };
         Ok(result)
@@ -1297,13 +1296,13 @@ where
                         v.into_iter()
                             .map(|v| {
                                 if s.row.fields.len() < num_key_parts {
-                                    anyhow::bail!("Invalid KTable schema: expect at least {} fields, got {}", num_key_parts, s.row.fields.len());
+                                    client_bail!("Invalid KTable schema: expect at least {} fields, got {}", num_key_parts, s.row.fields.len());
                                 }
                                 let mut fields_iter = s.row.fields.iter();
                                 match v {
                                     serde_json::Value::Array(v) => {
                                         if v.len() != fields_iter.len() {
-                                            anyhow::bail!("Invalid KTable value: expect {} values, received {}", fields_iter.len(), v.len());
+                                            client_bail!("Invalid KTable value: expect {} values, received {}", fields_iter.len(), v.len());
                                         }
 
                                         let mut field_vals_iter = v.into_iter();
@@ -1365,7 +1364,7 @@ where
                 }
             }
             (v, t) => {
-                anyhow::bail!("Value and type not matched.\nTarget type {t:?}\nJSON value: {v}\n")
+                client_bail!("Value and type not matched.\nTarget type {t:?}\nJSON value: {v}\n")
             }
         };
         Ok(result)

@@ -82,7 +82,7 @@ impl Client<AzureConfig> {
         };
 
         let api_base =
-            address.ok_or_else(|| anyhow::anyhow!("address is required for Azure OpenAI"))?;
+            address.ok_or_else(|| client_error!("address is required for Azure OpenAI"))?;
 
         // Default to API version that supports structured outputs (json_schema).
         let api_version = config
@@ -91,7 +91,7 @@ impl Client<AzureConfig> {
 
         let api_key = api_key
             .or_else(|| std::env::var("AZURE_OPENAI_API_KEY").ok())
-            .ok_or_else(|| anyhow::anyhow!(
+            .ok_or_else(|| client_error!(
                 "AZURE_OPENAI_API_KEY must be set either via api_key parameter or environment variable"
             ))?;
 
@@ -201,7 +201,7 @@ where
             .into_iter()
             .next()
             .and_then(|choice| choice.message.content)
-            .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
+            .ok_or_else(|| client_error!("No response from OpenAI"))?;
 
         Ok(super::LlmGenerateResponse { text })
     }

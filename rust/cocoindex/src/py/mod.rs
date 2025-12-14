@@ -400,7 +400,7 @@ impl Flow {
                     let py_exec_ctx = flow_ctx
                         .py_exec_ctx
                         .as_ref()
-                        .ok_or_else(|| anyhow!("Python execution context is missing"))?;
+                        .ok_or_else(|| internal_error!("Python execution context is missing"))?;
                     let task_locals = pyo3_async_runtimes::TaskLocals::new(
                         py_exec_ctx.event_loop.bind(py).clone(),
                     );

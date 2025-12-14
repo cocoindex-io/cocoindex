@@ -76,7 +76,7 @@ impl ScopeValueBuilder {
             .zip(&mut builder.fields)
         {
             r.set(augmented_value(v, &t.value_type.typ)?)
-                .map_err(|_| anyhow!("Value of field `{}` is already set", t.name))
+                .map_err(|_| internal_error!("Value of field `{}` is already set", t.name))
                 .into_py_result()?;
         }
         Ok(builder)
@@ -115,7 +115,7 @@ fn augmented_value(
                 .map(|v| ScopeValueBuilder::augmented_from(v, t))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        (val, _) => bail!("Value kind doesn't match the type {val_type}: {val:?}"),
+        (val, _) => internal_bail!("Value kind doesn't match the type {val_type}: {val:?}"),
     };
     Ok(value)
 }
@@ -195,7 +195,7 @@ impl<'a> ScopeEntry<'a> {
         } else {
             let struct_field_schema = match &field_schema.value_type.typ {
                 schema::ValueType::Struct(s) => s,
-                _ => bail!("Expect struct field"),
+                _ => internal_bail!("Expect struct field"),
             };
             Self::get_local_field_schema(struct_field_schema, &indices[1..])?
         };
@@ -211,7 +211,7 @@ impl<'a> ScopeEntry<'a> {
         } else if let value::KeyPart::Struct(fields) = key_val {
             Self::get_local_key_field(&fields[indices[0] as usize], &indices[1..])?
         } else {
-            bail!("Only struct can be accessed by sub field");
+            internal_bail!("Only struct can be accessed by sub field");
         };
         Ok(result)
     }
@@ -227,7 +227,7 @@ impl<'a> ScopeEntry<'a> {
         } else if let value::Value::Struct(fields) = val {
             Self::get_local_field(&fields.fields[indices[0] as usize], &indices[1..])?
         } else {
-            bail!("Only struct can be accessed by sub field");
+            internal_bail!("Only struct can be accessed by sub field");
         };
         Ok(result)
     }
@@ -240,7 +240,7 @@ impl<'a> ScopeEntry<'a> {
         let index_base = self.key.value_field_index_base();
         let val = self.value.fields[(first_index - index_base) as usize]
             .get()
-            .ok_or_else(|| anyhow!("Field {} is not set", first_index))?;
+            .ok_or_else(|| internal_error!("Field {} is not set", first_index))?;
         Self::get_local_field(val, &field_ref.fields_idx[1..])
     }
 
@@ -248,14 +248,17 @@ impl<'a> ScopeEntry<'a> {
         let first_index = field_ref.fields_idx[0] as usize;
         let index_base = self.key.value_field_index_base();
         let result = if first_index < index_base {
-            let key_val = self.key.key().ok_or_else(|| anyhow!("Key is not set"))?;
+            let key_val = self
+                .key
+                .key()
+                .ok_or_else(|| internal_error!("Key is not set"))?;
             let key_part =
                 Self::get_local_key_field(&key_val[first_index], &field_ref.fields_idx[1..])?;
             key_part.clone().into()
         } else {
             let val = self.value.fields[(first_index - index_base) as usize]
                 .get()
-                .ok_or_else(|| anyhow!("Field {} is not set", first_index))?;
+                .ok_or_else(|| internal_error!("Field {} is not set", first_index))?;
             let val_part = Self::get_local_field(val, &field_ref.fields_idx[1..])?;
             value::Value::from_alternative_ref(val_part)
         };
@@ -280,7 +283,7 @@ impl<'a> ScopeEntry<'a> {
         let field_index = output_field.field_idx as usize;
         let index_base = self.key.value_field_index_base() as usize;
         self.value.fields[field_index - index_base].set(val).map_err(|_| {
-            anyhow!("Field {field_index} for scope is already set, violating single-definition rule.")
+            internal_error!("Field {field_index} for scope is already set, violating single-definition rule.")
         })?;
         Ok(())
     }
@@ -302,7 +305,7 @@ fn assemble_value(
         AnalyzedValueMapping::Constant { value } => value.clone(),
         AnalyzedValueMapping::Field(field_ref) => scoped_entries
             .headn(field_ref.scope_up_level as usize)
-            .ok_or_else(|| anyhow!("Invalid scope_up_level: {}", field_ref.scope_up_level))?
+            .ok_or_else(|| internal_error!("Invalid scope_up_level: {}", field_ref.scope_up_level))?
             .get_field(&field_ref.local)?,
         AnalyzedValueMapping::Struct(mapping) => {
             let fields = mapping
@@ -382,7 +385,7 @@ where
                 return res;
             }
             _ = &mut timeout_future => {
-                return Err(anyhow!(
+                return Err(internal_error!(
                     "Function '{}' ({}) timed out after {} seconds",
                     op_kind, op_name, timeout_duration.as_secs()
                 ));
@@ -481,7 +484,7 @@ async fn evaluate_op_scope(
                 let target_field_schema = head_scope.get_field_schema(&op.local_field_ref)?;
                 let table_schema = match &target_field_schema.value_type.typ {
                     schema::ValueType::Table(cs) => cs,
-                    _ => bail!("Expect target field to be a table"),
+                    _ => internal_bail!("Expect target field to be a table"),
                 };
 
                 let target_field = head_scope.get_value_field_builder(&op.local_field_ref)?;
@@ -543,7 +546,7 @@ async fn evaluate_op_scope(
                         })
                         .collect::<Vec<_>>(),
                     _ => {
-                        bail!("Target field type is expected to be a table");
+                        internal_bail!("Target field type is expected to be a table");
                     }
                 };
                 try_join_all(task_futs)
@@ -575,7 +578,7 @@ async fn evaluate_op_scope(
                 };
                 let collector_entry = scoped_entries
                     .headn(op.collector_ref.scope_up_level as usize)
-                    .ok_or_else(|| anyhow::anyhow!("Collector level out of bound"))?;
+                    .ok_or_else(|| internal_error!("Collector level out of bound"))?;
 
                 // Assemble input values
                 let input_values: Vec<value::Value> =
@@ -670,7 +673,7 @@ pub async fn evaluate_source_entry(
     {
         schema::ValueType::Table(cs) => cs,
         _ => {
-            bail!("Expect source output to be a table")
+            internal_bail!("Expect source output to be a table")
         }
     };
 
@@ -725,7 +728,7 @@ pub async fn evaluate_transient_flow(
     );
 
     if input_values.len() != flow.execution_plan.input_fields.len() {
-        bail!(
+        client_bail!(
             "Input values length mismatch: expect {}, got {}",
             flow.execution_plan.input_fields.len(),
             input_values.len()

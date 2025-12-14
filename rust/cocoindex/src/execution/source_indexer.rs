@@ -439,10 +439,10 @@ impl SourceIndexingContext {
                                 if let Some(ref op_stats) = operation_in_process_stats_for_async {
                                     op_stats.start_processing(&operation_name_for_async, 1);
                                 }
-                                let row_input = row_input
-                                    .key_aux_info
-                                    .as_ref()
-                                    .ok_or_else(|| anyhow!("`key_aux_info` must be provided"))?;
+                                let row_input =
+                                    row_input.key_aux_info.as_ref().ok_or_else(|| {
+                                        internal_error!("`key_aux_info` must be provided")
+                                    })?;
                                 let read_options = interface::SourceExecutorReadOptions {
                                     include_value: true,
                                     include_ordinal: true,
@@ -461,7 +461,7 @@ impl SourceIndexingContext {
                                         .unwrap_or(interface::Ordinal::unavailable()),
                                     data.content_version_fp,
                                     data.value
-                                        .ok_or_else(|| anyhow::anyhow!("value is not available"))?,
+                                        .ok_or_else(|| internal_error!("value is not available"))?,
                                 )
                             }
                         };
@@ -591,7 +591,7 @@ impl SourceIndexingContext {
                 let source_version = SourceVersion::from_current_with_ordinal(
                     row.data
                         .ordinal
-                        .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
+                        .ok_or_else(|| internal_error!("ordinal is not available"))?,
                 );
                 {
                     let mut state = self.state.lock().unwrap();
@@ -704,7 +704,7 @@ impl batching::Runner for UpdateOnceRunner {
         let input = inputs
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow::anyhow!("no input"))?;
+            .ok_or_else(|| internal_error!("no input"))?;
         input
             .context
             .update_once(&input.stats, &update_options)

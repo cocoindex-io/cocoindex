@@ -193,7 +193,7 @@ impl GraphElementSchemaBuilder {
             fields_idx
         } else {
             if existing_fields.len() != fields.len() {
-                bail!(
+                client_bail!(
                     "{elem_type} {kind} fields number mismatch: {} vs {}",
                     existing_fields.len(),
                     fields.len()
@@ -208,13 +208,13 @@ impl GraphElementSchemaBuilder {
                 .iter()
                 .map(|existing_field| {
                     let (idx, typ) = fields_map.remove(&existing_field.name).ok_or_else(|| {
-                        anyhow!(
+                        client_error!(
                             "{elem_type} {kind} field `{}` not found in some collector",
                             existing_field.name
                         )
                     })?;
                     if typ != existing_field.value_type {
-                        bail!(
+                        client_bail!(
                             "{elem_type} {kind} field `{}` type mismatch: {} vs {}",
                             existing_field.name,
                             typ,
@@ -249,7 +249,7 @@ impl GraphElementSchemaBuilder {
 
     fn build_schema(self) -> Result<GraphElementSchema> {
         if self.key_fields.is_empty() {
-            bail!(
+            client_bail!(
                 "No key fields specified for Node label `{}`",
                 self.elem_type
             );
@@ -310,7 +310,7 @@ impl<'a, AuthEntry> DependentNodeLabelAnalyzer<'a, AuthEntry> {
         schema_builders: &mut HashMap<GraphElementType<AuthEntry>, GraphElementSchemaBuilder>,
     ) -> Result<(GraphElementType<AuthEntry>, GraphElementInputFieldsIdx)> {
         if !self.remaining_fields.is_empty() {
-            anyhow::bail!(
+            client_bail!(
                 "Fields not mapped for {}: {}",
                 self.graph_elem_type,
                 self.remaining_fields.keys().join(", ")
@@ -323,7 +323,7 @@ impl<'a, AuthEntry> DependentNodeLabelAnalyzer<'a, AuthEntry> {
             .map(|(field_name, (idx, typ))| (idx, FieldSchema::new(field_name, typ)))
             .partition(|(_, f)| self.primary_key_fields.contains(&f.name));
         if key_fields.len() != self.primary_key_fields.len() {
-            bail!(
+            client_bail!(
                 "Primary key fields number mismatch: {} vs {}",
                 key_fields.iter().map(|(_, f)| &f.name).join(", "),
                 self.primary_key_fields.iter().join(", ")

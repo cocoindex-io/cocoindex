@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use regex::{Matches, Regex};
 use std::sync::LazyLock;
 use std::{collections::HashMap, sync::Arc};
@@ -675,9 +675,9 @@ impl SimpleFunctionExecutor for Executor {
         {
             let mut parser = tree_sitter::Parser::new();
             parser.set_language(&tree_sitter_info.tree_sitter_lang)?;
-            let tree = parser
-                .parse(full_text.as_ref(), None)
-                .ok_or_else(|| anyhow!("failed in parsing text in language: {}", lang_info.name))?;
+            let tree = parser.parse(full_text.as_ref(), None).ok_or_else(|| {
+                internal_error!("failed in parsing text in language: {}", lang_info.name)
+            })?;
             recursive_chunker.split_root_chunk(ChunkKind::TreeSitterNode {
                 tree_sitter_info,
                 node: tree.root_node(),

@@ -54,7 +54,7 @@ impl std::str::FromStr for MetadataRecordType {
         } else if let Some(target_id) = s.strip_prefix("Target:") {
             Ok(Self::Target(target_id.to_string()))
         } else {
-            anyhow::bail!("Invalid MetadataRecordType string: {}", s)
+            internal_bail!("Invalid MetadataRecordType string: {}", s)
         }
     }
 }
@@ -222,7 +222,7 @@ fn group_states<K: Hash + Eq + std::fmt::Display + std::fmt::Debug + Clone, S: D
         if state.current.is_some() {
             if let indexmap::map::Entry::Occupied(entry) = &entry {
                 if entry.get().existing.current.is_some() {
-                    bail!("Duplicate existing state for key: {}", entry.key());
+                    internal_bail!("Duplicate existing state for key: {}", entry.key());
                 }
             }
         }
@@ -564,7 +564,7 @@ async fn apply_changes_for_flow(
         ObjectStatus::New => "Creating",
         ObjectStatus::Deleted => "Deleting",
         ObjectStatus::Existing => "Updating resources for ",
-        _ => bail!("invalid flow status"),
+        _ => internal_bail!("invalid flow status"),
     };
     write!(write, "\n{verb} flow {}:\n", flow_ctx.flow_name())?;
 
@@ -647,7 +647,7 @@ async fn apply_changes_for_flow(
             resources.into_iter(),
             |targets_change| async move {
                 let factory = get_export_target_factory(target_kind).ok_or_else(|| {
-                    anyhow::anyhow!("No factory found for target kind: {}", target_kind)
+                    internal_error!("No factory found for target kind: {}", target_kind)
                 })?;
                 for target_change in targets_change.iter() {
                     for delete in target_change.setup_change.attachments_change.deletes.iter() {
@@ -793,7 +793,7 @@ impl SetupChangeBundle {
                 let flows = lib_context.flows.lock().unwrap();
                 flows
                     .get(flow_name)
-                    .ok_or_else(|| anyhow::anyhow!("Flow instance not found: {flow_name}"))?
+                    .ok_or_else(|| client_error!("Flow instance not found: {flow_name}"))?
                     .clone()
             };
             let flow_exec_ctx = flow_ctx.get_execution_ctx_for_setup().read().await;
@@ -845,7 +845,7 @@ impl SetupChangeBundle {
                 let flows = lib_context.flows.lock().unwrap();
                 flows
                     .get(flow_name)
-                    .ok_or_else(|| anyhow::anyhow!("Flow instance not found: {flow_name}"))?
+                    .ok_or_else(|| client_error!("Flow instance not found: {flow_name}"))?
                     .clone()
             };
             let mut flow_exec_ctx = flow_ctx.get_execution_ctx_for_setup().write().await;

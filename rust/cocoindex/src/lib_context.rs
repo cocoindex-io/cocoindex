@@ -268,7 +268,7 @@ impl LibContext {
 
     pub fn require_persistence_ctx(&self) -> Result<&PersistenceContext> {
         self.persistence_ctx.as_ref().ok_or_else(|| {
-            anyhow!(
+            client_error!(
                 "Database is required for this operation. \
                          The easiest way is to set COCOINDEX_DATABASE_URL environment variable. \
                          Please see https://cocoindex.io/docs/core/settings for more details."
@@ -333,7 +333,7 @@ fn get_settings() -> Result<settings::Settings> {
     let settings = if let Some(get_settings_fn) = &*get_settings_fn {
         get_settings_fn()?
     } else {
-        bail!("CocoIndex setting function is not provided");
+        client_bail!("CocoIndex setting function is not provided");
     };
     Ok(settings)
 }

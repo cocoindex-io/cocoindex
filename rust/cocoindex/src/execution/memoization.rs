@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use crate::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -127,7 +127,7 @@ impl EvaluationMemory {
 
     pub fn into_stored(self) -> Result<StoredMemoizationInfo> {
         if self.evaluation_only {
-            bail!("For evaluation only, cannot convert to stored MemoizationInfo");
+            internal_bail!("For evaluation only, cannot convert to stored MemoizationInfo");
         }
         let cache = if let Some(cache) = self.cache {
             cache
@@ -150,7 +150,7 @@ impl EvaluationMemory {
                 })
                 .collect::<Result<_, _>>()?
         } else {
-            bail!("Cache is disabled, cannot convert to stored MemoizationInfo");
+            internal_bail!("Cache is disabled, cannot convert to stored MemoizationInfo");
         };
         let uuids = self
             .uuids
