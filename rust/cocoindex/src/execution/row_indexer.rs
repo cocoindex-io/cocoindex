@@ -300,17 +300,13 @@ impl<'a> RowIndexer<'a> {
         }
 
         let (output, stored_mem_info, source_fp) = {
-            // 1. CHANGE: Add 'mut' here so we can modify the extracted info
             let mut extracted_memoization_info = existing_tracking_info
                 .and_then(|info| info.memoization_info)
                 .and_then(|info| info.0);
 
-            // 2. CHANGE: Check mode and clear cache
-            // Note: Ensure you have added 'FullReprocess' to the UpdateMode enum in source_indexer.rs
+            // Invalidate memoization cache if full reprocess is requested
             if self.mode == super::source_indexer::UpdateMode::FullReprocess {
                 if let Some(ref mut info) = extracted_memoization_info {
-                    // Check 'memoization.rs' for the exact field name.
-                    // Usually it's 'cache', 'entries', or similar.
                     info.cache.clear();
                 }
             }
