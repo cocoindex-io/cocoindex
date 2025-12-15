@@ -170,6 +170,12 @@ impl<'p> StablePathRef<'p> {
                 .collect(),
         )
     }
+
+    pub fn split_parent(&self) -> Option<(StablePathRef<'p>, &'p StableKey)> {
+        self.0
+            .split_last()
+            .map(|(last, parent)| (StablePathRef(parent), last))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

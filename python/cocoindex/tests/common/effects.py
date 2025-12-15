@@ -128,16 +128,20 @@ class DictsEffectStore:
     _stores: dict[str, DictEffectStore]
     metrics: Metrics
     _lock: threading.Lock
+    sink_exception: bool
 
     def __init__(self) -> None:
         self._stores = {}
         self.metrics = Metrics()
         self._lock = threading.Lock()
+        self.sink_exception = False
 
     def _sink(
         self, actions: Collection[tuple[str, bool]]
     ) -> list[coco.EffectReconciler[str] | None]:
         child_recons: list[coco.EffectReconciler[str] | None] = []
+        if self.sink_exception:
+            raise ValueError("injected sink exception")
         with self._lock:
             for name, exists in actions:
                 if exists:

@@ -102,6 +102,8 @@ struct Committer<'a, Prof: EngineProfile> {
 
     existence_processing_queue: VecDeque<ChildrenPathInfo>,
     buffered_paths_for_tombstone: Vec<StablePath>,
+
+    demote_component_only: bool,
 }
 
 impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
@@ -109,6 +111,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
         component_ctx: &'a ComponentProcessorContext<Prof>,
         component_path: &'a StablePath,
         effect_providers: &'a rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
+        demote_component_only: bool,
     ) -> Result<Self> {
         let tombstone_key_prefix = db_schema::DbEntryKey::StablePath(
             component_path.clone(),
@@ -123,6 +126,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
             encoded_tombstone_key_prefix,
             existence_processing_queue: VecDeque::new(),
             buffered_paths_for_tombstone: Vec::new(),
+            demote_component_only,
         })
     }
 
@@ -175,7 +179,9 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                 )?;
             }
 
-            self.update_existence(&mut wtxn, child_path_set)?;
+            if !self.demote_component_only {
+                self.update_existence(&mut wtxn, child_path_set)?;
+            }
             wtxn.commit()?;
         }
 
@@ -478,10 +484,35 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     );
 
     let mut actions_by_sinks = HashMap::<Prof::EffectSink, SinkInput<Prof>>::new();
+    let mut demote_component_only = false;
 
     // Reconcile and pre-commit effects
     let curr_version = {
         let mut wtxn = db_env.write_txn()?;
+
+        if let Some((parent_path, key)) = context.stable_path().as_ref().split_parent() {
+            match context.mode() {
+                ComponentProcessingMode::Build => {
+                    ensure_path_node_type(
+                        db,
+                        &mut wtxn,
+                        parent_path,
+                        key,
+                        db_schema::StablePathNodeType::Component,
+                    )?;
+                }
+                ComponentProcessingMode::Delete => {
+                    let node_type = get_path_node_type(db, &wtxn, parent_path, key)?;
+                    match node_type {
+                        Some(db_schema::StablePathNodeType::Component) => return Ok(None),
+                        Some(db_schema::StablePathNodeType::Directory) => {
+                            demote_component_only = true;
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
 
         let mut effect_info: db_schema::StablePathEntryEffectInfo = db
             .get(&wtxn, effect_info_key.encode()?.as_ref())?
@@ -628,7 +659,12 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         }
     }
 
-    let mut committer = Committer::new(context, context.stable_path(), &effect_providers)?;
+    let mut committer = Committer::new(
+        context,
+        context.stable_path(),
+        &effect_providers,
+        demote_component_only,
+    )?;
     committer.commit(child_path_set, &effect_info_key, curr_version)?;
 
     Ok(provider_registry)
@@ -659,4 +695,77 @@ pub(crate) fn cleanup_tombstone<Prof: EngineProfile>(
         wtxn.commit()?;
     }
     Ok(())
+}
+
+fn ensure_path_node_type(
+    db: &db_schema::Database,
+    wtxn: &mut RwTxn<'_>,
+    parent_path: StablePathRef<'_>,
+    key: &StableKey,
+    target_node_type: db_schema::StablePathNodeType,
+) -> Result<()> {
+    let db_key = db_schema::DbEntryKey::StablePath(
+        parent_path.into(),
+        db_schema::StablePathEntryKey::ChildExistence(key.clone()),
+    );
+    let encoded_db_key = db_key.encode()?;
+
+    let existing_node_type = get_path_node_type_with_raw_key(db, wtxn, encoded_db_key.as_slice())?;
+    match (existing_node_type, target_node_type) {
+        (None, _)
+        | (
+            Some(db_schema::StablePathNodeType::Directory),
+            db_schema::StablePathNodeType::Component,
+        ) => {
+            db.put(
+                wtxn,
+                encoded_db_key.as_slice(),
+                &rmp_serde::to_vec(&db_schema::ChildExistenceInfo {
+                    node_type: target_node_type,
+                })?,
+            )?;
+        }
+        _ => {
+            // No-op for all other cases
+        }
+    }
+    if existing_node_type.is_none()
+        && let Some((parent, key)) = parent_path.split_parent()
+    {
+        return ensure_path_node_type(
+            db,
+            wtxn,
+            parent,
+            key,
+            db_schema::StablePathNodeType::Directory,
+        );
+    }
+    Ok(())
+}
+
+fn get_path_node_type(
+    db: &db_schema::Database,
+    rtxn: &RoTxn<'_>,
+    parent_path: StablePathRef<'_>,
+    key: &StableKey,
+) -> Result<Option<db_schema::StablePathNodeType>> {
+    let encoded_db_key = db_schema::DbEntryKey::StablePath(
+        parent_path.into(),
+        db_schema::StablePathEntryKey::ChildExistence(key.clone()),
+    )
+    .encode()?;
+    get_path_node_type_with_raw_key(db, rtxn, encoded_db_key.as_slice())
+}
+
+fn get_path_node_type_with_raw_key(
+    db: &db_schema::Database,
+    rtxn: &RoTxn<'_>,
+    raw_key: &[u8],
+) -> Result<Option<db_schema::StablePathNodeType>> {
+    let db_value = db.get(rtxn, raw_key)?;
+    let Some(db_value) = db_value else {
+        return Ok(None);
+    };
+    let child_existence_info: db_schema::ChildExistenceInfo = rmp_serde::from_slice(db_value)?;
+    Ok(Some(child_existence_info.node_type))
 }

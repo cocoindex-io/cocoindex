@@ -266,7 +266,6 @@ impl<Prof: EngineProfile> Component<Prof> {
         parent_context: Option<ComponentProcessorContext<Prof>>,
         providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
     ) -> Result<()> {
-        trace!("deleting component at {}", self.stable_path());
         let child_readiness_guard = parent_context
             .as_ref()
             .map(|c| c.components_readiness().clone().add_child());
@@ -277,6 +276,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             ComponentProcessingMode::Delete,
         );
         get_runtime().spawn(async move {
+            trace!("deleting component at {}", self.stable_path());
             let result = self
                 .execute_once(&processor_context, None)
                 .await
@@ -285,7 +285,8 @@ impl<Prof: EngineProfile> Component<Prof> {
                     Ok(ret)
                 });
             let shared_result = match result {
-                Ok(_) => Ok(()),
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(err)) => Err(SharedError::new(err.into())),
                 Err(err) => Err(SharedError::new(err)),
             };
             child_readiness_guard.map(|guard| guard.resolve(shared_result.clone()));

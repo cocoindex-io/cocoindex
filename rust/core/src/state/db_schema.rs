@@ -150,7 +150,7 @@ pub struct StablePathEntryEffectInfo<'a> {
     pub items: BTreeMap<EffectPath, EffectInfoItem<'a>>,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
 pub enum StablePathNodeType {
     #[serde(rename = "D")]
     Directory,
