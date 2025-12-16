@@ -77,7 +77,7 @@ class Patient(BaseModel):
 
 
 # DSPy Signature for patient information extraction from images
-class PatientExtractionSignature(dspy.Signature):
+class PatientExtractionSignature(dspy.Signature):  # type: ignore[misc]
     """Extract structured patient information from a medical intake form image."""
 
     form_images: list[dspy.Image] = dspy.InputField(
@@ -88,7 +88,7 @@ class PatientExtractionSignature(dspy.Signature):
     )
 
 
-class PatientExtractor(dspy.Module):
+class PatientExtractor(dspy.Module):  # type: ignore[misc]
     """DSPy module for extracting patient information from intake form images."""
 
     def __init__(self) -> None:
