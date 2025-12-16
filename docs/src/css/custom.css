@@ -218,7 +218,7 @@
   padding: 8px 12px;
   border-radius: 4px;
   text-decoration: none !important;
-  border: 1px solid #ccc;
+  border: 1px solid var(--ifm-color-emphasis-300);
   color: var(--ifm-color-default);
   font-size: 0.85rem;
   transition: all 0.2s ease;

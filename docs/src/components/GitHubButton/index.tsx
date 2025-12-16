@@ -15,7 +15,7 @@ function Button({ href, children, margin = "0" }: ButtonProps): ReactNode {
       target="_blank"
       rel="noopener noreferrer"
       className="custom-cta-button"
-      style={{ margin }}
+      style={{ margin: margin }}
     >
       {children}
     </a>
