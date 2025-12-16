@@ -51,32 +51,36 @@ Input data:
 * `chunk_size` (*Int64*): The maximum size of each chunk, in bytes.
 * `min_chunk_size` (*Int64*, default: `chunk_size / 2`): The minimum size of each chunk, in bytes.
 
-    :::note
+:::note
 
-    `SplitRecursively` will do its best to make the output chunks sized between `min_chunk_size` and `chunk_size`.
-    However, it's possible that some chunks are smaller than `min_chunk_size` or larger than `chunk_size` in rare cases, e.g. too short input text, or non-splittable large text.
+`SplitRecursively` will do its best to make the output chunks sized between `min_chunk_size` and `chunk_size`.
+However, it's possible that some chunks are smaller than `min_chunk_size` or larger than `chunk_size` in rare cases, e.g. too short input text, or non-splittable large text.
 
-    Please avoid setting `min_chunk_size` to a value too close to `chunk_size`, to leave more rooms for the function to plan the optimal chunking.
+Please avoid setting `min_chunk_size` to a value too close to `chunk_size`, to leave more rooms for the function to plan the optimal chunking.
 
-    :::
+:::
 
 * `chunk_overlap` (*Optional[Int64]*, default: *None*): The maximum overlap size between adjacent chunks, in bytes.
-* `language` (*Str*, default: `""`): The language of the document.
-    Can be a language name (e.g. `python`, `javascript`, `markdown`) or a file extension (e.g. `.py`, `.js`, `.md`).
+* `language` (*Optional[Str]*, default: *None*): The language of the document.
 
-    :::note
+    It can be a language name (e.g. `python`, `javascript`, `markdown`) or a file extension (e.g. `.py`, `.js`, `.md`).
 
-    We use the `language` field to determine how to split the input text, following these rules:
+    When it's not provided or doesn't match any known language, the input will be treated as plain text.
 
-  * We match the input `language` field against the following registries in the following order:
-  * `custom_languages` in the spec, against the `language_name` or `aliases` field of each entry.
+:::note
+
+We use the `language` field to determine how to split the input text, following these rules:
+
+* We match the input `language` field against the following registries in the following order:
+
+  * `custom_languages` in the spec, against the `language_name` or `aliases` field of each entry. If `language` is not provided (`None`), it'll be matched against a entry with `language_name == ""` (empty string).
   * Builtin languages (see [Supported Languages](#supported-languages) section below), against the language, aliases or file extensions of each entry.
 
-        All matches are in a case-insensitive manner.
+  All matches are in a case-insensitive manner.
 
-  * If no match is found, the input will be treated as plain text.
+* If no match is found, the input will be treated as plain text.
 
-    :::
+:::
 
 Return: [*KTable*](/docs/core/data_types#ktable), each row represents a chunk, with the following sub fields:
 
@@ -122,6 +126,10 @@ Currently, `SplitRecursively` supports the following languages:
 | xml | | `.xml` |
 | yaml | | `.yaml`, `.yml` |
 
+If you don't specify the `language` field, or the language you specified doesn't match any known language,
+the input will be treated as plain text,
+in which case the input text is treated as an article and split will be based on blank lines, punctuation marks, whitespaces, etc.
+
 ## SentenceTransformerEmbed
 
 `SentenceTransformerEmbed` embeds a text into a vector space using the [SentenceTransformer](https://huggingface.co/sentence-transformers) library.
@@ -130,7 +138,7 @@ Currently, `SplitRecursively` supports the following languages:
 
 This function requires the 'sentence-transformers' library, which is an optional dependency. Install CocoIndex with:
 
-```bash
+```sh
 pip install 'cocoindex[embeddings]'
 ```
 
@@ -181,10 +189,11 @@ The spec takes the following fields:
 * `api_type` ([`cocoindex.LlmApiType`](/docs/ai/llm#llm-api-types)): The type of LLM API to use for embedding.
 * `model` (`str`): The name of the embedding model to use.
 * `address` (`str`, optional): The address of the LLM API. If not specified, uses the default address for the API type.
-* `output_dimension` (`int`, optional): The expected dimension of the output embedding vector. If not specified, use the default dimension of the model.
+* `output_dimension` (`int`, optional): The dimension to request from the embedding API. Some APIs support specifying the output dimension (e.g., OpenAI's models support dimension reduction). If not specified, the API will use its default dimension.
+* `expected_output_dimension` (`int`, optional): The expected dimension of the output embedding vector for validation and type schema. If not specified, falls back to `output_dimension`, then to the default dimension of the model.
 
-    For most API types, the function internally keeps a registry for the default output dimension of known model.
-    You need to explicitly specify the `output_dimension` if you want to use a new model that is not in the registry yet.
+    For most API types, the function internally keeps a registry for the default output dimension of known models.
+    You need to explicitly specify `expected_output_dimension` (or `output_dimension`) if you want to use a new model that is not in the registry yet.
 
 * `task_type` (`str`, optional): The task type for embedding, used by some embedding models to optimize the embedding for specific use cases.
 
@@ -215,7 +224,7 @@ These models use late interaction between image patch embeddings and text token 
 
 These functions require the `colpali-engine` library, which is an optional dependency. Install CocoIndex with:
 
-```bash
+```sh
 pip install 'cocoindex[colpali]'
 ```
 

@@ -49,7 +49,7 @@ Ultra performant data transformation framework for AI, with core engine written 
 
 </br>
 
-CocoIndex makes it effortless to transform data with AI, and keep source data and target in sync. Whether you’re building a vector index for RAG, creating knowledge graphs, or performing any custom data transformations — goes beyond SQL.
+CocoIndex makes it effortless to transform data with AI, and keep source data and target in sync. Whether you’re building a vector index, creating knowledge graphs for context engineering or performing any custom data transformations — goes beyond SQL.
 
 </br>
 
@@ -116,7 +116,7 @@ If you're new to CocoIndex, we recommend checking out
 
 1. Install CocoIndex Python library
 
-```bash
+```sh
 pip install -U cocoindex
 ```
 
@@ -204,6 +204,7 @@ It defines an index flow like this:
 | [Patient intake form extraction](examples/patient_intake_extraction) | Use LLM to extract structured data from patient intake forms with different formats |
 | [HackerNews Trending Topics](examples/hn_trending_topics) | Extract trending topics from HackerNews threads and comments, using *CocoIndex Custom Source* and LLM |
 | [Patient Intake Form Extraction with BAML](examples/patient_intake_extraction_baml) | Extract structured data from patient intake forms using BAML |
+| [Patient Intake Form Extraction with DSPy](examples/patient_intake_extraction_dspy) | Extract structured data from patient intake forms using DSPy |
 
 More coming and stay tuned 👀!
 

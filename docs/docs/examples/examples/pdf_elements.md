@@ -49,7 +49,7 @@ This flow automatically:
 
 If you don’t have Qdrant running locally, start it via Docker:
 
-```bash
+```sh
 docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
 ```
 
@@ -57,7 +57,7 @@ docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
 
 We’ll use a few sample PDFs (board game manuals). Download them into the `source_files` directory:
 
-```bash
+```sh
 ./pdf_elements/fetch_manual_urls.sh
 ```
 
@@ -68,19 +68,19 @@ Or, feel free to drop in any of your own PDFs.
 
 Install dependencies:
 
-```bash
+```sh
 pip install -e .
 ```
 
 Then build your index (sets up tables automatically on first run):
 
-```bash
+```sh
 cocoindex update --setup main
 ```
 
 Or Run in CocoInsight
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 
@@ -287,7 +287,7 @@ It connects locally with **zero data retention**.
 
 Start your local server:
 
-```bash
+```sh
 cocoindex server -ci main
 ```
 

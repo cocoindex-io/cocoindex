@@ -28,7 +28,7 @@ See [List of Environment Variables](#list-of-environment-variables) for specific
 
 :::tip
 
-You can consider place a `.env` file in your directory.
+You can consider placing a `.env` file in your directory.
 The [CLI](cli#environment-variables) will load environment variables from the `.env` file (see [CLI](cli#environment-variables) for more details).
 From your own main module, you can also load environment variables with a package like [`python-dotenv`](https://github.com/theskumar/python-dotenv).
 
@@ -69,7 +69,7 @@ cocoindex.init(
 For example, you can call it in the main function of your application.
 Once the `cocoindex.init()` is called with a `cocoindex.Settings` dataclass object as argument, the `@cocoindex.settings` function and environment variables will be ignored.
 
-This is more flexible, as you can more easily construct `cocoindex.Settings` based on other stuffs you loaded earlier.
+This is more flexible, as you can more easily construct `cocoindex.Settings` based on other objects or instances you loaded earlier.
 But be careful that if you call `cocoindex.init()` only under the path of main (e.g. within `if __name__ == "__main__":` guard), it won't be executed when you're using CocoIndex CLI, as it won't execute your main logic.
 
 :::info
@@ -123,7 +123,7 @@ If not set, all flows are in a default unnamed namespace.
 
     :::tip
 
-    Please be careful that all values in `url` needs to be url-encoded if they contain special characters.
+    Please be careful that all values in `url` need to be URL-encoded if they contain special characters.
     For this reason, prefer to use the separated `user` and `password` fields for username and password.
 
     :::
@@ -140,7 +140,7 @@ If not set, all flows are in a default unnamed namespace.
 
 If you use the Postgres database hosted by [Supabase](https://supabase.com/), please click **Connect** on your project dashboard and find the following URL:
 
-* If you're on a IPv6 network, use the URL under **Direct connection**. You can visit [IPv6 test](https://test-ipv6.com/) to see if you have IPv6 Internet connection.
+* If you're on an IPv6 network, use the URL under **Direct connection**. You can visit [IPv6 test](https://test-ipv6.com/) to see if you have IPv6 Internet connection.
 * Otherwise, use the URL under **Session pooler**.
   Note that Supabase has a pool size limit of 15 by default, while CocoIndex's default `max_connections` value is 25.
   You can adjust either value to make sure Supabase's pool size limit is greater than CocoIndex's `max_connections` value.
@@ -156,7 +156,7 @@ If you use the Postgres database hosted by [Supabase](https://supabase.com/), pl
 * `source_max_inflight_rows` (type: `int | None`, default: `1024`): The maximum number of concurrent inflight rows for all source operations.
 * `source_max_inflight_bytes` (type: `int | None`, default: `None`): The maximum number of concurrent inflight bytes for all source operations.
 
-See also [flow definition docs](/docs/core/flow_def#control-processing-concurrency) about why it's necessary to control processing concurrency, and how to configure it on per-source basis.
+See also [flow definition docs](/docs/core/flow_def#control-processing-concurrency) about why it's necessary to control processing concurrency, and how to configure it on a per-source basis.
 If both global and per-source limits are specified, both need to be satisfied to admit additional source rows.
 
 ## List of Environment Variables

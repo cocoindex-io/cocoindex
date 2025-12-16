@@ -177,7 +177,7 @@ struct ErrorResponse {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        log::debug!("Internal server error:\n{:?}", self.err);
+        tracing::debug!("Internal server error:\n{:?}", self.err);
         let error_response = ErrorResponse {
             error: format!("{:?}", self.err),
         };

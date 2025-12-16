@@ -15,7 +15,7 @@ import { DocumentationButton, GitHubButton } from '../../../src/components/GitHu
 
 ![Text Embedding from Google Drive](/img/integrations/google_drive/cover.png)
 
-This guide shows how to build a real-time data pipeline with CocoIndex to transform and index files from Google Drive. It walks through setting up Google credentials, configuring CocoIndex, and build vector index for semantic search.
+This guide shows how to build a real-time data pipeline with CocoIndex to transform and index files from Google Drive. It walks through setting up Google credentials, configuring CocoIndex, and builds a vector index for semantic search.
 
 
 ## Prerequisites
@@ -23,7 +23,7 @@ This guide shows how to build a real-time data pipeline with CocoIndex to transf
 If you don't have Postgres installed, please refer to the [installation guide](https://cocoindex.io/docs/getting_started/installation).
 
 ### Enable Google Drive access by service account
-CocoIndex provides native builtin to support Google Drive as a source.
+CocoIndex provides a native built-in integration to support Google Drive as a source.
 
 <DocumentationButton url="https://cocoindex.io/docs/sources/googledrive" text="GoogleDrive Source" margin="0 0 16px 0" />
 
@@ -66,7 +66,7 @@ Once you've logged into Google Cloud Console, you need to select an existing pro
     Choose "JSON" as the key type and click "Create".
     ![Create JSON Key](/img/integrations/google_drive/create_new_key_form.png)
 
-3.  The key file will be downloaded to your computer. Depends on the browser setting, it start download automatically or may pop up a dialog to for the location to download.  Keep this file secure as it provides access to your Google Drive resources. It looks like this:
+3.  The key file will be downloaded to your computer. Depending on the browser settings, it starts downloading automatically or may pop up a dialog for the download location. Keep this file secure as it provides access to your Google Drive resources. It looks like this:
     ```json
     {
     "type": "service_account",
@@ -118,7 +118,7 @@ Search for "Google Drive API" in Google Cloud Console and enable it.
     dependencies = ["cocoindex>=0.2.4", "python-dotenv>=1.0.1"]
     ```
 
-2.  Setup `.env`
+2.  Set up `.env`
     Create a `.env` file in the root directory and add the following:
     You can copy it from the [`.env.example`](https://github.com/cocoindex-io/cocoindex/blob/main/examples/gdrive_text_embedding/.env.example) file.
 

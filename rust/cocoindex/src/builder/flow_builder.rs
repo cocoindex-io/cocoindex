@@ -251,8 +251,9 @@ pub struct FlowBuilder {
 impl FlowBuilder {
     #[new]
     pub fn new(py: Python<'_>, name: &str, py_event_loop: Py<PyAny>) -> PyResult<Self> {
+        let _span = info_span!("flow_builder.new", flow_name = %name).entered();
         let lib_context = py
-            .allow_threads(|| -> anyhow::Result<Arc<LibContext>> {
+            .detach(|| -> anyhow::Result<Arc<LibContext>> {
                 get_runtime().block_on(get_lib_context())
             })
             .into_py_result()?;
@@ -306,6 +307,7 @@ impl FlowBuilder {
         refresh_options: Option<py::Pythonized<spec::SourceRefreshOptions>>,
         execution_options: Option<py::Pythonized<spec::ExecutionOptions>>,
     ) -> PyResult<DataSlice> {
+        let _span = info_span!("flow_builder.add_source", flow_name = %self.flow_instance_name, source_name = %name, source_kind = %kind).entered();
         if let Some(target_scope) = target_scope {
             if *target_scope != self.root_op_scope {
                 return Err(PyException::new_err(
@@ -331,7 +333,7 @@ impl FlowBuilder {
             flow_ctx: self.flow_inst_context.clone(),
         };
         let analyzed = py
-            .allow_threads(|| {
+            .detach(|| {
                 get_runtime().block_on(
                     analyzer_ctx.analyze_import_op(&self.root_op_scope, import_op.clone()),
                 )
@@ -456,6 +458,7 @@ impl FlowBuilder {
         target_scope: Option<OpScopeRef>,
         name: String,
     ) -> PyResult<DataSlice> {
+        let _span = info_span!("flow_builder.transform", flow_name = %self.flow_instance_name, op_name = %name, op_kind = %kind).entered();
         let spec = spec::OpSpec {
             kind,
             spec: op_spec.into_inner(),
@@ -486,7 +489,7 @@ impl FlowBuilder {
             flow_ctx: self.flow_inst_context.clone(),
         };
         let analyzed = py
-            .allow_threads(|| {
+            .detach(|| {
                 get_runtime().block_on(analyzer_ctx.analyze_reactive_op(op_scope, &reactive_op))
             })
             .into_py_result()?;
@@ -508,6 +511,7 @@ impl FlowBuilder {
         fields: Vec<(FieldName, DataSlice)>,
         auto_uuid_field: Option<FieldName>,
     ) -> PyResult<()> {
+        let _span = info_span!("flow_builder.collect", flow_name = %self.flow_instance_name, collector_name = %collector.name).entered();
         let common_scope = Self::minimum_common_scope(fields.iter().map(|(_, ds)| &ds.scope), None)
             .into_py_result()?;
         let name = format!(".collect.{}", self.next_generated_op_id);
@@ -536,7 +540,7 @@ impl FlowBuilder {
             flow_ctx: self.flow_inst_context.clone(),
         };
         let analyzed = py
-            .allow_threads(|| {
+            .detach(|| {
                 get_runtime().block_on(analyzer_ctx.analyze_reactive_op(common_scope, &reactive_op))
             })
             .into_py_result()?;
@@ -589,6 +593,7 @@ impl FlowBuilder {
         input: &DataCollector,
         setup_by_user: bool,
     ) -> PyResult<()> {
+        let _span = info_span!("flow_builder.export", flow_name = %self.flow_instance_name, export_name = %name, target_kind = %kind).entered();
         let spec = spec::OpSpec {
             kind,
             spec: op_spec.into_inner(),
@@ -636,6 +641,8 @@ impl FlowBuilder {
     }
 
     pub fn build_flow(&self, py: Python<'_>) -> PyResult<py::Flow> {
+        let _span =
+            info_span!("flow_builder.build_flow", flow_name = %self.flow_instance_name).entered();
         let spec = spec::FlowInstanceSpec {
             name: self.flow_instance_name.clone(),
             import_ops: self.import_ops.clone(),
@@ -645,7 +652,7 @@ impl FlowBuilder {
         };
         let flow_instance_ctx = self.flow_inst_context.clone();
         let flow_ctx = py
-            .allow_threads(|| {
+            .detach(|| {
                 get_runtime().block_on(async move {
                     let analyzed_flow =
                         super::AnalyzedFlow::from_flow_instance(spec, flow_instance_ctx).await?;

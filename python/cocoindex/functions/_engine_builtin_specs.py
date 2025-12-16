@@ -4,6 +4,7 @@ import dataclasses
 from typing import Literal
 
 from .. import llm, op
+from ..auth_registry import TransientAuthEntryReference
 
 
 class ParseJson(op.FunctionSpec):
@@ -54,8 +55,10 @@ class EmbedText(op.FunctionSpec):
     model: str
     address: str | None = None
     output_dimension: int | None = None
+    expected_output_dimension: int | None = None
     task_type: str | None = None
     api_config: llm.VertexAiConfig | None = None
+    api_key: TransientAuthEntryReference[str] | None = None
 
 
 class ExtractByLlm(op.FunctionSpec):

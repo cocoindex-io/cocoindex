@@ -407,6 +407,7 @@ class DataCollector:
         primary_key_fields: Sequence[str],
         attachments: Sequence[op.TargetAttachmentSpec] = (),
         vector_indexes: Sequence[index.VectorIndexDef] = (),
+        fts_indexes: Sequence[index.FtsIndexDef] = (),
         vector_index: Sequence[tuple[str, index.VectorSimilarityMetric]] = (),
         setup_by_user: bool = False,
     ) -> None:
@@ -432,6 +433,7 @@ class DataCollector:
         index_options = index.IndexOptions(
             primary_key_fields=primary_key_fields,
             vector_indexes=vector_indexes,
+            fts_indexes=fts_indexes,
         )
         self._flow_builder_state.engine_flow_builder.export(
             target_name,

@@ -18,7 +18,7 @@ jobs:
                   - { runner: ubuntu-latest, python_exec: ".venv/bin/python" }
                   - { runner: ubuntu-24.04-arm, python_exec: ".venv/bin/python" }
                   - { runner: macos-latest, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
-                  - { runner: macos-13, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
+                  - { runner: macos-15-intel, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
                   - { runner: windows-latest, python_exec: ".venv\\Scripts\\python" }
         runs-on: ${{ matrix.platform.runner }}
         env:
@@ -71,6 +71,7 @@ jobs:
         - name: Python type check (mypy)
           run: |
             ${{ matrix.platform.python_exec }} -m mypy python
+            ${{ matrix.platform.python_exec }} -m mypy --namespace-packages --explicit-package-bases --ignore-missing-imports examples
         - name: Python tests
           run: |
             ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests

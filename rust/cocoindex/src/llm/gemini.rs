@@ -34,14 +34,18 @@ pub struct AiStudioClient {
 }
 
 impl AiStudioClient {
-    pub fn new(address: Option<String>) -> Result<Self> {
+    pub fn new(address: Option<String>, api_key: Option<String>) -> Result<Self> {
         if address.is_some() {
             api_bail!("Gemini doesn't support custom API address");
         }
-        let api_key = match std::env::var("GEMINI_API_KEY") {
-            Ok(val) => val,
-            Err(_) => api_bail!("GEMINI_API_KEY environment variable must be set"),
+
+        let api_key = if let Some(key) = api_key {
+            key
+        } else {
+            std::env::var("GEMINI_API_KEY")
+                .map_err(|_| anyhow::anyhow!("GEMINI_API_KEY environment variable must be set"))?
         };
+
         Ok(Self {
             api_key,
             client: reqwest::Client::new(),
@@ -139,9 +143,14 @@ impl LlmGenerationClient for AiStudioClient {
         }
 
         let url = self.get_api_url(request.model, "generateContent");
-        let resp = http::request(|| self.client.post(&url).json(&payload))
-            .await
-            .context("Gemini API error")?;
+        let resp = http::request(|| {
+            self.client
+                .post(&url)
+                .header("x-goog-api-key", &self.api_key)
+                .json(&payload)
+        })
+        .await
+        .context("Gemini API error")?;
         let resp_json: Value = resp.json().await.context("Invalid JSON")?;
 
         if let Some(error) = resp_json.get("error") {
@@ -253,10 +262,16 @@ static SHARED_RETRY_THROTTLER: LazyLock<SharedRetryThrottler> =
 impl VertexAiClient {
     pub async fn new(
         address: Option<String>,
+        api_key: Option<String>,
         api_config: Option<super::LlmApiConfig>,
     ) -> Result<Self> {
         if address.is_some() {
             api_bail!("VertexAi API address is not supported for VertexAi API type");
+        }
+        if api_key.is_some() {
+            api_bail!(
+                "VertexAi API key is not supported for VertexAi API type. Vertex AI uses Application Default Credentials (ADC) for authentication. Please set up ADC using 'gcloud auth application-default login' instead."
+            );
         }
         let Some(super::LlmApiConfig::VertexAi(config)) = api_config else {
             api_bail!("VertexAi API config is required for VertexAi API type");

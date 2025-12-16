@@ -23,13 +23,13 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 2. Install Qdrant
 
-    ```bash
+    ```sh
     docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
     ```
 
 3. Install dependencies:
 
-    ```bash
+    ```sh
     pip install -e .
     ```
 
@@ -37,14 +37,14 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 Update index, which will also setup the tables at the first time:
 
-```bash
+```sh
 cocoindex update main
 ```
 
 You can also run the command with `-L`, which will watch for file changes and update the index automatically.
 
-```bash
-cocoindex update -L main.py
+```sh
+cocoindex update -L main
 ```
 
 ## CocoInsight

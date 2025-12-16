@@ -10,7 +10,7 @@ Automatically generates CLI documentation from the CocoIndex Click commands.
 
 **Usage:**
 
-```bash
+```sh
 python dev/generate_cli_docs.py
 ```
 
@@ -35,3 +35,26 @@ python dev/generate_cli_docs.py
 - `cocoindex` package must be importable (the CLI module)
 
 This ensures that CLI documentation is always kept in sync with the actual command-line interface.
+
+## Type-checking Examples
+
+We provide a helper script to run mypy on each example entry point individually with minimal assumptions about optional dependencies.
+
+### `mypy_check_examples.ps1`
+
+Runs mypy for every `main.py` (and `colpali_main.py`) under the `examples/` folder using these rules:
+
+- Only ignore missing imports (no broad suppressions)
+- Avoid type-checking CocoIndex internals by setting `--follow-imports=silent`
+- Make CocoIndex sources discoverable via `MYPYPATH=python`
+
+Usage (Windows PowerShell):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File dev/mypy_check_examples.ps1
+```
+
+Notes:
+
+- Ensure you have a local virtual environment with `mypy` installed (e.g. `.venv` with `pip install mypy`).
+- The script will report any failing example files and exit non-zero on failures.

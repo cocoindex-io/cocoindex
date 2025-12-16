@@ -2,7 +2,7 @@
 This example shows how to extract relationships from Markdown documents and build a knowledge graph.
 """
 
-import dataclasses
+from pydantic import BaseModel, Field
 import datetime
 import cocoindex
 from jinja2 import Template
@@ -20,7 +20,6 @@ GraphDbSpec = cocoindex.targets.Neo4j
 GraphDbConnection = cocoindex.targets.Neo4jConnection
 GraphDbDeclaration = cocoindex.targets.Neo4jDeclaration
 conn_spec = neo4j_conn_spec
-
 
 # Template for rendering product information as markdown to provide information to LLMs
 PRODUCT_TEMPLATE = """
@@ -42,48 +41,45 @@ PRODUCT_TEMPLATE = """
  """
 
 
-@dataclasses.dataclass
-class ProductInfo:
+class ProductInfo(BaseModel):
     id: str
     title: str
     price: float
     detail: str
 
 
-@dataclasses.dataclass
-class ProductTaxonomy:
+class ProductTaxonomy(BaseModel):
     """
     Taxonomy for the product.
-
-    A taxonomy is a concise noun (or short noun phrase), based on its core functionality, without specific details such as branding, style, etc.
-
-    Always use the most common words in US English.
-
-    Use lowercase without punctuation, unless it's a proper noun or acronym.
-
-    A product may have multiple taxonomies. Avoid large categories like "office supplies" or "electronics". Use specific ones, like "pen" or "printer".
     """
 
-    name: str
+    name: str = Field(
+        description="A taxonomy is a concise noun (or short noun phrase), based on its core functionality, "
+        "without specific details such as branding, style, etc. Always use the most common words in US "
+        "English. Use lowercase without punctuation, unless it's a proper noun or acronym. A product may "
+        "have multiple taxonomies. Avoid large categories like 'office supplies' or 'electronics'. Use "
+        "specific ones, like 'pen' or 'printer'."
+    )
 
 
-@dataclasses.dataclass
-class ProductTaxonomyInfo:
+class ProductTaxonomyInfo(BaseModel):
     """
     Taxonomy information for the product.
-
-    Fields:
-    - taxonomies: Taxonomies for the current product.
-    - complementary_taxonomies: Think about when customers buy this product, what else they might need as complementary products. Put labels for these complentary products.
     """
 
-    taxonomies: list[ProductTaxonomy]
-    complementary_taxonomies: list[ProductTaxonomy]
+    taxonomies: list[ProductTaxonomy] = Field(
+        description="Taxonomies for the current product."
+    )
+    complementary_taxonomies: list[ProductTaxonomy] = Field(
+        description="Think about when customers buy this product, what else they might need as complementary products. Put labels "
+        "for these complementary products."
+    )
 
 
 @cocoindex.op.function(behavior_version=2)
 def extract_product_info(product: cocoindex.Json, filename: str) -> ProductInfo:
-    # Print  markdown for LLM to extract the taxonomy and complimentary taxonomy
+    """Print markdown for LLM to extract the taxonomy and complimentary taxonomy."""
+
     return ProductInfo(
         id=f"{filename.removesuffix('.json')}",
         title=product["title"],
@@ -97,7 +93,7 @@ def store_product_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
     """
-    Define an example flow that extracts triples from files and build knowledge graph.
+    Define an example flow that extracts triples from files and build the knowledge graph.
     """
     data_scope["products"] = flow_builder.add_source(
         cocoindex.sources.LocalFile(path="products", included_patterns=["*.json"]),

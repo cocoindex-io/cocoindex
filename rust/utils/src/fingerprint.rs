@@ -30,7 +30,7 @@ impl serde::ser::Error for FingerprinterError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Fingerprint(pub [u8; 16]);
 
 impl Fingerprint {
@@ -57,9 +57,33 @@ impl Fingerprint {
     }
 }
 
+impl std::fmt::Display for Fingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#")?;
+        for byte in self.0.iter() {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for Fingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
 impl AsRef<[u8]> for Fingerprint {
     fn as_ref(&self) -> &[u8] {
         &self.0
+    }
+}
+
+impl std::hash::Hash for Fingerprint {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Fingerprint is already evenly distributed, so we can just use the first few bytes.
+        const N: usize = size_of::<usize>();
+        state.write(&self.0[..N]);
     }
 }
 
@@ -99,6 +123,10 @@ impl Fingerprinter {
 
     pub fn write<S: Serialize + ?Sized>(&mut self, value: &S) -> Result<(), FingerprinterError> {
         value.serialize(self)
+    }
+
+    pub fn write_raw_bytes(&mut self, bytes: &[u8]) {
+        self.hasher.update(bytes);
     }
 
     fn write_type_tag(&mut self, tag: &str) {

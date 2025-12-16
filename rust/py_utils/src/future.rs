@@ -1,6 +1,5 @@
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use log::error;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::TaskLocals;
@@ -10,9 +9,10 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
+use tracing::error;
 
 struct CancelOnDropPy {
-    inner: BoxFuture<'static, pyo3::PyResult<pyo3::PyObject>>,
+    inner: BoxFuture<'static, PyResult<Py<PyAny>>>,
     task: Py<PyAny>,
     event_loop: Py<PyAny>,
     ctx: Py<PyAny>,
@@ -20,7 +20,7 @@ struct CancelOnDropPy {
 }
 
 impl Future for CancelOnDropPy {
-    type Output = pyo3::PyResult<pyo3::PyObject>;
+    type Output = PyResult<Py<PyAny>>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match Pin::new(&mut self.inner).poll(cx) {
             Poll::Ready(out) => {
@@ -37,7 +37,7 @@ impl Drop for CancelOnDropPy {
         if self.done.load(Ordering::SeqCst) {
             return;
         }
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let kwargs = PyDict::new(py);
             let result = || -> PyResult<()> {
                 // pass context so cancellation runs under the right contextvars
@@ -61,7 +61,7 @@ pub fn from_py_future<'py, 'fut>(
     py: Python<'py>,
     locals: &TaskLocals,
     awaitable: Bound<'py, PyAny>,
-) -> pyo3::PyResult<impl Future<Output = pyo3::PyResult<pyo3::PyObject>> + Send + use<'fut>> {
+) -> pyo3::PyResult<impl Future<Output = pyo3::PyResult<Py<PyAny>>> + Send + use<'fut>> {
     // 1) Capture loop + context from TaskLocals for thread-safe cancellation
     let event_loop: Bound<'py, PyAny> = locals.event_loop(py).into();
     let ctx: Bound<'py, PyAny> = locals.context(py);
