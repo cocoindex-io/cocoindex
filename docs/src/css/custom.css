@@ -5,18 +5,19 @@
  */
 
 /* Import Questrial font from Google Fonts */
-@import url("https://fonts.googleapis.com/css2?family=Questrial&display=swap");
+@import url('https://fonts.googleapis.com/css2?family=Questrial&display=swap');
 
 /* You can override the default Infima variables here. */
 :root {
   /* Iris color scheme from Radix UI */
-  --ifm-color-primary: #5b5bd6;
-  --ifm-color-primary-dark: #4d4dcc;
-  --ifm-color-primary-darker: #4040c8;
-  --ifm-color-primary-darkest: #3333b3;
-  --ifm-color-primary-light: #7373de;
-  --ifm-color-primary-lighter: #8f8fe6;
-  --ifm-color-primary-lightest: #ababef;
+  --ifm-color-primary: #5B5BD6;
+  --ifm-color-primary-dark: #4D4DCC;
+  --ifm-color-primary-darker: #4040C8;
+  --ifm-color-primary-darkest: #3333B3;
+  --ifm-color-primary-light: #7373DE;
+  --ifm-color-primary-lighter: #8F8FE6;
+  --ifm-color-primary-lightest: #ABABEF;
+
 
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
   --my-color-text-black: #111827;
@@ -35,14 +36,14 @@
 }
 
 /* For readability concerns, you should choose a lighter palette in dark mode. */
-[data-theme="dark"] {
-  --ifm-color-primary: #8f8fe6;
-  --ifm-color-primary-dark: #7373de;
-  --ifm-color-primary-darker: #5b5bd6;
-  --ifm-color-primary-darkest: #4d4dcc;
-  --ifm-color-primary-light: #ababef;
-  --ifm-color-primary-lighter: #c4c4f5;
-  --ifm-color-primary-lightest: #e1e1ff;
+[data-theme='dark'] {
+  --ifm-color-primary: #8F8FE6;
+  --ifm-color-primary-dark: #7373DE;
+  --ifm-color-primary-darker: #5B5BD6;
+  --ifm-color-primary-darkest: #4D4DCC;
+  --ifm-color-primary-light: #ABABEF;
+  --ifm-color-primary-lighter: #C4C4F5;
+  --ifm-color-primary-lightest: #E1E1FF;
 
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
   --my-color-text-black: #f9fafb;
@@ -59,6 +60,7 @@
   --theme-color-text-default: #f9fafb;
   --theme-color-keyline: #374151;
 }
+
 
 .table-of-contents {
   code {
@@ -98,7 +100,7 @@
   margin-bottom: 20px;
 }
 
-.navbar__logo {
+.navbar__logo{
   height: 24px;
   line-height: 24px;
   margin-right: 4px;
@@ -108,7 +110,7 @@
   font-size: 1.125rem; /* 18px */
   color: var(--my-color-text-black);
   font-weight: bold;
-  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
 }
 
 .navbar {
@@ -117,13 +119,15 @@
   /* 14px */
   border-bottom: 1px solid var(--ifm-color-emphasis-200);
 }
-.navbar__item {
+.navbar__item{
   margin-top: 3px;
 }
 .sidebarItemTitle_pO2u,
 .navbar__items {
-  font-family: "Questrial", sans-serif;
+  font-family: 'Questrial', sans-serif;
 }
+
+
 
 .footer {
   padding: 4rem 2rem;
@@ -131,7 +135,7 @@
 }
 
 .footer__title {
-  font-family: "Questrial", sans-serif;
+  font-family: 'Questrial', sans-serif;
   font-size: 1rem;
   font-weight: 600;
   margin-bottom: 1rem;
@@ -139,13 +143,13 @@
 }
 
 .footer__item {
-  font-family: "Questrial", sans-serif;
+  font-family: 'Questrial', sans-serif;
   font-size: 0.9rem;
   padding: 0.25rem 0;
 }
 
 .footer__copyright {
-  font-family: "Questrial", sans-serif;
+  font-family: 'Questrial', sans-serif;
   font-size: 0.9rem;
   margin-top: 3rem;
   text-align: left;
@@ -207,40 +211,7 @@
 }
 
 @media (max-width: 768px) {
-  .navbar__item.navbar-github-link {
-    margin-right: 40px;
-  }
+.navbar__item.navbar-github-link {
+  margin-right: 40px;
 }
-
-/* Issue #1077: Button Interactive States */
-.custom-cta-button {
-  display: inline-block;
-  padding: 8px 12px;
-  border-radius: 4px;
-  text-decoration: none !important;
-  border: 1px solid var(--ifm-color-emphasis-300);
-  color: var(--ifm-color-default);
-  font-size: 0.85rem;
-  transition: all 0.2s ease;
-  cursor: pointer;
-}
-
-.custom-cta-button:hover {
-  background-color: var(--ifm-color-emphasis-100);
-  border-color: var(--ifm-color-emphasis-400);
-  color: var(--ifm-color-primary);
-  text-decoration: none;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-  transform: translateY(-1px);
-}
-
-.custom-cta-button:active {
-  background-color: var(--ifm-color-emphasis-200);
-  transform: translateY(0);
-  box-shadow: none;
-}
-
-.custom-cta-button:focus-visible {
-  outline: 2px solid var(--ifm-color-primary);
-  outline-offset: 2px;
 }

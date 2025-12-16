@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { FaGithub, FaYoutube } from "react-icons/fa";
 import { MdMenuBook, MdDriveEta } from "react-icons/md";
 
@@ -9,13 +9,46 @@ type ButtonProps = {
 };
 
 function Button({ href, children, margin = "0" }: ButtonProps): ReactNode {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isActive, setIsActive] = useState(false);
+
   return (
     <a
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="custom-cta-button"
-      style={{ margin: margin }}
+      style={{
+        display: "inline-block",
+        padding: "8px 12px",
+        margin: margin,
+        borderRadius: "4px",
+        textDecoration: "none",
+        border: isHovered
+          ? "1px solid var(--ifm-color-emphasis-400)"
+          : "1px solid var(--ifm-color-emphasis-300)",
+        color: isHovered
+          ? "var(--ifm-color-primary)"
+          : "var(--ifm-color-default)",
+        fontSize: "0.85rem",
+        backgroundColor: isActive
+          ? "var(--ifm-color-emphasis-200)"
+          : isHovered
+          ? "var(--ifm-color-emphasis-100)"
+          : "transparent",
+        boxShadow:
+          isHovered && !isActive ? "0 2px 4px rgba(0,0,0,0.05)" : "none",
+        transform:
+          isHovered && !isActive ? "translateY(-1px)" : "translateY(0)",
+        transition: "all 0.2s ease",
+        cursor: "pointer",
+      }}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => {
+        setIsHovered(false);
+        setIsActive(false);
+      }}
+      onMouseDown={() => setIsActive(true)}
+      onMouseUp={() => setIsActive(false)}
     >
       {children}
     </a>
