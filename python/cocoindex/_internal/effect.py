@@ -44,37 +44,37 @@ Action_contra = TypeVar("Action_contra", contravariant=True)
 Key = TypeVar("Key", bound=Hashable)
 Key_contra = TypeVar("Key_contra", contravariant=True, bound=Hashable)
 Value = TypeVar("Value", default=Any)
-Decl_contra = TypeVar("Decl_contra", contravariant=True, default=Any)
+Value_contra = TypeVar("Value_contra", contravariant=True, default=Any)
 State = TypeVar("State", default=Any)
 State_co = TypeVar("State_co", covariant=True, default=Any)
 
-OptChildRecon = TypeVar(
-    "OptChildRecon",
+OptChildHandler = TypeVar(
+    "OptChildHandler",
     bound="EffectHandler[Any, Any, Any, Any] | None",
     default=None,
     covariant=True,
 )
-OptChildRecon_co = TypeVar(
-    "OptChildRecon_co",
+OptChildHandler_co = TypeVar(
+    "OptChildHandler_co",
     bound="EffectHandler[Any, Any, Any, Any] | None",
     default=None,
     covariant=True,
 )
 
 
-class EffectSinkFn(Protocol[Action_contra, OptChildRecon_co]):
+class EffectSinkFn(Protocol[Action_contra, OptChildHandler_co]):
     def __call__(
         self, actions: Sequence[Action_contra], /
-    ) -> Sequence[OptChildRecon_co | None] | None: ...
+    ) -> Sequence[OptChildHandler_co | None] | None: ...
 
 
-class AsyncEffectSinkFn(Protocol[Action_contra, OptChildRecon_co]):
+class AsyncEffectSinkFn(Protocol[Action_contra, OptChildHandler_co]):
     async def __call__(
         self, actions: Sequence[Action_contra], /
-    ) -> Sequence[OptChildRecon_co | None] | None: ...
+    ) -> Sequence[OptChildHandler_co | None] | None: ...
 
 
-class EffectSink(Generic[Action_contra, OptChildRecon_co]):
+class EffectSink(Generic[Action_contra, OptChildHandler_co]):
     __slots__ = ("_core",)
     _core: core.EffectSink
 
@@ -83,15 +83,15 @@ class EffectSink(Generic[Action_contra, OptChildRecon_co]):
 
     @staticmethod
     def from_fn(
-        fn: EffectSinkFn[Action_contra, OptChildRecon_co],
-    ) -> "EffectSink[Action_contra, OptChildRecon_co]":
+        fn: EffectSinkFn[Action_contra, OptChildHandler_co],
+    ) -> "EffectSink[Action_contra, OptChildHandler_co]":
         canonical = _SYNC_FN_DEDUPER.get_canonical(fn)
         return EffectSink(core.EffectSink.new_sync(canonical))
 
     @staticmethod
     def from_async_fn(
-        fn: AsyncEffectSinkFn[Action_contra, OptChildRecon_co],
-    ) -> "EffectSink[Action_contra, OptChildRecon_co]":
+        fn: AsyncEffectSinkFn[Action_contra, OptChildHandler_co],
+    ) -> "EffectSink[Action_contra, OptChildHandler_co]":
         canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
         return EffectSink(core.EffectSink.new_async(canonical, get_async_context()))
 
@@ -119,43 +119,43 @@ _SYNC_FN_DEDUPER = _ObjectDeduper()
 _ASYNC_FN_DEDUPER = _ObjectDeduper()
 
 
-class EffectReconcileOutput(Generic[Action, State_co, OptChildRecon_co], NamedTuple):
+class EffectReconcileOutput(Generic[Action, State_co, OptChildHandler_co], NamedTuple):
     action: Action
-    sink: EffectSink[Action, OptChildRecon_co]
+    sink: EffectSink[Action, OptChildHandler_co]
     state: State_co | NonExistenceType
 
 
-class EffectHandler(Protocol[Key_contra, Decl_contra, State, OptChildRecon_co]):
+class EffectHandler(Protocol[Key_contra, Value_contra, State, OptChildHandler_co]):
     def reconcile(
         self,
         key: Key_contra,
-        desired_effect: Decl_contra | NonExistenceType,
+        desired_effect: Value_contra | NonExistenceType,
         prev_possible_states: Collection[State],
         prev_may_be_missing: bool,
         /,
-    ) -> EffectReconcileOutput[Any, State, OptChildRecon_co] | None: ...
+    ) -> EffectReconcileOutput[Any, State, OptChildHandler_co] | None: ...
 
 
-class EffectProvider(Generic[Key, Value, OptChildRecon]):
+class EffectProvider(Generic[Key, Value, OptChildHandler]):
     __slots__ = ("_core",)
     _core: core.EffectProvider
 
     def __init__(self, core_effect_provider: core.EffectProvider):
         self._core = core_effect_provider
 
-    def effect(self, key: Key, value: Value) -> "Effect[OptChildRecon]":
+    def effect(self, key: Key, value: Value) -> "Effect[OptChildHandler]":
         return Effect(self, key, value)
 
 
-class Effect(Generic[OptChildRecon]):
+class Effect(Generic[OptChildHandler]):
     __slots__ = ("_provider", "_key", "_value")
-    _provider: EffectProvider[Any, Any, OptChildRecon]
+    _provider: EffectProvider[Any, Any, OptChildHandler]
     _key: Any
     _value: Any
 
     def __init__(
         self,
-        provider: EffectProvider[Key, Value, OptChildRecon],
+        provider: EffectProvider[Key, Value, OptChildHandler],
         key: Key,
         value: Value,
     ):
@@ -172,8 +172,8 @@ def declare_effect(effect: Effect[None]) -> None:
 
 
 def declare_effect_with_child(
-    effect: Effect[EffectHandler[Key, Value, Any, OptChildRecon]],
-) -> EffectProvider[Key, Value, OptChildRecon]:
+    effect: Effect[EffectHandler[Key, Value, Any, OptChildHandler]],
+) -> EffectProvider[Key, Value, OptChildHandler]:
     context = component_ctx_var.get()
     if context is None:
         raise RuntimeError("declare_effect* must be called within a component")
@@ -184,8 +184,8 @@ def declare_effect_with_child(
 
 
 def register_root_effect_provider(
-    name: str, handler: EffectHandler[Key, Value, Any, OptChildRecon]
-) -> EffectProvider[Key, Value, OptChildRecon]:
+    name: str, handler: EffectHandler[Key, Value, Any, OptChildHandler]
+) -> EffectProvider[Key, Value, OptChildHandler]:
     provider = core.register_root_effect_provider(name, handler)
     return EffectProvider(provider)
 

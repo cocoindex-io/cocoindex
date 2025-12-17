@@ -635,22 +635,22 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     // Apply actions
     for (sink, input) in actions_by_sinks {
-        let recons = sink.apply(input.actions).await?;
+        let handlers = sink.apply(input.actions).await?;
         if let Some(child_providers) = input.child_providers {
-            let Some(recons) = recons else {
+            let Some(handlers) = handlers else {
                 bail!("expect child providers returned by Sink");
             };
-            if recons.len() != child_providers.len() {
+            if handlers.len() != child_providers.len() {
                 bail!(
                     "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
                     child_providers.len(),
-                    recons.len(),
+                    handlers.len(),
                 );
             }
-            for (recon, child_provider) in std::iter::zip(recons, child_providers) {
+            for (handler, child_provider) in std::iter::zip(handlers, child_providers) {
                 if let Some(child_provider) = child_provider {
-                    if let Some(recon) = recon {
-                        child_provider.fulfill_handler(recon)?;
+                    if let Some(handler) = handler {
+                        child_provider.fulfill_handler(handler)?;
                     } else {
                         bail!("expect child provider returned by Sink to be fulfilled");
                     }
