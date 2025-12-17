@@ -69,6 +69,7 @@ dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "pre-commit"]
 embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
+leann = ["leann>=0.3.5"]
 
 # We need to repeat the dependency above to make it available for the `all` feature.
 # Indirect dependencies such as "cocoindex[embeddings]" will not work for local development.
@@ -77,6 +78,7 @@ all = [
     "colpali-engine",
     "lancedb>=0.25.0",
     "pyarrow>=19.0.0",
+     "leann>=0.3.5",
 ]
 
 # This is the set of dependencies that needs to be installed for the CI workflow.
