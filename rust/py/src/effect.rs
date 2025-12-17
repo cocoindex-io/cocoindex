@@ -2,7 +2,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 use cocoindex_core::engine::effect::{
-    EffectHandler, EffectProvider, EffectProviderRegistry, EffectReconcileOutput, EffectSink,
+    ChildEffectDef, EffectHandler, EffectProvider, EffectProviderRegistry, EffectReconcileOutput,
+    EffectSink,
 };
 use cocoindex_core::state::effect_path::EffectPath;
 use pyo3::exceptions::PyException;
@@ -78,7 +79,7 @@ impl EffectSink<PyEngineProfile> for PyEffectSink {
     async fn apply(
         &self,
         actions: Vec<Py<PyAny>>,
-    ) -> PyResult<Option<Vec<Option<PyEffectHandler>>>> {
+    ) -> PyResult<Option<Vec<Option<ChildEffectDef<PyEngineProfile>>>>> {
         let ret = self.callback.call((actions,)).into_py_result()?.await?;
         Python::attach(|py| {
             if ret.is_none(py) {
@@ -86,13 +87,17 @@ impl EffectSink<PyEngineProfile> for PyEffectSink {
             }
             let seq = ret.bind(py).cast::<PySequence>()?;
             let len = seq.len()? as usize;
-            let mut results: Vec<Option<PyEffectHandler>> = Vec::with_capacity(len);
+            let mut results: Vec<Option<ChildEffectDef<PyEngineProfile>>> = Vec::with_capacity(len);
             for i in 0..len {
                 let obj = seq.get_item(i)?;
                 if obj.is_none() {
                     results.push(None);
                 } else {
-                    results.push(Some(PyEffectHandler(obj.unbind())));
+                    // Extract handler from ChildEffectDef NamedTuple
+                    let (handler,) = obj.extract::<(Py<PyAny>,)>()?;
+                    results.push(Some(ChildEffectDef {
+                        handler: PyEffectHandler(handler),
+                    }));
                 }
             }
             Ok(Some(results))

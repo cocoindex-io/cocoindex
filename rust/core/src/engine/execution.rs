@@ -647,10 +647,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     handlers.len(),
                 );
             }
-            for (handler, child_provider) in std::iter::zip(handlers, child_providers) {
+            for (child_effect_def, child_provider) in std::iter::zip(handlers, child_providers) {
                 if let Some(child_provider) = child_provider {
-                    if let Some(handler) = handler {
-                        child_provider.fulfill_handler(handler)?;
+                    if let Some(child_effect_def) = child_effect_def {
+                        child_provider.fulfill_handler(child_effect_def.handler)?;
                     } else {
                         bail!("expect child provider returned by Sink to be fulfilled");
                     }

@@ -4,6 +4,10 @@ use crate::{engine::profile::EngineProfile, state::effect_path::EffectPath};
 
 use std::hash::Hash;
 
+pub struct ChildEffectDef<Prof: EngineProfile> {
+    pub handler: Prof::EffectHdl,
+}
+
 #[async_trait]
 pub trait EffectSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
@@ -14,7 +18,7 @@ pub trait EffectSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
     async fn apply(
         &self,
         actions: Vec<Prof::EffectAction>,
-    ) -> Result<Option<Vec<Option<Prof::EffectHdl>>>, Prof::Error>;
+    ) -> Result<Option<Vec<Option<ChildEffectDef<Prof>>>>, Prof::Error>;
 }
 
 pub struct EffectReconcileOutput<Prof: EngineProfile> {

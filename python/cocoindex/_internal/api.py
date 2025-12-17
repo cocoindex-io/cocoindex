@@ -1,6 +1,7 @@
 from .effect import (
     NonExistenceType,
     NON_EXISTENCE,
+    ChildEffectDef,
     Effect,
     EffectProvider,
     EffectReconcileOutput,
@@ -25,6 +26,7 @@ __all__ = [
     # .effect
     "NonExistenceType",
     "NON_EXISTENCE",
+    "ChildEffectDef",
     "Effect",
     "EffectProvider",
     "EffectReconcileOutput",

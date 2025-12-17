@@ -8,6 +8,7 @@ from typing import (
     Protocol,
     Any,
     Sequence,
+    overload,
 )
 import threading
 import weakref
@@ -47,7 +48,9 @@ Value = TypeVar("Value", default=Any)
 Value_contra = TypeVar("Value_contra", contravariant=True, default=Any)
 State = TypeVar("State", default=Any)
 State_co = TypeVar("State_co", covariant=True, default=Any)
-
+Handler_co = TypeVar(
+    "Handler_co", covariant=True, bound="EffectHandler[Any, Any, Any, Any]"
+)
 OptChildHandler = TypeVar(
     "OptChildHandler",
     bound="EffectHandler[Any, Any, Any, Any] | None",
@@ -62,16 +65,44 @@ OptChildHandler_co = TypeVar(
 )
 
 
+class ChildEffectDef(Generic[Handler_co], NamedTuple):
+    handler: Handler_co
+
+
 class EffectSinkFn(Protocol[Action_contra, OptChildHandler_co]):
+    # Case 1: No child handler
+    @overload
+    def __call__(
+        self: EffectSinkFn[Action_contra, None], actions: Sequence[Action_contra], /
+    ) -> None: ...
+    # Case 2: With child handler
+    @overload
+    def __call__(
+        self: EffectSinkFn[Action_contra, Handler_co],
+        actions: Sequence[Action_contra],
+        /,
+    ) -> Sequence[ChildEffectDef[Handler_co] | None] | None: ...
     def __call__(
         self, actions: Sequence[Action_contra], /
-    ) -> Sequence[OptChildHandler_co | None] | None: ...
+    ) -> Sequence[ChildEffectDef[Any] | None] | None: ...
 
 
 class AsyncEffectSinkFn(Protocol[Action_contra, OptChildHandler_co]):
+    # Case 1: No child handler
+    @overload
+    async def __call__(
+        self: EffectSinkFn[Action_contra, None], actions: Sequence[Action_contra], /
+    ) -> None: ...
+    # Case 2: With child handler
+    @overload
+    async def __call__(
+        self: EffectSinkFn[Action_contra, Handler_co],
+        actions: Sequence[Action_contra],
+        /,
+    ) -> Sequence[ChildEffectDef[Handler_co] | None] | None: ...
     async def __call__(
         self, actions: Sequence[Action_contra], /
-    ) -> Sequence[OptChildHandler_co | None] | None: ...
+    ) -> Sequence[ChildEffectDef[Any] | None] | None: ...
 
 
 class EffectSink(Generic[Action_contra, OptChildHandler_co]):

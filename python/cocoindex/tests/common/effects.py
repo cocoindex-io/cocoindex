@@ -134,8 +134,8 @@ class DictsEffectStore:
 
     def _sink(
         self, actions: Collection[tuple[str, bool]]
-    ) -> list[DictEffectStore | None]:
-        child_recons: list[DictEffectStore | None] = []
+    ) -> list[coco.ChildEffectDef[DictEffectStore] | None]:
+        child_effect_defs: list[coco.ChildEffectDef[DictEffectStore] | None] = []
         if self.sink_exception:
             raise ValueError("injected sink exception")
         with self._lock:
@@ -144,13 +144,13 @@ class DictsEffectStore:
                     if name not in self._stores:
                         self._stores[name] = DictEffectStore()
                         self.metrics.increment("upsert")
-                    child_recons.append(self._stores[name])
+                    child_effect_defs.append(coco.ChildEffectDef(self._stores[name]))
                 else:
                     del self._stores[name]
                     self.metrics.increment("delete")
-                    child_recons.append(None)
+                    child_effect_defs.append(None)
             self.metrics.increment("sink")
-        return child_recons
+        return child_effect_defs
 
     def reconcile(
         self,
