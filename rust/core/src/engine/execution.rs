@@ -9,7 +9,7 @@ use heed::{RoTxn, RwTxn};
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext, DeclaredEffect,
 };
-use crate::engine::effect::{EffectProvider, EffectProviderRegistry, EffectReconciler, EffectSink};
+use crate::engine::effect::{EffectHandler, EffectProvider, EffectProviderRegistry, EffectSink};
 use crate::engine::profile::{EngineProfile, Persist, StableFingerprint};
 use crate::state::effect_path::EffectPath;
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
@@ -19,13 +19,13 @@ pub fn declare_effect<Prof: EngineProfile>(
     context: &ComponentProcessorContext<Prof>,
     provider: EffectProvider<Prof>,
     key: Prof::EffectKey,
-    decl: Prof::EffectDecl,
+    value: Prof::EffectValue,
 ) -> Result<()> {
     let effect_path = make_effect_path(&provider, &key);
     let declared_effect = DeclaredEffect {
         provider,
         key,
-        decl,
+        value,
         child_provider: None,
     };
     context.update_building_state(|building_state| {
@@ -45,7 +45,7 @@ pub fn declare_effect_with_child<Prof: EngineProfile>(
     context: &ComponentProcessorContext<Prof>,
     provider: EffectProvider<Prof>,
     key: Prof::EffectKey,
-    decl: Prof::EffectDecl,
+    value: Prof::EffectValue,
 ) -> Result<EffectProvider<Prof>> {
     let effect_path = make_effect_path(&provider, &key);
     context.update_building_state(|building_state| {
@@ -56,7 +56,7 @@ pub fn declare_effect_with_child<Prof: EngineProfile>(
         let declared_effect = DeclaredEffect {
             provider,
             key,
-            decl,
+            value,
             child_provider: Some(child_provider.clone()),
         };
         match building_state.effect.declared_effects.entry(effect_path) {
@@ -539,7 +539,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 Some(declared_effect) => (
                     Cow::Owned(declared_effect.provider),
                     declared_effect.key,
-                    Some(declared_effect.decl),
+                    Some(declared_effect.value),
                     declared_effect.child_provider,
                 ),
                 None => {
@@ -557,7 +557,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 }
             };
             let recon_output = effect_provider
-                .reconciler()
+                .handler()
                 .ok_or_else(|| {
                     anyhow::anyhow!("effect provider not ready for effect with key {effect_key:?}")
                 })?
@@ -587,7 +587,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             let effect_key_bytes = effect.key.to_bytes()?;
             let Some(recon_output) = effect
                 .provider
-                .reconciler()
+                .handler()
                 .ok_or_else(|| {
                     anyhow::anyhow!(
                         "effect provider not ready for effect with key {:?}",
@@ -596,7 +596,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 })?
                 .reconcile(
                     effect.key,
-                    Some(effect.decl),
+                    Some(effect.value),
                     /*&prev_states=*/ &[],
                     /*prev_may_be_missing=*/ true,
                 )?
@@ -650,7 +650,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             for (recon, child_provider) in std::iter::zip(recons, child_providers) {
                 if let Some(child_provider) = child_provider {
                     if let Some(recon) = recon {
-                        child_provider.fulfill_reconciler(recon)?;
+                        child_provider.fulfill_handler(recon)?;
                     } else {
                         bail!("expect child provider returned by Sink to be fulfilled");
                     }

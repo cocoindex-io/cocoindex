@@ -43,20 +43,20 @@ Action_co = TypeVar("Action_co", covariant=True)
 Action_contra = TypeVar("Action_contra", contravariant=True)
 Key = TypeVar("Key", bound=Hashable)
 Key_contra = TypeVar("Key_contra", contravariant=True, bound=Hashable)
-Decl = TypeVar("Decl", default=Any)
+Value = TypeVar("Value", default=Any)
 Decl_contra = TypeVar("Decl_contra", contravariant=True, default=Any)
 State = TypeVar("State", default=Any)
 State_co = TypeVar("State_co", covariant=True, default=Any)
 
 OptChildRecon = TypeVar(
     "OptChildRecon",
-    bound="EffectReconciler[Any, Any] | None",
+    bound="EffectHandler[Any, Any, Any, Any] | None",
     default=None,
     covariant=True,
 )
 OptChildRecon_co = TypeVar(
     "OptChildRecon_co",
-    bound="EffectReconciler[Any, Any] | None",
+    bound="EffectHandler[Any, Any, Any, Any] | None",
     default=None,
     covariant=True,
 )
@@ -64,13 +64,13 @@ OptChildRecon_co = TypeVar(
 
 class EffectSinkFn(Protocol[Action_contra, OptChildRecon_co]):
     def __call__(
-        self, actions: Collection[Action_contra], /
+        self, actions: Sequence[Action_contra], /
     ) -> Sequence[OptChildRecon_co | None] | None: ...
 
 
 class AsyncEffectSinkFn(Protocol[Action_contra, OptChildRecon_co]):
     async def __call__(
-        self, actions: Collection[Action_contra], /
+        self, actions: Sequence[Action_contra], /
     ) -> Sequence[OptChildRecon_co | None] | None: ...
 
 
@@ -125,98 +125,68 @@ class EffectReconcileOutput(Generic[Action, State_co, OptChildRecon_co], NamedTu
     state: State_co | NonExistenceType
 
 
-def _unwrap_reconcile_output(
-    recon_output: EffectReconcileOutput[Action, State, OptChildRecon] | None,
-) -> Any:
-    if recon_output is None:
-        return None
-    return (recon_output.action, recon_output.sink._core, recon_output.state)
-
-
-class EffectReconcilerFn(
-    Protocol[Action, Key_contra, Decl_contra, State, OptChildRecon_co]
-):
-    def __call__(
+class EffectHandler(Protocol[Key_contra, Decl_contra, State, OptChildRecon_co]):
+    def reconcile(
         self,
         key: Key_contra,
         desired_effect: Decl_contra | NonExistenceType,
         prev_possible_states: Collection[State],
         prev_may_be_missing: bool,
         /,
-    ) -> EffectReconcileOutput[Action, State, OptChildRecon_co] | None: ...
+    ) -> EffectReconcileOutput[Any, State, OptChildRecon_co] | None: ...
 
 
-class EffectReconciler(Generic[Key_contra, Decl_contra, OptChildRecon_co]):
-    __slots__ = ("_core",)
-    _core: core.EffectReconciler
-
-    def __init__(self, core_effect_reconciler: core.EffectReconciler):
-        self._core = core_effect_reconciler
-
-    @staticmethod
-    def from_fn(
-        fn: EffectReconcilerFn[
-            Action, Key_contra, Decl_contra, State, OptChildRecon_co
-        ],
-    ) -> "EffectReconciler[Key_contra, Decl_contra, OptChildRecon_co]":
-        return EffectReconciler(
-            core.EffectReconciler.new_sync(
-                lambda *args: _unwrap_reconcile_output(fn(*args))
-            )
-        )
-
-
-class EffectProvider(Generic[Key, Decl, OptChildRecon]):
+class EffectProvider(Generic[Key, Value, OptChildRecon]):
     __slots__ = ("_core",)
     _core: core.EffectProvider
 
     def __init__(self, core_effect_provider: core.EffectProvider):
         self._core = core_effect_provider
 
-    def effect(self, key: Key, decl: Decl) -> "Effect[OptChildRecon]":
-        return Effect(self, key, decl)
+    def effect(self, key: Key, value: Value) -> "Effect[OptChildRecon]":
+        return Effect(self, key, value)
 
 
 class Effect(Generic[OptChildRecon]):
-    __slots__ = ("_provider", "_key", "_decl")
+    __slots__ = ("_provider", "_key", "_value")
     _provider: EffectProvider[Any, Any, OptChildRecon]
     _key: Any
-    _decl: Any
+    _value: Any
 
     def __init__(
         self,
-        provider: EffectProvider[Key, Decl, OptChildRecon],
+        provider: EffectProvider[Key, Value, OptChildRecon],
         key: Key,
-        decl: Decl,
+        value: Value,
     ):
         self._provider = provider
         self._key = key
-        self._decl = decl
+        self._value = value
 
 
 def declare_effect(effect: Effect[None]) -> None:
     context = component_ctx_var.get()
     if context is None:
         raise RuntimeError("declare_effect* must be called within a component")
-    core.declare_effect(context, effect._provider._core, effect._key, effect._decl)
+    core.declare_effect(context, effect._provider._core, effect._key, effect._value)
 
 
 def declare_effect_with_child(
-    effect: Effect[EffectReconciler[Key, Decl, Any]],
-) -> EffectProvider[Key, Decl, Any]:
+    effect: Effect[EffectHandler[Key, Value, Any, OptChildRecon]],
+) -> EffectProvider[Key, Value, OptChildRecon]:
     context = component_ctx_var.get()
     if context is None:
         raise RuntimeError("declare_effect* must be called within a component")
     provider = core.declare_effect_with_child(
-        context, effect._provider._core, effect._key, effect._decl
+        context, effect._provider._core, effect._key, effect._value
     )
     return EffectProvider(provider)
 
 
 def register_root_effect_provider(
-    name: str, reconciler: EffectReconciler[Key, Decl, OptChildRecon]
-) -> EffectProvider[Key, Decl, OptChildRecon]:
-    provider = core.register_root_effect_provider(name, reconciler._core)
+    name: str, handler: EffectHandler[Key, Value, Any, OptChildRecon]
+) -> EffectProvider[Key, Value, OptChildRecon]:
+    provider = core.register_root_effect_provider(name, handler)
     return EffectProvider(provider)
 
 

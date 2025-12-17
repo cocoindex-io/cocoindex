@@ -2,7 +2,7 @@ use std::{fmt::Debug, hash::Hash};
 
 use crate::engine::{
     component::ComponentProcessor,
-    effect::{EffectReconciler, EffectSink},
+    effect::{EffectHandler, EffectSink},
 };
 use crate::prelude::*;
 
@@ -26,7 +26,7 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
     type ComponentProc: ComponentProcessor<Self>;
     type ComponentProcRet: Send;
 
-    type EffectRcl: EffectReconciler<Self>;
+    type EffectHdl: EffectHandler<Self>;
     type EffectKey: Clone
         + std::fmt::Debug
         + Send
@@ -38,5 +38,5 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
     type EffectState: Clone + Send + Persist<Error = Self::Error> + 'static;
     type EffectAction: Send + 'static;
     type EffectSink: EffectSink<Self>;
-    type EffectDecl: Send + 'static;
+    type EffectValue: Send + 'static;
 }

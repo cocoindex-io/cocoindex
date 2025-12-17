@@ -2,7 +2,7 @@ use cocoindex_core::engine::profile::EngineProfile;
 
 use crate::{
     component::PyComponentProcessor,
-    effect::{PyEffectReconciler, PyEffectSink},
+    effect::{PyEffectHandler, PyEffectSink},
     prelude::*,
 };
 
@@ -16,10 +16,10 @@ impl EngineProfile for PyEngineProfile {
     type ComponentProcRet = Py<PyAny>;
     type Error = PyErr;
 
-    type EffectRcl = PyEffectReconciler;
+    type EffectHdl = PyEffectHandler;
     type EffectKey = crate::value::PyKey;
     type EffectState = crate::value::PyValue;
     type EffectAction = Py<PyAny>;
     type EffectSink = PyEffectSink;
-    type EffectDecl = Py<PyAny>;
+    type EffectValue = Py<PyAny>;
 }

@@ -50,7 +50,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 pub(crate) struct DeclaredEffect<Prof: EngineProfile> {
     pub provider: EffectProvider<Prof>,
     pub key: Prof::EffectKey,
-    pub decl: Prof::EffectDecl,
+    pub value: Prof::EffectValue,
     pub child_provider: Option<EffectProvider<Prof>>,
 }
 

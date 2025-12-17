@@ -14,7 +14,7 @@ pub trait EffectSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
     async fn apply(
         &self,
         actions: Vec<Prof::EffectAction>,
-    ) -> Result<Option<Vec<Option<Prof::EffectRcl>>>, Prof::Error>;
+    ) -> Result<Option<Vec<Option<Prof::EffectHdl>>>, Prof::Error>;
 }
 
 pub struct EffectReconcileOutput<Prof: EngineProfile> {
@@ -26,11 +26,11 @@ pub struct EffectReconcileOutput<Prof: EngineProfile> {
     // - Whether or not destructive (all children effect should be deleted)
 }
 
-pub trait EffectReconciler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
+pub trait EffectHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
     fn reconcile(
         &self,
         key: Prof::EffectKey,
-        desired_effect: Option<Prof::EffectDecl>,
+        desired_effect: Option<Prof::EffectValue>,
         prev_possible_states: &[Prof::EffectState],
         prev_may_be_missing: bool,
     ) -> Result<Option<EffectReconcileOutput<Prof>>, Prof::Error>;
@@ -38,7 +38,7 @@ pub trait EffectReconciler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
 
 pub(crate) struct EffectProviderInner<Prof: EngineProfile> {
     effect_path: EffectPath,
-    reconciler: OnceLock<Prof::EffectRcl>,
+    handler: OnceLock<Prof::EffectHdl>,
     orphaned: OnceLock<()>,
 }
 
@@ -52,7 +52,7 @@ impl<Prof: EngineProfile> EffectProvider<Prof> {
         Self {
             inner: Arc::new(EffectProviderInner {
                 effect_path,
-                reconciler: OnceLock::new(),
+                handler: OnceLock::new(),
                 orphaned: OnceLock::new(),
             }),
         }
@@ -61,15 +61,15 @@ impl<Prof: EngineProfile> EffectProvider<Prof> {
         &self.inner.effect_path
     }
 
-    pub fn reconciler(&self) -> Option<&Prof::EffectRcl> {
-        self.inner.reconciler.get()
+    pub fn handler(&self) -> Option<&Prof::EffectHdl> {
+        self.inner.handler.get()
     }
 
-    pub fn fulfill_reconciler(&self, reconciler: Prof::EffectRcl) -> Result<()> {
+    pub fn fulfill_handler(&self, handler: Prof::EffectHdl) -> Result<()> {
         self.inner
-            .reconciler
-            .set(reconciler)
-            .map_err(|_| anyhow!("Reconciler is already fulfilled"))
+            .handler
+            .set(handler)
+            .map_err(|_| anyhow!("Handler is already fulfilled"))
     }
 
     pub fn is_orphaned(&self) -> bool {
@@ -106,12 +106,12 @@ impl<Prof: EngineProfile> EffectProviderRegistry<Prof> {
     pub fn register(
         &mut self,
         effect_path: EffectPath,
-        reconciler: Prof::EffectRcl,
+        handler: Prof::EffectHdl,
     ) -> Result<EffectProvider<Prof>> {
         let provider = EffectProvider {
             inner: Arc::new(EffectProviderInner {
                 effect_path: effect_path.clone(),
-                reconciler: OnceLock::from(reconciler),
+                handler: OnceLock::from(handler),
                 orphaned: OnceLock::new(),
             }),
         };
@@ -123,7 +123,7 @@ impl<Prof: EngineProfile> EffectProviderRegistry<Prof> {
         let provider = EffectProvider {
             inner: Arc::new(EffectProviderInner {
                 effect_path: effect_path.clone(),
-                reconciler: OnceLock::new(),
+                handler: OnceLock::new(),
                 orphaned: OnceLock::new(),
             }),
         };
