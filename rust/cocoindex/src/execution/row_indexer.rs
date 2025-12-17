@@ -300,15 +300,22 @@ impl<'a> RowIndexer<'a> {
         }
 
         let (output, stored_mem_info, source_fp) = {
-            let extracted_memoization_info = existing_tracking_info
+            let mut extracted_memoization_info = existing_tracking_info
                 .and_then(|info| info.memoization_info)
                 .and_then(|info| info.0);
+
+            // Invalidate memoization cache if full reprocess is requested
+            if self.mode == super::source_indexer::UpdateMode::FullReprocess {
+                if let Some(ref mut info) = extracted_memoization_info {
+                    info.cache.clear();
+                }
+            }
 
             match source_value {
                 interface::SourceValue::Existence(source_value) => {
                     let evaluation_memory = EvaluationMemory::new(
                         self.process_time,
-                        extracted_memoization_info,
+                        extracted_memoization_info, // This is now potentially cleared
                         EvaluationMemoryOptions {
                             enable_cache: true,
                             evaluation_only: false,

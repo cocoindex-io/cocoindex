@@ -111,6 +111,7 @@ cocoindex server [OPTIONS] APP_TARGET
 | `--setup` | (DEPRECATED) Automatically setup backends for the flow if it's not setup yet. This is now the default behavior.  [default: True] |
 | `--reset` | Drop existing setup before starting server (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`. |
 | `--reexport` | Reexport to targets even if there's no change. |
+| `--full-reprocess` | Reprocess everything and invalidate existing caches. |
 | `-f, --force` | Force setup without confirmation prompts. |
 | `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |
 | `-r, --reload` | Enable auto-reload on code changes. |
@@ -194,7 +195,8 @@ cocoindex update [OPTIONS] APP_FLOW_SPECIFIER
 |--------|-------------|
 | `-L, --live` | Continuously watch changes from data sources and apply to the target index. |
 | `--reexport` | Reexport to targets even if there's no change. |
-| `--setup` | (DEPRECATED) Automatically setup backends for the flow if it's not setup yet. This is now the default behavior.  [default: True] |
+| `--full-reprocess` | Reprocess everything and invalidate existing caches. |
+| `--setup` | (DEPRECATED) Automatically setup backends for the flow if it's not setup yet. This is now the default behavior. [default: True] |
 | `--reset` | Drop existing setup before updating (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`. |
 | `-f, --force` | Force setup without confirmation prompts. |
 | `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |

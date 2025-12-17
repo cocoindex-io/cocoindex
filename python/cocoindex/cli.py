@@ -406,6 +406,13 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
     help="Reexport to targets even if there's no change.",
 )
 @click.option(
+    "--full-reprocess",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Reprocess everything and invalidate existing caches.",
+)
+@click.option(
     "--setup",
     is_flag=True,
     show_default=True,
@@ -440,6 +447,7 @@ def update(
     app_flow_specifier: str,
     live: bool,
     reexport: bool,
+    full_reprocess: bool,
     setup: bool,  # pylint: disable=redefined-outer-name
     reset: bool,
     force: bool,
@@ -469,6 +477,7 @@ def update(
     options = flow.FlowLiveUpdaterOptions(
         live_mode=live,
         reexport_targets=reexport,
+        full_reprocess=full_reprocess,
         print_stats=not quiet,
     )
     if reset or setup:
@@ -588,6 +597,13 @@ def evaluate(
     show_default=True,
     default=False,
     help="Reexport to targets even if there's no change.",
+)
+@click.option(
+    "--full-reprocess",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Reprocess everything and invalidate existing caches.",
 )
 @click.option(
     "-f",
