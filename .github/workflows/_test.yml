@@ -54,7 +54,7 @@ jobs:
         #     cache-workspace-crates: 'false'
 
         - name: Rust tests (no default features)
-          run: cargo test --no-default-features --verbose
+          run: cargo test --no-default-features --features abi3 --verbose
 
         - name: Rust tests
           run: cargo test --verbose
