@@ -137,8 +137,10 @@ impl PostgresSourceExecutor {
 }
 
 /// Map PostgreSQL data types to CocoIndex BasicValueType and a decoder function
-fn map_postgres_type_to_cocoindex_and_decoder(pg_type: &str) -> (BasicValueType, PgValueDecoder) {
-    match pg_type {
+fn map_postgres_type_to_cocoindex_and_decoder(
+    pg_type: &str,
+) -> Option<(BasicValueType, PgValueDecoder)> {
+    let result = match pg_type {
         "bytea" => (
             BasicValueType::Bytes,
             (|row, idx| Ok(Value::from(row.try_get::<Option<Vec<u8>>, _>(idx)?))) as PgValueDecoder,
@@ -235,25 +237,63 @@ fn map_postgres_type_to_cocoindex_and_decoder(pg_type: &str) -> (BasicValueType,
                 ))
             }) as PgValueDecoder,
         ),
-        // Vector types (if supported) -> fallback to JSON
-        t if t.starts_with("vector(") => (
-            BasicValueType::Json,
-            (|row, idx| {
-                Ok(Value::from(
-                    row.try_get::<Option<serde_json::Value>, _>(idx)?,
-                ))
-            }) as PgValueDecoder,
-        ),
-        // Others fallback to JSON
-        _ => (
-            BasicValueType::Json,
-            (|row, idx| {
-                Ok(Value::from(
-                    row.try_get::<Option<serde_json::Value>, _>(idx)?,
-                ))
-            }) as PgValueDecoder,
-        ),
-    }
+        // Vector types (pgvector extension)
+        t if t.starts_with("vector(") => {
+            // Parse dimension from "vector(N)" format
+            let dim = t
+                .strip_prefix("vector(")
+                .and_then(|s| s.strip_suffix(")"))
+                .and_then(|s| s.parse::<usize>().ok());
+            (
+                BasicValueType::Vector(VectorTypeSchema {
+                    element_type: Box::new(BasicValueType::Float32),
+                    dimension: dim,
+                }),
+                (|row, idx| {
+                    let opt_vec = row.try_get::<Option<pgvector::Vector>, _>(idx)?;
+                    Ok(match opt_vec {
+                        Some(vec) => {
+                            let floats: Vec<f32> = vec.to_vec();
+                            Value::Basic(BasicValue::from(floats))
+                        }
+                        None => Value::Null,
+                    })
+                }) as PgValueDecoder,
+            )
+        }
+        // Half-precision vector types (pgvector extension)
+        t if t.starts_with("halfvec(") => {
+            // Parse dimension from "halfvec(N)" format
+            let dim = t
+                .strip_prefix("halfvec(")
+                .and_then(|s| s.strip_suffix(")"))
+                .and_then(|s| s.parse::<usize>().ok());
+            (
+                BasicValueType::Vector(VectorTypeSchema {
+                    element_type: Box::new(BasicValueType::Float32),
+                    dimension: dim,
+                }),
+                (|row, idx| {
+                    let opt_vec = row.try_get::<Option<pgvector::HalfVector>, _>(idx)?;
+                    Ok(match opt_vec {
+                        Some(vec) => {
+                            // Convert half-precision floats to f32
+                            let floats: Vec<f32> =
+                                vec.to_vec().into_iter().map(f32::from).collect();
+                            Value::Basic(BasicValue::from(floats))
+                        }
+                        None => Value::Null,
+                    })
+                }) as PgValueDecoder,
+            )
+        }
+        // Skip others
+        t => {
+            warn!("Skipping unsupported PostgreSQL type: {t}");
+            return None;
+        }
+    };
+    Some(result)
 }
 
 /// Fetch table schema information from PostgreSQL
@@ -267,11 +307,14 @@ async fn fetch_table_schema(
     let query = r#"
         SELECT
             c.column_name,
-            c.data_type,
+            format_type(a.atttypid, a.atttypmod) as data_type,
             c.is_nullable,
             (pk.column_name IS NOT NULL) as is_primary_key
         FROM
             information_schema.columns c
+        JOIN pg_class t ON c.table_name = t.relname
+        JOIN pg_namespace s ON t.relnamespace = s.oid AND c.table_schema = s.nspname
+        JOIN pg_attribute a ON t.oid = a.attrelid AND c.column_name = a.attname
         LEFT JOIN (
             SELECT
                 kcu.column_name
@@ -301,7 +344,10 @@ async fn fetch_table_schema(
         let is_nullable: bool = row.try_get::<String, _>("is_nullable")? == "YES";
         let is_primary_key: bool = row.try_get::<bool, _>("is_primary_key")?;
 
-        let (basic_type, decoder) = map_postgres_type_to_cocoindex_and_decoder(&pg_type_str);
+        let Some((basic_type, decoder)) = map_postgres_type_to_cocoindex_and_decoder(&pg_type_str)
+        else {
+            continue;
+        };
         let field_schema = FieldSchema::new(
             &col_name,
             make_output_type(basic_type).with_nullable(is_nullable),
