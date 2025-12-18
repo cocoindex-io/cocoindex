@@ -64,7 +64,14 @@ include = ["THIRD_PARTY_NOTICES.html"]
 manifest-path = "rust/py/Cargo.toml"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "pre-commit"]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+    "pre-commit",
+    "pydantic>=2.11.9",
+]
 
 embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
@@ -85,12 +92,43 @@ all-ci = ["pytest", "pytest-asyncio", "mypy", "pydantic>=2.11.9"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = "python/cocoindex"
-exclude = "(\\.venv|site-packages)"
+
+files = ["python"]
+
+# This allows 'import cocoindex' to work inside examples
+mypy_path = "python"
+
+# Prevent "Duplicate module named 'main'" errors
+# This forces mypy to calculate module names based on file path
+# relative to the root, rather than just the filename.
+explicit_package_bases = true
+
+# Enable namespace packages
+# This allows 'examples/example1' to be seen as a module path
+namespace_packages = true
+
+exclude = [".venv", "site-packages", "baml_client"]
 disable_error_code = ["unused-ignore"]
+
 [[tool.mypy.overrides]]
+# Ignore missing imports for optional dependencies from cocoindex library
 module = ["sentence_transformers", "torch", "colpali_engine", "PIL"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["examples_v1.*"]
+
+# Silence missing import errors for optional dependencies
+disable_error_code = ["import-not-found", "import-untyped", "untyped-decorator"]
+
+# Prevent the "Any" contagion from triggering strict errors
+# (These flags are normally True in strict mode)
+
+warn_return_any = false
+disallow_any_generics = false
+disallow_subclassing_any = false
+disallow_untyped_calls = false
+disallow_any_decorated = false
 
 [tool.pytest]
 log_cli = true

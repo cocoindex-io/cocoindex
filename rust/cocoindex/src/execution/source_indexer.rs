@@ -237,6 +237,19 @@ pub enum UpdateMode {
     #[default]
     Normal,
     ReexportTargets,
+    FullReprocess,
+}
+
+impl UpdateMode {
+    /// Returns true if the mode requires re-exporting data regardless of
+    /// whether the source data appears unchanged.
+    /// This covers both ReexportTargets and FullReprocess.
+    pub fn needs_full_export(&self) -> bool {
+        matches!(
+            self,
+            UpdateMode::ReexportTargets | UpdateMode::FullReprocess
+        )
+    }
 }
 
 pub struct UpdateOptions {
@@ -397,7 +410,7 @@ impl SourceIndexingContext {
                             .advance(
                                 version,
                                 Some(content_version_fp),
-                                /*force_reload=*/ mode == UpdateMode::ReexportTargets,
+                                /*force_reload=*/ mode.needs_full_export(),
                             )
                             .await?
                         {
@@ -409,9 +422,9 @@ impl SourceIndexingContext {
                             } => {
                                 // Fast path optimization: may collapse the row based on source version fingerprint.
                                 // Still need to update the tracking table as the processed ordinal advanced.
-                                if let Some(prev_content_version_fp) =
-                                    &prev_version_state.content_version_fp
-                                    && mode == UpdateMode::Normal
+                                if !mode.needs_full_export()
+                                    && let Some(prev_content_version_fp) =
+                                        &prev_version_state.content_version_fp
                                 {
                                     let collapse_result = row_indexer
                                         .try_collapse(
@@ -471,7 +484,7 @@ impl SourceIndexingContext {
                         .advance(
                             source_version,
                             content_version_fp.as_ref(),
-                            /*force_reload=*/ mode == UpdateMode::ReexportTargets,
+                            /*force_reload=*/ mode.needs_full_export(),
                         )
                         .await?
                     {
@@ -598,7 +611,7 @@ impl SourceIndexingContext {
                     let scan_generation = state.scan_generation;
                     let row_state = state.rows.entry(row.key.clone()).or_default();
                     row_state.touched_generation = scan_generation;
-                    if update_options.mode == UpdateMode::Normal
+                    if !update_options.mode.needs_full_export()
                         && row_state
                             .version_state
                             .source_version
@@ -693,6 +706,11 @@ impl batching::Runner for UpdateOnceRunner {
         let update_options = UpdateOptions {
             expect_little_diff: inputs.iter().all(|input| input.options.expect_little_diff),
             mode: if inputs
+                .iter()
+                .any(|input| input.options.mode == UpdateMode::FullReprocess)
+            {
+                UpdateMode::FullReprocess
+            } else if inputs
                 .iter()
                 .any(|input| input.options.mode == UpdateMode::ReexportTargets)
             {

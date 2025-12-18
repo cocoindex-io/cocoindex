@@ -71,7 +71,7 @@ class ProductTaxonomyInfo(BaseModel):
         description="Taxonomies for the current product."
     )
     complementary_taxonomies: list[ProductTaxonomy] = Field(
-        "Think about when customers buy this product, what else they might need as complementary products. Put labels "
+        description="Think about when customers buy this product, what else they might need as complementary products. Put labels "
         "for these complementary products."
     )
 

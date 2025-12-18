@@ -58,9 +58,9 @@ repos:
 
         - id: mypy-check
           name: mypy type check
-          entry: dmypy run python
+          entry: dmypy run
           language: system
-          files: ^(rust/|python/Cargo\.toml|pyproject\.toml)
+          files: ^(rust/|python/|examples/|Cargo\.toml|pyproject\.toml)
           pass_filenames: false
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
