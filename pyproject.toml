@@ -85,9 +85,24 @@ all-ci = ["pytest", "pytest-asyncio", "mypy", "pydantic>=2.11.9"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = "python/cocoindex"
-exclude = "(\\.venv|site-packages)"
+
+files = ["python", "examples"]
+
+# This allows 'import cocoindex' to work inside examples
+mypy_path = "python"
+
+# Prevent "Duplicate module named 'main'" errors
+# This forces mypy to calculate module names based on file path
+# relative to the root, rather than just the filename.
+explicit_package_bases = true
+
+# Enable namespace packages
+# This allows 'example/example1' to be seen as a module path
+namespace_packages = true
+
+exclude = [".venv", "site-packages", "baml_client"]
 disable_error_code = ["unused-ignore"]
+
 [[tool.mypy.overrides]]
-module = ["sentence_transformers", "torch", "colpali_engine", "PIL"]
-ignore_missing_imports = true
+module = ["examples.*"]
+disable_error_code = ["import-not-found", "import-untyped"]
