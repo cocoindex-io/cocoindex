@@ -64,7 +64,14 @@ include = ["THIRD_PARTY_NOTICES.html"]
 manifest-path = "rust/cocoindex/Cargo.toml"
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "pre-commit"]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+    "pre-commit",
+    "pydantic>=2.11.9",
+]
 
 embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
@@ -104,9 +111,21 @@ exclude = [".venv", "site-packages", "baml_client"]
 disable_error_code = ["unused-ignore"]
 
 [[tool.mypy.overrides]]
+# Ignore missing imports for optional dependencies from cocoindex library
 module = ["sentence_transformers", "torch", "colpali_engine", "PIL"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["examples.*"]
-disable_error_code = ["import-not-found", "import-untyped"]
+
+# Silence missing import errors for optional dependencies
+disable_error_code = ["import-not-found", "import-untyped", "no-any-return"]
+
+# Prevent the "Any" contagion from triggering strict errors
+# (These flags are normally True in strict mode)
+
+warn_return_any = false
+disallow_any_generics = false
+disallow_subclassing_any = false
+disallow_untyped_calls = false
+disallow_any_decorated = false
