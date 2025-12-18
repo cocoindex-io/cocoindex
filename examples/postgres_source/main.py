@@ -3,7 +3,7 @@ import os
 
 from dotenv import load_dotenv
 from psycopg_pool import ConnectionPool
-from pgvector.psycopg import register_vector  # type: ignore[import-untyped]
+from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 from numpy.typing import NDArray
 
@@ -133,7 +133,7 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
             """,
                 (query_vector, top_k),
             )
-            return cur.fetchall()  # type: ignore
+            return cur.fetchall()
 
 
 def _main() -> None:
