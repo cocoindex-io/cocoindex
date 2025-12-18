@@ -119,7 +119,7 @@ ignore_missing_imports = true
 module = ["examples.*"]
 
 # Silence missing import errors for optional dependencies
-disable_error_code = ["import-not-found", "import-untyped", "no-any-return"]
+disable_error_code = ["import-not-found", "import-untyped", "untyped-decorator"]
 
 # Prevent the "Any" contagion from triggering strict errors
 # (These flags are normally True in strict mode)

@@ -109,7 +109,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 fastapi_app = FastAPI(lifespan=lifespan)
 
 
-@fastapi_app.get("/search")  # type: ignore
+@fastapi_app.get("/search")
 def search_endpoint(
     request: Request,
     q: str = Query(..., description="Search query"),
