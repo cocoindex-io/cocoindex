@@ -56,8 +56,8 @@ repos:
 
         - id: mypy-check
           name: mypy type check
-          entry: .pre-commit-scripts/mypy-check.sh
-          language: script
+          entry: dmypy run
+          language: system
           files: ^(rust/|python/|examples/|Cargo\.toml|pyproject\.toml)
           pass_filenames: false
 
