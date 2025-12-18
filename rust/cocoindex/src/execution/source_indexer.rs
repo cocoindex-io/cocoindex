@@ -422,9 +422,9 @@ impl SourceIndexingContext {
                             } => {
                                 // Fast path optimization: may collapse the row based on source version fingerprint.
                                 // Still need to update the tracking table as the processed ordinal advanced.
-                                if let Some(prev_content_version_fp) =
-                                    &prev_version_state.content_version_fp
-                                    && mode == UpdateMode::Normal
+                                if !mode.needs_full_export()
+                                    && let Some(prev_content_version_fp) =
+                                        &prev_version_state.content_version_fp
                                 {
                                     let collapse_result = row_indexer
                                         .try_collapse(
@@ -611,7 +611,7 @@ impl SourceIndexingContext {
                     let scan_generation = state.scan_generation;
                     let row_state = state.rows.entry(row.key.clone()).or_default();
                     row_state.touched_generation = scan_generation;
-                    if update_options.mode == UpdateMode::Normal
+                    if !update_options.mode.needs_full_export()
                         && row_state
                             .version_state
                             .source_version

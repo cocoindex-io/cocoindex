@@ -636,6 +636,7 @@ def server(
     setup: bool,  # pylint: disable=redefined-outer-name
     reset: bool,
     reexport: bool,
+    full_reprocess: bool,
     force: bool,
     quiet: bool,
     cors_origin: str | None,
@@ -659,6 +660,7 @@ def server(
         cors_local,
         live_update,
         reexport,
+        full_reprocess,
         quiet,
     )
     kwargs = {
@@ -719,6 +721,7 @@ def _run_server(
     cors_local: int | None = None,
     live_update: bool = False,
     reexport: bool = False,
+    full_reprocess: bool = False,
     quiet: bool = False,
     /,
     *,
@@ -783,6 +786,7 @@ def _run_server(
         options = flow.FlowLiveUpdaterOptions(
             live_mode=live_update,
             reexport_targets=reexport,
+            full_reprocess=full_reprocess,
             print_stats=not quiet,
         )
         asyncio.run_coroutine_threadsafe(

@@ -245,7 +245,7 @@ impl<'a> RowIndexer<'a> {
                 );
 
                 // First check ordinal-based skipping
-                if self.mode == super::source_indexer::UpdateMode::Normal
+                if !self.mode.needs_full_export()
                     && existing_version.should_skip(source_version, Some(self.update_stats))
                 {
                     return Ok(SkippedOr::Skipped(
@@ -271,7 +271,7 @@ impl<'a> RowIndexer<'a> {
             (None, interface::SourceValue::NonExistence) => None,
         };
 
-        if self.mode == super::source_indexer::UpdateMode::Normal
+        if !self.mode.needs_full_export()
             && let Some(content_version_fp) = &content_version_fp
         {
             let baseline = if tracking_setup_state.has_fast_fingerprint_column {
@@ -417,7 +417,7 @@ impl<'a> RowIndexer<'a> {
         if let Some(existing_version) = existing_version {
             if output.is_some() {
                 if existing_version.kind == SourceVersionKind::DifferentLogic
-                    || self.mode == super::source_indexer::UpdateMode::ReexportTargets
+                    || self.mode.needs_full_export()
                 {
                     self.update_stats.num_reprocesses.inc(1);
                 } else {
@@ -443,8 +443,7 @@ impl<'a> RowIndexer<'a> {
         let tracking_table_setup = &self.setup_execution_ctx.setup_state.tracking_table;
 
         // Check if we can use content hash optimization
-        if self.mode != super::source_indexer::UpdateMode::Normal
-            || existing_version.kind != SourceVersionKind::CurrentLogic
+        if self.mode.needs_full_export() || existing_version.kind != SourceVersionKind::CurrentLogic
         {
             return Ok(None);
         }
@@ -555,7 +554,7 @@ impl<'a> RowIndexer<'a> {
             &mut *txn,
         )
         .await?;
-        if self.mode == super::source_indexer::UpdateMode::Normal
+        if !self.mode.needs_full_export()
             && let Some(tracking_info) = &tracking_info
         {
             let existing_source_version = SourceVersion::from_stored_precommit_info(
@@ -675,7 +674,7 @@ impl<'a> RowIndexer<'a> {
                     } else {
                         None
                     };
-                    if self.mode == super::source_indexer::UpdateMode::Normal
+                    if !self.mode.needs_full_export()
                         && existing_target_keys.as_ref().map_or(false, |keys| {
                             !keys.is_empty() && keys.iter().all(|(_, fp)| fp == &curr_fp)
                         })
