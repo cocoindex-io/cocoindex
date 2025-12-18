@@ -97,11 +97,15 @@ mypy_path = "python"
 explicit_package_bases = true
 
 # Enable namespace packages
-# This allows 'example/example1' to be seen as a module path
+# This allows 'examples/example1' to be seen as a module path
 namespace_packages = true
 
 exclude = [".venv", "site-packages", "baml_client"]
 disable_error_code = ["unused-ignore"]
+
+[[tool.mypy.overrides]]
+module = ["sentence_transformers", "torch", "colpali_engine", "PIL"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["examples.*"]
