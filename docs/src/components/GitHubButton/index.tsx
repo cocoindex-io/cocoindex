@@ -17,6 +17,7 @@ function Button({ href, children, margin = "0" }: ButtonProps): ReactNode {
       href={href}
       target="_blank"
       rel="noopener noreferrer"
+      className="button button--outline button--secondary"
       style={{
         margin,
         fontSize: "0.85rem",
@@ -28,7 +29,7 @@ function Button({ href, children, margin = "0" }: ButtonProps): ReactNode {
           ? "var(--coco-glow, 0 0 0 6px rgba(91,91,214,0.08))"
           : "var(--coco-shadow, 0 6px 18px rgba(91,91,214,0.06))",
         transition:
-          "background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform 80ms ease",
+          "background-color 150ms ease, color 150ms ease, box-shadow 150ms ease",
       }}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
