@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
 import { FaGithub, FaYoutube } from 'react-icons/fa';
 import { MdMenuBook, MdDriveEta } from 'react-icons/md';
-import { useState } from 'react';
 
 type ButtonProps = {
     href: string;
@@ -10,35 +9,21 @@ type ButtonProps = {
 };
 
 function Button({ href, children, margin = "0" }: ButtonProps): ReactNode {
-  const [hover, setHover] = useState(false);
-
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="button button--outline button--secondary"
-      style={{
-        margin,
-        fontSize: "0.85rem",
-        cursor: "pointer",
-        borderColor: "var(--ifm-color-primary)",
-        color: hover ? "#fff" : "var(--ifm-color-primary)",
-        backgroundColor: hover ? "var(--ifm-color-primary)" : "transparent",
-        boxShadow: hover
-          ? "var(--coco-glow, 0 0 0 6px rgba(91,91,214,0.08))"
-          : "var(--coco-shadow, 0 6px 18px rgba(91,91,214,0.06))",
-        transition:
-          "background-color 150ms ease, color 150ms ease, box-shadow 150ms ease",
-      }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onFocus={() => setHover(true)}
-      onBlur={() => setHover(false)}
+        <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="button button--outline button--secondary button--interactive"
+        style={{
+            margin,
+            fontSize: "0.85rem",
+            cursor: "pointer",
+        }}
     >
-      {children}
-    </a>
-  );
+        {children}
+        </a>
+    );
 }
 
 type GitHubButtonProps = {
