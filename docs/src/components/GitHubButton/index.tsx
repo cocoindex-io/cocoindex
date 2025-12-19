@@ -17,7 +17,6 @@ function Button({ href, children, margin = "0" }: ButtonProps): ReactNode {
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="button button--outline button--secondary"
       style={{
         margin,
         fontSize: "0.85rem",
