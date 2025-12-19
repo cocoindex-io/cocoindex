@@ -21,18 +21,18 @@ _FileFingerprint = bytes
 
 
 class _FileHandler(coco.EffectHandler[_FileName, _FileContent, _FileFingerprint]):
-    _path: pathlib.Path
+    _base_path: pathlib.Path
     _sink: coco.EffectSink[_FileAction]
 
-    def __init__(self, path: pathlib.Path) -> None:
-        self._path = path
+    def __init__(self, base_path: pathlib.Path) -> None:
+        self._base_path = base_path
         self._sink = coco.EffectSink.from_fn(self._apply_actions)
 
     def _apply_actions(self, actions: Sequence[_FileAction]) -> None:
         for action in actions:
-            path = self._path / action.path
+            path = self._base_path / action.path
             if action.content is None:
-                path.unlink()
+                path.unlink(missing_ok=True)
             else:
                 path.write_bytes(action.content)
 
@@ -40,7 +40,7 @@ class _FileHandler(coco.EffectHandler[_FileName, _FileContent, _FileFingerprint]
         self,
         key: _FileName,
         desired_effect: _FileContent | coco.NonExistenceType,
-        prev_possible_states: Collection[_FileContent],
+        prev_possible_states: Collection[_FileFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.EffectReconcileOutput[_FileAction, _FileFingerprint] | None:
@@ -50,6 +50,8 @@ class _FileHandler(coco.EffectHandler[_FileName, _FileContent, _FileFingerprint]
                 sink=self._sink,
                 state=coco.NON_EXISTENCE,
             )
+
+        # TODO: Replace with fingerprinting offered by CocoIndex core engine (e.g. the same mechanism used to detect cached function argument changes).
         target_fp = blake2b(desired_effect).digest()
         if not prev_may_be_missing and all(
             prev == target_fp for prev in prev_possible_states
