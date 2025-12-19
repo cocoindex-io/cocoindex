@@ -3,7 +3,9 @@ use crate::{engine::effect::EffectProviderRegistry, engine::profile::EngineProfi
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::PathBuf, u32};
 
+// TODO: Expose these as settings.
 const MAX_DBS: u32 = 1024;
+const LMDB_MAP_SIZE: usize = 0x1_0000_0000; // 4GiB
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct EnvironmentSettings {
@@ -11,7 +13,7 @@ pub struct EnvironmentSettings {
 }
 
 struct EnvironmentInner<Prof: EngineProfile> {
-    db_env: heed::Env<heed::WithoutTls>,
+    db_env: heed::Env,
     app_names: Mutex<BTreeSet<String>>,
     effect_providers: Arc<Mutex<EffectProviderRegistry<Prof>>>,
 }
@@ -28,21 +30,26 @@ impl<Prof: EngineProfile> Environment<Prof> {
     ) -> Result<Self> {
         // Create the directory if not exists.
         std::fs::create_dir_all(&settings.db_path)?;
+        let db_env = unsafe {
+            heed::EnvOpenOptions::new()
+                .max_dbs(MAX_DBS)
+                .map_size(LMDB_MAP_SIZE)
+                .open(settings.db_path.clone())
+        }?;
+        let cleared_count = db_env.clear_stale_readers()?;
+        if cleared_count > 0 {
+            info!("Cleared {cleared_count} stale readers");
+        }
 
         let state = Arc::new(EnvironmentInner {
-            db_env: unsafe {
-                heed::EnvOpenOptions::new()
-                    .read_txn_without_tls()
-                    .max_dbs(MAX_DBS)
-                    .open(settings.db_path.clone())
-            }?,
+            db_env,
             app_names: Mutex::new(BTreeSet::new()),
             effect_providers,
         });
         Ok(Self { inner: state })
     }
 
-    pub fn db_env(&self) -> &heed::Env<heed::WithoutTls> {
+    pub fn db_env(&self) -> &heed::Env {
         &self.inner.db_env
     }
 

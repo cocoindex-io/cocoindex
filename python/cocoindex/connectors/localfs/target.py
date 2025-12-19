@@ -178,10 +178,10 @@ class DirectoryTarget:
             _directory_provider.effect(key, spec)
         )
 
-    def declare_file(self, *, key: str, content: bytes | str) -> None:
+    def declare_file(self, *, filename: str, content: bytes | str) -> None:
         if isinstance(content, str):
             content = content.encode()
-        coco.declare_effect(self._provider.effect(key, content))
+        coco.declare_effect(self._provider.effect(filename, content))
 
 
 __all__ = ["DirectoryTarget"]

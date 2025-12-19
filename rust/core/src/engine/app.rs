@@ -15,13 +15,7 @@ impl<Prof: EngineProfile> App<Prof> {
     pub fn new(name: &str, env: Environment<Prof>) -> Result<Self> {
         let app_reg = AppRegistration::new(name, &env)?;
 
-        let existing_db = {
-            let rtxn = env.db_env().read_txn()?;
-            env.db_env().open_database(&rtxn, Some(name))?
-        };
-        let db = if let Some(db) = existing_db {
-            db
-        } else {
+        let db = {
             let mut wtxn = env.db_env().write_txn()?;
             let db = env.db_env().create_database(&mut wtxn, Some(name))?;
             wtxn.commit()?;

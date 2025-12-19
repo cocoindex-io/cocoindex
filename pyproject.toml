@@ -93,7 +93,7 @@ all-ci = ["pytest", "pytest-asyncio", "mypy", "pydantic>=2.11.9"]
 python_version = "3.11"
 strict = true
 
-files = ["python"]
+files = ["python", "examples_v1"]
 
 # This allows 'import cocoindex' to work inside examples
 mypy_path = "python"

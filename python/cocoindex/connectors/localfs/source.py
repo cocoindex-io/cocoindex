@@ -15,7 +15,7 @@ from cocoindex.resources.files import (
 class File(FileLike):
     """Represents a file entry from the directory walk."""
 
-    relative_path: Path
+    _relative_path: Path
     _base_path: Path
     _stat: os.stat_result
 
@@ -25,7 +25,7 @@ class File(FileLike):
         base_path: Path,
         stat: os.stat_result,
     ) -> None:
-        self.relative_path = relative_path
+        self._relative_path = relative_path
         self._base_path = base_path
         self._stat = stat
 
@@ -49,11 +49,16 @@ class File(FileLike):
         Returns:
             The file content as bytes.
         """
-        path = self._base_path / self.relative_path
+        path = self._base_path / self._relative_path
         if size < 0:
             return path.read_bytes()
         with path.open("rb") as f:
             return f.read(size)
+
+    @property
+    def relative_path(self) -> Path:
+        """Return the relative path of the file."""
+        return self._relative_path
 
 
 def walk_dir(

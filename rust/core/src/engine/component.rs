@@ -252,7 +252,11 @@ impl<Prof: EngineProfile> Component<Prof> {
         let join_handle = get_runtime().spawn(async move {
             let result = self.execute_once(&processor_context, Some(processor)).await;
             let shared_result = match result {
-                Ok(_) => Ok(()),
+                Ok(Ok(_)) => Ok(()),
+                Ok(Err(err)) => {
+                    error!("component build failed:\n{err}");
+                    Ok(())
+                }
                 Err(err) => Err(SharedError::new(err)),
             };
             child_readiness_guard.map(|guard| guard.resolve(shared_result.clone()));
