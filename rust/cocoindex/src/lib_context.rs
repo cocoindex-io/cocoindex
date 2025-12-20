@@ -86,7 +86,7 @@ impl FlowExecutionContext {
     ) -> Result<&Arc<SourceIndexingContext>> {
         self.source_indexing_contexts[source_idx]
             .get_or_try_init(|| async move {
-                anyhow::Ok(
+                Ok::<_, Error>(
                     SourceIndexingContext::load(
                         flow.clone(),
                         source_idx,
@@ -205,7 +205,8 @@ impl DbPools {
                     let pool = pool_options
                         .connect_with(pg_options.clone())
                         .await
-                        .context(format!("Failed to connect to database {}", conn_spec.url))?;
+                        .internal()
+                        .with_context(|| format!("Failed to connect to database {}", conn_spec.url))?;
                     let _ = pool.acquire().await?;
                 }
 
@@ -219,8 +220,9 @@ impl DbPools {
                 let pool = pool_options
                     .connect_with(pg_options)
                     .await
-                    .context("Failed to connect to database")?;
-                anyhow::Ok(pool)
+                    .internal()
+                    .with_context(|| "Failed to connect to database")?;
+                Ok::<_, Error>(pool)
             })
             .await?;
         Ok(pool.clone())
