@@ -69,34 +69,32 @@ class _FileHandler(coco.EffectHandler[_FileName, _FileContent, _FileFingerprint]
         )
 
 
-class _DirectoryKey(NamedTuple):
+class _DirKey(NamedTuple):
     # Exactly one of the two will be set
     stable_key: coco.StableKey | None = None
     path: pathlib.Path | None = None
 
 
 @dataclass
-class _DirectorySpec:
+class _DirSpec:
     path: pathlib.Path
     managed_by: Literal["system", "user"] = "system"
 
 
-class _DirectoryAction(NamedTuple):
+class _DirAction(NamedTuple):
     curr_path: pathlib.Path | None
     curr_path_action: Literal["insert", "upsert"] | None
     to_delete: set[pathlib.Path]
 
 
-class _DirectoryHandler(
-    coco.EffectHandler[_DirectoryKey, _DirectorySpec, _DirectorySpec, _FileHandler]
-):
-    _sink: coco.EffectSink[_DirectoryAction, _FileHandler]
+class _DirHandler(coco.EffectHandler[_DirKey, _DirSpec, _DirSpec, _FileHandler]):
+    _sink: coco.EffectSink[_DirAction, _FileHandler]
 
     def __init__(self) -> None:
         self._sink = coco.EffectSink.from_fn(self._apply_actions)
 
     def _apply_actions(
-        self, actions: Sequence[_DirectoryAction]
+        self, actions: Sequence[_DirAction]
     ) -> Sequence[coco.ChildEffectDef[_FileHandler] | None]:
         outputs: list[coco.ChildEffectDef[_FileHandler] | None] = []
         for action in actions:
@@ -118,12 +116,12 @@ class _DirectoryHandler(
 
     def reconcile(
         self,
-        key: _DirectoryKey,
-        desired_effect: _DirectorySpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_DirectorySpec],
+        key: _DirKey,
+        desired_effect: _DirSpec | coco.NonExistenceType,
+        prev_possible_states: Collection[_DirSpec],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.EffectReconcileOutput[_DirectoryAction, _DirectorySpec, _FileHandler]:
+    ) -> coco.EffectReconcileOutput[_DirAction, _DirSpec, _FileHandler]:
         curr_path: pathlib.Path | None = None
         curr_path_action: Literal["insert", "upsert"] | None = None
         if not coco.is_non_existence(desired_effect):
@@ -148,7 +146,7 @@ class _DirectoryHandler(
                 to_delete.add(prev.path)
 
         return coco.EffectReconcileOutput(
-            action=_DirectoryAction(
+            action=_DirAction(
                 curr_path=curr_path,
                 curr_path_action=curr_path_action,
                 to_delete=to_delete,
@@ -158,12 +156,12 @@ class _DirectoryHandler(
         )
 
 
-_directory_provider = coco.register_root_effect_provider(
-    "cocoindex.io/localfs/directory", _DirectoryHandler()
+_dir_provider = coco.register_root_effect_provider(
+    "cocoindex.io/localfs/dir", _DirHandler()
 )
 
 
-class DirectoryTarget:
+class DirTarget:
     """
     A target for writing files to a local directory.
 
@@ -174,30 +172,9 @@ class DirectoryTarget:
 
     def __init__(
         self,
-        scope: Scope,
-        *,
-        stable_key: coco.StableKey | None = None,
-        path: pathlib.Path,
-        managed_by: Literal["system", "user"] = "system",
+        _provider: coco.EffectProvider[_FileName, _FileContent],
     ) -> None:
-        """
-        Create a DirectoryTarget.
-
-        Args:
-            scope: The scope for effect declaration.
-            stable_key: Optional stable key for identifying the directory.
-            path: The filesystem path for the directory.
-            managed_by: Whether the directory is managed by "system" or "user".
-        """
-        key = (
-            _DirectoryKey(stable_key=stable_key)
-            if stable_key is not None
-            else _DirectoryKey(path=path)
-        )
-        spec = _DirectorySpec(path=path, managed_by=managed_by)
-        self._provider = coco.declare_effect_with_child(
-            scope, _directory_provider.effect(key, spec)
-        )
+        self._provider = _provider
 
     def declare_file(
         self, scope: Scope, *, filename: str, content: bytes | str
@@ -215,4 +192,29 @@ class DirectoryTarget:
         coco.declare_effect(scope, self._provider.effect(filename, content))
 
 
-__all__ = ["DirectoryTarget"]
+@coco.function
+def dir_target(
+    scope: Scope,
+    path: pathlib.Path,
+    *,
+    stable_key: coco.StableKey | None = None,
+    managed_by: Literal["system", "user"] = "system",
+) -> DirTarget:
+    """
+    Create a DirTarget.
+
+    Args:
+        scope: The scope for effect declaration.
+        stable_key: Optional stable key for identifying the directory.
+        path: The filesystem path for the directory.
+        managed_by: Whether the directory is managed by "system" or "user".
+    """
+    key = (
+        _DirKey(stable_key=stable_key) if stable_key is not None else _DirKey(path=path)
+    )
+    spec = _DirSpec(path=path, managed_by=managed_by)
+    provider = coco.declare_effect_with_child(scope, _dir_provider.effect(key, spec))
+    return DirTarget(provider)
+
+
+__all__ = ["DirTarget", "dir_target"]
