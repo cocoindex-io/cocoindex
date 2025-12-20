@@ -216,7 +216,7 @@
 }
 }
 
- .button--interactive{
+ .button-interactive{
   display: inline-flex;
   align-items: center;
   padding: 0.5rem 1rem;
@@ -230,20 +230,20 @@
   transition: background-color 150ms ease, color 150ms ease;
 }
 
-.button--interactive:hover,
-.button--interactive:active,
-.button--interactive:focus{
+.button-interactive:hover,
+.button-interactive:active,
+.button-interactive:focus{
   color: #fff;
   background-color: var(--ifm-color-primary);
 }
 
-.button--interactive:focus-visible{
+.button-interactive:focus-visible{
   outline: none;
 }
 
 /* Icon spacing */
 .icon-button,
-.button--interactive svg {
+.button-interactive svg {
   margin-right: 8px;
   vertical-align: middle;
   font-size: 1rem;

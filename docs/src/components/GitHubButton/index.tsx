@@ -12,9 +12,9 @@ function Button({ href, children, margin = "0" }: ButtonProps): ReactNode {
   return (
         <a
         href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="button--interactive"
+        target='_blank'
+        rel='noopener noreferrer'
+        className='button-interactive'
     >
         {children}
         </a>
@@ -29,7 +29,7 @@ type GitHubButtonProps = {
 function GitHubButton({ url, margin = '0' }: GitHubButtonProps): ReactNode {
     return (
         <Button href={url} margin={margin}>
-            <FaGithub className="icon-button" />
+            <FaGithub className='icon-button' />
             View on GitHub
         </Button>
     );
