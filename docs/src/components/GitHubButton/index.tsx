@@ -8,7 +8,7 @@ type ButtonProps = {
     margin?: string;
 };
 
-function Button({ href, children, margin = "0" }: ButtonProps): ReactNode {
+function Button({ href, children, margin = '0' }: ButtonProps): ReactNode {
   return (
         <a
         href={href}
