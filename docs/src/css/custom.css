@@ -235,13 +235,11 @@
 .button.button--interactive:focus {
   color: #fff;
   background-color: var(--ifm-color-primary);
-  box-shadow: var(--coco-glow);
 }
 
 .button--interactive:focus-visible,
 .button.button--interactive:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(91,91,214,0.18), var(--coco-glow);
 }
 
 /* Icon spacing */
