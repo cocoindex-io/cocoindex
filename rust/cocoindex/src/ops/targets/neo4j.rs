@@ -72,7 +72,7 @@ impl GraphPool {
                 if let Some(db) = &spec.db {
                     config_builder = config_builder.db(db.clone());
                 }
-                anyhow::Ok(Arc::new(Graph::connect(config_builder.build()?).await?))
+                Ok::<_, Error>(Arc::new(Graph::connect(config_builder.build()?).await?))
             })
             .await?;
         Ok(graph.clone())
@@ -1070,13 +1070,15 @@ impl TargetFactoryBase for Factory {
                     for mut_with_ctx in muts.iter() {
                         let export_ctx = &mut_with_ctx.export_context;
                         for upsert in mut_with_ctx.mutation.upserts.iter() {
-                            export_ctx.add_upsert_queries(upsert, &mut queries)?;
+                            export_ctx.add_upsert_queries(upsert, &mut queries)
+                                .map_err(retryable::Error::not_retryable)?;
                         }
                     }
                     for mut_with_ctx in muts.iter().rev() {
                         let export_ctx = &mut_with_ctx.export_context;
                         for deletion in mut_with_ctx.mutation.deletes.iter() {
-                            export_ctx.add_delete_queries(&deletion.key, &mut queries)?;
+                            export_ctx.add_delete_queries(&deletion.key, &mut queries)
+                                .map_err(retryable::Error::not_retryable)?;
                         }
                     }
                     let mut txn = graph.start_txn().await?;
