@@ -187,7 +187,7 @@ where
         let request = &request;
         let response = retryable::run(
             || async {
-                let req = create_llm_generation_request(request)?;
+                let req = create_llm_generation_request(request).map_err(anyhow::Error::from)?;
                 let response = self.client.chat().create(req).await?;
                 retryable::Ok(response)
             },
@@ -229,7 +229,8 @@ where
         let response = retryable::run(
             || async {
                 let texts: Vec<String> = request.texts.iter().map(|t| t.to_string()).collect();
-                self.client
+                let response = self
+                    .client
                     .embeddings()
                     .create(CreateEmbeddingRequest {
                         model: request.model.to_string(),
@@ -237,11 +238,13 @@ where
                         dimensions: request.output_dimension,
                         ..Default::default()
                     })
-                    .await
+                    .await?;
+                retryable::Ok(response)
             },
             &retryable::RetryOptions::default(),
         )
-        .await?;
+        .await
+        .map_err(Error::from)?;
         Ok(super::LlmEmbeddingResponse {
             embeddings: response.data.into_iter().map(|e| e.embedding).collect(),
         })

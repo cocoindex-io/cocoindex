@@ -150,8 +150,9 @@ impl LlmGenerationClient for AiStudioClient {
                 .json(&payload)
         })
         .await
-        .context("Gemini API error")?;
-        let resp_json: Value = resp.json().await.context("Invalid JSON")?;
+        .map_err(Error::from)
+        .with_context(|| "Gemini API error")?;
+        let resp_json: Value = resp.json().await.internal().with_context(|| "Invalid JSON")?;
 
         if let Some(error) = resp_json.get("error") {
             client_bail!("Gemini API error: {:?}", error);
@@ -206,9 +207,10 @@ impl LlmEmbeddingClient for AiStudioClient {
                 .json(&payload)
         })
         .await
-        .context("Gemini API error")?;
+        .map_err(Error::from)
+        .with_context(|| "Gemini API error")?;
         let embedding_resp: BatchEmbedContentResponse =
-            resp.json().await.context("Invalid JSON")?;
+            resp.json().await.internal().with_context(|| "Invalid JSON")?;
         Ok(super::LlmEmbeddingResponse {
             embeddings: embedding_resp
                 .embeddings
@@ -283,7 +285,8 @@ impl VertexAiClient {
             .with_backoff_policy(ExponentialBackoff::default())
             .with_retry_throttler(SHARED_RETRY_THROTTLER.clone())
             .build()
-            .await?;
+            .await
+            .internal()?;
         Ok(Self { client, config })
     }
 
@@ -355,7 +358,7 @@ impl LlmGenerationClient for VertexAiClient {
         }
 
         // Call the API
-        let resp = req.send().await?;
+        let resp = req.send().await.internal()?;
         // Extract text from response
         let Some(Data::Text(text)) = resp
             .candidates
@@ -418,7 +421,8 @@ impl LlmEmbeddingClient for VertexAiClient {
             .set_parameters(parameters)
             .with_idempotency(true)
             .send()
-            .await?;
+            .await
+            .internal()?;
 
         // Extract the embeddings from the response
         let embeddings: Vec<Vec<f32>> = response

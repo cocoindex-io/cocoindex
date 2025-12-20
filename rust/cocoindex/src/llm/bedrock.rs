@@ -117,9 +117,9 @@ impl LlmGenerationClient for Client {
                 .json(&payload)
         })
         .await
-        .context("Bedrock API error")?;
+        .with_context(|| "Bedrock API error")?;
 
-        let resp_json: serde_json::Value = resp.json().await.context("Invalid JSON")?;
+        let resp_json: serde_json::Value = resp.json().await.with_context(|| "Invalid JSON")?;
 
         // Check for errors in the response
         if let Some(error) = resp_json.get("error") {
