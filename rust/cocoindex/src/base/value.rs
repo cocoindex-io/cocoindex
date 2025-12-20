@@ -41,7 +41,7 @@ impl RangeValue {
 }
 
 impl Serialize for RangeValue {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let mut tuple = serializer.serialize_tuple(2)?;
         tuple.serialize_element(&self.start)?;
         tuple.serialize_element(&self.end)?;
@@ -50,7 +50,7 @@ impl Serialize for RangeValue {
 }
 
 impl<'de> Deserialize<'de> for RangeValue {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         struct RangeVisitor;
 
         impl<'de> Visitor<'de> for RangeVisitor {
@@ -60,7 +60,7 @@ impl<'de> Deserialize<'de> for RangeValue {
                 formatter.write_str("a tuple of two u64")
             }
 
-            fn visit_seq<V>(self, mut seq: V) -> Result<Self::Value, V::Error>
+            fn visit_seq<V>(self, mut seq: V) -> std::result::Result<Self::Value, V::Error>
             where
                 V: SeqAccess<'de>,
             {
@@ -157,7 +157,7 @@ impl From<Vec<KeyPart>> for KeyPart {
 }
 
 impl serde::Serialize for KeyPart {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         Value::from(self.clone()).serialize(serializer)
     }
 }
@@ -198,22 +198,22 @@ impl KeyPart {
                     .ok_or_else(|| api_error!("Key parts less than expected"))?;
                 match basic_type {
                     BasicValueType::Bytes => {
-                        KeyPart::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
+                        KeyPart::Bytes(Bytes::from(BASE64_STANDARD.decode(v).internal()?))
                     }
                     BasicValueType::Str => KeyPart::Str(Arc::from(v)),
-                    BasicValueType::Bool => KeyPart::Bool(v.parse()?),
-                    BasicValueType::Int64 => KeyPart::Int64(v.parse()?),
+                    BasicValueType::Bool => KeyPart::Bool(v.parse().internal()?),
+                    BasicValueType::Int64 => KeyPart::Int64(v.parse().internal()?),
                     BasicValueType::Range => {
                         let v2 = values_iter
                             .next()
                             .ok_or_else(|| api_error!("Key parts less than expected"))?;
                         KeyPart::Range(RangeValue {
-                            start: v.parse()?,
-                            end: v2.parse()?,
+                            start: v.parse().internal()?,
+                            end: v2.parse().internal()?,
                         })
                     }
-                    BasicValueType::Uuid => KeyPart::Uuid(v.parse()?),
-                    BasicValueType::Date => KeyPart::Date(v.parse()?),
+                    BasicValueType::Uuid => KeyPart::Uuid(v.parse().internal()?),
+                    BasicValueType::Date => KeyPart::Date(v.parse().internal()?),
                     schema => api_bail!("Invalid key type {schema}"),
                 }
             }
@@ -409,7 +409,7 @@ impl std::fmt::Display for KeyValue {
 }
 
 impl Serialize for KeyValue {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         if self.0.len() == 1 && !matches!(self.0[0], KeyPart::Struct(_)) {
             self.0[0].serialize(serializer)
         } else {
@@ -1003,7 +1003,7 @@ impl<VS: EstimatedByteSize> EstimatedByteSize for FieldValues<VS> {
 }
 
 impl serde::Serialize for FieldValues {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         self.fields.serialize(serializer)
     }
 }
@@ -1097,7 +1097,7 @@ impl From<FieldValues> for ScopeValue {
 }
 
 impl serde::Serialize for BasicValue {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         match self {
             BasicValue::Bytes(v) => serializer.serialize_str(&BASE64_STANDARD.encode(v)),
             BasicValue::Str(v) => serializer.serialize_str(v),
@@ -1132,7 +1132,7 @@ impl BasicValue {
     pub fn from_json(value: serde_json::Value, schema: &BasicValueType) -> Result<Self> {
         let result = match (value, schema) {
             (serde_json::Value::String(v), BasicValueType::Bytes) => {
-                BasicValue::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
+                BasicValue::Bytes(Bytes::from(BASE64_STANDARD.decode(v).internal()?))
             }
             (serde_json::Value::String(v), BasicValueType::Str) => BasicValue::Str(Arc::from(v)),
             (serde_json::Value::Bool(v), BasicValueType::Bool) => BasicValue::Bool(v),
@@ -1149,11 +1149,11 @@ impl BasicValue {
                     .ok_or_else(|| client_error!("invalid fp64 value {v}"))?,
             ),
             (v, BasicValueType::Range) => BasicValue::Range(utils::deser::from_json_value(v)?),
-            (serde_json::Value::String(v), BasicValueType::Uuid) => BasicValue::Uuid(v.parse()?),
-            (serde_json::Value::String(v), BasicValueType::Date) => BasicValue::Date(v.parse()?),
-            (serde_json::Value::String(v), BasicValueType::Time) => BasicValue::Time(v.parse()?),
+            (serde_json::Value::String(v), BasicValueType::Uuid) => BasicValue::Uuid(v.parse().internal()?),
+            (serde_json::Value::String(v), BasicValueType::Date) => BasicValue::Date(v.parse().internal()?),
+            (serde_json::Value::String(v), BasicValueType::Time) => BasicValue::Time(v.parse().internal()?),
             (serde_json::Value::String(v), BasicValueType::LocalDateTime) => {
-                BasicValue::LocalDateTime(v.parse()?)
+                BasicValue::LocalDateTime(v.parse().internal()?)
             }
             (serde_json::Value::String(v), BasicValueType::OffsetDateTime) => {
                 match chrono::DateTime::parse_from_rfc3339(&v) {
@@ -1166,7 +1166,7 @@ impl BasicValue {
                                 chrono::Utc.fix(),
                             ))
                         } else {
-                            Err(e)?
+                            Err(e).internal()?
                         }
                     }
                 }
@@ -1234,7 +1234,7 @@ impl BasicValue {
 struct TableEntry<'a>(&'a [KeyPart], &'a ScopeValue);
 
 impl serde::Serialize for Value<ScopeValue> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         match self {
             Value::Null => serializer.serialize_none(),
             Value::Basic(v) => v.serialize(serializer),
@@ -1253,7 +1253,7 @@ impl serde::Serialize for Value<ScopeValue> {
 }
 
 impl serde::Serialize for TableEntry<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let &TableEntry(key, value) = self;
         let mut seq = serializer.serialize_seq(Some(key.len() + value.0.fields.len()))?;
         for item in key.iter() {
@@ -1378,7 +1378,7 @@ pub struct TypedValue<'a> {
 }
 
 impl Serialize for TypedValue<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         match (self.t, self.v) {
             (_, Value::Null) => serializer.serialize_none(),
             (ValueType::Basic(t), v) => match t {
@@ -1432,7 +1432,7 @@ pub struct TypedFieldsValue<'a, I: Iterator<Item = &'a Value> + Clone> {
 }
 
 impl<'a, I: Iterator<Item = &'a Value> + Clone> Serialize for TypedFieldsValue<'a, I> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(self.schema.len()))?;
         let values_iter = self.values_iter.clone();
         for (field, value) in self.schema.iter().zip(values_iter) {
