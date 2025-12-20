@@ -216,44 +216,35 @@
 }
 }
 
- .button--interactive,
-.button.button--interactive {
+ .button--interactive{
+  display: inline-flex;
+  align-items: center;
+  padding: 0.5rem 1rem;
   font-size: 0.85rem;
   cursor: pointer;
+  text-decoration: none;
+  border: 1px solid var(--ifm-color-primary);
+  border-radius: var(--ifm-button-border-radius, 4px);
   color: var(--ifm-color-primary);
   background: transparent;
-  border-color: var(--ifm-color-primary);
-  box-shadow: var(--coco-shadow);
-  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+  transition: background-color 150ms ease, color 150ms ease;
 }
 
 .button--interactive:hover,
 .button--interactive:active,
-.button--interactive:focus,
-.button.button--interactive:hover,
-.button.button--interactive:active,
-.button.button--interactive:focus {
+.button--interactive:focus{
   color: #fff;
   background-color: var(--ifm-color-primary);
 }
 
-.button--interactive:focus-visible,
-.button.button--interactive:focus-visible {
+.button--interactive:focus-visible{
   outline: none;
 }
 
 /* Icon spacing */
-.button__icon,
+.icon-button,
 .button--interactive svg {
   margin-right: 8px;
   vertical-align: middle;
   font-size: 1rem;
-}
-
-/* Respect reduced motion */
-@media (prefers-reduced-motion: reduce) {
-  .button--interactive,
-  .button.button--interactive {
-    transition: none;
-  }
 }
