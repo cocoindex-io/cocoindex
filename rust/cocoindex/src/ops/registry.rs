@@ -1,5 +1,5 @@
 use super::interface::ExecutorFactory;
-use anyhow::Result;
+use crate::prelude::*;
 use cocoindex_utils::internal_error;
 use std::collections::HashMap;
 use std::sync::Arc;
