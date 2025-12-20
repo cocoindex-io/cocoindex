@@ -16,39 +16,35 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 
 @coco.function
-def setup_target(_csp: coco.StablePath, path: pathlib.Path) -> localfs.DirectoryTarget:
-    return localfs.DirectoryTarget(path=path)
+def setup_target(scope: coco.Scope, outdir: pathlib.Path) -> localfs.DirectoryTarget:
+    return localfs.DirectoryTarget(scope, path=outdir)
 
 
 @coco.function
 def process_file(
-    _csp: coco.StablePath, file: FileLike, target: localfs.DirectoryTarget
+    scope: coco.Scope, file: FileLike, target: localfs.DirectoryTarget
 ) -> None:
     html = _markdown_it.render(file.read_text())
-    output_filename = "__".join(file.relative_path.parts) + ".html"
-    target.declare_file(filename=output_filename, content=html)
+    outname = "__".join(file.relative_path.parts) + ".html"
+    target.declare_file(scope, filename=outname, content=html)
 
 
 @coco.function
-def app_main(
-    csp: coco.StablePath, source_dir: pathlib.Path, output_dir: pathlib.Path
-) -> None:
-    target = coco.mount_run(setup_target, csp / "setup", output_dir).result()
+def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+    target = coco.mount_run(scope / "setup", setup_target, outdir).result()
 
     files = localfs.walk_dir(
-        source_dir, path_matcher=PatternFilePathMatcher(included_patterns=["*.md"])
+        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["*.md"])
     )
-    for file in files:
-        coco.mount(
-            process_file, csp / "process" / str(file.relative_path), file, target
-        )
+    for f in files:
+        coco.mount(scope / "process" / str(f.relative_path), process_file, f, target)
 
 
 app = coco.App("FilesTransform", app_main)
 
 
 def main() -> None:
-    app.run(source_dir=pathlib.Path("./data"), output_dir=pathlib.Path("./output_html"))
+    app.run(sourcedir=pathlib.Path("./data"), outdir=pathlib.Path("./output_html"))
 
 
 if __name__ == "__main__":

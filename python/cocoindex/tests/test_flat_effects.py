@@ -11,9 +11,9 @@ _source_data: dict[str, Any] = {}
 
 
 @coco.function
-def declare_global_dict_entries(csp: coco.StablePath) -> None:
+def declare_global_dict_entries(scope: coco.Scope) -> None:
     for key, value in _source_data.items():
-        coco.declare_effect(GlobalDictTarget.effect(key, value))
+        coco.declare_effect(scope, GlobalDictTarget.effect(key, value))
 
 
 def test_global_dict_effect_insert() -> None:

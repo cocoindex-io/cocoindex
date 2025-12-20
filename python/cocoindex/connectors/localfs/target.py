@@ -1,11 +1,16 @@
+from __future__ import annotations
+
 import pathlib
 import shutil
 import os
 from dataclasses import dataclass
 from hashlib import blake2b
-from typing import Collection, Literal, NamedTuple, Sequence
+from typing import Collection, Literal, NamedTuple, Sequence, TYPE_CHECKING
 
 import cocoindex as coco
+
+if TYPE_CHECKING:
+    from cocoindex import Scope
 
 
 _FileName = str
@@ -159,15 +164,31 @@ _directory_provider = coco.register_root_effect_provider(
 
 
 class DirectoryTarget:
+    """
+    A target for writing files to a local directory.
+
+    The directory is managed as an effect, with the scope used to scope the effect.
+    """
+
     _provider: coco.EffectProvider[_FileName, _FileContent]
 
     def __init__(
         self,
+        scope: Scope,
         *,
         stable_key: coco.StableKey | None = None,
         path: pathlib.Path,
         managed_by: Literal["system", "user"] = "system",
     ) -> None:
+        """
+        Create a DirectoryTarget.
+
+        Args:
+            scope: The scope for effect declaration.
+            stable_key: Optional stable key for identifying the directory.
+            path: The filesystem path for the directory.
+            managed_by: Whether the directory is managed by "system" or "user".
+        """
         key = (
             _DirectoryKey(stable_key=stable_key)
             if stable_key is not None
@@ -175,13 +196,23 @@ class DirectoryTarget:
         )
         spec = _DirectorySpec(path=path, managed_by=managed_by)
         self._provider = coco.declare_effect_with_child(
-            _directory_provider.effect(key, spec)
+            scope, _directory_provider.effect(key, spec)
         )
 
-    def declare_file(self, *, filename: str, content: bytes | str) -> None:
+    def declare_file(
+        self, scope: Scope, *, filename: str, content: bytes | str
+    ) -> None:
+        """
+        Declare a file to be written to this directory.
+
+        Args:
+            scope: The scope for effect declaration.
+            filename: The name of the file.
+            content: The content of the file (bytes or str).
+        """
         if isinstance(content, str):
             content = content.encode()
-        coco.declare_effect(self._provider.effect(filename, content))
+        coco.declare_effect(scope, self._provider.effect(filename, content))
 
 
 __all__ = ["DirectoryTarget"]

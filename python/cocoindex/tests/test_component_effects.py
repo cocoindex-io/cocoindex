@@ -14,10 +14,8 @@ _source_data: dict[str, dict[str, Any]] = {}
 
 
 @coco.function
-def _declare_dict_container(
-    csp: coco.StablePath, name: str
-) -> coco.EffectProvider[str]:
-    provider = coco.declare_effect_with_child(DictsTarget.effect(name, None))
+def _declare_dict_container(scope: coco.Scope, name: str) -> coco.EffectProvider[str]:
+    provider = coco.declare_effect_with_child(scope, DictsTarget.effect(name, None))
     return provider
 
 
@@ -25,15 +23,15 @@ def _declare_dict_container(
 
 
 @coco.function
-def _declare_dicts_data_together(csp: coco.StablePath) -> None:
+def _declare_dicts_data_together(scope: coco.Scope) -> None:
     for name, data in _source_data.items():
         single_dict_provider = coco.mount_run(
+            scope / "dict" / name,
             _declare_dict_container,
-            csp / "dict" / name,
             name,
         ).result()
         for key, value in data.items():
-            coco.declare_effect(single_dict_provider.effect(key, value))
+            coco.declare_effect(scope, single_dict_provider.effect(key, value))
 
 
 def test_dicts_data_together_insert() -> None:
@@ -216,18 +214,18 @@ def test_dicts_data_together_delete_entry() -> None:
 
 
 @coco.function
-def _declare_one_dict(csp: coco.StablePath, name: str) -> None:
+def _declare_one_dict(scope: coco.Scope, name: str) -> None:
     dict_provider = coco.mount_run(
-        _declare_dict_container, csp / "setup", name
+        scope / "setup", _declare_dict_container, name
     ).result()
     for key, value in _source_data[name].items():
-        coco.declare_effect(dict_provider.effect(key, value))
+        coco.declare_effect(scope, dict_provider.effect(key, value))
 
 
 @coco.function
-def _declare_dicts_in_sub_components(csp: coco.StablePath) -> None:
+def _declare_dicts_in_sub_components(scope: coco.Scope) -> None:
     for name in _source_data.keys():
-        coco.mount(_declare_one_dict, csp / name, name)
+        coco.mount(scope / name, _declare_one_dict, name)
 
 
 def test_dicts_in_sub_components_insert() -> None:
@@ -417,10 +415,10 @@ def test_dicts_in_sub_components_delete_entry() -> None:
 
 @coco.function
 def _declare_dict_containers(
-    csp: coco.StablePath, names: Collection[str]
+    scope: coco.Scope, names: Collection[str]
 ) -> dict[str, coco.EffectProvider[str]]:
     providers = {
-        name: coco.declare_effect_with_child(DictsTarget.effect(name, None))
+        name: coco.declare_effect_with_child(scope, DictsTarget.effect(name, None))
         for name in names
     }
     return providers
@@ -428,19 +426,19 @@ def _declare_dict_containers(
 
 @coco.function
 def _declare_one_dict_data(
-    csp: coco.StablePath, name: str, provider: coco.EffectProvider[str]
+    scope: coco.Scope, name: str, provider: coco.EffectProvider[str]
 ) -> None:
     for key, value in _source_data[name].items():
-        coco.declare_effect(provider.effect(key, value))
+        coco.declare_effect(scope, provider.effect(key, value))
 
 
 @coco.function
-def _declare_dict_containers_together(csp: coco.StablePath) -> None:
+def _declare_dict_containers_together(scope: coco.Scope) -> None:
     providers = coco.mount_run(
-        _declare_dict_containers, csp / "setup", _source_data.keys()
+        scope / "setup", _declare_dict_containers, _source_data.keys()
     ).result()
     for name, provider in providers.items():
-        coco.mount(_declare_one_dict_data, csp / name, name, provider)
+        coco.mount(scope / name, _declare_one_dict_data, name, provider)
 
 
 def test_dicts_containers_together_insert() -> None:
@@ -620,12 +618,12 @@ def test_dicts_containers_together_delete_entry() -> None:
 
 
 @coco.function
-async def _declare_dict_containers_together_async(csp: coco.StablePath) -> None:
+async def _declare_dict_containers_together_async(scope: coco.Scope) -> None:
     providers = await coco_aio.mount_run(
-        _declare_dict_containers, csp / "setup", _source_data.keys()
+        scope / "setup", _declare_dict_containers, _source_data.keys()
     ).result()
     for name, provider in providers.items():
-        coco_aio.mount(_declare_one_dict_data, csp / name, name, provider)
+        coco_aio.mount(scope / name, _declare_one_dict_data, name, provider)
 
 
 @pytest.mark.asyncio
@@ -805,19 +803,19 @@ async def test_dicts_containers_together_delete_entry_async() -> None:
 
 
 @coco.function
-def _declare_one_dict_w_exception(csp: coco.StablePath, name: str) -> None:
+def _declare_one_dict_w_exception(scope: coco.Scope, name: str) -> None:
     dict_provider = coco.mount_run(
-        _declare_dict_container, csp / "setup", name
+        scope / "setup", _declare_dict_container, name
     ).result()
     for key, value in _source_data[name].items():
-        coco.declare_effect(dict_provider.effect(key, value))
+        coco.declare_effect(scope, dict_provider.effect(key, value))
     raise ValueError("test exception")
 
 
 @coco.function
-def _declare_dicts_in_sub_components_w_exception(csp: coco.StablePath) -> None:
+def _declare_dicts_in_sub_components_w_exception(scope: coco.Scope) -> None:
     for name in _source_data.keys():
-        coco.mount(_declare_one_dict_w_exception, csp / name, name)
+        coco.mount(scope / name, _declare_one_dict_w_exception, name)
 
 
 def test_cleanup_partially_built_components() -> None:

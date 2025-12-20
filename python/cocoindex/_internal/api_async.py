@@ -8,9 +8,8 @@ from typing import (
 
 from . import core
 from .app import AppBase
-from .context import component_ctx_var
+from .scope import Scope
 from .function import Function
-from .stable_path import StablePath
 
 
 P = ParamSpec("P")
@@ -22,23 +21,28 @@ _NOT_SET = object()
 class ComponentMountRunHandle(Generic[R]):
     """Handle for a component that was started with `mount_run()`. Allows awaiting the result."""
 
-    __slots__ = ("_core", "_lock", "_cached_result")
+    __slots__ = ("_core", "_lock", "_cached_result", "_parent_ctx")
 
     _core: core.ComponentMountRunHandle
     _lock: asyncio.Lock
     _cached_result: R | object
+    _parent_ctx: core.ComponentProcessorContext
 
-    def __init__(self, core_handle: core.ComponentMountRunHandle) -> None:
+    def __init__(
+        self,
+        core_handle: core.ComponentMountRunHandle,
+        parent_ctx: core.ComponentProcessorContext,
+    ) -> None:
         self._core = core_handle
         self._lock = asyncio.Lock()
         self._cached_result = _NOT_SET
+        self._parent_ctx = parent_ctx
 
     async def result(self) -> R:
         """Get the result of the component. Can be called multiple times."""
-        parent_ctx = component_ctx_var.get()
         async with self._lock:
             if self._cached_result is _NOT_SET:
-                self._cached_result = await self._core.result_async(parent_ctx)
+                self._cached_result = await self._core.result_async(self._parent_ctx)
             return self._cached_result  # type: ignore
 
 
@@ -65,8 +69,8 @@ class ComponentMountHandle:
 
 
 def mount_run(
-    processor_fn: Function[Concatenate[StablePath, P], R],
-    stable_path: StablePath,
+    scope: Scope,
+    processor_fn: Function[Concatenate[Scope, P], R],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[R]:
@@ -74,23 +78,25 @@ def mount_run(
     Mount and run a component, returning a handle to await its result.
 
     Args:
+        scope: The scope for the component (includes stable path and processor context).
         processor_fn: The function to run as the component processor.
-        stable_path: The stable path for the component.
         *args: Arguments to pass to the function.
         **kwargs: Keyword arguments to pass to the function.
 
     Returns:
         A handle that can be used to get the result.
     """
-    parent_ctx = component_ctx_var.get()
-    processor = processor_fn._as_core_component_processor(stable_path, *args, **kwargs)
-    core_handle = core.mount_run(processor, stable_path._core, parent_ctx)
-    return ComponentMountRunHandle(core_handle)
+    parent_ctx = scope._core_processor_ctx
+    processor = processor_fn._as_core_component_processor(
+        scope._core_path, *args, **kwargs
+    )
+    core_handle = core.mount_run(processor, scope._core_path, parent_ctx)
+    return ComponentMountRunHandle(core_handle, parent_ctx)
 
 
 def mount(
-    processor_fn: Function[Concatenate[StablePath, P], R],
-    stable_path: StablePath,
+    scope: Scope,
+    processor_fn: Function[Concatenate[Scope, P], R],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountHandle:
@@ -98,24 +104,27 @@ def mount(
     Mount a component in the background and return a handle to wait until ready.
 
     Args:
+        scope: The scope for the component (includes stable path and processor context).
         processor_fn: The function to run as the component processor.
-        stable_path: The stable path for the component.
         *args: Arguments to pass to the function.
         **kwargs: Keyword arguments to pass to the function.
 
     Returns:
         A handle that can be used to wait until the component is ready.
     """
-    parent_ctx = component_ctx_var.get()
-    processor = processor_fn._as_core_component_processor(stable_path, *args, **kwargs)
-    core_handle = core.mount(processor, stable_path._core, parent_ctx)
+    parent_ctx = scope._core_processor_ctx
+    processor = processor_fn._as_core_component_processor(
+        scope._core_path, *args, **kwargs
+    )
+    core_handle = core.mount(processor, scope._core_path, parent_ctx)
     return ComponentMountHandle(core_handle)
 
 
 class App(AppBase[P, R]):
     async def run(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        root_path = core.StablePath()
         processor = self._main_fn._as_core_component_processor(
-            StablePath(), *args, **kwargs
+            root_path, *args, **kwargs
         )
         return await self._core.run_async(processor)  # type: ignore
 

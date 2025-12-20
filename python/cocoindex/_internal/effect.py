@@ -12,10 +12,10 @@ from typing import (
 )
 import threading
 import weakref
-from cocoindex._internal.context import component_ctx_var
 from typing_extensions import TypeIs, TypeVar
 
 from . import core
+from .scope import Scope
 from .runtime import get_async_context
 
 
@@ -195,21 +195,37 @@ class Effect(Generic[OptChildHandler]):
         self._value = value
 
 
-def declare_effect(effect: Effect[None]) -> None:
-    context = component_ctx_var.get()
-    if context is None:
-        raise RuntimeError("declare_effect* must be called within a component")
-    core.declare_effect(context, effect._provider._core, effect._key, effect._value)
+def declare_effect(scope: Scope, effect: Effect[None]) -> None:
+    """
+    Declare an effect within the given scope.
+
+    Args:
+        scope: The scope for the effect declaration.
+        effect: The effect to declare.
+    """
+    processor_ctx = scope._core_processor_ctx
+    core.declare_effect(
+        processor_ctx, effect._provider._core, effect._key, effect._value
+    )
 
 
 def declare_effect_with_child(
+    scope: Scope,
     effect: Effect[EffectHandler[Key, Value, Any, OptChildHandler]],
 ) -> EffectProvider[Key, Value, OptChildHandler]:
-    context = component_ctx_var.get()
-    if context is None:
-        raise RuntimeError("declare_effect* must be called within a component")
+    """
+    Declare an effect with a child handler within the given scope.
+
+    Args:
+        scope: The scope for the effect declaration.
+        effect: The effect to declare.
+
+    Returns:
+        An EffectProvider for the child effects.
+    """
+    processor_ctx = scope._core_processor_ctx
     provider = core.declare_effect_with_child(
-        context, effect._provider._core, effect._key, effect._value
+        processor_ctx, effect._provider._core, effect._key, effect._value
     )
     return EffectProvider(provider)
 

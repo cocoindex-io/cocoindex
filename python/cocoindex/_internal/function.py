@@ -4,6 +4,7 @@ import functools
 from typing import (
     Callable,
     Any,
+    Concatenate,
     TypeVar,
     ParamSpec,
     Awaitable,
@@ -14,13 +15,14 @@ from typing import (
 
 from . import core
 
-from .context import component_ctx_var
+from .scope import Scope
 from .runtime import execution_context, is_coroutine_fn, get_async_context
 
 
 P = ParamSpec("P")
-R = TypeVar("R", covariant=True)
+R = TypeVar("R")
 R_co = TypeVar("R_co", covariant=True)
+P0 = ParamSpec("P0")
 
 
 class Function(Protocol[P, R_co]):
@@ -29,7 +31,10 @@ class Function(Protocol[P, R_co]):
     def acall(self, *args: P.args, **kwargs: P.kwargs) -> Awaitable[R_co]: ...
 
     def _as_core_component_processor(
-        self, *args: P.args, **kwargs: P.kwargs
+        self: "Function[Concatenate[Scope, P0], R_co]",
+        path: core.StablePath,
+        *args: P0.args,
+        **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor: ...
 
 
@@ -43,15 +48,14 @@ class SyncFunction(Function[P, R_co]):
         return self._fn(*args, **kwargs)
 
     def _as_core_component_processor(
-        self, *args: P.args, **kwargs: P.kwargs
+        self: "Function[Concatenate[Scope, P0], R_co]",
+        path: core.StablePath,
+        *args: P0.args,
+        **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor:
         def _build(builder_ctx: core.ComponentProcessorContext) -> R_co:
-            tok = component_ctx_var.set(builder_ctx)
-            try:
-                ret = self._fn(*args, **kwargs)
-            finally:
-                component_ctx_var.reset(tok)
-            return ret
+            scope = Scope(path, builder_ctx)
+            return self._fn(scope, *args, **kwargs)  # type: ignore
 
         return core.ComponentProcessor.new_sync(_build)
 
@@ -72,15 +76,14 @@ class AsyncFunction(Function[P, R_co]):
         return self._fn(*args, **kwargs)
 
     def _as_core_component_processor(
-        self, *args: P.args, **kwargs: P.kwargs
+        self: "Function[Concatenate[Scope, P0], R_co]",
+        path: core.StablePath,
+        *args: P0.args,
+        **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor:
         async def _build(builder_ctx: core.ComponentProcessorContext) -> R_co:
-            tok = component_ctx_var.set(builder_ctx)
-            try:
-                ret = await self._fn(*args, **kwargs)
-            finally:
-                component_ctx_var.reset(tok)
-            return ret
+            scope = Scope(path, builder_ctx)
+            return await self._fn(scope, *args, **kwargs)  # type: ignore
 
         return core.ComponentProcessor.new_async(_build, get_async_context())
 

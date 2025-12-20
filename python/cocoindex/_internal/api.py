@@ -1,3 +1,5 @@
+from .scope import Scope
+
 from .effect import (
     NonExistenceType,
     NON_EXISTENCE,
@@ -18,11 +20,14 @@ from .environment import lifespan, default_env
 
 from .function import function
 
+# Keep StablePath and StableKey exported for backward compatibility
 from .stable_path import ROOT_PATH, StablePath, StableKey
 
 from .setting import Settings
 
 __all__ = [
+    # .scope
+    "Scope",
     # .effect
     "NonExistenceType",
     "NON_EXISTENCE",
