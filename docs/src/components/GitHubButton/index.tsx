@@ -15,11 +15,7 @@ function Button({ href, children, margin = "0" }: ButtonProps): ReactNode {
         target="_blank"
         rel="noopener noreferrer"
         className="button button--outline button--secondary button--interactive"
-        style={{
-            margin,
-            fontSize: "0.85rem",
-            cursor: "pointer",
-        }}
+        style={{ margin }}
     >
         {children}
         </a>
@@ -34,7 +30,7 @@ type GitHubButtonProps = {
 function GitHubButton({ url, margin = '0' }: GitHubButtonProps): ReactNode {
     return (
         <Button href={url} margin={margin}>
-            <FaGithub style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
+            <FaGithub className="button__icon" />
             View on GitHub
         </Button>
     );
@@ -48,7 +44,7 @@ type YouTubeButtonProps = {
 function YouTubeButton({ url, margin = '0' }: YouTubeButtonProps): ReactNode {
     return (
         <Button href={url} margin={margin}>
-            <FaYoutube style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
+            <FaYoutube className='button__icon' />
             Watch on YouTube
         </Button>
     );

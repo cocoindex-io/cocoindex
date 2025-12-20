@@ -215,33 +215,47 @@
   margin-right: 40px;
 }
 }
-.button.button--outline.button--secondary.button--interactive {
+
+ .button--interactive,
+.button.button--interactive {
+  font-size: 0.85rem;
+  cursor: pointer;
   color: var(--ifm-color-primary);
   background: transparent;
   border-color: var(--ifm-color-primary);
-  box-shadow: var(--coco-shadow, 0 6px 18px rgba(91,91,214,0.06));
+  box-shadow: var(--coco-shadow);
   transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
 }
 
-.button.button--outline.button--secondary.button--interactive:hover,
-.button.button--outline.button--secondary.button--interactive:active,
-.button.button--outline.button--secondary.button--interactive:focus {
+.button--interactive:hover,
+.button--interactive:active,
+.button--interactive:focus,
+.button.button--interactive:hover,
+.button.button--interactive:active,
+.button.button--interactive:focus {
   color: #fff;
   background-color: var(--ifm-color-primary);
-  box-shadow: var(--coco-glow, 0 0 0 6px rgba(91,91,214,0.08));
+  box-shadow: var(--coco-glow);
 }
 
-/* Accessible focus ring for keyboard users */
-.button.button--outline.button--secondary.button--interactive:focus-visible {
+.button--interactive:focus-visible,
+.button.button--interactive:focus-visible {
   outline: none;
-  box-shadow:
-    0 0 0 3px rgba(91,91,214,0.18),
-    var(--coco-glow, 0 0 0 6px rgba(91,91,214,0.08));
+  box-shadow: 0 0 0 3px rgba(91,91,214,0.18), var(--coco-glow);
+}
+
+/* Icon spacing */
+.button__icon,
+.button--interactive svg {
+  margin-right: 8px;
+  vertical-align: middle;
+  font-size: 1rem;
 }
 
 /* Respect reduced motion */
 @media (prefers-reduced-motion: reduce) {
-  .button.button--outline.button--secondary.button--interactive {
+  .button--interactive,
+  .button.button--interactive {
     transition: none;
   }
 }
