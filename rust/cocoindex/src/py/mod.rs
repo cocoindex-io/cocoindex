@@ -33,7 +33,7 @@ fn set_settings_fn(get_settings_fn: Py<PyAny>) -> PyResult<()> {
             let py_settings = obj
                 .extract::<Pythonized<Settings>>()
                 .to_result_with_py_trace(py)?;
-            anyhow::Ok(py_settings.into_inner())
+            Ok::<_, Error>(py_settings.into_inner())
         })
     };
     crate::lib_context::set_settings_fn(Box::new(get_settings_closure));
@@ -47,22 +47,20 @@ fn init_pyo3_runtime() {
 
 #[pyfunction]
 fn init(py: Python<'_>, settings: Pythonized<Option<Settings>>) -> PyResult<()> {
-    py.detach(|| -> anyhow::Result<()> {
+    py_utils::CResultIntoPyResult::into_py_result(py.detach(|| -> Result<()> {
         get_runtime().block_on(async move { init_lib_context(settings.into_inner()).await })
-    })
-    .into_py_result()
+    }))
 }
 
 #[pyfunction]
 fn start_server(py: Python<'_>, settings: Pythonized<ServerSettings>) -> PyResult<()> {
-    py.detach(|| -> anyhow::Result<()> {
+    py_utils::CResultIntoPyResult::into_py_result(py.detach(|| -> Result<()> {
         let server = get_runtime().block_on(async move {
             server::init_server(get_lib_context().await?, settings.into_inner()).await
         })?;
         get_runtime().spawn(server);
         Ok(())
-    })
-    .into_py_result()
+    }))
 }
 
 #[pyfunction]
@@ -76,7 +74,10 @@ fn register_source_connector(name: String, py_source_connector: Py<PyAny>) -> Py
     let factory = PySourceConnectorFactory {
         py_source_connector,
     };
-    register_factory(name, ExecutorFactory::Source(Arc::new(factory))).into_py_result()
+    py_utils::CResultIntoPyResult::into_py_result(register_factory(
+        name,
+        ExecutorFactory::Source(Arc::new(factory)),
+    ))
 }
 
 #[pyfunction]
@@ -84,7 +85,10 @@ fn register_function_factory(name: String, py_function_factory: Py<PyAny>) -> Py
     let factory = PyFunctionFactory {
         py_function_factory,
     };
-    register_factory(name, ExecutorFactory::SimpleFunction(Arc::new(factory))).into_py_result()
+    py_utils::CResultIntoPyResult::into_py_result(register_factory(
+        name,
+        ExecutorFactory::SimpleFunction(Arc::new(factory)),
+    ))
 }
 
 #[pyfunction]
@@ -92,7 +96,10 @@ fn register_target_connector(name: String, py_target_connector: Py<PyAny>) -> Py
     let factory = PyExportTargetFactory {
         py_target_connector,
     };
-    register_factory(name, ExecutorFactory::ExportTarget(Arc::new(factory))).into_py_result()
+    py_utils::CResultIntoPyResult::into_py_result(register_factory(
+        name,
+        ExecutorFactory::ExportTarget(Arc::new(factory)),
+    ))
 }
 
 #[pyclass]
@@ -159,31 +166,36 @@ impl FlowLiveUpdater {
     ) -> PyResult<Bound<'py, PyAny>> {
         let flow = flow.0.clone();
         future_into_py(py, async move {
-            let lib_context = get_lib_context().await.into_py_result()?;
-            let live_updater = execution::FlowLiveUpdater::start(
-                flow,
-                lib_context.require_builtin_db_pool().into_py_result()?,
-                &lib_context.multi_progress_bar,
-                options.into_inner(),
-            )
-            .await
-            .into_py_result()?;
+            let lib_context =
+                py_utils::CResultIntoPyResult::into_py_result(get_lib_context().await)?;
+            let live_updater = py_utils::CResultIntoPyResult::into_py_result(
+                execution::FlowLiveUpdater::start(
+                    flow,
+                    py_utils::CResultIntoPyResult::into_py_result(
+                        lib_context.require_builtin_db_pool(),
+                    )?,
+                    &lib_context.multi_progress_bar,
+                    options.into_inner(),
+                )
+                .await,
+            )?;
             Ok(Self(Arc::new(live_updater)))
         })
     }
 
     pub fn wait_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let live_updater = self.0.clone();
-        future_into_py(
-            py,
-            async move { live_updater.wait().await.into_py_result() },
-        )
+        future_into_py(py, async move {
+            py_utils::CResultIntoPyResult::into_py_result(live_updater.wait().await)
+        })
     }
 
     pub fn next_status_updates_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let live_updater = self.0.clone();
         future_into_py(py, async move {
-            let updates = live_updater.next_status_updates().await.into_py_result()?;
+            let updates = py_utils::CResultIntoPyResult::into_py_result(
+                live_updater.next_status_updates().await,
+            )?;
             Ok(FlowLiveUpdaterUpdates(updates))
         })
     }
@@ -217,21 +229,19 @@ impl Flow {
         options: Pythonized<execution::dumper::EvaluateAndDumpOptions>,
     ) -> PyResult<()> {
         py.detach(|| {
-            get_runtime()
-                .block_on(async {
-                    let exec_plan = self.0.flow.get_execution_plan().await?;
-                    let lib_context = get_lib_context().await?;
-                    let execution_ctx = self.0.use_execution_ctx().await?;
-                    execution::dumper::evaluate_and_dump(
-                        &exec_plan,
-                        &execution_ctx.setup_execution_context,
-                        &self.0.flow.data_schema,
-                        options.into_inner(),
-                        lib_context.require_builtin_db_pool()?,
-                    )
-                    .await
-                })
-                .into_py_result()?;
+            py_utils::CResultIntoPyResult::into_py_result(get_runtime().block_on(async {
+                let exec_plan = self.0.flow.get_execution_plan().await?;
+                let lib_context = get_lib_context().await?;
+                let execution_ctx = self.0.use_execution_ctx().await?;
+                execution::dumper::evaluate_and_dump(
+                    &exec_plan,
+                    &execution_ctx.setup_execution_context,
+                    &self.0.flow.data_schema,
+                    options.into_inner(),
+                    lib_context.require_builtin_db_pool()?,
+                )
+                .await
+            }))?;
             Ok(())
         })
     }
@@ -394,8 +404,11 @@ impl Flow {
                 let result_fut = Python::attach(|py| -> Result<_> {
                     let handler = self.handler.clone_ref(py);
                     // Build args: pass a dict with the query input
-                    let args = pyo3::types::PyTuple::new(py, [input.query])?;
-                    let result_coro = handler.call(py, args, None).to_result_with_py_trace(py)?;
+                    let args = pyo3::types::PyTuple::new(py, [input.query]).map_err(Error::host)?;
+                    let result_coro = handler
+                        .call(py, args, None)
+                        .to_result_with_py_trace(py)
+                        .map_err(Error::from)?;
 
                     let py_exec_ctx = flow_ctx
                         .py_exec_ctx
@@ -408,15 +421,18 @@ impl Flow {
                         py,
                         &task_locals,
                         result_coro.into_bound(py),
-                    )?)
+                    )
+                    .map_err(Error::host)?)
                 })?;
 
                 let py_obj = result_fut.await;
                 // Convert Python result to Rust type with proper traceback handling
                 let output = Python::attach(|py| -> Result<_> {
-                    let output_any = py_obj.to_result_with_py_trace(py)?;
+                    let output_any = py_obj
+                        .to_result_with_py_trace(py)
+                        .map_err(Error::from)?;
                     let output: crate::py::Pythonized<crate::service::query_handler::QueryOutput> =
-                        output_any.extract(py)?;
+                        output_any.extract(py).map_err(Error::host)?;
                     Ok(output.into_inner())
                 })?;
 
@@ -463,9 +479,9 @@ impl TransientFlow {
         .collect::<PyResult<_>>()?;
 
         future_into_py(py, async move {
-            let result = evaluate_transient_flow(&flow, &input_values)
-                .await
-                .into_py_result()?;
+            let result = py_utils::CResultIntoPyResult::into_py_result(
+                evaluate_transient_flow(&flow, &input_values).await,
+            )?;
             Python::attach(|py| value_to_py_object(py, &result)?.into_py_any(py))
         })
     }
@@ -479,8 +495,9 @@ impl SetupChangeBundle {
     pub fn describe_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let bundle = self.0.clone();
         future_into_py(py, async move {
-            let lib_context = get_lib_context().await.into_py_result()?;
-            bundle.describe(&lib_context).await.into_py_result()
+            let lib_context =
+                py_utils::CResultIntoPyResult::into_py_result(get_lib_context().await)?;
+            py_utils::CResultIntoPyResult::into_py_result(bundle.describe(&lib_context).await)
         })
     }
 
@@ -492,20 +509,22 @@ impl SetupChangeBundle {
         let bundle = self.0.clone();
 
         future_into_py(py, async move {
-            let lib_context = get_lib_context().await.into_py_result()?;
+            let lib_context =
+                py_utils::CResultIntoPyResult::into_py_result(get_lib_context().await)?;
             let mut stdout = None;
             let mut sink = None;
-            bundle
-                .apply(
-                    &lib_context,
-                    if report_to_stdout {
-                        stdout.insert(std::io::stdout())
-                    } else {
-                        sink.insert(std::io::sink())
-                    },
-                )
-                .await
-                .into_py_result()
+            py_utils::CResultIntoPyResult::into_py_result(
+                bundle
+                    .apply(
+                        &lib_context,
+                        if report_to_stdout {
+                            stdout.insert(std::io::stdout())
+                        } else {
+                            sink.insert(std::io::sink())
+                        },
+                    )
+                    .await,
+            )
         })
     }
 }
@@ -513,13 +532,14 @@ impl SetupChangeBundle {
 #[pyfunction]
 fn flow_names_with_setup_async(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
-        let lib_context = get_lib_context().await.into_py_result()?;
-        let setup_ctx = lib_context
-            .require_persistence_ctx()
-            .into_py_result()?
-            .setup_ctx
-            .read()
-            .await;
+        let lib_context =
+            py_utils::CResultIntoPyResult::into_py_result(get_lib_context().await)?;
+        let setup_ctx = py_utils::CResultIntoPyResult::into_py_result(
+            lib_context.require_persistence_ctx(),
+        )?
+        .setup_ctx
+        .read()
+        .await;
         let flow_names: Vec<String> = setup_ctx.all_setup_states.flows.keys().cloned().collect();
         PyResult::Ok(flow_names)
     })
@@ -545,48 +565,47 @@ fn make_drop_bundle(flow_names: Vec<String>) -> PyResult<SetupChangeBundle> {
 
 #[pyfunction]
 fn remove_flow_context(py: Python<'_>, flow_name: String) -> PyResult<()> {
-    py.detach(|| -> anyhow::Result<()> {
+    py_utils::CResultIntoPyResult::into_py_result(py.detach(|| -> Result<()> {
         get_runtime().block_on(async move {
-            let lib_context = get_lib_context().await.into_py_result()?;
+            let lib_context = get_lib_context().await?;
             lib_context.remove_flow_context(&flow_name);
             Ok(())
         })
-    })
-    .into_py_result()
+    }))
 }
 
 #[pyfunction]
 fn add_auth_entry(key: String, value: Pythonized<serde_json::Value>) -> PyResult<()> {
-    get_auth_registry()
-        .add(key, value.into_inner())
-        .into_py_result()?;
+    py_utils::CResultIntoPyResult::into_py_result(
+        get_auth_registry().add(key, value.into_inner()),
+    )?;
     Ok(())
 }
 
 #[pyfunction]
 fn add_transient_auth_entry(value: Pythonized<serde_json::Value>) -> PyResult<String> {
-    get_auth_registry()
-        .add_transient(value.into_inner())
-        .into_py_result()
+    py_utils::CResultIntoPyResult::into_py_result(
+        get_auth_registry().add_transient(value.into_inner()),
+    )
 }
 
 #[pyfunction]
 fn get_auth_entry(key: String) -> PyResult<Pythonized<serde_json::Value>> {
     let auth_ref = AuthEntryReference::new(key);
-    let json_value: serde_json::Value = get_auth_registry().get(&auth_ref).into_py_result()?;
+    let json_value: serde_json::Value = py_utils::CResultIntoPyResult::into_py_result(
+        get_auth_registry().get(&auth_ref),
+    )?;
     Ok(Pythonized(json_value))
 }
 
 #[pyfunction]
 fn get_app_namespace(py: Python<'_>) -> PyResult<String> {
-    let app_namespace = py
-        .detach(|| -> anyhow::Result<_> {
-            get_runtime().block_on(async move {
-                let lib_context = get_lib_context().await?;
-                Ok(lib_context.app_namespace.clone())
-            })
+    let app_namespace = py_utils::CResultIntoPyResult::into_py_result(py.detach(|| -> Result<_> {
+        get_runtime().block_on(async move {
+            let lib_context = get_lib_context().await?;
+            Ok(lib_context.app_namespace.clone())
         })
-        .into_py_result()?;
+    }))?;
     Ok(app_namespace)
 }
 
@@ -598,7 +617,9 @@ fn seder_roundtrip<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let typ = typ.into_inner();
     let value = value_from_py_object(&typ, &value)?;
-    let value = value::test_util::seder_roundtrip(&value, &typ).into_py_result()?;
+    let value = py_utils::CResultIntoPyResult::into_py_result(
+        value::test_util::seder_roundtrip(&value, &typ),
+    )?;
     value_to_py_object(py, &value)
 }
 

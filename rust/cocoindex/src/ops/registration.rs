@@ -2,7 +2,7 @@ use super::{
     factory_bases::*, functions, registry::ExecutorFactoryRegistry, sdk::ExecutorFactory, sources,
     targets,
 };
-use anyhow::Result;
+use crate::prelude::*;
 use cocoindex_utils::client_error;
 use std::sync::{LazyLock, RwLock};
 
