@@ -202,7 +202,7 @@ impl<'a> LocalSourceRowStateOperator<'a> {
             }
         };
         if let Some(sem) = sem {
-            self.processing_sem_permit = Some(sem.clone().acquire_owned().await?);
+            self.processing_sem_permit = Some(sem.clone().acquire_owned().await.internal()?);
             self.processing_sem = Some(sem);
         }
         Ok(outcome)
@@ -402,7 +402,7 @@ impl SourceIndexingContext {
                             .await?
                         {
                             RowStateAdvanceOutcome::Skipped => {
-                                return anyhow::Ok(());
+                                return Ok::<_, Error>(());
                             }
                             RowStateAdvanceOutcome::Advanced {
                                 prev_version_state: Some(prev_version_state),
@@ -523,18 +523,15 @@ impl SourceIndexingContext {
             if let Some(ack_fn) = ack_fn {
                 ack_fn().await?;
             }
-            anyhow::Ok(())
+            Ok::<_, Error>(())
         };
         if let Err(e) = process_and_ack.await {
             update_stats.num_errors.inc(1);
             error!(
-                "{:?}",
-                e.context(format!(
-                    "Error in processing row from flow `{flow}` source `{source}` with key: {key}",
-                    flow = self.flow.flow_instance.name,
-                    source = self.flow.flow_instance.import_ops[self.source_idx].name,
-                    key = row_input.key,
-                ))
+                "Error in processing row from flow `{flow}` source `{source}` with key: {key}: {e:?}",
+                flow = self.flow.flow_instance.name,
+                source = self.flow.flow_instance.import_ops[self.source_idx].name,
+                key = row_input.key,
             );
         }
     }
@@ -550,7 +547,7 @@ impl SourceIndexingContext {
             stats: update_stats.clone(),
             options: update_options,
         };
-        self.update_once_batcher.run(input).await
+        self.update_once_batcher.run(input).await.map_err(Error::from)
     }
 
     async fn update_once(
@@ -610,7 +607,8 @@ impl SourceIndexingContext {
                 let concur_permit = import_op
                     .concurrency_controller
                     .acquire(concur_control::BYTES_UNKNOWN_YET)
-                    .await?;
+                    .await
+                    .internal()?;
                 join_set.spawn(self.clone().process_source_row(
                     ProcessSourceRowInput {
                         key: row.key,
@@ -645,7 +643,7 @@ impl SourceIndexingContext {
             deleted_key_versions
         };
         for (key, source_ordinal) in deleted_key_versions {
-            let concur_permit = import_op.concurrency_controller.acquire(Some(|| 0)).await?;
+            let concur_permit = import_op.concurrency_controller.acquire(Some(|| 0)).await.internal()?;
             join_set.spawn(self.clone().process_source_row(
                 ProcessSourceRowInput {
                     key,
@@ -688,7 +686,7 @@ impl batching::Runner for UpdateOnceRunner {
     type Input = UpdateOnceInput;
     type Output = ();
 
-    async fn run(&self, inputs: Vec<UpdateOnceInput>) -> Result<impl ExactSizeIterator<Item = ()>> {
+    async fn run(&self, inputs: Vec<UpdateOnceInput>) -> anyhow::Result<impl ExactSizeIterator<Item = ()>> {
         let num_inputs = inputs.len();
         let update_options = UpdateOptions {
             expect_little_diff: inputs.iter().all(|input| input.options.expect_little_diff),

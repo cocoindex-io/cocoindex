@@ -29,7 +29,7 @@ pub struct StoredMemoizationInfo {
     pub content_hash: Option<String>,
 }
 
-pub type CacheEntryCell = Arc<tokio::sync::OnceCell<Result<value::Value, SharedError>>>;
+pub type CacheEntryCell = Arc<tokio::sync::OnceCell<std::result::Result<value::Value, SharedError>>>;
 enum CacheData {
     /// Existing entry in previous runs, but not in current run yet.
     Previous(serde_json::Value),
@@ -131,7 +131,8 @@ impl EvaluationMemory {
         }
         let cache = if let Some(cache) = self.cache {
             cache
-                .into_inner()?
+                .into_inner()
+                .internal()?
                 .into_iter()
                 .filter_map(|(k, e)| match e.data {
                     CacheData::Previous(_) => None,
@@ -148,13 +149,14 @@ impl EvaluationMemory {
                         _ => None,
                     },
                 })
-                .collect::<Result<_, _>>()?
+                .collect::<std::result::Result<_, _>>()?
         } else {
             internal_bail!("Cache is disabled, cannot convert to stored MemoizationInfo");
         };
         let uuids = self
             .uuids
-            .into_inner()?
+            .into_inner()
+            .internal()?
             .into_iter()
             .filter_map(|(k, v)| v.into_stored().map(|uuids| (k, uuids)))
             .collect();
@@ -242,10 +244,10 @@ where
         Some(cell) => Cow::Borrowed(
             cell.get_or_init(|| {
                 let fut = compute();
-                async move { fut.await.map_err(SharedError::new) }
+                async move { fut.await.map_err(SharedError::from) }
             })
             .await
-            .anyhow_result()?,
+            .into_result()?,
         ),
         None => Cow::Owned(compute().await?),
     };

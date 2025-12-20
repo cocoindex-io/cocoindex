@@ -1,14 +1,12 @@
 use crate::execution::indexing_status::SourceLogicFingerprint;
 use crate::prelude::*;
 
-use anyhow::{Context, Ok};
 use futures::future::try_join_all;
 use tokio::time::Duration;
 
 use crate::base::value::EstimatedByteSize;
 use crate::base::{schema, value};
 use crate::builder::{AnalyzedTransientFlow, plan::*};
-use crate::py::AnyhowIntoPyResult;
 use utils::immutable::RefList;
 
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, evaluate_with_cell};
@@ -76,8 +74,7 @@ impl ScopeValueBuilder {
             .zip(&mut builder.fields)
         {
             r.set(augmented_value(v, &t.value_type.typ)?)
-                .map_err(|_| internal_error!("Value of field `{}` is already set", t.name))
-                .into_py_result()?;
+                .map_err(|_| internal_error!("Value of field `{}` is already set", t.name))?;
         }
         Ok(builder)
     }
@@ -345,7 +342,8 @@ async fn evaluate_child_op_scope(
                 .map(|f| f.get().map_or(0, |v| v.estimated_byte_size()))
                 .sum()
         }))
-        .await?;
+        .await
+        .internal()?;
     evaluate_op_scope(
         op_scope,
         scoped_entries.prepend(&child_scope_entry),
@@ -432,12 +430,12 @@ async fn evaluate_op_scope(
                 let result = if op.function_exec_info.enable_cache {
                     let output_value_cell = memory.get_cache_entry(
                         || {
-                            Ok(op
-                                .function_exec_info
+                            op.function_exec_info
                                 .fingerprinter
                                 .clone()
-                                .with(&input_values)?
-                                .into_fingerprint())
+                                .with(&input_values)
+                                .map(|fp| fp.into_fingerprint())
+                                .internal()
                         },
                         &op.function_exec_info.output_type,
                         /*ttl=*/ None,
@@ -657,7 +655,8 @@ pub async fn evaluate_source_entry(
         .import_op
         .concurrency_controller
         .acquire_bytes_with_reservation(|| source_value.estimated_byte_size())
-        .await?;
+        .await
+        .internal()?;
     let root_schema = &src_eval_ctx.schema.schema;
     let root_scope_value = ScopeValueBuilder::new(root_schema.fields.len());
     let root_scope_entry = ScopeEntry::new(

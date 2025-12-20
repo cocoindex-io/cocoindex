@@ -732,7 +732,7 @@ impl PostgresSourceExecutor {
                 BasicValue::Bool(b).into()
             }
             (ValueType::Basic(BasicValueType::Bytes), serde_json::Value::String(s)) => {
-                let bytes = BASE64_STANDARD.decode(&s)?;
+                let bytes = BASE64_STANDARD.decode(&s).internal()?;
                 BasicValue::Bytes(bytes::Bytes::from(bytes)).into()
             }
             (ValueType::Basic(BasicValueType::Str), serde_json::Value::String(s)) => {
@@ -746,19 +746,19 @@ impl PostgresSourceExecutor {
                 }
             }
             (ValueType::Basic(BasicValueType::Uuid), serde_json::Value::String(s)) => {
-                let uuid = s.parse::<uuid::Uuid>()?;
+                let uuid = s.parse::<uuid::Uuid>().internal()?;
                 BasicValue::Uuid(uuid).into()
             }
             (ValueType::Basic(BasicValueType::Date), serde_json::Value::String(s)) => {
-                let dt = s.parse::<chrono::NaiveDate>()?;
+                let dt = s.parse::<chrono::NaiveDate>().internal()?;
                 BasicValue::Date(dt).into()
             }
             (ValueType::Basic(BasicValueType::LocalDateTime), serde_json::Value::String(s)) => {
-                let dt = s.parse::<chrono::NaiveDateTime>()?;
+                let dt = s.parse::<chrono::NaiveDateTime>().internal()?;
                 BasicValue::LocalDateTime(dt).into()
             }
             (ValueType::Basic(BasicValueType::OffsetDateTime), serde_json::Value::String(s)) => {
-                let dt = s.parse::<chrono::DateTime<chrono::FixedOffset>>()?;
+                let dt = s.parse::<chrono::DateTime<chrono::FixedOffset>>().internal()?;
                 BasicValue::OffsetDateTime(dt).into()
             }
             (_, json_value) => {
