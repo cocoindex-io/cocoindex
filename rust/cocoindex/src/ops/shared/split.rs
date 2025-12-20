@@ -6,8 +6,8 @@ use crate::{
         BasicValueType, EnrichedValueType, FieldSchema, KTableInfo, OpArgsResolver, StructSchema,
         StructSchemaBuilder, TableKind, TableSchema, make_output_type, schema,
     },
+    prelude::*,
 };
-use anyhow::Result;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputPosition {
