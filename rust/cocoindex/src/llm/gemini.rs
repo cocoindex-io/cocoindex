@@ -1,8 +1,8 @@
 use crate::prelude::*;
 
 use crate::llm::{
-    LlmEmbeddingClient, LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
-    ToJsonSchemaOptions, detect_image_mime_type,
+    GeneratedOutput, LlmEmbeddingClient, LlmGenerateRequest, LlmGenerateResponse,
+    LlmGenerationClient, OutputFormat, ToJsonSchemaOptions, detect_image_mime_type,
 };
 use base64::prelude::*;
 use google_cloud_aiplatform_v1 as vertexai;
@@ -134,6 +134,7 @@ impl LlmGenerationClient for AiStudioClient {
         }
 
         // If structured output is requested, add schema and responseMimeType
+        let has_json_schema = request.output_format.is_some();
         if let Some(OutputFormat::JsonSchema { schema, .. }) = &request.output_format {
             let schema_json = serde_json::to_value(schema)?;
             payload["generationConfig"] = serde_json::json!({
@@ -162,7 +163,13 @@ impl LlmGenerationClient for AiStudioClient {
             _ => bail!("No text in response"),
         };
 
-        Ok(LlmGenerateResponse { text })
+        let output = if has_json_schema {
+            GeneratedOutput::Json(serde_json::from_str(&text)?)
+        } else {
+            GeneratedOutput::Text(text)
+        };
+
+        Ok(LlmGenerateResponse { output })
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {
@@ -331,6 +338,7 @@ impl LlmGenerationClient for VertexAiClient {
         });
 
         // Compose generation config
+        let has_json_schema = request.output_format.is_some();
         let mut generation_config = None;
         if let Some(OutputFormat::JsonSchema { schema, .. }) = &request.output_format {
             let schema_json = serde_json::to_value(schema)?;
@@ -367,7 +375,14 @@ impl LlmGenerationClient for VertexAiClient {
         else {
             bail!("No text in response");
         };
-        Ok(super::LlmGenerateResponse { text })
+
+        let output = if has_json_schema {
+            super::GeneratedOutput::Json(serde_json::from_str(&text)?)
+        } else {
+            super::GeneratedOutput::Text(text)
+        };
+
+        Ok(super::LlmGenerateResponse { output })
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {

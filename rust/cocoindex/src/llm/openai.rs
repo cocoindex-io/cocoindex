@@ -184,6 +184,7 @@ where
         &self,
         request: super::LlmGenerateRequest<'req>,
     ) -> Result<super::LlmGenerateResponse> {
+        let has_json_schema = request.output_format.is_some();
         let request = &request;
         let response = retryable::run(
             || async {
@@ -203,7 +204,13 @@ where
             .and_then(|choice| choice.message.content)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
 
-        Ok(super::LlmGenerateResponse { text })
+        let output = if has_json_schema {
+            super::GeneratedOutput::Json(serde_json::from_str(&text)?)
+        } else {
+            super::GeneratedOutput::Text(text)
+        };
+
+        Ok(super::LlmGenerateResponse { output })
     }
 
     fn json_schema_options(&self) -> super::ToJsonSchemaOptions {
