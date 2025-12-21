@@ -75,6 +75,7 @@ def _load_field(
 class Settings:
     """Settings for the cocoindex library."""
 
+    ignore_target_drop_failures: bool = False
     database: DatabaseConnectionSpec | None = None
     app_namespace: str = ""
     global_execution_options: GlobalExecutionOptions | None = None
@@ -82,6 +83,17 @@ class Settings:
     @classmethod
     def from_env(cls) -> Self:
         """Load settings from environment variables."""
+
+        extra_kwargs: dict[str, Any] = {}
+        _load_field(
+            extra_kwargs,
+            "ignore_target_drop_failures",
+            "COCOINDEX_IGNORE_TARGET_DROP_FAILURES",
+            parse=lambda v: v.lower() == "true",
+        )
+        ignore_target_drop_failures = extra_kwargs.get(
+            "ignore_target_drop_failures", False
+        )
 
         database_url = os.getenv("COCOINDEX_DATABASE_URL")
         if database_url is not None:
@@ -122,6 +134,7 @@ class Settings:
         app_namespace = os.getenv("COCOINDEX_APP_NAMESPACE", "")
 
         return cls(
+            ignore_target_drop_failures=ignore_target_drop_failures,
             database=database,
             app_namespace=app_namespace,
             global_execution_options=global_execution_options,
