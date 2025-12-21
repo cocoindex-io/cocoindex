@@ -1,31 +1,40 @@
+from __future__ import annotations
+
 import asyncio
 from typing import (
+    Any,
     Concatenate,
     Generic,
+    Mapping,
+    Sequence,
     ParamSpec,
     TypeVar,
+    overload,
 )
 
 from . import core
 from .app import AppBase
+from .pending_marker import ResolvesTo
 from .scope import Scope
 from .function import Function
 
 
 P = ParamSpec("P")
-R = TypeVar("R")
+K = TypeVar("K")
+ReturnT = TypeVar("ReturnT")
+ResolvedT = TypeVar("ResolvedT")
 
 _NOT_SET = object()
 
 
-class ComponentMountRunHandle(Generic[R]):
+class ComponentMountRunHandle(Generic[ReturnT]):
     """Handle for a component that was started with `mount_run()`. Allows awaiting the result."""
 
     __slots__ = ("_core", "_lock", "_cached_result", "_parent_ctx")
 
     _core: core.ComponentMountRunHandle
     _lock: asyncio.Lock
-    _cached_result: R | object
+    _cached_result: ReturnT | object
     _parent_ctx: core.ComponentProcessorContext
 
     def __init__(
@@ -38,7 +47,7 @@ class ComponentMountRunHandle(Generic[R]):
         self._cached_result = _NOT_SET
         self._parent_ctx = parent_ctx
 
-    async def result(self) -> R:
+    async def result(self) -> ReturnT:
         """Get the result of the component. Can be called multiple times."""
         async with self._lock:
             if self._cached_result is _NOT_SET:
@@ -68,12 +77,47 @@ class ComponentMountHandle:
                 self._ready_called = True
 
 
+@overload
 def mount_run(
     scope: Scope,
-    processor_fn: Function[Concatenate[Scope, P], R],
+    processor_fn: Function[Concatenate[Scope, P], ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[R]:
+) -> ComponentMountRunHandle[ReturnT]: ...
+@overload
+def mount_run(
+    scope: Scope,
+    processor_fn: Function[Concatenate[Scope, P], Sequence[ResolvesTo[ReturnT]]],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
+@overload
+def mount_run(
+    scope: Scope,
+    processor_fn: Function[Concatenate[Scope, P], Sequence[ResolvesTo[ReturnT]]],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
+@overload
+def mount_run(
+    scope: Scope,
+    processor_fn: Function[Concatenate[Scope, P], Mapping[K, ResolvesTo[ReturnT]]],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ComponentMountRunHandle[Mapping[K, ReturnT]]: ...
+@overload
+def mount_run(
+    scope: Scope,
+    processor_fn: Function[Concatenate[Scope, P], ReturnT],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ComponentMountRunHandle[ReturnT]: ...
+def mount_run(
+    scope: Scope,
+    processor_fn: Function[Concatenate[Scope, P], ReturnT],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ComponentMountRunHandle[Any]:
     """
     Mount and run a component, returning a handle to await its result.
 
@@ -96,7 +140,7 @@ def mount_run(
 
 def mount(
     scope: Scope,
-    processor_fn: Function[Concatenate[Scope, P], R],
+    processor_fn: Function[Concatenate[Scope, P], ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountHandle:
@@ -120,8 +164,8 @@ def mount(
     return ComponentMountHandle(core_handle)
 
 
-class App(AppBase[P, R]):
-    async def run(self, *args: P.args, **kwargs: P.kwargs) -> R:
+class App(AppBase[P, ReturnT]):
+    async def run(self, *args: P.args, **kwargs: P.kwargs) -> ReturnT:
         root_path = core.StablePath()
         processor = self._main_fn._as_core_component_processor(
             root_path, *args, **kwargs

@@ -5,7 +5,7 @@ import shutil
 import os
 from dataclasses import dataclass
 from hashlib import blake2b
-from typing import Collection, Literal, NamedTuple, Sequence, TYPE_CHECKING
+from typing import Collection, Generic, Literal, NamedTuple, Sequence, TYPE_CHECKING
 
 import cocoindex as coco
 
@@ -161,23 +161,25 @@ _dir_provider = coco.register_root_effect_provider(
 )
 
 
-class DirTarget:
+class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
     """
     A target for writing files to a local directory.
 
     The directory is managed as an effect, with the scope used to scope the effect.
     """
 
-    _provider: coco.EffectProvider[_FileName, _FileContent]
+    _provider: coco.EffectProvider[_FileName, _FileContent, None, coco.MaybePendingS]
 
     def __init__(
         self,
-        _provider: coco.EffectProvider[_FileName, _FileContent],
+        _provider: coco.EffectProvider[
+            _FileName, _FileContent, None, coco.MaybePendingS
+        ],
     ) -> None:
         self._provider = _provider
 
     def declare_file(
-        self, scope: Scope, *, filename: str, content: bytes | str
+        self: DirTarget, scope: Scope, *, filename: str, content: bytes | str
     ) -> None:
         """
         Declare a file to be written to this directory.
@@ -199,7 +201,7 @@ def dir_target(
     *,
     stable_key: coco.StableKey | None = None,
     managed_by: Literal["system", "user"] = "system",
-) -> DirTarget:
+) -> DirTarget[coco.PendingS]:
     """
     Create a DirTarget.
 

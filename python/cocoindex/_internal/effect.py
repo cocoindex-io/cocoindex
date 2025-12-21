@@ -8,6 +8,7 @@ from typing import (
     Protocol,
     Any,
     Sequence,
+    TypeAlias,
     overload,
 )
 import threading
@@ -17,6 +18,7 @@ from typing_extensions import TypeIs, TypeVar
 from . import core
 from .scope import Scope
 from .runtime import get_async_context
+from .pending_marker import PendingS, MaybePendingS, ResolvesTo
 
 
 class NonExistenceType:
@@ -39,73 +41,73 @@ def is_non_existence(obj: Any) -> TypeIs[NonExistenceType]:
     return obj is NON_EXISTENCE
 
 
-Action = TypeVar("Action")
-Action_co = TypeVar("Action_co", covariant=True)
-Action_contra = TypeVar("Action_contra", contravariant=True)
-Key = TypeVar("Key", bound=Hashable)
-Key_contra = TypeVar("Key_contra", contravariant=True, bound=Hashable)
-Value = TypeVar("Value", default=Any)
-Value_contra = TypeVar("Value_contra", contravariant=True, default=Any)
-State = TypeVar("State", default=Any)
-State_co = TypeVar("State_co", covariant=True, default=Any)
-Handler_co = TypeVar(
-    "Handler_co", covariant=True, bound="EffectHandler[Any, Any, Any, Any]"
+ActionT = TypeVar("ActionT")
+ActionT_co = TypeVar("ActionT_co", covariant=True)
+ActionT_contra = TypeVar("ActionT_contra", contravariant=True)
+KeyT = TypeVar("KeyT", bound=Hashable)
+KeyT_contra = TypeVar("KeyT_contra", contravariant=True, bound=Hashable)
+ValueT = TypeVar("ValueT", default=Any)
+ValueT_contra = TypeVar("ValueT_contra", contravariant=True, default=Any)
+StateT = TypeVar("StateT", default=Any)
+StateT_co = TypeVar("StateT_co", covariant=True, default=Any)
+HandlerT_co = TypeVar(
+    "HandlerT_co", covariant=True, bound="EffectHandler[Any, Any, Any, Any]"
 )
-OptChildHandler = TypeVar(
-    "OptChildHandler",
+OptChildHandlerT = TypeVar(
+    "OptChildHandlerT",
     bound="EffectHandler[Any, Any, Any, Any] | None",
     default=None,
     covariant=True,
 )
-OptChildHandler_co = TypeVar(
-    "OptChildHandler_co",
+OptChildHandlerT_co = TypeVar(
+    "OptChildHandlerT_co",
     bound="EffectHandler[Any, Any, Any, Any] | None",
     default=None,
     covariant=True,
 )
 
 
-class ChildEffectDef(Generic[Handler_co], NamedTuple):
-    handler: Handler_co
+class ChildEffectDef(Generic[HandlerT_co], NamedTuple):
+    handler: HandlerT_co
 
 
-class EffectSinkFn(Protocol[Action_contra, OptChildHandler_co]):
+class EffectSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
     # Case 1: No child handler
     @overload
     def __call__(
-        self: EffectSinkFn[Action_contra, None], actions: Sequence[Action_contra], /
+        self: EffectSinkFn[ActionT_contra, None], actions: Sequence[ActionT_contra], /
     ) -> None: ...
     # Case 2: With child handler
     @overload
     def __call__(
-        self: EffectSinkFn[Action_contra, Handler_co],
-        actions: Sequence[Action_contra],
+        self: EffectSinkFn[ActionT_contra, HandlerT_co],
+        actions: Sequence[ActionT_contra],
         /,
-    ) -> Sequence[ChildEffectDef[Handler_co] | None] | None: ...
+    ) -> Sequence[ChildEffectDef[HandlerT_co] | None] | None: ...
     def __call__(
-        self, actions: Sequence[Action_contra], /
+        self, actions: Sequence[ActionT_contra], /
     ) -> Sequence[ChildEffectDef[Any] | None] | None: ...
 
 
-class AsyncEffectSinkFn(Protocol[Action_contra, OptChildHandler_co]):
+class AsyncEffectSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
     # Case 1: No child handler
     @overload
     async def __call__(
-        self: EffectSinkFn[Action_contra, None], actions: Sequence[Action_contra], /
+        self: EffectSinkFn[ActionT_contra, None], actions: Sequence[ActionT_contra], /
     ) -> None: ...
     # Case 2: With child handler
     @overload
     async def __call__(
-        self: EffectSinkFn[Action_contra, Handler_co],
-        actions: Sequence[Action_contra],
+        self: EffectSinkFn[ActionT_contra, HandlerT_co],
+        actions: Sequence[ActionT_contra],
         /,
-    ) -> Sequence[ChildEffectDef[Handler_co] | None] | None: ...
+    ) -> Sequence[ChildEffectDef[HandlerT_co] | None] | None: ...
     async def __call__(
-        self, actions: Sequence[Action_contra], /
+        self, actions: Sequence[ActionT_contra], /
     ) -> Sequence[ChildEffectDef[Any] | None] | None: ...
 
 
-class EffectSink(Generic[Action_contra, OptChildHandler_co]):
+class EffectSink(Generic[ActionT_contra, OptChildHandlerT_co]):
     __slots__ = ("_core",)
     _core: core.EffectSink
 
@@ -114,15 +116,15 @@ class EffectSink(Generic[Action_contra, OptChildHandler_co]):
 
     @staticmethod
     def from_fn(
-        fn: EffectSinkFn[Action_contra, OptChildHandler_co],
-    ) -> "EffectSink[Action_contra, OptChildHandler_co]":
+        fn: EffectSinkFn[ActionT_contra, OptChildHandlerT_co],
+    ) -> "EffectSink[ActionT_contra, OptChildHandlerT_co]":
         canonical = _SYNC_FN_DEDUPER.get_canonical(fn)
         return EffectSink(core.EffectSink.new_sync(canonical))
 
     @staticmethod
     def from_async_fn(
-        fn: AsyncEffectSinkFn[Action_contra, OptChildHandler_co],
-    ) -> "EffectSink[Action_contra, OptChildHandler_co]":
+        fn: AsyncEffectSinkFn[ActionT_contra, OptChildHandlerT_co],
+    ) -> "EffectSink[ActionT_contra, OptChildHandlerT_co]":
         canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
         return EffectSink(core.EffectSink.new_async(canonical, get_async_context()))
 
@@ -150,45 +152,59 @@ _SYNC_FN_DEDUPER = _ObjectDeduper()
 _ASYNC_FN_DEDUPER = _ObjectDeduper()
 
 
-class EffectReconcileOutput(Generic[Action, State_co, OptChildHandler_co], NamedTuple):
-    action: Action
-    sink: EffectSink[Action, OptChildHandler_co]
-    state: State_co | NonExistenceType
+class EffectReconcileOutput(
+    Generic[ActionT, StateT_co, OptChildHandlerT_co], NamedTuple
+):
+    action: ActionT
+    sink: EffectSink[ActionT, OptChildHandlerT_co]
+    state: StateT_co | NonExistenceType
 
 
-class EffectHandler(Protocol[Key_contra, Value_contra, State, OptChildHandler_co]):
+class EffectHandler(Protocol[KeyT_contra, ValueT_contra, StateT, OptChildHandlerT_co]):
     def reconcile(
         self,
-        key: Key_contra,
-        desired_effect: Value_contra | NonExistenceType,
-        prev_possible_states: Collection[State],
+        key: KeyT_contra,
+        desired_effect: ValueT_contra | NonExistenceType,
+        prev_possible_states: Collection[StateT],
         prev_may_be_missing: bool,
         /,
-    ) -> EffectReconcileOutput[Any, State, OptChildHandler_co] | None: ...
+    ) -> EffectReconcileOutput[Any, StateT, OptChildHandlerT_co] | None: ...
 
 
-class EffectProvider(Generic[Key, Value, OptChildHandler]):
+class EffectProvider(
+    Generic[KeyT, ValueT, OptChildHandlerT, MaybePendingS],
+    ResolvesTo["EffectProvider[KeyT, ValueT, OptChildHandlerT]"],
+):
     __slots__ = ("_core",)
     _core: core.EffectProvider
 
     def __init__(self, core_effect_provider: core.EffectProvider):
         self._core = core_effect_provider
 
-    def effect(self, key: Key, value: Value) -> "Effect[OptChildHandler]":
+    def effect(
+        self: EffectProvider[KeyT, ValueT, OptChildHandlerT],
+        key: KeyT,
+        value: ValueT,
+    ) -> "Effect[OptChildHandlerT]":
         return Effect(self, key, value)
 
 
-class Effect(Generic[OptChildHandler]):
+PendingEffectProvider: TypeAlias = EffectProvider[
+    KeyT, ValueT, OptChildHandlerT, PendingS
+]
+
+
+class Effect(Generic[OptChildHandlerT]):
     __slots__ = ("_provider", "_key", "_value")
-    _provider: EffectProvider[Any, Any, OptChildHandler]
+    _provider: EffectProvider[Any, Any, OptChildHandlerT]
     _key: Any
     _value: Any
 
     def __init__(
         self,
-        provider: EffectProvider[Key, Value, OptChildHandler],
-        key: Key,
-        value: Value,
+        provider: EffectProvider[KeyT, ValueT, OptChildHandlerT],
+        key: KeyT,
+        value: ValueT,
     ):
         self._provider = provider
         self._key = key
@@ -211,8 +227,8 @@ def declare_effect(scope: Scope, effect: Effect[None]) -> None:
 
 def declare_effect_with_child(
     scope: Scope,
-    effect: Effect[EffectHandler[Key, Value, Any, OptChildHandler]],
-) -> EffectProvider[Key, Value, OptChildHandler]:
+    effect: Effect[EffectHandler[KeyT, ValueT, Any, OptChildHandlerT]],
+) -> EffectProvider[KeyT, ValueT, OptChildHandlerT, PendingS]:
     """
     Declare an effect with a child handler within the given scope.
 
@@ -231,8 +247,8 @@ def declare_effect_with_child(
 
 
 def register_root_effect_provider(
-    name: str, handler: EffectHandler[Key, Value, Any, OptChildHandler]
-) -> EffectProvider[Key, Value, OptChildHandler]:
+    name: str, handler: EffectHandler[KeyT, ValueT, Any, OptChildHandlerT]
+) -> EffectProvider[KeyT, ValueT, OptChildHandlerT]:
     provider = core.register_root_effect_provider(name, handler)
     return EffectProvider(provider)
 

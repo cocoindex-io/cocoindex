@@ -14,9 +14,10 @@ _source_data: dict[str, dict[str, Any]] = {}
 
 
 @coco.function
-def _declare_dict_container(scope: coco.Scope, name: str) -> coco.EffectProvider[str]:
-    provider = coco.declare_effect_with_child(scope, DictsTarget.effect(name, None))
-    return provider
+def _declare_dict_container(
+    scope: coco.Scope, name: str
+) -> coco.PendingEffectProvider[str]:
+    return coco.declare_effect_with_child(scope, DictsTarget.effect(name, None))
 
 
 ##################################################################################
@@ -416,7 +417,7 @@ def test_dicts_in_sub_components_delete_entry() -> None:
 @coco.function
 def _declare_dict_containers(
     scope: coco.Scope, names: Collection[str]
-) -> dict[str, coco.EffectProvider[str]]:
+) -> dict[str, coco.PendingEffectProvider[str]]:
     providers = {
         name: coco.declare_effect_with_child(scope, DictsTarget.effect(name, None))
         for name in names

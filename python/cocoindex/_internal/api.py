@@ -9,6 +9,7 @@ from .effect import (
     EffectReconcileOutput,
     EffectHandler,
     EffectSink,
+    PendingEffectProvider,
     declare_effect,
     declare_effect_with_child,
     is_non_existence,
@@ -20,7 +21,8 @@ from .environment import lifespan, default_env
 
 from .function import function
 
-# Keep StablePath and StableKey exported for backward compatibility
+from .pending_marker import PendingS, ResolvedS, MaybePendingS, ResolvesTo
+
 from .stable_path import ROOT_PATH, StablePath, StableKey
 
 from .setting import Settings
@@ -37,6 +39,7 @@ __all__ = [
     "EffectReconcileOutput",
     "EffectHandler",
     "EffectSink",
+    "PendingEffectProvider",
     "declare_effect",
     "declare_effect_with_child",
     "is_non_existence",
@@ -49,6 +52,11 @@ __all__ = [
     "default_env",
     # .fn
     "function",
+    # .pending_marker
+    "MaybePendingS",
+    "PendingS",
+    "ResolvedS",
+    "ResolvesTo",
     # .stable_path
     "ROOT_PATH",
     "StablePath",

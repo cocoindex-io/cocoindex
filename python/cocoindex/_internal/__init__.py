@@ -3,10 +3,10 @@ Library level functions and states.
 """
 
 from . import core as _core
-from . import seder as _seder
+from . import serde as _serde
 
 
 _core.init_runtime(  # type: ignore
-    serialize_fn=_seder.serialize,
-    deserialize_fn=_seder.deserialize,
+    serialize_fn=_serde.serialize,
+    deserialize_fn=_serde.deserialize,
 )
