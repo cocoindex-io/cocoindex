@@ -33,9 +33,9 @@ def get_auto_default_for_type(
         return None, True
 
     # Case 2: Table types (KTable or LTable) - check if it's a list or dict type
-    if isinstance(type_info.variant, datatype.ListType):
+    if isinstance(type_info.variant, datatype.SequenceType):
         return [], True
-    elif isinstance(type_info.variant, datatype.DictType):
+    elif isinstance(type_info.variant, datatype.MappingType):
         return {}, True
 
     return None, False
@@ -130,7 +130,7 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
         return v
 
     # List, NDArray (Vector-ish), or general sequences
-    if isinstance(variant, datatype.ListType):
+    if isinstance(variant, datatype.SequenceType):
         elem_type = variant.elem_type if variant.elem_type else Any
         if type_info.base_type is np.ndarray:
             # Reconstruct NDArray with appropriate dtype if available
@@ -143,7 +143,7 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
         return [load_engine_object(elem_type, item) for item in v]
 
     # Dict / Mapping
-    if isinstance(variant, datatype.DictType):
+    if isinstance(variant, datatype.MappingType):
         key_t = variant.key_type
         val_t = variant.value_type
         return {

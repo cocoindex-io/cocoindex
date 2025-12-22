@@ -9,7 +9,7 @@ from cocoindex.typing import (
     VectorInfo,
 )
 from cocoindex._internal.datatype import (
-    ListType,
+    SequenceType,
     analyze_type_info,
 )
 
@@ -17,7 +17,7 @@ from cocoindex._internal.datatype import (
 def test_vector_float32_no_dim() -> None:
     typ = Vector[np.float32]
     result = analyze_type_info(typ)
-    assert isinstance(result.variant, ListType)
+    assert isinstance(result.variant, SequenceType)
     assert result.variant.vector_info == VectorInfo(dim=None)
     assert result.variant.elem_type == np.float32
     assert result.nullable is False
@@ -28,7 +28,7 @@ def test_vector_float32_no_dim() -> None:
 def test_vector_float32_with_dim() -> None:
     typ = Vector[np.float32, Literal[384]]
     result = analyze_type_info(typ)
-    assert isinstance(result.variant, ListType)
+    assert isinstance(result.variant, SequenceType)
     assert result.variant.vector_info == VectorInfo(dim=384)
     assert result.variant.elem_type == np.float32
     assert result.nullable is False
@@ -39,7 +39,7 @@ def test_vector_float32_with_dim() -> None:
 def test_vector_str() -> None:
     typ = Vector[str]
     result = analyze_type_info(typ)
-    assert isinstance(result.variant, ListType)
+    assert isinstance(result.variant, SequenceType)
     assert result.variant.elem_type is str
     assert result.variant.vector_info == VectorInfo(dim=None)
 
@@ -47,6 +47,6 @@ def test_vector_str() -> None:
 def test_non_numpy_vector() -> None:
     typ = Vector[float, Literal[3]]
     result = analyze_type_info(typ)
-    assert isinstance(result.variant, ListType)
+    assert isinstance(result.variant, SequenceType)
     assert result.variant.elem_type is float
     assert result.variant.vector_info == VectorInfo(dim=3)

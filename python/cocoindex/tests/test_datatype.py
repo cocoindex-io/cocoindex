@@ -14,10 +14,10 @@ from cocoindex.typing import (
 )
 from cocoindex._internal.datatype import (
     BasicType,
-    DictType,
-    ListType,
+    MappingType,
+    SequenceType,
     StructType,
-    UnknownType,
+    OtherType,
     DataTypeInfo,
     analyze_type_info,
 )
@@ -39,7 +39,7 @@ def test_ndarray_float32_no_dim() -> None:
 
     typ = NDArray[np.float32]
     result = analyze_type_info(typ)
-    assert isinstance(result.variant, ListType)
+    assert isinstance(result.variant, SequenceType)
     assert result.variant.vector_info is None
     assert result.variant.elem_type == np.float32
     assert result.nullable is False
@@ -52,7 +52,7 @@ def test_ndarray_float64_with_dim() -> None:
 
     typ = Annotated[NDArray[np.float64], VectorInfo(dim=128)]
     result = analyze_type_info(typ)
-    assert isinstance(result.variant, ListType)
+    assert isinstance(result.variant, SequenceType)
     assert result.variant.vector_info == VectorInfo(dim=128)
     assert result.variant.elem_type == np.float64
     assert result.nullable is False
@@ -65,7 +65,7 @@ def test_ndarray_int64_no_dim() -> None:
 
     typ = NDArray[np.int64]
     result = analyze_type_info(typ)
-    assert isinstance(result.variant, ListType)
+    assert isinstance(result.variant, SequenceType)
     assert result.variant.vector_info is None
     assert result.variant.elem_type == np.int64
     assert result.nullable is False
@@ -78,7 +78,7 @@ def test_nullable_ndarray() -> None:
 
     typ = NDArray[np.float32] | None
     result = analyze_type_info(typ)
-    assert isinstance(result.variant, ListType)
+    assert isinstance(result.variant, SequenceType)
     assert result.variant.vector_info is None
     assert result.variant.elem_type == np.float32
     assert result.nullable is True
@@ -108,7 +108,7 @@ def test_list_of_primitives() -> None:
     assert result == DataTypeInfo(
         core_type=list[str],
         base_type=list,
-        variant=ListType(elem_type=str, vector_info=None),
+        variant=SequenceType(elem_type=str, vector_info=None),
         attrs=None,
         nullable=False,
     )
@@ -120,7 +120,7 @@ def test_list_of_structs() -> None:
     assert result == DataTypeInfo(
         core_type=list[SimpleDataclass],
         base_type=list,
-        variant=ListType(elem_type=SimpleDataclass, vector_info=None),
+        variant=SequenceType(elem_type=SimpleDataclass, vector_info=None),
         attrs=None,
         nullable=False,
     )
@@ -132,7 +132,7 @@ def test_sequence_of_int() -> None:
     assert result == DataTypeInfo(
         core_type=Sequence[int],
         base_type=Sequence,
-        variant=ListType(elem_type=int, vector_info=None),
+        variant=SequenceType(elem_type=int, vector_info=None),
         attrs=None,
         nullable=False,
     )
@@ -144,7 +144,7 @@ def test_list_with_vector_info() -> None:
     assert result == DataTypeInfo(
         core_type=list[int],
         base_type=list,
-        variant=ListType(elem_type=int, vector_info=VectorInfo(dim=5)),
+        variant=SequenceType(elem_type=int, vector_info=VectorInfo(dim=5)),
         attrs=None,
         nullable=False,
     )
@@ -156,7 +156,7 @@ def test_dict_str_int() -> None:
     assert result == DataTypeInfo(
         core_type=dict[str, int],
         base_type=dict,
-        variant=DictType(key_type=str, value_type=int),
+        variant=MappingType(key_type=str, value_type=int),
         attrs=None,
         nullable=False,
     )
@@ -168,7 +168,7 @@ def test_mapping_str_dataclass() -> None:
     assert result == DataTypeInfo(
         core_type=Mapping[str, SimpleDataclass],
         base_type=Mapping,
-        variant=DictType(key_type=str, value_type=SimpleDataclass),
+        variant=MappingType(key_type=str, value_type=SimpleDataclass),
         attrs=None,
         nullable=False,
     )
@@ -335,4 +335,4 @@ def test_annotated_list_with_type_kind() -> None:
 def test_unknown_type() -> None:
     typ = set
     result = analyze_type_info(typ)
-    assert isinstance(result.variant, UnknownType)
+    assert isinstance(result.variant, OtherType)
