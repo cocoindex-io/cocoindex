@@ -617,7 +617,9 @@ fn serde_roundtrip<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let typ = typ.into_inner();
     let value = value_from_py_object(&typ, &value)?;
-    let value = value::test_util::serde_roundtrip(&value, &typ).into_py_result()?;
+    let value = cocoindex_py_utils::CResultIntoPyResult::into_py_result(
+        value::test_util::serde_roundtrip(&value, &typ),
+    )?;
     value_to_py_object(py, &value)
 }
 

@@ -108,8 +108,13 @@ impl LlmGenerationClient for Client {
                 .json(&req)
         })
         .await
+        .map_err(Error::from)
         .context("Ollama API error")?;
-        let json: OllamaResponse = res.json().await?;
+        let json: OllamaResponse = res
+            .json()
+            .await
+            .internal()
+            .with_context(|| "Invalid JSON from Ollama")?;
 
         let output = if has_json_schema {
             super::GeneratedOutput::Json(serde_json::from_str(&json.response)?)

@@ -787,7 +787,7 @@ pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
 mod tests {
     use super::*;
     use crate::ops::functions::test_utils::test_flow_function;
-    use crate::ops::sdk::{BasicValueType, KeyPart, KeyValue, make_output_type};
+    use crate::ops::sdk::{BasicValueType, KeyValue, make_output_type};
     use crate::ops::shared::split::OutputPosition;
 
     fn build_split_recursively_arg_schemas() -> Vec<(Option<&'static str>, EnrichedValueType)> {
