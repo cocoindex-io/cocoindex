@@ -26,6 +26,11 @@ const sidebars: SidebarsConfig = {
       ],
     },
     {
+      type: 'doc',
+      id: 'query',
+      label: 'Query Support',
+    },
+    {
       type: 'category',
       label: 'Built-in Sources',
       link: { type: 'doc', id: 'sources/index' },
@@ -78,11 +83,6 @@ const sidebars: SidebarsConfig = {
       type: 'doc',
       id: 'cocoinsight_access',
       label: 'CocoInsight Access',
-    },
-    {
-      type: 'doc',
-      id: 'query',
-      label: 'Query Support',
     },
     {
       type: 'category',
