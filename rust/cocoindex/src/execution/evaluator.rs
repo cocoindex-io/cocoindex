@@ -13,8 +13,8 @@ use utils::immutable::RefList;
 
 use super::memoization::{EvaluationMemory, EvaluationMemoryOptions, evaluate_with_cell};
 
-const TIMEOUT_THRESHOLD: Duration = Duration::from_secs(1800);
-const WARNING_THRESHOLD: Duration = Duration::from_secs(30);
+const DEFAULT_TIMEOUT_THRESHOLD: Duration = Duration::from_secs(1800);
+const MIN_WARNING_THRESHOLD: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub struct ScopeValueBuilder {
@@ -372,7 +372,7 @@ where
     F: std::future::Future<Output = Result<T>>,
 {
     let mut eval_future = Box::pin(eval_future);
-    let mut warned = false;
+    let mut to_warn = warn_duration < timeout_duration;
     let timeout_future = tokio::time::sleep(timeout_duration);
     tokio::pin!(timeout_future);
 
@@ -387,12 +387,12 @@ where
                     op_kind, op_name, timeout_duration.as_secs()
                 ));
             }
-            _ = tokio::time::sleep(warn_duration), if !warned => {
+            _ = tokio::time::sleep(warn_duration), if to_warn => {
                 warn!(
-                    "Function '{}' ({}) is taking longer than {}s",
-                    op_kind, op_name, WARNING_THRESHOLD.as_secs()
+                    "Function '{}' ({}) is taking longer than {}s (will be timed out after {}s)",
+                    op_kind, op_name, warn_duration.as_secs(), timeout_duration.as_secs()
                 );
-                warned = true;
+                to_warn = false;
             }
         }
     }
@@ -420,8 +420,11 @@ async fn evaluate_op_scope(
                     input_values.push(value?);
                 }
 
-                let timeout_duration = op.function_exec_info.timeout.unwrap_or(TIMEOUT_THRESHOLD);
-                let warn_duration = WARNING_THRESHOLD;
+                let timeout_duration = op
+                    .function_exec_info
+                    .timeout
+                    .unwrap_or(DEFAULT_TIMEOUT_THRESHOLD);
+                let warn_duration = std::cmp::max(timeout_duration / 2, MIN_WARNING_THRESHOLD);
 
                 let op_name_for_warning = op.name.clone();
                 let op_kind_for_warning = op.op_kind.clone();

@@ -18,23 +18,26 @@ import { GitHubButton, YouTubeButton, DocumentationButton } from '../../../src/c
 ![Manual Extraction](/img/examples/manual_extraction/cover.png)
 
 ## Overview
+
 This example shows how to extract structured data from Python Manuals using Ollama.
 
 ## Flow Overview
+
 ![Flow Overview](/img/examples/manual_extraction/flow.png)
 
 - For each PDF file:
-    - Parse to markdown.
-    - Extract structured data from the markdown using LLM.
-    - Add summary to the module info.
-    - Collect the data.
+  - Parse to markdown.
+  - Extract structured data from the markdown using LLM.
+  - Add summary to the module info.
+  - Collect the data.
 - Export the data to a table.
 
-
 ## Prerequisites
+
 - If you don't have Postgres installed, please refer to the [installation guide](https://cocoindex.io/docs/getting_started/installation).
 
 - [Download](https://ollama.com/download) and install Ollama. Pull your favorite LLM models by:
+
     ```sh
     ollama pull llama3.2
     ```
@@ -46,6 +49,7 @@ This example shows how to extract structured data from Python Manuals using Olla
     <DocumentationButton url="https://cocoindex.io/docs/ai/llm" text="LLM" margin="0 0 16px 0" />
 
 ## Add Source
+
 Let's add Python docs as a source.
 
 ```python
@@ -64,6 +68,7 @@ def manual_extraction_flow(
 ```
 
 `flow_builder.add_source` will create a table with the following sub fields:
+
 - `filename` (key, type: `str`): the filename of the file, e.g. `dir1/file1.md`
 - `content` (type: `str` if `binary` is `False`, otherwise `bytes`): the content of the file
 
@@ -98,6 +103,7 @@ class PdfToMarkdownExecutor:
             text, _, _ = text_from_rendered(self._converter(temp_file.name))
             return text
 ```
+
 You may wonder why we want to define a spec + executor (instead of using a standalone function) here. The main reason is there's some heavy preparation work (initialize the parser) that needs to be done before being ready to process real data.
 
 <DocumentationButton url="https://cocoindex.io/docs/custom_ops/custom_functions" text="Custom Function" margin="0 0 16px 0" />
@@ -111,9 +117,10 @@ with data_scope["documents"].row() as doc:
 
 It transforms each document to markdown.
 
-
 ## Extract Structured Data from Markdown files
+
 ### Define schema
+
 Let's define the schema `ModuleInfo` using Python dataclasses, and we can pass it to the LLM to extract the structured data. It's easy to do this with CocoIndex.
 
 ``` python
@@ -127,7 +134,7 @@ class ArgInfo:
 class MethodInfo:
     """Information about a method."""
     name: str
-    args: cocoindex.typing.List[ArgInfo]
+    args: list[ArgInfo]
     description: str
 
 @dataclasses.dataclass
@@ -135,15 +142,15 @@ class ClassInfo:
     """Information about a class."""
     name: str
     description: str
-    methods: cocoindex.typing.List[MethodInfo]
+    methods: list[MethodInfo]
 
 @dataclasses.dataclass
 class ModuleInfo:
     """Information about a Python module."""
     title: str
     description: str
-    classes: cocoindex.typing.List[ClassInfo]
-    methods: cocoindex.typing.List[MethodInfo]
+    classes: list[ClassInfo]
+    methods: list[MethodInfo]
 ```
 
 ### Extract structured data
@@ -168,9 +175,11 @@ with data_scope["documents"].row() as doc:
 ![ExtractByLlm](/img/examples/manual_extraction/extraction.png)
 
 ## Add summarization to module info
+
 Using CocoIndex as framework, you can easily add any transformation on the data, and collect it as part of the data index. Let's add some simple summary to each module - like number of classes and methods, using simple Python function.
 
 ### Define Schema
+
 ``` python
 @dataclasses.dataclass
 class ModuleSummary:
@@ -180,6 +189,7 @@ class ModuleSummary:
 ```
 
 ### A simple custom function to summarize the data
+
 ```python
 @cocoindex.op.function()
 def summarize_module(module_info: ModuleInfo) -> ModuleSummary:
@@ -191,6 +201,7 @@ def summarize_module(module_info: ModuleInfo) -> ModuleSummary:
 ```
 
 ### Plug in the function into the flow
+
 ```python
 with data_scope["documents"].row() as doc:
     # ... after the extraction
@@ -202,7 +213,6 @@ with data_scope["documents"].row() as doc:
 ![Summarize Module](/img/examples/manual_extraction/summary.png)
 
 ## Collect the data
-
 
 After the extraction, we need to cherry-pick anything we like from the output using the `collect` function from the collector of a data scope defined above.
 
@@ -224,11 +234,13 @@ modules_index.export(
 ```
 
 ## Query and test your index
+
 Run the following command to set up and update the index.
 
 ```sh
 cocoindex update -L main
 ```
+
 You'll see the index updates state in the terminal
 
 After the index is built, you have a table with the name `modules_info`. You can query it at any time, e.g., start a Postgres shell:
@@ -244,9 +256,11 @@ SELECT filename, module_info->'title' AS title, module_summary FROM modules_info
 ```
 
 ## CocoInsight
+
 [CocoInsight](https://www.youtube.com/watch?v=ZnmyoHslBSc) is a really cool tool to help you understand your data pipeline and data index. It is in Early Access now (Free).
 
 ```sh
 cocoindex server -ci main
 ```
+
 CocoInsight dashboard is here `https://cocoindex.io/cocoinsight`.  It connects to your local CocoIndex server with zero data retention.

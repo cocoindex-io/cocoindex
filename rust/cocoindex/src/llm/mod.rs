@@ -75,8 +75,14 @@ pub struct LlmGenerateRequest<'a> {
 }
 
 #[derive(Debug)]
+pub enum GeneratedOutput {
+    Json(serde_json::Value),
+    Text(String),
+}
+
+#[derive(Debug)]
 pub struct LlmGenerateResponse {
-    pub text: String,
+    pub output: GeneratedOutput,
 }
 
 #[async_trait]
