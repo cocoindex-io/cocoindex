@@ -48,3 +48,22 @@ Follow the steps below to get CocoIndex built on the latest codebase locally - i
     ```sh
     . ./.env.lib_debug
     ```
+
+## Troubleshooting
+
+### `cargo test` fails with `ModuleNotFoundError: encodings` (embedded Python can't find stdlib)
+
+On some setups (notably when using `uv venv` with an `uv`-managed Python), `cargo test` may crash with:
+
+`ModuleNotFoundError: No module named 'encodings'`
+
+This can happen when the embedded Python interpreter (used by Rust tests) cannot locate the Python stdlib (you may see `sys.prefix=/install` in the crash output).
+
+Workaround:
+- Run cargo tests via:
+
+  `./dev/run_cargo_test.sh -p cocoindex --lib`
+
+This wrapper sets `PYTHONHOME`/`PYTHONPATH` for that command only, so embedded Python can locate the stdlib and site-packages.
+
+Note: the cargo-test pre-commit hook uses this wrapper.
