@@ -23,12 +23,12 @@ from ._internal.datatype import (
     is_pydantic_model,
     is_numpy_number_type,
 )
-from ._internal.engine_type import (
-    EngineValueType,
-    EngineFieldSchema,
-    EngineBasicValueType,
-    EngineStructType,
-    EngineTableType,
+from .engine_type import (
+    ValueType,
+    FieldSchema,
+    BasicValueType,
+    StructType as StructValueType,
+    TableType,
 )
 from .engine_object import get_auto_default_for_type
 
@@ -154,7 +154,7 @@ def make_engine_value_encoder(type_info: DataTypeInfo) -> Callable[[Any], Any]:
 
 def make_engine_key_decoder(
     field_path: list[str],
-    key_fields_schema: list[EngineFieldSchema],
+    key_fields_schema: list[FieldSchema],
     dst_type_info: DataTypeInfo,
 ) -> Callable[[Any], Any]:
     """
@@ -185,7 +185,7 @@ def make_engine_key_decoder(
 
 def make_engine_value_decoder(
     field_path: list[str],
-    src_type: EngineValueType,
+    src_type: ValueType,
     dst_type_info: DataTypeInfo,
     for_key: bool = False,
 ) -> Callable[[Any], Any]:
@@ -194,7 +194,7 @@ def make_engine_value_decoder(
 
     Args:
         field_path: The path to the field in the engine value. For error messages.
-        src_type: The type of the engine value, mapped from a `cocoindex::base::schema::EngineValueType`.
+        src_type: The type of the engine value, mapped from a `cocoindex::base::schema::ValueType`.
         dst_annotation: The type annotation of the Python value.
 
     Returns:
@@ -211,7 +211,7 @@ def make_engine_value_decoder(
             f"declared `{dst_type_info.core_type}`, an unsupported type"
         )
 
-    if isinstance(src_type, EngineStructType):  # type: ignore[redundant-cast]
+    if isinstance(src_type, StructValueType):  # type: ignore[redundant-cast]
         return make_engine_struct_decoder(
             field_path,
             src_type.fields,
@@ -219,7 +219,7 @@ def make_engine_value_decoder(
             for_key=for_key,
         )
 
-    if isinstance(src_type, EngineTableType):  # type: ignore[redundant-cast]
+    if isinstance(src_type, TableType):  # type: ignore[redundant-cast]
         with ChildFieldPath(field_path, "[*]"):
             engine_fields_schema = src_type.row.fields
 
@@ -280,7 +280,7 @@ def make_engine_value_decoder(
 
         return decode
 
-    if isinstance(src_type, EngineBasicValueType) and src_type.kind == "Union":
+    if isinstance(src_type, BasicValueType) and src_type.kind == "Union":
         if isinstance(dst_type_variant, AnyType):
             return lambda value: value[1]
 
@@ -291,7 +291,7 @@ def make_engine_value_decoder(
         )
         # mypy: union info exists for Union kind
         assert src_type.union is not None  # type: ignore[unreachable]
-        src_type_variants_basic: list[EngineBasicValueType] = src_type.union.variants
+        src_type_variants_basic: list[BasicValueType] = src_type.union.variants
         src_type_variants = src_type_variants_basic
         decoders = []
         for i, src_type_variant in enumerate(src_type_variants):
@@ -316,7 +316,7 @@ def make_engine_value_decoder(
     if isinstance(dst_type_variant, AnyType):
         return lambda value: value
 
-    if isinstance(src_type, EngineBasicValueType) and src_type.kind == "Vector":
+    if isinstance(src_type, BasicValueType) and src_type.kind == "Vector":
         field_path_str = "".join(field_path)
         if not isinstance(dst_type_variant, ListType):
             raise ValueError(
@@ -395,7 +395,7 @@ def make_engine_value_decoder(
 
 def make_engine_struct_decoder(
     field_path: list[str],
-    src_fields: list[EngineFieldSchema],
+    src_fields: list[FieldSchema],
     dst_type_info: DataTypeInfo,
     for_key: bool = False,
 ) -> Callable[[list[Any]], Any]:
@@ -487,7 +487,7 @@ def make_engine_struct_decoder(
 
 def _make_engine_struct_to_dict_decoder(
     field_path: list[str],
-    src_fields: list[EngineFieldSchema],
+    src_fields: list[FieldSchema],
     value_type_annotation: Any,
 ) -> Callable[[list[Any] | None], dict[str, Any] | None]:
     """Make a decoder from engine field values to a Python dict."""
@@ -521,7 +521,7 @@ def _make_engine_struct_to_dict_decoder(
 
 def _make_engine_struct_to_tuple_decoder(
     field_path: list[str],
-    src_fields: list[EngineFieldSchema],
+    src_fields: list[FieldSchema],
 ) -> Callable[[list[Any] | None], tuple[Any, ...] | None]:
     """Make a decoder from engine field values to a Python tuple."""
 

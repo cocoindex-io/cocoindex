@@ -12,11 +12,11 @@ from cocoindex.typing import (
     VectorInfo,
 )
 from cocoindex._internal.datatype import analyze_type_info
-from cocoindex._internal.engine_type import (
-    decode_engine_value_type,
+from cocoindex.engine_type import (
+    decode_value_type,
     encode_enriched_type,
     encode_enriched_type_info,
-    encode_engine_value_type,
+    encode_value_type,
 )
 
 
@@ -174,8 +174,8 @@ def test_basic_types_encode_decode() -> None:
 
     for typ in test_cases:
         encoded = encode_type_from_annotation(typ)
-        decoded = decode_engine_value_type(encoded["type"])
-        reencoded = encode_engine_value_type(decoded)
+        decoded = decode_value_type(encoded["type"])
+        reencoded = encode_value_type(decoded)
         assert reencoded == encoded["type"]
 
 
@@ -192,8 +192,8 @@ def test_vector_types_encode_decode() -> None:
 
     for typ in test_cases:
         encoded = encode_type_from_annotation(typ)
-        decoded = decode_engine_value_type(encoded["type"])
-        reencoded = encode_engine_value_type(decoded)
+        decoded = decode_value_type(encoded["type"])
+        reencoded = encode_value_type(decoded)
         assert reencoded == encoded["type"]
 
 
@@ -206,8 +206,8 @@ def test_struct_types_encode_decode() -> None:
 
     for typ in test_cases:
         encoded = encode_type_from_annotation(typ)
-        decoded = decode_engine_value_type(encoded["type"])
-        reencoded = encode_engine_value_type(decoded)
+        decoded = decode_value_type(encoded["type"])
+        reencoded = encode_value_type(decoded)
         assert reencoded == encoded["type"]
 
 
@@ -220,8 +220,8 @@ def test_table_types_encode_decode() -> None:
 
     for typ in test_cases:
         encoded = encode_type_from_annotation(typ)
-        decoded = decode_engine_value_type(encoded["type"])
-        reencoded = encode_engine_value_type(decoded)
+        decoded = decode_value_type(encoded["type"])
+        reencoded = encode_value_type(decoded)
         assert reencoded == encoded["type"]
 
 
@@ -235,8 +235,8 @@ def test_nullable_types_encode_decode() -> None:
 
     for typ in test_cases:
         encoded = encode_type_from_annotation(typ)
-        decoded = decode_engine_value_type(encoded["type"])
-        reencoded = encode_engine_value_type(decoded)
+        decoded = decode_value_type(encoded["type"])
+        reencoded = encode_value_type(decoded)
         assert reencoded == encoded["type"]
 
 
@@ -250,8 +250,8 @@ def test_annotated_types_encode_decode() -> None:
 
     for typ in test_cases:
         encoded = encode_type_from_annotation(typ)
-        decoded = decode_engine_value_type(encoded["type"])
-        reencoded = encode_engine_value_type(decoded)
+        decoded = decode_value_type(encoded["type"])
+        reencoded = encode_value_type(decoded)
         assert reencoded == encoded["type"]
 
 
@@ -266,6 +266,6 @@ def test_complex_nested_encode_decode() -> None:
         score: Annotated[float, TypeAttr("indexed", True)]
 
     encoded = encode_type_from_annotation(ComplexStruct)
-    decoded = decode_engine_value_type(encoded["type"])
-    reencoded = encode_engine_value_type(decoded)
+    decoded = decode_value_type(encoded["type"])
+    reencoded = encode_value_type(decoded)
     assert reencoded == encoded["type"]

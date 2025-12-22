@@ -40,7 +40,7 @@ from .op import FunctionSpec
 from .runtime import execution_context, to_async_call
 from .setup import SetupChangeBundle
 from ._internal.datatype import analyze_type_info
-from ._internal.engine_type import encode_enriched_type, decode_engine_value_type
+from .engine_type import encode_enriched_type, decode_value_type
 from .query_handler import QueryHandlerInfo, QueryHandlerResultFields
 from .validation import (
     validate_flow_name,
@@ -1186,7 +1186,7 @@ class TransformFlow(Generic[T]):
         )
         result_decoder = make_engine_value_decoder(
             [],
-            decode_engine_value_type(engine_return_type["type"]),
+            decode_value_type(engine_return_type["type"]),
             analyze_type_info(python_return_type),
         )
 

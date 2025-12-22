@@ -8,22 +8,12 @@ from typing import (
 )
 
 import cocoindex.typing
-from cocoindex._internal.datatype import (
-    analyze_type_info,
-    AnyType,
-    StructType,
-    BasicType,
-    ListType,
-    DictType,
-    UnionType,
-    UnknownType,
-    DataTypeInfo,
-)
+from cocoindex._internal import datatype
 
 
 @dataclasses.dataclass
-class EngineVectorTypeSchema:
-    element_type: "EngineBasicValueType"
+class VectorTypeSchema:
+    element_type: "BasicValueType"
     dimension: int | None
 
     def __str__(self) -> str:
@@ -34,9 +24,9 @@ class EngineVectorTypeSchema:
         return self.__str__()
 
     @staticmethod
-    def decode(obj: dict[str, Any]) -> "EngineVectorTypeSchema":
-        return EngineVectorTypeSchema(
-            element_type=EngineBasicValueType.decode(obj["element_type"]),
+    def decode(obj: dict[str, Any]) -> "VectorTypeSchema":
+        return VectorTypeSchema(
+            element_type=BasicValueType.decode(obj["element_type"]),
             dimension=obj.get("dimension"),
         )
 
@@ -48,8 +38,8 @@ class EngineVectorTypeSchema:
 
 
 @dataclasses.dataclass
-class EngineUnionTypeSchema:
-    variants: list["EngineBasicValueType"]
+class UnionTypeSchema:
+    variants: list["BasicValueType"]
 
     def __str__(self) -> str:
         types_str = " | ".join(str(t) for t in self.variants)
@@ -59,9 +49,9 @@ class EngineUnionTypeSchema:
         return self.__str__()
 
     @staticmethod
-    def decode(obj: dict[str, Any]) -> "EngineUnionTypeSchema":
-        return EngineUnionTypeSchema(
-            variants=[EngineBasicValueType.decode(t) for t in obj["types"]]
+    def decode(obj: dict[str, Any]) -> "UnionTypeSchema":
+        return UnionTypeSchema(
+            variants=[BasicValueType.decode(t) for t in obj["types"]]
         )
 
     def encode(self) -> dict[str, Any]:
@@ -69,9 +59,9 @@ class EngineUnionTypeSchema:
 
 
 @dataclasses.dataclass
-class EngineBasicValueType:
+class BasicValueType:
     """
-    Mirror of Rust EngineBasicValueType in JSON form.
+    Mirror of Rust BasicValueType in JSON form.
 
     For Vector and Union kinds, extra fields are populated accordingly.
     """
@@ -94,8 +84,8 @@ class EngineBasicValueType:
         "Vector",
         "Union",
     ]
-    vector: EngineVectorTypeSchema | None = None
-    union: EngineUnionTypeSchema | None = None
+    vector: VectorTypeSchema | None = None
+    union: UnionTypeSchema | None = None
 
     def __str__(self) -> str:
         if self.kind == "Vector" and self.vector is not None:
@@ -115,19 +105,19 @@ class EngineBasicValueType:
         return self.__str__()
 
     @staticmethod
-    def decode(obj: dict[str, Any]) -> "EngineBasicValueType":
+    def decode(obj: dict[str, Any]) -> "BasicValueType":
         kind = obj["kind"]
         if kind == "Vector":
-            return EngineBasicValueType(
+            return BasicValueType(
                 kind=kind,  # type: ignore[arg-type]
-                vector=EngineVectorTypeSchema.decode(obj),
+                vector=VectorTypeSchema.decode(obj),
             )
         if kind == "Union":
-            return EngineBasicValueType(
+            return BasicValueType(
                 kind=kind,  # type: ignore[arg-type]
-                union=EngineUnionTypeSchema.decode(obj),
+                union=UnionTypeSchema.decode(obj),
             )
-        return EngineBasicValueType(kind=kind)  # type: ignore[arg-type]
+        return BasicValueType(kind=kind)  # type: ignore[arg-type]
 
     def encode(self) -> dict[str, Any]:
         result = {"kind": self.kind}
@@ -139,8 +129,8 @@ class EngineBasicValueType:
 
 
 @dataclasses.dataclass
-class EngineEnrichedValueType:
-    type: "EngineValueType"
+class EnrichedValueType:
+    type: "ValueType"
     nullable: bool = False
     attrs: dict[str, Any] | None = None
 
@@ -157,9 +147,9 @@ class EngineEnrichedValueType:
         return self.__str__()
 
     @staticmethod
-    def decode(obj: dict[str, Any]) -> "EngineEnrichedValueType":
-        return EngineEnrichedValueType(
-            type=decode_engine_value_type(obj["type"]),
+    def decode(obj: dict[str, Any]) -> "EnrichedValueType":
+        return EnrichedValueType(
+            type=decode_value_type(obj["type"]),
             nullable=obj.get("nullable", False),
             attrs=obj.get("attrs"),
         )
@@ -174,9 +164,9 @@ class EngineEnrichedValueType:
 
 
 @dataclasses.dataclass
-class EngineFieldSchema:
+class FieldSchema:
     name: str
-    value_type: EngineEnrichedValueType
+    value_type: EnrichedValueType
     description: str | None = None
 
     def __str__(self) -> str:
@@ -186,10 +176,10 @@ class EngineFieldSchema:
         return self.__str__()
 
     @staticmethod
-    def decode(obj: dict[str, Any]) -> "EngineFieldSchema":
-        return EngineFieldSchema(
+    def decode(obj: dict[str, Any]) -> "FieldSchema":
+        return FieldSchema(
             name=obj["name"],
-            value_type=EngineEnrichedValueType.decode(obj),
+            value_type=EnrichedValueType.decode(obj),
             description=obj.get("description"),
         )
 
@@ -202,8 +192,8 @@ class EngineFieldSchema:
 
 
 @dataclasses.dataclass
-class EngineStructSchema:
-    fields: list[EngineFieldSchema]
+class StructSchema:
+    fields: list[FieldSchema]
     description: str | None = None
 
     def __str__(self) -> str:
@@ -216,7 +206,7 @@ class EngineStructSchema:
     @classmethod
     def decode(cls, obj: dict[str, Any]) -> Self:
         return cls(
-            fields=[EngineFieldSchema.decode(f) for f in obj["fields"]],
+            fields=[FieldSchema.decode(f) for f in obj["fields"]],
             description=obj.get("description"),
         )
 
@@ -228,7 +218,7 @@ class EngineStructSchema:
 
 
 @dataclasses.dataclass
-class EngineStructType(EngineStructSchema):
+class StructType(StructSchema):
     kind: Literal["Struct"] = "Struct"
 
     def __str__(self) -> str:
@@ -245,9 +235,9 @@ class EngineStructType(EngineStructSchema):
 
 
 @dataclasses.dataclass
-class EngineTableType:
+class TableType:
     kind: Literal["KTable", "LTable"]
-    row: EngineStructSchema
+    row: StructSchema
     num_key_parts: int | None = None  # Only for KTable
 
     def __str__(self) -> str:
@@ -263,13 +253,13 @@ class EngineTableType:
         return self.__str__()
 
     @staticmethod
-    def decode(obj: dict[str, Any]) -> "EngineTableType":
+    def decode(obj: dict[str, Any]) -> "TableType":
         row_obj = obj["row"]
-        row = EngineStructSchema(
-            fields=[EngineFieldSchema.decode(f) for f in row_obj["fields"]],
+        row = StructSchema(
+            fields=[FieldSchema.decode(f) for f in row_obj["fields"]],
             description=row_obj.get("description"),
         )
-        return EngineTableType(
+        return TableType(
             kind=obj["kind"],  # type: ignore[arg-type]
             row=row,
             num_key_parts=obj.get("num_key_parts"),
@@ -282,37 +272,37 @@ class EngineTableType:
         return result
 
 
-EngineValueType = EngineBasicValueType | EngineStructType | EngineTableType
+ValueType = BasicValueType | StructType | TableType
 
 
-def decode_engine_field_schemas(objs: list[dict[str, Any]]) -> list[EngineFieldSchema]:
-    return [EngineFieldSchema.decode(o) for o in objs]
+def decode_field_schemas(objs: list[dict[str, Any]]) -> list[FieldSchema]:
+    return [FieldSchema.decode(o) for o in objs]
 
 
-def decode_engine_value_type(obj: dict[str, Any]) -> EngineValueType:
+def decode_value_type(obj: dict[str, Any]) -> ValueType:
     kind = obj["kind"]
     if kind == "Struct":
-        return EngineStructType.decode(obj)
+        return StructType.decode(obj)
 
     if kind in cocoindex.typing.TABLE_TYPES:
-        return EngineTableType.decode(obj)
+        return TableType.decode(obj)
 
     # Otherwise it's a basic value
-    return EngineBasicValueType.decode(obj)
+    return BasicValueType.decode(obj)
 
 
-def encode_engine_value_type(value_type: EngineValueType) -> dict[str, Any]:
-    """Encode a EngineValueType to its dictionary representation."""
+def encode_value_type(value_type: ValueType) -> dict[str, Any]:
+    """Encode a ValueType to its dictionary representation."""
     return value_type.encode()
 
 
 def _encode_struct_schema(
-    struct_info: StructType, key_type: type | None = None
+    struct_info: datatype.StructType, key_type: type | None = None
 ) -> tuple[dict[str, Any], int | None]:
     fields = []
 
     def add_field(
-        name: str, analyzed_type: DataTypeInfo, description: str | None = None
+        name: str, analyzed_type: datatype.DataTypeInfo, description: str | None = None
     ) -> None:
         try:
             type_info = encode_enriched_type_info(analyzed_type)
@@ -327,18 +317,22 @@ def _encode_struct_schema(
             type_info["description"] = description
         fields.append(type_info)
 
-    def add_fields_from_struct(struct_info: StructType) -> None:
+    def add_fields_from_struct(struct_info: datatype.StructType) -> None:
         for field in struct_info.fields:
-            add_field(field.name, analyze_type_info(field.type_hint), field.description)
+            add_field(
+                field.name,
+                datatype.analyze_type_info(field.type_hint),
+                field.description,
+            )
 
     result: dict[str, Any] = {}
     num_key_parts = None
     if key_type is not None:
-        key_type_info = analyze_type_info(key_type)
-        if isinstance(key_type_info.variant, BasicType):
+        key_type_info = datatype.analyze_type_info(key_type)
+        if isinstance(key_type_info.variant, datatype.BasicType):
             add_field(cocoindex.typing.KEY_FIELD_NAME, key_type_info)
             num_key_parts = 1
-        elif isinstance(key_type_info.variant, StructType):
+        elif isinstance(key_type_info.variant, datatype.StructType):
             add_fields_from_struct(key_type_info.variant)
             num_key_parts = len(fields)
         else:
@@ -352,27 +346,27 @@ def _encode_struct_schema(
     return result, num_key_parts
 
 
-def _encode_type(type_info: DataTypeInfo) -> dict[str, Any]:
+def _encode_type(type_info: datatype.DataTypeInfo) -> dict[str, Any]:
     variant = type_info.variant
 
-    if isinstance(variant, AnyType):
+    if isinstance(variant, datatype.AnyType):
         raise ValueError("Specific type annotation is expected")
 
-    if isinstance(variant, UnknownType):
+    if isinstance(variant, datatype.UnknownType):
         raise ValueError(f"Unsupported type annotation: {type_info.core_type}")
 
-    if isinstance(variant, BasicType):
+    if isinstance(variant, datatype.BasicType):
         return {"kind": variant.kind}
 
-    if isinstance(variant, StructType):
+    if isinstance(variant, datatype.StructType):
         encoded_type, _ = _encode_struct_schema(variant)
         encoded_type["kind"] = "Struct"
         return encoded_type
 
-    if isinstance(variant, ListType):
-        elem_type_info = analyze_type_info(variant.elem_type)
+    if isinstance(variant, datatype.ListType):
+        elem_type_info = datatype.analyze_type_info(variant.elem_type)
         encoded_elem_type = _encode_type(elem_type_info)
-        if isinstance(elem_type_info.variant, StructType):
+        if isinstance(elem_type_info.variant, datatype.StructType):
             if variant.vector_info is not None:
                 raise ValueError("LTable type must not have a vector info")
             row_type, _ = _encode_struct_schema(elem_type_info.variant)
@@ -385,9 +379,9 @@ def _encode_type(type_info: DataTypeInfo) -> dict[str, Any]:
                 "dimension": vector_info and vector_info.dim,
             }
 
-    if isinstance(variant, DictType):
-        value_type_info = analyze_type_info(variant.value_type)
-        if not isinstance(value_type_info.variant, StructType):
+    if isinstance(variant, datatype.DictType):
+        value_type_info = datatype.analyze_type_info(variant.value_type)
+        if not isinstance(value_type_info.variant, datatype.StructType):
             raise ValueError(
                 f"KTable value must have a Struct type, got {value_type_info.core_type}"
             )
@@ -401,18 +395,19 @@ def _encode_type(type_info: DataTypeInfo) -> dict[str, Any]:
             "num_key_parts": num_key_parts,
         }
 
-    if isinstance(variant, UnionType):
+    if isinstance(variant, datatype.UnionType):
         return {
             "kind": "Union",
             "types": [
-                _encode_type(analyze_type_info(typ)) for typ in variant.variant_types
+                _encode_type(datatype.analyze_type_info(typ))
+                for typ in variant.variant_types
             ],
         }
 
 
-def encode_enriched_type_info(type_info: DataTypeInfo) -> dict[str, Any]:
+def encode_enriched_type_info(type_info: datatype.DataTypeInfo) -> dict[str, Any]:
     """
-    Encode an `DataTypeInfo` to a CocoIndex engine's `EngineEnrichedValueType` representation
+    Encode an `datatype.DataTypeInfo` to a CocoIndex engine's `EnrichedValueType` representation
     """
     encoded: dict[str, Any] = {"type": _encode_type(type_info)}
 
@@ -440,4 +435,10 @@ def encode_enriched_type(t: Any) -> dict[str, Any] | None:
     if t is None:
         return None
 
-    return encode_enriched_type_info(analyze_type_info(t))
+    return encode_enriched_type_info(datatype.analyze_type_info(t))
+
+
+def resolve_forward_ref(t: Any) -> Any:
+    if isinstance(t, str):
+        return eval(t)  # pylint: disable=eval-used
+    return t

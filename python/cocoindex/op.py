@@ -12,7 +12,6 @@ from typing import (
     Iterator,
     Protocol,
     dataclass_transform,
-    Annotated,
     TypeVar,
     Generic,
     Literal,
@@ -38,16 +37,15 @@ from ._internal.datatype import (
     AnyType,
     DictType,
 )
-from ._internal.engine_type import (
-    EngineStructSchema,
-    EngineStructType,
-    EngineTableType,
+from .engine_type import (
+    StructSchema,
+    StructType as StructValueType,
+    TableType,
     encode_enriched_type_info,
-    resolve_forward_ref,
-    EngineEnrichedValueType,
-    decode_engine_field_schemas,
-    EngineFieldSchema,
-    EngineValueType,
+    EnrichedValueType,
+    decode_field_schemas,
+    FieldSchema,
+    ValueType,
 )
 from .runtime import to_async_call
 from .index import IndexOptions
@@ -179,7 +177,7 @@ class _ArgInfo:
 
 
 def _make_batched_engine_value_decoder(
-    field_path: list[str], src_type: EngineValueType, dst_type_info: DataTypeInfo
+    field_path: list[str], src_type: ValueType, dst_type_info: DataTypeInfo
 ) -> Callable[[Any], Any]:
     if not isinstance(dst_type_info.variant, ListType):
         raise ValueError("Expected arguments for batching function to be a list type")
@@ -247,7 +245,7 @@ def _register_op_factory(
                     if related_arg_name == arg_name:
                         attributes[related_attr.value] = actual_arg.analyzed_value
                 type_info = analyze_type_info(arg_param.annotation)
-                enriched = EngineEnrichedValueType.decode(actual_arg.value_type)
+                enriched = EnrichedValueType.decode(actual_arg.value_type)
                 if op_args.batching:
                     decoder = _make_batched_engine_value_decoder(
                         [arg_name], enriched.type, type_info
@@ -466,7 +464,7 @@ def executor_class(**args: Any) -> Callable[[type], type]:
         type_hints = cls.__annotations__
         if "spec" not in type_hints:
             raise TypeError("Expect a `spec` field with type hint")
-        spec_cls = resolve_forward_ref(type_hints["spec"])
+        spec_cls = _resolve_forward_ref(type_hints["spec"])
         sig = inspect.signature(cls.__call__)
         _register_op_factory(
             category=spec_cls._op_category,
@@ -682,7 +680,7 @@ class _SourceConnector:
     _key_type_info: DataTypeInfo
     _key_decoder: Callable[[Any], Any]
     _value_type_info: DataTypeInfo
-    _table_type: EngineEnrichedValueType
+    _table_type: EnrichedValueType
     _connector_cls: type[Any]
 
     _create_fn: Callable[[Any], Awaitable[Any]]
@@ -701,30 +699,30 @@ class _SourceConnector:
 
         # TODO: We can save the intermediate step after #1083 is fixed.
         encoded_engine_key_type = encode_enriched_type_info(self._key_type_info)
-        engine_key_type = EngineEnrichedValueType.decode(encoded_engine_key_type)
+        engine_key_type = EnrichedValueType.decode(encoded_engine_key_type)
 
         # TODO: We can save the intermediate step after #1083 is fixed.
         encoded_engine_value_type = encode_enriched_type_info(self._value_type_info)
-        engine_value_type = EngineEnrichedValueType.decode(encoded_engine_value_type)
+        engine_value_type = EnrichedValueType.decode(encoded_engine_value_type)
 
-        if not isinstance(engine_value_type.type, EngineStructType):
+        if not isinstance(engine_value_type.type, StructValueType):
             raise ValueError(
-                f"Expected a EngineStructType, got {engine_value_type.type}"
+                f"Expected a StructValueType, got {engine_value_type.type}"
             )
 
-        if isinstance(engine_key_type.type, EngineStructType):
+        if isinstance(engine_key_type.type, StructValueType):
             key_fields_schema = engine_key_type.type.fields
         else:
             key_fields_schema = [
-                EngineFieldSchema(name=KEY_FIELD_NAME, value_type=engine_key_type)
+                FieldSchema(name=KEY_FIELD_NAME, value_type=engine_key_type)
             ]
         self._key_decoder = make_engine_key_decoder(
             [], key_fields_schema, self._key_type_info
         )
-        self._table_type = EngineEnrichedValueType(
-            type=EngineTableType(
+        self._table_type = EnrichedValueType(
+            type=TableType(
                 kind="KTable",
-                row=EngineStructSchema(
+                row=StructSchema(
                     fields=key_fields_schema + engine_value_type.type.fields
                 ),
                 num_key_parts=len(key_fields_schema),
@@ -777,9 +775,9 @@ class _TargetConnectorContext:
     target_name: str
     spec: Any
     prepared_spec: Any
-    key_fields_schema: list[EngineFieldSchema]
+    key_fields_schema: list[FieldSchema]
     key_decoder: Callable[[Any], Any]
-    value_fields_schema: list[EngineFieldSchema]
+    value_fields_schema: list[FieldSchema]
     value_decoder: Callable[[Any], Any]
     index_options: IndexOptions
     setup_state: Any
@@ -921,11 +919,11 @@ class _TargetConnector:
             else (Any, Any)
         )
 
-        key_fields_schema = decode_engine_field_schemas(raw_key_fields_schema)
+        key_fields_schema = decode_field_schemas(raw_key_fields_schema)
         key_decoder = make_engine_key_decoder(
             ["<key>"], key_fields_schema, analyze_type_info(key_annotation)
         )
-        value_fields_schema = decode_engine_field_schemas(raw_value_fields_schema)
+        value_fields_schema = decode_field_schemas(raw_value_fields_schema)
         value_decoder = make_engine_struct_decoder(
             ["<value>"], value_fields_schema, analyze_type_info(value_annotation)
         )
@@ -1092,3 +1090,9 @@ def target_connector(
         return connector_cls
 
     return _inner
+
+
+def _resolve_forward_ref(t: Any) -> Any:
+    if isinstance(t, str):
+        return eval(t)  # pylint: disable=eval-used
+    return t

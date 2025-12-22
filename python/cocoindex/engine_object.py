@@ -22,9 +22,9 @@ from ._internal.datatype import (
     is_namedtuple_type,
     extract_ndarray_elem_dtype,
 )
-from ._internal.engine_type import (
-    EngineEnrichedValueType,
-    EngineFieldSchema,
+from .engine_type import (
+    EnrichedValueType,
+    FieldSchema,
     encode_enriched_type,
 )
 
@@ -60,9 +60,9 @@ def dump_engine_object(v: Any) -> Any:
     """Recursively dump an object for engine. Engine side uses `Pythonized` to catch."""
     if v is None:
         return None
-    elif isinstance(v, EngineEnrichedValueType):
+    elif isinstance(v, EnrichedValueType):
         return v.encode()
-    elif isinstance(v, EngineFieldSchema):
+    elif isinstance(v, FieldSchema):
         return v.encode()
     elif isinstance(v, type) or get_origin(v) is not None:
         return encode_enriched_type(v)
@@ -123,10 +123,10 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
     type_info = analyze_type_info(expected_type)
     variant = type_info.variant
 
-    if type_info.core_type is EngineEnrichedValueType:
-        return EngineEnrichedValueType.decode(v)
-    if type_info.core_type is EngineFieldSchema:
-        return EngineFieldSchema.decode(v)
+    if type_info.core_type is EnrichedValueType:
+        return EnrichedValueType.decode(v)
+    if type_info.core_type is FieldSchema:
+        return FieldSchema.decode(v)
 
     # Any or unknown → return as-is
     if isinstance(variant, AnyType) or type_info.base_type is Any:
