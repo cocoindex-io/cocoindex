@@ -5,13 +5,9 @@ import shutil
 import os
 from dataclasses import dataclass
 from hashlib import blake2b
-from typing import Collection, Generic, Literal, NamedTuple, Sequence, TYPE_CHECKING
+from typing import Collection, Generic, Literal, NamedTuple, Sequence
 
 import cocoindex as coco
-
-if TYPE_CHECKING:
-    from cocoindex import Scope
-
 
 _FileName = str
 _FileContent = bytes
@@ -179,7 +175,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
         self._provider = _provider
 
     def declare_file(
-        self: DirTarget, scope: Scope, *, filename: str, content: bytes | str
+        self: DirTarget, scope: coco.Scope, *, filename: str, content: bytes | str
     ) -> None:
         """
         Declare a file to be written to this directory.
@@ -196,7 +192,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
 
 @coco.function
 def dir_target(
-    scope: Scope,
+    scope: coco.Scope,
     path: pathlib.Path,
     *,
     stable_key: coco.StableKey | None = None,
