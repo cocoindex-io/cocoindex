@@ -618,7 +618,7 @@ fn seder_roundtrip<'py>(
     let typ = typ.into_inner();
     let value = value_from_py_object(&typ, &value)?;
     let value = py_utils::CResultIntoPyResult::into_py_result(
-        value::test_util::seder_roundtrip(&value, &typ),
+        value::test_util::serde_roundtrip(&value, &typ),
     )?;
     value_to_py_object(py, &value)
 }
