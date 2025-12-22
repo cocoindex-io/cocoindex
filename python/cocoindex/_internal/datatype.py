@@ -8,6 +8,7 @@ from typing import (
     Annotated,
     Any,
     Iterator,
+    Mapping,
     NamedTuple,
     get_type_hints,
 )
@@ -188,8 +189,7 @@ class LeafType(NamedTuple):
 TypeVariant = AnyType | SequenceType | MappingType | StructType | UnionType | LeafType
 
 
-@dataclasses.dataclass
-class DataTypeInfo:
+class DataTypeInfo(NamedTuple):
     """
     Analyzed info of a Python type.
     """
@@ -203,7 +203,7 @@ class DataTypeInfo:
     annotations: tuple[Any, ...] = ()
 
 
-def analyze_type_info(t: Any) -> DataTypeInfo:
+def analyze_type_info(t: Any, *, nullable: bool = False) -> DataTypeInfo:
     """
     Analyze a Python type annotation and extract CocoIndex-specific type information.
     """
@@ -211,7 +211,6 @@ def analyze_type_info(t: Any) -> DataTypeInfo:
     annotations: tuple[Any, ...] = ()
     base_type = None
     type_args: tuple[Any, ...] = ()
-    nullable = False
     while True:
         base_type = typing.get_origin(t)
         if base_type is Annotated:
@@ -247,11 +246,11 @@ def analyze_type_info(t: Any) -> DataTypeInfo:
         if len(non_none_types) == 0:
             return analyze_type_info(None)
 
-        nullable = len(non_none_types) < len(type_args)
         if len(non_none_types) == 1:
-            result = analyze_type_info(non_none_types[0])
-            result.nullable = nullable
-            return result
+            return analyze_type_info(
+                non_none_types[0],
+                nullable=nullable or len(non_none_types) < len(type_args),
+            )
 
         variant = UnionType(variant_types=non_none_types)
     else:
