@@ -28,7 +28,9 @@ from cocoindex.typing import (
     Float64,
     TypeKind,
     Vector,
-    analyze_type_info,
+)
+from cocoindex._internal.datatype import analyze_type_info
+from cocoindex._internal.engine_type import (
     encode_enriched_type,
     decode_engine_value_type,
 )

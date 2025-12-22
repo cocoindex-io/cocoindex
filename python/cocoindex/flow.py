@@ -39,7 +39,8 @@ from .engine_value import (
 from .op import FunctionSpec
 from .runtime import execution_context, to_async_call
 from .setup import SetupChangeBundle
-from .typing import analyze_type_info, encode_enriched_type, decode_engine_value_type
+from ._internal.datatype import analyze_type_info
+from ._internal.engine_type import encode_enriched_type, decode_engine_value_type
 from .query_handler import QueryHandlerInfo, QueryHandlerResultFields
 from .validation import (
     validate_flow_name,

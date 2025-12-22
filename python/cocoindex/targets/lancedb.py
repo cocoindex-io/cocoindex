@@ -11,14 +11,14 @@ import lancedb  # type: ignore
 import pyarrow as pa  # type: ignore
 
 from .. import op
-from ..typing import (
-    FieldSchema,
-    EnrichedValueType,
-    BasicValueType,
-    StructType,
-    ValueType,
-    VectorTypeSchema,
-    TableType,
+from .._internal.engine_type import (
+    EngineFieldSchema,
+    EngineEnrichedValueType,
+    EngineBasicValueType,
+    EngineStructType,
+    EngineValueType,
+    EngineVectorTypeSchema,
+    EngineTableType,
 )
 from ..index import VectorIndexDef, FtsIndexDef, IndexOptions, VectorSimilarityMetric
 
@@ -57,8 +57,8 @@ class _FtsIndex:
 
 @dataclasses.dataclass
 class _State:
-    key_field_schema: FieldSchema
-    value_fields_schema: list[FieldSchema]
+    key_field_schema: EngineFieldSchema
+    value_fields_schema: list[EngineFieldSchema]
     vector_indexes: list[_VectorIndex] | None = None
     fts_indexes: list[_FtsIndex] | None = None
     db_options: DatabaseOptions | None = None
@@ -100,9 +100,9 @@ async def connect_async(
 
 
 def make_pa_schema(
-    key_field_schema: FieldSchema, value_fields_schema: list[FieldSchema]
+    key_field_schema: EngineFieldSchema, value_fields_schema: list[EngineFieldSchema]
 ) -> pa.Schema:
-    """Convert FieldSchema list to PyArrow schema."""
+    """Convert EngineFieldSchema list to PyArrow schema."""
     fields = [
         _convert_field_to_pa_field(field)
         for field in [key_field_schema] + value_fields_schema
@@ -110,8 +110,8 @@ def make_pa_schema(
     return pa.schema(fields)
 
 
-def _convert_field_to_pa_field(field_schema: FieldSchema) -> pa.Field:
-    """Convert a FieldSchema to a PyArrow Field."""
+def _convert_field_to_pa_field(field_schema: EngineFieldSchema) -> pa.Field:
+    """Convert a EngineFieldSchema to a PyArrow Field."""
     pa_type = _convert_value_type_to_pa_type(field_schema.value_type)
 
     # Handle nullable fields
@@ -120,31 +120,31 @@ def _convert_field_to_pa_field(field_schema: FieldSchema) -> pa.Field:
     return pa.field(field_schema.name, pa_type, nullable=nullable)
 
 
-def _convert_value_type_to_pa_type(value_type: EnrichedValueType) -> pa.DataType:
-    """Convert EnrichedValueType to PyArrow DataType."""
-    base_type: ValueType = value_type.type
+def _convert_value_type_to_pa_type(value_type: EngineEnrichedValueType) -> pa.DataType:
+    """Convert EngineEnrichedValueType to PyArrow DataType."""
+    base_type: EngineValueType = value_type.type
 
-    if isinstance(base_type, StructType):
+    if isinstance(base_type, EngineStructType):
         # Handle struct types
         return _convert_struct_fields_to_pa_type(base_type.fields)
-    elif isinstance(base_type, BasicValueType):
+    elif isinstance(base_type, EngineBasicValueType):
         # Handle basic types
         return _convert_basic_type_to_pa_type(base_type)
-    elif isinstance(base_type, TableType):
+    elif isinstance(base_type, EngineTableType):
         return pa.list_(_convert_struct_fields_to_pa_type(base_type.row.fields))
 
     assert False, f"Unhandled value type: {value_type}"
 
 
 def _convert_struct_fields_to_pa_type(
-    fields_schema: list[FieldSchema],
-) -> pa.StructType:
-    """Convert StructType to PyArrow StructType."""
+    fields_schema: list[EngineFieldSchema],
+) -> pa.EngineStructType:
+    """Convert EngineStructType to PyArrow EngineStructType."""
     return pa.struct([_convert_field_to_pa_field(field) for field in fields_schema])
 
 
-def _convert_basic_type_to_pa_type(basic_type: BasicValueType) -> pa.DataType:
-    """Convert BasicValueType to PyArrow DataType."""
+def _convert_basic_type_to_pa_type(basic_type: EngineBasicValueType) -> pa.DataType:
+    """Convert EngineBasicValueType to PyArrow DataType."""
     kind: str = basic_type.kind
 
     # Map basic types to PyArrow types
@@ -168,7 +168,7 @@ def _convert_basic_type_to_pa_type(basic_type: BasicValueType) -> pa.DataType:
         return type_mapping[kind]
 
     if kind == "Vector":
-        vector_schema: VectorTypeSchema | None = basic_type.vector
+        vector_schema: EngineVectorTypeSchema | None = basic_type.vector
         if vector_schema is None:
             raise ValueError("Vector type missing vector schema")
         element_type = _convert_basic_type_to_pa_type(vector_schema.element_type)
@@ -196,7 +196,7 @@ def _convert_key_value_to_sql(v: Any) -> str:
     return str(v)
 
 
-def _convert_fields_to_pyarrow(fields: list[FieldSchema], v: Any) -> Any:
+def _convert_fields_to_pyarrow(fields: list[EngineFieldSchema], v: Any) -> Any:
     if isinstance(v, dict):
         return {
             field.name: _convert_value_for_pyarrow(
@@ -214,11 +214,11 @@ def _convert_fields_to_pyarrow(fields: list[FieldSchema], v: Any) -> Any:
         return {field.name: _convert_value_for_pyarrow(field.value_type.type, v)}
 
 
-def _convert_value_for_pyarrow(t: ValueType, v: Any) -> Any:
+def _convert_value_for_pyarrow(t: EngineValueType, v: Any) -> Any:
     if v is None:
         return None
 
-    if isinstance(t, BasicValueType):
+    if isinstance(t, EngineBasicValueType):
         if isinstance(v, uuid.UUID):
             return v.bytes
 
@@ -230,10 +230,10 @@ def _convert_value_for_pyarrow(t: ValueType, v: Any) -> Any:
 
         return v
 
-    elif isinstance(t, StructType):
+    elif isinstance(t, EngineStructType):
         return _convert_fields_to_pyarrow(t.fields, v)
 
-    elif isinstance(t, TableType):
+    elif isinstance(t, EngineTableType):
         if isinstance(v, list):
             return [_convert_fields_to_pyarrow(t.row.fields, value) for value in v]
         else:
@@ -251,8 +251,8 @@ def _convert_value_for_pyarrow(t: ValueType, v: Any) -> Any:
 @dataclasses.dataclass
 class _MutateContext:
     table: lancedb.AsyncTable
-    key_field_schema: FieldSchema
-    value_fields_type: list[ValueType]
+    key_field_schema: EngineFieldSchema
+    value_fields_type: list[EngineValueType]
     pa_schema: pa.Schema
 
 
@@ -298,8 +298,8 @@ class _Connector:
     @staticmethod
     def get_setup_state(
         spec: LanceDB,
-        key_fields_schema: list[FieldSchema],
-        value_fields_schema: list[FieldSchema],
+        key_fields_schema: list[EngineFieldSchema],
+        value_fields_schema: list[EngineFieldSchema],
         index_options: IndexOptions,
     ) -> _State:
         if len(key_fields_schema) != 1:
