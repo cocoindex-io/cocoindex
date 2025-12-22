@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from typing import (
     Any,
-    Concatenate,
     Generic,
     Mapping,
     Sequence,
@@ -79,42 +78,42 @@ class ComponentMountHandle:
 
 @overload
 def mount_run(
+    processor_fn: Function[P, ResolvesTo[ReturnT]],
     scope: Scope,
-    processor_fn: Function[Concatenate[Scope, P], ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[ReturnT]: ...
 @overload
 def mount_run(
+    processor_fn: Function[P, Sequence[ResolvesTo[ReturnT]]],
     scope: Scope,
-    processor_fn: Function[Concatenate[Scope, P], Sequence[ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
 @overload
 def mount_run(
+    processor_fn: Function[P, Sequence[ResolvesTo[ReturnT]]],
     scope: Scope,
-    processor_fn: Function[Concatenate[Scope, P], Sequence[ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
 @overload
 def mount_run(
+    processor_fn: Function[P, Mapping[K, ResolvesTo[ReturnT]]],
     scope: Scope,
-    processor_fn: Function[Concatenate[Scope, P], Mapping[K, ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[Mapping[K, ReturnT]]: ...
 @overload
 def mount_run(
+    processor_fn: Function[P, ReturnT],
     scope: Scope,
-    processor_fn: Function[Concatenate[Scope, P], ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[ReturnT]: ...
 def mount_run(
+    processor_fn: Function[P, ReturnT],
     scope: Scope,
-    processor_fn: Function[Concatenate[Scope, P], ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[Any]:
@@ -122,8 +121,8 @@ def mount_run(
     Mount and run a component, returning a handle to await its result.
 
     Args:
-        scope: The scope for the component (includes stable path and processor context).
         processor_fn: The function to run as the component processor.
+        scope: The scope for the component (includes stable path and processor context).
         *args: Arguments to pass to the function.
         **kwargs: Keyword arguments to pass to the function.
 
@@ -139,8 +138,8 @@ def mount_run(
 
 
 def mount(
+    processor_fn: Function[P, ReturnT],
     scope: Scope,
-    processor_fn: Function[Concatenate[Scope, P], ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountHandle:
@@ -148,8 +147,8 @@ def mount(
     Mount a component in the background and return a handle to wait until ready.
 
     Args:
-        scope: The scope for the component (includes stable path and processor context).
         processor_fn: The function to run as the component processor.
+        scope: The scope for the component (includes stable path and processor context).
         *args: Arguments to pass to the function.
         **kwargs: Keyword arguments to pass to the function.
 

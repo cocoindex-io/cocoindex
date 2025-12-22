@@ -1,12 +1,10 @@
 from typing import (
-    Concatenate,
     Generic,
     ParamSpec,
     TypeVar,
 )
 
 from . import core  # type: ignore
-from .scope import Scope
 from .environment import Environment
 from .function import Function
 from .environment import default_env
@@ -18,14 +16,14 @@ R = TypeVar("R")
 
 class AppBase(Generic[P, R]):
     _name: str
-    _main_fn: Function[Concatenate[Scope, P], R]
+    _main_fn: Function[P, R]
 
     _core: core.App
 
     def __init__(
         self,
         name: str,
-        main_fn: Function[Concatenate[Scope, P], R],
+        main_fn: Function[P, R],
         /,
         *,
         environment: Environment | None = None,

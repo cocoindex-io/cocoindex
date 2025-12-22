@@ -27,8 +27,8 @@ def _declare_dict_container(
 def _declare_dicts_data_together(scope: coco.Scope) -> None:
     for name, data in _source_data.items():
         single_dict_provider = coco.mount_run(
-            scope / "dict" / name,
             _declare_dict_container,
+            scope / "dict" / name,
             name,
         ).result()
         for key, value in data.items():
@@ -217,7 +217,7 @@ def test_dicts_data_together_delete_entry() -> None:
 @coco.function
 def _declare_one_dict(scope: coco.Scope, name: str) -> None:
     dict_provider = coco.mount_run(
-        scope / "setup", _declare_dict_container, name
+        _declare_dict_container, scope / "setup", name
     ).result()
     for key, value in _source_data[name].items():
         coco.declare_effect(scope, dict_provider.effect(key, value))
@@ -226,7 +226,7 @@ def _declare_one_dict(scope: coco.Scope, name: str) -> None:
 @coco.function
 def _declare_dicts_in_sub_components(scope: coco.Scope) -> None:
     for name in _source_data.keys():
-        coco.mount(scope / name, _declare_one_dict, name)
+        coco.mount(_declare_one_dict, scope / name, name)
 
 
 def test_dicts_in_sub_components_insert() -> None:
@@ -436,10 +436,10 @@ def _declare_one_dict_data(
 @coco.function
 def _declare_dict_containers_together(scope: coco.Scope) -> None:
     providers = coco.mount_run(
-        scope / "setup", _declare_dict_containers, _source_data.keys()
+        _declare_dict_containers, scope / "setup", _source_data.keys()
     ).result()
     for name, provider in providers.items():
-        coco.mount(scope / name, _declare_one_dict_data, name, provider)
+        coco.mount(_declare_one_dict_data, scope / name, name, provider)
 
 
 def test_dicts_containers_together_insert() -> None:
@@ -621,10 +621,10 @@ def test_dicts_containers_together_delete_entry() -> None:
 @coco.function
 async def _declare_dict_containers_together_async(scope: coco.Scope) -> None:
     providers = await coco_aio.mount_run(
-        scope / "setup", _declare_dict_containers, _source_data.keys()
+        _declare_dict_containers, scope / "setup", _source_data.keys()
     ).result()
     for name, provider in providers.items():
-        coco_aio.mount(scope / name, _declare_one_dict_data, name, provider)
+        coco_aio.mount(_declare_one_dict_data, scope / name, name, provider)
 
 
 @pytest.mark.asyncio
@@ -806,7 +806,7 @@ async def test_dicts_containers_together_delete_entry_async() -> None:
 @coco.function
 def _declare_one_dict_w_exception(scope: coco.Scope, name: str) -> None:
     dict_provider = coco.mount_run(
-        scope / "setup", _declare_dict_container, name
+        _declare_dict_container, scope / "setup", name
     ).result()
     for key, value in _source_data[name].items():
         coco.declare_effect(scope, dict_provider.effect(key, value))
@@ -816,7 +816,7 @@ def _declare_one_dict_w_exception(scope: coco.Scope, name: str) -> None:
 @coco.function
 def _declare_dicts_in_sub_components_w_exception(scope: coco.Scope) -> None:
     for name in _source_data.keys():
-        coco.mount(scope / name, _declare_one_dict_w_exception, name)
+        coco.mount(_declare_one_dict_w_exception, scope / name, name)
 
 
 def test_cleanup_partially_built_components() -> None:

@@ -24,13 +24,13 @@ def process_file(scope: coco.Scope, file: FileLike, target: localfs.DirTarget) -
 
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    target = coco.mount_run(scope / "setup", localfs.dir_target, outdir).result()
+    target = coco.mount_run(localfs.dir_target, scope / "setup", outdir).result()
 
     files = localfs.walk_dir(
         sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["*.md"])
     )
     for f in files:
-        coco.mount(scope / "process" / str(f.relative_path), process_file, f, target)
+        coco.mount(process_file, scope / "process" / str(f.relative_path), f, target)
 
 
 app = coco.App("FilesTransform", app_main)
