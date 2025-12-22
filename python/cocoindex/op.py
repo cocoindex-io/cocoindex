@@ -315,14 +315,22 @@ def _register_op_factory(
             if len(missing_args) > 0:
                 raise ValueError(f"Missing arguments: {', '.join(missing_args)}")
 
-            analyzed_expected_return_type = datatype.analyze_type_info(expected_return)
+            analyzed_expected_return_type = datatype.analyze_type_info(
+                expected_return,
+                nullable=potentially_missing_required_arg,
+                extra_attrs=attributes,
+            )
             self._result_encoder = make_engine_value_encoder(
                 analyzed_expected_return_type
             )
 
             base_analyze_method = getattr(self._executor, "analyze", None)
             if base_analyze_method is not None:
-                analyzed_result_type = datatype.analyze_type_info(base_analyze_method())
+                analyzed_result_type = datatype.analyze_type_info(
+                    base_analyze_method(),
+                    nullable=potentially_missing_required_arg,
+                    extra_attrs=attributes,
+                )
             else:
                 if op_args.batching:
                     if not isinstance(
@@ -332,14 +340,12 @@ def _register_op_factory(
                             "Expected return type for batching function to be a list type"
                         )
                     analyzed_result_type = datatype.analyze_type_info(
-                        analyzed_expected_return_type.variant.elem_type
+                        analyzed_expected_return_type.variant.elem_type,
+                        nullable=potentially_missing_required_arg,
+                        extra_attrs=attributes,
                     )
                 else:
                     analyzed_result_type = analyzed_expected_return_type
-            if len(attributes) > 0:
-                analyzed_result_type.attrs = attributes
-            if potentially_missing_required_arg:
-                analyzed_result_type.nullable = True
             encoded_type = engine_type.encode_enriched_type_info(analyzed_result_type)
 
             return encoded_type
