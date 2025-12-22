@@ -10,8 +10,8 @@ from typing import Any
 import lancedb  # type: ignore
 import pyarrow as pa  # type: ignore
 
-from .. import op
-from ..typing import (
+from cocoindex import op
+from cocoindex.engine_type import (
     FieldSchema,
     EnrichedValueType,
     BasicValueType,
@@ -20,7 +20,7 @@ from ..typing import (
     VectorTypeSchema,
     TableType,
 )
-from ..index import VectorIndexDef, FtsIndexDef, IndexOptions, VectorSimilarityMetric
+from cocoindex.index import IndexOptions, VectorSimilarityMetric
 
 _logger = logging.getLogger(__name__)
 

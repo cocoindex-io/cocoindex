@@ -28,9 +28,11 @@ from cocoindex.typing import (
     Float64,
     TypeKind,
     Vector,
-    analyze_type_info,
+)
+from cocoindex._internal.datatype import analyze_type_info
+from cocoindex.engine_type import (
     encode_enriched_type,
-    decode_engine_value_type,
+    decode_value_type,
 )
 
 
@@ -120,7 +122,7 @@ def build_engine_value_decoder(
     engine_type = encode_enriched_type(engine_type_in_py)["type"]
     return make_engine_value_decoder(
         [],
-        decode_engine_value_type(engine_type),
+        decode_value_type(engine_type),
         analyze_type_info(python_type or engine_type_in_py),
     )
 
@@ -152,7 +154,7 @@ def validate_full_roundtrip_to(
     for other_value, other_type in decoded_values:
         decoder = make_engine_value_decoder(
             [],
-            decode_engine_value_type(encoded_output_type),
+            decode_value_type(encoded_output_type),
             analyze_type_info(other_type),
         )
         other_decoded_value = decoder(value_from_engine)
@@ -420,15 +422,15 @@ def test_roundtrip_json() -> None:
 
 def test_decode_scalar_numpy_values() -> None:
     test_cases = [
-        (decode_engine_value_type({"kind": "Int64"}), np.int64, 42, np.int64(42)),
+        (decode_value_type({"kind": "Int64"}), np.int64, 42, np.int64(42)),
         (
-            decode_engine_value_type({"kind": "Float32"}),
+            decode_value_type({"kind": "Float32"}),
             np.float32,
             3.14,
             np.float32(3.14),
         ),
         (
-            decode_engine_value_type({"kind": "Float64"}),
+            decode_value_type({"kind": "Float64"}),
             np.float64,
             2.718,
             np.float64(2.718),
@@ -445,7 +447,7 @@ def test_decode_scalar_numpy_values() -> None:
 
 def test_non_ndarray_vector_decoding() -> None:
     # Test list[np.float64]
-    src_type = decode_engine_value_type(
+    src_type = decode_value_type(
         {
             "kind": "Vector",
             "element_type": {"kind": "Float64"},
@@ -463,7 +465,7 @@ def test_non_ndarray_vector_decoding() -> None:
     assert result == [np.float64(1.0), np.float64(2.0), np.float64(3.0)]
 
     # Test list[Uuid]
-    src_type = decode_engine_value_type(
+    src_type = decode_value_type(
         {"kind": "Vector", "element_type": {"kind": "Uuid"}, "dimension": None}
     )
     dst_type_uuid = list[uuid.UUID]
@@ -946,7 +948,7 @@ def test_encode_complex_structure_with_ndarray() -> None:
 
 def test_decode_nullable_ndarray_none_or_value_input() -> None:
     """Test decoding a nullable NDArray with None or value inputs."""
-    src_type_dict = decode_engine_value_type(
+    src_type_dict = decode_value_type(
         {
             "kind": "Vector",
             "element_type": {"kind": "Float32"},
@@ -974,7 +976,7 @@ def test_decode_nullable_ndarray_none_or_value_input() -> None:
 
 def test_decode_vector_string() -> None:
     """Test decoding a vector of strings works for Python native list type."""
-    src_type_dict = decode_engine_value_type(
+    src_type_dict = decode_value_type(
         {
             "kind": "Vector",
             "element_type": {"kind": "Str"},
@@ -989,7 +991,7 @@ def test_decode_vector_string() -> None:
 
 def test_decode_error_non_nullable_or_non_list_vector() -> None:
     """Test decoding errors for non-nullable vectors or non-list inputs."""
-    src_type_dict = decode_engine_value_type(
+    src_type_dict = decode_value_type(
         {
             "kind": "Vector",
             "element_type": {"kind": "Float32"},
