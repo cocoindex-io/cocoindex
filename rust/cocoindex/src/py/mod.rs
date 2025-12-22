@@ -417,20 +417,16 @@ impl Flow {
                     let task_locals = pyo3_async_runtimes::TaskLocals::new(
                         py_exec_ctx.event_loop.bind(py).clone(),
                     );
-                    Ok(py_utils::from_py_future(
-                        py,
-                        &task_locals,
-                        result_coro.into_bound(py),
+                    Ok(
+                        py_utils::from_py_future(py, &task_locals, result_coro.into_bound(py))
+                            .map_err(Error::host)?,
                     )
-                    .map_err(Error::host)?)
                 })?;
 
                 let py_obj = result_fut.await;
                 // Convert Python result to Rust type with proper traceback handling
                 let output = Python::attach(|py| -> Result<_> {
-                    let output_any = py_obj
-                        .to_result_with_py_trace(py)
-                        .map_err(Error::from)?;
+                    let output_any = py_obj.to_result_with_py_trace(py).map_err(Error::from)?;
                     let output: crate::py::Pythonized<crate::service::query_handler::QueryOutput> =
                         output_any.extract(py).map_err(Error::host)?;
                     Ok(output.into_inner())
@@ -532,14 +528,12 @@ impl SetupChangeBundle {
 #[pyfunction]
 fn flow_names_with_setup_async(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
-        let lib_context =
-            py_utils::CResultIntoPyResult::into_py_result(get_lib_context().await)?;
-        let setup_ctx = py_utils::CResultIntoPyResult::into_py_result(
-            lib_context.require_persistence_ctx(),
-        )?
-        .setup_ctx
-        .read()
-        .await;
+        let lib_context = py_utils::CResultIntoPyResult::into_py_result(get_lib_context().await)?;
+        let setup_ctx =
+            py_utils::CResultIntoPyResult::into_py_result(lib_context.require_persistence_ctx())?
+                .setup_ctx
+                .read()
+                .await;
         let flow_names: Vec<String> = setup_ctx.all_setup_states.flows.keys().cloned().collect();
         PyResult::Ok(flow_names)
     })
@@ -592,20 +586,20 @@ fn add_transient_auth_entry(value: Pythonized<serde_json::Value>) -> PyResult<St
 #[pyfunction]
 fn get_auth_entry(key: String) -> PyResult<Pythonized<serde_json::Value>> {
     let auth_ref = AuthEntryReference::new(key);
-    let json_value: serde_json::Value = py_utils::CResultIntoPyResult::into_py_result(
-        get_auth_registry().get(&auth_ref),
-    )?;
+    let json_value: serde_json::Value =
+        py_utils::CResultIntoPyResult::into_py_result(get_auth_registry().get(&auth_ref))?;
     Ok(Pythonized(json_value))
 }
 
 #[pyfunction]
 fn get_app_namespace(py: Python<'_>) -> PyResult<String> {
-    let app_namespace = py_utils::CResultIntoPyResult::into_py_result(py.detach(|| -> Result<_> {
-        get_runtime().block_on(async move {
-            let lib_context = get_lib_context().await?;
-            Ok(lib_context.app_namespace.clone())
-        })
-    }))?;
+    let app_namespace =
+        py_utils::CResultIntoPyResult::into_py_result(py.detach(|| -> Result<_> {
+            get_runtime().block_on(async move {
+                let lib_context = get_lib_context().await?;
+                Ok(lib_context.app_namespace.clone())
+            })
+        }))?;
     Ok(app_namespace)
 }
 

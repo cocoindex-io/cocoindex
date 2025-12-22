@@ -250,9 +250,9 @@ impl SourceFactoryBase for Factory {
             let account_access_key = context.auth_registry.get(&account_access_key)?;
             StorageCredentials::access_key(spec.account_name.clone(), account_access_key)
         } else {
-            let default_credential = Arc::new(DefaultAzureCredential::create(
-                TokenCredentialOptions::default(),
-            ).internal()?);
+            let default_credential = Arc::new(
+                DefaultAzureCredential::create(TokenCredentialOptions::default()).internal()?,
+            );
             StorageCredentials::token_credential(default_credential)
         };
 

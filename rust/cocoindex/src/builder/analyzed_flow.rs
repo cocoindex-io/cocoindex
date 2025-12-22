@@ -11,7 +11,8 @@ pub struct AnalyzedFlow {
     pub flow_instance_ctx: Arc<FlowInstanceContext>,
 
     /// It's None if the flow is not up to date
-    pub execution_plan: Shared<BoxFuture<'static, std::result::Result<Arc<plan::ExecutionPlan>, SharedError>>>,
+    pub execution_plan:
+        Shared<BoxFuture<'static, std::result::Result<Arc<plan::ExecutionPlan>, SharedError>>>,
 }
 
 impl AnalyzedFlow {

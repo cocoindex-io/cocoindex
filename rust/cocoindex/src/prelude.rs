@@ -31,12 +31,11 @@ pub(crate) use cocoindex_utils::{api_bail, api_error};
 pub(crate) use cocoindex_utils::{batching, concur_control, http, retryable};
 pub(crate) use cocoindex_utils::{client_bail, client_error, internal_bail, internal_error};
 
-
 pub(crate) use async_stream::{stream, try_stream};
 pub(crate) use tracing::{Span, debug, error, info, info_span, instrument, trace, warn};
 
 pub(crate) use derivative::Derivative;
 
 pub(crate) use cocoindex_py_utils as py_utils;
-pub(crate) use cocoindex_py_utils::{ToCResult, cerror_to_pyerr};
 pub(crate) use cocoindex_py_utils::CResultIntoPyResult as ResultIntoPyResult;
+pub(crate) use cocoindex_py_utils::{ToCResult, cerror_to_pyerr};

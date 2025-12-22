@@ -357,12 +357,17 @@ impl Executor {
                         change_messages.push(SourceChangeMessage {
                             changes,
                             ack_fn: Some(Box::new(move || {
-                                async move { sqs_context.delete_message(receipt_handle).await.internal() }
-                                    .boxed()
+                                async move {
+                                    sqs_context.delete_message(receipt_handle).await.internal()
+                                }
+                                .boxed()
                             })),
                         });
                     } else {
-                        sqs_context.delete_message(receipt_handle).await.internal()?;
+                        sqs_context
+                            .delete_message(receipt_handle)
+                            .await
+                            .internal()?;
                     }
                 }
             }

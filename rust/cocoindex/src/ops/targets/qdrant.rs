@@ -206,7 +206,10 @@ impl setup::ResourceSetupChange for SetupChange {
 impl SetupChange {
     async fn apply_delete(&self, collection_name: &String, qdrant_client: &Qdrant) -> Result<()> {
         if self.delete_collection {
-            qdrant_client.delete_collection(collection_name).await.internal()?;
+            qdrant_client
+                .delete_collection(collection_name)
+                .await
+                .internal()?;
         }
         Ok(())
     }

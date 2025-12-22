@@ -29,7 +29,8 @@ pub struct StoredMemoizationInfo {
     pub content_hash: Option<String>,
 }
 
-pub type CacheEntryCell = Arc<tokio::sync::OnceCell<std::result::Result<value::Value, SharedError>>>;
+pub type CacheEntryCell =
+    Arc<tokio::sync::OnceCell<std::result::Result<value::Value, SharedError>>>;
 enum CacheData {
     /// Existing entry in previous runs, but not in current run yet.
     Previous(serde_json::Value),

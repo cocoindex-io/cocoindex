@@ -16,7 +16,8 @@ impl PythonExecutionContext {
 }
 
 pub fn cerror_to_pyerr(err: CError) -> PyErr {
-    if let CError::HostLang(host_err) = err.without_contexts() { // if tunneled Python error
+    if let CError::HostLang(host_err) = err.without_contexts() {
+        // if tunneled Python error
         let any: &dyn Any = host_err.as_ref();
         if let Some(py_err) = any.downcast_ref::<PyErr>() {
             return Python::attach(|py| py_err.clone_ref(py));

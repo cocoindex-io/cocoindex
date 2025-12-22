@@ -152,7 +152,11 @@ impl LlmEmbeddingClient for Client {
             .map_err(Error::from)
             .with_context(|| "Ollama API error")?;
 
-        let embedding_resp: OllamaEmbeddingResponse = resp.json().await.internal().with_context(|| "Invalid JSON")?;
+        let embedding_resp: OllamaEmbeddingResponse = resp
+            .json()
+            .await
+            .internal()
+            .with_context(|| "Invalid JSON")?;
 
         Ok(super::LlmEmbeddingResponse {
             embeddings: embedding_resp.embeddings,

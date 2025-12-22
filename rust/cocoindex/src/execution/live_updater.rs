@@ -117,8 +117,9 @@ impl SourceUpdateTask {
         if !self.options.print_stats || self.multi_progress_bar.is_hidden() {
             return Ok(None);
         }
-        let style =
-            indicatif::ProgressStyle::default_spinner().template("{spinner}{spinner} {msg}").internal()?;
+        let style = indicatif::ProgressStyle::default_spinner()
+            .template("{spinner}{spinner} {msg}")
+            .internal()?;
         let pb = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear);
         pb.set_style(style);
         Ok(Some(pb))

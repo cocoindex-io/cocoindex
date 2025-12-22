@@ -153,7 +153,11 @@ impl LlmGenerationClient for AiStudioClient {
         .await
         .map_err(Error::from)
         .with_context(|| "Gemini API error")?;
-        let resp_json: Value = resp.json().await.internal().with_context(|| "Invalid JSON")?;
+        let resp_json: Value = resp
+            .json()
+            .await
+            .internal()
+            .with_context(|| "Invalid JSON")?;
 
         if let Some(error) = resp_json.get("error") {
             client_bail!("Gemini API error: {:?}", error);
@@ -216,8 +220,11 @@ impl LlmEmbeddingClient for AiStudioClient {
         .await
         .map_err(Error::from)
         .with_context(|| "Gemini API error")?;
-        let embedding_resp: BatchEmbedContentResponse =
-            resp.json().await.internal().with_context(|| "Invalid JSON")?;
+        let embedding_resp: BatchEmbedContentResponse = resp
+            .json()
+            .await
+            .internal()
+            .with_context(|| "Invalid JSON")?;
         Ok(super::LlmEmbeddingResponse {
             embeddings: embedding_resp
                 .embeddings

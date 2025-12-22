@@ -804,7 +804,9 @@ impl PostgresSourceExecutor {
                 BasicValue::LocalDateTime(dt).into()
             }
             (ValueType::Basic(BasicValueType::OffsetDateTime), serde_json::Value::String(s)) => {
-                let dt = s.parse::<chrono::DateTime<chrono::FixedOffset>>().internal()?;
+                let dt = s
+                    .parse::<chrono::DateTime<chrono::FixedOffset>>()
+                    .internal()?;
                 BasicValue::OffsetDateTime(dt).into()
             }
             (_, json_value) => {

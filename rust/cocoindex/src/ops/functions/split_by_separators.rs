@@ -45,7 +45,11 @@ impl Executor {
                     .collect::<Vec<_>>()
                     .join("|")
             );
-            Some(Regex::new(&pattern).internal().with_context(|| "failed to compile separators_regex")?)
+            Some(
+                Regex::new(&pattern)
+                    .internal()
+                    .with_context(|| "failed to compile separators_regex")?,
+            )
         };
         Ok(Self { args, spec, regex })
     }

@@ -560,7 +560,10 @@ impl SourceIndexingContext {
             stats: update_stats.clone(),
             options: update_options,
         };
-        self.update_once_batcher.run(input).await.map_err(Error::from)
+        self.update_once_batcher
+            .run(input)
+            .await
+            .map_err(Error::from)
     }
 
     async fn update_once(
@@ -656,7 +659,11 @@ impl SourceIndexingContext {
             deleted_key_versions
         };
         for (key, source_ordinal) in deleted_key_versions {
-            let concur_permit = import_op.concurrency_controller.acquire(Some(|| 0)).await.internal()?;
+            let concur_permit = import_op
+                .concurrency_controller
+                .acquire(Some(|| 0))
+                .await
+                .internal()?;
             join_set.spawn(self.clone().process_source_row(
                 ProcessSourceRowInput {
                     key,
@@ -699,7 +706,10 @@ impl batching::Runner for UpdateOnceRunner {
     type Input = UpdateOnceInput;
     type Output = ();
 
-    async fn run(&self, inputs: Vec<UpdateOnceInput>) -> anyhow::Result<impl ExactSizeIterator<Item = ()>> {
+    async fn run(
+        &self,
+        inputs: Vec<UpdateOnceInput>,
+    ) -> anyhow::Result<impl ExactSizeIterator<Item = ()>> {
         let num_inputs = inputs.len();
         let update_options = UpdateOptions {
             expect_little_diff: inputs.iter().all(|input| input.options.expect_little_diff),

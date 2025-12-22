@@ -380,8 +380,10 @@ impl SharedError {
             SharedErrorState::Error(err) => ResidualError::new(err),
         };
 
-        let orig_state =
-            std::mem::replace(mut_state, SharedErrorState::ResidualErrorMessage(residual_err));
+        let orig_state = std::mem::replace(
+            mut_state,
+            SharedErrorState::ResidualErrorMessage(residual_err),
+        );
         let SharedErrorState::Error(err) = orig_state else {
             panic!("Expected shared error state to hold Error");
         };
@@ -417,10 +419,12 @@ impl From<Error> for SharedError {
 
 impl SharedError {
     pub fn from_std_error<E: StdError + Send + Sync + 'static>(err: E) -> Self {
-        Self(Arc::new(Mutex::new(SharedErrorState::Error(Error::Internal {
-            source: Box::new(err),
-            bt: Backtrace::capture(),
-        }))))
+        Self(Arc::new(Mutex::new(SharedErrorState::Error(
+            Error::Internal {
+                source: Box::new(err),
+                bt: Backtrace::capture(),
+            },
+        ))))
     }
 }
 
