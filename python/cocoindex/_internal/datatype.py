@@ -10,6 +10,7 @@ from typing import (
     Annotated,
     Any,
     Iterator,
+    Mapping,
     NamedTuple,
     get_type_hints,
 )
@@ -209,8 +210,7 @@ TypeVariant = (
 )
 
 
-@dataclasses.dataclass
-class DataTypeInfo:
+class DataTypeInfo(NamedTuple):
     """
     Analyzed info of a Python type.
     """
@@ -249,7 +249,9 @@ def _get_basic_type_kind(t: Any) -> str | None:
         return None
 
 
-def analyze_type_info(t: Any) -> DataTypeInfo:
+def analyze_type_info(
+    t: Any, *, nullable: bool = False, extra_attrs: Mapping[str, Any] | None = None
+) -> DataTypeInfo:
     """
     Analyze a Python type annotation and extract CocoIndex-specific type information.
     """
@@ -257,7 +259,6 @@ def analyze_type_info(t: Any) -> DataTypeInfo:
     annotations: tuple[cocoindex.typing.Annotation, ...] = ()
     base_type = None
     type_args: tuple[Any, ...] = ()
-    nullable = False
     while True:
         base_type = typing.get_origin(t)
         if base_type is Annotated:
@@ -283,6 +284,10 @@ def analyze_type_info(t: Any) -> DataTypeInfo:
             vector_info = attr
         elif isinstance(attr, cocoindex.typing.TypeKind):
             kind = attr.kind
+    if extra_attrs:
+        if attrs is None:
+            attrs = dict()
+        attrs.update(extra_attrs)
 
     variant: TypeVariant | None = None
 
@@ -311,11 +316,11 @@ def analyze_type_info(t: Any) -> DataTypeInfo:
         if len(non_none_types) == 0:
             return analyze_type_info(None)
 
-        nullable = len(non_none_types) < len(type_args)
         if len(non_none_types) == 1:
-            result = analyze_type_info(non_none_types[0])
-            result.nullable = nullable
-            return result
+            return analyze_type_info(
+                non_none_types[0],
+                nullable=nullable or len(non_none_types) < len(type_args),
+            )
 
         variant = UnionType(variant_types=non_none_types)
     elif (basic_type_kind := _get_basic_type_kind(t)) is not None:
