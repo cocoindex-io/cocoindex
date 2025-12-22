@@ -610,16 +610,14 @@ fn get_app_namespace(py: Python<'_>) -> PyResult<String> {
 }
 
 #[pyfunction]
-fn seder_roundtrip<'py>(
+fn serde_roundtrip<'py>(
     py: Python<'py>,
     value: Bound<'py, PyAny>,
     typ: Pythonized<ValueType>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let typ = typ.into_inner();
     let value = value_from_py_object(&typ, &value)?;
-    let value = py_utils::CResultIntoPyResult::into_py_result(
-        value::test_util::serde_roundtrip(&value, &typ),
-    )?;
+    let value = value::test_util::serde_roundtrip(&value, &typ).into_py_result()?;
     value_to_py_object(py, &value)
 }
 
@@ -660,7 +658,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RenderedSpecLine>()?;
 
     let testutil_module = PyModule::new(m.py(), "testutil")?;
-    testutil_module.add_function(wrap_pyfunction!(seder_roundtrip, &testutil_module)?)?;
+    testutil_module.add_function(wrap_pyfunction!(serde_roundtrip, &testutil_module)?)?;
     m.add_submodule(&testutil_module)?;
 
     Ok(())

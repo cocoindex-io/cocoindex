@@ -2,7 +2,7 @@ use crate::prelude::*;
 use base64::prelude::*;
 
 use crate::llm::{
-    LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
+    GeneratedOutput, LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
     ToJsonSchemaOptions, detect_image_mime_type,
 };
 use anyhow::Context;
@@ -125,22 +125,21 @@ impl LlmGenerationClient for Client {
                 }
             }
         }
-        let text = if let Some(json) = extracted_json {
-            // Try strict JSON serialization first
-            serde_json::to_string(&json)?
+        let json_value = if let Some(json) = extracted_json {
+            json
         } else {
             // Fallback: try text if no tool output found
             match &mut resp_json["content"][0]["text"] {
                 serde_json::Value::String(s) => {
                     // Try strict JSON parsing first
                     match utils::deser::from_json_str::<serde_json::Value>(s) {
-                        Ok(_) => std::mem::take(s),
+                        Ok(value) => value,
                         Err(e) => {
                             // Try permissive json5 parsing as fallback
                             match json5::from_str::<serde_json::Value>(s) {
                                 Ok(value) => {
                                     println!("[Anthropic] Used permissive JSON5 parser for output");
-                                    serde_json::to_string(&value)?
+                                    value
                                 }
                                 Err(e2) => {
                                     return Err(client_error!(
@@ -159,7 +158,9 @@ impl LlmGenerationClient for Client {
             }
         };
 
-        Ok(LlmGenerateResponse { text })
+        Ok(LlmGenerateResponse {
+            output: GeneratedOutput::Json(json_value),
+        })
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {

@@ -98,7 +98,7 @@ class PatientExtractor(dspy.Module):
     def forward(self, form_images: list[dspy.Image]) -> Patient:
         """Extract patient information from form images and return as a Pydantic model."""
         result = self.extract(form_images=form_images)
-        return result.patient  # type: ignore
+        return result.patient
 
 
 @cocoindex.op.function(cache=True, behavior_version=1)
@@ -123,7 +123,7 @@ def extract_patient(pdf_content: bytes) -> Patient:
     extractor = PatientExtractor()
     patient = extractor(form_images=form_images)
 
-    return patient  # type: ignore
+    return patient
 
 
 @cocoindex.flow_def(name="PatientIntakeExtractionDSPy")

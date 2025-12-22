@@ -145,7 +145,7 @@ def validate_full_roundtrip_to(
     encoded_value = encode_engine_value(value, value_type)
     value_type = value_type or type(value)
     encoded_output_type = encode_enriched_type(value_type)["type"]
-    value_from_engine = _engine.testutil.seder_roundtrip(
+    value_from_engine = _engine.testutil.serde_roundtrip(
         encoded_value, encoded_output_type
     )
 

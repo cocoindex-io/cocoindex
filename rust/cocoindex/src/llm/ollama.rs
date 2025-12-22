@@ -89,6 +89,7 @@ impl LlmGenerationClient for Client {
         &self,
         request: super::LlmGenerateRequest<'req>,
     ) -> Result<super::LlmGenerateResponse> {
+        let has_json_schema = request.output_format.is_some();
         let req = OllamaRequest {
             model: request.model,
             prompt: request.user_prompt.as_ref(),
@@ -107,13 +108,11 @@ impl LlmGenerationClient for Client {
                 .json(&req)
         })
         .await
-        .map_err(Error::from)
-        .with_context(|| "Ollama API error")?;
-        let json: OllamaResponse = res.json().await.internal()?;
+        .context("Ollama API error")?;
+        let json: OllamaResponse = res.json().await?;
 
-        let has_json_schema = matches!(request.output_format, Some(super::OutputFormat::JsonSchema { .. }));
         let output = if has_json_schema {
-            super::GeneratedOutput::Json(serde_json::from_str(&json.response).internal()?)
+            super::GeneratedOutput::Json(serde_json::from_str(&json.response)?)
         } else {
             super::GeneratedOutput::Text(json.response)
         };

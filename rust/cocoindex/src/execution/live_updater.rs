@@ -49,6 +49,9 @@ pub struct FlowLiveUpdaterOptions {
     /// If true, the updater will reexport the targets even if there's no change.
     pub reexport_targets: bool,
 
+    /// If true, the updater will reprocess everything and invalidate existing caches.
+    pub full_reprocess: bool,
+
     /// If true, stats will be printed to the console.
     pub print_stats: bool,
 }
@@ -129,7 +132,9 @@ impl SourceUpdateTask {
             .await?;
         let initial_update_options = super::source_indexer::UpdateOptions {
             expect_little_diff: false,
-            mode: if self.options.reexport_targets {
+            mode: if self.options.full_reprocess {
+                super::source_indexer::UpdateMode::FullReprocess
+            } else if self.options.reexport_targets {
                 super::source_indexer::UpdateMode::ReexportTargets
             } else {
                 super::source_indexer::UpdateMode::Normal

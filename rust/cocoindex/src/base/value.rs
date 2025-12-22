@@ -1451,7 +1451,7 @@ impl<'a, I: Iterator<Item = &'a Value> + Clone> Serialize for TypedFieldsValue<'
 pub mod test_util {
     use super::*;
 
-    pub fn seder_roundtrip(value: &Value, typ: &ValueType) -> Result<Value> {
+    pub fn serde_roundtrip(value: &Value, typ: &ValueType) -> Result<Value> {
         let json_value = serde_json::to_value(value)?;
         let roundtrip_value = Value::from_json(json_value, typ)?;
         Ok(roundtrip_value)

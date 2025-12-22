@@ -406,6 +406,13 @@ def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> Non
     help="Reexport to targets even if there's no change.",
 )
 @click.option(
+    "--full-reprocess",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Reprocess everything and invalidate existing caches.",
+)
+@click.option(
     "--setup",
     is_flag=True,
     show_default=True,
@@ -440,6 +447,7 @@ def update(
     app_flow_specifier: str,
     live: bool,
     reexport: bool,
+    full_reprocess: bool,
     setup: bool,  # pylint: disable=redefined-outer-name
     reset: bool,
     force: bool,
@@ -469,6 +477,7 @@ def update(
     options = flow.FlowLiveUpdaterOptions(
         live_mode=live,
         reexport_targets=reexport,
+        full_reprocess=full_reprocess,
         print_stats=not quiet,
     )
     if reset or setup:
@@ -590,6 +599,13 @@ def evaluate(
     help="Reexport to targets even if there's no change.",
 )
 @click.option(
+    "--full-reprocess",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Reprocess everything and invalidate existing caches.",
+)
+@click.option(
     "-f",
     "--force",
     is_flag=True,
@@ -620,6 +636,7 @@ def server(
     setup: bool,  # pylint: disable=redefined-outer-name
     reset: bool,
     reexport: bool,
+    full_reprocess: bool,
     force: bool,
     quiet: bool,
     cors_origin: str | None,
@@ -643,6 +660,7 @@ def server(
         cors_local,
         live_update,
         reexport,
+        full_reprocess,
         quiet,
     )
     kwargs = {
@@ -703,6 +721,7 @@ def _run_server(
     cors_local: int | None = None,
     live_update: bool = False,
     reexport: bool = False,
+    full_reprocess: bool = False,
     quiet: bool = False,
     /,
     *,
@@ -767,6 +786,7 @@ def _run_server(
         options = flow.FlowLiveUpdaterOptions(
             live_mode=live_update,
             reexport_targets=reexport,
+            full_reprocess=full_reprocess,
             print_stats=not quiet,
         )
         asyncio.run_coroutine_threadsafe(

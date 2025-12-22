@@ -576,11 +576,13 @@ class FlowLiveUpdaterOptions:
 
     - live_mode: Whether to perform live update for data sources with change capture mechanisms.
     - reexport_targets: Whether to reexport to targets even if there's no change.
+    - full_reprocess: Whether to reprocess everything and invalidate existing caches.
     - print_stats: Whether to print stats during update.
     """
 
     live_mode: bool = True
     reexport_targets: bool = False
+    full_reprocess: bool = False
     print_stats: bool = False
 
 
@@ -765,17 +767,21 @@ class Flow:
         """
         return get_flow_full_name(self._name)
 
-    def update(self, /, *, reexport_targets: bool = False) -> _engine.IndexUpdateInfo:
+    def update(
+        self, /, *, reexport_targets: bool = False, full_reprocess: bool = False
+    ) -> _engine.IndexUpdateInfo:
         """
         Update the index defined by the flow.
         Once the function returns, the index is fresh up to the moment when the function is called.
         """
         return execution_context.run(
-            self.update_async(reexport_targets=reexport_targets)
+            self.update_async(
+                reexport_targets=reexport_targets, full_reprocess=full_reprocess
+            )
         )
 
     async def update_async(
-        self, /, *, reexport_targets: bool = False
+        self, /, *, reexport_targets: bool = False, full_reprocess: bool = False
     ) -> _engine.IndexUpdateInfo:
         """
         Update the index defined by the flow.
@@ -783,7 +789,11 @@ class Flow:
         """
         async with FlowLiveUpdater(
             self,
-            FlowLiveUpdaterOptions(live_mode=False, reexport_targets=reexport_targets),
+            FlowLiveUpdaterOptions(
+                live_mode=False,
+                reexport_targets=reexport_targets,
+                full_reprocess=full_reprocess,
+            ),
         ) as updater:
             await updater.wait_async()
         return updater.update_stats()
