@@ -666,8 +666,8 @@ mod tests {
 
     #[test]
     fn test_into_internal_trait() {
-        let io_result: Result<(), io::Error> =
-            Err(io::Error::new(io::ErrorKind::Other, "io error"));
+        let io_result: std::result::Result<(), std::io::Error> =
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "io error"));
         let cresult = io_result.internal();
 
         assert!(cresult.is_err());
@@ -677,8 +677,8 @@ mod tests {
 
     #[test]
     fn test_result_ext_cerror_context() {
-        let io_result: Result<(), io::Error> =
-            Err(io::Error::new(io::ErrorKind::Other, "io error"));
+        let io_result: std::result::Result<(), std::io::Error> =
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "io error"));
         let cresult = io_result.cerror_context("while reading file");
 
         assert!(cresult.is_err());
