@@ -192,7 +192,7 @@ impl SourceUpdateTask {
                         &retry_options,
                     )
                     .await
-                    .map_err(|e| Error::from(anyhow::Error::from(e)))
+                    .map_err(Error::from)
                     .with_context(|| {
                         format!(
                             "Error in getting change message for flow `{}` source `{}`",
