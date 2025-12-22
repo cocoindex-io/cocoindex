@@ -10,17 +10,17 @@ from typing import Any
 import lancedb  # type: ignore
 import pyarrow as pa  # type: ignore
 
-from .. import op
-from ..engine_type import (
+from cocoindex import op
+from cocoindex.engine_type import (
     FieldSchema,
     EnrichedValueType,
     BasicValueType,
-    StructType as StructValueType,
+    StructType,
     ValueType,
     VectorTypeSchema,
     TableType,
 )
-from ..index import VectorIndexDef, FtsIndexDef, IndexOptions, VectorSimilarityMetric
+from cocoindex.index import IndexOptions, VectorSimilarityMetric
 
 _logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ def _convert_value_type_to_pa_type(value_type: EnrichedValueType) -> pa.DataType
     """Convert EnrichedValueType to PyArrow DataType."""
     base_type: ValueType = value_type.type
 
-    if isinstance(base_type, StructValueType):
+    if isinstance(base_type, StructType):
         # Handle struct types
         return _convert_struct_fields_to_pa_type(base_type.fields)
     elif isinstance(base_type, BasicValueType):
@@ -138,8 +138,8 @@ def _convert_value_type_to_pa_type(value_type: EnrichedValueType) -> pa.DataType
 
 def _convert_struct_fields_to_pa_type(
     fields_schema: list[FieldSchema],
-) -> pa.StructValueType:
-    """Convert StructValueType to PyArrow StructValueType."""
+) -> pa.StructType:
+    """Convert StructType to PyArrow StructType."""
     return pa.struct([_convert_field_to_pa_field(field) for field in fields_schema])
 
 
@@ -230,7 +230,7 @@ def _convert_value_for_pyarrow(t: ValueType, v: Any) -> Any:
 
         return v
 
-    elif isinstance(t, StructValueType):
+    elif isinstance(t, StructType):
         return _convert_fields_to_pyarrow(t.fields, v)
 
     elif isinstance(t, TableType):
