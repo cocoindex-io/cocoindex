@@ -3,7 +3,7 @@ use pyo3::exceptions::{PyException, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule, PyString};
 use std::any::Any;
-use std::fmt::{self, Display, Write};
+use std::fmt::Write;
 
 pub struct PythonExecutionContext {
     pub event_loop: Py<PyAny>,
@@ -15,37 +15,16 @@ impl PythonExecutionContext {
     }
 }
 
-#[derive(Debug)]
-pub struct PyErrWrapper(PyErr);
-
-impl PyErrWrapper {
-    pub fn new(err: PyErr) -> Self {
-        Self(err)
-    }
-
-    pub fn into_inner(self) -> PyErr {
-        self.0
-    }
-}
-
-impl Display for PyErrWrapper {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::error::Error for PyErrWrapper {}
-
 pub fn cerror_to_pyerr(err: CError) -> PyErr {
-    if let Some(host_err) = err.find_host_error() {
-        let any: &dyn Any = host_err;
-        if let Some(wrapper) = any.downcast_ref::<PyErrWrapper>() {
-            return Python::attach(|py| wrapper.0.clone_ref(py));
+    if let CError::HostLang(host_err) = err.without_contexts() { // if tunneled Python error
+        let any: &dyn Any = host_err.as_ref();
+        if let Some(py_err) = any.downcast_ref::<PyErr>() {
+            return Python::attach(|py| py_err.clone_ref(py));
         }
     }
 
     match err.without_contexts() {
-        CError::Client { msg, .. } => PyValueError::new_err(msg.clone()),
+        CError::Client { .. } => PyValueError::new_err(format_error_chain_no_backtrace(&err)),
         _ => PyRuntimeError::new_err(format_error_chain(&err)),
     }
 }
@@ -63,13 +42,23 @@ fn format_error_chain(err: &CError) -> String {
     s
 }
 
+fn format_error_chain_no_backtrace(err: &CError) -> String {
+    let mut s = err.to_string();
+    let mut current = err;
+    while let CError::Context { source, .. } = current {
+        write!(&mut s, "\nCaused by: {}", source).ok();
+        current = source;
+    }
+    s
+}
+
 pub trait ToCResult<T> {
     fn to_cresult(self) -> CResult<T>;
 }
 
 impl<T> ToCResult<T> for PyResult<T> {
     fn to_cresult(self) -> CResult<T> {
-        self.map_err(|err| CError::host(PyErrWrapper::new(err)))
+        self.map_err(|err| CError::host(err))
     }
 }
 

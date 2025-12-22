@@ -10,7 +10,7 @@ use pyo3::types::{PyList, PyTuple};
 use pyo3::{exceptions::PyException, prelude::*};
 use pythonize::{depythonize, pythonize};
 
-use py_utils::{AnyhowIntoPyResult, IntoPyResult};
+use py_utils::IntoPyResult;
 
 fn basic_value_to_py_object<'py>(
     py: Python<'py>,
@@ -315,29 +315,30 @@ pub fn value_from_py_object<'py>(
 
                     schema::TableKind::KTable(info) => {
                         let num_key_parts = info.num_key_parts;
-                        value::Value::KTable(
-                            values
-                                .into_iter()
-                                .map(|v| {
-                                    let mut iter = v.fields.into_iter();
-                                    if iter.len() < num_key_parts {
-                                        client_bail!(
-                                            "Invalid KTable value: expect at least {} fields, got {}",
-                                            num_key_parts,
-                                            iter.len()
-                                        );
-                                    }
-                                    let keys: Box<[value::KeyPart]> = (0..num_key_parts)
-                                        .map(|_| iter.next().unwrap().into_key())
-                                        .collect::<Result<_>>()?;
-                                    let values = value::FieldValues {
-                                        fields: iter.collect::<Vec<_>>(),
-                                    };
-                                    Ok((KeyValue(keys), values.into()))
-                                })
-                                .collect::<Result<BTreeMap<_, _>>>()
-                                .into_py_result()?,
-                        )
+                        let k_table_values = values
+                            .into_iter()
+                            .map(|v| {
+                                let mut iter = v.fields.into_iter();
+                                if iter.len() < num_key_parts {
+                                    client_bail!(
+                                        "Invalid KTable value: expect at least {} fields, got {}",
+                                        num_key_parts,
+                                        iter.len()
+                                    );
+                                }
+                                let keys: Box<[value::KeyPart]> = (0..num_key_parts)
+                                    .map(|_| iter.next().unwrap().into_key())
+                                    .collect::<Result<_>>()?;
+                                let values = value::FieldValues {
+                                    fields: iter.collect::<Vec<_>>(),
+                                };
+                                Ok((KeyValue(keys), values.into()))
+                            })
+                            .collect::<Result<BTreeMap<_, _>>>();
+                        let k_table_values =
+                            py_utils::CResultIntoPyResult::into_py_result(k_table_values)?;
+
+                        value::Value::KTable(k_table_values)
                     }
                 }
             }
