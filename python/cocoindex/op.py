@@ -140,7 +140,7 @@ class OpArgs:
     - max_batch_size: The maximum batch size for the executor. Only valid if `batching` is True.
     - behavior_version: The behavior version of the executor. Cache will be invalidated if it
       changes. Must be provided if `cache` is True.
-    - timeout: Timeout in seconds for this function execution. None means use default (300s).
+    - timeout: Timeout in seconds for this function execution. None means use default.
     - arg_relationship: It specifies the relationship between an input argument and the output,
       e.g. `(ArgRelationship.CHUNKS_BASE_TEXT, "content")` means the output is chunks for the
       input argument with name `content`.
