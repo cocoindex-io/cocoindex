@@ -78,7 +78,7 @@ def text_embedding_flow(
         vector_indexes=vector_indexes,
         fts_indexes=[
             cocoindex.FtsIndexDef(
-                field_name="text", parameters={"tokenizer_name": "simple"}
+                field_name="text", parameters={"base_tokenizer": "simple"}
             )
         ],
     )
