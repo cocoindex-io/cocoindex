@@ -111,7 +111,7 @@ class BasicType(NamedTuple):
     kind: str
 
 
-class ListType(NamedTuple):
+class SequenceType(NamedTuple):
     """
     Any list type, e.g. list[T], Sequence[T], NDArray[T], etc.
     """
@@ -183,7 +183,7 @@ class UnionType(NamedTuple):
     variant_types: list[Any]
 
 
-class DictType(NamedTuple):
+class MappingType(NamedTuple):
     """
     Any dict type, e.g. dict[T1, T2], Mapping[T1, T2], etc.
     """
@@ -192,14 +192,20 @@ class DictType(NamedTuple):
     value_type: Any
 
 
-class UnknownType(NamedTuple):
+class OtherType(NamedTuple):
     """
     Any type that is not supported by CocoIndex.
     """
 
 
 TypeVariant = (
-    AnyType | BasicType | ListType | StructType | UnionType | DictType | UnknownType
+    AnyType
+    | BasicType
+    | SequenceType
+    | MappingType
+    | StructType
+    | UnionType
+    | OtherType
 )
 
 
@@ -291,15 +297,15 @@ def analyze_type_info(t: Any) -> DataTypeInfo:
         variant = BasicType(kind=kind)
     elif base_type is collections.abc.Sequence or base_type is list:
         elem_type = type_args[0] if len(type_args) > 0 else Any
-        variant = ListType(elem_type=elem_type, vector_info=vector_info)
+        variant = SequenceType(elem_type=elem_type, vector_info=vector_info)
     elif base_type is np.ndarray:
         np_number_type = t
         elem_type = extract_ndarray_elem_dtype(np_number_type)
-        variant = ListType(elem_type=elem_type, vector_info=vector_info)
+        variant = SequenceType(elem_type=elem_type, vector_info=vector_info)
     elif base_type is collections.abc.Mapping or base_type is dict or t is dict:
         key_type = type_args[0] if len(type_args) > 0 else Any
         elem_type = type_args[1] if len(type_args) > 1 else Any
-        variant = DictType(key_type=key_type, value_type=elem_type)
+        variant = MappingType(key_type=key_type, value_type=elem_type)
     elif base_type in (types.UnionType, typing.Union):
         non_none_types = [arg for arg in type_args if arg not in (None, types.NoneType)]
         if len(non_none_types) == 0:
@@ -315,7 +321,7 @@ def analyze_type_info(t: Any) -> DataTypeInfo:
     elif (basic_type_kind := _get_basic_type_kind(t)) is not None:
         variant = BasicType(kind=basic_type_kind)
     else:
-        variant = UnknownType()
+        variant = OtherType()
 
     return DataTypeInfo(
         core_type=core_type,

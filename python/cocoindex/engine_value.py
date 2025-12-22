@@ -69,10 +69,10 @@ def make_engine_value_encoder(type_info: datatype.DataTypeInfo) -> Callable[[Any
     """
     variant = type_info.variant
 
-    if isinstance(variant, datatype.UnknownType):
+    if isinstance(variant, datatype.OtherType):
         raise ValueError(f"Type annotation `{type_info.core_type}` is unsupported")
 
-    if isinstance(variant, datatype.ListType):
+    if isinstance(variant, datatype.SequenceType):
         elem_type_info = (
             datatype.analyze_type_info(variant.elem_type)
             if variant.elem_type
@@ -88,7 +88,7 @@ def make_engine_value_encoder(type_info: datatype.DataTypeInfo) -> Callable[[Any
 
         # Otherwise it's a vector, falling into basic type in the engine.
 
-    if isinstance(variant, datatype.DictType):
+    if isinstance(variant, datatype.MappingType):
         key_type_info = datatype.analyze_type_info(variant.key_type)
         key_encoder = make_engine_key_encoder(key_type_info)
 
@@ -190,7 +190,7 @@ def make_engine_value_decoder(
 
     dst_type_variant = dst_type_info.variant
 
-    if isinstance(dst_type_variant, datatype.UnknownType):
+    if isinstance(dst_type_variant, datatype.OtherType):
         raise ValueError(
             f"Type mismatch for `{''.join(field_path)}`: "
             f"declared `{dst_type_info.core_type}`, an unsupported type"
@@ -211,7 +211,7 @@ def make_engine_value_decoder(
             if src_type.kind == "LTable":
                 if isinstance(dst_type_variant, datatype.AnyType):
                     dst_elem_type = Any
-                elif isinstance(dst_type_variant, datatype.ListType):
+                elif isinstance(dst_type_variant, datatype.SequenceType):
                     dst_elem_type = dst_type_variant.elem_type
                 else:
                     raise ValueError(
@@ -232,7 +232,7 @@ def make_engine_value_decoder(
             elif src_type.kind == "KTable":
                 if isinstance(dst_type_variant, datatype.AnyType):
                     key_type, value_type = Any, Any
-                elif isinstance(dst_type_variant, datatype.DictType):
+                elif isinstance(dst_type_variant, datatype.MappingType):
                     key_type = dst_type_variant.key_type
                     value_type = dst_type_variant.value_type
                 else:
@@ -305,7 +305,7 @@ def make_engine_value_decoder(
 
     if isinstance(src_type, engine_type.BasicValueType) and src_type.kind == "Vector":
         field_path_str = "".join(field_path)
-        if not isinstance(dst_type_variant, datatype.ListType):
+        if not isinstance(dst_type_variant, datatype.SequenceType):
             raise ValueError(
                 f"Type mismatch for `{''.join(field_path)}`: "
                 f"declared `{dst_type_info.core_type}`, a list type expected"
@@ -395,7 +395,7 @@ def make_engine_struct_decoder(
             return _make_engine_struct_to_tuple_decoder(field_path, src_fields)
         else:
             return _make_engine_struct_to_dict_decoder(field_path, src_fields, Any)
-    elif isinstance(dst_type_variant, datatype.DictType):
+    elif isinstance(dst_type_variant, datatype.MappingType):
         analyzed_key_type = datatype.analyze_type_info(dst_type_variant.key_type)
         if (
             isinstance(analyzed_key_type.variant, datatype.AnyType)

@@ -166,7 +166,7 @@ def _make_batched_engine_value_decoder(
     src_type: engine_type.ValueType,
     dst_type_info: datatype.DataTypeInfo,
 ) -> Callable[[Any], Any]:
-    if not isinstance(dst_type_info.variant, datatype.ListType):
+    if not isinstance(dst_type_info.variant, datatype.SequenceType):
         raise ValueError("Expected arguments for batching function to be a list type")
     elem_type_info = datatype.analyze_type_info(dst_type_info.variant.elem_type)
     base_decoder = make_engine_value_decoder(field_path, src_type, elem_type_info)
@@ -326,7 +326,7 @@ def _register_op_factory(
             else:
                 if op_args.batching:
                     if not isinstance(
-                        analyzed_expected_return_type.variant, datatype.ListType
+                        analyzed_expected_return_type.variant, datatype.SequenceType
                     ):
                         raise ValueError(
                             "Expected return type for batching function to be a list type"
@@ -825,7 +825,7 @@ class _TargetConnector:
         [Any, dict[str, Any] | None, dict[str, Any] | None], Awaitable[None]
     ]
     _mutate_async_fn: Callable[..., Awaitable[None]]
-    _mutatation_type: datatype.DictType | None
+    _mutatation_type: datatype.MappingType | None
 
     def __init__(
         self,
@@ -857,7 +857,7 @@ class _TargetConnector:
     @staticmethod
     def _analyze_mutate_mutation_type(
         connector_cls: type, mutate_fn: Callable[..., Any]
-    ) -> datatype.DictType | None:
+    ) -> datatype.MappingType | None:
         # Validate mutate_fn signature and extract type annotation
         mutate_sig = inspect.signature(mutate_fn)
         params = list(mutate_sig.parameters.values())
@@ -888,7 +888,7 @@ class _TargetConnector:
                 mutation_type = datatype.analyze_type_info(args[1])
                 if isinstance(mutation_type.variant, datatype.AnyType):
                     return None
-                if isinstance(mutation_type.variant, datatype.DictType):
+                if isinstance(mutation_type.variant, datatype.MappingType):
                     return mutation_type.variant
 
         raise ValueError(

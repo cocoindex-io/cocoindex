@@ -352,7 +352,7 @@ def _encode_type(type_info: datatype.DataTypeInfo) -> dict[str, Any]:
     if isinstance(variant, datatype.AnyType):
         raise ValueError("Specific type annotation is expected")
 
-    if isinstance(variant, datatype.UnknownType):
+    if isinstance(variant, datatype.OtherType):
         raise ValueError(f"Unsupported type annotation: {type_info.core_type}")
 
     if isinstance(variant, datatype.BasicType):
@@ -363,7 +363,7 @@ def _encode_type(type_info: datatype.DataTypeInfo) -> dict[str, Any]:
         encoded_type["kind"] = "Struct"
         return encoded_type
 
-    if isinstance(variant, datatype.ListType):
+    if isinstance(variant, datatype.SequenceType):
         elem_type_info = datatype.analyze_type_info(variant.elem_type)
         encoded_elem_type = _encode_type(elem_type_info)
         if isinstance(elem_type_info.variant, datatype.StructType):
@@ -379,7 +379,7 @@ def _encode_type(type_info: datatype.DataTypeInfo) -> dict[str, Any]:
                 "dimension": vector_info and vector_info.dim,
             }
 
-    if isinstance(variant, datatype.DictType):
+    if isinstance(variant, datatype.MappingType):
         value_type_info = datatype.analyze_type_info(variant.value_type)
         if not isinstance(value_type_info.variant, datatype.StructType):
             raise ValueError(
