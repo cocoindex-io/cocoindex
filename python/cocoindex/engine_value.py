@@ -9,27 +9,8 @@ import warnings
 from typing import Any, Callable, TypeVar
 
 import numpy as np
-from ._internal.datatype import (
-    AnyType,
-    BasicType,
-    DictType,
-    ListType,
-    StructType,
-    DataTypeInfo,
-    UnionType,
-    UnknownType,
-    StructFieldInfo,
-    analyze_type_info,
-    is_pydantic_model,
-    is_numpy_number_type,
-)
-from .engine_type import (
-    ValueType,
-    FieldSchema,
-    BasicValueType,
-    StructType as StructValueType,
-    TableType,
-)
+from ._internal import datatype
+from . import engine_type
 from .engine_object import get_auto_default_for_type
 
 
@@ -68,34 +49,36 @@ def _is_type_kind_convertible_to(src_type_kind: str, dst_type_kind: str) -> bool
 
 
 # Pre-computed type info for missing/Any type annotations
-ANY_TYPE_INFO = analyze_type_info(inspect.Parameter.empty)
+ANY_TYPE_INFO = datatype.analyze_type_info(inspect.Parameter.empty)
 
 
-def make_engine_key_encoder(type_info: DataTypeInfo) -> Callable[[Any], Any]:
+def make_engine_key_encoder(type_info: datatype.DataTypeInfo) -> Callable[[Any], Any]:
     """
     Create an encoder closure for a key type.
     """
     value_encoder = make_engine_value_encoder(type_info)
-    if isinstance(type_info.variant, BasicType):
+    if isinstance(type_info.variant, datatype.BasicType):
         return lambda value: [value_encoder(value)]
     else:
         return value_encoder
 
 
-def make_engine_value_encoder(type_info: DataTypeInfo) -> Callable[[Any], Any]:
+def make_engine_value_encoder(type_info: datatype.DataTypeInfo) -> Callable[[Any], Any]:
     """
     Create an encoder closure for a specific type.
     """
     variant = type_info.variant
 
-    if isinstance(variant, UnknownType):
+    if isinstance(variant, datatype.UnknownType):
         raise ValueError(f"Type annotation `{type_info.core_type}` is unsupported")
 
-    if isinstance(variant, ListType):
+    if isinstance(variant, datatype.ListType):
         elem_type_info = (
-            analyze_type_info(variant.elem_type) if variant.elem_type else ANY_TYPE_INFO
+            datatype.analyze_type_info(variant.elem_type)
+            if variant.elem_type
+            else ANY_TYPE_INFO
         )
-        if isinstance(elem_type_info.variant, StructType):
+        if isinstance(elem_type_info.variant, datatype.StructType):
             elem_encoder = make_engine_value_encoder(elem_type_info)
 
             def encode_struct_list(value: Any) -> Any:
@@ -105,12 +88,12 @@ def make_engine_value_encoder(type_info: DataTypeInfo) -> Callable[[Any], Any]:
 
         # Otherwise it's a vector, falling into basic type in the engine.
 
-    if isinstance(variant, DictType):
-        key_type_info = analyze_type_info(variant.key_type)
+    if isinstance(variant, datatype.DictType):
+        key_type_info = datatype.analyze_type_info(variant.key_type)
         key_encoder = make_engine_key_encoder(key_type_info)
 
-        value_type_info = analyze_type_info(variant.value_type)
-        if not isinstance(value_type_info.variant, StructType):
+        value_type_info = datatype.analyze_type_info(variant.value_type)
+        if not isinstance(value_type_info.variant, datatype.StructType):
             raise ValueError(
                 f"Value type for dict is required to be a struct (e.g. dataclass or NamedTuple), got {variant.value_type}. "
                 f"If you want a free-formed dict, use `cocoindex.Json` instead."
@@ -124,11 +107,13 @@ def make_engine_value_encoder(type_info: DataTypeInfo) -> Callable[[Any], Any]:
 
         return encode_struct_dict
 
-    if isinstance(variant, StructType):
+    if isinstance(variant, datatype.StructType):
         field_encoders = [
             (
                 field_info.name,
-                make_engine_value_encoder(analyze_type_info(field_info.type_hint)),
+                make_engine_value_encoder(
+                    datatype.analyze_type_info(field_info.type_hint)
+                ),
             )
             for field_info in variant.fields
         ]
@@ -154,14 +139,14 @@ def make_engine_value_encoder(type_info: DataTypeInfo) -> Callable[[Any], Any]:
 
 def make_engine_key_decoder(
     field_path: list[str],
-    key_fields_schema: list[FieldSchema],
-    dst_type_info: DataTypeInfo,
+    key_fields_schema: list[engine_type.FieldSchema],
+    dst_type_info: datatype.DataTypeInfo,
 ) -> Callable[[Any], Any]:
     """
     Create an encoder closure for a key type.
     """
     if len(key_fields_schema) == 1 and isinstance(
-        dst_type_info.variant, (BasicType, AnyType)
+        dst_type_info.variant, (datatype.BasicType, datatype.AnyType)
     ):
         single_key_decoder = make_engine_value_decoder(
             field_path,
@@ -185,8 +170,8 @@ def make_engine_key_decoder(
 
 def make_engine_value_decoder(
     field_path: list[str],
-    src_type: ValueType,
-    dst_type_info: DataTypeInfo,
+    src_type: engine_type.ValueType,
+    dst_type_info: datatype.DataTypeInfo,
     for_key: bool = False,
 ) -> Callable[[Any], Any]:
     """
@@ -194,7 +179,7 @@ def make_engine_value_decoder(
 
     Args:
         field_path: The path to the field in the engine value. For error messages.
-        src_type: The type of the engine value, mapped from a `cocoindex::base::schema::ValueType`.
+        src_type: The type of the engine value, mapped from a `cocoindex::base::schema::engine_type.ValueType`.
         dst_annotation: The type annotation of the Python value.
 
     Returns:
@@ -205,13 +190,13 @@ def make_engine_value_decoder(
 
     dst_type_variant = dst_type_info.variant
 
-    if isinstance(dst_type_variant, UnknownType):
+    if isinstance(dst_type_variant, datatype.UnknownType):
         raise ValueError(
             f"Type mismatch for `{''.join(field_path)}`: "
             f"declared `{dst_type_info.core_type}`, an unsupported type"
         )
 
-    if isinstance(src_type, StructValueType):  # type: ignore[redundant-cast]
+    if isinstance(src_type, engine_type.StructType):  # type: ignore[redundant-cast]
         return make_engine_struct_decoder(
             field_path,
             src_type.fields,
@@ -219,14 +204,14 @@ def make_engine_value_decoder(
             for_key=for_key,
         )
 
-    if isinstance(src_type, TableType):  # type: ignore[redundant-cast]
+    if isinstance(src_type, engine_type.TableType):  # type: ignore[redundant-cast]
         with ChildFieldPath(field_path, "[*]"):
             engine_fields_schema = src_type.row.fields
 
             if src_type.kind == "LTable":
-                if isinstance(dst_type_variant, AnyType):
+                if isinstance(dst_type_variant, datatype.AnyType):
                     dst_elem_type = Any
-                elif isinstance(dst_type_variant, ListType):
+                elif isinstance(dst_type_variant, datatype.ListType):
                     dst_elem_type = dst_type_variant.elem_type
                 else:
                     raise ValueError(
@@ -236,7 +221,7 @@ def make_engine_value_decoder(
                 row_decoder = make_engine_struct_decoder(
                     field_path,
                     engine_fields_schema,
-                    analyze_type_info(dst_elem_type),
+                    datatype.analyze_type_info(dst_elem_type),
                 )
 
                 def decode(value: Any) -> Any | None:
@@ -245,9 +230,9 @@ def make_engine_value_decoder(
                     return [row_decoder(v) for v in value]
 
             elif src_type.kind == "KTable":
-                if isinstance(dst_type_variant, AnyType):
+                if isinstance(dst_type_variant, datatype.AnyType):
                     key_type, value_type = Any, Any
-                elif isinstance(dst_type_variant, DictType):
+                elif isinstance(dst_type_variant, datatype.DictType):
                     key_type = dst_type_variant.key_type
                     value_type = dst_type_variant.value_type
                 else:
@@ -260,12 +245,12 @@ def make_engine_value_decoder(
                 key_decoder = make_engine_key_decoder(
                     field_path,
                     engine_fields_schema[0:num_key_parts],
-                    analyze_type_info(key_type),
+                    datatype.analyze_type_info(key_type),
                 )
                 value_decoder = make_engine_struct_decoder(
                     field_path,
                     engine_fields_schema[num_key_parts:],
-                    analyze_type_info(value_type),
+                    datatype.analyze_type_info(value_type),
                 )
 
                 def decode(value: Any) -> Any | None:
@@ -280,18 +265,20 @@ def make_engine_value_decoder(
 
         return decode
 
-    if isinstance(src_type, BasicValueType) and src_type.kind == "Union":
-        if isinstance(dst_type_variant, AnyType):
+    if isinstance(src_type, engine_type.BasicValueType) and src_type.kind == "Union":
+        if isinstance(dst_type_variant, datatype.AnyType):
             return lambda value: value[1]
 
         dst_type_info_variants = (
-            [analyze_type_info(t) for t in dst_type_variant.variant_types]
-            if isinstance(dst_type_variant, UnionType)
+            [datatype.analyze_type_info(t) for t in dst_type_variant.variant_types]
+            if isinstance(dst_type_variant, datatype.UnionType)
             else [dst_type_info]
         )
         # mypy: union info exists for Union kind
         assert src_type.union is not None  # type: ignore[unreachable]
-        src_type_variants_basic: list[BasicValueType] = src_type.union.variants
+        src_type_variants_basic: list[engine_type.BasicValueType] = (
+            src_type.union.variants
+        )
         src_type_variants = src_type_variants_basic
         decoders = []
         for i, src_type_variant in enumerate(src_type_variants):
@@ -313,12 +300,12 @@ def make_engine_value_decoder(
                 decoders.append(decoder)
         return lambda value: decoders[value[0]](value[1])
 
-    if isinstance(dst_type_variant, AnyType):
+    if isinstance(dst_type_variant, datatype.AnyType):
         return lambda value: value
 
-    if isinstance(src_type, BasicValueType) and src_type.kind == "Vector":
+    if isinstance(src_type, engine_type.BasicValueType) and src_type.kind == "Vector":
         field_path_str = "".join(field_path)
-        if not isinstance(dst_type_variant, ListType):
+        if not isinstance(dst_type_variant, datatype.ListType):
             raise ValueError(
                 f"Type mismatch for `{''.join(field_path)}`: "
                 f"declared `{dst_type_info.core_type}`, a list type expected"
@@ -332,7 +319,7 @@ def make_engine_value_decoder(
         vec_elem_decoder = None
         scalar_dtype = None
         if dst_type_variant and dst_type_info.base_type is np.ndarray:
-            if is_numpy_number_type(dst_type_variant.elem_type):
+            if datatype.is_numpy_number_type(dst_type_variant.elem_type):
                 scalar_dtype = dst_type_variant.elem_type
         else:
             # mypy: vector info exists for Vector kind
@@ -340,7 +327,7 @@ def make_engine_value_decoder(
             vec_elem_decoder = make_engine_value_decoder(
                 field_path + ["[*]"],
                 src_type.vector.element_type,
-                analyze_type_info(
+                datatype.analyze_type_info(
                     dst_type_variant.elem_type if dst_type_variant else Any
                 ),
             )
@@ -369,7 +356,7 @@ def make_engine_value_decoder(
 
         return decode_vector
 
-    if isinstance(dst_type_variant, BasicType):
+    if isinstance(dst_type_variant, datatype.BasicType):
         if not _is_type_kind_convertible_to(src_type_kind, dst_type_variant.kind):
             raise ValueError(
                 f"Type mismatch for `{''.join(field_path)}`: "
@@ -395,30 +382,30 @@ def make_engine_value_decoder(
 
 def make_engine_struct_decoder(
     field_path: list[str],
-    src_fields: list[FieldSchema],
-    dst_type_info: DataTypeInfo,
+    src_fields: list[engine_type.FieldSchema],
+    dst_type_info: datatype.DataTypeInfo,
     for_key: bool = False,
 ) -> Callable[[list[Any]], Any]:
     """Make a decoder from an engine field values to a Python value."""
 
     dst_type_variant = dst_type_info.variant
 
-    if isinstance(dst_type_variant, AnyType):
+    if isinstance(dst_type_variant, datatype.AnyType):
         if for_key:
             return _make_engine_struct_to_tuple_decoder(field_path, src_fields)
         else:
             return _make_engine_struct_to_dict_decoder(field_path, src_fields, Any)
-    elif isinstance(dst_type_variant, DictType):
-        analyzed_key_type = analyze_type_info(dst_type_variant.key_type)
+    elif isinstance(dst_type_variant, datatype.DictType):
+        analyzed_key_type = datatype.analyze_type_info(dst_type_variant.key_type)
         if (
-            isinstance(analyzed_key_type.variant, AnyType)
+            isinstance(analyzed_key_type.variant, datatype.AnyType)
             or analyzed_key_type.core_type is str
         ):
             return _make_engine_struct_to_dict_decoder(
                 field_path, src_fields, dst_type_variant.value_type
             )
 
-    if not isinstance(dst_type_variant, StructType):
+    if not isinstance(dst_type_variant, datatype.StructType):
         raise ValueError(
             f"Type mismatch for `{''.join(field_path)}`: "
             f"declared `{dst_type_info.core_type}`, a dataclass, NamedTuple, Pydantic model or dict[str, Any] expected"
@@ -428,11 +415,11 @@ def make_engine_struct_decoder(
     dst_struct_type = dst_type_variant.struct_type
 
     def make_closure_for_field(
-        field_info: StructFieldInfo,
+        field_info: datatype.StructFieldInfo,
     ) -> Callable[[list[Any]], Any]:
         name = field_info.name
         src_idx = src_name_to_idx.get(name)
-        type_info = analyze_type_info(field_info.type_hint)
+        type_info = datatype.analyze_type_info(field_info.type_hint)
 
         with ChildFieldPath(field_path, f".{name}"):
             if src_idx is not None:
@@ -463,7 +450,7 @@ def make_engine_struct_decoder(
             )
 
     # Different construction for different struct types
-    if is_pydantic_model(dst_struct_type):
+    if datatype.is_pydantic_model(dst_struct_type):
         # Pydantic models prefer keyword arguments
         pydantic_fields_decoder = [
             (field_info.name, make_closure_for_field(field_info))
@@ -487,13 +474,13 @@ def make_engine_struct_decoder(
 
 def _make_engine_struct_to_dict_decoder(
     field_path: list[str],
-    src_fields: list[FieldSchema],
+    src_fields: list[engine_type.FieldSchema],
     value_type_annotation: Any,
 ) -> Callable[[list[Any] | None], dict[str, Any] | None]:
     """Make a decoder from engine field values to a Python dict."""
 
     field_decoders = []
-    value_type_info = analyze_type_info(value_type_annotation)
+    value_type_info = datatype.analyze_type_info(value_type_annotation)
     for field_schema in src_fields:
         field_name = field_schema.name
         with ChildFieldPath(field_path, f".{field_name}"):
@@ -521,12 +508,12 @@ def _make_engine_struct_to_dict_decoder(
 
 def _make_engine_struct_to_tuple_decoder(
     field_path: list[str],
-    src_fields: list[FieldSchema],
+    src_fields: list[engine_type.FieldSchema],
 ) -> Callable[[list[Any] | None], tuple[Any, ...] | None]:
     """Make a decoder from engine field values to a Python tuple."""
 
     field_decoders = []
-    value_type_info = analyze_type_info(Any)
+    value_type_info = datatype.analyze_type_info(Any)
     for field_schema in src_fields:
         field_name = field_schema.name
         with ChildFieldPath(field_path, f".{field_name}"):
