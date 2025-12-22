@@ -25,7 +25,7 @@ pub(super) enum ValueTypeBuilder {
 }
 
 impl TryFrom<&ValueType> for ValueTypeBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(value_type: &ValueType) -> std::result::Result<Self, Self::Error> {
         match value_type {
@@ -37,7 +37,7 @@ impl TryFrom<&ValueType> for ValueTypeBuilder {
 }
 
 impl TryInto<ValueType> for &ValueTypeBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_into(self) -> std::result::Result<ValueType, Self::Error> {
         match self {
@@ -78,7 +78,7 @@ impl StructSchemaBuilder {
 }
 
 impl TryFrom<&StructSchema> for StructSchemaBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(schema: &StructSchema) -> std::result::Result<Self, Self::Error> {
         let mut result = StructSchemaBuilder {
@@ -94,7 +94,7 @@ impl TryFrom<&StructSchema> for StructSchemaBuilder {
 }
 
 impl TryInto<StructSchema> for &StructSchemaBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_into(self) -> std::result::Result<StructSchema, Self::Error> {
         Ok(StructSchema {
@@ -116,7 +116,7 @@ pub(super) struct TableSchemaBuilder {
 }
 
 impl TryFrom<&TableSchema> for TableSchemaBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(schema: &TableSchema) -> std::result::Result<Self, Self::Error> {
         Ok(Self {
@@ -130,7 +130,7 @@ impl TryFrom<&TableSchema> for TableSchemaBuilder {
 }
 
 impl TryInto<TableSchema> for &TableSchemaBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_into(self) -> std::result::Result<TableSchema, Self::Error> {
         let sub_scope = self.sub_scope.lock().unwrap();
