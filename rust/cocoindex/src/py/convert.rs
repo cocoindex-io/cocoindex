@@ -335,8 +335,7 @@ pub fn value_from_py_object<'py>(
                                 Ok((KeyValue(keys), values.into()))
                             })
                             .collect::<Result<BTreeMap<_, _>>>();
-                        let k_table_values =
-                            py_utils::CResultIntoPyResult::into_py_result(k_table_values)?;
+                        let k_table_values = k_table_values.into_py_result()?;
 
                         value::Value::KTable(k_table_values)
                     }
