@@ -12,11 +12,7 @@ This example shows how to use [BAML](https://boundaryml.com/) to extract structu
 
 ### 1. Install dependencies
 
-```sh
-pip install -U cocoindex baml-py python-dotenv
-```
-
-Or install from the project's pyproject.toml:
+Install from the project's pyproject.toml:
 
 ```sh
 pip install -e .
