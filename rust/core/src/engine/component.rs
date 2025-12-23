@@ -216,6 +216,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self.inner.stable_path
     }
 
+    #[instrument(name = "component.run", skip_all, fields(component_path = %self.stable_path()))]
     pub fn run(
         self,
         processor: Prof::ComponentProc,
