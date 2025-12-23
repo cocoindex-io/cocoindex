@@ -105,9 +105,7 @@ pub struct DataSlice {
 #[pymethods]
 impl DataSlice {
     pub fn data_type(&self) -> PyResult<DataType> {
-        Ok(DataType::from(
-            cocoindex_py_utils::CResultIntoPyResult::into_py_result(self.value_type())?,
-        ))
+        Ok(DataType::from(self.value_type().into_py_result()?))
     }
 
     pub fn __str__(&self) -> String {
@@ -123,10 +121,9 @@ impl DataSlice {
             spec::ValueMapping::Field(spec::FieldMapping { scope, field_path }) => {
                 let data_scope_builder = self.scope.data.lock().unwrap();
                 let struct_schema = {
-                    let (_, val_type, _) = cocoindex_py_utils::CResultIntoPyResult::into_py_result(
-                        data_scope_builder
-                            .analyze_field_path(field_path, self.scope.base_value_def_fp.clone()),
-                    )?;
+                    let (_, val_type, _) = data_scope_builder
+                        .analyze_field_path(field_path, self.scope.base_value_def_fp.clone())
+                        .into_py_result()?;
                     match &val_type.typ {
                         ValueTypeBuilder::Struct(struct_type) => struct_type,
                         _ => return Err(PyException::new_err("expect struct type in field path")),
@@ -337,15 +334,16 @@ impl FlowBuilder {
             lib_ctx: self.lib_context.clone(),
             flow_ctx: self.flow_inst_context.clone(),
         };
-        let analyzed = cocoindex_py_utils::CResultIntoPyResult::into_py_result(py.detach(|| {
-            get_runtime()
-                .block_on(analyzer_ctx.analyze_import_op(&self.root_op_scope, import_op.clone()))
-        }))?;
+        let analyzed = py
+            .detach(|| {
+                get_runtime().block_on(
+                    analyzer_ctx.analyze_import_op(&self.root_op_scope, import_op.clone()),
+                )
+            })
+            .into_py_result()?;
         std::mem::drop(analyzed);
 
-        let result = cocoindex_py_utils::CResultIntoPyResult::into_py_result(
-            Self::last_field_to_data_slice(&self.root_op_scope),
-        )?;
+        let result = Self::last_field_to_data_slice(&self.root_op_scope).into_py_result()?;
         self.import_ops.push(import_op);
         Ok(result)
     }
@@ -375,8 +373,8 @@ impl FlowBuilder {
         let value_type = value_type.into_inner();
         {
             let mut root_data_scope = self.root_op_scope.data.lock().unwrap();
-            cocoindex_py_utils::CResultIntoPyResult::into_py_result(
-                root_data_scope.add_field(
+            root_data_scope
+                .add_field(
                     name.clone(),
                     &value_type,
                     FieldDefFingerprint {
@@ -388,12 +386,10 @@ impl FlowBuilder {
                             .into_py_result()?
                             .into_fingerprint(),
                     },
-                ),
-            )?;
+                )
+                .into_py_result()?;
         }
-        let result = cocoindex_py_utils::CResultIntoPyResult::into_py_result(
-            Self::last_field_to_data_slice(&self.root_op_scope),
-        )?;
+        let result = Self::last_field_to_data_slice(&self.root_op_scope).into_py_result()?;
         self.direct_input_fields.push(FieldSchema {
             name,
             value_type,
@@ -429,9 +425,9 @@ impl FlowBuilder {
             field_path.last().map_or("", |s| s.as_str()),
             num_parent_layers
         );
-        let (_, child_op_scope) = cocoindex_py_utils::CResultIntoPyResult::into_py_result(
-            parent_scope.new_foreach_op_scope(scope_name.clone(), field_path),
-        )?;
+        let (_, child_op_scope) = parent_scope
+            .new_foreach_op_scope(scope_name.clone(), field_path)
+            .into_py_result()?;
 
         let reactive_op = spec::NamedSpec {
             name: format!(".for_each.{}", self.next_generated_op_id),
@@ -447,10 +443,9 @@ impl FlowBuilder {
             }),
         };
         self.next_generated_op_id += 1;
-        cocoindex_py_utils::CResultIntoPyResult::into_py_result(
-            self.get_mut_reactive_ops(parent_scope),
-        )?
-        .push(reactive_op);
+        self.get_mut_reactive_ops(parent_scope)
+            .into_py_result()?
+            .push(reactive_op);
 
         Ok(OpScopeRef(child_op_scope))
     }
@@ -470,11 +465,11 @@ impl FlowBuilder {
             kind,
             spec: op_spec.into_inner(),
         };
-        let op_scope =
-            cocoindex_py_utils::CResultIntoPyResult::into_py_result(Self::minimum_common_scope(
-                args.iter().map(|(ds, _)| &ds.scope),
-                target_scope.as_ref().map(|s| &s.0),
-            ))?;
+        let op_scope = Self::minimum_common_scope(
+            args.iter().map(|(ds, _)| &ds.scope),
+            target_scope.as_ref().map(|s| &s.0),
+        )
+        .into_py_result()?;
 
         let reactive_op = spec::NamedSpec {
             name,
@@ -495,19 +490,18 @@ impl FlowBuilder {
             lib_ctx: self.lib_context.clone(),
             flow_ctx: self.flow_inst_context.clone(),
         };
-        let analyzed = cocoindex_py_utils::CResultIntoPyResult::into_py_result(py.detach(|| {
-            get_runtime().block_on(analyzer_ctx.analyze_reactive_op(op_scope, &reactive_op))
-        }))?;
+        let analyzed = py
+            .detach(|| {
+                get_runtime().block_on(analyzer_ctx.analyze_reactive_op(op_scope, &reactive_op))
+            })
+            .into_py_result()?;
         std::mem::drop(analyzed);
 
-        cocoindex_py_utils::CResultIntoPyResult::into_py_result(
-            self.get_mut_reactive_ops(op_scope),
-        )?
-        .push(reactive_op);
+        self.get_mut_reactive_ops(op_scope)
+            .into_py_result()?
+            .push(reactive_op);
 
-        let result = cocoindex_py_utils::CResultIntoPyResult::into_py_result(
-            Self::last_field_to_data_slice(op_scope),
-        )?;
+        let result = Self::last_field_to_data_slice(op_scope).into_py_result()?;
         Ok(result)
     }
 
@@ -520,9 +514,8 @@ impl FlowBuilder {
         auto_uuid_field: Option<FieldName>,
     ) -> PyResult<()> {
         let _span = info_span!("flow_builder.collect", flow_name = %self.flow_instance_name, collector_name = %collector.name).entered();
-        let common_scope = cocoindex_py_utils::CResultIntoPyResult::into_py_result(
-            Self::minimum_common_scope(fields.iter().map(|(_, ds)| &ds.scope), None),
-        )?;
+        let common_scope = Self::minimum_common_scope(fields.iter().map(|(_, ds)| &ds.scope), None)
+            .into_py_result()?;
         let name = format!(".collect.{}", self.next_generated_op_id);
         self.next_generated_op_id += 1;
 
@@ -548,15 +541,16 @@ impl FlowBuilder {
             lib_ctx: self.lib_context.clone(),
             flow_ctx: self.flow_inst_context.clone(),
         };
-        let analyzed = cocoindex_py_utils::CResultIntoPyResult::into_py_result(py.detach(|| {
-            get_runtime().block_on(analyzer_ctx.analyze_reactive_op(common_scope, &reactive_op))
-        }))?;
+        let analyzed = py
+            .detach(|| {
+                get_runtime().block_on(analyzer_ctx.analyze_reactive_op(common_scope, &reactive_op))
+            })
+            .into_py_result()?;
         std::mem::drop(analyzed);
 
-        cocoindex_py_utils::CResultIntoPyResult::into_py_result(
-            self.get_mut_reactive_ops(common_scope),
-        )?
-        .push(reactive_op);
+        self.get_mut_reactive_ops(common_scope)
+            .into_py_result()?
+            .push(reactive_op);
 
         let collector_schema = CollectorSchema::from_fields(
             fields
@@ -577,9 +571,9 @@ impl FlowBuilder {
             // TODO: Pass in the right field def fingerprint
             let mut collector = collector.collector.lock().unwrap();
             if let Some(collector) = collector.as_mut() {
-                cocoindex_py_utils::CResultIntoPyResult::into_py_result(
-                    collector.collect(&collector_schema, FieldDefFingerprint::default()),
-                )?;
+                collector
+                    .collect(&collector_schema, FieldDefFingerprint::default())
+                    .into_py_result()?;
             } else {
                 *collector = Some(CollectorBuilder::new(
                     Arc::new(collector_schema),
