@@ -32,6 +32,7 @@ from typing_extensions import TypeVar
 import numpy as np
 
 import cocoindex as coco
+from cocoindex.connectorkits import statediff
 from cocoindex._internal.datatype import (
     AnyType,
     MappingType,
@@ -56,6 +57,17 @@ _RowKey = tuple[Any, ...]  # Primary key values as tuple
 _RowValue = dict[str, Any]  # Column name -> value
 _RowFingerprint = bytes
 Encoder = Callable[[Any], Any]
+
+# Postgres protocol parameter limit (also used in the Rust implementation).
+_BIND_LIMIT: int = 65535
+
+
+def _qualified_table_name(table_name: str, schema_name: str | None) -> str:
+    """Return a properly quoted (optionally schema-qualified) table name."""
+
+    if schema_name:
+        return f'"{schema_name}"."{table_name}"'
+    return f'"{table_name}"'
 
 
 class PgType(NamedTuple):
@@ -292,13 +304,9 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         self._table_schema = table_schema
         self._sink = coco.EffectSink.from_async_fn(self._apply_actions)
 
-    def _qualified_table_name(self) -> str:
-        if self._schema_name:
-            return f'"{self._schema_name}"."{self._table_name}"'
-        return f'"{self._table_name}"'
-
     async def _apply_actions(self, actions: Sequence[_RowAction]) -> None:
         """Apply row actions (upserts and deletes) to the database."""
+
         if not actions:
             return
 
@@ -327,7 +335,7 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         upserts: list[_RowAction],
     ) -> None:
         """Execute upsert operations."""
-        table_name = self._qualified_table_name()
+        table_name = _qualified_table_name(self._table_name, self._schema_name)
         columns = self._table_schema.columns
         pk_cols = self._table_schema.primary_key
         all_col_names = [c.name for c in columns]
@@ -335,7 +343,6 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
 
         # Build column lists
         col_list = ", ".join(f'"{c}"' for c in all_col_names)
-        placeholders = ", ".join(f"${i + 1}" for i in range(len(all_col_names)))
         pk_list = ", ".join(f'"{c}"' for c in pk_cols)
 
         # Build ON CONFLICT clause
@@ -345,13 +352,30 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         else:
             conflict_clause = f"ON CONFLICT ({pk_list}) DO NOTHING"
 
-        sql = f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders}) {conflict_clause}"
+        num_parameters = len(all_col_names)
+        if num_parameters == 0:
+            return
 
-        for action in upserts:
-            assert action.value is not None
-            # Values are encoded by TableTarget before being stored as effect values.
-            values = [action.value.get(col.name) for col in columns]
-            await conn.execute(sql, *values)
+        # Batch multiple rows into one INSERT, respecting Postgres' bind parameter limit.
+        chunk_size = max(1, _BIND_LIMIT // num_parameters)
+        for upsert_chunk in (
+            upserts[i : i + chunk_size] for i in range(0, len(upserts), chunk_size)
+        ):
+            values_sql_parts: list[str] = []
+            params: list[Any] = []
+            for row_idx, action in enumerate(upsert_chunk):
+                assert action.value is not None
+                base = row_idx * num_parameters
+                placeholders = ", ".join(
+                    f"${base + j + 1}" for j in range(num_parameters)
+                )
+                values_sql_parts.append(f"({placeholders})")
+                # Values are encoded by TableTarget before being stored as effect values.
+                params.extend(action.value.get(col.name) for col in columns)
+
+            values_sql = ", ".join(values_sql_parts)
+            sql = f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
+            await conn.execute(sql, *params)
 
     async def _execute_deletes(
         self,
@@ -359,7 +383,7 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         deletes: list[_RowAction],
     ) -> None:
         """Execute delete operations."""
-        table_name = self._qualified_table_name()
+        table_name = _qualified_table_name(self._table_name, self._schema_name)
         pk_cols = self._table_schema.primary_key
 
         # Build WHERE clause for primary key
@@ -410,9 +434,10 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
 
 
 class _TableKey(NamedTuple):
-    """Key identifying a table: (database_key, table_name)."""
+    """Key identifying a table: (database_key, schema_name, table_name)."""
 
     db_key: str  # Stable key for the database
+    schema_name: str | None
     table_name: str
 
 
@@ -420,33 +445,52 @@ class _TableKey(NamedTuple):
 class _TableSpec:
     """Specification for a PostgreSQL table."""
 
-    db_key: str  # Stable key for looking up the database pool
-    table_name: str
     table_schema: TableSchema[Any]
-    schema_name: str | None = None
     managed_by: Literal["system", "user"] = "system"
 
 
-@dataclass
-class _TableState:
-    """Stored state for a table."""
+class _PkColumnState(NamedTuple):
+    """Primary-key column signature used for table-level main state."""
 
-    db_key: str
-    table_name: str
-    schema_name: str | None
-    table_schema_hash: str  # Hash of the schema for change detection
-    managed_by: Literal["system", "user"]
+    name: str
+    type: str
+
+
+class _NonPkColumnState(NamedTuple):
+    """Per-non-PK column state used for incremental ALTER TABLE operations."""
+
+    type: str
+    nullable: bool
+
+
+def _table_composite_state_from_spec(
+    spec: _TableSpec,
+) -> statediff.CompositeState[tuple[_PkColumnState, ...], str, _NonPkColumnState]:
+    schema = spec.table_schema
+    col_by_name = {c.name: c for c in schema.columns}
+    pk_sig = tuple(
+        _PkColumnState(name=pk, type=col_by_name[pk].type) for pk in schema.primary_key
+    )
+    sub = {
+        c.name: _NonPkColumnState(type=c.type, nullable=c.nullable)
+        for c in schema.columns
+        if c.name not in schema.primary_key
+    }
+    return statediff.CompositeState(main=pk_sig, sub=sub)
+
+
+_TableState = statediff.MutualState[
+    statediff.CompositeState[tuple[_PkColumnState, ...], str, _NonPkColumnState]
+]
 
 
 class _TableAction(NamedTuple):
     """Action to perform on a table."""
 
-    db_key: str  # Database key for looking up the pool
-    spec: _TableSpec | None  # None means table should not exist
-    action_type: (
-        Literal["create", "ensure", "drop"] | None
-    )  # None means no action needed
-    prev_table_names_to_drop: list[tuple[str, str | None]]  # (table_name, schema_name)
+    key: _TableKey
+    spec: _TableSpec | coco.NonExistenceType
+    main_action: statediff.DiffAction | None
+    column_actions: dict[str, statediff.DiffAction]
 
 
 # Database registry: maps stable keys to connection pools
@@ -482,19 +526,6 @@ def _unregister_db(key: str) -> None:
         _db_registry.pop(key, None)
 
 
-def _schema_hash(table_schema: TableSchema) -> str:
-    """Compute a hash of the table schema for change detection."""
-    data = {
-        "columns": [
-            {"name": c.name, "type": c.type, "nullable": c.nullable}
-            for c in table_schema.columns
-        ],
-        "primary_key": table_schema.primary_key,
-    }
-    serialized = json.dumps(data, sort_keys=True)
-    return hashlib.sha256(serialized.encode()).hexdigest()
-
-
 class _TableHandler(
     coco.EffectHandler[_TableKey, _TableSpec, _TableState, _RowHandler]
 ):
@@ -508,59 +539,86 @@ class _TableHandler(
     async def _apply_actions(
         self, actions: Collection[_TableAction]
     ) -> list[coco.ChildEffectDef[_RowHandler] | None]:
-        """Apply table actions and return child handlers."""
-        outputs: list[coco.ChildEffectDef[_RowHandler] | None] = []
+        """Apply table actions (DDL) and return child row handlers."""
+        actions_list = list(actions)
+        outputs: list[coco.ChildEffectDef[_RowHandler] | None] = [None] * len(
+            actions_list
+        )
 
-        for action in actions:
-            pool = _get_pool(action.db_key)
+        # Group actions by table key so we can apply all DDL for the same table
+        # within a single transaction/connection.
+        by_key: dict[_TableKey, list[int]] = {}
+        for i, action in enumerate(actions_list):
+            by_key.setdefault(action.key, []).append(i)
 
-            # Handle dropping previous tables
-            for table_name, schema_name in action.prev_table_names_to_drop:
-                await self._drop_table(pool, table_name, schema_name)
+        for key, idxs in by_key.items():
+            pool = _get_pool(key.db_key)
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    for i in idxs:
+                        action = actions_list[i]
+                        assert action.key == key
 
-            # Handle current table
-            if action.spec is None or action.action_type == "drop":
-                if action.spec and action.action_type == "drop":
-                    await self._drop_table(
-                        pool, action.spec.table_name, action.spec.schema_name
-                    )
-                outputs.append(None)
-            else:
-                if action.action_type == "create":
-                    await self._create_table(pool, action.spec)
-                elif action.action_type == "ensure":
-                    await self._ensure_table(pool, action.spec)
+                        if action.main_action in ("replace", "delete"):
+                            await self._drop_table(
+                                conn, key.table_name, key.schema_name
+                            )
 
-                outputs.append(
-                    coco.ChildEffectDef(
-                        handler=_RowHandler(
-                            pool=pool,
-                            table_name=action.spec.table_name,
-                            schema_name=action.spec.schema_name,
-                            table_schema=action.spec.table_schema,
+                        if coco.is_non_existence(action.spec):
+                            outputs[i] = None
+                            continue
+
+                        spec = action.spec
+                        outputs[i] = coco.ChildEffectDef(
+                            handler=_RowHandler(
+                                pool=pool,
+                                table_name=key.table_name,
+                                schema_name=key.schema_name,
+                                table_schema=spec.table_schema,
+                            )
                         )
-                    )
-                )
+
+                        if action.main_action in ("insert", "upsert", "replace"):
+                            await self._create_table(
+                                conn,
+                                key,
+                                spec.table_schema,
+                                if_not_exists=(action.main_action == "upsert"),
+                            )
+                            continue
+
+                        # No main change: reconcile non-PK columns incrementally.
+                        if action.column_actions:
+                            await self._apply_column_actions(
+                                conn, key, spec.table_schema, action.column_actions
+                            )
 
         return outputs
 
     async def _drop_table(
-        self, pool: asyncpg.Pool, table_name: str, schema_name: str | None
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        table_name: str,
+        schema_name: str | None,
     ) -> None:
         """Drop a table if it exists."""
-        qualified_name = self._qualified_table_name(table_name, schema_name)
-        async with pool.acquire() as conn:
-            await conn.execute(f"DROP TABLE IF EXISTS {qualified_name}")
+        qualified_name = _qualified_table_name(table_name, schema_name)
+        await conn.execute(f"DROP TABLE IF EXISTS {qualified_name}")
 
-    async def _create_table(self, pool: asyncpg.Pool, spec: _TableSpec) -> None:
+    async def _create_table(
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        key: _TableKey,
+        schema: TableSchema[Any],
+        *,
+        if_not_exists: bool,
+    ) -> None:
         """Create a table."""
-        qualified_name = self._qualified_table_name(spec.table_name, spec.schema_name)
-        schema = spec.table_schema
+        qualified_name = _qualified_table_name(key.table_name, key.schema_name)
 
         # Create schema if specified
-        if spec.schema_name:
-            async with pool.acquire() as conn:
-                await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{spec.schema_name}"')
+        if key.schema_name:
+            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{key.schema_name}"')
 
         # Build column definitions
         col_defs = []
@@ -577,22 +635,72 @@ class _TableHandler(
         col_defs.append(f"PRIMARY KEY ({pk_cols})")
 
         columns_sql = ", ".join(col_defs)
-        sql = f"CREATE TABLE IF NOT EXISTS {qualified_name} ({columns_sql})"
+        if_not_exists_sql = " IF NOT EXISTS" if if_not_exists else ""
+        sql = f"CREATE TABLE{if_not_exists_sql} {qualified_name} ({columns_sql})"
+        await conn.execute(sql)
 
-        async with pool.acquire() as conn:
-            await conn.execute(sql)
+    async def _apply_column_actions(
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        key: _TableKey,
+        schema: TableSchema[Any],
+        column_actions: dict[str, statediff.DiffAction],
+    ) -> None:
+        qualified_name = _qualified_table_name(key.table_name, key.schema_name)
+        pk_cols = set(schema.primary_key)
+        non_pk_col_by_name = {
+            c.name: c for c in schema.columns if c.name not in pk_cols
+        }
+        for col_name, action in column_actions.items():
+            # Defensive: we never ALTER PK columns here.
+            if col_name in pk_cols:
+                continue
 
-    async def _ensure_table(self, pool: asyncpg.Pool, spec: _TableSpec) -> None:
-        """Ensure a table exists with the correct schema."""
-        # For now, just create if not exists
-        # TODO: Add schema migration support
-        await self._create_table(pool, spec)
+            if action == "delete":
+                await conn.execute(
+                    f'ALTER TABLE {qualified_name} DROP COLUMN IF EXISTS "{col_name}"'
+                )
+                continue
 
-    @staticmethod
-    def _qualified_table_name(table_name: str, schema_name: str | None) -> str:
-        if schema_name:
-            return f'"{schema_name}"."{table_name}"'
-        return f'"{table_name}"'
+            desired_col = non_pk_col_by_name.get(col_name)
+            if desired_col is None:
+                # If the desired schema no longer mentions this column, treat
+                # it as a no-op here; "delete" should have been emitted.
+                continue
+
+            if action == "insert":
+                async with conn.transaction():
+                    await conn.execute(
+                        f"ALTER TABLE {qualified_name} "
+                        f'ADD COLUMN "{col_name}" {desired_col.type}'
+                    )
+                continue
+
+            if action == "upsert":
+                await conn.execute(
+                    f"ALTER TABLE {qualified_name} "
+                    f'ADD COLUMN IF NOT EXISTS "{col_name}" {desired_col.type}'
+                )
+                continue
+
+            if action == "replace":
+                # Type change may fail depending on existing data. Try ALTER TYPE first
+                # inside a savepoint; if it fails, fall back to drop+add.
+                try:
+                    async with conn.transaction():
+                        nullable = "" if desired_col.nullable else " NOT NULL"
+                        await conn.execute(
+                            f"ALTER TABLE {qualified_name} "
+                            f'ALTER COLUMN "{col_name}" TYPE {desired_col.type}{nullable}'
+                        )
+                except asyncpg.PostgresError:
+                    await conn.execute(
+                        f'ALTER TABLE {qualified_name} DROP COLUMN IF EXISTS "{col_name}"'
+                    )
+                    await conn.execute(
+                        f"ALTER TABLE {qualified_name} "
+                        f'ADD COLUMN "{col_name}" {desired_col.type}'
+                    )
 
     def reconcile(
         self,
@@ -601,79 +709,42 @@ class _TableHandler(
         prev_possible_states: Collection[_TableState],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.EffectReconcileOutput[_TableAction, _TableState, _RowHandler]:
-        db_key = key.db_key
-        # Determine what previous tables need to be dropped (table_name, schema_name)
-        prev_tables_to_drop: list[tuple[str, str | None]] = []
-
-        if not coco.is_non_existence(desired_effect):
-            # Check if we need to drop any previous tables that differ
-            for prev in prev_possible_states:
-                if prev.managed_by == "system":
-                    # Check if this is a different table (name or schema changed)
-                    if (
-                        prev.table_name != desired_effect.table_name
-                        or prev.schema_name != desired_effect.schema_name
-                    ):
-                        prev_tables_to_drop.append((prev.table_name, prev.schema_name))
+    ) -> coco.EffectReconcileOutput[_TableAction, _TableState, _RowHandler] | None:
+        desired_state: _TableState | coco.NonExistenceType
 
         if coco.is_non_existence(desired_effect):
-            # Drop the table
-            for prev in prev_possible_states:
-                if prev.managed_by == "system":
-                    prev_tables_to_drop.append((prev.table_name, prev.schema_name))
-
-            return coco.EffectReconcileOutput(
-                action=_TableAction(
-                    db_key=db_key,
-                    spec=None,
-                    action_type=None,
-                    prev_table_names_to_drop=prev_tables_to_drop,
-                ),
-                sink=self._sink,
-                state=coco.NON_EXISTENCE,
+            desired_state = coco.NON_EXISTENCE
+        else:
+            desired_state = statediff.MutualState(
+                state=_table_composite_state_from_spec(desired_effect),
+                managed_by=desired_effect.managed_by,
             )
 
-        # Determine action type
-        current_hash = _schema_hash(desired_effect.table_schema)
-        must_exist = not prev_may_be_missing and all(
-            prev.table_name == desired_effect.table_name
-            and prev.schema_name == desired_effect.schema_name
-            and prev.table_schema_hash == current_hash
-            and prev.managed_by == desired_effect.managed_by
-            for prev in prev_possible_states
+        resolved = statediff.resolve_system_transition(
+            statediff.StateTransition(
+                desired_state,
+                list(prev_possible_states),
+                prev_may_be_missing,
+            )
         )
+        main_action, column_transitions = statediff.diff_composite(resolved)
 
-        may_exist = any(
-            prev.table_name == desired_effect.table_name
-            and prev.schema_name == desired_effect.schema_name
-            for prev in prev_possible_states
-        )
-
-        if must_exist:
-            action_type: Literal["create", "ensure", "drop"] | None = None
-        elif may_exist:
-            action_type = "ensure"
-        else:
-            action_type = "create"
-
-        new_state = _TableState(
-            db_key=db_key,
-            table_name=desired_effect.table_name,
-            schema_name=desired_effect.schema_name,
-            table_schema_hash=current_hash,
-            managed_by=desired_effect.managed_by,
-        )
+        column_actions: dict[str, statediff.DiffAction] = {}
+        if main_action is None:
+            for col_name, t in column_transitions.items():
+                action = statediff.diff(t)
+                if action is not None:
+                    column_actions[col_name] = action
 
         return coco.EffectReconcileOutput(
             action=_TableAction(
-                db_key=db_key,
+                key=key,
                 spec=desired_effect,
-                action_type=action_type,
-                prev_table_names_to_drop=prev_tables_to_drop,
+                main_action=main_action,
+                column_actions=column_actions,
             ),
             sink=self._sink,
-            state=new_state,
+            state=desired_state,
         )
 
 
@@ -804,12 +875,11 @@ class PgDatabase:
         Returns:
             A TableTarget that can be used to declare rows.
         """
-        key = _TableKey(db_key=self._key, table_name=table_name)
+        key = _TableKey(
+            db_key=self._key, schema_name=schema_name, table_name=table_name
+        )
         spec = _TableSpec(
-            db_key=self._key,
-            table_name=table_name,
             table_schema=table_schema,
-            schema_name=schema_name,
             managed_by=managed_by,
         )
         provider = coco.declare_effect_with_child(
