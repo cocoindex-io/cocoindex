@@ -57,6 +57,7 @@ const sidebars: SidebarsConfig = {
         'targets/postgres',
         'targets/qdrant',
         'targets/lancedb',
+        'targets/surrealdb',
         'targets/neo4j',
         'targets/kuzu',
       ],

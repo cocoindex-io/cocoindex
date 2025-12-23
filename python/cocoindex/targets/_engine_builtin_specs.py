@@ -151,3 +151,34 @@ class KuzuDeclaration(op.DeclarationSpec):
     connection: AuthEntryReference[KuzuConnection]
     nodes_label: str
     primary_key_fields: Sequence[str]
+
+
+@dataclass
+class SurrealDBConnection:
+    """Connection spec for SurrealDB."""
+
+    # WebSocket RPC endpoint, e.g. "ws://localhost:8000/rpc"
+    endpoint: str
+    # Namespace and database to use.
+    namespace: str
+    database: str
+    # Auth (root user).
+    username: str
+    password: str
+
+
+class SurrealDB(op.TargetSpec):
+    """Multi-model storage powered by SurrealDB (vectors + graph relations)."""
+
+    connection: AuthEntryReference[SurrealDBConnection]
+    mapping: Nodes | Relationships
+
+
+class SurrealDBDeclaration(op.DeclarationSpec):
+    """Declarations for SurrealDB."""
+
+    kind = "SurrealDB"
+    connection: AuthEntryReference[SurrealDBConnection]
+    nodes_label: str
+    primary_key_fields: Sequence[str]
+    vector_indexes: Sequence[index.VectorIndexDef] = ()

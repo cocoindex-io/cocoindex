@@ -449,7 +449,46 @@ mod tests {
     }
 
     fn schema_to_json(schema: &SchemaObject) -> serde_json::Value {
-        serde_json::to_value(schema).unwrap()
+        fn reorder_json(v: serde_json::Value) -> serde_json::Value {
+            match v {
+                serde_json::Value::Array(a) => {
+                    serde_json::Value::Array(a.into_iter().map(reorder_json).collect())
+                }
+                serde_json::Value::Object(mut m) => {
+                    // Keep output stable for expect-tests.
+                    // serde_json preserves insertion order; schemars/serde may change it across versions.
+                    const ORDER: &[&str] = &[
+                        "additionalProperties",
+                        "description",
+                        "properties",
+                        "required",
+                        "items",
+                        "maxItems",
+                        "minItems",
+                        "format",
+                        "type",
+                    ];
+                    let mut out = serde_json::Map::new();
+                    for k in ORDER {
+                        if let Some(v) = m.remove(*k) {
+                            out.insert((*k).to_string(), reorder_json(v));
+                        }
+                    }
+                    let mut rest: Vec<(String, serde_json::Value)> = m
+                        .into_iter()
+                        .map(|(k, v)| (k, reorder_json(v)))
+                        .collect();
+                    rest.sort_by(|a, b| a.0.cmp(&b.0));
+                    for (k, v) in rest {
+                        out.insert(k, v);
+                    }
+                    serde_json::Value::Object(out)
+                }
+                v => v,
+            }
+        }
+
+        reorder_json(serde_json::to_value(schema).unwrap())
     }
 
     #[test]

@@ -17,6 +17,7 @@ The way to map data from a data collector to a target depends on data model of t
 | [Postgres](/docs/targets/postgres) | Relational Database, Vector Search (PGVector)   |
 | [Qdrant](/docs/targets/qdrant)     | Vector Database, Keyword Search       |
 | [LanceDB](/docs/targets/lancedb)   | Vector Database, Keyword Search         |
+| [SurrealDB](/docs/targets/surrealdb) | Multi-model Database, Vector Search, Property Graph |
 | [Neo4j](/docs/targets/neo4j)       | [Property graph](#property-graph-targets)        |
 
 If you are looking for targets beyond here, you can always use [custom targets](/docs/custom_ops/custom_targets) as building blocks.
