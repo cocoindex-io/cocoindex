@@ -28,7 +28,7 @@ pub enum Error {
     },
     Internal {
         source: Box<dyn StdError + Send + Sync>,
-        bt: Backtrace,
+        bt: Option<Backtrace>,
     },
 }
 
@@ -54,7 +54,7 @@ impl StdError for Error {
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 // Backwards compatibility aliases
 pub type CError = Error;
@@ -75,21 +75,21 @@ impl Error {
     pub fn internal(e: impl StdError + Send + Sync + 'static) -> Self {
         Self::Internal {
             source: Box::new(e),
-            bt: Backtrace::capture(),
+            bt: Some(Backtrace::capture()),
         }
     }
 
     pub fn internal_msg(msg: impl Into<String>) -> Self {
         Self::Internal {
             source: Box::new(StringError(msg.into())),
-            bt: Backtrace::capture(),
+            bt: Some(Backtrace::capture()),
         }
     }
 
     pub fn backtrace(&self) -> Option<&Backtrace> {
         match self {
             Error::Client { bt, .. } => Some(bt),
-            Error::Internal { bt, .. } => Some(bt),
+            Error::Internal { bt, .. } => bt.as_ref(),
             Error::Context { source, .. } => source.backtrace(),
             Error::HostLang(_) => None,
         }
@@ -141,7 +141,7 @@ impl From<anyhow::Error> for Error {
     fn from(e: anyhow::Error) -> Self {
         Error::Internal {
             source: Box::new(AnyhowWrapper(e)),
-            bt: Backtrace::capture(),
+            bt: None,
         }
     }
 }
@@ -156,7 +156,7 @@ impl From<ApiError> for Error {
         } else {
             Error::Internal {
                 source: Box::new(AnyhowWrapper(e.err)),
-                bt: Backtrace::capture(),
+                bt: None,
             }
         }
     }
@@ -166,7 +166,7 @@ impl From<crate::retryable::Error> for Error {
     fn from(e: crate::retryable::Error) -> Self {
         Error::Internal {
             source: Box::new(AnyhowWrapper(e.error)),
-            bt: Backtrace::capture(),
+            bt: None,
         }
     }
 }
@@ -210,7 +210,7 @@ impl<T, E: StdError + Send + Sync + 'static> IntoInternal<T> for std::result::Re
     fn internal(self) -> Result<T> {
         self.map_err(|e| Error::Internal {
             source: Box::new(e),
-            bt: Backtrace::capture(),
+            bt: Some(Backtrace::capture()),
         })
     }
 }
@@ -248,7 +248,7 @@ impl<T, E: StdError + Send + Sync + 'static> ResultExt<T, E> for std::result::Re
             msg: context.into(),
             source: Box::new(Error::Internal {
                 source: Box::new(e),
-                bt: Backtrace::capture(),
+                bt: Some(Backtrace::capture()),
             }),
         })
     }
@@ -258,7 +258,7 @@ impl<T, E: StdError + Send + Sync + 'static> ResultExt<T, E> for std::result::Re
             msg: f().into(),
             source: Box::new(Error::Internal {
                 source: Box::new(e),
-                bt: Backtrace::capture(),
+                bt: Some(Backtrace::capture()),
             }),
         })
     }
@@ -374,7 +374,7 @@ impl SharedError {
                 // Already extracted; return a generic internal error with the residual message.
                 return Error::Internal {
                     source: Box::new(err.clone()),
-                    bt: Backtrace::capture(),
+                    bt: Some(Backtrace::capture()),
                 };
             }
             SharedErrorState::Error(err) => ResidualError::new(err),
@@ -422,7 +422,7 @@ impl SharedError {
         Self(Arc::new(Mutex::new(SharedErrorState::Error(
             Error::Internal {
                 source: Box::new(err),
-                bt: Backtrace::capture(),
+                bt: Some(Backtrace::capture()),
             },
         ))))
     }
