@@ -128,13 +128,3 @@ impl<T> AnyhowIntoPyResult<T> for anyhow::Result<T> {
         }
     }
 }
-
-pub trait CResultIntoPyResult<T> {
-    fn into_py_result(self) -> PyResult<T>;
-}
-
-impl<T> CResultIntoPyResult<T> for CResult<T> {
-    fn into_py_result(self) -> PyResult<T> {
-        self.map_err(cerror_to_pyerr)
-    }
-}
