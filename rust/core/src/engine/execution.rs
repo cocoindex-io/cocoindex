@@ -636,7 +636,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     // Apply actions
     for (sink, input) in actions_by_sinks {
+        debug!("Before applying actions to sink");
         let handlers = sink.apply(input.actions).await?;
+        debug!("After applying actions to sink");
         if let Some(child_providers) = input.child_providers {
             let Some(handlers) = handlers else {
                 bail!("expect child providers returned by Sink");

@@ -1,33 +1,44 @@
 """
-HackerNews Trending Topics - Batch Pipeline Example
+HackerNews Trending Topics - CocoIndex Pipeline Example
 
-This example demonstrates a batch pipeline that:
+This example demonstrates a CocoIndex pipeline that:
 1. Scrapes HackerNews threads and comments via API
 2. Extracts topics using LLM (Gemini 2.5 Flash via LiteLLM)
-3. Stores everything in PostgreSQL using asyncpg
+3. Stores everything in PostgreSQL using the cocoindex postgres target
 """
 
 import asyncio
-import json
 import os
+import sys
+import pathlib
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Generic, Iterator
 
 import aiohttp
 import asyncpg
 from litellm import acompletion
 from pydantic import BaseModel, Field
 
+import cocoindex as coco
+import cocoindex.aio as coco_aio
+from cocoindex.connectors import postgres
 
 # Configuration
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost:5432/hn_topics")
-MAX_THREADS = 200
-LLM_MODEL = "gemini/gemini-2.5-flash-preview-05-20"
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
+)
+MAX_THREADS = 10
+LLM_MODEL = "gemini/gemini-2.5-flash"
 
-# Scoring weights
+# Scoring weights for trending topics query
 THREAD_LEVEL_MENTION_SCORE = 5
 COMMENT_LEVEL_MENTION_SCORE = 1
+
+
+# ============================================================================
+# Data models for HackerNews content
+# ============================================================================
 
 
 @dataclass
@@ -48,112 +59,38 @@ class Thread:
     comments: list[Comment]
 
 
-async def create_database(pool: asyncpg.Pool) -> None:
-    """Create the database tables."""
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            DROP TABLE IF EXISTS hn_topics CASCADE;
-            DROP TABLE IF EXISTS hn_messages CASCADE;
-        """)
-
-        await conn.execute("""
-            CREATE TABLE hn_messages (
-                id TEXT PRIMARY KEY,
-                thread_id TEXT NOT NULL,
-                content_type TEXT NOT NULL,
-                author TEXT,
-                text TEXT,
-                url TEXT,
-                created_at TIMESTAMPTZ
-            );
-
-            CREATE INDEX idx_messages_thread_id ON hn_messages(thread_id);
-            CREATE INDEX idx_messages_created_at ON hn_messages(created_at);
-        """)
-
-        await conn.execute("""
-            CREATE TABLE hn_topics (
-                topic TEXT NOT NULL,
-                message_id TEXT NOT NULL,
-                thread_id TEXT NOT NULL,
-                content_type TEXT NOT NULL,
-                created_at TIMESTAMPTZ,
-                PRIMARY KEY (topic, message_id)
-            );
-
-            CREATE INDEX idx_topics_topic ON hn_topics(topic);
-            CREATE INDEX idx_topics_thread_id ON hn_topics(thread_id);
-        """)
-
-    print("Database tables created successfully")
+# ============================================================================
+# Table schemas as dataclasses (for PostgreSQL target)
+# ============================================================================
 
 
-async def fetch_thread_list(
-    session: aiohttp.ClientSession, max_results: int = MAX_THREADS
-) -> list[str]:
-    """Fetch list of recent thread IDs from HackerNews."""
-    search_url = "https://hn.algolia.com/api/v1/search_by_date"
-    params = {"tags": "story", "hitsPerPage": max_results}
+@dataclass
+class HnMessage:
+    """Schema for hn_messages table."""
 
-    async with session.get(search_url, params=params) as response:
-        response.raise_for_status()
-        data = await response.json()
-        thread_ids = [
-            hit["objectID"] for hit in data.get("hits", []) if hit.get("objectID")
-        ]
-        print(f"Found {len(thread_ids)} threads")
-        return thread_ids
+    id: str
+    thread_id: str
+    content_type: str
+    author: str | None
+    text: str | None
+    url: str | None
+    created_at: datetime | None
 
 
-async def fetch_thread(session: aiohttp.ClientSession, thread_id: str) -> Thread | None:
-    """Fetch a single thread with all its comments."""
-    item_url = f"https://hn.algolia.com/api/v1/items/{thread_id}"
+@dataclass
+class HnTopic:
+    """Schema for hn_topics table."""
 
-    try:
-        async with session.get(item_url) as response:
-            response.raise_for_status()
-            data = await response.json()
+    topic: str
+    message_id: str
+    thread_id: str
+    content_type: str
+    created_at: datetime | None
 
-            if not data:
-                return None
 
-            # Parse comments recursively
-            comments: list[Comment] = []
-
-            def parse_comments(parent: dict[str, Any]) -> None:
-                for child in parent.get("children", []):
-                    if comment_id := child.get("id"):
-                        ctime = child.get("created_at")
-                        comments.append(
-                            Comment(
-                                id=str(comment_id),
-                                author=child.get("author"),
-                                text=child.get("text"),
-                                created_at=datetime.fromisoformat(ctime)
-                                if ctime
-                                else None,
-                            )
-                        )
-                    parse_comments(child)
-
-            parse_comments(data)
-
-            ctime = data.get("created_at")
-            text = data.get("title", "")
-            if more_text := data.get("text"):
-                text += "\n\n" + more_text
-
-            return Thread(
-                id=thread_id,
-                author=data.get("author"),
-                text=text,
-                url=data.get("url"),
-                created_at=datetime.fromisoformat(ctime) if ctime else None,
-                comments=comments,
-            )
-    except Exception as e:
-        print(f"Error fetching thread {thread_id}: {e}")
-        return None
+# ============================================================================
+# LLM topic extraction
+# ============================================================================
 
 
 class TopicsResponse(BaseModel):
@@ -216,171 +153,282 @@ async def extract_topics(text: str | None) -> list[str]:
     if not text or not text.strip():
         return []
 
+    response = await acompletion(
+        model=LLM_MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": TOPIC_EXTRACTION_PROMPT.format(text=text[:4000]),
+            }
+        ],
+        response_format=build_response_schema(TopicsResponse),
+    )
+
+    content = response.choices[0].message.content
+    return TopicsResponse.model_validate_json(content).topics
+
+
+# ============================================================================
+# HackerNews API functions
+# ============================================================================
+
+
+async def fetch_thread_list(
+    session: aiohttp.ClientSession, max_results: int = MAX_THREADS
+) -> list[str]:
+    """Fetch list of recent thread IDs from HackerNews."""
+    search_url = "https://hn.algolia.com/api/v1/search_by_date"
+    params: dict[str, str | int] = {"tags": "story", "hitsPerPage": max_results}
+
+    async with session.get(search_url, params=params) as response:
+        response.raise_for_status()
+        data = await response.json()
+        thread_ids = [
+            hit["objectID"] for hit in data.get("hits", []) if hit.get("objectID")
+        ]
+        print(f"Found {len(thread_ids)} threads")
+        return thread_ids
+
+
+async def fetch_thread(session: aiohttp.ClientSession, thread_id: str) -> Thread | None:
+    """Fetch a single thread with all its comments."""
+    item_url = f"https://hn.algolia.com/api/v1/items/{thread_id}"
+
     try:
-        response = await acompletion(
-            model=LLM_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": TOPIC_EXTRACTION_PROMPT.format(text=text[:4000]),
-                }
-            ],
-            response_format=build_response_schema(TopicsResponse),
+        async with session.get(item_url) as response:
+            response.raise_for_status()
+            data = await response.json()
+
+            if not data:
+                return None
+
+            # Parse comments recursively
+            comments: list[Comment] = []
+
+            def parse_comments(parent: dict[str, Any]) -> None:
+                for child in parent.get("children", []):
+                    if comment_id := child.get("id"):
+                        ctime = child.get("created_at")
+                        comments.append(
+                            Comment(
+                                id=str(comment_id),
+                                author=child.get("author"),
+                                text=child.get("text"),
+                                created_at=datetime.fromisoformat(ctime)
+                                if ctime
+                                else None,
+                            )
+                        )
+                    parse_comments(child)
+
+            parse_comments(data)
+
+            ctime = data.get("created_at")
+            text = data.get("title", "")
+            if more_text := data.get("text"):
+                text += "\n\n" + more_text
+
+            return Thread(
+                id=thread_id,
+                author=data.get("author"),
+                text=text,
+                url=data.get("url"),
+                created_at=datetime.fromisoformat(ctime) if ctime else None,
+                comments=comments,
+            )
+    except Exception as e:
+        print(f"Error fetching thread {thread_id}: {e}")
+        return None
+
+
+# ============================================================================
+# CocoIndex setup
+# ============================================================================
+
+
+# Global reference for database handle (set in lifespan)
+_db: postgres.PgDatabase | None = None
+_pool: asyncpg.Pool | None = None
+
+
+@coco.lifespan
+def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+    """Set up CocoIndex environment with PostgreSQL database."""
+    global _db, _pool  # noqa: PLW0603
+
+    # Configure the local state database path
+    builder.settings.db_path = pathlib.Path("./cocoindex.db")
+
+    # Create asyncpg pool and register with cocoindex
+    async def setup_pool() -> asyncpg.Pool:
+        pool = await asyncpg.create_pool(DATABASE_URL)
+        if not pool:
+            raise RuntimeError("Failed to create database pool")
+        return pool
+
+    _pool = asyncio.get_event_loop().run_until_complete(setup_pool())
+    _db = postgres.register_db("hn_db", _pool)
+
+    print(f"Connected to PostgreSQL: {DATABASE_URL}")
+
+    yield
+
+    # Cleanup
+    if _pool:
+        asyncio.get_event_loop().run_until_complete(_pool.close())
+
+
+# ============================================================================
+# Table targets
+# ============================================================================
+
+
+@dataclass
+class TableTargets(Generic[coco.MaybePendingS], coco.ResolvesTo["TableTargets"]):
+    """Container for table targets."""
+
+    messages: postgres.TableTarget[HnMessage, coco.MaybePendingS]
+    topics: postgres.TableTarget[HnTopic, coco.MaybePendingS]
+
+
+@coco.function
+def setup_tables(scope: coco.Scope) -> TableTargets[coco.PendingS]:
+    """Create table targets for messages and topics."""
+    assert _db is not None
+
+    messages_target = _db.table_target(
+        scope,
+        table_name="hn_messages",
+        table_schema=postgres.TableSchema(HnMessage, primary_key=["id"]),
+    )
+
+    topics_target = _db.table_target(
+        scope,
+        table_name="hn_topics",
+        table_schema=postgres.TableSchema(HnTopic, primary_key=["topic", "message_id"]),
+    )
+
+    return TableTargets(messages=messages_target, topics=topics_target)
+
+
+# ============================================================================
+# Processing functions
+# ============================================================================
+
+
+@coco.function
+async def process_thread(
+    scope: coco.Scope,
+    thread_id: str,
+    targets: TableTargets,
+) -> None:
+    """Fetch and process a single thread and its comments."""
+    async with aiohttp.ClientSession() as session:
+        thread = await fetch_thread(session, thread_id)
+    if thread is None:
+        print(f"Skipping thread {thread_id}: failed to fetch")
+        return
+
+    # Extract topics from thread
+    thread_topics = await extract_topics(thread.text)
+
+    # Declare thread message row
+    targets.messages.declare_row(
+        scope,
+        row=HnMessage(
+            id=thread.id,
+            thread_id=thread.id,
+            content_type="thread",
+            author=thread.author,
+            text=thread.text,
+            url=thread.url,
+            created_at=thread.created_at,
+        ),
+    )
+
+    # Declare thread topic rows
+    for topic in thread_topics:
+        targets.topics.declare_row(
+            scope,
+            row=HnTopic(
+                topic=topic,
+                message_id=thread.id,
+                thread_id=thread.id,
+                content_type="thread",
+                created_at=thread.created_at,
+            ),
         )
 
-        content = response.choices[0].message.content
-        if content:
-            result = TopicsResponse.model_validate_json(content)
-            return result.topics
-        return []
-    except Exception as e:
-        print(f"Error extracting topics: {e}")
-        return []
+    # Process comments
+    for comment in thread.comments:
+        comment_topics = await extract_topics(comment.text)
 
+        # Declare comment message row
+        targets.messages.declare_row(
+            scope,
+            row=HnMessage(
+                id=comment.id,
+                thread_id=thread.id,
+                content_type="comment",
+                author=comment.author,
+                text=comment.text,
+                url="",
+                created_at=comment.created_at,
+            ),
+        )
 
-async def process_thread(
-    thread: Thread,
-    pool: asyncpg.Pool,
-    semaphore: asyncio.Semaphore,
-) -> None:
-    """Process a single thread and its comments."""
-    async with semaphore:
-        # Extract topics from thread
-        thread_topics = await extract_topics(thread.text)
-
-        async with pool.acquire() as conn:
-            # Insert thread message
-            await conn.execute(
-                """
-                INSERT INTO hn_messages (id, thread_id, content_type, author, text, url, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (id) DO UPDATE SET
-                    text = EXCLUDED.text,
-                    author = EXCLUDED.author,
-                    url = EXCLUDED.url,
-                    created_at = EXCLUDED.created_at
-            """,
-                thread.id,
-                thread.id,
-                "thread",
-                thread.author,
-                thread.text,
-                thread.url,
-                thread.created_at,
+        # Declare comment topic rows
+        for topic in comment_topics:
+            targets.topics.declare_row(
+                scope,
+                row=HnTopic(
+                    topic=topic,
+                    message_id=comment.id,
+                    thread_id=thread.id,
+                    content_type="comment",
+                    created_at=comment.created_at,
+                ),
             )
 
-            # Insert thread topics
-            for topic in thread_topics:
-                await conn.execute(
-                    """
-                    INSERT INTO hn_topics (topic, message_id, thread_id, content_type, created_at)
-                    VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT (topic, message_id) DO NOTHING
-                """,
-                    topic,
-                    thread.id,
-                    thread.id,
-                    "thread",
-                    thread.created_at,
-                )
 
-        # Process comments
-        for comment in thread.comments:
-            comment_topics = await extract_topics(comment.text)
-
-            async with pool.acquire() as conn:
-                # Insert comment message
-                await conn.execute(
-                    """
-                    INSERT INTO hn_messages (id, thread_id, content_type, author, text, url, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    ON CONFLICT (id) DO UPDATE SET
-                        text = EXCLUDED.text,
-                        author = EXCLUDED.author,
-                        created_at = EXCLUDED.created_at
-                """,
-                    comment.id,
-                    thread.id,
-                    "comment",
-                    comment.author,
-                    comment.text,
-                    "",
-                    comment.created_at,
-                )
-
-                # Insert comment topics
-                for topic in comment_topics:
-                    await conn.execute(
-                        """
-                        INSERT INTO hn_topics (topic, message_id, thread_id, content_type, created_at)
-                        VALUES ($1, $2, $3, $4, $5)
-                        ON CONFLICT (topic, message_id) DO NOTHING
-                    """,
-                        topic,
-                        comment.id,
-                        thread.id,
-                        "comment",
-                        comment.created_at,
-                    )
-
-        print(
-            f"Processed thread {thread.id}: {len(thread_topics)} topics, {len(thread.comments)} comments"
-        )
-
-
-async def run_pipeline() -> None:
-    """Run the full batch pipeline."""
+@coco.function
+async def app_main(scope: coco.Scope) -> None:
+    """Main pipeline function."""
     print("Starting HackerNews Trending Topics Pipeline")
     print(f"Using LLM: {LLM_MODEL}")
     print(f"Database: {DATABASE_URL}")
     print()
 
-    # Create database connection pool
-    pool = await asyncpg.create_pool(DATABASE_URL)
-    if not pool:
-        raise RuntimeError("Failed to create database pool")
+    # Set up table targets
+    targets = await coco_aio.mount_run(setup_tables, scope / "setup").result()
 
-    try:
-        # Create tables
-        await create_database(pool)
+    print("targets setup done")
 
-        # Fetch threads
-        async with aiohttp.ClientSession() as session:
-            thread_ids = await fetch_thread_list(session)
+    # Fetch thread IDs from HackerNews
+    async with aiohttp.ClientSession() as session:
+        thread_ids = await fetch_thread_list(session)
 
-            # Fetch full thread data
-            print(f"Fetching {len(thread_ids)} threads...")
-            threads: list[Thread] = []
-            for thread_id in thread_ids:
-                thread = await fetch_thread(session, thread_id)
-                if thread:
-                    threads.append(thread)
+    # Process threads (each component fetches its own thread data)
+    print(f"Processing {len(thread_ids)} threads with LLM topic extraction...")
+    for thread_id in thread_ids:
+        await coco_aio.mount(
+            process_thread, scope / "thread" / thread_id, thread_id, targets
+        ).ready()
 
-            print(f"Successfully fetched {len(threads)} threads")
+    print()
+    print("Pipeline completed!")
 
-        # Process threads with rate limiting
-        print(f"Processing threads with LLM topic extraction...")
-        semaphore = asyncio.Semaphore(5)  # Limit concurrent LLM calls
 
-        tasks = [process_thread(thread, pool, semaphore) for thread in threads]
-        await asyncio.gather(*tasks)
+# ============================================================================
+# App definition
+# ============================================================================
 
-        # Print summary
-        async with pool.acquire() as conn:
-            message_count = await conn.fetchval("SELECT COUNT(*) FROM hn_messages")
-            topic_count = await conn.fetchval("SELECT COUNT(*) FROM hn_topics")
-            unique_topics = await conn.fetchval(
-                "SELECT COUNT(DISTINCT topic) FROM hn_topics"
-            )
+app = coco_aio.App("HNTrendingTopics", app_main)
 
-        print()
-        print("Pipeline completed!")
-        print(f"  Messages: {message_count}")
-        print(f"  Topic mentions: {topic_count}")
-        print(f"  Unique topics: {unique_topics}")
 
-    finally:
-        await pool.close()
+# ============================================================================
+# Query utilities (for demo purposes)
+# ============================================================================
 
 
 async def get_trending_topics(
@@ -474,10 +522,18 @@ async def query_demo() -> None:
         await pool.close()
 
 
-if __name__ == "__main__":
-    import sys
+# ============================================================================
+# Entry point
+# ============================================================================
 
+
+async def main() -> None:
+    """Run the pipeline."""
     if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query_demo())
+        await query_demo()
     else:
-        asyncio.run(run_pipeline())
+        await app.run()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

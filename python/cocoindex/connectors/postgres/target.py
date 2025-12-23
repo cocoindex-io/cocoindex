@@ -8,22 +8,42 @@ This module provides a two-level effect system for PostgreSQL:
 
 from __future__ import annotations
 
+import datetime
+import decimal
 import hashlib
+import ipaddress
 import json
+import threading
+import uuid
 from dataclasses import dataclass
 from typing import (
     Any,
+    Callable,
     Collection,
     Generic,
     Literal,
     NamedTuple,
     Sequence,
+    overload,
 )
 
+from typing_extensions import TypeVar
+
+import numpy as np
+
 import cocoindex as coco
+from cocoindex._internal.datatype import (
+    AnyType,
+    MappingType,
+    SequenceType,
+    StructType,
+    UnionType,
+    analyze_type_info,
+    is_struct_type,
+)
 
 try:
-    import asyncpg  # type: ignore[import-untyped]
+    import asyncpg
 except ImportError as e:
     raise ImportError(
         "asyncpg is required for PostgreSQL target. "
@@ -35,31 +55,212 @@ except ImportError as e:
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
 _RowValue = dict[str, Any]  # Column name -> value
 _RowFingerprint = bytes
+Encoder = Callable[[Any], Any]
 
 
-@dataclass
-class ColumnDef:
+class PgType(NamedTuple):
+    """
+    Annotation to specify a PostgreSQL column type.
+
+    Use with `typing.Annotated` to override the default type mapping:
+
+    ```python
+    from typing import Annotated
+    from dataclasses import dataclass
+    from cocoindex.connectors.postgres import PgType
+
+    @dataclass
+    class MyRow:
+        # Use integer instead of default bigint
+        id: Annotated[int, PgType("integer")]
+        # Use real instead of default double precision
+        value: Annotated[float, PgType("real")]
+        # Use timestamp without timezone
+        created_at: Annotated[datetime.datetime, PgType("timestamp")]
+    ```
+    """
+
+    pg_type: str
+    encoder: Encoder | None = None
+
+
+def _json_encoder(value: Any) -> str:
+    """Encode a value to JSON string for asyncpg."""
+    return json.dumps(value, default=str)
+
+
+class _TypeMapping(NamedTuple):
+    """Mapping from Python type to PostgreSQL type with optional encoder."""
+
+    pg_type: str
+    encoder: Encoder | None = None
+
+
+# Global mapping for leaf types
+# Based on asyncpg's type conversion: https://magicstack.github.io/asyncpg/current/usage.html#type-conversion
+# For types that map to multiple PostgreSQL types, uses the broader one.
+_LEAF_TYPE_MAPPINGS: dict[type, _TypeMapping] = {
+    # Boolean
+    bool: _TypeMapping("boolean"),
+    # Numeric types (use broader types)
+    int: _TypeMapping("bigint"),
+    float: _TypeMapping("double precision"),
+    decimal.Decimal: _TypeMapping("numeric"),
+    # String types
+    str: _TypeMapping("text"),
+    bytes: _TypeMapping("bytea"),
+    # UUID
+    uuid.UUID: _TypeMapping("uuid"),
+    # Date/time types (use timezone-aware variants as broader)
+    datetime.date: _TypeMapping("date"),
+    datetime.time: _TypeMapping("time with time zone"),
+    datetime.datetime: _TypeMapping("timestamp with time zone"),
+    datetime.timedelta: _TypeMapping("interval"),
+    # Network types
+    ipaddress.IPv4Network: _TypeMapping("cidr"),
+    ipaddress.IPv6Network: _TypeMapping("cidr"),
+    ipaddress.IPv4Address: _TypeMapping("inet"),
+    ipaddress.IPv6Address: _TypeMapping("inet"),
+    ipaddress.IPv4Interface: _TypeMapping("inet"),
+    ipaddress.IPv6Interface: _TypeMapping("inet"),
+}
+
+# Default mapping for complex types that need JSON encoding
+_JSONB_MAPPING = _TypeMapping("jsonb", _json_encoder)
+
+
+def _get_type_mapping(python_type: Any) -> _TypeMapping:
+    """
+    Get the PostgreSQL type mapping for a Python type.
+
+    Based on asyncpg's type conversion table:
+    https://magicstack.github.io/asyncpg/current/usage.html#type-conversion
+
+    For types that map to multiple PostgreSQL types, uses the broader one.
+    Use `PgType` annotation with `typing.Annotated` to override the default.
+    """
+    type_info = analyze_type_info(python_type)
+
+    # Check for PgType annotation override
+    for annotation in type_info.annotations:
+        if isinstance(annotation, PgType):
+            return _TypeMapping(annotation.pg_type, annotation.encoder)
+
+    base_type = type_info.base_type
+
+    # Check direct leaf type mappings
+    if base_type in _LEAF_TYPE_MAPPINGS:
+        return _LEAF_TYPE_MAPPINGS[base_type]
+
+    # NumPy number types
+    if isinstance(base_type, type):
+        if issubclass(base_type, np.integer):
+            return _TypeMapping("bigint")
+        if issubclass(base_type, np.floating):
+            return _TypeMapping("double precision")
+
+    # Complex types that need JSON encoding
+    if isinstance(
+        type_info.variant, (SequenceType, MappingType, StructType, UnionType, AnyType)
+    ):
+        return _JSONB_MAPPING
+
+    # Default fallback
+    return _JSONB_MAPPING
+
+
+class ColumnDef(NamedTuple):
     """Definition of a table column."""
 
     name: str
-    type: str  # PostgreSQL type (e.g., "text", "integer", "jsonb", "vector(384)")
+    type: str  # PostgreSQL type (e.g., "text", "bigint", "jsonb", "vector(384)")
     nullable: bool = True
+    encoder: Encoder | None = (
+        None  # Optional encoder to convert value before sending to asyncpg
+    )
 
 
-@dataclass
-class TableSchema:
+# Type variable for row type
+RowT = TypeVar("RowT", default=dict[str, Any])
+
+
+class TableSchema(Generic[RowT]):
     """Schema definition for a PostgreSQL table."""
 
     columns: list[ColumnDef]
     primary_key: list[str]  # Column names that form the primary key
+    row_type: type[RowT] | None  # The row type, if provided
 
-    def __post_init__(self) -> None:
+    @overload
+    def __init__(
+        self: "TableSchema[dict[str, Any]]",
+        columns: list[ColumnDef],
+        primary_key: list[str],
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: "TableSchema[RowT]",
+        columns: type[RowT],
+        primary_key: list[str],
+    ) -> None: ...
+
+    def __init__(
+        self,
+        columns: type[RowT] | list[ColumnDef],
+        primary_key: list[str],
+    ) -> None:
+        """
+        Create a TableSchema.
+
+        Args:
+            columns: Either a struct type (dataclass, NamedTuple, or Pydantic model)
+                     or a list of ColumnDef objects.
+                     When a struct type is provided, Python types are automatically
+                     mapped to PostgreSQL types based on asyncpg's type conversion.
+            primary_key: List of column names that form the primary key.
+        """
+        if isinstance(columns, list):
+            self.columns = columns
+            self.row_type = None
+        elif is_struct_type(columns):
+            self.columns = self._columns_from_struct_type(columns)
+            self.row_type = columns  # type: ignore[assignment]
+        else:
+            raise TypeError(
+                f"columns must be a struct type (dataclass, NamedTuple, Pydantic model) "
+                f"or a list of ColumnDef, got {type(columns)}"
+            )
+
+        self.primary_key = primary_key
+
+        # Validate primary key columns exist
         col_names = {c.name for c in self.columns}
         for pk in self.primary_key:
             if pk not in col_names:
                 raise ValueError(
                     f"Primary key column '{pk}' not found in columns: {col_names}"
                 )
+
+    @staticmethod
+    def _columns_from_struct_type(struct_type: type) -> list[ColumnDef]:
+        """Convert a struct type to a list of ColumnDef."""
+        struct_info = StructType(struct_type)
+        columns: list[ColumnDef] = []
+
+        for field in struct_info.fields:
+            type_info = analyze_type_info(field.type_hint)
+            type_mapping = _get_type_mapping(field.type_hint)
+            columns.append(
+                ColumnDef(
+                    name=field.name,
+                    type=type_mapping.pg_type,
+                    nullable=type_info.nullable,
+                    encoder=type_mapping.encoder,
+                )
+            )
+
+        return columns
 
 
 class _RowAction(NamedTuple):
@@ -121,17 +322,20 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
                     await self._execute_deletes(conn, deletes)
 
     async def _execute_upserts(
-        self, conn: asyncpg.Connection, upserts: list[_RowAction]
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        upserts: list[_RowAction],
     ) -> None:
         """Execute upsert operations."""
         table_name = self._qualified_table_name()
+        columns = self._table_schema.columns
         pk_cols = self._table_schema.primary_key
-        all_cols = [c.name for c in self._table_schema.columns]
-        non_pk_cols = [c for c in all_cols if c not in pk_cols]
+        all_col_names = [c.name for c in columns]
+        non_pk_cols = [c for c in all_col_names if c not in pk_cols]
 
         # Build column lists
-        col_list = ", ".join(f'"{c}"' for c in all_cols)
-        placeholders = ", ".join(f"${i + 1}" for i in range(len(all_cols)))
+        col_list = ", ".join(f'"{c}"' for c in all_col_names)
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(all_col_names)))
         pk_list = ", ".join(f'"{c}"' for c in pk_cols)
 
         # Build ON CONFLICT clause
@@ -145,12 +349,14 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
 
         for action in upserts:
             assert action.value is not None
-            # Build values in column order
-            values = [self._convert_value(action.value.get(c)) for c in all_cols]
+            # Values are encoded by TableTarget before being stored as effect values.
+            values = [action.value.get(col.name) for col in columns]
             await conn.execute(sql, *values)
 
     async def _execute_deletes(
-        self, conn: asyncpg.Connection, deletes: list[_RowAction]
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        deletes: list[_RowAction],
     ) -> None:
         """Execute delete operations."""
         table_name = self._qualified_table_name()
@@ -163,14 +369,6 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
 
         for action in deletes:
             await conn.execute(sql, *action.key)
-
-    def _convert_value(self, value: Any) -> Any:
-        """Convert Python values to PostgreSQL-compatible values."""
-        if value is None:
-            return None
-        if isinstance(value, (list, dict)):
-            return json.dumps(value)
-        return value
 
     def _compute_fingerprint(self, value: _RowValue) -> _RowFingerprint:
         """Compute a fingerprint for row data."""
@@ -212,32 +410,28 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
 
 
 class _TableKey(NamedTuple):
-    """Key identifying a table."""
+    """Key identifying a table: (database_key, table_name)."""
 
-    # Exactly one should be set
-    stable_key: coco.StableKey | None = None
-    table_name: str | None = None
+    db_key: str  # Stable key for the database
+    table_name: str
 
 
 @dataclass
 class _TableSpec:
     """Specification for a PostgreSQL table."""
 
-    database_url: str
+    db_key: str  # Stable key for looking up the database pool
     table_name: str
-    table_schema: TableSchema
+    table_schema: TableSchema[Any]
     schema_name: str | None = None
     managed_by: Literal["system", "user"] = "system"
-    # Optional credentials (if not in URL)
-    username: str | None = None
-    password: str | None = None
 
 
 @dataclass
 class _TableState:
     """Stored state for a table."""
 
-    database_url: str
+    db_key: str
     table_name: str
     schema_name: str | None
     table_schema_hash: str  # Hash of the schema for change detection
@@ -247,47 +441,45 @@ class _TableState:
 class _TableAction(NamedTuple):
     """Action to perform on a table."""
 
+    db_key: str  # Database key for looking up the pool
     spec: _TableSpec | None  # None means table should not exist
     action_type: (
         Literal["create", "ensure", "drop"] | None
     )  # None means no action needed
-    prev_specs_to_drop: list[_TableSpec]  # Previous tables to drop
+    prev_table_names_to_drop: list[tuple[str, str | None]]  # (table_name, schema_name)
 
 
-# Connection pool cache
-_pool_cache: dict[str, asyncpg.Pool] = {}
+# Database registry: maps stable keys to connection pools
+_db_registry: dict[str, asyncpg.Pool] = {}
+_db_registry_lock = threading.Lock()
 
 
-async def _get_pool(spec: _TableSpec) -> asyncpg.Pool:
-    """Get or create a connection pool for the given spec."""
-    # Build connection string
-    url = spec.database_url
-    cache_key = url
-
-    if cache_key in _pool_cache:
-        pool = _pool_cache[cache_key]
-        # Check if pool is still valid
-        try:
-            async with pool.acquire() as conn:
-                await conn.execute("SELECT 1")
-            return pool
-        except (asyncpg.PostgresError, OSError):
-            # Pool is invalid, remove from cache
-            del _pool_cache[cache_key]
-
-    # Create new pool
-    connect_kwargs: dict[str, Any] = {}
-    if spec.username:
-        connect_kwargs["user"] = spec.username
-    if spec.password:
-        connect_kwargs["password"] = spec.password
-
-    pool = await asyncpg.create_pool(url, **connect_kwargs)
+def _get_pool(db_key: str) -> asyncpg.Pool:
+    """Get the connection pool for the given database key."""
+    with _db_registry_lock:
+        pool = _db_registry.get(db_key)
     if pool is None:
-        raise RuntimeError(f"Failed to create connection pool for {url}")
-
-    _pool_cache[cache_key] = pool
+        raise RuntimeError(
+            f"No database registered with key '{db_key}'. Call register_db() first."
+        )
     return pool
+
+
+def _register_db(key: str, pool: asyncpg.Pool) -> None:
+    """Register a database pool (internal, with lock)."""
+    with _db_registry_lock:
+        if key in _db_registry:
+            raise ValueError(
+                f"Database with key '{key}' is already registered. "
+                f"Use a different key or unregister the existing one first."
+            )
+        _db_registry[key] = pool
+
+
+def _unregister_db(key: str) -> None:
+    """Unregister a database pool (internal, with lock)."""
+    with _db_registry_lock:
+        _db_registry.pop(key, None)
 
 
 def _schema_hash(table_schema: TableSchema) -> str:
@@ -311,27 +503,29 @@ class _TableHandler(
     _sink: coco.EffectSink[_TableAction, _RowHandler]
 
     def __init__(self) -> None:
-        self._sink = coco.EffectSink.from_async_fn(self._apply_actions)  # type: ignore[arg-type]
+        self._sink = coco.EffectSink.from_async_fn(self._apply_actions)
 
     async def _apply_actions(
-        self, actions: Sequence[_TableAction]
-    ) -> Sequence[coco.ChildEffectDef[_RowHandler] | None]:
+        self, actions: Collection[_TableAction]
+    ) -> list[coco.ChildEffectDef[_RowHandler] | None]:
         """Apply table actions and return child handlers."""
         outputs: list[coco.ChildEffectDef[_RowHandler] | None] = []
 
         for action in actions:
+            pool = _get_pool(action.db_key)
+
             # Handle dropping previous tables
-            for prev_spec in action.prev_specs_to_drop:
-                await self._drop_table(prev_spec)
+            for table_name, schema_name in action.prev_table_names_to_drop:
+                await self._drop_table(pool, table_name, schema_name)
 
             # Handle current table
             if action.spec is None or action.action_type == "drop":
                 if action.spec and action.action_type == "drop":
-                    await self._drop_table(action.spec)
+                    await self._drop_table(
+                        pool, action.spec.table_name, action.spec.schema_name
+                    )
                 outputs.append(None)
             else:
-                pool = await _get_pool(action.spec)
-
                 if action.action_type == "create":
                     await self._create_table(pool, action.spec)
                 elif action.action_type == "ensure":
@@ -350,20 +544,17 @@ class _TableHandler(
 
         return outputs
 
-    async def _drop_table(self, spec: _TableSpec) -> None:
-        """Drop a table if it exists and is system-managed."""
-        if spec.managed_by != "system":
-            return
-
-        pool = await _get_pool(spec)
-        table_name = self._qualified_table_name(spec)
-
+    async def _drop_table(
+        self, pool: asyncpg.Pool, table_name: str, schema_name: str | None
+    ) -> None:
+        """Drop a table if it exists."""
+        qualified_name = self._qualified_table_name(table_name, schema_name)
         async with pool.acquire() as conn:
-            await conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+            await conn.execute(f"DROP TABLE IF EXISTS {qualified_name}")
 
     async def _create_table(self, pool: asyncpg.Pool, spec: _TableSpec) -> None:
         """Create a table."""
-        table_name = self._qualified_table_name(spec)
+        qualified_name = self._qualified_table_name(spec.table_name, spec.schema_name)
         schema = spec.table_schema
 
         # Create schema if specified
@@ -386,7 +577,7 @@ class _TableHandler(
         col_defs.append(f"PRIMARY KEY ({pk_cols})")
 
         columns_sql = ", ".join(col_defs)
-        sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({columns_sql})"
+        sql = f"CREATE TABLE IF NOT EXISTS {qualified_name} ({columns_sql})"
 
         async with pool.acquire() as conn:
             await conn.execute(sql)
@@ -397,10 +588,11 @@ class _TableHandler(
         # TODO: Add schema migration support
         await self._create_table(pool, spec)
 
-    def _qualified_table_name(self, spec: _TableSpec) -> str:
-        if spec.schema_name:
-            return f'"{spec.schema_name}"."{spec.table_name}"'
-        return f'"{spec.table_name}"'
+    @staticmethod
+    def _qualified_table_name(table_name: str, schema_name: str | None) -> str:
+        if schema_name:
+            return f'"{schema_name}"."{table_name}"'
+        return f'"{table_name}"'
 
     def reconcile(
         self,
@@ -410,48 +602,33 @@ class _TableHandler(
         prev_may_be_missing: bool,
         /,
     ) -> coco.EffectReconcileOutput[_TableAction, _TableState, _RowHandler]:
-        # Determine what previous tables need to be dropped
-        prev_specs_to_drop: list[_TableSpec] = []
+        db_key = key.db_key
+        # Determine what previous tables need to be dropped (table_name, schema_name)
+        prev_tables_to_drop: list[tuple[str, str | None]] = []
 
         if not coco.is_non_existence(desired_effect):
             # Check if we need to drop any previous tables that differ
             for prev in prev_possible_states:
                 if prev.managed_by == "system":
-                    # Check if this is a different table
+                    # Check if this is a different table (name or schema changed)
                     if (
                         prev.table_name != desired_effect.table_name
                         or prev.schema_name != desired_effect.schema_name
-                        or prev.database_url != desired_effect.database_url
                     ):
-                        prev_specs_to_drop.append(
-                            _TableSpec(
-                                database_url=prev.database_url,
-                                table_name=prev.table_name,
-                                schema_name=prev.schema_name,
-                                table_schema=TableSchema(columns=[], primary_key=[]),
-                                managed_by=prev.managed_by,
-                            )
-                        )
+                        prev_tables_to_drop.append((prev.table_name, prev.schema_name))
 
         if coco.is_non_existence(desired_effect):
             # Drop the table
             for prev in prev_possible_states:
                 if prev.managed_by == "system":
-                    prev_specs_to_drop.append(
-                        _TableSpec(
-                            database_url=prev.database_url,
-                            table_name=prev.table_name,
-                            schema_name=prev.schema_name,
-                            table_schema=TableSchema(columns=[], primary_key=[]),
-                            managed_by=prev.managed_by,
-                        )
-                    )
+                    prev_tables_to_drop.append((prev.table_name, prev.schema_name))
 
             return coco.EffectReconcileOutput(
                 action=_TableAction(
+                    db_key=db_key,
                     spec=None,
                     action_type=None,
-                    prev_specs_to_drop=prev_specs_to_drop,
+                    prev_table_names_to_drop=prev_tables_to_drop,
                 ),
                 sink=self._sink,
                 state=coco.NON_EXISTENCE,
@@ -462,7 +639,6 @@ class _TableHandler(
         must_exist = not prev_may_be_missing and all(
             prev.table_name == desired_effect.table_name
             and prev.schema_name == desired_effect.schema_name
-            and prev.database_url == desired_effect.database_url
             and prev.table_schema_hash == current_hash
             and prev.managed_by == desired_effect.managed_by
             for prev in prev_possible_states
@@ -471,7 +647,6 @@ class _TableHandler(
         may_exist = any(
             prev.table_name == desired_effect.table_name
             and prev.schema_name == desired_effect.schema_name
-            and prev.database_url == desired_effect.database_url
             for prev in prev_possible_states
         )
 
@@ -483,7 +658,7 @@ class _TableHandler(
             action_type = "create"
 
         new_state = _TableState(
-            database_url=desired_effect.database_url,
+            db_key=db_key,
             table_name=desired_effect.table_name,
             schema_name=desired_effect.schema_name,
             table_schema_hash=current_hash,
@@ -492,9 +667,10 @@ class _TableHandler(
 
         return coco.EffectReconcileOutput(
             action=_TableAction(
+                db_key=db_key,
                 spec=desired_effect,
                 action_type=action_type,
-                prev_specs_to_drop=prev_specs_to_drop,
+                prev_table_names_to_drop=prev_tables_to_drop,
             ),
             sink=self._sink,
             state=new_state,
@@ -507,87 +683,187 @@ _table_provider = coco.register_root_effect_provider(
 )
 
 
-class TableTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["TableTarget"]):
+class TableTarget(
+    Generic[RowT, coco.MaybePendingS], coco.ResolvesTo["TableTarget[RowT]"]
+):
     """
     A target for writing rows to a PostgreSQL table.
 
     The table is managed as an effect, with the scope used to scope the effect.
+
+    Type Parameters:
+        RowT: The type of row objects (dict, dataclass, NamedTuple, or Pydantic model).
     """
 
     _provider: coco.EffectProvider[_RowKey, _RowValue, None, coco.MaybePendingS]
-    _table_schema: TableSchema
+    _table_schema: TableSchema[RowT]
 
     def __init__(
         self,
         provider: coco.EffectProvider[_RowKey, _RowValue, None, coco.MaybePendingS],
-        table_schema: TableSchema,
+        table_schema: TableSchema[RowT],
     ) -> None:
         self._provider = provider
         self._table_schema = table_schema
 
     def declare_row(
-        self: TableTarget, scope: coco.Scope, *, row: dict[str, Any]
+        self: "TableTarget[RowT, Any]", scope: coco.Scope, *, row: RowT
     ) -> None:
         """
         Declare a row to be upserted to this table.
 
         Args:
             scope: The scope for effect declaration.
-            row: A dictionary mapping column names to values.
+            row: A row object (dict, dataclass, NamedTuple, or Pydantic model).
                  Must include all primary key columns.
         """
+        row_dict = self._row_to_dict(row)
         # Extract primary key values
-        pk_values = tuple(row[pk] for pk in self._table_schema.primary_key)
-        coco.declare_effect(scope, self._provider.effect(pk_values, row))
+        pk_values = tuple(row_dict[pk] for pk in self._table_schema.primary_key)
+        coco.declare_effect(scope, self._provider.effect(pk_values, row_dict))
+
+    def _row_to_dict(self, row: RowT) -> dict[str, Any]:
+        """
+        Convert a row (dict or object) into dict[str, Any] using the schema columns,
+        and apply column encoders for both dict and object inputs.
+        """
+        out: dict[str, Any] = {}
+        for col in self._table_schema.columns:
+            if isinstance(row, dict):
+                value = row.get(col.name)  # type: ignore[union-attr]
+            else:
+                value = getattr(row, col.name)
+
+            if value is not None and col.encoder is not None:
+                value = col.encoder(value)
+            out[col.name] = value
+        return out
 
 
-@coco.function
-def table_target(
-    scope: coco.Scope,
-    database_url: str,
-    table_name: str,
-    table_schema: TableSchema,
-    *,
-    stable_key: coco.StableKey | None = None,
-    schema_name: str | None = None,
-    managed_by: Literal["system", "user"] = "system",
-    username: str | None = None,
-    password: str | None = None,
-) -> TableTarget[coco.PendingS]:
+class PgDatabase:
     """
-    Create a TableTarget for writing rows to a PostgreSQL table.
+    Handle for a registered PostgreSQL database.
+
+    Use `register_db()` to create an instance. Can be used as a context manager
+    to automatically unregister on exit.
+
+    Example:
+        ```python
+        # Without context manager (manual lifecycle)
+        db = register_db("my_db", pool)
+        # ... use db ...
+
+        # With context manager (auto-unregister on exit)
+        with register_db("my_db", pool) as db:
+            # ... use db ...
+        # db is automatically unregistered here
+        ```
+    """
+
+    _key: str
+
+    def __init__(self, key: str) -> None:
+        self._key = key
+
+    @property
+    def key(self) -> str:
+        """The stable key for this database."""
+        return self._key
+
+    def __enter__(self) -> "PgDatabase":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        _unregister_db(self._key)
+
+    def table_target(
+        self,
+        scope: coco.Scope,
+        table_name: str,
+        table_schema: TableSchema[RowT],
+        *,
+        schema_name: str | None = None,
+        managed_by: Literal["system", "user"] = "system",
+    ) -> TableTarget[RowT, coco.PendingS]:
+        """
+        Create a TableTarget for writing rows to a PostgreSQL table.
+
+        Args:
+            scope: The scope for effect declaration.
+            table_name: Name of the table.
+            table_schema: Schema definition including columns and primary key.
+            schema_name: Optional PostgreSQL schema name (default is "public").
+            managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
+                        or "user" (table must exist, CocoIndex only manages rows).
+
+        Returns:
+            A TableTarget that can be used to declare rows.
+        """
+        key = _TableKey(db_key=self._key, table_name=table_name)
+        spec = _TableSpec(
+            db_key=self._key,
+            table_name=table_name,
+            table_schema=table_schema,
+            schema_name=schema_name,
+            managed_by=managed_by,
+        )
+        provider = coco.declare_effect_with_child(
+            scope, _table_provider.effect(key, spec)
+        )
+        return TableTarget(provider, table_schema)
+
+
+def register_db(key: str, pool: asyncpg.Pool) -> PgDatabase:
+    """
+    Register a PostgreSQL database connection pool with a stable key.
+
+    The key should be stable across runs - it identifies the logical database.
+    The pool can be recreated with different connection parameters (host, password, etc.)
+    as long as the same key is used.
+
+    Can be used as a context manager to automatically unregister on exit.
 
     Args:
-        scope: The scope for effect declaration.
-        database_url: PostgreSQL connection URL (e.g., "postgresql://localhost:5432/mydb").
-        table_name: Name of the table.
-        table_schema: Schema definition including columns and primary key.
-        stable_key: Optional stable key for identifying the table across schema changes.
-        schema_name: Optional PostgreSQL schema name (default is "public").
-        managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
-                    or "user" (table must exist, CocoIndex only manages rows).
-        username: Optional username (if not in URL).
-        password: Optional password (if not in URL).
+        key: A stable identifier for this database (e.g., "main_db", "analytics").
+             Must be unique - raises ValueError if a database with this key
+             is already registered.
+        pool: An asyncpg connection pool.
 
     Returns:
-        A TableTarget that can be used to declare rows.
+        A PgDatabase handle that can be used to create table targets.
+
+    Raises:
+        ValueError: If a database with the given key is already registered.
+
+    Example:
+        ```python
+        async def setup():
+            pool = await asyncpg.create_pool("postgresql://localhost/mydb")
+
+            # Option 1: Manual lifecycle
+            db = register_db("my_db", pool)
+
+            # Option 2: Context manager (auto-unregister on exit)
+            with register_db("my_db", pool) as db:
+                table = db.table_target(scope, "my_table", schema)
+            # db is automatically unregistered here
+        ```
     """
-    key = (
-        _TableKey(stable_key=stable_key)
-        if stable_key is not None
-        else _TableKey(table_name=table_name)
-    )
-    spec = _TableSpec(
-        database_url=database_url,
-        table_name=table_name,
-        table_schema=table_schema,
-        schema_name=schema_name,
-        managed_by=managed_by,
-        username=username,
-        password=password,
-    )
-    provider = coco.declare_effect_with_child(scope, _table_provider.effect(key, spec))
-    return TableTarget(provider, table_schema)
+    _register_db(key, pool)
+    return PgDatabase(key)
 
 
-__all__ = ["ColumnDef", "TableSchema", "TableTarget", "table_target"]
+__all__ = [
+    "ColumnDef",
+    "Encoder",
+    "PgDatabase",
+    "PgType",
+    "TableSchema",
+    "TableTarget",
+    "register_db",
+]
