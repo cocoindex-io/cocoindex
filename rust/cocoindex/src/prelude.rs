@@ -37,5 +37,5 @@ pub(crate) use tracing::{Span, debug, error, info, info_span, instrument, trace,
 pub(crate) use derivative::Derivative;
 
 pub(crate) use cocoindex_py_utils as py_utils;
-pub(crate) use cocoindex_py_utils::CResultIntoPyResult as ResultIntoPyResult;
+pub(crate) use cocoindex_py_utils::IntoPyResult;
 pub(crate) use cocoindex_py_utils::{ToCResult, cerror_to_pyerr};
