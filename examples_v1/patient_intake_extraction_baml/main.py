@@ -2,6 +2,10 @@ import base64
 import pathlib
 from typing import Iterator
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import cocoindex as coco
 from cocoindex.resources.files import FileLike, PatternFilePathMatcher
 from cocoindex.connectors import localfs
@@ -17,7 +21,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 
 @coco.function
-async def extract_patient_info(content: bytes) -> Patient:
+async def extract_patient_info(scope: coco.Scope, content: bytes) -> Patient:
     """Extract patient information from PDF content using BAML."""
     pdf = baml_py.Pdf.from_base64(base64.b64encode(content).decode("utf-8"))
     return await b.ExtractPatientInfo(pdf)
