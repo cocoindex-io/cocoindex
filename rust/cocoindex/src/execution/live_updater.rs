@@ -59,6 +59,26 @@ pub struct FlowLiveUpdaterOptions {
 const PROGRESS_BAR_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 const TRACE_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+async fn warn_if_overrun<F, T>(fut: F, threshold: std::time::Duration, warn_fn: impl FnOnce()) -> T
+where
+    F: Future<Output = T>,
+{
+    tokio::pin!(fut);
+
+    let mut sleep = tokio::time::sleep(threshold);
+    tokio::pin!(sleep);
+
+    tokio::select! {
+        biased;
+
+        res = &mut fut => res,
+        _ = &mut sleep => {
+            warn_fn();
+            fut.await
+        }
+    }
+}
+
 struct SharedAckFn<AckAsyncFn: AsyncFnOnce() -> Result<()>> {
     count: usize,
     ack_fn: Option<AckAsyncFn>,
@@ -151,6 +171,7 @@ impl SourceUpdateTask {
                     "batch update",
                     initial_update_options,
                     interval_progress_bar.as_ref(),
+                    None,
                 )
                 .await;
         }
@@ -289,6 +310,7 @@ impl SourceUpdateTask {
                     },
                     initial_update_options,
                     interval_progress_bar.as_ref(),
+                    None, // don't warn on initial
                 )
                 .await;
 
@@ -315,6 +337,7 @@ impl SourceUpdateTask {
                                 mode: super::source_indexer::UpdateMode::Normal,
                             },
                             interval_progress_bar.as_ref(),
+                            Some(refresh_interval),
                         )
                         .await;
                     }
@@ -424,13 +447,40 @@ impl SourceUpdateTask {
         update_title: &str,
         update_options: super::source_indexer::UpdateOptions,
         progress_bar: Option<&ProgressBar>,
+        warn_overrun_after: Option<std::time::Duration>,
     ) -> Result<()> {
         let start_time = std::time::Instant::now();
         let update_stats = Arc::new(stats::UpdateStats::default());
 
         // Check update result
+        let flow_name = self.flow.flow_instance.name.clone();
+        let source_name = self.import_op().name.clone();
+        let update_title_owned = update_title.to_string();
+        let started_at = start_time; // Instant is Copy
+
+        let update_fut = async {
+            let fut = source_indexing_context.update(&update_stats, update_options);
+
+            if let Some(threshold) = warn_overrun_after {
+                warn_if_overrun(fut, threshold, move || {
+            let elapsed = started_at.elapsed();
+            warn!(
+                flow_name = %flow_name,
+                source_name = %source_name,
+                update_title = %update_title_owned,
+                refresh_interval_secs = threshold.as_secs_f64(),
+                elapsed_secs = elapsed.as_secs_f64(),
+                "Live update pass exceeded refresh_interval; interval updates will lag behind"
+            );
+        })
+        .await
+            } else {
+                fut.await
+            }
+        };
+
         self.run_with_progress_report(
-            source_indexing_context.update(&update_stats, update_options),
+            update_fut,
             &update_stats,
             update_title,
             Some(start_time),
@@ -466,6 +516,7 @@ impl SourceUpdateTask {
         update_title: &str,
         update_options: super::source_indexer::UpdateOptions,
         progress_bar: Option<&ProgressBar>,
+        warn_overrun_after: Option<std::time::Duration>,
     ) {
         let result = self
             .update_one_pass(
@@ -473,6 +524,7 @@ impl SourceUpdateTask {
                 update_title,
                 update_options,
                 progress_bar,
+                warn_overrun_after,
             )
             .await;
         if let Err(err) = result {
@@ -634,5 +686,49 @@ impl FlowLiveUpdater {
             recv_state.is_done = true;
         }
         Ok(updates)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    #[tokio::test]
+    async fn warn_if_overrun_triggers_for_slow_future() {
+        let warned = Arc::new(AtomicBool::new(false));
+        let warned2 = warned.clone();
+
+        let fut = async {
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let res = warn_if_overrun(fut, std::time::Duration::from_millis(10), move || {
+            warned2.store(true, Ordering::Relaxed)
+        })
+        .await;
+
+        res.unwrap();
+        assert!(warned.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn warn_if_overrun_does_not_trigger_for_fast_future() {
+        let warned = Arc::new(AtomicBool::new(false));
+        let warned2 = warned.clone();
+
+        let fut = async { Ok::<(), anyhow::Error>(()) };
+
+        let res = warn_if_overrun(fut, std::time::Duration::from_millis(50), move || {
+            warned2.store(true, Ordering::Relaxed)
+        })
+        .await;
+
+        res.unwrap();
+        assert!(!warned.load(Ordering::Relaxed));
     }
 }
