@@ -93,12 +93,14 @@ class AsyncEffectSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
     # Case 1: No child handler
     @overload
     async def __call__(
-        self: EffectSinkFn[ActionT_contra, None], actions: Sequence[ActionT_contra], /
+        self: AsyncEffectSinkFn[ActionT_contra, None],
+        actions: Sequence[ActionT_contra],
+        /,
     ) -> None: ...
     # Case 2: With child handler
     @overload
     async def __call__(
-        self: EffectSinkFn[ActionT_contra, HandlerT_co],
+        self: AsyncEffectSinkFn[ActionT_contra, HandlerT_co],
         actions: Sequence[ActionT_contra],
         /,
     ) -> Sequence[ChildEffectDef[HandlerT_co] | None] | None: ...

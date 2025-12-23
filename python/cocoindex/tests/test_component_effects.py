@@ -6,7 +6,7 @@ import pytest
 from typing import Any, Collection
 
 from . import common
-from .common.effects import DictsTarget, DictDataWithPrev
+from .common.effects import DictsTarget, DictDataWithPrev, AsyncDictsTarget
 
 coco_env = common.create_test_env(__file__)
 
@@ -932,4 +932,125 @@ def test_restore_from_gc_failed_components() -> None:
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
+    ]
+
+
+##################################################################################
+
+
+@coco.function
+async def _declare_async_dict_container(
+    scope: coco.Scope, name: str
+) -> coco.PendingEffectProvider[str]:
+    return coco.declare_effect_with_child(scope, AsyncDictsTarget.effect(name, None))
+
+
+@coco.function
+async def _declare_async_dicts_data_together(scope: coco.Scope) -> None:
+    for name, data in _source_data.items():
+        single_dict_provider = await coco_aio.mount_run(
+            _declare_async_dict_container,
+            scope / "dict" / name,
+            name,
+        ).result()
+        for key, value in data.items():
+            coco.declare_effect(scope, single_dict_provider.effect(key, value))
+
+
+@pytest.mark.asyncio
+async def test_async_dicts() -> None:
+    AsyncDictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco_aio.App(
+        "test_async_dicts",
+        _declare_async_dicts_data_together,
+        environment=coco_env,
+    )
+
+    _source_data["D1"] = {"a": 1, "b": 2}
+    _source_data["D2"] = {}
+    await app.run()
+    assert AsyncDictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {},
+    }
+    assert AsyncDictsTarget.store.metrics.collect() == {"sink": 2, "upsert": 2}
+    assert AsyncDictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
+    _source_data["D2"]["c"] = 3
+    _source_data["D3"] = {"a": 4}
+    await app.run()
+    assert AsyncDictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+        "D3": {
+            "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert AsyncDictsTarget.store.metrics.collect() == {"sink": 3, "upsert": 1}
+    assert AsyncDictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert coco_inspect.list_stable_paths(app) == [
+        coco.ROOT_PATH,
+        coco.ROOT_PATH / "dict",
+        coco.ROOT_PATH / "dict" / "D1",
+        coco.ROOT_PATH / "dict" / "D2",
+        coco.ROOT_PATH / "dict" / "D3",
+    ]
+
+
+def test_async_dicts_sync_app() -> None:
+    AsyncDictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        "test_async_dicts_sync_app",
+        _declare_async_dicts_data_together,
+        environment=coco_env,
+    )
+
+    _source_data["D1"] = {"a": 1, "b": 2}
+    _source_data["D2"] = {}
+    app.run()
+    assert AsyncDictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {},
+    }
+    assert AsyncDictsTarget.store.metrics.collect() == {"sink": 2, "upsert": 2}
+    assert AsyncDictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
+    _source_data["D2"]["c"] = 3
+    _source_data["D3"] = {"a": 4}
+    app.run()
+    assert AsyncDictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+        "D3": {
+            "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert AsyncDictsTarget.store.metrics.collect() == {"sink": 3, "upsert": 1}
+    assert AsyncDictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert coco_inspect.list_stable_paths(app) == [
+        coco.ROOT_PATH,
+        coco.ROOT_PATH / "dict",
+        coco.ROOT_PATH / "dict" / "D1",
+        coco.ROOT_PATH / "dict" / "D2",
+        coco.ROOT_PATH / "dict" / "D3",
     ]
