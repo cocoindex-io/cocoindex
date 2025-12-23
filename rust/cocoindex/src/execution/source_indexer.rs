@@ -7,7 +7,6 @@ use crate::{
 use utils::batching;
 
 use futures::future::Ready;
-use sqlx::PgPool;
 use std::collections::{HashMap, hash_map};
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
@@ -15,13 +14,13 @@ use tokio::{
 };
 
 use super::{
-    db_tracking,
     evaluator::SourceRowEvaluationContext,
     row_indexer::{self, SkippedOr, SourceVersion},
     stats,
 };
 
 use crate::ops::interface;
+use crate::persistence::InternalPersistence;
 
 #[derive(Default)]
 struct SourceRowVersionState {
@@ -59,7 +58,7 @@ struct SourceIndexingState {
 }
 
 pub struct SourceIndexingContext {
-    pool: PgPool,
+    persistence: Arc<dyn InternalPersistence>,
     flow: Arc<builder::AnalyzedFlow>,
     source_idx: usize,
     state: Mutex<SourceIndexingState>,
@@ -270,11 +269,10 @@ impl SourceIndexingContext {
         flow: Arc<builder::AnalyzedFlow>,
         source_idx: usize,
         setup_execution_ctx: Arc<exec_ctx::FlowSetupExecutionContext>,
-        pool: &PgPool,
+        persistence: Arc<dyn InternalPersistence>,
     ) -> Result<Arc<Self>> {
         let plan = flow.get_execution_plan().await?;
         let import_op = &plan.import_ops[source_idx];
-        let mut list_state = db_tracking::ListTrackedSourceKeyMetadataState::new();
         let mut rows = HashMap::new();
         let mut rows_to_retry: Option<HashSet<value::KeyValue>> = None;
         let scan_generation = 0;
@@ -285,13 +283,13 @@ impl SourceIndexingContext {
             plan.legacy_fingerprint.clone(),
         )?;
         {
-            let mut key_metadata_stream = list_state.list(
+            let key_metadata_list = persistence
+                .list_tracked_source_key_metadata(
                 setup_execution_ctx.import_ops[source_idx].source_id,
                 &setup_execution_ctx.setup_state.tracking_table,
-                pool,
-            );
-            while let Some(key_metadata) = key_metadata_stream.next().await {
-                let key_metadata = key_metadata?;
+                )
+                .await?;
+            for key_metadata in key_metadata_list.into_iter() {
                 let source_pk = value::KeyValue::from_json(
                     key_metadata.source_key,
                     &import_op.primary_key_schema,
@@ -319,7 +317,7 @@ impl SourceIndexingContext {
             }
         }
         Ok(Arc::new(Self {
-            pool: pool.clone(),
+            persistence,
             flow,
             source_idx,
             needs_to_track_rows_to_retry: rows_to_retry.is_some(),
@@ -388,7 +386,7 @@ impl SourceIndexingContext {
                 operation_in_process_stats_cloned
                     .as_ref()
                     .map(|s| s.as_ref()),
-                &self.pool,
+                &self.persistence,
             )?;
 
             let source_data = row_input.data;
@@ -514,14 +512,15 @@ impl SourceIndexingContext {
                 row_state_operator.rollback();
                 if !ordinal_touched && self.needs_to_track_rows_to_retry {
                     let source_key_json = serde_json::to_value(&row_input.key)?;
-                    db_tracking::touch_max_process_ordinal(
+                    let mut txn = self.persistence.begin_txn().await?;
+                    txn.touch_max_process_ordinal(
                         self.setup_execution_ctx.import_ops[self.source_idx].source_id,
                         &source_key_json,
                         row_indexer::RowIndexer::process_ordinal_from_time(process_time),
                         &self.setup_execution_ctx.setup_state.tracking_table,
-                        &self.pool,
                     )
                     .await?;
+                    txn.commit().await?;
                 }
             }
             result

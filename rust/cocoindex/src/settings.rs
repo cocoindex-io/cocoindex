@@ -9,6 +9,15 @@ pub struct DatabaseConnectionSpec {
     pub min_connections: u32,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct SurrealDbConnectionSpec {
+    pub endpoint: String,
+    pub namespace: String,
+    pub database: String,
+    pub user: Option<String>,
+    pub password: Option<String>,
+}
+
 #[derive(Deserialize, Debug, Default)]
 pub struct GlobalExecutionOptions {
     pub source_max_inflight_rows: Option<usize>,
@@ -19,6 +28,8 @@ pub struct GlobalExecutionOptions {
 pub struct Settings {
     #[serde(default)]
     pub database: Option<DatabaseConnectionSpec>,
+    #[serde(default)]
+    pub surreal: Option<SurrealDbConnectionSpec>,
     #[serde(default)]
     #[allow(dead_code)] // Used via serialization/deserialization to Python
     pub app_namespace: String,
@@ -64,6 +75,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
 
         assert!(settings.database.is_none());
+        assert!(settings.surreal.is_none());
         assert_eq!(settings.app_namespace, "test_app");
     }
 
@@ -74,6 +86,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
 
         assert!(settings.database.is_none());
+        assert!(settings.surreal.is_none());
         assert_eq!(settings.app_namespace, "");
     }
 
@@ -90,6 +103,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
 
         assert!(settings.database.is_some());
+        assert!(settings.surreal.is_none());
         let db = settings.database.unwrap();
         assert_eq!(db.url, "postgresql://localhost:5432/test");
         assert_eq!(db.user, None);
@@ -97,6 +111,28 @@ mod tests {
         assert_eq!(db.min_connections, 1);
         assert_eq!(db.max_connections, 10);
         assert_eq!(settings.app_namespace, "");
+    }
+
+    #[test]
+    fn test_settings_deserialize_surreal() {
+        let json = r#"{
+            "surreal": {
+                "endpoint": "ws://localhost:8000",
+                "namespace": "testns",
+                "database": "testdb",
+                "user": "root",
+                "password": "root"
+            }
+        }"#;
+
+        let settings: Settings = serde_json::from_str(json).unwrap();
+        assert!(settings.database.is_none());
+        let surreal = settings.surreal.unwrap();
+        assert_eq!(surreal.endpoint, "ws://localhost:8000");
+        assert_eq!(surreal.namespace, "testns");
+        assert_eq!(surreal.database, "testdb");
+        assert_eq!(surreal.user, Some("root".to_string()));
+        assert_eq!(surreal.password, Some("root".to_string()));
     }
 
     #[test]

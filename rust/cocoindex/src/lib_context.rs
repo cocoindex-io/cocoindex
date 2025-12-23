@@ -4,6 +4,9 @@ use crate::prelude::*;
 
 use crate::builder::AnalyzedFlow;
 use crate::execution::source_indexer::SourceIndexingContext;
+use crate::persistence::InternalPersistence;
+use crate::persistence::postgres::PostgresPersistence;
+use crate::persistence::surreal::SurrealWsPersistence;
 use crate::service::query_handler::{QueryHandler, QueryHandlerSpec};
 use crate::settings;
 use crate::setup::ObjectSetupChange;
@@ -82,7 +85,7 @@ impl FlowExecutionContext {
         &self,
         flow: &Arc<AnalyzedFlow>,
         source_idx: usize,
-        pool: &PgPool,
+        persistence: &Arc<dyn InternalPersistence>,
     ) -> Result<&Arc<SourceIndexingContext>> {
         self.source_indexing_contexts[source_idx]
             .get_or_try_init(|| async move {
@@ -91,7 +94,7 @@ impl FlowExecutionContext {
                         flow.clone(),
                         source_idx,
                         self.setup_execution_context.clone(),
-                        pool,
+                        persistence.clone(),
                     )
                     .await?,
                 )
@@ -232,7 +235,8 @@ pub struct LibSetupContext {
     pub global_setup_change: setup::GlobalSetupChange,
 }
 pub struct PersistenceContext {
-    pub builtin_db_pool: PgPool,
+    pub persistence: Arc<dyn InternalPersistence>,
+    pub builtin_postgres_pool: Option<PgPool>,
     pub setup_ctx: tokio::sync::RwLock<LibSetupContext>,
 }
 
@@ -270,14 +274,21 @@ impl LibContext {
         self.persistence_ctx.as_ref().ok_or_else(|| {
             anyhow!(
                 "Database is required for this operation. \
-                         The easiest way is to set COCOINDEX_DATABASE_URL environment variable. \
+                         The easiest way is to set COCOINDEX_DATABASE_URL (Postgres) or COCOINDEX_SURREAL_ENDPOINT (SurrealDB) environment variable. \
                          Please see https://cocoindex.io/docs/core/settings for more details."
             )
         })
     }
 
-    pub fn require_builtin_db_pool(&self) -> Result<&PgPool> {
-        Ok(&self.require_persistence_ctx()?.builtin_db_pool)
+    pub fn require_builtin_postgres_pool(&self) -> Result<&PgPool> {
+        self.require_persistence_ctx()?
+            .builtin_postgres_pool
+            .as_ref()
+            .ok_or_else(|| anyhow!("Postgres pool is not available for the configured persistence backend"))
+    }
+
+    pub fn require_persistence(&self) -> Result<Arc<dyn InternalPersistence>> {
+        Ok(self.require_persistence_ctx()?.persistence.clone())
     }
 }
 
@@ -296,18 +307,39 @@ pub async fn create_lib_context(settings: settings::Settings) -> Result<LibConte
     });
 
     let db_pools = DbPools::default();
-    let persistence_ctx = if let Some(database_spec) = &settings.database {
-        let pool = db_pools.get_pool(database_spec).await?;
-        let all_setup_states = setup::get_existing_setup_state(&pool).await?;
+    let persistence_ctx = if let Some(surreal_spec) = &settings.surreal {
+        let persistence = SurrealWsPersistence::connect(
+            &surreal_spec.endpoint,
+            &surreal_spec.namespace,
+            &surreal_spec.database,
+            surreal_spec.user.as_deref(),
+            surreal_spec.password.as_deref(),
+        )
+        .await?;
+        let persistence: Arc<dyn InternalPersistence> = Arc::new(persistence);
+        let all_setup_states = setup::get_existing_setup_state(persistence.as_ref()).await?;
         Some(PersistenceContext {
-            builtin_db_pool: pool,
+            persistence,
+            builtin_postgres_pool: None,
+            setup_ctx: tokio::sync::RwLock::new(LibSetupContext {
+                global_setup_change: setup::GlobalSetupChange::from_setup_states(&all_setup_states),
+                all_setup_states,
+            }),
+        })
+    } else if let Some(database_spec) = &settings.database {
+        let pool = db_pools.get_pool(database_spec).await?;
+        let persistence: Arc<dyn InternalPersistence> =
+            Arc::new(PostgresPersistence::new(pool.clone()));
+        let all_setup_states = setup::get_existing_setup_state(persistence.as_ref()).await?;
+        Some(PersistenceContext {
+            persistence,
+            builtin_postgres_pool: Some(pool),
             setup_ctx: tokio::sync::RwLock::new(LibSetupContext {
                 global_setup_change: setup::GlobalSetupChange::from_setup_states(&all_setup_states),
                 all_setup_states,
             }),
         })
     } else {
-        // No database configured
         None
     };
 
@@ -392,7 +424,7 @@ mod tests {
             .await
             .unwrap();
         assert!(lib_context.persistence_ctx.is_none());
-        assert!(lib_context.require_builtin_db_pool().is_err());
+        assert!(lib_context.require_builtin_postgres_pool().is_err());
     }
 
     #[tokio::test]

@@ -4,11 +4,11 @@ use crate::{
         get_attachment_factory, get_optional_target_factory,
         interface::{AttachmentSetupKey, FlowInstanceContext, TargetFactory},
     },
+    persistence::InternalPersistence,
     prelude::*,
     setup::{AttachmentsSetupChange, TargetSetupChange},
 };
 
-use sqlx::PgPool;
 use std::{
     fmt::{Debug, Display},
     str::FromStr,
@@ -84,8 +84,10 @@ fn get_export_target_factory(target_type: &str) -> Option<Arc<dyn TargetFactory 
     get_optional_target_factory(target_type)
 }
 
-pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupStates<ExistingMode>> {
-    let setup_metadata_records = db_metadata::read_setup_metadata(pool).await?;
+pub async fn get_existing_setup_state(
+    persistence: &dyn InternalPersistence,
+) -> Result<AllSetupStates<ExistingMode>> {
+    let setup_metadata_records = persistence.read_setup_metadata().await?;
 
     let setup_metadata_records = if let Some(records) = setup_metadata_records {
         records
@@ -555,7 +557,7 @@ async fn apply_changes_for_flow(
     flow_ctx: &FlowContext,
     flow_setup_change: &FlowSetupChange,
     existing_setup_state: &mut Option<setup::FlowSetupState<setup::ExistingMode>>,
-    pool: &PgPool,
+    persistence: &Arc<dyn InternalPersistence>,
 ) -> Result<()> {
     let Some(status) = flow_setup_change.status else {
         return Ok(());
@@ -615,13 +617,13 @@ async fn apply_changes_for_flow(
         );
     }
 
-    let new_version_id = db_metadata::stage_changes_for_flow(
-        flow_ctx.flow_name(),
-        flow_setup_change.seen_flow_metadata_version,
-        &update_info,
-        pool,
-    )
-    .await?;
+    let new_version_id = persistence
+        .stage_changes_for_flow(
+            flow_ctx.flow_name(),
+            flow_setup_change.seen_flow_metadata_version,
+            &update_info,
+        )
+        .await?;
 
     if let Some(tracking_table) = &flow_setup_change.tracking_table {
         maybe_update_resource_setup(
@@ -678,14 +680,9 @@ async fn apply_changes_for_flow(
     }
 
     let is_deletion = status == ObjectStatus::Deleted;
-    db_metadata::commit_changes_for_flow(
-        flow_ctx.flow_name(),
-        new_version_id,
-        &update_info,
-        is_deletion,
-        pool,
-    )
-    .await?;
+    persistence
+        .commit_changes_for_flow(flow_ctx.flow_name(), new_version_id, &update_info, is_deletion)
+        .await?;
     if is_deletion {
         *existing_setup_state = None;
     } else {
@@ -854,7 +851,7 @@ impl SetupChangeBundle {
                 &flow_ctx,
                 &mut flow_exec_ctx,
                 setup_ctx,
-                &persistence_ctx.builtin_db_pool,
+                persistence_ctx.persistence.clone(),
                 write,
             )
             .await?;
@@ -889,7 +886,7 @@ pub(crate) async fn apply_changes_for_flow_ctx(
     flow_ctx: &FlowContext,
     flow_exec_ctx: &mut FlowExecutionContext,
     setup_ctx: &mut LibSetupContext,
-    db_pool: &PgPool,
+    persistence: Arc<dyn InternalPersistence>,
     write: &mut (dyn std::io::Write + Send),
 ) -> Result<()> {
     let mut setup_change_buffer = None;
@@ -909,7 +906,7 @@ pub(crate) async fn apply_changes_for_flow_ctx(
         .all_setup_states
         .flows
         .remove(flow_ctx.flow_name());
-    apply_changes_for_flow(write, &flow_ctx, setup_change, &mut flow_states, db_pool).await?;
+    apply_changes_for_flow(write, &flow_ctx, setup_change, &mut flow_states, &persistence).await?;
 
     flow_exec_ctx
         .update_setup_state(&flow_ctx.flow, flow_states.as_ref())

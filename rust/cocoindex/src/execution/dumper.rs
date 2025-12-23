@@ -4,7 +4,6 @@ use crate::prelude::*;
 use futures::{StreamExt, future::try_join_all};
 use itertools::Itertools;
 use serde::ser::SerializeSeq;
-use sqlx::PgPool;
 use std::path::{Path, PathBuf};
 use yaml_rust2::YamlEmitter;
 
@@ -14,6 +13,7 @@ use super::row_indexer;
 use crate::base::{schema, value};
 use crate::builder::plan::{AnalyzedImportOp, ExecutionPlan};
 use crate::ops::interface::SourceExecutorReadOptions;
+use crate::persistence::InternalPersistence;
 use utils::yaml_ser::YamlSerializer;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -61,7 +61,7 @@ struct Dumper<'a> {
     plan: &'a ExecutionPlan,
     setup_execution_ctx: &'a exec_ctx::FlowSetupExecutionContext,
     schema: &'a schema::FlowSchema,
-    pool: &'a PgPool,
+    persistence: &'a Arc<dyn InternalPersistence>,
     options: EvaluateAndDumpOptions,
 }
 
@@ -93,7 +93,7 @@ impl<'a> Dumper<'a> {
                 enable_cache: self.options.use_cache,
                 evaluation_only: true,
             },
-            self.pool,
+            self.persistence,
         )
         .await?;
 
@@ -277,7 +277,7 @@ pub async fn evaluate_and_dump(
     setup_execution_ctx: &exec_ctx::FlowSetupExecutionContext,
     schema: &schema::FlowSchema,
     options: EvaluateAndDumpOptions,
-    pool: &PgPool,
+    persistence: Arc<dyn InternalPersistence>,
 ) -> Result<()> {
     let output_dir = Path::new(&options.output_dir);
     if output_dir.exists() {
@@ -292,7 +292,7 @@ pub async fn evaluate_and_dump(
         plan,
         setup_execution_ctx,
         schema,
-        pool,
+        persistence: &persistence,
         options,
     };
     dumper.evaluate_and_dump().await

@@ -81,7 +81,7 @@ impl<'de> serde::Deserialize<'de> for TrackedTargetKeyInfo {
 /// (source_id, target_key)
 pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKeyInfo>)>;
 
-#[derive(sqlx::FromRow, Debug)]
+#[derive(sqlx::FromRow, Debug, Serialize, Deserialize)]
 pub struct SourceTrackingInfoForProcessing {
     pub memoization_info: Option<sqlx::types::Json<Option<StoredMemoizationInfo>>>,
 
@@ -96,7 +96,7 @@ pub async fn read_source_tracking_info_for_processing(
     source_id: i32,
     source_key_json: &serde_json::Value,
     db_setup: &TrackingTableSetupState,
-    pool: &PgPool,
+    db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<Option<SourceTrackingInfoForProcessing>> {
     let query_str = format!(
         "SELECT memoization_info, processed_source_ordinal, {}, process_logic_fingerprint, max_process_ordinal, process_ordinal FROM {} WHERE source_id = $1 AND source_key = $2",
@@ -110,13 +110,13 @@ pub async fn read_source_tracking_info_for_processing(
     let tracking_info = sqlx::query_as(&query_str)
         .bind(source_id)
         .bind(source_key_json)
-        .fetch_optional(pool)
+        .fetch_optional(db_executor)
         .await?;
 
     Ok(tracking_info)
 }
 
-#[derive(sqlx::FromRow, Debug)]
+#[derive(sqlx::FromRow, Debug, Serialize, Deserialize)]
 pub struct SourceTrackingInfoForPrecommit {
     pub max_process_ordinal: i64,
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
@@ -208,7 +208,7 @@ pub async fn touch_max_process_ordinal(
     Ok(())
 }
 
-#[derive(sqlx::FromRow, Debug)]
+#[derive(sqlx::FromRow, Debug, Serialize, Deserialize)]
 pub struct SourceTrackingInfoForCommit {
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
     pub process_ordinal: Option<i64>,
@@ -312,7 +312,7 @@ pub async fn delete_source_tracking_info(
     Ok(())
 }
 
-#[derive(sqlx::FromRow, Debug)]
+#[derive(sqlx::FromRow, Debug, Serialize, Deserialize)]
 pub struct TrackedSourceKeyMetadata {
     pub source_key: serde_json::Value,
     pub processed_source_ordinal: Option<i64>,
@@ -354,7 +354,7 @@ impl ListTrackedSourceKeyMetadataState {
     }
 }
 
-#[derive(sqlx::FromRow, Debug)]
+#[derive(sqlx::FromRow, Debug, Serialize, Deserialize)]
 pub struct SourceLastProcessedInfo {
     pub processed_source_ordinal: Option<i64>,
     pub process_logic_fingerprint: Option<Vec<u8>>,

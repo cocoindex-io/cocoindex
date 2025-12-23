@@ -4,10 +4,9 @@ use crate::prelude::*;
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use futures::future::try_join_all;
-use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 
-use super::db_tracking::{self, TrackedTargetKeyInfo, read_source_tracking_info_for_processing};
+use super::db_tracking::{self, TrackedTargetKeyInfo};
 use super::evaluator::{
     EvaluateSourceEntryOutput, SourceRowEvaluationContext, evaluate_source_entry,
 };
@@ -19,6 +18,7 @@ use crate::builder::plan::*;
 use crate::ops::interface::{
     ExportTargetMutation, ExportTargetUpsertEntry, Ordinal, SourceExecutorReadOptions,
 };
+use crate::persistence::InternalPersistence;
 use utils::db::WriteAction;
 use utils::fingerprint::{Fingerprint, Fingerprinter};
 
@@ -185,7 +185,7 @@ pub struct RowIndexer<'a> {
     mode: super::source_indexer::UpdateMode,
     update_stats: &'a stats::UpdateStats,
     operation_in_process_stats: Option<&'a stats::OperationInProcessStats>,
-    pool: &'a PgPool,
+    persistence: &'a Arc<dyn InternalPersistence>,
 
     source_id: i32,
     process_time: chrono::DateTime<chrono::Utc>,
@@ -204,7 +204,7 @@ impl<'a> RowIndexer<'a> {
         process_time: chrono::DateTime<chrono::Utc>,
         update_stats: &'a stats::UpdateStats,
         operation_in_process_stats: Option<&'a stats::OperationInProcessStats>,
-        pool: &'a PgPool,
+        persistence: &'a Arc<dyn InternalPersistence>,
     ) -> Result<Self> {
         Ok(Self {
             source_id: setup_execution_ctx.import_ops[src_eval_ctx.import_op_idx].source_id,
@@ -216,7 +216,7 @@ impl<'a> RowIndexer<'a> {
             mode,
             update_stats,
             operation_in_process_stats,
-            pool,
+            persistence,
         })
     }
 
@@ -229,13 +229,18 @@ impl<'a> RowIndexer<'a> {
     ) -> Result<SkippedOr<()>> {
         let tracking_setup_state = &self.setup_execution_ctx.setup_state.tracking_table;
         // Phase 1: Check existing tracking info and apply optimizations
-        let existing_tracking_info = read_source_tracking_info_for_processing(
-            self.source_id,
-            &self.source_key_json,
-            &self.setup_execution_ctx.setup_state.tracking_table,
-            self.pool,
-        )
-        .await?;
+        let existing_tracking_info = {
+            let mut txn = self.persistence.begin_txn().await?;
+            let info = txn
+                .read_source_tracking_info_for_processing(
+                    self.source_id,
+                    &self.source_key_json,
+                    tracking_setup_state,
+                )
+                .await?;
+            txn.commit().await?;
+            info
+        };
 
         let existing_version = match &existing_tracking_info {
             Some(info) => {
@@ -476,15 +481,15 @@ impl<'a> RowIndexer<'a> {
         }
 
         // Content hash matches - try optimization
-        let mut txn = self.pool.begin().await?;
+        let mut txn = self.persistence.begin_txn().await?;
 
-        let existing_tracking_info = db_tracking::read_source_tracking_info_for_precommit(
-            self.source_id,
-            &self.source_key_json,
-            tracking_table_setup,
-            &mut *txn,
-        )
-        .await?;
+        let existing_tracking_info = txn
+            .read_source_tracking_info_for_precommit(
+                self.source_id,
+                &self.source_key_json,
+                tracking_table_setup,
+            )
+            .await?;
 
         let Some(existing_tracking_info) = existing_tracking_info else {
             return Ok(None);
@@ -522,12 +527,11 @@ impl<'a> RowIndexer<'a> {
         }
 
         // Safe to apply optimization - just update tracking table
-        db_tracking::update_source_tracking_ordinal(
+        txn.update_source_tracking_ordinal(
             self.source_id,
             &self.source_key_json,
             source_version.ordinal.0,
             tracking_table_setup,
-            &mut *txn,
         )
         .await?;
 
@@ -545,15 +549,11 @@ impl<'a> RowIndexer<'a> {
         let export_ops = &self.src_eval_ctx.plan.export_ops;
         let export_ops_exec_ctx = &self.setup_execution_ctx.export_ops;
 
-        let mut txn = self.pool.begin().await?;
+        let mut txn = self.persistence.begin_txn().await?;
 
-        let tracking_info = db_tracking::read_source_tracking_info_for_precommit(
-            self.source_id,
-            &self.source_key_json,
-            db_setup,
-            &mut *txn,
-        )
-        .await?;
+        let tracking_info = txn
+            .read_source_tracking_info_for_precommit(self.source_id, &self.source_key_json, db_setup)
+            .await?;
         if !self.mode.needs_full_export()
             && let Some(tracking_info) = &tracking_info
         {
@@ -748,14 +748,13 @@ impl<'a> RowIndexer<'a> {
             }
         }
 
-        db_tracking::precommit_source_tracking_info(
+        txn.precommit_source_tracking_info(
             self.source_id,
             &self.source_key_json,
             process_ordinal,
             new_staging_target_keys,
             data.as_ref().map(|data| data.memoization_info),
             db_setup,
-            &mut *txn,
             if tracking_info_exists {
                 WriteAction::Update
             } else {
@@ -784,15 +783,11 @@ impl<'a> RowIndexer<'a> {
         precommit_metadata: PrecommitMetadata,
     ) -> Result<()> {
         let db_setup = &self.setup_execution_ctx.setup_state.tracking_table;
-        let mut txn = self.pool.begin().await?;
+        let mut txn = self.persistence.begin_txn().await?;
 
-        let tracking_info = db_tracking::read_source_tracking_info_for_commit(
-            self.source_id,
-            &self.source_key_json,
-            db_setup,
-            &mut *txn,
-        )
-        .await?;
+        let tracking_info = txn
+            .read_source_tracking_info_for_commit(self.source_id, &self.source_key_json, db_setup)
+            .await?;
         let tracking_info_exists = tracking_info.is_some();
         if tracking_info.as_ref().and_then(|info| info.process_ordinal)
             >= Some(precommit_metadata.process_ordinal)
@@ -827,16 +822,11 @@ impl<'a> RowIndexer<'a> {
         if !precommit_metadata.source_entry_exists && cleaned_staging_target_keys.is_empty() {
             // delete tracking if no source and no staged keys
             if tracking_info_exists {
-                db_tracking::delete_source_tracking_info(
-                    self.source_id,
-                    &self.source_key_json,
-                    db_setup,
-                    &mut *txn,
-                )
-                .await?;
+                txn.delete_source_tracking_info(self.source_id, &self.source_key_json, db_setup)
+                    .await?;
             }
         } else {
-            db_tracking::commit_source_tracking_info(
+            txn.commit_source_tracking_info(
                 self.source_id,
                 &self.source_key_json,
                 cleaned_staging_target_keys,
@@ -847,7 +837,6 @@ impl<'a> RowIndexer<'a> {
                 self.process_time.timestamp_micros(),
                 precommit_metadata.new_target_keys,
                 db_setup,
-                &mut *txn,
                 if tracking_info_exists {
                     WriteAction::Update
                 } else {
@@ -872,18 +861,23 @@ pub async fn evaluate_source_entry_with_memory(
     key_aux_info: &serde_json::Value,
     setup_execution_ctx: &exec_ctx::FlowSetupExecutionContext,
     options: EvaluationMemoryOptions,
-    pool: &PgPool,
+    persistence: &Arc<dyn InternalPersistence>,
 ) -> Result<Option<EvaluateSourceEntryOutput>> {
     let stored_info = if options.enable_cache || !options.evaluation_only {
         let source_key_json = serde_json::to_value(src_eval_ctx.key)?;
         let source_id = setup_execution_ctx.import_ops[src_eval_ctx.import_op_idx].source_id;
-        let existing_tracking_info = read_source_tracking_info_for_processing(
-            source_id,
-            &source_key_json,
-            &setup_execution_ctx.setup_state.tracking_table,
-            pool,
-        )
-        .await?;
+        let existing_tracking_info = {
+            let mut txn = persistence.begin_txn().await?;
+            let info = txn
+                .read_source_tracking_info_for_processing(
+                    source_id,
+                    &source_key_json,
+                    &setup_execution_ctx.setup_state.tracking_table,
+                )
+                .await?;
+            txn.commit().await?;
+            info
+        };
         existing_tracking_info
             .and_then(|info| info.memoization_info.map(|info| info.0))
             .flatten()

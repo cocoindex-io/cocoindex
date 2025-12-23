@@ -353,24 +353,10 @@ impl ResourceSetupChange for MetadataTableSetup {
 
 impl MetadataTableSetup {
     pub async fn apply_change(&self) -> Result<()> {
-        if !self.metadata_table_missing {
-            return Ok(());
-        }
         let lib_context = get_lib_context().await?;
-        let pool = lib_context.require_builtin_db_pool()?;
-        let query_str = format!(
-            "CREATE TABLE IF NOT EXISTS {SETUP_METADATA_TABLE_NAME} (
-                flow_name TEXT NOT NULL,
-                resource_type TEXT NOT NULL,
-                key JSONB NOT NULL,
-                state JSONB,
-                staging_changes JSONB NOT NULL,
-
-                PRIMARY KEY (flow_name, resource_type, key)
-            )
-        ",
-        );
-        sqlx::query(&query_str).execute(pool).await?;
-        Ok(())
+        let persistence = lib_context.require_persistence()?;
+        persistence
+            .apply_metadata_table_setup(self.metadata_table_missing)
+            .await
     }
 }

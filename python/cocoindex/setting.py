@@ -40,6 +40,21 @@ class DatabaseConnectionSpec:
 
 
 @dataclass
+class SurrealDbConnectionSpec:
+    """
+    Connection spec for SurrealDB (used for internal persistence when configured).
+
+    Typical endpoint: ws://localhost:8000
+    """
+
+    endpoint: str
+    namespace: str
+    database: str
+    user: str | None = None
+    password: str | None = None
+
+
+@dataclass
 class GlobalExecutionOptions:
     """Global execution options."""
 
@@ -76,6 +91,7 @@ class Settings:
     """Settings for the cocoindex library."""
 
     database: DatabaseConnectionSpec | None = None
+    surreal: SurrealDbConnectionSpec | None = None
     app_namespace: str = ""
     global_execution_options: GlobalExecutionOptions | None = None
 
@@ -83,26 +99,37 @@ class Settings:
     def from_env(cls) -> Self:
         """Load settings from environment variables."""
 
-        database_url = os.getenv("COCOINDEX_DATABASE_URL")
-        if database_url is not None:
-            db_kwargs: dict[str, Any] = {"url": database_url}
-            _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
-            _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
-            _load_field(
-                db_kwargs,
-                "max_connections",
-                "COCOINDEX_DATABASE_MAX_CONNECTIONS",
-                parse=int,
-            )
-            _load_field(
-                db_kwargs,
-                "min_connections",
-                "COCOINDEX_DATABASE_MIN_CONNECTIONS",
-                parse=int,
-            )
-            database = DatabaseConnectionSpec(**db_kwargs)
-        else:
+        surreal_endpoint = os.getenv("COCOINDEX_SURREAL_ENDPOINT")
+        if surreal_endpoint is not None:
+            surreal_kwargs: dict[str, Any] = {"endpoint": surreal_endpoint}
+            _load_field(surreal_kwargs, "namespace", "COCOINDEX_SURREAL_NS", required=True)
+            _load_field(surreal_kwargs, "database", "COCOINDEX_SURREAL_DB", required=True)
+            _load_field(surreal_kwargs, "user", "COCOINDEX_SURREAL_USER")
+            _load_field(surreal_kwargs, "password", "COCOINDEX_SURREAL_PASSWORD")
+            surreal = SurrealDbConnectionSpec(**surreal_kwargs)
             database = None
+        else:
+            surreal = None
+            database_url = os.getenv("COCOINDEX_DATABASE_URL")
+            if database_url is not None:
+                db_kwargs: dict[str, Any] = {"url": database_url}
+                _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
+                _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
+                _load_field(
+                    db_kwargs,
+                    "max_connections",
+                    "COCOINDEX_DATABASE_MAX_CONNECTIONS",
+                    parse=int,
+                )
+                _load_field(
+                    db_kwargs,
+                    "min_connections",
+                    "COCOINDEX_DATABASE_MIN_CONNECTIONS",
+                    parse=int,
+                )
+                database = DatabaseConnectionSpec(**db_kwargs)
+            else:
+                database = None
 
         exec_kwargs: dict[str, Any] = dict()
         _load_field(
@@ -123,6 +150,7 @@ class Settings:
 
         return cls(
             database=database,
+            surreal=surreal,
             app_namespace=app_namespace,
             global_execution_options=global_execution_options,
         )

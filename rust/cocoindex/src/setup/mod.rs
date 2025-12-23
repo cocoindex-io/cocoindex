@@ -1,5 +1,5 @@
 mod auth_registry;
-mod db_metadata;
+pub(crate) mod db_metadata;
 mod driver;
 mod states;
 

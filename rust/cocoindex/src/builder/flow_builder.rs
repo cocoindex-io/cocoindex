@@ -683,7 +683,7 @@ impl FlowBuilder {
                                 &flow_ctx,
                                 &mut flow_exec_ctx,
                                 &mut *lib_setup_ctx,
-                                &persistence_ctx.builtin_db_pool,
+                                persistence_ctx.persistence.clone(),
                                 &mut output_buffer,
                             )
                             .await?;

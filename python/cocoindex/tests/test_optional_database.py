@@ -139,6 +139,7 @@ class TestOptionalDatabase:
         ):
             settings = Settings.from_env()
             assert settings.database is not None
+            assert settings.surreal is None
             assert settings.database.url == test_url
             assert settings.database.user == test_user
             assert settings.database.password == test_password
@@ -160,9 +161,34 @@ class TestOptionalDatabase:
 
             settings = Settings.from_env()
             assert settings.database is not None
+            assert settings.surreal is None
             assert settings.database.url == test_url
             assert settings.database.user is None
             assert settings.database.password is None
+
+    def test_settings_from_env_with_surreal(self) -> None:
+        """Test that Settings.from_env() prefers SurrealDB config when provided."""
+        with patch.dict(
+            os.environ,
+            {
+                "COCOINDEX_SURREAL_ENDPOINT": "ws://localhost:8000",
+                "COCOINDEX_SURREAL_NS": "testns",
+                "COCOINDEX_SURREAL_DB": "testdb",
+                "COCOINDEX_SURREAL_USER": "root",
+                "COCOINDEX_SURREAL_PASSWORD": "root",
+                # Also set Postgres vars; Surreal should take precedence
+                "COCOINDEX_DATABASE_URL": "postgresql://localhost:5432/test",
+            },
+            clear=False,
+        ):
+            settings = Settings.from_env()
+            assert settings.surreal is not None
+            assert settings.database is None
+            assert settings.surreal.endpoint == "ws://localhost:8000"
+            assert settings.surreal.namespace == "testns"
+            assert settings.surreal.database == "testdb"
+            assert settings.surreal.user == "root"
+            assert settings.surreal.password == "root"
 
     def test_multiple_init_calls(self) -> None:
         """Test that multiple init calls work correctly."""
