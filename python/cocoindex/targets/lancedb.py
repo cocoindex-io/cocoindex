@@ -8,7 +8,7 @@ import datetime
 from typing import Any
 
 import lancedb  # type: ignore
-from lancedb.index import FTS  # type: ignore
+from lancedb.index import FTS, HnswPq, IvfFlat  # type: ignore
 import pyarrow as pa  # type: ignore
 
 from cocoindex import op
@@ -21,7 +21,13 @@ from cocoindex.engine_type import (
     VectorTypeSchema,
     TableType,
 )
-from cocoindex.index import IndexOptions, VectorSimilarityMetric
+from cocoindex.index import (
+    IndexOptions,
+    VectorSimilarityMetric,
+    VectorIndexMethod,
+    HnswVectorIndexMethod,
+    IvfFlatVectorIndexMethod,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -30,6 +36,43 @@ _LANCEDB_VECTOR_METRIC: dict[VectorSimilarityMetric, str] = {
     VectorSimilarityMetric.L2_DISTANCE: "l2",
     VectorSimilarityMetric.INNER_PRODUCT: "dot",
 }
+
+
+def _create_vector_index_config(
+    method: VectorIndexMethod | None, distance_type: str
+) -> HnswPq | IvfFlat:
+    """
+    Create the appropriate LanceDB index configuration based on the VectorIndexMethod.
+
+    Args:
+        method: The vector index method configuration, or None for default (HNSW).
+        distance_type: The distance metric type ('cosine', 'l2', or 'dot').
+
+    Returns:
+        A LanceDB index configuration object (HnswPq or IvfFlat).
+    """
+    if method is None:
+        # Default to HNSW with PQ (HnswPq)
+        return HnswPq(distance_type=distance_type)
+
+    if isinstance(method, HnswVectorIndexMethod):
+        # HNSW method - use HnswPq with optional parameters
+        kwargs: dict[str, Any] = {"distance_type": distance_type}
+        if method.m is not None:
+            kwargs["m"] = method.m
+        if method.ef_construction is not None:
+            kwargs["ef_construction"] = method.ef_construction
+        return HnswPq(**kwargs)
+
+    if isinstance(method, IvfFlatVectorIndexMethod):
+        # IVF Flat method
+        kwargs = {"distance_type": distance_type}
+        if method.lists is not None:
+            kwargs["num_partitions"] = method.lists
+        return IvfFlat(**kwargs)
+
+    # Fallback to default
+    return HnswPq(distance_type=distance_type)
 
 
 class DatabaseOptions:
@@ -47,6 +90,7 @@ class _VectorIndex:
     name: str
     field_name: str
     metric: VectorSimilarityMetric
+    method: VectorIndexMethod | None = None
 
 
 @dataclasses.dataclass
@@ -305,12 +349,17 @@ class _Connector:
     ) -> _State:
         if len(key_fields_schema) != 1:
             raise ValueError("LanceDB only supports a single key field")
-        if index_options.vector_indexes is not None:
-            for vector_index in index_options.vector_indexes:
-                if vector_index.method is not None:
-                    raise ValueError(
-                        "Vector index method is not configurable for LanceDB yet"
-                    )
+
+        def _get_method_suffix(method: VectorIndexMethod | None) -> str:
+            """Get a suffix string representing the index method for the index name."""
+            if method is None:
+                return "hnsw_pq"  # default
+            if isinstance(method, HnswVectorIndexMethod):
+                return "hnsw_pq"
+            if isinstance(method, IvfFlatVectorIndexMethod):
+                return "ivf_flat"
+            return "hnsw_pq"
+
         return _State(
             key_field_schema=key_fields_schema[0],
             value_fields_schema=value_fields_schema,
@@ -318,9 +367,10 @@ class _Connector:
             vector_indexes=(
                 [
                     _VectorIndex(
-                        name=f"__{index.field_name}__{_LANCEDB_VECTOR_METRIC[index.metric]}__idx",
+                        name=f"__{index.field_name}__{_LANCEDB_VECTOR_METRIC[index.metric]}__{_get_method_suffix(index.method)}__idx",
                         field_name=index.field_name,
                         metric=index.metric,
+                        method=index.method,
                     )
                     for index in index_options.vector_indexes
                 ]
@@ -413,12 +463,14 @@ class _Connector:
                 unseen_prev_vector_indexes.remove(index.name)
             else:
                 try:
+                    # Determine index configuration based on method
+                    index_config = _create_vector_index_config(
+                        index.method, _LANCEDB_VECTOR_METRIC[index.metric]
+                    )
                     await table.create_index(
                         index.field_name,
                         name=index.name,
-                        config=lancedb.index.HnswPq(
-                            distance_type=_LANCEDB_VECTOR_METRIC[index.metric]
-                        ),
+                        config=index_config,
                     )
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     raise RuntimeError(
