@@ -117,8 +117,9 @@ impl SourceUpdateTask {
         if !self.options.print_stats || self.multi_progress_bar.is_hidden() {
             return Ok(None);
         }
-        let style =
-            indicatif::ProgressStyle::default_spinner().template("{spinner}{spinner} {msg}")?;
+        let style = indicatif::ProgressStyle::default_spinner()
+            .template("{spinner}{spinner} {msg}")
+            .internal()?;
         let pb = ProgressBar::new_spinner().with_finish(ProgressFinish::AndClear);
         pb.set_style(style);
         Ok(Some(pb))
@@ -197,7 +198,7 @@ impl SourceUpdateTask {
                         &retry_options,
                     )
                     .await
-                    .map_err(Into::<anyhow::Error>::into)
+                    .map_err(Error::from)
                     .with_context(|| {
                         format!(
                             "Error in getting change message for flow `{}` source `{}`",
@@ -241,7 +242,8 @@ impl SourceUpdateTask {
                         let concur_permit = import_op
                             .concurrency_controller
                             .acquire(concur_control::BYTES_UNKNOWN_YET)
-                            .await?;
+                            .await
+                            .internal()?;
                         tokio::spawn(source_indexing_context.clone().process_source_row(
                             ProcessSourceRowInput {
                                 key: change.key,
@@ -574,7 +576,7 @@ impl FlowLiveUpdater {
     pub async fn wait(&self) -> Result<()> {
         {
             let mut rx = self.num_remaining_tasks_rx.clone();
-            rx.wait_for(|v| *v == 0).await?;
+            rx.wait_for(|v| *v == 0).await.internal()?;
         }
 
         let Some(mut join_set) = self.join_set.lock().unwrap().take() else {
@@ -588,7 +590,7 @@ impl FlowLiveUpdater {
                 }
                 Err(err) if err.is_cancelled() => {}
                 Err(err) => {
-                    return Err(err.into());
+                    return Err(err).internal();
                 }
             }
         }
@@ -627,7 +629,7 @@ impl FlowLiveUpdater {
             });
         }
 
-        recv_state.status_rx.changed().await?;
+        recv_state.status_rx.changed().await.internal()?;
         let status = recv_state.status_rx.borrow_and_update();
         let updates = FlowLiveUpdaterUpdates {
             active_sources: status

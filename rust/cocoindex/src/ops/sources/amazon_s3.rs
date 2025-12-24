@@ -18,7 +18,7 @@ fn decode_form_encoded_url(input: &str) -> Result<Arc<str>> {
     // - Literal '+' would be encoded as '%2B' and remain unchanged after replacement
     // - Space would be encoded as '+' and become ' ' after replacement
     let with_spaces = input.replace("+", " ");
-    Ok(urlencoding::decode(&with_spaces)?.into())
+    Ok(urlencoding::decode(&with_spaces).internal()?.into())
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +52,8 @@ impl SqsContext {
             .queue_url(&self.queue_url)
             .receipt_handle(receipt_handle)
             .send()
-            .await?;
+            .await
+            .internal()?;
         Ok(())
     }
 }
@@ -64,7 +65,7 @@ struct RedisContext {
 
 impl RedisContext {
     async fn new(redis_url: &str, channel: &str) -> Result<Self> {
-        let client = RedisClient::open(redis_url)?;
+        let client = RedisClient::open(redis_url).internal()?;
         Ok(Self {
             client,
             channel: channel.to_string(),
@@ -72,8 +73,8 @@ impl RedisContext {
     }
 
     async fn subscribe(&self) -> Result<redis::aio::PubSub> {
-        let mut pubsub = self.client.get_async_pubsub().await?;
-        pubsub.subscribe(&self.channel).await?;
+        let mut pubsub = self.client.get_async_pubsub().await.internal()?;
+        pubsub.subscribe(&self.channel).await.internal()?;
         Ok(pubsub)
     }
 }
@@ -111,7 +112,7 @@ impl SourceExecutor for Executor {
                 if let Some(ref token) = continuation_token {
                     req = req.continuation_token(token);
                 }
-                let resp = req.send().await?;
+                let resp = req.send().await.internal()?;
                 if let Some(contents) = &resp.contents {
                     let mut batch = Vec::new();
                     for obj in contents {
@@ -175,7 +176,8 @@ impl SourceExecutor for Executor {
                 .bucket(&self.bucket_name)
                 .key(key_str.as_ref())
                 .send()
-                .await?;
+                .await
+                .internal()?;
             if let Some(size) = head_result.content_length() {
                 if size > max_size {
                     return Ok(PartialSourceRowData {
@@ -201,7 +203,7 @@ impl SourceExecutor for Executor {
                     content_version_fp: None,
                 });
             }
-            r => r?,
+            r => r.internal()?,
         };
         let ordinal = if options.include_ordinal {
             obj.last_modified().map(datetime_to_ordinal)
@@ -209,7 +211,7 @@ impl SourceExecutor for Executor {
             None
         };
         let value = if options.include_value {
-            let bytes = obj.body.collect().await?.into_bytes();
+            let bytes = obj.body.collect().await.internal()?.into_bytes();
             Some(SourceValue::Existence(if self.binary {
                 fields_value!(bytes.to_vec())
             } else {
@@ -310,7 +312,8 @@ impl Executor {
             .max_number_of_messages(10)
             .wait_time_seconds(20)
             .send()
-            .await?;
+            .await
+            .internal()?;
         let messages = if let Some(messages) = resp.messages {
             messages
         } else {
@@ -354,12 +357,17 @@ impl Executor {
                         change_messages.push(SourceChangeMessage {
                             changes,
                             ack_fn: Some(Box::new(move || {
-                                async move { sqs_context.delete_message(receipt_handle).await }
-                                    .boxed()
+                                async move {
+                                    sqs_context.delete_message(receipt_handle).await.internal()
+                                }
+                                .boxed()
                             })),
                         });
                     } else {
-                        sqs_context.delete_message(receipt_handle).await?;
+                        sqs_context
+                            .delete_message(receipt_handle)
+                            .await
+                            .internal()?;
                     }
                 }
             }
@@ -371,14 +379,14 @@ impl Executor {
         &self,
         redis_context: &Arc<RedisContext>,
     ) -> Result<Vec<SourceChangeMessage>> {
-        let mut pubsub = redis_context.subscribe().await?;
+        let mut pubsub = redis_context.subscribe().await.internal()?;
         let mut change_messages = vec![];
 
         // Wait for a message without timeout - long waiting is expected for event notifications
         let message = pubsub.on_message().next().await;
 
         if let Some(message) = message {
-            let payload: String = message.get_payload()?;
+            let payload: String = message.get_payload().internal()?;
             // Parse the Redis message - MinIO sends S3 event notifications in JSON format
             let notification: S3EventNotification = utils::deser::from_json_str(&payload)?;
             let mut changes = vec![];

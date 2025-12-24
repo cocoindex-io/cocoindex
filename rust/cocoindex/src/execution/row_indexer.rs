@@ -467,7 +467,8 @@ impl<'a> RowIndexer<'a> {
                     .and_then(|info| info.0.as_ref())
                     .and_then(|stored_info| stored_info.content_hash.as_ref())
                     .map(|content_hash| BASE64_STANDARD.decode(content_hash))
-                    .transpose()?
+                    .transpose()
+                    .internal()?
                     .map(Cow::Owned)
             }
         };
@@ -905,7 +906,7 @@ pub async fn evaluate_source_entry_with_memory(
         )
         .await?
         .value
-        .ok_or_else(|| anyhow::anyhow!("value not returned"))?;
+        .ok_or_else(|| internal_error!("value not returned"))?;
     let output = match source_value {
         interface::SourceValue::Existence(source_value) => {
             Some(evaluate_source_entry(src_eval_ctx, source_value, &memory, None).await?)

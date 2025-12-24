@@ -391,7 +391,7 @@ async fn fetch_table_schema(
         Some(ord) => {
             let schema = ordinal_field_schema
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("`ordinal_column` `{}` not found in table", ord))?;
+                .ok_or_else(|| client_error!("`ordinal_column` `{}` not found in table", ord))?;
             if !is_supported_ordinal_type(&schema.schema.value_type.typ) {
                 api_bail!(
                     "Unsupported `ordinal_column` type for `{}`. Supported types: Int64, LocalDateTime, OffsetDateTime",
@@ -517,7 +517,7 @@ impl SourceExecutor for PostgresSourceExecutor {
         qb.push("\" WHERE ");
 
         if key.len() != self.table_schema.primary_key_columns.len() {
-            bail!(
+            internal_bail!(
                 "Composite key has {} values but table has {} primary key columns",
                 key.len(),
                 self.table_schema.primary_key_columns.len()
@@ -694,10 +694,10 @@ impl PostgresSourceExecutor {
         let mut payload: serde_json::Value = utils::deser::from_json_str(notification.payload())?;
         let payload = payload
             .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("'fields' field is not an object"))?;
+            .ok_or_else(|| client_error!("'fields' field is not an object"))?;
 
         let Some(serde_json::Value::String(op)) = payload.get_mut("op") else {
-            return Err(anyhow::anyhow!(
+            return Err(client_error!(
                 "Missing or invalid 'op' field in notification"
             ));
         };
@@ -706,16 +706,16 @@ impl PostgresSourceExecutor {
         let mut fields = std::mem::take(
             payload
                 .get_mut("fields")
-                .ok_or_else(|| anyhow::anyhow!("Missing 'fields' field in notification"))?
+                .ok_or_else(|| client_error!("Missing 'fields' field in notification"))?
                 .as_object_mut()
-                .ok_or_else(|| anyhow::anyhow!("'fields' field is not an object"))?,
+                .ok_or_else(|| client_error!("'fields' field is not an object"))?,
         );
 
         // Extract primary key values to construct the key
         let mut key_parts = Vec::with_capacity(self.table_schema.primary_key_columns.len());
         for pk_col in &self.table_schema.primary_key_columns {
             let field_value = fields.get_mut(&pk_col.schema.name).ok_or_else(|| {
-                anyhow::anyhow!("Missing primary key field: {}", pk_col.schema.name)
+                client_error!("Missing primary key field: {}", pk_col.schema.name)
             })?;
 
             let key_part = Self::decode_key_ordinal_value_in_json(
@@ -758,7 +758,7 @@ impl PostgresSourceExecutor {
                     content_version_fp: None,
                 }
             }
-            _ => return Err(anyhow::anyhow!("Unknown operation: {}", op)),
+            _ => return Err(client_error!("Unknown operation: {}", op)),
         };
 
         Ok(SourceChange {
@@ -778,7 +778,7 @@ impl PostgresSourceExecutor {
                 BasicValue::Bool(b).into()
             }
             (ValueType::Basic(BasicValueType::Bytes), serde_json::Value::String(s)) => {
-                let bytes = BASE64_STANDARD.decode(&s)?;
+                let bytes = BASE64_STANDARD.decode(&s).internal()?;
                 BasicValue::Bytes(bytes::Bytes::from(bytes)).into()
             }
             (ValueType::Basic(BasicValueType::Str), serde_json::Value::String(s)) => {
@@ -788,27 +788,29 @@ impl PostgresSourceExecutor {
                 if let Some(i) = n.as_i64() {
                     BasicValue::Int64(i).into()
                 } else {
-                    bail!("Invalid integer value: {}", n)
+                    client_bail!("Invalid integer value: {}", n)
                 }
             }
             (ValueType::Basic(BasicValueType::Uuid), serde_json::Value::String(s)) => {
-                let uuid = s.parse::<uuid::Uuid>()?;
+                let uuid = s.parse::<uuid::Uuid>().internal()?;
                 BasicValue::Uuid(uuid).into()
             }
             (ValueType::Basic(BasicValueType::Date), serde_json::Value::String(s)) => {
-                let dt = s.parse::<chrono::NaiveDate>()?;
+                let dt = s.parse::<chrono::NaiveDate>().internal()?;
                 BasicValue::Date(dt).into()
             }
             (ValueType::Basic(BasicValueType::LocalDateTime), serde_json::Value::String(s)) => {
-                let dt = s.parse::<chrono::NaiveDateTime>()?;
+                let dt = s.parse::<chrono::NaiveDateTime>().internal()?;
                 BasicValue::LocalDateTime(dt).into()
             }
             (ValueType::Basic(BasicValueType::OffsetDateTime), serde_json::Value::String(s)) => {
-                let dt = s.parse::<chrono::DateTime<chrono::FixedOffset>>()?;
+                let dt = s
+                    .parse::<chrono::DateTime<chrono::FixedOffset>>()
+                    .internal()?;
                 BasicValue::OffsetDateTime(dt).into()
             }
             (_, json_value) => {
-                bail!(
+                client_bail!(
                     "Got unsupported JSON value for type {value_type}: {}",
                     serde_json::to_string(&json_value)?
                 );

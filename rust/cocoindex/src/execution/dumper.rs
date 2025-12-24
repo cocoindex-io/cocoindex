@@ -31,7 +31,7 @@ struct TargetExportData<'a> {
 }
 
 impl Serialize for TargetExportData<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -151,7 +151,8 @@ impl<'a> Dumper<'a> {
         let _permit = import_op
             .concurrency_controller
             .acquire(concur_control::BYTES_UNKNOWN_YET)
-            .await?;
+            .await
+            .internal()?;
         let mut collected_values_buffer = Vec::new();
         let (exports, error) = match self
             .evaluate_source_entry(
@@ -179,11 +180,11 @@ impl<'a> Dumper<'a> {
 
         let yaml_output = {
             let mut yaml_output = String::new();
-            let yaml_data = YamlSerializer::serialize(&file_data)?;
+            let yaml_data = YamlSerializer::serialize(&file_data).internal()?;
             let mut yaml_emitter = YamlEmitter::new(&mut yaml_output);
             yaml_emitter.multiline_strings(true);
             yaml_emitter.compact(true);
-            yaml_emitter.dump(&yaml_data)?;
+            yaml_emitter.dump(&yaml_data).internal()?;
             yaml_output
         };
         tokio::fs::write(file_path, yaml_output).await?;
@@ -282,7 +283,7 @@ pub async fn evaluate_and_dump(
     let output_dir = Path::new(&options.output_dir);
     if output_dir.exists() {
         if !output_dir.is_dir() {
-            return Err(anyhow::anyhow!("The path exists and is not a directory"));
+            return Err(client_error!("The path exists and is not a directory"));
         }
     } else {
         tokio::fs::create_dir(output_dir).await?;

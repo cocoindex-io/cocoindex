@@ -86,7 +86,7 @@ impl FlowExecutionContext {
     ) -> Result<&Arc<SourceIndexingContext>> {
         self.source_indexing_contexts[source_idx]
             .get_or_try_init(|| async move {
-                anyhow::Ok(
+                Ok::<_, Error>(
                     SourceIndexingContext::load(
                         flow.clone(),
                         source_idx,
@@ -205,7 +205,10 @@ impl DbPools {
                     let pool = pool_options
                         .connect_with(pg_options.clone())
                         .await
-                        .context(format!("Failed to connect to database {}", conn_spec.url))?;
+                        .internal()
+                        .with_context(|| {
+                            format!("Failed to connect to database {}", conn_spec.url)
+                        })?;
                     let _ = pool.acquire().await?;
                 }
 
@@ -219,8 +222,9 @@ impl DbPools {
                 let pool = pool_options
                     .connect_with(pg_options)
                     .await
-                    .context("Failed to connect to database")?;
-                anyhow::Ok(pool)
+                    .internal()
+                    .with_context(|| "Failed to connect to database")?;
+                Ok::<_, Error>(pool)
             })
             .await?;
         Ok(pool.clone())
@@ -268,7 +272,7 @@ impl LibContext {
 
     pub fn require_persistence_ctx(&self) -> Result<&PersistenceContext> {
         self.persistence_ctx.as_ref().ok_or_else(|| {
-            anyhow!(
+            client_error!(
                 "Database is required for this operation. \
                          The easiest way is to set COCOINDEX_DATABASE_URL environment variable. \
                          Please see https://cocoindex.io/docs/core/settings for more details."
@@ -333,7 +337,7 @@ fn get_settings() -> Result<settings::Settings> {
     let settings = if let Some(get_settings_fn) = &*get_settings_fn {
         get_settings_fn()?
     } else {
-        bail!("CocoIndex setting function is not provided");
+        client_bail!("CocoIndex setting function is not provided");
     };
     Ok(settings)
 }

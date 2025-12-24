@@ -82,7 +82,7 @@ impl Client<AzureConfig> {
         };
 
         let api_base =
-            address.ok_or_else(|| anyhow::anyhow!("address is required for Azure OpenAI"))?;
+            address.ok_or_else(|| client_error!("address is required for Azure OpenAI"))?;
 
         // Default to API version that supports structured outputs (json_schema).
         let api_version = config
@@ -91,7 +91,7 @@ impl Client<AzureConfig> {
 
         let api_key = api_key
             .or_else(|| std::env::var("AZURE_OPENAI_API_KEY").ok())
-            .ok_or_else(|| anyhow::anyhow!(
+            .ok_or_else(|| client_error!(
                 "AZURE_OPENAI_API_KEY must be set either via api_key parameter or environment variable"
             ))?;
 
@@ -188,7 +188,7 @@ where
         let request = &request;
         let response = retryable::run(
             || async {
-                let req = create_llm_generation_request(request)?;
+                let req = create_llm_generation_request(request).map_err(anyhow::Error::from)?;
                 let response = self.client.chat().create(req).await?;
                 retryable::Ok(response)
             },
@@ -202,7 +202,7 @@ where
             .into_iter()
             .next()
             .and_then(|choice| choice.message.content)
-            .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
+            .ok_or_else(|| client_error!("No response from OpenAI"))?;
 
         let output = if has_json_schema {
             super::GeneratedOutput::Json(serde_json::from_str(&text)?)
@@ -236,7 +236,8 @@ where
         let response = retryable::run(
             || async {
                 let texts: Vec<String> = request.texts.iter().map(|t| t.to_string()).collect();
-                self.client
+                let response = self
+                    .client
                     .embeddings()
                     .create(CreateEmbeddingRequest {
                         model: request.model.to_string(),
@@ -244,11 +245,13 @@ where
                         dimensions: request.output_dimension,
                         ..Default::default()
                     })
-                    .await
+                    .await?;
+                retryable::Ok(response)
             },
             &retryable::RetryOptions::default(),
         )
-        .await?;
+        .await
+        .map_err(Error::from)?;
         Ok(super::LlmEmbeddingResponse {
             embeddings: response.data.into_iter().map(|e| e.embedding).collect(),
         })

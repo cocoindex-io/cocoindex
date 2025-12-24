@@ -254,7 +254,9 @@ impl FlowBuilder {
         let _span = info_span!("flow_builder.new", flow_name = %name).entered();
         let lib_context = py
             .detach(|| -> anyhow::Result<Arc<LibContext>> {
-                get_runtime().block_on(get_lib_context())
+                get_runtime()
+                    .block_on(get_lib_context())
+                    .map_err(anyhow::Error::from)
             })
             .into_py_result()?;
         let root_op_scope = OpScope::new(
@@ -561,6 +563,7 @@ impl FlowBuilder {
                     })
                 })
                 .collect::<Result<Vec<FieldSchema>>>()
+                .map_err(anyhow::Error::from)
                 .into_py_result()?,
             auto_uuid_field,
         );
@@ -695,9 +698,10 @@ impl FlowBuilder {
                         }
                     }
 
-                    anyhow::Ok(flow_ctx)
+                    Ok::<_, Error>(flow_ctx)
                 })
             })
+            .map_err(anyhow::Error::from)
             .into_py_result()?;
         let mut flow_ctxs = self.lib_context.flows.lock().unwrap();
         let flow_ctx = match flow_ctxs.entry(self.flow_instance_name.clone()) {
@@ -746,7 +750,11 @@ impl FlowBuilder {
         });
         future_into_py(py, async move {
             Ok(py::TransientFlow(Arc::new(
-                analyzed_flow.await.into_py_result()?.into_py_result()?,
+                analyzed_flow
+                    .await
+                    .into_py_result()?
+                    .map_err(anyhow::Error::from)
+                    .into_py_result()?,
             )))
         })
     }
@@ -821,7 +829,7 @@ impl FlowBuilder {
         let mut scope_iter = scopes;
         let mut common_scope = scope_iter
             .next()
-            .ok_or_else(|| PyException::new_err("expect at least one input"))?;
+            .ok_or_else(|| api_error!("expect at least one input"))?;
         for scope in scope_iter {
             if scope.is_op_scope_descendant(common_scope) {
                 common_scope = scope;

@@ -33,7 +33,7 @@ fn set_settings_fn(get_settings_fn: Py<PyAny>) -> PyResult<()> {
             let py_settings = obj
                 .extract::<Pythonized<Settings>>()
                 .to_result_with_py_trace(py)?;
-            anyhow::Ok(py_settings.into_inner())
+            Ok::<_, Error>(py_settings.into_inner())
         })
     };
     crate::lib_context::set_settings_fn(Box::new(get_settings_closure));
@@ -47,7 +47,7 @@ fn init_pyo3_runtime() {
 
 #[pyfunction]
 fn init(py: Python<'_>, settings: Pythonized<Option<Settings>>) -> PyResult<()> {
-    py.detach(|| -> anyhow::Result<()> {
+    py.detach(|| -> Result<()> {
         get_runtime().block_on(async move { init_lib_context(settings.into_inner()).await })
     })
     .into_py_result()
@@ -55,7 +55,7 @@ fn init(py: Python<'_>, settings: Pythonized<Option<Settings>>) -> PyResult<()> 
 
 #[pyfunction]
 fn start_server(py: Python<'_>, settings: Pythonized<ServerSettings>) -> PyResult<()> {
-    py.detach(|| -> anyhow::Result<()> {
+    py.detach(|| -> Result<()> {
         let server = get_runtime().block_on(async move {
             server::init_server(get_lib_context().await?, settings.into_inner()).await
         })?;
@@ -394,29 +394,31 @@ impl Flow {
                 let result_fut = Python::attach(|py| -> Result<_> {
                     let handler = self.handler.clone_ref(py);
                     // Build args: pass a dict with the query input
-                    let args = pyo3::types::PyTuple::new(py, [input.query])?;
-                    let result_coro = handler.call(py, args, None).to_result_with_py_trace(py)?;
+                    let args = pyo3::types::PyTuple::new(py, [input.query]).map_err(Error::host)?;
+                    let result_coro = handler
+                        .call(py, args, None)
+                        .to_result_with_py_trace(py)
+                        .map_err(Error::from)?;
 
                     let py_exec_ctx = flow_ctx
                         .py_exec_ctx
                         .as_ref()
-                        .ok_or_else(|| anyhow!("Python execution context is missing"))?;
+                        .ok_or_else(|| internal_error!("Python execution context is missing"))?;
                     let task_locals = pyo3_async_runtimes::TaskLocals::new(
                         py_exec_ctx.event_loop.bind(py).clone(),
                     );
-                    Ok(py_utils::from_py_future(
-                        py,
-                        &task_locals,
-                        result_coro.into_bound(py),
-                    )?)
+                    Ok(
+                        py_utils::from_py_future(py, &task_locals, result_coro.into_bound(py))
+                            .map_err(Error::host)?,
+                    )
                 })?;
 
                 let py_obj = result_fut.await;
                 // Convert Python result to Rust type with proper traceback handling
                 let output = Python::attach(|py| -> Result<_> {
-                    let output_any = py_obj.to_result_with_py_trace(py)?;
+                    let output_any = py_obj.to_result_with_py_trace(py).map_err(Error::from)?;
                     let output: crate::py::Pythonized<crate::service::query_handler::QueryOutput> =
-                        output_any.extract(py)?;
+                        output_any.extract(py).map_err(Error::host)?;
                     Ok(output.into_inner())
                 })?;
 
@@ -545,9 +547,9 @@ fn make_drop_bundle(flow_names: Vec<String>) -> PyResult<SetupChangeBundle> {
 
 #[pyfunction]
 fn remove_flow_context(py: Python<'_>, flow_name: String) -> PyResult<()> {
-    py.detach(|| -> anyhow::Result<()> {
+    py.detach(|| -> Result<()> {
         get_runtime().block_on(async move {
-            let lib_context = get_lib_context().await.into_py_result()?;
+            let lib_context = get_lib_context().await?;
             lib_context.remove_flow_context(&flow_name);
             Ok(())
         })
@@ -580,7 +582,7 @@ fn get_auth_entry(key: String) -> PyResult<Pythonized<serde_json::Value>> {
 #[pyfunction]
 fn get_app_namespace(py: Python<'_>) -> PyResult<String> {
     let app_namespace = py
-        .detach(|| -> anyhow::Result<_> {
+        .detach(|| -> Result<_> {
             get_runtime().block_on(async move {
                 let lib_context = get_lib_context().await?;
                 Ok(lib_context.app_namespace.clone())

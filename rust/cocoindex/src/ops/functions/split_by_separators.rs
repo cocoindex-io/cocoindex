@@ -1,4 +1,3 @@
-use anyhow::{Context, Result};
 use regex::Regex;
 use std::sync::Arc;
 
@@ -46,7 +45,11 @@ impl Executor {
                     .collect::<Vec<_>>()
                     .join("|")
             );
-            Some(Regex::new(&pattern).context("failed to compile separators_regex")?)
+            Some(
+                Regex::new(&pattern)
+                    .internal()
+                    .with_context(|| "failed to compile separators_regex")?,
+            )
         };
         Ok(Self { args, spec, regex })
     }
