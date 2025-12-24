@@ -520,6 +520,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             .transpose()?
             .unwrap_or_default();
         let curr_version = effect_info.version + 1;
+        effect_info.version = curr_version;
 
         let mut declared_effects_to_process = declared_effects;
 
@@ -617,7 +618,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             };
             let item = db_schema::EffectInfoItem {
                 key: Cow::Owned(effect_key_bytes.into()),
-                states: vec![(curr_version, Some(new_state))],
+                states: vec![(0, None), (curr_version, Some(new_state))],
             };
             effect_info.items.insert(effect_path, item);
         }
