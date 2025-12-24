@@ -292,36 +292,61 @@ impl SourceUpdateTask {
                 )
                 .await;
 
-                if let Some(refresh_interval) = refresh_interval {
-                    let mut interval = tokio::time::interval(refresh_interval);
-                    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-                    interval.tick().await;
-                    loop {
-                        if let Some(progress_bar) = interval_progress_bar.as_ref() {
-                            progress_bar.set_message(format!(
-                                "{}.{}: Waiting for next interval update...",
-                                task.flow.flow_instance.name,
-                                task.import_op().name
-                            ));
-                            progress_bar.tick();
-                        }
-                        interval.tick().await;
+                let Some(refresh_interval) = refresh_interval else {
+                    return Ok(());
+                };
 
-                        task.update_one_pass_with_error_logging(
-                            source_indexing_context,
-                            "interval update",
-                            super::source_indexer::UpdateOptions {
-                                expect_little_diff: true,
-                                mode: super::source_indexer::UpdateMode::Normal,
-                            },
-                            interval_progress_bar.as_ref(),
-                        )
-                        .await;
+                let mut interval = tokio::time::interval(refresh_interval);
+                interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+                // tokio::time::interval ticks immediately once; consume it so the first loop waits.
+                interval.tick().await;
+
+                loop {
+                    if let Some(progress_bar) = interval_progress_bar.as_ref() {
+                        progress_bar.set_message(format!(
+                            "{}.{}: Waiting for next interval update...",
+                            task.flow.flow_instance.name,
+                            task.import_op().name
+                        ));
+                        progress_bar.tick();
+                    }
+
+                    // Wait for the next scheduled update tick
+                    interval.tick().await;
+
+                    let mut update_fut = Box::pin(task.update_one_pass_with_error_logging(
+                        source_indexing_context,
+                        "interval update",
+                        super::source_indexer::UpdateOptions {
+                            expect_little_diff: true,
+                            mode: super::source_indexer::UpdateMode::Normal,
+                        },
+                        interval_progress_bar.as_ref(),
+                    ));
+
+                    tokio::select! {
+                        biased;
+
+                        _ = update_fut.as_mut() => {
+                            // finished within refresh_interval, no warning
+                        }
+
+                        _ = tokio::time::sleep(refresh_interval) => {
+                            // overrun: warn once for this pass, then wait for the pass to finish
+                            warn!(
+                                flow_name = %task.flow.flow_instance.name,
+                                source_name = %task.import_op().name,
+                                update_title = "interval update",
+                                refresh_interval_secs = refresh_interval.as_secs_f64(),
+                                "Live update pass exceeded refresh_interval; interval updates will lag behind"
+                            );
+                            update_fut.as_mut().await;
+                        }
                     }
                 }
-                Ok(())
-            }
-            .boxed()
+    }
+    .boxed()
         });
 
         try_join_all(futs).await?;
@@ -428,9 +453,10 @@ impl SourceUpdateTask {
         let start_time = std::time::Instant::now();
         let update_stats = Arc::new(stats::UpdateStats::default());
 
-        // Check update result
+        let update_fut = source_indexing_context.update(&update_stats, update_options);
+
         self.run_with_progress_report(
-            source_indexing_context.update(&update_stats, update_options),
+            update_fut,
             &update_stats,
             update_title,
             Some(start_time),
@@ -475,6 +501,7 @@ impl SourceUpdateTask {
                 progress_bar,
             )
             .await;
+
         if let Err(err) = result {
             error!("{:?}", err);
         }
