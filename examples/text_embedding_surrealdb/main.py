@@ -148,15 +148,6 @@ async def search(query: str) -> cocoindex.QueryOutput:
             {"embedding": list(query_vector)},
         )
         if isinstance(res, list):
-            # results = [
-            #     {
-            #         "filename": row["filename"],
-            #         "text": row["text"],
-            #         "score": row["score"],
-            #     }
-            #     for row in res
-            #     if isinstance(row, dict)
-            # ]
             results = [QueryResult.model_validate(row) for row in res]
         else:
             raise ValueError(f"Unexpected result type: {type(res)}")
