@@ -10,6 +10,8 @@ use crate::state::stable_path::StablePath;
 use crate::state::stable_path_set::StablePathSet;
 use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt, SharedResultExtRef};
 
+use tracing::Instrument;
+
 pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
@@ -216,26 +218,29 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self.inner.stable_path
     }
 
-    #[instrument(name = "component.run", skip_all, fields(component_path = %self.stable_path()))]
     pub fn run(
         self,
         processor: Prof::ComponentProc,
         parent_context: Option<ComponentProcessorContext<Prof>>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
         let processor_context = self.new_processor_context_for_build(parent_context)?;
-        let join_handle = get_runtime().spawn(async move {
-            let output = self
-                .execute_once(&processor_context, Some(processor))
-                .await?;
-            let ret = match output {
-                Ok(Some(output)) => Ok(output),
-                Ok(None) => {
-                    bail!("component deletion can only run in background");
-                }
-                Err(err) => Err(err),
-            };
-            Ok(ret)
-        });
+        let span = tracing::info_span!("component.run", component_path = %self.stable_path());
+        let join_handle = get_runtime().spawn(
+            async move {
+                let output = self
+                    .execute_once(&processor_context, Some(processor))
+                    .await?;
+                let ret = match output {
+                    Ok(Some(output)) => Ok(output),
+                    Ok(None) => {
+                        bail!("component deletion can only run in background");
+                    }
+                    Err(err) => Err(err),
+                };
+                Ok(ret)
+            }
+            .instrument(span),
+        );
         Ok(ComponentMountRunHandle { join_handle })
     }
 
