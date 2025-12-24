@@ -28,8 +28,9 @@ pub enum Error {
     },
     Internal {
         source: Box<dyn StdError + Send + Sync>,
-        bt: Option<Backtrace>,
+        bt: Backtrace,
     },
+    InternalAnyhow(anyhow::Error),
 }
 
 impl Display for Error {
@@ -39,6 +40,7 @@ impl Display for Error {
             Error::HostLang(e) => write!(f, "{}", e),
             Error::Client { msg, .. } => write!(f, "Invalid Request: {}", msg),
             Error::Internal { source, .. } => write!(f, "{}", source),
+            Error::InternalAnyhow(e) => write!(f, "{}", e),
         }
     }
 }
@@ -49,6 +51,7 @@ impl StdError for Error {
             Error::Context { source, .. } => Some(source.as_ref()),
             Error::HostLang(e) => Some(e.as_ref()),
             Error::Internal { source, .. } => Some(source.as_ref()),
+            Error::InternalAnyhow(e) => e.source(),
             Error::Client { .. } => None,
         }
     }
@@ -75,21 +78,22 @@ impl Error {
     pub fn internal(e: impl StdError + Send + Sync + 'static) -> Self {
         Self::Internal {
             source: Box::new(e),
-            bt: Some(Backtrace::capture()),
+            bt: Backtrace::capture(),
         }
     }
 
     pub fn internal_msg(msg: impl Into<String>) -> Self {
         Self::Internal {
             source: Box::new(StringError(msg.into())),
-            bt: Some(Backtrace::capture()),
+            bt: Backtrace::capture(),
         }
     }
 
     pub fn backtrace(&self) -> Option<&Backtrace> {
         match self {
             Error::Client { bt, .. } => Some(bt),
-            Error::Internal { bt, .. } => bt.as_ref(),
+            Error::Internal { bt, .. } => Some(bt),
+            Error::InternalAnyhow(e) => Some(e.backtrace()),
             Error::Context { source, .. } => source.backtrace(),
             Error::HostLang(_) => None,
         }
@@ -121,28 +125,9 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-// Wrapper for anyhow::Error to implement StdError
-#[derive(Debug)]
-pub struct AnyhowWrapper(anyhow::Error);
-
-impl Display for AnyhowWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&self.0, f)
-    }
-}
-
-impl StdError for AnyhowWrapper {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        self.0.source()
-    }
-}
-
 impl From<anyhow::Error> for Error {
     fn from(e: anyhow::Error) -> Self {
-        Error::Internal {
-            source: Box::new(AnyhowWrapper(e)),
-            bt: None,
-        }
+        Error::InternalAnyhow(e)
     }
 }
 
@@ -154,20 +139,14 @@ impl From<ApiError> for Error {
                 bt: Backtrace::capture(),
             }
         } else {
-            Error::Internal {
-                source: Box::new(AnyhowWrapper(e.err)),
-                bt: None,
-            }
+            Error::InternalAnyhow(e.err)
         }
     }
 }
 
 impl From<crate::retryable::Error> for Error {
     fn from(e: crate::retryable::Error) -> Self {
-        Error::Internal {
-            source: Box::new(AnyhowWrapper(e.error)),
-            bt: None,
-        }
+        Error::InternalAnyhow(e.error)
     }
 }
 
@@ -210,7 +189,7 @@ impl<T, E: StdError + Send + Sync + 'static> IntoInternal<T> for std::result::Re
     fn internal(self) -> Result<T> {
         self.map_err(|e| Error::Internal {
             source: Box::new(e),
-            bt: Some(Backtrace::capture()),
+            bt: Backtrace::capture(),
         })
     }
 }
@@ -248,7 +227,7 @@ impl<T, E: StdError + Send + Sync + 'static> ResultExt<T, E> for std::result::Re
             msg: context.into(),
             source: Box::new(Error::Internal {
                 source: Box::new(e),
-                bt: Some(Backtrace::capture()),
+                bt: Backtrace::capture(),
             }),
         })
     }
@@ -258,7 +237,7 @@ impl<T, E: StdError + Send + Sync + 'static> ResultExt<T, E> for std::result::Re
             msg: f().into(),
             source: Box::new(Error::Internal {
                 source: Box::new(e),
-                bt: Some(Backtrace::capture()),
+                bt: Backtrace::capture(),
             }),
         })
     }
@@ -281,7 +260,7 @@ impl IntoResponse for Error {
         let (status_code, error_msg) = match &self {
             Error::Client { msg, .. } => (StatusCode::BAD_REQUEST, msg.clone()),
             Error::HostLang(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            Error::Context { .. } | Error::Internal { .. } => {
+            Error::Context { .. } | Error::Internal { .. } | Error::InternalAnyhow(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", self))
             }
         };
@@ -374,7 +353,7 @@ impl SharedError {
                 // Already extracted; return a generic internal error with the residual message.
                 return Error::Internal {
                     source: Box::new(err.clone()),
-                    bt: Some(Backtrace::capture()),
+                    bt: Backtrace::capture(),
                 };
             }
             SharedErrorState::Error(err) => ResidualError::new(err),
@@ -422,7 +401,7 @@ impl SharedError {
         Self(Arc::new(Mutex::new(SharedErrorState::Error(
             Error::Internal {
                 source: Box::new(err),
-                bt: Some(Backtrace::capture()),
+                bt: Backtrace::capture(),
             },
         ))))
     }
