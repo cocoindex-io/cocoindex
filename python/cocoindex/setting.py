@@ -3,9 +3,9 @@ Data types for settings of the cocoindex library.
 """
 
 import os
-
-from typing import Callable, Self, Any, overload
 from dataclasses import dataclass
+from typing import Any, Callable, Self, overload
+
 from . import _engine  # type: ignore
 
 
@@ -99,13 +99,17 @@ class Settings:
     def from_env(cls) -> Self:
         """Load settings from environment variables."""
 
-        surreal_endpoint = os.getenv("COCOINDEX_SURREAL_ENDPOINT")
+        surreal_endpoint = os.getenv("COCOINDEX_SURREALDB_ENDPOINT")
         if surreal_endpoint is not None:
             surreal_kwargs: dict[str, Any] = {"endpoint": surreal_endpoint}
-            _load_field(surreal_kwargs, "namespace", "COCOINDEX_SURREAL_NS", required=True)
-            _load_field(surreal_kwargs, "database", "COCOINDEX_SURREAL_DB", required=True)
-            _load_field(surreal_kwargs, "user", "COCOINDEX_SURREAL_USER")
-            _load_field(surreal_kwargs, "password", "COCOINDEX_SURREAL_PASSWORD")
+            _load_field(
+                surreal_kwargs, "namespace", "COCOINDEX_SURREALDB_NS", required=True
+            )
+            _load_field(
+                surreal_kwargs, "database", "COCOINDEX_SURREALDB_DB", required=True
+            )
+            _load_field(surreal_kwargs, "user", "COCOINDEX_SURREALDB_USER")
+            _load_field(surreal_kwargs, "password", "COCOINDEX_SURREALDB_PASSWORD")
             surreal = SurrealDbConnectionSpec(**surreal_kwargs)
             database = None
         else:

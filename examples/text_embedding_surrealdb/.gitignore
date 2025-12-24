@@ -1,0 +1,5 @@
+# user's .env could contain API keys
+.env
+
+# UV
+uv.lock

@@ -10,6 +10,7 @@ This module tests that:
 
 import os
 from unittest.mock import patch
+
 import pytest
 
 import cocoindex
@@ -171,11 +172,11 @@ class TestOptionalDatabase:
         with patch.dict(
             os.environ,
             {
-                "COCOINDEX_SURREAL_ENDPOINT": "ws://localhost:8000",
-                "COCOINDEX_SURREAL_NS": "testns",
-                "COCOINDEX_SURREAL_DB": "testdb",
-                "COCOINDEX_SURREAL_USER": "root",
-                "COCOINDEX_SURREAL_PASSWORD": "root",
+                "COCOINDEX_SURREALDB_ENDPOINT": "ws://localhost:8000",
+                "COCOINDEX_SURREALDB_NS": "testns",
+                "COCOINDEX_SURREALDB_DB": "testdb",
+                "COCOINDEX_SURREALDB_USER": "root",
+                "COCOINDEX_SURREALDB_PASSWORD": "root",
                 # Also set Postgres vars; Surreal should take precedence
                 "COCOINDEX_DATABASE_URL": "postgresql://localhost:5432/test",
             },

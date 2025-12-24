@@ -192,6 +192,7 @@ It defines an index flow like this:
 | [Meeting Notes to Knowledge Graph](examples/meeting_notes_graph) | Extract structured meeting info from Google Drive and build a knowledge graph |
 | [Docs to Knowledge Graph](examples/docs_to_knowledge_graph) | Extract relationships from Markdown documents and build a knowledge graph |
 | [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |
+| [Embeddings to SurrealDB](examples/text_embedding_surrealdb) | Index documents in a SurrealDB collection for semantic search |
 | [Embeddings to LanceDB](examples/text_embedding_lancedb) | Index documents in a LanceDB collection for semantic search |
 | [FastAPI Server with Docker](examples/fastapi_server_docker) | Run the semantic search server in a Dockerized FastAPI setup |
 | [Product Recommendation](examples/product_recommendation) | Build real-time product recommendations with LLM and graph database|

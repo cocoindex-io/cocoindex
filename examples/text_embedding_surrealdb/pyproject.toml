@@ -1,0 +1,20 @@
+[project]
+name = "text-embedding-surrealdb"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Martin Schaer", email = "martin.schaer@surrealdb.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[embeddings]",
+    "pydantic>=2.12.5",
+    "surrealdb>=1.0.7",
+]
+
+[tool.uv.sources]
+cocoindex = { path = "../..", editable = true }
+
+# [project.scripts]
+# surrealdb-example = "surrealdb_example:main"

@@ -274,7 +274,7 @@ impl LibContext {
         self.persistence_ctx.as_ref().ok_or_else(|| {
             anyhow!(
                 "Database is required for this operation. \
-                         The easiest way is to set COCOINDEX_DATABASE_URL (Postgres) or COCOINDEX_SURREAL_ENDPOINT (SurrealDB) environment variable. \
+                         The easiest way is to set COCOINDEX_DATABASE_URL (Postgres) or COCOINDEX_SURREALDB_ENDPOINT (SurrealDB) environment variable. \
                          Please see https://cocoindex.io/docs/core/settings for more details."
             )
         })
@@ -284,7 +284,9 @@ impl LibContext {
         self.require_persistence_ctx()?
             .builtin_postgres_pool
             .as_ref()
-            .ok_or_else(|| anyhow!("Postgres pool is not available for the configured persistence backend"))
+            .ok_or_else(|| {
+                anyhow!("Postgres pool is not available for the configured persistence backend")
+            })
     }
 
     pub fn require_persistence(&self) -> Result<Arc<dyn InternalPersistence>> {

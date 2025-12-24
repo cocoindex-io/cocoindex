@@ -152,7 +152,7 @@ If you use the Postgres database hosted by [Supabase](https://supabase.com/), pl
 
 ### SurrealDB internal persistence (alternative)
 
-If you set `COCOINDEX_SURREAL_ENDPOINT`, CocoIndex will use SurrealDB **instead of Postgres** for internal persistence (setup metadata + tracking state).
+If you set `COCOINDEX_SURREALDB_ENDPOINT`, CocoIndex will use SurrealDB **instead of Postgres** for internal persistence (setup metadata + tracking state).
 
 - Endpoint uses WebSocket, e.g. `ws://localhost:8000` (or `wss://...`).
 - CocoIndex will use the namespace and database specified by env vars below.
@@ -160,11 +160,11 @@ If you set `COCOINDEX_SURREAL_ENDPOINT`, CocoIndex will use SurrealDB **instead 
 
 *Environment variables*:
 
-* `COCOINDEX_SURREAL_ENDPOINT` (required): SurrealDB websocket endpoint, e.g. `ws://localhost:8000`
-* `COCOINDEX_SURREAL_NS` (required): namespace
-* `COCOINDEX_SURREAL_DB` (required): database
-* `COCOINDEX_SURREAL_USER` (optional): username (if not provided, no signin is performed)
-* `COCOINDEX_SURREAL_PASSWORD` (optional): password
+* `COCOINDEX_SURREALDB_ENDPOINT` (required): SurrealDB websocket endpoint, e.g. `ws://localhost:8000`
+* `COCOINDEX_SURREALDB_NS` (required): namespace
+* `COCOINDEX_SURREALDB_DB` (required): database
+* `COCOINDEX_SURREALDB_USER` (optional): username (if not provided, no signin is performed)
+* `COCOINDEX_SURREALDB_PASSWORD` (optional): password
 
 ### GlobalExecutionOptions
 
@@ -183,15 +183,15 @@ This is the list of environment variables, each of which has a corresponding fie
 | environment variable | corresponding field in `Settings` | required? |
 |---------------------|-------------------|----------|
 | `COCOINDEX_APP_NAMESPACE` | `app_namespace` | No |
-| `COCOINDEX_DATABASE_URL` | `database.url` | Yes |
+| `COCOINDEX_DATABASE_URL` | `database.url` | Yes (No if you use SurrealDB) |
 | `COCOINDEX_DATABASE_USER` | `database.user` | No |
 | `COCOINDEX_DATABASE_PASSWORD` | `database.password` | No |
 | `COCOINDEX_DATABASE_MAX_CONNECTIONS` | `database.max_connections` | No (default: `25`) |
 | `COCOINDEX_DATABASE_MIN_CONNECTIONS` | `database.min_connections` | No (default: `5`) |
-| `COCOINDEX_SURREAL_ENDPOINT` | `surreal.endpoint` | No |
-| `COCOINDEX_SURREAL_NS` | `surreal.namespace` | No |
-| `COCOINDEX_SURREAL_DB` | `surreal.database` | No |
-| `COCOINDEX_SURREAL_USER` | `surreal.user` | No |
-| `COCOINDEX_SURREAL_PASSWORD` | `surreal.password` | No |
+| `COCOINDEX_SURREALDB_ENDPOINT` | `surreal.endpoint` | No |
+| `COCOINDEX_SURREALDB_NS` | `surreal.namespace` | No |
+| `COCOINDEX_SURREALDB_DB` | `surreal.database` | No |
+| `COCOINDEX_SURREALDB_USER` | `surreal.user` | No |
+| `COCOINDEX_SURREALDB_PASSWORD` | `surreal.password` | No |
 | `COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS` | `global_execution_options.source_max_inflight_rows` | No (default: `1024`) |
 | `COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES` | `global_execution_options.source_max_inflight_bytes` | No |

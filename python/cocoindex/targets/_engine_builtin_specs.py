@@ -1,10 +1,9 @@
 """All builtin targets."""
 
 from dataclasses import dataclass
-from typing import Sequence, Literal
+from typing import Literal, Sequence
 
-from .. import op
-from .. import index
+from .. import index, op
 from ..auth_registry import AuthEntryReference
 from ..setting import DatabaseConnectionSpec
 
@@ -170,8 +169,9 @@ class SurrealDBConnection:
 class SurrealDB(op.TargetSpec):
     """Multi-model storage powered by SurrealDB (vectors + graph relations)."""
 
-    connection: AuthEntryReference[SurrealDBConnection]
-    mapping: Nodes | Relationships
+    # TODO: should we add vector indexes?
+    mapping: Nodes | Relationships | None = None
+    connection: AuthEntryReference[SurrealDBConnection] | None = None
 
 
 class SurrealDBDeclaration(op.DeclarationSpec):
