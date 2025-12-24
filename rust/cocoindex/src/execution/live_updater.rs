@@ -292,8 +292,6 @@ impl SourceUpdateTask {
                 )
                 .await;
 
-                // IMPORTANT:
-                // If refresh_interval is None, we're done after the initial pass.
                 let Some(refresh_interval) = refresh_interval else {
                     return Ok(());
                 };
@@ -455,7 +453,6 @@ impl SourceUpdateTask {
         let start_time = std::time::Instant::now();
         let update_stats = Arc::new(stats::UpdateStats::default());
 
-        // No overrun warning here anymore (founder wants it at the interval loop layer).
         let update_fut = source_indexing_context.update(&update_stats, update_options);
 
         self.run_with_progress_report(
