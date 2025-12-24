@@ -81,7 +81,7 @@ impl<'de> serde::Deserialize<'de> for TrackedTargetKeyInfo {
 /// (source_id, target_key)
 pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKeyInfo>)>;
 
-#[derive(sqlx::FromRow, Debug, Serialize, Deserialize)]
+#[derive(sqlx::FromRow, Debug, Deserialize)]
 pub struct SourceTrackingInfoForProcessing {
     pub memoization_info: Option<sqlx::types::Json<Option<StoredMemoizationInfo>>>,
 
@@ -116,7 +116,7 @@ pub async fn read_source_tracking_info_for_processing(
     Ok(tracking_info)
 }
 
-#[derive(sqlx::FromRow, Debug, Serialize, Deserialize)]
+#[derive(sqlx::FromRow, Debug, Deserialize)]
 pub struct SourceTrackingInfoForPrecommit {
     pub max_process_ordinal: i64,
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
@@ -208,7 +208,7 @@ pub async fn touch_max_process_ordinal(
     Ok(())
 }
 
-#[derive(sqlx::FromRow, Debug, Serialize, Deserialize)]
+#[derive(sqlx::FromRow, Debug, Deserialize)]
 pub struct SourceTrackingInfoForCommit {
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
     pub process_ordinal: Option<i64>,
@@ -312,7 +312,7 @@ pub async fn delete_source_tracking_info(
     Ok(())
 }
 
-#[derive(sqlx::FromRow, Debug, Serialize, Deserialize)]
+#[derive(sqlx::FromRow, Debug)]
 pub struct TrackedSourceKeyMetadata {
     pub source_key: serde_json::Value,
     pub processed_source_ordinal: Option<i64>,
@@ -354,7 +354,7 @@ impl ListTrackedSourceKeyMetadataState {
     }
 }
 
-#[derive(sqlx::FromRow, Debug, Serialize, Deserialize)]
+#[derive(sqlx::FromRow, Debug)]
 pub struct SourceLastProcessedInfo {
     pub processed_source_ordinal: Option<i64>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
