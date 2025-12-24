@@ -1,4 +1,5 @@
 import base64
+import json
 import pathlib
 from typing import Iterator
 
@@ -31,16 +32,34 @@ async def extract_patient_info(scope: coco.Scope, content: bytes) -> Patient:
 def process_patient_form(
     scope: coco.Scope, file: FileLike, target: localfs.DirTarget
 ) -> None:
-    """Process a patient intake form PDF and extract structured information."""
-    content = file.read()
+    """Process a patient intake form PDF and extract structured information.
 
-    patient_info = coco.mount_run(
-        extract_patient_info, scope / "extract", content
-    ).result()
-
-    patient_json = patient_info.model_dump_json(indent=2)
-
+    Writes one JSON file per input PDF. If extraction fails, write an error JSON
+    instead so the rest of the pipeline can continue.
+    """
     output_filename = file.relative_path.stem + ".json"
+
+    try:
+        content = file.read()
+        patient_info = coco.mount_run(
+            extract_patient_info, scope / "extract", content
+        ).result()
+        patient_json = patient_info.model_dump_json(indent=2)
+    except Exception as e:
+        target.declare_file(
+            scope,
+            filename=output_filename,
+            content=json.dumps(
+                {
+                    "file": str(file.relative_path),
+                    "error": "Failed to process patient intake form",
+                    "details": str(e),
+                },
+                indent=2,
+            ),
+        )
+        return
+
     target.declare_file(scope, filename=output_filename, content=patient_json)
 
 
