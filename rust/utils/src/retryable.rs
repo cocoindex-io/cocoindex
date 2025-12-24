@@ -88,6 +88,15 @@ impl From<anyhow::Error> for Error {
     }
 }
 
+impl From<crate::error::Error> for Error {
+    fn from(error: crate::error::Error) -> Self {
+        Self {
+            error: anyhow::Error::from(error),
+            is_retryable: false,
+        }
+    }
+}
+
 impl From<Error> for anyhow::Error {
     fn from(val: Error) -> Self {
         val.error
