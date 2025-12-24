@@ -37,8 +37,13 @@ impl InternalPersistence for PostgresPersistence {
         seen_metadata_version: Option<u64>,
         resource_update_info: &HashMap<ResourceTypeKey, StateUpdateInfo>,
     ) -> Result<u64> {
-        db_metadata::stage_changes_for_flow(flow_name, seen_metadata_version, resource_update_info, &self.pool)
-            .await
+        db_metadata::stage_changes_for_flow(
+            flow_name,
+            seen_metadata_version,
+            resource_update_info,
+            &self.pool,
+        )
+        .await
     }
 
     async fn commit_changes_for_flow(
@@ -79,7 +84,10 @@ impl InternalPersistence for PostgresPersistence {
         Ok(())
     }
 
-    async fn apply_tracking_table_setup_change(&self, change: &TrackingTableSetupChange) -> Result<()> {
+    async fn apply_tracking_table_setup_change(
+        &self,
+        change: &TrackingTableSetupChange,
+    ) -> Result<()> {
         // Delegate to the existing SQL implementation for Postgres by temporarily using its method body logic:
         // call the module-level apply via its existing public API in db_tracking_setup.
         // The current code lives on the type itself and grabs the builtin pool from LibContext; so we replicate here
@@ -116,8 +124,13 @@ impl InternalPersistence for PostgresPersistence {
         source_key_json: &serde_json::Value,
         db_setup: &TrackingTableSetupState,
     ) -> Result<Option<db_tracking::SourceLastProcessedInfo>> {
-        db_tracking::read_source_last_processed_info(source_id, source_key_json, db_setup, &self.pool)
-            .await
+        db_tracking::read_source_last_processed_info(
+            source_id,
+            source_key_json,
+            db_setup,
+            &self.pool,
+        )
+        .await
     }
 }
 
@@ -263,7 +276,13 @@ impl InternalPersistenceTxn for PostgresPersistenceTxn {
         source_key_json: &serde_json::Value,
         db_setup: &TrackingTableSetupState,
     ) -> Result<()> {
-        db_tracking::delete_source_tracking_info(source_id, source_key_json, db_setup, &mut *self.conn).await
+        db_tracking::delete_source_tracking_info(
+            source_id,
+            source_key_json,
+            db_setup,
+            &mut *self.conn,
+        )
+        .await
     }
 
     async fn update_source_tracking_ordinal(
@@ -299,8 +318,13 @@ impl InternalPersistenceTxn for PostgresPersistenceTxn {
         state: serde_json::Value,
         db_setup: &TrackingTableSetupState,
     ) -> Result<()> {
-        db_tracking::upsert_source_state(source_id, source_key_json, state, db_setup, &mut *self.conn).await
+        db_tracking::upsert_source_state(
+            source_id,
+            source_key_json,
+            state,
+            db_setup,
+            &mut *self.conn,
+        )
+        .await
     }
 }
-
-

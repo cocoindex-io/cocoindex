@@ -263,7 +263,10 @@ impl TrackingTableSetupChange {
 }
 
 /// Postgres helper used by the Postgres persistence backend.
-pub async fn apply_change_with_pool(change: &TrackingTableSetupChange, pool: &PgPool) -> Result<()> {
+pub async fn apply_change_with_pool(
+    change: &TrackingTableSetupChange,
+    pool: &PgPool,
+) -> Result<()> {
     if let Some(desired) = &change.desired_state {
         for lagacy_name in change.legacy_tracking_table_names.iter() {
             let query = format!(
@@ -274,7 +277,8 @@ pub async fn apply_change_with_pool(change: &TrackingTableSetupChange, pool: &Pg
         }
 
         if change.min_existing_version_id != Some(desired.version_id) {
-            upgrade_tracking_table(pool, desired, change.min_existing_version_id.unwrap_or(0)).await?;
+            upgrade_tracking_table(pool, desired, change.min_existing_version_id.unwrap_or(0))
+                .await?;
         }
     } else {
         for lagacy_name in change.legacy_tracking_table_names.iter() {

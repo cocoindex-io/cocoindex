@@ -1,11 +1,11 @@
 use crate::prelude::*;
 
-use crate::execution::db_tracking_setup::TrackingTableSetupChange;
-use crate::execution::db_tracking_setup::TrackingTableSetupState;
 use crate::execution::db_tracking::{
     SourceLastProcessedInfo, SourceTrackingInfoForCommit, SourceTrackingInfoForPrecommit,
     SourceTrackingInfoForProcessing, TrackedSourceKeyMetadata, TrackedTargetKeyForSource,
 };
+use crate::execution::db_tracking_setup::TrackingTableSetupChange;
+use crate::execution::db_tracking_setup::TrackingTableSetupState;
 use crate::setup::db_metadata::{ResourceTypeKey, SetupMetadataRecord, StateUpdateInfo};
 use async_trait::async_trait;
 use utils::db::WriteAction;
@@ -37,7 +37,10 @@ pub trait InternalPersistence: Send + Sync {
     async fn apply_metadata_table_setup(&self, metadata_table_missing: bool) -> Result<()>;
 
     /// Apply tracking-table setup changes for a flow (DDL/cleanup for SQL backends; no-op for schema-less backends).
-    async fn apply_tracking_table_setup_change(&self, change: &TrackingTableSetupChange) -> Result<()>;
+    async fn apply_tracking_table_setup_change(
+        &self,
+        change: &TrackingTableSetupChange,
+    ) -> Result<()>;
 
     async fn begin_txn(&self) -> Result<Box<dyn InternalPersistenceTxn>>;
 
@@ -146,5 +149,3 @@ pub trait InternalPersistenceTxn: Send {
         db_setup: &TrackingTableSetupState,
     ) -> Result<()>;
 }
-
-

@@ -552,7 +552,11 @@ impl<'a> RowIndexer<'a> {
         let mut txn = self.persistence.begin_txn().await?;
 
         let tracking_info = txn
-            .read_source_tracking_info_for_precommit(self.source_id, &self.source_key_json, db_setup)
+            .read_source_tracking_info_for_precommit(
+                self.source_id,
+                &self.source_key_json,
+                db_setup,
+            )
             .await?;
         if !self.mode.needs_full_export()
             && let Some(tracking_info) = &tracking_info
