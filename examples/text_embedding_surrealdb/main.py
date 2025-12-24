@@ -15,19 +15,32 @@ class QueryResult(BaseModel):
     score: float
 
 
-# SurrealDB connection generator
-class SurrealDBConnection:
-    def __init__(self):
-        self.url = os.environ.get("COCOINDEX_SURREALDB_ENDPOINT", "ws://localhost:8000")
-        self.user = os.environ.get("COCOINDEX_SURREALDB_USER", "root")
-        self.password = os.environ.get("COCOINDEX_SURREALDB_PASSWORD", "secret")
-        self.namespace = os.environ.get("COCOINDEX_SURREALDB_NS", "cocoindex")
-        self.database = os.environ.get("COCOINDEX_SURREALDB_DB", __name__)
+SURREALDB_URL = os.environ.get("COCOINDEX_SURREALDB_URL", "ws://localhost:8000")
+SURREALDB_USER = os.environ.get("COCOINDEX_SURREALDB_USER", "root")
+SURREALDB_PASSWORD = os.environ.get("COCOINDEX_SURREALDB_PASSWORD", "secret")
+SURREALDB_NS = os.environ.get("COCOINDEX_SURREALDB_NS", "cocoindex")
+SURREALDB_DB = os.environ.get("COCOINDEX_SURREALDB_DB", __name__)
 
+surrealdb_conn_spec = cocoindex.add_auth_entry(
+    "SurrealDBConnection",
+    cocoindex.targets.SurrealDBConnection(
+        url=SURREALDB_URL,
+        namespace=SURREALDB_NS,
+        database=SURREALDB_DB,
+        username=SURREALDB_USER,
+        password=SURREALDB_PASSWORD,
+    ),
+)
+
+
+# SurrealDB connection generator
+class SurrealDBClient:
     async def __aenter__(self):
-        self.async_conn = AsyncWsSurrealConnection(self.url)
-        await self.async_conn.signin({"username": self.user, "password": self.password})
-        await self.async_conn.use(self.namespace, self.database)
+        self.async_conn = AsyncWsSurrealConnection(SURREALDB_URL)
+        await self.async_conn.signin(
+            {"username": SURREALDB_USER, "password": SURREALDB_PASSWORD}
+        )
+        await self.async_conn.use(SURREALDB_NS, SURREALDB_DB)
         return self.async_conn
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -89,7 +102,9 @@ def text_embedding_flow(
 
     doc_embeddings.export(
         "doc_embeddings",
-        cocoindex.targets.SurrealDB(),
+        cocoindex.targets.SurrealDB(
+            surrealdb_conn_spec, mapping=cocoindex.targets.Nodes(label="Document")
+        ),
         primary_key_fields=["filename", "location"],
         vector_indexes=[
             cocoindex.VectorIndexDef(
@@ -118,7 +133,7 @@ async def search(query: str) -> cocoindex.QueryOutput:
     # Evaluate the transform flow defined above with the input query, to get the embedding.
     query_vector = text_to_embedding.eval(query)
     # Run the query and get the results.
-    async with SurrealDBConnection() as conn:
+    async with SurrealDBClient() as conn:
         res = await conn.query(
             f"""
                 SELECT *, score

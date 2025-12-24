@@ -274,7 +274,7 @@ impl LibContext {
         self.persistence_ctx.as_ref().ok_or_else(|| {
             anyhow!(
                 "Database is required for this operation. \
-                         The easiest way is to set COCOINDEX_DATABASE_URL (Postgres) or COCOINDEX_SURREALDB_ENDPOINT (SurrealDB) environment variable. \
+                         The easiest way is to set COCOINDEX_DATABASE_URL (Postgres) or COCOINDEX_SURREALDB_URL (SurrealDB) environment variable. \
                          Please see https://cocoindex.io/docs/core/settings for more details."
             )
         })
@@ -311,7 +311,7 @@ pub async fn create_lib_context(settings: settings::Settings) -> Result<LibConte
     let db_pools = DbPools::default();
     let persistence_ctx = if let Some(surreal_spec) = &settings.surreal {
         let persistence = SurrealWsPersistence::connect(
-            &surreal_spec.endpoint,
+            &surreal_spec.url,
             &surreal_spec.namespace,
             &surreal_spec.database,
             surreal_spec.user.as_deref(),

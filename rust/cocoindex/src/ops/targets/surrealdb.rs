@@ -18,8 +18,8 @@ use tokio::sync::OnceCell;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ConnectionSpec {
-    /// Websocket RPC endpoint, e.g. `ws://localhost:8000/rpc`.
-    endpoint: String,
+    /// Websocket RPC url, e.g. `ws://localhost:8000`.
+    url: String,
     /// Namespace to use.
     namespace: String,
     /// Database to use.
@@ -49,7 +49,7 @@ pub struct Declaration {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 struct DbKey {
-    endpoint: String,
+    url: String,
     namespace: String,
     database: String,
     username: String,
@@ -58,7 +58,7 @@ struct DbKey {
 impl DbKey {
     fn from_spec(spec: &ConnectionSpec) -> Self {
         Self {
-            endpoint: spec.endpoint.clone(),
+            url: spec.url.clone(),
             namespace: spec.namespace.clone(),
             database: spec.database.clone(),
             username: spec.username.clone(),
@@ -81,7 +81,8 @@ impl DbPool {
         let db = cell
             .get_or_try_init(|| async {
                 let sdb: Surreal<Client> = Surreal::init();
-                sdb.connect::<Ws>(&spec.endpoint).await?;
+                // TODO: implement Wss
+                sdb.connect::<Ws>(&spec.url).await?;
                 sdb.signin(Root {
                     username: &spec.username,
                     password: &spec.password,
@@ -93,7 +94,6 @@ impl DbPool {
             .await?;
         Ok(db.clone())
     }
-
 }
 
 ////////////////////////////////////////////////////////////
@@ -139,7 +139,9 @@ impl setup::ResourceSetupChange for SetupChange {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         match &self.action {
             SetupAction::NoChange => vec![],
-            SetupAction::Delete => vec![setup::ChangeDescription::Action("Remove table".to_string())],
+            SetupAction::Delete => {
+                vec![setup::ChangeDescription::Action("Remove table".to_string())]
+            }
             SetupAction::Upsert(state) => {
                 let mut changes = vec![setup::ChangeDescription::Action(if self.existing {
                     "Update table".to_string()
@@ -194,7 +196,13 @@ pub struct ExportContext {
 
 fn sanitize_ident(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -250,9 +258,9 @@ fn record_id(table: &str, key: &KeyValue, additional_key: &serde_json::Value) ->
 fn parse_vector_field(field_type: &schema::ValueType) -> Result<(usize, &'static str)> {
     match field_type {
         schema::ValueType::Basic(schema::BasicValueType::Vector(vs)) => {
-            let dim = vs
-                .dimension
-                .ok_or_else(|| api_error!("Vector index field must be a vector with fixed dimension"))?;
+            let dim = vs.dimension.ok_or_else(|| {
+                api_error!("Vector index field must be a vector with fixed dimension")
+            })?;
             let elem = match &*vs.element_type {
                 schema::BasicValueType::Float32 => "F32",
                 schema::BasicValueType::Float64 => "F64",
@@ -351,8 +359,14 @@ fn build_table_setup_sql(table: &str, state: &SetupState) -> Result<String> {
     Ok(out)
 }
 
-fn encode_value_as_json(schema: &schema::ValueType, value: &value::Value) -> Result<serde_json::Value> {
-    Ok(serde_json::to_value(TypedValue { t: schema, v: value })?)
+fn encode_value_as_json(
+    schema: &schema::ValueType,
+    value: &value::Value,
+) -> Result<serde_json::Value> {
+    Ok(serde_json::to_value(TypedValue {
+        t: schema,
+        v: value,
+    })?)
 }
 
 fn encode_key_fields_as_json(
@@ -448,83 +462,97 @@ impl TargetFactoryBase for Factory {
             declarations.iter().map(|d| (&d.connection, &d.decl)),
         )?;
 
-        let data_coll_outputs: Vec<TypedExportDataCollectionBuildOutput<Self>> =
-            std::iter::zip(data_collections, analyzed_data_colls.into_iter())
-                .map(|(data_coll, analyzed)| {
-                    if !data_coll.index_options.fts_indexes.is_empty() {
-                        api_bail!("FTS indexes are not supported for SurrealDB target yet");
+        let data_coll_outputs: Vec<TypedExportDataCollectionBuildOutput<Self>> = std::iter::zip(
+            data_collections,
+            analyzed_data_colls.into_iter(),
+        )
+        .map(|(data_coll, analyzed)| {
+            if !data_coll.index_options.fts_indexes.is_empty() {
+                api_bail!("FTS indexes are not supported for SurrealDB target yet");
+            }
+            let value_field_types = analyzed
+                .schema
+                .value_fields
+                .iter()
+                .map(|f| (f.name.as_str(), &f.value_type.typ))
+                .collect::<HashMap<_, _>>();
+
+            let mut vector_indexes = vec![];
+            for index_def in data_coll.index_options.vector_indexes.iter() {
+                let field_typ = value_field_types
+                    .get(index_def.field_name.as_str())
+                    .ok_or_else(|| {
+                        api_error!(
+                            "Unknown field name for vector index: {}",
+                            index_def.field_name
+                        )
+                    })?;
+                let (dim, elem_type) = parse_vector_field(field_typ)?;
+                // Only HNSW is supported
+                if let Some(method) = &index_def.method {
+                    if matches!(method, spec::VectorIndexMethod::IvfFlat { .. }) {
+                        api_bail!(
+                            "IvfFlat vector index method is not supported for SurrealDB target"
+                        );
                     }
-                    let value_field_types = analyzed
-                        .schema
-                        .value_fields
-                        .iter()
-                        .map(|f| (f.name.as_str(), &f.value_type.typ))
-                        .collect::<HashMap<_, _>>();
+                }
+                // Validate metric mapping
+                let _ = metric_to_surreal(index_def.metric)?;
+                vector_indexes.push(VectorIndexState {
+                    field_name: index_def.field_name.clone(),
+                    metric: index_def.metric,
+                    vector_size: dim,
+                    method: index_def.method.clone(),
+                    elem_type: elem_type.to_string(),
+                });
+            }
 
-                    let mut vector_indexes = vec![];
-                    for index_def in data_coll.index_options.vector_indexes.iter() {
-                        let field_typ = value_field_types.get(index_def.field_name.as_str()).ok_or_else(|| {
-                            api_error!("Unknown field name for vector index: {}", index_def.field_name)
-                        })?;
-                        let (dim, elem_type) = parse_vector_field(field_typ)?;
-                        // Only HNSW is supported
-                        if let Some(method) = &index_def.method {
-                            if matches!(method, spec::VectorIndexMethod::IvfFlat { .. }) {
-                                api_bail!("IvfFlat vector index method is not supported for SurrealDB target");
-                            }
-                        }
-                        // Validate metric mapping
-                        let _ = metric_to_surreal(index_def.metric)?;
-                        vector_indexes.push(VectorIndexState {
-                            field_name: index_def.field_name.clone(),
-                            metric: index_def.metric,
-                            vector_size: dim,
-                            method: index_def.method.clone(),
-                            elem_type: elem_type.to_string(),
-                        });
-                    }
+            let desired_setup_state = SetupState {
+                key_field_names: analyzed
+                    .schema
+                    .key_fields
+                    .iter()
+                    .map(|f| f.name.clone())
+                    .collect(),
+                rel_endpoints: analyzed.rel.as_ref().map(|rel| {
+                    (
+                        rel.source.schema.elem_type.label().to_string(),
+                        rel.target.schema.elem_type.label().to_string(),
+                    )
+                }),
+                dependent_node_labels: analyzed
+                    .dependent_node_labels()
+                    .into_iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                vector_indexes,
+            };
+            let setup_key = SurrealGraphElement {
+                connection: data_coll.spec.connection.clone(),
+                typ: analyzed.schema.elem_type.clone(),
+            };
 
-                    let desired_setup_state = SetupState {
-                        key_field_names: analyzed.schema.key_fields.iter().map(|f| f.name.clone()).collect(),
-                        rel_endpoints: analyzed.rel.as_ref().map(|rel| {
-                            (
-                                rel.source.schema.elem_type.label().to_string(),
-                                rel.target.schema.elem_type.label().to_string(),
-                            )
-                        }),
-                        dependent_node_labels: analyzed
-                            .dependent_node_labels()
-                            .into_iter()
-                            .map(|s| s.to_string())
-                            .collect(),
-                        vector_indexes,
-                    };
-                    let setup_key = SurrealGraphElement {
-                        connection: data_coll.spec.connection.clone(),
-                        typ: analyzed.schema.elem_type.clone(),
-                    };
+            let pool = self.clone();
+            let conn_ref = data_coll.spec.connection.clone();
+            let ctx = context.clone();
+            let export_context = async move {
+                let conn_spec = ctx.auth_registry.get::<ConnectionSpec>(&conn_ref)?;
+                let db = pool.db_pool.get_db(&conn_spec).await?;
+                Ok(Arc::new(ExportContext {
+                    conn_ref,
+                    db,
+                    analyzed_data_coll: analyzed,
+                }))
+            }
+            .boxed();
 
-                    let pool = self.clone();
-                    let conn_ref = data_coll.spec.connection.clone();
-                    let ctx = context.clone();
-                    let export_context = async move {
-                        let conn_spec = ctx.auth_registry.get::<ConnectionSpec>(&conn_ref)?;
-                        let db = pool.db_pool.get_db(&conn_spec).await?;
-                        Ok(Arc::new(ExportContext {
-                            conn_ref,
-                            db,
-                            analyzed_data_coll: analyzed,
-                        }))
-                    }
-                    .boxed();
-
-                    Ok(TypedExportDataCollectionBuildOutput {
-                        export_context,
-                        setup_key,
-                        desired_setup_state,
-                    })
-                })
-                .collect::<Result<_>>()?;
+            Ok(TypedExportDataCollectionBuildOutput {
+                export_context,
+                setup_key,
+                desired_setup_state,
+            })
+        })
+        .collect::<Result<_>>()?;
 
         // Declarations create setup states for extra node labels.
         let decl_output = std::iter::zip(declarations, declared_graph_elements)
@@ -539,13 +567,20 @@ impl TargetFactoryBase for Factory {
                     .collect::<HashMap<_, _>>();
                 let mut vector_indexes = vec![];
                 for index_def in decl.decl.index_options.vector_indexes.iter() {
-                    let field_typ = value_field_types.get(index_def.field_name.as_str()).ok_or_else(|| {
-                        api_error!("Unknown field name for vector index: {}", index_def.field_name)
-                    })?;
+                    let field_typ = value_field_types
+                        .get(index_def.field_name.as_str())
+                        .ok_or_else(|| {
+                            api_error!(
+                                "Unknown field name for vector index: {}",
+                                index_def.field_name
+                            )
+                        })?;
                     let (dim, elem_type) = parse_vector_field(field_typ)?;
                     if let Some(method) = &index_def.method {
                         if matches!(method, spec::VectorIndexMethod::IvfFlat { .. }) {
-                            api_bail!("IvfFlat vector index method is not supported for SurrealDB target");
+                            api_bail!(
+                                "IvfFlat vector index method is not supported for SurrealDB target"
+                            );
                         }
                     }
                     let _ = metric_to_surreal(index_def.metric)?;
@@ -559,7 +594,11 @@ impl TargetFactoryBase for Factory {
                 }
 
                 let setup_state = SetupState {
-                    key_field_names: graph_elem_schema.key_fields.iter().map(|f| f.name.clone()).collect(),
+                    key_field_names: graph_elem_schema
+                        .key_fields
+                        .iter()
+                        .map(|f| f.name.clone())
+                        .collect(),
                     rel_endpoints: None,
                     dependent_node_labels: vec![],
                     vector_indexes,
@@ -700,10 +739,9 @@ impl TargetFactoryBase for Factory {
                 for upsert in m.mutation.upserts.iter() {
                     let mut content = encode_key_fields_as_json(&schema.key_fields, &upsert.key)?;
                     // Value fields are in upsert.value.fields (value-fields only). For nodes, schema.value_fields aligns.
-                    for (field_schema, value) in std::iter::zip(
-                        schema.value_fields.iter(),
-                        upsert.value.fields.iter(),
-                    ) {
+                    for (field_schema, value) in
+                        std::iter::zip(schema.value_fields.iter(), upsert.value.fields.iter())
+                    {
                         content.insert(
                             field_schema.name.clone(),
                             encode_value_as_json(&field_schema.value_type.typ, value)?,
@@ -720,12 +758,8 @@ impl TargetFactoryBase for Factory {
                 }
                 for del in m.mutation.deletes.iter() {
                     let rid = record_id(table, &del.key, &del.additional_key);
-                    db.query(format!(
-                        "DELETE {}:{};",
-                        sanitize_ident(table),
-                        rid
-                    ))
-                    .await?;
+                    db.query(format!("DELETE {}:{};", sanitize_ident(table), rid))
+                        .await?;
                 }
             }
 
@@ -800,7 +834,8 @@ impl TargetFactoryBase for Factory {
                     .await?;
 
                     // Upsert edge record with in/out links and relationship properties.
-                    let mut edge_props = encode_key_fields_as_json(&schema.key_fields, &upsert.key)?;
+                    let mut edge_props =
+                        encode_key_fields_as_json(&schema.key_fields, &upsert.key)?;
                     let rel_props = encode_mapped_fields_as_json(
                         &schema.value_fields,
                         &m.export_context.analyzed_data_coll.value_fields_input_idx,
@@ -810,14 +845,10 @@ impl TargetFactoryBase for Factory {
 
                     let edge_rid = record_id(edge_table, &upsert.key, &upsert.additional_key);
 
-                    let in_thing = surrealdb::sql::Thing::from((
-                        sanitize_ident(src_table),
-                        src_rid.clone(),
-                    ));
-                    let out_thing = surrealdb::sql::Thing::from((
-                        sanitize_ident(tgt_table),
-                        tgt_rid.clone(),
-                    ));
+                    let in_thing =
+                        surrealdb::sql::Thing::from((sanitize_ident(src_table), src_rid.clone()));
+                    let out_thing =
+                        surrealdb::sql::Thing::from((sanitize_ident(tgt_table), tgt_rid.clone()));
 
                     // First set in/out as Things, then merge props.
                     db.query(format!(
@@ -878,7 +909,9 @@ mod tests {
         assert!(sql.contains(
             "DEFINE INDEX OVERWRITE __Document__pk__idx ON TABLE Document FIELDS id UNIQUE;"
         ));
-        assert!(sql.contains("DEFINE FIELD OVERWRITE embedding ON TABLE Document TYPE array<float>;"));
+        assert!(
+            sql.contains("DEFINE FIELD OVERWRITE embedding ON TABLE Document TYPE array<float>;")
+        );
         assert!(sql.contains("HNSW DIMENSION 384 DIST COSINE TYPE F32"));
         assert!(sql.contains("EFC 150"));
         assert!(sql.contains("M 12"));
@@ -916,5 +949,3 @@ mod tests {
         assert_ne!(id1, id3);
     }
 }
-
-

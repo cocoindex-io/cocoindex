@@ -21,7 +21,7 @@ Read [Property Graph Targets](./index.md#property-graph-targets) for how `Nodes`
 The `SurrealDB` target spec takes the following fields:
 
 * `connection` ([auth reference](/docs/core/flow_def#auth-registry) to `SurrealDBConnection`, required): Connection to SurrealDB. `SurrealDBConnection` has:
-  * `endpoint` (`str`): WebSocket RPC endpoint, e.g. `ws://localhost:8000/rpc`
+  * `url` (`str`): WebSocket RPC url, e.g. `ws://localhost:8000/rpc`
   * `namespace` (`str`): SurrealDB namespace
   * `database` (`str`): SurrealDB database
   * `username` (`str`): Root username
@@ -56,5 +56,3 @@ Persistent (RocksDB):
 ```sh
 surreal start -u root -p root rocksdb:database
 ```
-
-

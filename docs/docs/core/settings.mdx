@@ -152,7 +152,7 @@ If you use the Postgres database hosted by [Supabase](https://supabase.com/), pl
 
 ### SurrealDB internal persistence (alternative)
 
-If you set `COCOINDEX_SURREALDB_ENDPOINT`, CocoIndex will use SurrealDB **instead of Postgres** for internal persistence (setup metadata + tracking state).
+If you set `COCOINDEX_SURREALDB_URL`, CocoIndex will use SurrealDB **instead of Postgres** for internal persistence (setup metadata + tracking state).
 
 - Endpoint uses WebSocket, e.g. `ws://localhost:8000` (or `wss://...`).
 - CocoIndex will use the namespace and database specified by env vars below.
@@ -160,7 +160,7 @@ If you set `COCOINDEX_SURREALDB_ENDPOINT`, CocoIndex will use SurrealDB **instea
 
 *Environment variables*:
 
-* `COCOINDEX_SURREALDB_ENDPOINT` (required): SurrealDB websocket endpoint, e.g. `ws://localhost:8000`
+* `COCOINDEX_SURREALDB_URL` (required): SurrealDB websocket endpoint, e.g. `ws://localhost:8000`
 * `COCOINDEX_SURREALDB_NS` (required): namespace
 * `COCOINDEX_SURREALDB_DB` (required): database
 * `COCOINDEX_SURREALDB_USER` (optional): username (if not provided, no signin is performed)
@@ -188,7 +188,7 @@ This is the list of environment variables, each of which has a corresponding fie
 | `COCOINDEX_DATABASE_PASSWORD` | `database.password` | No |
 | `COCOINDEX_DATABASE_MAX_CONNECTIONS` | `database.max_connections` | No (default: `25`) |
 | `COCOINDEX_DATABASE_MIN_CONNECTIONS` | `database.min_connections` | No (default: `5`) |
-| `COCOINDEX_SURREALDB_ENDPOINT` | `surreal.endpoint` | No |
+| `COCOINDEX_SURREALDB_URL` | `surreal.endpoint` | No |
 | `COCOINDEX_SURREALDB_NS` | `surreal.namespace` | No |
 | `COCOINDEX_SURREALDB_DB` | `surreal.database` | No |
 | `COCOINDEX_SURREALDB_USER` | `surreal.user` | No |

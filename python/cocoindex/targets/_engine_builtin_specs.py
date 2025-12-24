@@ -156,8 +156,8 @@ class KuzuDeclaration(op.DeclarationSpec):
 class SurrealDBConnection:
     """Connection spec for SurrealDB."""
 
-    # WebSocket RPC endpoint, e.g. "ws://localhost:8000/rpc"
-    endpoint: str
+    # WebSocket RPC url, e.g. "ws://localhost:8000"
+    url: str
     # Namespace and database to use.
     namespace: str
     database: str
@@ -169,9 +169,9 @@ class SurrealDBConnection:
 class SurrealDB(op.TargetSpec):
     """Multi-model storage powered by SurrealDB (vectors + graph relations)."""
 
+    connection: AuthEntryReference[SurrealDBConnection]
     # TODO: should we add vector indexes?
-    mapping: Nodes | Relationships | None = None
-    connection: AuthEntryReference[SurrealDBConnection] | None = None
+    mapping: Nodes | Relationships
 
 
 class SurrealDBDeclaration(op.DeclarationSpec):

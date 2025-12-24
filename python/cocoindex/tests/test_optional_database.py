@@ -172,7 +172,7 @@ class TestOptionalDatabase:
         with patch.dict(
             os.environ,
             {
-                "COCOINDEX_SURREALDB_ENDPOINT": "ws://localhost:8000",
+                "COCOINDEX_SURREALDB_URL": "ws://localhost:8000",
                 "COCOINDEX_SURREALDB_NS": "testns",
                 "COCOINDEX_SURREALDB_DB": "testdb",
                 "COCOINDEX_SURREALDB_USER": "root",
@@ -185,7 +185,7 @@ class TestOptionalDatabase:
             settings = Settings.from_env()
             assert settings.surreal is not None
             assert settings.database is None
-            assert settings.surreal.endpoint == "ws://localhost:8000"
+            assert settings.surreal.url == "ws://localhost:8000"
             assert settings.surreal.namespace == "testns"
             assert settings.surreal.database == "testdb"
             assert settings.surreal.user == "root"

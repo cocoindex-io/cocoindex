@@ -4,7 +4,7 @@ import cocoindex
 def test_surrealdb_specs_importable() -> None:
     # Smoke test: specs are present and instantiable.
     _conn = cocoindex.targets.SurrealDBConnection(
-        endpoint="ws://localhost:8000/rpc",
+        url="ws://localhost:8000",
         namespace="test_ns",
         database="test_db",
         username="root",
@@ -27,5 +27,3 @@ def test_surrealdb_specs_importable() -> None:
         vector_indexes=[cocoindex.VectorIndexDef("embedding")],
     )
     assert decl.nodes_label == "Place"
-
-

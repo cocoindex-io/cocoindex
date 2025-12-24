@@ -47,7 +47,7 @@ class SurrealDbConnectionSpec:
     Typical endpoint: ws://localhost:8000
     """
 
-    endpoint: str
+    url: str
     namespace: str
     database: str
     user: str | None = None
@@ -99,9 +99,9 @@ class Settings:
     def from_env(cls) -> Self:
         """Load settings from environment variables."""
 
-        surreal_endpoint = os.getenv("COCOINDEX_SURREALDB_ENDPOINT")
-        if surreal_endpoint is not None:
-            surreal_kwargs: dict[str, Any] = {"endpoint": surreal_endpoint}
+        surreal_url = os.getenv("COCOINDEX_SURREALDB_URL")
+        if surreal_url is not None:
+            surreal_kwargs: dict[str, Any] = {"url": surreal_url}
             _load_field(
                 surreal_kwargs, "namespace", "COCOINDEX_SURREALDB_NS", required=True
             )

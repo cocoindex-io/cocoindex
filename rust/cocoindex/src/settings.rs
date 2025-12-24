@@ -11,7 +11,7 @@ pub struct DatabaseConnectionSpec {
 
 #[derive(Deserialize, Debug)]
 pub struct SurrealDbConnectionSpec {
-    pub endpoint: String,
+    pub url: String,
     pub namespace: String,
     pub database: String,
     pub user: Option<String>,
@@ -117,7 +117,7 @@ mod tests {
     fn test_settings_deserialize_surreal() {
         let json = r#"{
             "surreal": {
-                "endpoint": "ws://localhost:8000",
+                "url": "ws://localhost:8000",
                 "namespace": "testns",
                 "database": "testdb",
                 "user": "root",
@@ -128,7 +128,7 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
         assert!(settings.database.is_none());
         let surreal = settings.surreal.unwrap();
-        assert_eq!(surreal.endpoint, "ws://localhost:8000");
+        assert_eq!(surreal.url, "ws://localhost:8000");
         assert_eq!(surreal.namespace, "testns");
         assert_eq!(surreal.database, "testdb");
         assert_eq!(surreal.user, Some("root".to_string()));
