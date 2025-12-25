@@ -133,8 +133,8 @@ const config: Config = {
         },
         {
           label: 'Examples',
-          type: 'doc',
-          docId: 'examples/index',
+          to: 'https://cocoindex.io/examples',
+          target: '_self',
           position: 'left',
         },
         {
