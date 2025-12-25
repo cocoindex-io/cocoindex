@@ -56,7 +56,7 @@ except ImportError as e:
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
 _RowValue = dict[str, Any]  # Column name -> value
 _RowFingerprint = bytes
-Encoder = Callable[[Any], Any]
+ValueEncoder = Callable[[Any], Any]
 
 # Postgres protocol parameter limit (also used in the Rust implementation).
 _BIND_LIMIT: int = 65535
@@ -93,7 +93,7 @@ class PgType(NamedTuple):
     """
 
     pg_type: str
-    encoder: Encoder | None = None
+    encoder: ValueEncoder | None = None
 
 
 def _json_encoder(value: Any) -> str:
@@ -105,7 +105,7 @@ class _TypeMapping(NamedTuple):
     """Mapping from Python type to PostgreSQL type with optional encoder."""
 
     pg_type: str
-    encoder: Encoder | None = None
+    encoder: ValueEncoder | None = None
 
 
 # Global mapping for leaf types
@@ -187,7 +187,7 @@ class ColumnDef(NamedTuple):
     name: str
     type: str  # PostgreSQL type (e.g., "text", "bigint", "jsonb", "vector(384)")
     nullable: bool = True
-    encoder: Encoder | None = (
+    encoder: ValueEncoder | None = (
         None  # Optional encoder to convert value before sending to asyncpg
     )
 
@@ -930,7 +930,7 @@ def register_db(key: str, pool: asyncpg.Pool) -> PgDatabase:
 
 __all__ = [
     "ColumnDef",
-    "Encoder",
+    "ValueEncoder",
     "PgDatabase",
     "PgType",
     "TableSchema",
