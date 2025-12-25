@@ -137,12 +137,6 @@ const config: Config = {
           target: '_self',
           position: 'left',
         },
-        {
-          label: 'Tutorials',
-          type: 'doc',
-          docId: 'tutorials/live_updates',
-          position: 'left',
-        },
         { to: 'https://cocoindex.io/blogs/', label: 'Blog', position: 'left', target: '_self' },
         {
           type: 'html',
