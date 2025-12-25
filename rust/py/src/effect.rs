@@ -6,6 +6,7 @@ use cocoindex_core::engine::effect::{
     EffectSink,
 };
 use cocoindex_core::state::effect_path::EffectPath;
+use cocoindex_py_utils::ToResultWithPyTrace;
 use pyo3::exceptions::PyException;
 use pyo3::types::{PyList, PySequence};
 
