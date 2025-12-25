@@ -467,8 +467,7 @@ impl<'a> RowIndexer<'a> {
                     .and_then(|info| info.0.as_ref())
                     .and_then(|stored_info| stored_info.content_hash.as_ref())
                     .map(|content_hash| BASE64_STANDARD.decode(content_hash))
-                    .transpose()
-                    .internal()?
+                    .transpose()?
                     .map(Cow::Owned)
             }
         };

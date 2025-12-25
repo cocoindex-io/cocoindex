@@ -132,8 +132,7 @@ impl EvaluationMemory {
         }
         let cache = if let Some(cache) = self.cache {
             cache
-                .into_inner()
-                .internal()?
+                .into_inner()?
                 .into_iter()
                 .filter_map(|(k, e)| match e.data {
                     CacheData::Previous(_) => None,
@@ -156,8 +155,7 @@ impl EvaluationMemory {
         };
         let uuids = self
             .uuids
-            .into_inner()
-            .internal()?
+            .into_inner()?
             .into_iter()
             .filter_map(|(k, v)| v.into_stored().map(|uuids| (k, uuids)))
             .collect();

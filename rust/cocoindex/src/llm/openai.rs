@@ -188,7 +188,7 @@ where
         let request = &request;
         let response = retryable::run(
             || async {
-                let req = create_llm_generation_request(request).map_err(anyhow::Error::from)?;
+                let req = create_llm_generation_request(request)?;
                 let response = self.client.chat().create(req).await?;
                 retryable::Ok(response)
             },

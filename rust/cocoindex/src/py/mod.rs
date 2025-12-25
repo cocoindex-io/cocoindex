@@ -26,13 +26,8 @@ pub(crate) use py_utils::*;
 fn set_settings_fn(get_settings_fn: Py<PyAny>) -> PyResult<()> {
     let get_settings_closure = move || {
         Python::attach(|py| {
-            let obj = get_settings_fn
-                .bind(py)
-                .call0()
-                .to_result_with_py_trace(py)?;
-            let py_settings = obj
-                .extract::<Pythonized<Settings>>()
-                .to_result_with_py_trace(py)?;
+            let obj = get_settings_fn.bind(py).call0().from_py_result()?;
+            let py_settings = obj.extract::<Pythonized<Settings>>().from_py_result()?;
             Ok::<_, Error>(py_settings.into_inner())
         })
     };
@@ -394,11 +389,8 @@ impl Flow {
                 let result_fut = Python::attach(|py| -> Result<_> {
                     let handler = self.handler.clone_ref(py);
                     // Build args: pass a dict with the query input
-                    let args = pyo3::types::PyTuple::new(py, [input.query]).map_err(Error::host)?;
-                    let result_coro = handler
-                        .call(py, args, None)
-                        .to_result_with_py_trace(py)
-                        .map_err(Error::from)?;
+                    let args = pyo3::types::PyTuple::new(py, [input.query]).from_py_result()?;
+                    let result_coro = handler.call(py, args, None).from_py_result()?;
 
                     let py_exec_ctx = flow_ctx
                         .py_exec_ctx
@@ -409,16 +401,16 @@ impl Flow {
                     );
                     Ok(
                         py_utils::from_py_future(py, &task_locals, result_coro.into_bound(py))
-                            .map_err(Error::host)?,
+                            .from_py_result()?,
                     )
                 })?;
 
                 let py_obj = result_fut.await;
                 // Convert Python result to Rust type with proper traceback handling
                 let output = Python::attach(|py| -> Result<_> {
-                    let output_any = py_obj.to_result_with_py_trace(py).map_err(Error::from)?;
+                    let output_any = py_obj.from_py_result()?;
                     let output: crate::py::Pythonized<crate::service::query_handler::QueryOutput> =
-                        output_any.extract(py).map_err(Error::host)?;
+                        output_any.extract(py).from_py_result()?;
                     Ok(output.into_inner())
                 })?;
 

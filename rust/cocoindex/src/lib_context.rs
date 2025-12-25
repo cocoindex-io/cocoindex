@@ -205,7 +205,6 @@ impl DbPools {
                     let pool = pool_options
                         .connect_with(pg_options.clone())
                         .await
-                        .internal()
                         .with_context(|| {
                             format!("Failed to connect to database {}", conn_spec.url)
                         })?;
@@ -222,7 +221,6 @@ impl DbPools {
                 let pool = pool_options
                     .connect_with(pg_options)
                     .await
-                    .internal()
                     .with_context(|| "Failed to connect to database")?;
                 Ok::<_, Error>(pool)
             })

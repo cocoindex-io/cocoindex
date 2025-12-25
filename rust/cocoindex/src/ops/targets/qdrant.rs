@@ -206,10 +206,7 @@ impl setup::ResourceSetupChange for SetupChange {
 impl SetupChange {
     async fn apply_delete(&self, collection_name: &String, qdrant_client: &Qdrant) -> Result<()> {
         if self.delete_collection {
-            qdrant_client
-                .delete_collection(collection_name)
-                .await
-                .internal()?;
+            qdrant_client.delete_collection(collection_name).await?;
         }
         Ok(())
     }
@@ -239,7 +236,7 @@ impl SetupChange {
                 }
                 builder = builder.vectors_config(vectors_config);
             }
-            qdrant_client.create_collection(builder).await.internal()?;
+            qdrant_client.create_collection(builder).await?;
         }
         Ok(())
     }
@@ -268,8 +265,7 @@ impl ExportContext {
         if !points.is_empty() {
             self.qdrant_client
                 .upsert_points(UpsertPointsBuilder::new(&self.collection_name, points).wait(true))
-                .await
-                .internal()?;
+                .await?;
         }
 
         let ids = mutation
@@ -285,8 +281,7 @@ impl ExportContext {
                         .points(PointsIdsList { ids })
                         .wait(true),
                 )
-                .await
-                .internal()?;
+                .await?;
         }
 
         Ok(())
@@ -594,8 +589,7 @@ impl Factory {
             Qdrant::from_url(&spec.grpc_url)
                 .api_key(spec.api_key)
                 .skip_compatibility_check()
-                .build()
-                .internal()?,
+                .build()?,
         );
         clients.insert(auth_entry.clone(), client.clone());
         Ok(client)

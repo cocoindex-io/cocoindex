@@ -399,13 +399,8 @@ impl<E: BatchedFunctionExecutor> batching::Runner for BatchedFunctionExecutorRun
     async fn run(
         &self,
         inputs: Vec<Self::Input>,
-    ) -> anyhow::Result<impl ExactSizeIterator<Item = Self::Output>> {
-        Ok(self
-            .0
-            .evaluate_batch(inputs)
-            .await
-            .map_err(anyhow::Error::from)?
-            .into_iter())
+    ) -> Result<impl ExactSizeIterator<Item = Self::Output>> {
+        Ok(self.0.evaluate_batch(inputs).await?.into_iter())
     }
 }
 

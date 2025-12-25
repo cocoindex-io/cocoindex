@@ -15,44 +15,32 @@ use std::{
 pub trait HostError: Any + StdError + Send + Sync + 'static {}
 impl<T: Any + StdError + Send + Sync + 'static> HostError for T {}
 
-#[derive(Debug)]
 pub enum Error {
-    Context {
-        msg: String,
-        source: Box<Error>,
-    },
+    Context { msg: String, source: Box<SError> },
     HostLang(Box<dyn HostError>),
-    Client {
-        msg: String,
-        bt: Backtrace,
-    },
-    Internal {
-        source: Box<dyn StdError + Send + Sync>,
-        bt: Backtrace,
-    },
-    InternalAnyhow(anyhow::Error),
+    Client { msg: String, bt: Backtrace },
+    Internal(anyhow::Error),
 }
 
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::Context { msg, .. } => write!(f, "{}", msg),
+        match self.format_context(f)? {
+            Error::Context { .. } => Ok(()),
             Error::HostLang(e) => write!(f, "{}", e),
             Error::Client { msg, .. } => write!(f, "Invalid Request: {}", msg),
-            Error::Internal { source, .. } => write!(f, "{}", source),
-            Error::InternalAnyhow(e) => write!(f, "{}", e),
+            Error::Internal(e) => write!(f, "{}", e),
         }
     }
 }
-
-impl StdError for Error {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match self {
-            Error::Context { source, .. } => Some(source.as_ref()),
-            Error::HostLang(e) => Some(e.as_ref()),
-            Error::Internal { source, .. } => Some(source.as_ref()),
-            Error::InternalAnyhow(e) => e.source(),
-            Error::Client { .. } => None,
+impl Debug for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.format_context(f)? {
+            Error::Context { .. } => Ok(()),
+            Error::HostLang(e) => write!(f, "{:?}", e),
+            Error::Client { msg, bt } => {
+                write!(f, "Invalid Request: {msg}\n\n{bt}\n")
+            }
+            Error::Internal(e) => write!(f, "{e:?}"),
         }
     }
 }
@@ -75,122 +63,75 @@ impl Error {
         }
     }
 
-    pub fn internal(e: impl StdError + Send + Sync + 'static) -> Self {
-        Self::Internal {
-            source: Box::new(e),
-            bt: Backtrace::capture(),
-        }
+    pub fn internal(e: impl Into<anyhow::Error>) -> Self {
+        Self::Internal(e.into())
     }
 
     pub fn internal_msg(msg: impl Into<String>) -> Self {
-        Self::Internal {
-            source: Box::new(StringError(msg.into())),
-            bt: Backtrace::capture(),
-        }
+        Self::Internal(anyhow::anyhow!("{}", msg.into()))
     }
 
     pub fn backtrace(&self) -> Option<&Backtrace> {
         match self {
             Error::Client { bt, .. } => Some(bt),
-            Error::Internal { bt, .. } => Some(bt),
-            Error::InternalAnyhow(e) => Some(e.backtrace()),
-            Error::Context { source, .. } => source.backtrace(),
+            Error::Internal(e) => Some(e.backtrace()),
+            Error::Context { source, .. } => source.0.backtrace(),
             Error::HostLang(_) => None,
         }
     }
 
     pub fn without_contexts(&self) -> &Error {
         match self {
-            Error::Context { source, .. } => source.without_contexts(),
+            Error::Context { source, .. } => source.0.without_contexts(),
             other => other,
         }
     }
-}
 
-impl From<std::fmt::Error> for Error {
-    fn from(e: std::fmt::Error) -> Self {
-        Error::internal(e)
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Error::internal(e)
-    }
-}
-
-impl From<serde_json::Error> for Error {
-    fn from(e: serde_json::Error) -> Self {
-        Error::internal(e)
-    }
-}
-
-impl From<anyhow::Error> for Error {
-    fn from(e: anyhow::Error) -> Self {
-        Error::InternalAnyhow(e)
-    }
-}
-
-impl From<ApiError> for Error {
-    fn from(e: ApiError) -> Self {
-        if e.status_code == StatusCode::BAD_REQUEST {
-            Error::Client {
-                msg: e.err.to_string(),
-                bt: Backtrace::capture(),
-            }
-        } else {
-            Error::InternalAnyhow(e.err)
+    pub fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Context { source, .. } => Some(source.as_ref()),
+            Error::HostLang(e) => Some(e.as_ref()),
+            Error::Internal(e) => e.source(),
+            Error::Client { .. } => None,
         }
     }
-}
 
-impl From<crate::retryable::Error> for Error {
-    fn from(e: crate::retryable::Error) -> Self {
-        Error::InternalAnyhow(e.error)
+    pub fn context<C: Into<String>>(self, context: C) -> Self {
+        Self::Context {
+            msg: context.into(),
+            source: Box::new(SError(self)),
+        }
+    }
+
+    pub fn with_context<C: Into<String>, F: FnOnce() -> C>(self, f: F) -> Self {
+        Self::Context {
+            msg: f().into(),
+            source: Box::new(SError(self)),
+        }
+    }
+
+    pub fn std_error(self) -> SError {
+        SError(self)
+    }
+
+    fn format_context(&self, f: &mut std::fmt::Formatter<'_>) -> Result<&Error, std::fmt::Error> {
+        let mut current = self;
+        if matches!(current, Error::Context { .. }) {
+            write!(f, "\nContext:\n")?;
+            let mut next_id = 1;
+            while let Error::Context { msg, source } = current {
+                write!(f, "  {next_id}: {msg}\n")?;
+                current = source.inner();
+                next_id += 1;
+            }
+        }
+        Ok(current)
     }
 }
 
-impl From<crate::fingerprint::FingerprinterError> for Error {
-    fn from(e: crate::fingerprint::FingerprinterError) -> Self {
-        Error::internal(e)
-    }
-}
-
-#[cfg(feature = "sqlx")]
-impl From<sqlx::Error> for Error {
-    fn from(e: sqlx::Error) -> Self {
-        Error::internal(e)
-    }
-}
-
-#[cfg(feature = "neo4rs")]
-impl From<neo4rs::Error> for Error {
-    fn from(e: neo4rs::Error) -> Self {
-        Error::internal(e)
-    }
-}
-
-#[derive(Debug)]
-struct StringError(String);
-
-impl Display for StringError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl StdError for StringError {}
-
-pub trait IntoInternal<T> {
-    fn internal(self) -> Result<T>;
-}
-
-impl<T, E: StdError + Send + Sync + 'static> IntoInternal<T> for std::result::Result<T, E> {
-    fn internal(self) -> Result<T> {
-        self.map_err(|e| Error::Internal {
-            source: Box::new(e),
-            bt: Backtrace::capture(),
-        })
+impl<E: Into<anyhow::Error>> From<E> for Error {
+    fn from(e: E) -> Self {
+        Error::Internal(e.into())
     }
 }
 
@@ -201,45 +142,21 @@ pub trait ContextExt<T> {
 
 impl<T> ContextExt<T> for Result<T> {
     fn context<C: Into<String>>(self, context: C) -> Result<T> {
-        self.map_err(|e| Error::Context {
-            msg: context.into(),
-            source: Box::new(e),
-        })
+        self.map_err(|e| e.context(context))
     }
 
     fn with_context<C: Into<String>, F: FnOnce() -> C>(self, f: F) -> Result<T> {
-        self.map_err(|e| Error::Context {
-            msg: f().into(),
-            source: Box::new(e),
-        })
+        self.map_err(|e| e.with_context(f))
     }
 }
 
-// Uses cerror_context to avoid name conflicts with anyhow::Context during migration
-pub trait ResultExt<T, E> {
-    fn cerror_context<C: Into<String>>(self, context: C) -> Result<T>;
-    fn cerror_with_context<C: Into<String>, F: FnOnce() -> C>(self, f: F) -> Result<T>;
-}
-
-impl<T, E: StdError + Send + Sync + 'static> ResultExt<T, E> for std::result::Result<T, E> {
-    fn cerror_context<C: Into<String>>(self, context: C) -> Result<T> {
-        self.map_err(|e| Error::Context {
-            msg: context.into(),
-            source: Box::new(Error::Internal {
-                source: Box::new(e),
-                bt: Backtrace::capture(),
-            }),
-        })
+impl<T, E: StdError + Send + Sync + 'static> ContextExt<T> for Result<T, E> {
+    fn context<C: Into<String>>(self, context: C) -> Result<T> {
+        self.map_err(|e| Error::internal(e).context(context))
     }
 
-    fn cerror_with_context<C: Into<String>, F: FnOnce() -> C>(self, f: F) -> Result<T> {
-        self.map_err(|e| Error::Context {
-            msg: f().into(),
-            source: Box::new(Error::Internal {
-                source: Box::new(e),
-                bt: Backtrace::capture(),
-            }),
-        })
+    fn with_context<C: Into<String>, F: FnOnce() -> C>(self, f: F) -> Result<T> {
+        self.map_err(|e| Error::internal(e).with_context(f))
     }
 }
 
@@ -260,7 +177,7 @@ impl IntoResponse for Error {
         let (status_code, error_msg) = match &self {
             Error::Client { msg, .. } => (StatusCode::BAD_REQUEST, msg.clone()),
             Error::HostLang(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            Error::Context { .. } | Error::Internal { .. } | Error::InternalAnyhow(_) => {
+            Error::Context { .. } | Error::Internal(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", self))
             }
         };
@@ -296,6 +213,33 @@ macro_rules! internal_error {
     ( $fmt:literal $(, $($arg:tt)*)?) => {
         $crate::error::Error::internal_msg(format!($fmt $(, $($arg)*)?))
     };
+}
+
+// A wrapper around Error that fits into std::error::Error trait.
+pub struct SError(Error);
+
+impl SError {
+    pub fn inner(&self) -> &Error {
+        &self.0
+    }
+}
+
+impl Display for SError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
+impl Debug for SError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for SError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
 }
 
 // Legacy types below - kept for backwards compatibility during migration
@@ -351,10 +295,7 @@ impl SharedError {
         let residual_err = match mut_state {
             SharedErrorState::ResidualErrorMessage(err) => {
                 // Already extracted; return a generic internal error with the residual message.
-                return Error::Internal {
-                    source: Box::new(err.clone()),
-                    bt: Backtrace::capture(),
-                };
+                return Error::internal(err.clone());
             }
             SharedErrorState::Error(err) => ResidualError::new(err),
         };
@@ -393,17 +334,6 @@ impl Display for SharedError {
 impl From<Error> for SharedError {
     fn from(err: Error) -> Self {
         Self(Arc::new(Mutex::new(SharedErrorState::Error(err))))
-    }
-}
-
-impl SharedError {
-    pub fn from_std_error<E: StdError + Send + Sync + 'static>(err: E) -> Self {
-        Self(Arc::new(Mutex::new(SharedErrorState::Error(
-            Error::Internal {
-                source: Box::new(err),
-                bt: Backtrace::capture(),
-            },
-        ))))
     }
 }
 
@@ -499,9 +429,13 @@ impl From<anyhow::Error> for ApiError {
 
 impl From<Error> for ApiError {
     fn from(err: Error) -> ApiError {
-        Self {
-            err: anyhow::Error::from(err),
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+        let status_code = match err.without_contexts() {
+            Error::Client { .. } => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        ApiError {
+            err: anyhow::Error::from(err.std_error()),
+            status_code,
         }
     }
 }
@@ -542,16 +476,13 @@ mod tests {
         let err = Error::client("invalid input");
         assert!(matches!(&err, Error::Client { msg, .. } if msg == "invalid input"));
         assert!(matches!(err.without_contexts(), Error::Client { .. }));
-        assert!(!matches!(err.without_contexts(), Error::HostLang(_)));
     }
 
     #[test]
     fn test_internal_error_creation() {
         let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
-        let err = Error::internal(io_err);
+        let err: Error = io_err.into();
         assert!(matches!(err, Error::Internal { .. }));
-        assert!(!matches!(err.without_contexts(), Error::Client { .. }));
-        assert!(!matches!(err.without_contexts(), Error::HostLang(_)));
     }
 
     #[test]
@@ -566,7 +497,6 @@ mod tests {
         let mock = MockHostError("test error".to_string());
         let err = Error::host(mock);
         assert!(matches!(err.without_contexts(), Error::HostLang(_)));
-        assert!(!matches!(err.without_contexts(), Error::Client { .. }));
 
         if let Error::HostLang(host_err) = err.without_contexts() {
             let any: &dyn Any = host_err.as_ref();
@@ -591,9 +521,18 @@ mod tests {
         assert!(matches!(&err, Error::Context { msg, .. } if msg == "layer 3"));
 
         if let Error::Context { source, .. } = &err {
-            assert!(matches!(source.as_ref(), Error::Context { msg, .. } if msg == "layer 2"));
+            assert!(
+                matches!(source.as_ref(), SError(Error::Context { msg, .. }) if msg == "layer 2")
+            );
         }
-        assert_eq!(err.to_string(), "layer 3");
+        assert_eq!(
+            err.to_string(),
+            "\nContext:\
+             \n  1: layer 3\
+             \n  2: layer 2\
+             \n  3: layer 1\
+             \nInvalid Request: base error"
+        );
     }
 
     #[test]
@@ -645,28 +584,6 @@ mod tests {
         let err = with_context.unwrap_err();
         let bt = err.backtrace();
         assert!(bt.is_some());
-    }
-
-    #[test]
-    fn test_into_internal_trait() {
-        let io_result: std::result::Result<(), std::io::Error> =
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "io error"));
-        let cresult = io_result.internal();
-
-        assert!(cresult.is_err());
-        let err = cresult.unwrap_err();
-        assert!(matches!(err, Error::Internal { .. }));
-    }
-
-    #[test]
-    fn test_result_ext_cerror_context() {
-        let io_result: std::result::Result<(), std::io::Error> =
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "io error"));
-        let cresult = io_result.cerror_context("while reading file");
-
-        assert!(cresult.is_err());
-        let err = cresult.unwrap_err();
-        assert!(matches!(&err, Error::Context { msg, .. } if msg == "while reading file"));
     }
 
     #[test]

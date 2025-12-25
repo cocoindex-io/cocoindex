@@ -585,7 +585,7 @@ impl Executor {
             let separator_regex = lang
                 .separators_regex
                 .iter()
-                .map(|s| Regex::new(s).internal())
+                .map(|s| Regex::new(s))
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .with_context(|| {
                     format!(
@@ -673,9 +673,7 @@ impl SimpleFunctionExecutor for Executor {
             && let Some(tree_sitter_info) = lang_info.treesitter_info.as_ref()
         {
             let mut parser = tree_sitter::Parser::new();
-            parser
-                .set_language(&tree_sitter_info.tree_sitter_lang)
-                .internal()?;
+            parser.set_language(&tree_sitter_info.tree_sitter_lang)?;
             let tree = parser.parse(full_text.as_ref(), None).ok_or_else(|| {
                 internal_error!("failed in parsing text in language: {}", lang_info.name)
             })?;
