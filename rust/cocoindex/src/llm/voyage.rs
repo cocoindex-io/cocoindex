@@ -90,11 +90,7 @@ impl LlmEmbeddingClient for Client {
         .map_err(Error::from)
         .with_context(|| "Voyage AI API error")?;
 
-        let embedding_resp: EmbedResponse = resp
-            .json()
-            .await
-            .internal()
-            .with_context(|| "Invalid JSON")?;
+        let embedding_resp: EmbedResponse = resp.json().await.with_context(|| "Invalid JSON")?;
 
         Ok(LlmEmbeddingResponse {
             embeddings: embedding_resp

@@ -5,7 +5,6 @@ use crate::llm::{
     GeneratedOutput, LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
     ToJsonSchemaOptions, detect_image_mime_type,
 };
-use anyhow::Context;
 use urlencoding::encode;
 
 pub struct Client {

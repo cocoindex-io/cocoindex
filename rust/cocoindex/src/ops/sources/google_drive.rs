@@ -173,7 +173,7 @@ impl Executor {
         if let Some(next_page_token) = &next_page_token {
             list_call = list_call.page_token(next_page_token);
         }
-        let (_, files) = list_call.doit().await.internal()?;
+        let (_, files) = list_call.doit().await?;
         *next_page_token = files.next_page_token;
         let file_iter = files.files.into_iter().flat_map(|file| file.into_iter());
         Ok(file_iter)
@@ -210,7 +210,7 @@ impl Executor {
             if let Some(token) = next_page_token {
                 list_call = list_call.page_token(token.as_str());
             }
-            let (_, files) = list_call.doit().await.internal()?;
+            let (_, files) = list_call.doit().await?;
             for file in files.files.into_iter().flat_map(|files| files.into_iter()) {
                 let modified_time = file.modified_time.unwrap_or_default();
                 if most_recent_modified_time.is_none() {
@@ -256,8 +256,7 @@ impl Executor {
                 .add_scope(Scope::Readonly)
                 .param("fields", "parents")
                 .doit()
-                .await
-                .internal()?;
+                .await?;
             next_file_id = file
                 .parents
                 .into_iter()
@@ -363,8 +362,7 @@ impl SourceExecutor for Executor {
             .param("fields", &fields)
             .doit()
             .await
-            .or_not_found()
-            .internal()?;
+            .or_not_found()?;
         let file = match resp {
             Some((_, file)) if file.trashed != Some(true) => file,
             _ => {
@@ -417,8 +415,7 @@ impl SourceExecutor for Executor {
                 .add_scope(Scope::Readonly)
                 .doit()
                 .await
-                .or_not_found()
-                .internal()?
+                .or_not_found()?
                 .map(|content| (Some(target_mime_type.to_string()), content.into_body()))
         } else {
             self.drive_hub
@@ -428,13 +425,12 @@ impl SourceExecutor for Executor {
                 .param("alt", "media")
                 .doit()
                 .await
-                .or_not_found()
-                .internal()?
+                .or_not_found()?
                 .map(|(resp, _)| (file.mime_type, resp.into_body()))
         };
         let value = match type_n_body {
             Some((mime_type, resp_body)) => {
-                let content = resp_body.collect().await.internal()?;
+                let content = resp_body.collect().await?;
 
                 let fields = vec![
                     file.name.unwrap_or_default().into(),

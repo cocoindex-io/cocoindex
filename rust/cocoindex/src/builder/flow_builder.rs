@@ -9,6 +9,8 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use std::{collections::btree_map, ops::Deref};
 use tokio::task::LocalSet;
 
+use cocoindex_py_utils::prelude::*;
+
 use super::analyzer::{
     AnalyzerContext, CollectorBuilder, DataScopeBuilder, OpScope, ValueTypeBuilder,
     build_flow_instance_context,
@@ -20,7 +22,6 @@ use crate::{
     },
     lib_context::LibContext,
     ops::interface::FlowInstanceContext,
-    py::{AnyhowIntoPyResult, IntoPyResult},
 };
 use crate::{lib_context::FlowContext, py};
 
@@ -253,11 +254,7 @@ impl FlowBuilder {
     pub fn new(py: Python<'_>, name: &str, py_event_loop: Py<PyAny>) -> PyResult<Self> {
         let _span = info_span!("flow_builder.new", flow_name = %name).entered();
         let lib_context = py
-            .detach(|| -> anyhow::Result<Arc<LibContext>> {
-                get_runtime()
-                    .block_on(get_lib_context())
-                    .map_err(anyhow::Error::from)
-            })
+            .detach(|| -> Result<Arc<LibContext>> { get_runtime().block_on(get_lib_context()) })
             .into_py_result()?;
         let root_op_scope = OpScope::new(
             spec::ROOT_SCOPE_NAME.to_string(),
@@ -359,7 +356,9 @@ impl FlowBuilder {
             scope: self.root_op_scope.clone(),
             value: Arc::new(spec::ValueMapping::Constant(spec::ConstantMapping {
                 schema: schema.clone(),
-                value: serde_json::to_value(value).into_py_result()?,
+                value: serde_json::to_value(value)
+                    .map_err(Error::internal)
+                    .into_py_result()?,
             })),
         };
         Ok(slice)
@@ -381,8 +380,10 @@ impl FlowBuilder {
                         source_op_names: HashSet::from([name.clone()]),
                         fingerprint: Fingerprinter::default()
                             .with("input")
+                            .map_err(Error::from)
                             .into_py_result()?
                             .with(&name)
+                            .map_err(Error::from)
                             .into_py_result()?
                             .into_fingerprint(),
                     },
@@ -563,7 +564,7 @@ impl FlowBuilder {
                     })
                 })
                 .collect::<Result<Vec<FieldSchema>>>()
-                .map_err(anyhow::Error::from)
+                .map_err(Error::from)
                 .into_py_result()?,
             auto_uuid_field,
         );
@@ -701,7 +702,7 @@ impl FlowBuilder {
                     Ok::<_, Error>(flow_ctx)
                 })
             })
-            .map_err(anyhow::Error::from)
+            .map_err(Error::from)
             .into_py_result()?;
         let mut flow_ctxs = self.lib_context.flows.lock().unwrap();
         let flow_ctx = match flow_ctxs.entry(self.flow_instance_name.clone()) {
@@ -752,8 +753,8 @@ impl FlowBuilder {
             Ok(py::TransientFlow(Arc::new(
                 analyzed_flow
                     .await
+                    .map_err(Error::from)
                     .into_py_result()?
-                    .map_err(anyhow::Error::from)
                     .into_py_result()?,
             )))
         })

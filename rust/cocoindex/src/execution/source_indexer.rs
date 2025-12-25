@@ -202,7 +202,7 @@ impl<'a> LocalSourceRowStateOperator<'a> {
             }
         };
         if let Some(sem) = sem {
-            self.processing_sem_permit = Some(sem.clone().acquire_owned().await.internal()?);
+            self.processing_sem_permit = Some(sem.clone().acquire_owned().await?);
             self.processing_sem = Some(sem);
         }
         Ok(outcome)
@@ -623,8 +623,7 @@ impl SourceIndexingContext {
                 let concur_permit = import_op
                     .concurrency_controller
                     .acquire(concur_control::BYTES_UNKNOWN_YET)
-                    .await
-                    .internal()?;
+                    .await?;
                 join_set.spawn(self.clone().process_source_row(
                     ProcessSourceRowInput {
                         key: row.key,
@@ -659,11 +658,7 @@ impl SourceIndexingContext {
             deleted_key_versions
         };
         for (key, source_ordinal) in deleted_key_versions {
-            let concur_permit = import_op
-                .concurrency_controller
-                .acquire(Some(|| 0))
-                .await
-                .internal()?;
+            let concur_permit = import_op.concurrency_controller.acquire(Some(|| 0)).await?;
             join_set.spawn(self.clone().process_source_row(
                 ProcessSourceRowInput {
                     key,
@@ -706,10 +701,7 @@ impl batching::Runner for UpdateOnceRunner {
     type Input = UpdateOnceInput;
     type Output = ();
 
-    async fn run(
-        &self,
-        inputs: Vec<UpdateOnceInput>,
-    ) -> anyhow::Result<impl ExactSizeIterator<Item = ()>> {
+    async fn run(&self, inputs: Vec<UpdateOnceInput>) -> Result<impl ExactSizeIterator<Item = ()>> {
         let num_inputs = inputs.len();
         let update_options = UpdateOptions {
             expect_little_diff: inputs.iter().all(|input| input.options.expect_little_diff),

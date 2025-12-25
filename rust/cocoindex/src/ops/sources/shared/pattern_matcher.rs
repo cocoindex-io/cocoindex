@@ -5,9 +5,9 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 fn build_glob_set(patterns: Vec<String>) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
-        builder.add(Glob::new(pattern.as_str()).internal()?);
+        builder.add(Glob::new(pattern.as_str())?);
     }
-    Ok(builder.build().internal()?)
+    Ok(builder.build()?)
 }
 
 /// Pattern matcher that handles include and exclude patterns for files

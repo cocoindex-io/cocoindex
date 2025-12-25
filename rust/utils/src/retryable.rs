@@ -9,7 +9,7 @@ pub trait IsRetryable {
 }
 
 pub struct Error {
-    pub error: anyhow::Error,
+    pub error: crate::error::Error,
     pub is_retryable: bool,
 }
 
@@ -64,25 +64,16 @@ impl IsRetryable for neo4rs::Error {
 }
 
 impl Error {
-    pub fn retryable<E: Into<anyhow::Error>>(error: E) -> Self {
+    pub fn retryable<E: Into<crate::error::Error>>(error: E) -> Self {
         Self {
             error: error.into(),
             is_retryable: true,
         }
     }
 
-    pub fn not_retryable<E: Into<anyhow::Error>>(error: E) -> Self {
+    pub fn not_retryable<E: Into<crate::error::Error>>(error: E) -> Self {
         Self {
             error: error.into(),
-            is_retryable: false,
-        }
-    }
-}
-
-impl From<anyhow::Error> for Error {
-    fn from(error: anyhow::Error) -> Self {
-        Self {
-            error,
             is_retryable: false,
         }
     }
@@ -91,13 +82,13 @@ impl From<anyhow::Error> for Error {
 impl From<crate::error::Error> for Error {
     fn from(error: crate::error::Error) -> Self {
         Self {
-            error: anyhow::Error::from(error),
+            error,
             is_retryable: false,
         }
     }
 }
 
-impl From<Error> for anyhow::Error {
+impl From<Error> for crate::error::Error {
     fn from(val: Error) -> Self {
         val.error
     }
@@ -107,7 +98,7 @@ impl<E: IsRetryable + std::error::Error + Send + Sync + 'static> From<E> for Err
     fn from(error: E) -> Self {
         Self {
             is_retryable: error.is_retryable(),
-            error: anyhow::Error::new(error),
+            error: error.into(),
         }
     }
 }

@@ -1,6 +1,6 @@
 use crate::{
     client_bail,
-    error::{Error, IntoInternal, Result},
+    error::{Error, Result},
 };
 use base64::prelude::*;
 use blake2::digest::typenum;
@@ -43,10 +43,10 @@ impl Fingerprint {
 
     pub fn from_base64(s: &str) -> Result<Self> {
         let bytes = match s.len() {
-            24 => BASE64_STANDARD.decode(s).internal()?,
+            24 => BASE64_STANDARD.decode(s)?,
 
             // For backward compatibility. Some old version (<= v0.1.2) is using hex encoding.
-            32 => hex::decode(s).internal()?,
+            32 => hex::decode(s)?,
             _ => client_bail!("Encoded fingerprint length is unexpected: {}", s.len()),
         };
         let bytes: [u8; 16] = bytes.try_into().map_err(|e: Vec<u8>| {

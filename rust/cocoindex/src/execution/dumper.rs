@@ -151,8 +151,7 @@ impl<'a> Dumper<'a> {
         let _permit = import_op
             .concurrency_controller
             .acquire(concur_control::BYTES_UNKNOWN_YET)
-            .await
-            .internal()?;
+            .await?;
         let mut collected_values_buffer = Vec::new();
         let (exports, error) = match self
             .evaluate_source_entry(
@@ -180,11 +179,11 @@ impl<'a> Dumper<'a> {
 
         let yaml_output = {
             let mut yaml_output = String::new();
-            let yaml_data = YamlSerializer::serialize(&file_data).internal()?;
+            let yaml_data = YamlSerializer::serialize(&file_data)?;
             let mut yaml_emitter = YamlEmitter::new(&mut yaml_output);
             yaml_emitter.multiline_strings(true);
             yaml_emitter.compact(true);
-            yaml_emitter.dump(&yaml_data).internal()?;
+            yaml_emitter.dump(&yaml_data)?;
             yaml_output
         };
         tokio::fs::write(file_path, yaml_output).await?;

@@ -1,5 +1,3 @@
-use crate::error::ResidualError;
-use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -7,6 +5,10 @@ use tokio::sync::{oneshot, watch};
 use tokio_util::task::AbortOnDropHandle;
 use tracing::error;
 
+use crate::{
+    error::{Error, ResidualError, Result},
+    internal_bail,
+};
 #[async_trait]
 pub trait Runner: Send + Sync {
     type Input: Send;
@@ -77,7 +79,7 @@ impl<R: Runner + 'static> BatcherData<R> {
                     );
                     error!("{message}");
                     for sender in batch.output_txs {
-                        sender.send(Err(anyhow!("{message}"))).ok();
+                        sender.send(Err(Error::internal_msg(&message))).ok();
                     }
                     return;
                 }
@@ -185,7 +187,7 @@ impl<R: Runner + 'static> Batcher<R> {
                 let handle = AbortOnDropHandle::new(tokio::spawn(async move {
                     let mut outputs = data.runner.run(vec![input]).await?;
                     if outputs.len() != 1 {
-                        bail!("Expected 1 output, got {}", outputs.len());
+                        internal_bail!("Expected 1 output, got {}", outputs.len());
                     }
                     Ok(outputs.next().unwrap())
                 }));

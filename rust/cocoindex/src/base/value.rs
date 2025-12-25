@@ -206,22 +206,22 @@ impl KeyPart {
                     .ok_or_else(|| api_error!("Key parts less than expected"))?;
                 match basic_type {
                     BasicValueType::Bytes => {
-                        KeyPart::Bytes(Bytes::from(BASE64_STANDARD.decode(v).internal()?))
+                        KeyPart::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
                     }
                     BasicValueType::Str => KeyPart::Str(Arc::from(v)),
-                    BasicValueType::Bool => KeyPart::Bool(v.parse().internal()?),
-                    BasicValueType::Int64 => KeyPart::Int64(v.parse().internal()?),
+                    BasicValueType::Bool => KeyPart::Bool(v.parse()?),
+                    BasicValueType::Int64 => KeyPart::Int64(v.parse()?),
                     BasicValueType::Range => {
                         let v2 = values_iter
                             .next()
                             .ok_or_else(|| api_error!("Key parts less than expected"))?;
                         KeyPart::Range(RangeValue {
-                            start: v.parse().internal()?,
-                            end: v2.parse().internal()?,
+                            start: v.parse()?,
+                            end: v2.parse()?,
                         })
                     }
-                    BasicValueType::Uuid => KeyPart::Uuid(v.parse().internal()?),
-                    BasicValueType::Date => KeyPart::Date(v.parse().internal()?),
+                    BasicValueType::Uuid => KeyPart::Uuid(v.parse()?),
+                    BasicValueType::Date => KeyPart::Date(v.parse()?),
                     schema => api_bail!("Invalid key type {schema}"),
                 }
             }
@@ -1149,7 +1149,7 @@ impl BasicValue {
     pub fn from_json(value: serde_json::Value, schema: &BasicValueType) -> Result<Self> {
         let result = match (value, schema) {
             (serde_json::Value::String(v), BasicValueType::Bytes) => {
-                BasicValue::Bytes(Bytes::from(BASE64_STANDARD.decode(v).internal()?))
+                BasicValue::Bytes(Bytes::from(BASE64_STANDARD.decode(v)?))
             }
             (serde_json::Value::String(v), BasicValueType::Str) => BasicValue::Str(Arc::from(v)),
             (serde_json::Value::Bool(v), BasicValueType::Bool) => BasicValue::Bool(v),
@@ -1166,17 +1166,11 @@ impl BasicValue {
                     .ok_or_else(|| client_error!("invalid fp64 value {v}"))?,
             ),
             (v, BasicValueType::Range) => BasicValue::Range(utils::deser::from_json_value(v)?),
-            (serde_json::Value::String(v), BasicValueType::Uuid) => {
-                BasicValue::Uuid(v.parse().internal()?)
-            }
-            (serde_json::Value::String(v), BasicValueType::Date) => {
-                BasicValue::Date(v.parse().internal()?)
-            }
-            (serde_json::Value::String(v), BasicValueType::Time) => {
-                BasicValue::Time(v.parse().internal()?)
-            }
+            (serde_json::Value::String(v), BasicValueType::Uuid) => BasicValue::Uuid(v.parse()?),
+            (serde_json::Value::String(v), BasicValueType::Date) => BasicValue::Date(v.parse()?),
+            (serde_json::Value::String(v), BasicValueType::Time) => BasicValue::Time(v.parse()?),
             (serde_json::Value::String(v), BasicValueType::LocalDateTime) => {
-                BasicValue::LocalDateTime(v.parse().internal()?)
+                BasicValue::LocalDateTime(v.parse()?)
             }
             (serde_json::Value::String(v), BasicValueType::OffsetDateTime) => {
                 match chrono::DateTime::parse_from_rfc3339(&v) {
@@ -1189,7 +1183,7 @@ impl BasicValue {
                                 chrono::Utc.fix(),
                             ))
                         } else {
-                            Err(e).internal()?
+                            Err(e)?
                         }
                     }
                 }
