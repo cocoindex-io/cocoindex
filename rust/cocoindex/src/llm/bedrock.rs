@@ -5,7 +5,6 @@ use crate::llm::{
     GeneratedOutput, LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
     ToJsonSchemaOptions, detect_image_mime_type,
 };
-use anyhow::Context;
 use urlencoding::encode;
 
 pub struct Client {
@@ -118,13 +117,13 @@ impl LlmGenerationClient for Client {
                 .json(&payload)
         })
         .await
-        .context("Bedrock API error")?;
+        .with_context(|| "Bedrock API error")?;
 
-        let resp_json: serde_json::Value = resp.json().await.context("Invalid JSON")?;
+        let resp_json: serde_json::Value = resp.json().await.with_context(|| "Invalid JSON")?;
 
         // Check for errors in the response
         if let Some(error) = resp_json.get("error") {
-            bail!("Bedrock API error: {:?}", error);
+            client_bail!("Bedrock API error: {:?}", error);
         }
 
         // Debug print full response (uncomment for debugging)
@@ -175,7 +174,7 @@ impl LlmGenerationClient for Client {
                 GeneratedOutput::Text(text_parts.join(""))
             }
         } else {
-            return Err(anyhow::anyhow!("No content found in Bedrock response"));
+            return Err(client_error!("No content found in Bedrock response"));
         };
 
         Ok(LlmGenerateResponse {

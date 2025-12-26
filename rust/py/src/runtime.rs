@@ -19,14 +19,20 @@ impl PythonFunctions {
         &self,
         py: Python<'py>,
         value: &Bound<'py, PyAny>,
-    ) -> PyResult<bytes::Bytes> {
-        self.serialize_fn
-            .call(py, (value,), None)?
-            .extract::<bytes::Bytes>(py)
-            .into_py_result()
+    ) -> Result<bytes::Bytes> {
+        (|| -> PyResult<bytes::Bytes> {
+            Ok(self
+                .serialize_fn
+                .call(py, (value,), None)?
+                .extract::<bytes::Bytes>(py)?)
+        })()
+        .from_py_result()
     }
-    pub fn deserialize<'py>(&self, py: Python<'py>, value: &[u8]) -> PyResult<Py<PyAny>> {
-        self.deserialize_fn.call(py, (value,), None)
+
+    pub fn deserialize<'py>(&self, py: Python<'py>, value: &[u8]) -> Result<Py<PyAny>> {
+        self.deserialize_fn
+            .call(py, (value,), None)
+            .from_py_result()
     }
 }
 
@@ -79,7 +85,7 @@ impl PyCallback {
     pub fn call<A>(
         &self,
         args: A,
-    ) -> Result<impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static>
+    ) -> Result<impl Future<Output = Result<Py<PyAny>>> + Send + 'static>
     where
         A: for<'py> PyCallArgs<'py> + Send + 'static,
     {
@@ -106,6 +112,6 @@ impl PyCallback {
             })?
             .boxed(),
         };
-        Ok(boxed_fut)
+        Ok(boxed_fut.map(|r| r.from_py_result()))
     }
 }

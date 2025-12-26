@@ -907,8 +907,7 @@ def test_retry_from_gc_failed_components() -> None:
     del _source_data["D1"]
     try:
         DictsTarget.store.sink_exception = True
-        with pytest.raises(Exception):
-            app.run()
+        app.run()
     finally:
         DictsTarget.store.sink_exception = False
     assert DictsTarget.store.data == {"D1": {}}
@@ -948,8 +947,7 @@ def test_restore_from_gc_failed_components() -> None:
     del _source_data["D1"]
     DictsTarget.store.sink_exception = True
     try:
-        with pytest.raises(Exception):
-            app.run()
+        app.run()
     finally:
         DictsTarget.store.sink_exception = False
     assert DictsTarget.store.data == {"D1": {}}

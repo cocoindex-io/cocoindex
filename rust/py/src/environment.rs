@@ -1,7 +1,7 @@
 use crate::{effect::root_effect_provider_registry, prelude::*};
 
 use cocoindex_core::engine::environment::{Environment, EnvironmentSettings};
-use cocoindex_py_utils::{AnyhowIntoPyResult, Pythonized};
+use cocoindex_py_utils::Pythonized;
 
 #[pyclass(name = "Environment")]
 pub struct PyEnvironment(pub Environment<PyEngineProfile>);

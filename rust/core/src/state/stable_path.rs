@@ -152,7 +152,7 @@ impl<'a> std::ops::Deref for StablePathRef<'a> {
 impl<'p> StablePathRef<'p> {
     pub fn strip_parent(&self, parent: StablePathRef) -> Result<Self> {
         if self.0.len() < parent.0.len() || &self.0[..parent.0.len()] != parent.0 {
-            bail!("Path {self} is not a child of parent {parent}");
+            internal_bail!("Path {self} is not a child of parent {parent}");
         }
         Ok(StablePathRef(&self.0[parent.0.len()..]))
     }

@@ -1,4 +1,3 @@
-use anyhow::{Context, anyhow};
 use regex::{Matches, Regex};
 use std::sync::LazyLock;
 use std::{collections::HashMap, sync::Arc};
@@ -587,7 +586,7 @@ impl Executor {
                 .separators_regex
                 .iter()
                 .map(|s| Regex::new(s))
-                .collect::<Result<_, _>>()
+                .collect::<std::result::Result<Vec<_>, _>>()
                 .with_context(|| {
                     format!(
                         "failed in parsing regexp for language `{}`",
@@ -675,9 +674,9 @@ impl SimpleFunctionExecutor for Executor {
         {
             let mut parser = tree_sitter::Parser::new();
             parser.set_language(&tree_sitter_info.tree_sitter_lang)?;
-            let tree = parser
-                .parse(full_text.as_ref(), None)
-                .ok_or_else(|| anyhow!("failed in parsing text in language: {}", lang_info.name))?;
+            let tree = parser.parse(full_text.as_ref(), None).ok_or_else(|| {
+                internal_error!("failed in parsing text in language: {}", lang_info.name)
+            })?;
             recursive_chunker.split_root_chunk(ChunkKind::TreeSitterNode {
                 tree_sitter_info,
                 node: tree.root_node(),
@@ -788,7 +787,7 @@ pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
 mod tests {
     use super::*;
     use crate::ops::functions::test_utils::test_flow_function;
-    use crate::ops::sdk::{BasicValueType, KeyPart, KeyValue, make_output_type};
+    use crate::ops::sdk::{BasicValueType, KeyValue, make_output_type};
     use crate::ops::shared::split::OutputPosition;
 
     fn build_split_recursively_arg_schemas() -> Vec<(Option<&'static str>, EnrichedValueType)> {

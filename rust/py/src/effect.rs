@@ -6,7 +6,6 @@ use cocoindex_core::engine::effect::{
     EffectSink,
 };
 use cocoindex_core::state::effect_path::EffectPath;
-use cocoindex_py_utils::ToResultWithPyTrace;
 use pyo3::exceptions::PyException;
 use pyo3::types::{PyList, PySequence};
 
@@ -80,9 +79,9 @@ impl EffectSink<PyEngineProfile> for PyEffectSink {
     async fn apply(
         &self,
         actions: Vec<Py<PyAny>>,
-    ) -> PyResult<Option<Vec<Option<ChildEffectDef<PyEngineProfile>>>>> {
-        let ret = self.callback.call((actions,)).into_py_result()?.await?;
-        Python::attach(|py| {
+    ) -> Result<Option<Vec<Option<ChildEffectDef<PyEngineProfile>>>>> {
+        let ret = self.callback.call((actions,))?.await?;
+        Python::attach(|py| -> PyResult<_> {
             if ret.is_none(py) {
                 return Ok(None);
             }
@@ -103,6 +102,7 @@ impl EffectSink<PyEngineProfile> for PyEffectSink {
             }
             Ok(Some(results))
         })
+        .from_py_result()
     }
 }
 
@@ -116,7 +116,7 @@ impl EffectHandler<PyEngineProfile> for PyEffectHandler {
         desired_effect: Option<Py<PyAny>>,
         prev_possible_states: &[PyValue],
         prev_may_be_missing: bool,
-    ) -> PyResult<Option<EffectReconcileOutput<PyEngineProfile>>> {
+    ) -> Result<Option<EffectReconcileOutput<PyEngineProfile>>> {
         Python::attach(|py| -> PyResult<_> {
             let prev_possible_states =
                 PyList::new(py, prev_possible_states.iter().map(|s| s.value().bind(py)))?;
@@ -151,6 +151,7 @@ impl EffectHandler<PyEngineProfile> for PyEffectHandler {
             };
             Ok(output)
         })
+        .from_py_result()
     }
 }
 
@@ -165,7 +166,7 @@ pub fn declare_effect<'py>(
     key: Py<PyAny>,
     value: Py<PyAny>,
 ) -> PyResult<()> {
-    let py_key = PyKey::new(py, key)?;
+    let py_key = PyKey::new(py, key).into_py_result()?;
     cocoindex_core::engine::execution::declare_effect(
         &context.0,
         provider.0.clone(),
@@ -184,7 +185,7 @@ pub fn declare_effect_with_child<'py>(
     key: Py<PyAny>,
     value: Py<PyAny>,
 ) -> PyResult<PyEffectProvider> {
-    let py_key = PyKey::new(py, key)?;
+    let py_key = PyKey::new(py, key).into_py_result()?;
     let output = cocoindex_core::engine::execution::declare_effect_with_child(
         &context.0,
         provider.0.clone(),

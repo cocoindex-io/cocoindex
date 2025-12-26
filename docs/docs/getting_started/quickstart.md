@@ -12,7 +12,7 @@ In this tutorial, we’ll build an index with text embeddings, keeping it minima
 
 ## Flow Overview
 
-![Flow](/img/examples/simple_vector_index/flow.png)
+![Flow](/img/quickstart/flow.png)
 
 1. Read text files from the local filesystem
 2. Chunk each document
@@ -88,7 +88,7 @@ We extend a new field `chunks` to each row by *transforming* the `content` field
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" margin="0 0 16px 0" />
 
-![Chunking](/img/examples/simple_vector_index/chunk.png)
+![Chunking](/img/quickstart/chunk.png)
 
 #### Embed each chunk and collect the embeddings
 
@@ -112,7 +112,7 @@ with doc["chunks"].row() as chunk:
 
 This code embeds each chunk using the SentenceTransformer library and collects the results.
 
-![Embedding](/img/examples/simple_vector_index/embed.png)
+![Embedding](/img/quickstart/embed.png)
 
 <DocumentationButton url="https://cocoindex.io/docs/ops/functions#sentencetransformerembed" text="SentenceTransformerEmbed" margin="0 0 16px 0" />
 
