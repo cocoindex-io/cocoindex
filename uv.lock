@@ -151,7 +151,7 @@ wheels = [
 
 [[package]]
 name = "cocoindex"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "click" },
     { name = "numpy" },
