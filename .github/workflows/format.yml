@@ -12,12 +12,14 @@ on:
       - rust/**
       - python/**
       - examples/**
+      - ".github/workflows/*.yml"
   push:
     branches: [main]
     paths:
       - rust/**
       - python/**
       - examples/**
+      - ".github/workflows/*.yml"
   workflow_dispatch:
 
 permissions:
