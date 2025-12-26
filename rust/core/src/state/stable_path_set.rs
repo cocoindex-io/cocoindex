@@ -12,7 +12,7 @@ pub struct ChildStablePathSet {
 impl ChildStablePathSet {
     pub fn add_child(&mut self, path: StablePathRef, info: StablePathSet) -> Result<()> {
         let Some((last, dir)) = path.split_last() else {
-            bail!("Path is empty");
+            client_bail!("Path is empty");
         };
         let mut current = self;
         for key in dir {
@@ -25,13 +25,13 @@ impl ChildStablePathSet {
                     current = dir;
                 }
                 StablePathSet::Component => {
-                    bail!("{key} is not a directory in path {path}");
+                    client_bail!("{key} is not a directory in path {path}");
                 }
             }
         }
         match current.children.entry(last.clone()) {
             btree_map::Entry::Occupied(_) => {
-                bail!("Path {path} already exists");
+                client_bail!("Path {path} already exists");
             }
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(info);

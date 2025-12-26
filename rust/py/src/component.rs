@@ -42,7 +42,7 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
     fn process(
         &self,
         context: &ComponentProcessorContext<PyEngineProfile>,
-    ) -> Result<impl Future<Output = PyResult<Py<PyAny>>> + Send + 'static> {
+    ) -> Result<impl Future<Output = Result<Py<PyAny>>> + Send + 'static> {
         let py_context = PyComponentProcessorContext(context.clone());
         self.processor_fn.call((py_context,))
     }
@@ -94,8 +94,7 @@ impl PyComponentMountRunHandle {
         let py = slf.py();
         let handle = slf.borrow_mut().take_handle()?;
         future_into_py(py, async move {
-            let result = handle.result(Some(&parent_ctx.0)).await.into_py_result()?;
-            result.into_py_result()
+            handle.result(Some(&parent_ctx.0)).await.into_py_result()
         })
     }
 
@@ -106,10 +105,8 @@ impl PyComponentMountRunHandle {
         let py = slf.py();
         let handle = slf.take_handle()?;
         py.detach(|| {
-            get_runtime().block_on(async move {
-                let result = handle.result(Some(&parent_ctx.0)).await.into_py_result()?;
-                result.into_py_result()
-            })
+            get_runtime()
+                .block_on(async move { handle.result(Some(&parent_ctx.0)).await.into_py_result() })
         })
     }
 }

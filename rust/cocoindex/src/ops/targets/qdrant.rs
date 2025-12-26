@@ -95,11 +95,11 @@ fn encode_dense_vector(v: &BasicValue) -> Result<DenseVector> {
                     BasicValue::Float32(f) => *f,
                     BasicValue::Float64(f) => *f as f32,
                     BasicValue::Int64(i) => *i as f32,
-                    _ => bail!("Unsupported vector type: {:?}", elem.kind()),
+                    _ => client_bail!("Unsupported vector type: {:?}", elem.kind()),
                 })
             })
             .collect::<Result<Vec<_>>>()?,
-        _ => bail!("Expected a vector field, got {:?}", v),
+        _ => client_bail!("Expected a vector field, got {:?}", v),
     };
     Ok(vec.into())
 }
@@ -110,7 +110,7 @@ fn encode_multi_dense_vector(v: &BasicValue) -> Result<MultiDenseVector> {
             .iter()
             .map(encode_dense_vector)
             .collect::<Result<Vec<_>>>()?,
-        _ => bail!("Expected a vector field, got {:?}", v),
+        _ => client_bail!("Expected a vector field, got {:?}", v),
     };
     Ok(vecs.into())
 }
@@ -225,7 +225,7 @@ impl SetupChange {
                         params = params.multivector_config(MultiVectorConfigBuilder::new(
                             MultiVectorComparator::from_str_name(multi_vector_comparator)
                                 .ok_or_else(|| {
-                                    anyhow!(
+                                    client_error!(
                                         "unrecognized multi vector comparator: {}",
                                         multi_vector_comparator
                                     )
@@ -293,7 +293,7 @@ fn key_to_point_id(key_value: &KeyValue) -> Result<PointId> {
         KeyPart::Str(v) => PointId::from(v.to_string()),
         KeyPart::Int64(v) => PointId::from(*v as u64),
         KeyPart::Uuid(v) => PointId::from(v.to_string()),
-        e => bail!("Invalid Qdrant point ID: {e}"),
+        e => client_bail!("Invalid Qdrant point ID: {e}"),
     };
 
     Ok(point_id)
@@ -322,7 +322,7 @@ fn values_to_payload(
                         }
                     },
                     _ => {
-                        bail!("Expected a vector field, got {:?}", value);
+                        client_bail!("Expected a vector field, got {:?}", value);
                     }
                 };
                 vectors = vectors.add_vector(field_name.clone(), vector);

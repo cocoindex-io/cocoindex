@@ -121,7 +121,7 @@ impl SimpleFunctionExecutor for Executor {
         let json_value = match res.output {
             GeneratedOutput::Json(json) => json,
             GeneratedOutput::Text(text) => {
-                bail!("Expected JSON response but got text: {}", text)
+                internal_bail!("Expected JSON response but got text: {}", text)
             }
         };
         let value = self.value_extractor.extract_value(json_value)?;

@@ -31,7 +31,7 @@ pub fn declare_effect<Prof: EngineProfile>(
     context.update_building_state(|building_state| {
         match building_state.effect.declared_effects.entry(effect_path) {
             btree_map::Entry::Occupied(entry) => {
-                bail!("Effect already declared with key: {:?}", entry.get().key);
+                client_bail!("Effect already declared with key: {:?}", entry.get().key);
             }
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(declared_effect);
@@ -61,7 +61,7 @@ pub fn declare_effect_with_child<Prof: EngineProfile>(
         };
         match building_state.effect.declared_effects.entry(effect_path) {
             btree_map::Entry::Occupied(entry) => {
-                bail!("Effect already declared with key: {:?}", entry.get().key);
+                client_bail!("Effect already declared with key: {:?}", entry.get().key);
             }
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(declared_effect);
@@ -457,7 +457,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         ComponentProcessingAction::Build(building_state) => {
             let mut building_state = building_state.lock().unwrap();
             let Some(building_state) = building_state.take() else {
-                bail!(
+                internal_bail!(
                     "Processing for the component at {} is already finished",
                     context.stable_path()
                 );
@@ -532,7 +532,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 .iter()
                 .filter_map(|(_, s)| s.as_ref())
                 .map(|s_bytes| Prof::EffectState::from_bytes(s_bytes.as_ref()))
-                .collect::<Result<Vec<_>, Prof::Error>>()?;
+                .collect::<Result<Vec<_>>>()?;
 
             let declared_effect = declared_effects_to_process.remove(effect_path);
             let (effect_provider, effect_key, declared_decl, child_provider) = match declared_effect
@@ -639,10 +639,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         let handlers = sink.apply(input.actions).await?;
         if let Some(child_providers) = input.child_providers {
             let Some(handlers) = handlers else {
-                bail!("expect child providers returned by Sink");
+                client_bail!("expect child providers returned by Sink");
             };
             if handlers.len() != child_providers.len() {
-                bail!(
+                client_bail!(
                     "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
                     child_providers.len(),
                     handlers.len(),
@@ -653,7 +653,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     if let Some(child_effect_def) = child_effect_def {
                         child_provider.fulfill_handler(child_effect_def.handler)?;
                     } else {
-                        bail!("expect child provider returned by Sink to be fulfilled");
+                        client_bail!("expect child provider returned by Sink to be fulfilled");
                     }
                 }
             }

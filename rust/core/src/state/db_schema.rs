@@ -126,7 +126,7 @@ impl<'a> storekey::Decode for DbEntryKey<'a> {
 impl<'a> DbEntryKey<'a> {
     pub fn encode(&self) -> Result<Vec<u8>> {
         storekey::encode_vec(self)
-            .map_err(|e| anyhow::anyhow!("Failed to encode DbEntryKey: {}", e))
+            .map_err(|e| internal_error!("Failed to encode DbEntryKey: {}", e))
     }
 
     pub fn decode(data: &[u8]) -> Result<Self> {

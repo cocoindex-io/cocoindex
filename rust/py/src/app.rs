@@ -22,9 +22,10 @@ impl PyApp {
         root_processor: PyComponentProcessor,
     ) -> PyResult<Bound<'py, PyAny>> {
         let app = self.0.clone();
-        let fut = future_into_py(py, async move {
-            app.run(root_processor).await.into_py_result()?
-        })?;
+        let fut = future_into_py(
+            py,
+            async move { app.run(root_processor).await.into_py_result() },
+        )?;
         Ok(fut)
     }
 
@@ -35,7 +36,7 @@ impl PyApp {
     ) -> PyResult<Py<PyAny>> {
         let app = self.0.clone();
         py.detach(|| {
-            get_runtime().block_on(async move { app.run(root_processor).await.into_py_result()? })
+            get_runtime().block_on(async move { app.run(root_processor).await.into_py_result() })
         })
     }
 }

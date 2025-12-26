@@ -272,7 +272,7 @@ impl<DataType> EnrichedValueType<DataType> {
         value_type: &EnrichedValueType<AltDataType>,
     ) -> Result<Self>
     where
-        for<'a> &'a AltDataType: TryInto<DataType, Error = anyhow::Error>,
+        for<'a> &'a AltDataType: TryInto<DataType, Error = Error>,
     {
         Ok(Self {
             typ: (&value_type.typ).try_into()?,
@@ -364,7 +364,7 @@ impl FieldSchema {
 impl<DataType> FieldSchema<DataType> {
     pub fn from_alternative<AltDataType>(field: &FieldSchema<AltDataType>) -> Result<Self>
     where
-        for<'a> &'a AltDataType: TryInto<DataType, Error = anyhow::Error>,
+        for<'a> &'a AltDataType: TryInto<DataType, Error = Error>,
     {
         Ok(Self {
             name: field.name.clone(),
