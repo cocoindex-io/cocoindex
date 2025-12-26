@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.7.8,<2.0"]
+requires = ["maturin>=1.10.0,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -63,22 +63,14 @@ include = ["THIRD_PARTY_NOTICES.html"]
 # Point to the crate within the workspace
 manifest-path = "rust/cocoindex/Cargo.toml"
 
-[project.optional-dependencies]
-dev = [
-    "pytest",
-    "pytest-asyncio",
-    "ruff",
-    "mypy",
-    "pre-commit",
-    "pydantic>=2.11.9",
-]
+profile = "release"      # wheel / normal builds
+editable-profile = "dev" # local editable builds
 
+[project.optional-dependencies]
 embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
 
-# We need to repeat the dependency above to make it available for the `all` feature.
-# Indirect dependencies such as "cocoindex[embeddings]" will not work for local development.
 all = [
     "sentence-transformers>=3.3.1",
     "colpali-engine",
@@ -86,8 +78,22 @@ all = [
     "pyarrow>=19.0.0",
 ]
 
-# This is the set of dependencies that needs to be installed for the CI workflow.
-all-ci = ["pytest", "pytest-asyncio", "mypy", "pydantic>=2.11.9"]
+[dependency-groups]
+build-test = ["maturin>=1.10.0,<2.0", "pytest", "pytest-asyncio", "mypy"]
+format = ["ruff"]
+
+ci-enabled-optional-deps = ["pydantic>=2.11.9"]
+ci = [
+    { include-group = "build-test" },
+    { include-group = "ci-enabled-optional-deps" },
+]
+
+dev-local = ["pre-commit"]
+dev = [
+    { include-group = "build-test" },
+    { include-group = "format" },
+    { include-group = "dev-local" },
+]
 
 [tool.mypy]
 python_version = "3.11"

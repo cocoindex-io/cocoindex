@@ -45,12 +45,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - uses: actions/setup-python@v5
-        with:
-          python-version: 3.11
-      - name: Install Ruff
-        run: |
-          pip install ruff
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
       - name: Check Python formatting
-        run: |
-          ruff format --check .
+        run: uv run --no-dev --group format ruff format --check .
