@@ -10,8 +10,9 @@ name = "cocoindex_engine"
 crate-type = ["cdylib"]
 
 [features]
-default = ["legacy-states-v0"]
+default = ["legacy-states-v0", "abi3"]
 legacy-states-v0 = []
+abi3 = ["pyo3/abi3-py311"]
 
 [dependencies]
 cocoindex_utils = { path = "../utils", features = [
