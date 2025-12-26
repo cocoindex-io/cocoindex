@@ -37,14 +37,13 @@ jobs:
 
         - run: rustup toolchain install stable --profile minimal
 
-        # Disable Rust cache until we have higher cache size limits
-        # - name: Rust Cache
-        #   uses: Swatinem/rust-cache@v2
-        #   with:
-        #     key: rust-${{ matrix.platform.runner }}-${{ matrix.python-version }}
-        #     cache-targets: 'false'
-        #     cache-all-crates: 'false'
-        #     cache-workspace-crates: 'false'
+        - name: Rust Cache
+          uses: Swatinem/rust-cache@v2
+          with:
+            key: rust-${{ matrix.platform.runner }}
+            cache-targets: 'true'
+            cache-all-crates: 'false'
+            cache-workspace-crates: 'false'
 
         - uses: actions/setup-python@v5
           id: setup_python
