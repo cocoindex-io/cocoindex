@@ -4,26 +4,28 @@ This file provides guidance to Claude Code (claude.ai/claude-code) when working 
 
 ## Build and Test Commands
 
+This project uses [uv](https://docs.astral.sh/uv/) for Python project management.
+
 ### Building
 
 ```bash
-maturin develop          # Build Rust code and install Python package (required after Rust changes)
+uv run maturin develop   # Build Rust code and install Python package (required after Rust changes)
 ```
 
 ### Testing
 
 ```bash
 cargo test               # Run Rust tests
-dmypy run                # Type check Python code (uses mypy daemon)
-pytest python/           # Run Python tests (use after both Rust and Python changes)
+uv run dmypy run         # Type check Python code (uses mypy daemon)
+uv run pytest python/    # Run Python tests (use after both Rust and Python changes)
 ```
 
 ### Workflow Summary
 
 | Change Type | Commands to Run |
 |-------------|-----------------|
-| Rust code only | `maturin develop && cargo test` |
-| Python code only | `dmypy run && pytest python/` |
+| Rust code only | `uv run maturin develop && cargo test` |
+| Python code only | `uv run dmypy run && uv run pytest python/` |
 | Both Rust and Python | Run all commands from both categories above |
 
 ## Code Structure

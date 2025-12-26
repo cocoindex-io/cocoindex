@@ -86,12 +86,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: wheels-linux-x86_64
-      - uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
         with:
           python-version: ${{ matrix.py }}
-      - run: python -V
-      - run: pip install --find-links=./ cocoindex
-      - run: python -c "import cocoindex, sys; print('import ok on', sys.version)"
+      - run: uv python install ${{ matrix.py }}
+      - run: uv run --no-project python -V
+      - run: uv pip install --system --find-links=./ cocoindex
+      - run: uv run --no-project python -c "import cocoindex, sys; print('import ok on', sys.version)"
 
 
   sdist:
