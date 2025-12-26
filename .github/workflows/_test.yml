@@ -46,10 +46,15 @@ jobs:
         #     cache-all-crates: 'false'
         #     cache-workspace-crates: 'false'
 
-        - name: Install uv
-          uses: astral-sh/setup-uv@v4
+        - uses: actions/setup-python@v5
+          id: setup_python
           with:
             python-version: ${{ matrix.python-version }}
+            # Python cache is huge and saves little time, so disabled for now, until we have higher cache size limits
+            # cache: 'pip'
+
+        - name: Install uv
+          uses: astral-sh/setup-uv@v4
 
         - name: Sync Python dependencies
           run: uv sync --no-dev --group ci
