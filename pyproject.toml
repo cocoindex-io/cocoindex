@@ -95,6 +95,9 @@ dev = [
     { include-group = "dev-local" },
 ]
 
+[tool.uv]
+package = false
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
