@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 
 import cocoindex
-from cocoindex import op
+from cocoindex import SurrealDBConnectionSpec, op
 from cocoindex.setting import Settings
 
 
@@ -140,7 +140,6 @@ class TestOptionalDatabase:
         ):
             settings = Settings.from_env()
             assert settings.database is not None
-            assert settings.surreal is None
             assert settings.database.url == test_url
             assert settings.database.user == test_user
             assert settings.database.password == test_password
@@ -162,7 +161,6 @@ class TestOptionalDatabase:
 
             settings = Settings.from_env()
             assert settings.database is not None
-            assert settings.surreal is None
             assert settings.database.url == test_url
             assert settings.database.user is None
             assert settings.database.password is None
@@ -183,13 +181,12 @@ class TestOptionalDatabase:
             clear=False,
         ):
             settings = Settings.from_env()
-            assert settings.surreal is not None
-            assert settings.database is None
-            assert settings.surreal.url == "ws://localhost:8000"
-            assert settings.surreal.namespace == "testns"
-            assert settings.surreal.database == "testdb"
-            assert settings.surreal.user == "root"
-            assert settings.surreal.password == "root"
+            assert isinstance(settings.database, SurrealDBConnectionSpec)
+            assert settings.database.url == "ws://localhost:8000"
+            assert settings.database.namespace == "testns"
+            assert settings.database.database == "testdb"
+            assert settings.database.user == "root"
+            assert settings.database.password == "root"
 
     def test_multiple_init_calls(self) -> None:
         """Test that multiple init calls work correctly."""

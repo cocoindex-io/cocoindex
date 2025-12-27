@@ -40,7 +40,7 @@ class DatabaseConnectionSpec:
 
 
 @dataclass
-class SurrealDbConnectionSpec:
+class SurrealDBConnectionSpec:
     """
     Connection spec for SurrealDB (used for internal persistence when configured).
 
@@ -90,14 +90,14 @@ def _load_field(
 class Settings:
     """Settings for the cocoindex library."""
 
-    database: DatabaseConnectionSpec | SurrealDbConnectionSpec | None = None
+    database: DatabaseConnectionSpec | SurrealDBConnectionSpec | None = None
     app_namespace: str = ""
     global_execution_options: GlobalExecutionOptions | None = None
 
     @classmethod
     def from_env(cls) -> Self:
         """Load settings from environment variables."""
-
+        database: DatabaseConnectionSpec | SurrealDBConnectionSpec | None = None
         surreal_url = os.getenv("COCOINDEX_SURREALDB_URL")
         if surreal_url is not None:
             surreal_kwargs: dict[str, Any] = {"url": surreal_url}
@@ -109,7 +109,7 @@ class Settings:
             )
             _load_field(surreal_kwargs, "user", "COCOINDEX_SURREALDB_USER")
             _load_field(surreal_kwargs, "password", "COCOINDEX_SURREALDB_PASSWORD")
-            database = SurrealDbConnectionSpec(**surreal_kwargs)
+            database = SurrealDBConnectionSpec(**surreal_kwargs)
         else:
             database_url = os.getenv("COCOINDEX_DATABASE_URL")
             if database_url is not None:

@@ -1,4 +1,5 @@
 import cocoindex
+from cocoindex.targets import SurrealDBConnection
 
 
 def test_surrealdb_specs_importable() -> None:
@@ -12,7 +13,9 @@ def test_surrealdb_specs_importable() -> None:
     )
 
     # AuthEntryReference is a runtime wrapper; for spec construction, we can reference an auth key.
-    conn_ref = cocoindex.auth_registry.ref_auth_entry("surreal")
+    conn_ref: cocoindex.auth_registry.AuthEntryReference[SurrealDBConnection] = (
+        cocoindex.auth_registry.ref_auth_entry("surreal")
+    )
 
     target = cocoindex.targets.SurrealDB(
         connection=conn_ref,

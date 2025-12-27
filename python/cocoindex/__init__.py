@@ -36,7 +36,7 @@ from .index import (
 )
 from .setting import (
     DatabaseConnectionSpec,
-    SurrealDbConnectionSpec,
+    SurrealDBConnectionSpec,
     Settings,
     ServerSettings,
 )
@@ -107,7 +107,7 @@ __all__ = [
     "IvfFlatVectorIndexMethod",
     # Settings
     "DatabaseConnectionSpec",
-    "SurrealDbConnectionSpec",
+    "SurrealDBConnectionSpec",
     "Settings",
     "ServerSettings",
     "get_app_namespace",
