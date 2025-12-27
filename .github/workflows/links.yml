@@ -1,0 +1,49 @@
+name: Link Check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**/*.md"
+      - "docs/**/*.mdx"
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  link-check:
+    name: Check links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Restore lychee cache
+        uses: actions/cache@v4
+        with:
+          path: .lycheecache
+          key: cache-lychee-${{ github.sha }}
+          restore-keys: cache-lychee-
+
+      - name: Run link checker
+        id: lychee
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --cache --max-cache-age 1d --verbose --no-progress 'docs/**/*.md' 'docs/**/*.mdx'
+          fail: true
+          format: markdown
+          jobSummary: true
+          output: ./lychee/out.md
+
+      - name: Create issue from report
+        if: steps.lychee.outputs.exit_code != 0
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: Link Checker Report
+          content-filepath: ./lychee/out.md
+          labels: report, automated issue
