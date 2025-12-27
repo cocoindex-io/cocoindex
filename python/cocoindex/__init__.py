@@ -34,7 +34,12 @@ from .index import (
     HnswVectorIndexMethod,
     IvfFlatVectorIndexMethod,
 )
-from .setting import DatabaseConnectionSpec, SurrealDbConnectionSpec, Settings, ServerSettings
+from .setting import (
+    DatabaseConnectionSpec,
+    SurrealDbConnectionSpec,
+    Settings,
+    ServerSettings,
+)
 from .setting import get_app_namespace
 from .query_handler import QueryHandlerResultFields, QueryInfo, QueryOutput
 from .typing import (
