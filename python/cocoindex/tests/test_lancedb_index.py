@@ -25,6 +25,7 @@ from lancedb.index import HnswPq, IvfFlat  # type: ignore
 @dataclass
 class HnswVectorIndexMethod:
     """HNSW vector index parameters."""
+
     kind: str = "Hnsw"
     m: Optional[int] = None
     ef_construction: Optional[int] = None
@@ -33,6 +34,7 @@ class HnswVectorIndexMethod:
 @dataclass
 class IvfFlatVectorIndexMethod:
     """IVFFlat vector index parameters."""
+
     kind: str = "IvfFlat"
     lists: Optional[int] = None
 
