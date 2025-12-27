@@ -184,7 +184,6 @@ def _get_type_mapping(python_type: Any) -> _TypeMapping:
 class ColumnDef(NamedTuple):
     """Definition of a table column."""
 
-    name: str
     type: str  # PostgreSQL type (e.g., "text", "bigint", "jsonb", "vector(384)")
     nullable: bool = True
     encoder: ValueEncoder | None = (
@@ -199,14 +198,14 @@ RowT = TypeVar("RowT", default=dict[str, Any])
 class TableSchema(Generic[RowT]):
     """Schema definition for a PostgreSQL table."""
 
-    columns: list[ColumnDef]
+    columns: dict[str, ColumnDef]  # column name -> definition
     primary_key: list[str]  # Column names that form the primary key
     row_type: type[RowT] | None  # The row type, if provided
 
     @overload
     def __init__(
         self: "TableSchema[dict[str, Any]]",
-        columns: list[ColumnDef],
+        columns: dict[str, ColumnDef],
         primary_key: list[str],
     ) -> None: ...
 
@@ -219,7 +218,7 @@ class TableSchema(Generic[RowT]):
 
     def __init__(
         self,
-        columns: type[RowT] | list[ColumnDef],
+        columns: type[RowT] | dict[str, ColumnDef],
         primary_key: list[str],
     ) -> None:
         """
@@ -227,12 +226,12 @@ class TableSchema(Generic[RowT]):
 
         Args:
             columns: Either a struct type (dataclass, NamedTuple, or Pydantic model)
-                     or a list of ColumnDef objects.
+                     or a dict mapping column names to ColumnDef.
                      When a struct type is provided, Python types are automatically
                      mapped to PostgreSQL types based on asyncpg's type conversion.
             primary_key: List of column names that form the primary key.
         """
-        if isinstance(columns, list):
+        if isinstance(columns, dict):
             self.columns = columns
             self.row_type = None
         elif is_struct_type(columns):
@@ -241,35 +240,31 @@ class TableSchema(Generic[RowT]):
         else:
             raise TypeError(
                 f"columns must be a struct type (dataclass, NamedTuple, Pydantic model) "
-                f"or a list of ColumnDef, got {type(columns)}"
+                f"or a dict[str, ColumnDef], got {type(columns)}"
             )
 
         self.primary_key = primary_key
 
         # Validate primary key columns exist
-        col_names = {c.name for c in self.columns}
         for pk in self.primary_key:
-            if pk not in col_names:
+            if pk not in self.columns:
                 raise ValueError(
-                    f"Primary key column '{pk}' not found in columns: {col_names}"
+                    f"Primary key column '{pk}' not found in columns: {list(self.columns.keys())}"
                 )
 
     @staticmethod
-    def _columns_from_struct_type(struct_type: type) -> list[ColumnDef]:
-        """Convert a struct type to a list of ColumnDef."""
+    def _columns_from_struct_type(struct_type: type) -> dict[str, ColumnDef]:
+        """Convert a struct type to a dict of column name -> ColumnDef."""
         struct_info = StructType(struct_type)
-        columns: list[ColumnDef] = []
+        columns: dict[str, ColumnDef] = {}
 
         for field in struct_info.fields:
             type_info = analyze_type_info(field.type_hint)
             type_mapping = _get_type_mapping(field.type_hint)
-            columns.append(
-                ColumnDef(
-                    name=field.name,
-                    type=type_mapping.pg_type,
-                    nullable=type_info.nullable,
-                    encoder=type_mapping.encoder,
-                )
+            columns[field.name] = ColumnDef(
+                type=type_mapping.pg_type,
+                nullable=type_info.nullable,
+                encoder=type_mapping.encoder,
             )
 
         return columns
@@ -338,7 +333,7 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         table_name = _qualified_table_name(self._table_name, self._schema_name)
         columns = self._table_schema.columns
         pk_cols = self._table_schema.primary_key
-        all_col_names = [c.name for c in columns]
+        all_col_names = list(columns.keys())
         non_pk_cols = [c for c in all_col_names if c not in pk_cols]
 
         # Build column lists
@@ -371,7 +366,7 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
                 )
                 values_sql_parts.append(f"({placeholders})")
                 # Values are encoded by TableTarget before being stored as effect values.
-                params.extend(action.value.get(col.name) for col in columns)
+                params.extend(action.value.get(col_name) for col_name in all_col_names)
 
             values_sql = ", ".join(values_sql_parts)
             sql = f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
@@ -467,14 +462,14 @@ def _table_composite_state_from_spec(
     spec: _TableSpec,
 ) -> statediff.CompositeState[tuple[_PkColumnState, ...], str, _NonPkColumnState]:
     schema = spec.table_schema
-    col_by_name = {c.name: c for c in schema.columns}
+    col_by_name = schema.columns
     pk_sig = tuple(
         _PkColumnState(name=pk, type=col_by_name[pk].type) for pk in schema.primary_key
     )
     sub = {
-        c.name: _NonPkColumnState(type=c.type, nullable=c.nullable)
-        for c in schema.columns
-        if c.name not in schema.primary_key
+        col_name: _NonPkColumnState(type=col_def.type, nullable=col_def.nullable)
+        for col_name, col_def in schema.columns.items()
+        if col_name not in schema.primary_key
     }
     return statediff.CompositeState(main=pk_sig, sub=sub)
 
@@ -622,13 +617,13 @@ class _TableHandler(
 
         # Build column definitions
         col_defs = []
-        for col in schema.columns:
+        for col_name, col in schema.columns.items():
             nullable = (
                 ""
-                if col.nullable and col.name not in schema.primary_key
+                if col.nullable and col_name not in schema.primary_key
                 else " NOT NULL"
             )
-            col_defs.append(f'"{col.name}" {col.type}{nullable}')
+            col_defs.append(f'"{col_name}" {col.type}{nullable}')
 
         # Build primary key constraint
         pk_cols = ", ".join(f'"{c}"' for c in schema.primary_key)
@@ -649,7 +644,7 @@ class _TableHandler(
         qualified_name = _qualified_table_name(key.table_name, key.schema_name)
         pk_cols = set(schema.primary_key)
         non_pk_col_by_name = {
-            c.name: c for c in schema.columns if c.name not in pk_cols
+            n: c for n, c in schema.columns.items() if n not in pk_cols
         }
         for col_name, action in column_actions.items():
             # Defensive: we never ALTER PK columns here.
@@ -777,9 +772,7 @@ class TableTarget(
         self._provider = provider
         self._table_schema = table_schema
 
-    def declare_row(
-        self: "TableTarget[RowT, Any]", scope: coco.Scope, *, row: RowT
-    ) -> None:
+    def declare_row(self: "TableTarget[RowT]", scope: coco.Scope, *, row: RowT) -> None:
         """
         Declare a row to be upserted to this table.
 
@@ -799,15 +792,15 @@ class TableTarget(
         and apply column encoders for both dict and object inputs.
         """
         out: dict[str, Any] = {}
-        for col in self._table_schema.columns:
+        for col_name, col in self._table_schema.columns.items():
             if isinstance(row, dict):
-                value = row.get(col.name)  # type: ignore[union-attr]
+                value = row.get(col_name)  # type: ignore[union-attr]
             else:
-                value = getattr(row, col.name)
+                value = getattr(row, col_name)
 
             if value is not None and col.encoder is not None:
                 value = col.encoder(value)
-            out[col.name] = value
+            out[col_name] = value
         return out
 
 
