@@ -52,10 +52,8 @@ pub struct OutputPosition {
 
 /// A chunk of text with its range and position information.
 #[derive(Debug, Clone)]
-pub struct Chunk<'a> {
-    /// The text content of the chunk.
-    pub text: &'a str,
-    /// Byte range in the original text.
+pub struct Chunk {
+    /// Character range in the original text.
     pub range: TextRange,
     /// Start position (character offset, line, column).
     pub start: OutputPosition,
