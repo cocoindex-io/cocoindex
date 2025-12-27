@@ -171,7 +171,7 @@ pub fn get_auth_registry() -> &'static Arc<AuthRegistry> {
     &AUTH_REGISTRY
 }
 
-type PoolKey = (String, Option<String>);
+type PoolKey = (String, Option<String>, Option<String>);
 type PoolValue = Arc<tokio::sync::OnceCell<PgPool>>;
 
 #[derive(Default)]
@@ -182,7 +182,11 @@ pub struct DbPools {
 impl DbPools {
     pub async fn get_pool(&self, conn_spec: &settings::DatabaseConnectionSpec) -> Result<PgPool> {
         let db_pool_cell = {
-            let key = (conn_spec.url.clone(), conn_spec.user.clone());
+            let key = (
+                conn_spec.url.clone(),
+                conn_spec.user.clone(),
+                conn_spec.schema.clone(),
+            );
             let mut db_pools = self.pools.lock().unwrap();
             db_pools.entry(key).or_default().clone()
         };
@@ -195,7 +199,9 @@ impl DbPools {
                 if let Some(password) = &conn_spec.password {
                     pg_options = pg_options.password(password);
                 }
-
+                if let Some(schema) = &conn_spec.schema {
+                    pg_options = pg_options.options([("search_path", schema.as_str())]);
+                }
                 // Try to connect to the database with a low timeout first.
                 {
                     let pool_options = PgPoolOptions::new()
@@ -405,6 +411,7 @@ mod tests {
                 url: "postgresql://test".to_string(),
                 user: None,
                 password: None,
+                schema: None,
                 max_connections: 10,
                 min_connections: 1,
             }),
