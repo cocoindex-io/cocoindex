@@ -84,15 +84,12 @@ class Settings:
     def from_env(cls) -> Self:
         """Load settings from environment variables."""
 
-        extra_kwargs: dict[str, Any] = {}
+        ignore_target_drop_failures_dict: dict[str, Any] = {}
         _load_field(
-            extra_kwargs,
+            ignore_target_drop_failures_dict,
             "ignore_target_drop_failures",
             "COCOINDEX_IGNORE_TARGET_DROP_FAILURES",
             parse=lambda v: v.lower() == "true",
-        )
-        ignore_target_drop_failures = extra_kwargs.get(
-            "ignore_target_drop_failures", False
         )
 
         database_url = os.getenv("COCOINDEX_DATABASE_URL")
@@ -132,6 +129,10 @@ class Settings:
         global_execution_options = GlobalExecutionOptions(**exec_kwargs)
 
         app_namespace = os.getenv("COCOINDEX_APP_NAMESPACE", "")
+
+        ignore_target_drop_failures = ignore_target_drop_failures_dict.get(
+            "ignore_target_drop_failures", False
+        )
 
         return cls(
             ignore_target_drop_failures=ignore_target_drop_failures,
