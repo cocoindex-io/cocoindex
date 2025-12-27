@@ -24,11 +24,17 @@ repos:
         exclude_types: [python]  # Covered by Ruff W291.
         exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
 
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.6.1
+    hooks:
+      - id: uv-lock
+        # Ensures uv.lock is up to date with pyproject.toml
+
   - repo: local
     hooks:
         - id: maturin-develop
           name: maturin develop
-          entry: maturin develop -E all,dev
+          entry: uv run maturin develop -E all,dev
           language: system
           files: ^(rust/|python/|Cargo\.toml|pyproject\.toml)
           pass_filenames: false
@@ -36,7 +42,7 @@ repos:
         # Disable until the cli module is fully migrated.
         # - id: generate-cli-docs
         #   name: generate CLI documentation
-        #   entry: python dev/generate_cli_docs.py
+        #   entry: uv run python dev/generate_cli_docs.py
         #   language: system
         #   files: ^(python/cocoindex/cli\.py|dev/generate_cli_docs\.py)$
         #   pass_filenames: false
@@ -58,7 +64,7 @@ repos:
 
         - id: mypy-check
           name: mypy type check
-          entry: dmypy run
+          entry: uv run dmypy run
           language: system
           files: ^(rust/|python/|examples/|Cargo\.toml|pyproject\.toml)
           pass_filenames: false
@@ -70,12 +76,12 @@ repos:
         types: [python]
         pass_filenames: true
   
-  - repo: https://github.com/christophmeissner/pytest-pre-commit
-    rev: 1.0.0
+  - repo: local
     hooks:
       - id: pytest
+        name: pytest
+        entry: uv run pytest python/
         language: system
         types: [python]
         pass_filenames: false
         always_run: false
-        args: ["python"]
