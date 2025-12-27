@@ -58,6 +58,7 @@ cocoindex/
 │       ├── connectors/         # External system connectors
 │       ├── connectorkits/      # Connector building utilities
 │       ├── resources/          # Abstractions for various resources (files, tables, chunks, etc.)
+│       ├── extras/             # Convenience utilities for various types of data processing, etc.
 │       └── tests/              # Python tests
 │
 ├── examples/                   # Example applications
@@ -132,3 +133,10 @@ app = coco.App("FilesTransform", app_main)
 ## Principles
 
 * We prefer end-to-end tests on user-facing APIs, over unit tests on smaller internal functions. With this said, there're cases where unit tests are necessary, e.g. for internal logic with various situations and edge cases, in which case it's usually easier to cover various scenarios with unit tests.
+
+## Python Code Conventions
+
+* Avoid leaking internal symbols in public modules. Import modules with underscore prefix and reference their symbols:
+  * `import typing as _typing`, then reference as `_typing.Literal`, `_typing.Optional`, etc.
+  * `from cocoindex._internal import core as _core`
+  * `from cocoindex.resources import chunk as _chunk`

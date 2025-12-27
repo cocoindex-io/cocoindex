@@ -502,6 +502,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "cocoindex_core",
+ "cocoindex_extra_text",
  "cocoindex_py_utils",
  "cocoindex_utils",
  "futures",
