@@ -327,10 +327,9 @@ impl<'s> AtomChunksCollector<'s> {
     }
 }
 
-struct ChunkOutput<'s> {
+struct ChunkOutput {
     start_pos: Position,
     end_pos: Position,
-    text: &'s str,
 }
 
 struct InternalRecursiveChunker<'s> {
@@ -423,7 +422,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         }
     }
 
-    fn merge_atom_chunks(&self, atom_chunks: Vec<AtomChunk>) -> Vec<ChunkOutput<'s>> {
+    fn merge_atom_chunks(&self, atom_chunks: Vec<AtomChunk>) -> Vec<ChunkOutput> {
         struct AtomRoutingPlan {
             start_idx: usize,
             prev_plan_idx: usize,
@@ -561,7 +560,6 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
             output.push(ChunkOutput {
                 start_pos: Position::new(start_chunk.range.start),
                 end_pos: Position::new(end_chunk.range.end),
-                text: &self.full_text[start_chunk.range.start..end_chunk.range.end],
             });
             plan_idx = plan.prev_plan_idx;
         }
@@ -569,7 +567,7 @@ impl<'t, 's: 't> InternalRecursiveChunker<'s> {
         output
     }
 
-    fn split_root_chunk(&self, kind: ChunkKind<'t>) -> Vec<ChunkOutput<'s>> {
+    fn split_root_chunk(&self, kind: ChunkKind<'t>) -> Vec<ChunkOutput> {
         let mut atom_collector = AtomChunksCollector {
             full_text: self.full_text,
             min_level: 0,
@@ -642,7 +640,7 @@ impl RecursiveChunker {
     }
 
     /// Split the text into chunks according to the configuration.
-    pub fn split<'a>(&self, text: &'a str, config: RecursiveChunkConfig) -> Vec<Chunk<'a>> {
+    pub fn split(&self, text: &str, config: RecursiveChunkConfig) -> Vec<Chunk> {
         let min_chunk_size = config.min_chunk_size.unwrap_or(config.chunk_size / 2);
         let chunk_overlap = std::cmp::min(config.chunk_overlap.unwrap_or(0), min_chunk_size);
 
@@ -712,8 +710,10 @@ impl RecursiveChunker {
                 let start = chunk_output.start_pos.output.unwrap();
                 let end = chunk_output.end_pos.output.unwrap();
                 Chunk {
-                    text: chunk_output.text,
-                    range: TextRange::new(start.char_offset, end.char_offset),
+                    range: TextRange::new(
+                        chunk_output.start_pos.byte_offset,
+                        chunk_output.end_pos.byte_offset,
+                    ),
                     start,
                     end,
                 }
@@ -739,9 +739,18 @@ mod tests {
         let chunks = chunker.split(text, config);
 
         assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0].text, "Linea 1.");
-        assert_eq!(chunks[1].text, "Linea 2.");
-        assert_eq!(chunks[2].text, "Linea 3.");
+        assert_eq!(
+            &text[chunks[0].range.start..chunks[0].range.end],
+            "Linea 1."
+        );
+        assert_eq!(
+            &text[chunks[1].range.start..chunks[1].range.end],
+            "Linea 2."
+        );
+        assert_eq!(
+            &text[chunks[2].range.start..chunks[2].range.end],
+            "Linea 3."
+        );
     }
 
     #[test]
@@ -758,7 +767,8 @@ mod tests {
 
         assert!(chunks.len() > 1);
         for chunk in &chunks {
-            assert!(chunk.text.len() <= 20);
+            let chunk_text = &text[chunk.range.start..chunk.range.end];
+            assert!(chunk_text.len() <= 20);
         }
     }
 
@@ -776,10 +786,11 @@ mod tests {
 
         assert!(chunks.len() > 1);
         for chunk in &chunks {
+            let chunk_text = &text[chunk.range.start..chunk.range.end];
             assert!(
-                chunk.text.len() <= 25,
+                chunk_text.len() <= 25,
                 "Chunk was too long: '{}'",
-                chunk.text
+                chunk_text
             );
         }
     }
@@ -798,7 +809,8 @@ mod tests {
 
         assert_eq!(chunks.len(), 3);
         // Verify chunks are trimmed appropriately
-        assert!(!chunks[0].text.starts_with("  "));
+        let chunk_text = &text[chunks[0].range.start..chunks[0].range.end];
+        assert!(!chunk_text.starts_with("  "));
     }
 
     #[test]
@@ -863,8 +875,8 @@ fn other() {
         let chunks = chunker.split(text, chunk_config);
 
         assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0].text, "Part1");
-        assert_eq!(chunks[1].text, "Part2");
-        assert_eq!(chunks[2].text, "Part3");
+        assert_eq!(&text[chunks[0].range.start..chunks[0].range.end], "Part1");
+        assert_eq!(&text[chunks[1].range.start..chunks[1].range.end], "Part2");
+        assert_eq!(&text[chunks[2].range.start..chunks[2].range.end], "Part3");
     }
 }
