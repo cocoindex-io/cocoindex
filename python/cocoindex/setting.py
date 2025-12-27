@@ -90,8 +90,7 @@ def _load_field(
 class Settings:
     """Settings for the cocoindex library."""
 
-    database: DatabaseConnectionSpec | None = None
-    surreal: SurrealDbConnectionSpec | None = None
+    database: DatabaseConnectionSpec | SurrealDbConnectionSpec | None = None
     app_namespace: str = ""
     global_execution_options: GlobalExecutionOptions | None = None
 
@@ -110,10 +109,8 @@ class Settings:
             )
             _load_field(surreal_kwargs, "user", "COCOINDEX_SURREALDB_USER")
             _load_field(surreal_kwargs, "password", "COCOINDEX_SURREALDB_PASSWORD")
-            surreal = SurrealDbConnectionSpec(**surreal_kwargs)
-            database = None
+            database = SurrealDbConnectionSpec(**surreal_kwargs)
         else:
-            surreal = None
             database_url = os.getenv("COCOINDEX_DATABASE_URL")
             if database_url is not None:
                 db_kwargs: dict[str, Any] = {"url": database_url}
@@ -154,7 +151,6 @@ class Settings:
 
         return cls(
             database=database,
-            surreal=surreal,
             app_namespace=app_namespace,
             global_execution_options=global_execution_options,
         )

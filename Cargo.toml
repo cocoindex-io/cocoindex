@@ -117,6 +117,7 @@ expect-test = "1.5.1"
 encoding_rs = "0.8.35"
 tokio-util = { version = "0.7.17", features = ["rt"] }
 surrealdb = "2.4.0"
+deadpool = "0.12.3"
 
 [profile.release]
 codegen-units = 1

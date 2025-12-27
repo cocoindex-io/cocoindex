@@ -162,7 +162,7 @@ class SurrealDBConnection:
     namespace: str
     database: str
     # Auth (root user).
-    username: str
+    user: str
     password: str
 
 

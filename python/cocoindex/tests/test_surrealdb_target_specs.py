@@ -7,7 +7,7 @@ def test_surrealdb_specs_importable() -> None:
         url="ws://localhost:8000",
         namespace="test_ns",
         database="test_db",
-        username="root",
+        user="root",
         password="root",
     )
 
@@ -18,6 +18,7 @@ def test_surrealdb_specs_importable() -> None:
         connection=conn_ref,
         mapping=cocoindex.targets.Nodes(label="Document"),
     )
+    assert isinstance(target.mapping, cocoindex.targets.Nodes)
     assert target.mapping.label == "Document"
 
     decl = cocoindex.targets.SurrealDBDeclaration(

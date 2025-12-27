@@ -27,7 +27,7 @@ surrealdb_conn_spec = cocoindex.add_auth_entry(
         url=SURREALDB_URL,
         namespace=SURREALDB_NS,
         database=SURREALDB_DB,
-        username=SURREALDB_USER,
+        user=SURREALDB_USER,
         password=SURREALDB_PASSWORD,
     ),
 )

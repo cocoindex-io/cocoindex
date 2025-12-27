@@ -1662,6 +1662,7 @@ dependencies = [
  "cocoindex_utils",
  "config",
  "const_format",
+ "deadpool 0.12.3",
  "derivative",
  "encoding_rs",
  "expect-test",
@@ -2178,6 +2179,18 @@ dependencies = [
  "deadpool-runtime",
  "num_cpus",
  "retain_mut",
+ "tokio",
+]
+
+[[package]]
+name = "deadpool"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0be2b1d1d6ec8d846f05e137292d0b89133caf95ef33695424c09568bdd39b1b"
+dependencies = [
+ "deadpool-runtime",
+ "lazy_static",
+ "num_cpus",
  "tokio",
 ]
 
@@ -4311,7 +4324,7 @@ dependencies = [
  "bytes",
  "chrono",
  "chrono-tz",
- "deadpool",
+ "deadpool 0.9.5",
  "delegate",
  "futures",
  "log",

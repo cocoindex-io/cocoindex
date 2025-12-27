@@ -1,6 +1,6 @@
-from enum import Enum
 from dataclasses import dataclass
-from typing import Sequence, Union, Any
+from enum import Enum
+from typing import Any, Sequence, Union
 
 
 class VectorSimilarityMetric(Enum):
@@ -36,7 +36,7 @@ class VectorIndexDef:
     """
 
     field_name: str
-    metric: VectorSimilarityMetric
+    metric: VectorSimilarityMetric = VectorSimilarityMetric.COSINE_SIMILARITY
     method: VectorIndexMethod | None = None
 
 

@@ -12,6 +12,7 @@ use utils::db::WriteAction;
 
 pub mod postgres;
 pub mod surreal;
+pub mod surrealdb_pool;
 
 #[async_trait]
 pub trait InternalPersistence: Send + Sync {

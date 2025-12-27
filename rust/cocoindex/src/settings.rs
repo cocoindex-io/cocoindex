@@ -1,7 +1,14 @@
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
-pub struct DatabaseConnectionSpec {
+#[serde(untagged)]
+pub enum DatabaseConnectionSpec {
+    Postgres(PostgresConnectionSpec),
+    SurrealDB(SurrealDBConnectionSpec),
+}
+
+#[derive(Deserialize, Debug)]
+pub struct PostgresConnectionSpec {
     pub url: String,
     pub user: Option<String>,
     pub password: Option<String>,
@@ -9,13 +16,13 @@ pub struct DatabaseConnectionSpec {
     pub min_connections: u32,
 }
 
-#[derive(Deserialize, Debug)]
-pub struct SurrealDbConnectionSpec {
+#[derive(Clone, Deserialize, Debug)]
+pub struct SurrealDBConnectionSpec {
     pub url: String,
     pub namespace: String,
     pub database: String,
-    pub user: Option<String>,
-    pub password: Option<String>,
+    pub user: String,
+    pub password: String,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -28,8 +35,6 @@ pub struct GlobalExecutionOptions {
 pub struct Settings {
     #[serde(default)]
     pub database: Option<DatabaseConnectionSpec>,
-    #[serde(default)]
-    pub surreal: Option<SurrealDbConnectionSpec>,
     #[serde(default)]
     #[allow(dead_code)] // Used via serialization/deserialization to Python
     pub app_namespace: String,
@@ -58,11 +63,16 @@ mod tests {
 
         assert!(settings.database.is_some());
         let db = settings.database.unwrap();
-        assert_eq!(db.url, "postgresql://localhost:5432/test");
-        assert_eq!(db.user, Some("testuser".to_string()));
-        assert_eq!(db.password, Some("testpass".to_string()));
-        assert_eq!(db.min_connections, 1);
-        assert_eq!(db.max_connections, 10);
+        match db {
+            DatabaseConnectionSpec::Postgres(db) => {
+                assert_eq!(db.url, "postgresql://localhost:5432/test");
+                assert_eq!(db.user, Some("testuser".to_string()));
+                assert_eq!(db.password, Some("testpass".to_string()));
+                assert_eq!(db.min_connections, 1);
+                assert_eq!(db.max_connections, 10);
+            }
+            _ => panic!("Expected Postgres connection spec"),
+        }
         assert_eq!(settings.app_namespace, "test_app");
     }
 
@@ -75,7 +85,6 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
 
         assert!(settings.database.is_none());
-        assert!(settings.surreal.is_none());
         assert_eq!(settings.app_namespace, "test_app");
     }
 
@@ -86,7 +95,6 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
 
         assert!(settings.database.is_none());
-        assert!(settings.surreal.is_none());
         assert_eq!(settings.app_namespace, "");
     }
 
@@ -103,20 +111,24 @@ mod tests {
         let settings: Settings = serde_json::from_str(json).unwrap();
 
         assert!(settings.database.is_some());
-        assert!(settings.surreal.is_none());
         let db = settings.database.unwrap();
-        assert_eq!(db.url, "postgresql://localhost:5432/test");
-        assert_eq!(db.user, None);
-        assert_eq!(db.password, None);
-        assert_eq!(db.min_connections, 1);
-        assert_eq!(db.max_connections, 10);
+        match db {
+            DatabaseConnectionSpec::Postgres(db) => {
+                assert_eq!(db.url, "postgresql://localhost:5432/test");
+                assert_eq!(db.user, None);
+                assert_eq!(db.password, None);
+                assert_eq!(db.min_connections, 1);
+                assert_eq!(db.max_connections, 10);
+            }
+            _ => panic!("Expected Postgres connection spec"),
+        }
         assert_eq!(settings.app_namespace, "");
     }
 
     #[test]
     fn test_settings_deserialize_surreal() {
         let json = r#"{
-            "surreal": {
+            "database": {
                 "url": "ws://localhost:8000",
                 "namespace": "testns",
                 "database": "testdb",
@@ -126,13 +138,17 @@ mod tests {
         }"#;
 
         let settings: Settings = serde_json::from_str(json).unwrap();
-        assert!(settings.database.is_none());
-        let surreal = settings.surreal.unwrap();
-        assert_eq!(surreal.url, "ws://localhost:8000");
-        assert_eq!(surreal.namespace, "testns");
-        assert_eq!(surreal.database, "testdb");
-        assert_eq!(surreal.user, Some("root".to_string()));
-        assert_eq!(surreal.password, Some("root".to_string()));
+        let db = settings.database.unwrap();
+        match db {
+            DatabaseConnectionSpec::SurrealDB(db) => {
+                assert_eq!(db.url, "ws://localhost:8000");
+                assert_eq!(db.namespace, "testns");
+                assert_eq!(db.database, "testdb");
+                assert_eq!(db.user, "root");
+                assert_eq!(db.password, "root");
+            }
+            _ => panic!("Expected Postgres connection spec"),
+        }
     }
 
     #[test]
@@ -146,11 +162,15 @@ mod tests {
         }"#;
 
         let db_spec: DatabaseConnectionSpec = serde_json::from_str(json).unwrap();
-
-        assert_eq!(db_spec.url, "postgresql://localhost:5432/test");
-        assert_eq!(db_spec.user, Some("testuser".to_string()));
-        assert_eq!(db_spec.password, Some("testpass".to_string()));
-        assert_eq!(db_spec.min_connections, 1);
-        assert_eq!(db_spec.max_connections, 10);
+        match db_spec {
+            DatabaseConnectionSpec::Postgres(db) => {
+                assert_eq!(db.url, "postgresql://localhost:5432/test");
+                assert_eq!(db.user, Some("testuser".to_string()));
+                assert_eq!(db.password, Some("testpass".to_string()));
+                assert_eq!(db.min_connections, 1);
+                assert_eq!(db.max_connections, 10);
+            }
+            _ => panic!("Expected Postgres connection spec"),
+        }
     }
 }

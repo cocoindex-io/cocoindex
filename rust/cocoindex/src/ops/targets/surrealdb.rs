@@ -1,99 +1,31 @@
-use crate::prelude::*;
-
 use super::shared::property_graph::*;
 use crate::ops::registry::ExecutorFactoryRegistry;
+use crate::persistence::surrealdb_pool::{SurrealDBPool, get_surrealdb_pool};
+use crate::prelude::*;
+use crate::settings::SurrealDBConnectionSpec;
 use crate::{ops::sdk::*, setup::CombinedState};
 use async_trait::async_trait;
 use blake2::Digest;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use surrealdb::Surreal;
-use surrealdb::engine::remote::ws::{Client, Ws};
-use surrealdb::opt::auth::Root;
-use tokio::sync::OnceCell;
+use surrealdb::engine::any::Any;
 
 ////////////////////////////////////////////////////////////
 // Public Types
 ////////////////////////////////////////////////////////////
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct ConnectionSpec {
-    /// Websocket RPC url, e.g. `ws://localhost:8000`.
-    url: String,
-    /// Namespace to use.
-    namespace: String,
-    /// Database to use.
-    database: String,
-    /// Root username.
-    username: String,
-    /// Root password.
-    password: String,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct Spec {
-    connection: spec::AuthEntryReference<ConnectionSpec>,
+    connection: spec::AuthEntryReference<SurrealDBConnectionSpec>,
     mapping: GraphElementMapping,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Declaration {
-    connection: spec::AuthEntryReference<ConnectionSpec>,
+    connection: spec::AuthEntryReference<SurrealDBConnectionSpec>,
     #[serde(flatten)]
     decl: GraphDeclaration,
-}
-
-////////////////////////////////////////////////////////////
-// Connection Pool
-////////////////////////////////////////////////////////////
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-struct DbKey {
-    url: String,
-    namespace: String,
-    database: String,
-    username: String,
-}
-
-impl DbKey {
-    fn from_spec(spec: &ConnectionSpec) -> Self {
-        Self {
-            url: spec.url.clone(),
-            namespace: spec.namespace.clone(),
-            database: spec.database.clone(),
-            username: spec.username.clone(),
-        }
-    }
-}
-
-#[derive(Default)]
-struct DbPool {
-    dbs: Mutex<HashMap<DbKey, Arc<OnceCell<Arc<Surreal<Client>>>>>>,
-}
-
-impl DbPool {
-    async fn get_db(&self, spec: &ConnectionSpec) -> Result<Arc<Surreal<Client>>> {
-        let key = DbKey::from_spec(spec);
-        let cell = {
-            let mut dbs = self.dbs.lock().unwrap();
-            dbs.entry(key).or_default().clone()
-        };
-        let db = cell
-            .get_or_try_init(|| async {
-                let sdb: Surreal<Client> = Surreal::init();
-                // TODO: implement Wss
-                sdb.connect::<Ws>(&spec.url).await?;
-                sdb.signin(Root {
-                    username: &spec.username,
-                    password: &spec.password,
-                })
-                .await?;
-                sdb.use_ns(&spec.namespace).use_db(&spec.database).await?;
-                anyhow::Ok(Arc::new(sdb))
-            })
-            .await?;
-        Ok(db.clone())
-    }
 }
 
 ////////////////////////////////////////////////////////////
@@ -113,6 +45,7 @@ pub struct VectorIndexState {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct SetupState {
+    // TODO: are these used in SurrealDB?
     key_field_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rel_endpoints: Option<(String, String)>,
@@ -189,8 +122,8 @@ impl setup::ResourceSetupChange for SetupChange {
 ////////////////////////////////////////////////////////////
 
 pub struct ExportContext {
-    conn_ref: spec::AuthEntryReference<ConnectionSpec>,
-    db: Arc<Surreal<Client>>,
+    db_ref: spec::AuthEntryReference<SurrealDBConnectionSpec>,
+    db_pool: SurrealDBPool,
     analyzed_data_coll: AnalyzedDataCollection,
 }
 
@@ -306,7 +239,7 @@ fn method_to_surreal_params(method: &Option<spec::VectorIndexMethod>) -> Result<
     })
 }
 
-fn build_table_setup_sql(table: &str, state: &SetupState) -> Result<String> {
+fn build_table_setup_surql(table: &str, state: &SetupState) -> Result<String> {
     let table = sanitize_ident(table);
     let mut out = String::new();
 
@@ -320,21 +253,15 @@ fn build_table_setup_sql(table: &str, state: &SetupState) -> Result<String> {
                 sanitize_ident(src),
                 sanitize_ident(tgt)
             ));
-        }
-    }
 
-    // Primary key unique index
-    if !state.key_field_names.is_empty() {
-        let idx_name = format!("__{table}__pk__idx");
-        let fields = state
-            .key_field_names
-            .iter()
-            .map(|f| sanitize_ident(f))
-            .collect::<Vec<_>>()
-            .join(", ");
-        out.push_str(&format!(
-            "DEFINE INDEX OVERWRITE {idx_name} ON TABLE {table} FIELDS {fields} UNIQUE;\n"
-        ));
+            // Unique index for relations
+            let idx_name = format!("__{table}__unique__idx");
+            out.push_str(&format!(
+                "DEFINE INDEX OVERWRITE {idx_name} ON {table} FIELDS {}, {} UNIQUE;\n",
+                sanitize_ident(src),
+                sanitize_ident(tgt)
+            ));
+        }
     }
 
     // Vector indexes (HNSW)
@@ -348,10 +275,10 @@ fn build_table_setup_sql(table: &str, state: &SetupState) -> Result<String> {
         let dist = metric_to_surreal(v.metric)?;
         let method_params = method_to_surreal_params(&v.method)?;
         out.push_str(&format!(
-            "DEFINE FIELD OVERWRITE {field} ON TABLE {table} TYPE array<float>;\n"
+            "DEFINE FIELD OVERWRITE {field} ON {table} TYPE array<float>;\n"
         ));
         out.push_str(&format!(
-            "DEFINE INDEX OVERWRITE {idx_name} ON TABLE {table} FIELDS {field} HNSW DIMENSION {} DIST {dist} TYPE {}{method_params};\n",
+            "DEFINE INDEX OVERWRITE {idx_name} ON {table} FIELDS {field} HNSW DIMENSION {} DIST {dist} TYPE {}{method_params};\n",
             v.vector_size, v.elem_type
         ));
     }
@@ -407,7 +334,7 @@ fn encode_mapped_fields_as_json(
     Ok(obj)
 }
 
-async fn run_surql(db: &Surreal<Client>, query: String) -> Result<()> {
+async fn run_surql(db: &Surreal<Any>, query: String) -> Result<()> {
     if query.trim().is_empty() {
         return Ok(());
     }
@@ -419,15 +346,12 @@ async fn run_surql(db: &Surreal<Client>, query: String) -> Result<()> {
 // Factory implementation
 ////////////////////////////////////////////////////////////
 
-type SurrealGraphElement = GraphElementType<ConnectionSpec>;
+type SurrealGraphElement = GraphElementType<SurrealDBConnectionSpec>;
 
-#[derive(Default)]
-pub struct Factory {
-    db_pool: DbPool,
-}
+pub struct TargetFactory;
 
 #[async_trait]
-impl TargetFactoryBase for Factory {
+impl TargetFactoryBase for TargetFactory {
     type Spec = Spec;
     type DeclarationSpec = Declaration;
     type SetupState = SetupState;
@@ -532,15 +456,13 @@ impl TargetFactoryBase for Factory {
                 typ: analyzed.schema.elem_type.clone(),
             };
 
-            let pool = self.clone();
-            let conn_ref = data_coll.spec.connection.clone();
+            let db_ref = data_coll.spec.connection.clone();
             let ctx = context.clone();
             let export_context = async move {
-                let conn_spec = ctx.auth_registry.get::<ConnectionSpec>(&conn_ref)?;
-                let db = pool.db_pool.get_db(&conn_spec).await?;
+                let dbconf = ctx.auth_registry.get::<SurrealDBConnectionSpec>(&db_ref)?;
                 Ok(Arc::new(ExportContext {
-                    conn_ref,
-                    db,
+                    db_ref,
+                    db_pool: SurrealDBPool::new(dbconf),
                     analyzed_data_coll: analyzed,
                 }))
             }
@@ -679,33 +601,36 @@ impl TargetFactoryBase for Factory {
 
     async fn apply_setup_changes(
         &self,
-        setup_change: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
+        changes: Vec<TypedResourceSetupChangeItem<'async_trait, Self>>,
         context: Arc<FlowInstanceContext>,
     ) -> Result<()> {
         // Apply in dependency order: nodes before relationships; deletes in reverse.
-        let mut items = setup_change;
-        items.sort_by_key(|i| match &i.key.typ {
+        let mut changes_sorted = changes;
+        changes_sorted.sort_by_key(|i| match &i.key.typ {
             ElementType::Node(_) => 0u8,
             ElementType::Relationship(_) => 1u8,
         });
 
-        for item in items.iter() {
-            let conn_spec = context
-                .auth_registry
-                .get::<ConnectionSpec>(&item.key.connection)?;
-            let db = self.db_pool.get_db(&conn_spec).await?;
-            let table = item.key.typ.label();
-            match &item.setup_change.action {
+        for change in changes_sorted.iter() {
+            let db =
+                get_surrealdb_pool(Some(&change.key.connection), &context.auth_registry).await?;
+            let conn = db.get_db().await?;
+
+            // TODO: implement apply_change in SetupChange
+            // change.setup_change.apply_change(&db, &change.key).await?;
+
+            let table = change.key.typ.label();
+            match &change.setup_change.action {
                 SetupAction::NoChange => {}
                 SetupAction::Delete => {
                     // Best-effort teardown.
                     let table = sanitize_ident(table);
                     let q = format!("REMOVE TABLE {table};\n");
-                    let _ = db.query(q).await;
+                    let _ = conn.query(q).await;
                 }
                 SetupAction::Upsert(state) => {
-                    let q = build_table_setup_sql(table, state)?;
-                    run_surql(&db, q).await?;
+                    let q = build_table_setup_surql(table, state)?;
+                    run_surql(&conn, q).await?;
                 }
             }
         }
@@ -716,17 +641,19 @@ impl TargetFactoryBase for Factory {
         &self,
         mutations: Vec<ExportTargetMutationWithContext<'async_trait, Self::ExportContext>>,
     ) -> Result<()> {
-        let mut mutations_by_conn: IndexMap<spec::AuthEntryReference<ConnectionSpec>, Vec<_>> =
-            IndexMap::new();
+        let mut mutations_by_conn: IndexMap<
+            spec::AuthEntryReference<SurrealDBConnectionSpec>,
+            Vec<_>,
+        > = IndexMap::new();
         for mutation in mutations.into_iter() {
             mutations_by_conn
-                .entry(mutation.export_context.conn_ref.clone())
+                .entry(mutation.export_context.db_ref.clone())
                 .or_default()
                 .push(mutation);
         }
 
         for mutations in mutations_by_conn.into_values() {
-            let db = &mutations[0].export_context.db;
+            let db = &mutations[0].export_context.db_pool.get_db().await?;
 
             // Apply node-only mutations first, then relationship mutations (which also upsert nodes).
             let (mut rel_mutations, node_mutations): (Vec<_>, Vec<_>) = mutations
@@ -880,7 +807,7 @@ impl TargetFactoryBase for Factory {
 }
 
 pub fn register(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
-    Factory::default().register(registry)
+    TargetFactory.register(registry)
 }
 
 #[cfg(test)]
@@ -904,17 +831,14 @@ mod tests {
                 elem_type: "F32".to_string(),
             }],
         };
-        let sql = build_table_setup_sql("Document", &state)?;
-        assert!(sql.contains("DEFINE TABLE OVERWRITE Document SCHEMALESS;"));
-        assert!(sql.contains(
-            "DEFINE INDEX OVERWRITE __Document__pk__idx ON TABLE Document FIELDS id UNIQUE;"
-        ));
-        assert!(
-            sql.contains("DEFINE FIELD OVERWRITE embedding ON TABLE Document TYPE array<float>;")
+        let sql = build_table_setup_surql("Document", &state)?;
+        assert_eq!(
+            sql,
+            r#"DEFINE TABLE OVERWRITE Document SCHEMALESS;
+DEFINE FIELD OVERWRITE embedding ON Document TYPE array<float>;
+DEFINE INDEX OVERWRITE __Document__embedding__Cosine__hnsw__idx ON Document FIELDS embedding HNSW DIMENSION 384 DIST COSINE TYPE F32 EFC 150 M 12;
+"#
         );
-        assert!(sql.contains("HNSW DIMENSION 384 DIST COSINE TYPE F32"));
-        assert!(sql.contains("EFC 150"));
-        assert!(sql.contains("M 12"));
         Ok(())
     }
 
@@ -926,12 +850,18 @@ mod tests {
             dependent_node_labels: vec![],
             vector_indexes: vec![],
         };
-        let sql = build_table_setup_sql("MENTION", &state)?;
+        let sql = build_table_setup_surql("MENTION", &state)?;
+        assert_eq!(
+            sql,
+            r#"DEFINE TABLE OVERWRITE MENTION TYPE RELATION IN Person OUT Place SCHEMALESS;
+DEFINE INDEX OVERWRITE __MENTION__unique__idx ON MENTION FIELDS Person, Place UNIQUE;
+"#
+        );
         assert!(sql.contains(
             "DEFINE TABLE OVERWRITE MENTION TYPE RELATION IN Person OUT Place SCHEMALESS;"
         ));
         assert!(sql.contains(
-            "DEFINE INDEX OVERWRITE __MENTION__pk__idx ON TABLE MENTION FIELDS rel_id UNIQUE;"
+            "DEFINE INDEX OVERWRITE __MENTION__unique__idx ON MENTION FIELDS Person, Place UNIQUE;"
         ));
         Ok(())
     }

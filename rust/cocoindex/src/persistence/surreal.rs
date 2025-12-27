@@ -1,3 +1,4 @@
+use crate::persistence::surrealdb_pool::SurrealDBPool;
 use crate::prelude::*;
 
 use crate::execution::db_tracking::{
@@ -16,8 +17,7 @@ use axum::http::StatusCode;
 use blake2::Digest;
 use serde::{Deserialize, Serialize};
 use surrealdb::Surreal;
-use surrealdb::engine::remote::ws::{Client, Ws, Wss};
-use surrealdb::opt::auth::Root;
+use surrealdb::engine::any::Any;
 use utils::db::WriteAction;
 
 const SETUP_TABLE: &str = "cocoindex_setup_metadata";
@@ -105,39 +105,19 @@ fn source_state_record_id(flow_table: &str, source_id: i32, key: &serde_json::Va
 }
 
 #[derive(Clone)]
-pub struct SurrealWsPersistence {
-    db: Surreal<Client>,
+pub struct SurrealDBPersistence {
+    pool: SurrealDBPool,
 }
 
-impl SurrealWsPersistence {
-    pub async fn connect(
-        url: &str,
-        ns: &str,
-        db: &str,
-        user: Option<&str>,
-        password: Option<&str>,
-    ) -> Result<Self> {
-        let (protocol, address) = url.split_once("://").unwrap_or(("ws://", "localhost:8000"));
-        let sdb = match protocol.as_ref() {
-            "ws" => Surreal::new::<Ws>(address).await?,
-            "wss" => Surreal::new::<Wss>(address).await?,
-            _ => return Err(anyhow!("Unsupported protocol: {}", protocol)),
-        };
-        if let Some(user) = user {
-            sdb.signin(Root {
-                username: user,
-                password: password.unwrap_or_default(),
-            })
-            .await?;
-        }
-        sdb.use_ns(ns).use_db(db).await?;
-        Ok(Self { db: sdb })
+impl SurrealDBPersistence {
+    pub fn new(pool: SurrealDBPool) -> Self {
+        Self { pool }
     }
 }
 
 #[derive(Clone)]
 struct SurrealTxn {
-    db: Surreal<Client>,
+    conn: Surreal<Any>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,10 +130,12 @@ struct SurrealSetupRow {
 }
 
 #[async_trait]
-impl InternalPersistence for SurrealWsPersistence {
+impl InternalPersistence for SurrealDBPersistence {
     async fn read_setup_metadata(&self) -> Result<Option<Vec<SetupMetadataRecord>>> {
         let mut res = self
-            .db
+            .pool
+            .get_db()
+            .await?
             .query(format!(
                 "SELECT flow_name, resource_type, key, state, staging_changes FROM {SETUP_TABLE};"
             ))
@@ -182,8 +164,8 @@ impl InternalPersistence for SurrealWsPersistence {
         resource_update_info: &HashMap<ResourceTypeKey, StateUpdateInfo>,
     ) -> Result<u64> {
         // Read all setup records for this flow
-        let mut res = self
-            .db
+        let conn = self.pool.get_db().await?;
+        let mut res = conn
             .query(format!(
                 "SELECT flow_name, resource_type, key, state, staging_changes FROM {SETUP_TABLE} WHERE flow_name = $flow;"
             ))
@@ -224,8 +206,7 @@ impl InternalPersistence for SurrealWsPersistence {
             FLOW_VERSION_RESOURCE_TYPE,
             &serde_json::Value::Null,
         );
-        let q = self
-            .db
+        let q = conn
             .query(format!(
                 "UPDATE {SETUP_TABLE}:{version_id} MERGE {{ flow_name: $flow, resource_type: $rtype, key: $key, state: $state, staging_changes: [] }};"
             ))
@@ -250,8 +231,7 @@ impl InternalPersistence for SurrealWsPersistence {
                     }
                     let legacy_id =
                         setup_record_id(flow_name, &legacy_key.resource_type, &legacy_key.key);
-                    self.db
-                        .query(format!("DELETE {SETUP_TABLE}:{legacy_id};"))
+                    conn.query(format!("DELETE {SETUP_TABLE}:{legacy_id};"))
                         .await?;
                 }
             }
@@ -274,7 +254,7 @@ impl InternalPersistence for SurrealWsPersistence {
             }
 
             let rid = setup_record_id(flow_name, &type_id.resource_type, &type_id.key);
-            self.db
+            conn
                 .query(format!(
                     "UPDATE {SETUP_TABLE}:{rid} MERGE {{ flow_name: $flow, resource_type: $rtype, key: $key, staging_changes: $staging }};"
                 ))
@@ -304,8 +284,8 @@ impl InternalPersistence for SurrealWsPersistence {
         struct VersionRow {
             state: Option<serde_json::Value>,
         }
-        let mut res = self
-            .db
+        let conn = self.pool.get_db().await?;
+        let mut res = conn
             .query(format!("SELECT state FROM {SETUP_TABLE}:{version_id};"))
             .await?;
         let rows: Vec<VersionRow> = res.take(0)?;
@@ -322,7 +302,7 @@ impl InternalPersistence for SurrealWsPersistence {
             let rid = setup_record_id(flow_name, &type_id.resource_type, &type_id.key);
             match &update_info.desired_state {
                 Some(desired_state) => {
-                    self.db
+                    conn
                         .query(format!(
                             "UPDATE {SETUP_TABLE}:{rid} MERGE {{ flow_name: $flow, resource_type: $rtype, key: $key, state: $state, staging_changes: [] }};"
                         ))
@@ -333,16 +313,13 @@ impl InternalPersistence for SurrealWsPersistence {
                         .await?;
                 }
                 None => {
-                    self.db
-                        .query(format!("DELETE {SETUP_TABLE}:{rid};"))
-                        .await?;
+                    conn.query(format!("DELETE {SETUP_TABLE}:{rid};")).await?;
                 }
             }
         }
 
         if delete_version {
-            self.db
-                .query(format!("DELETE {SETUP_TABLE}:{version_id};"))
+            conn.query(format!("DELETE {SETUP_TABLE}:{version_id};"))
                 .await?;
         }
 
@@ -364,7 +341,7 @@ impl InternalPersistence for SurrealWsPersistence {
 
     async fn begin_txn(&self) -> Result<Box<dyn InternalPersistenceTxn>> {
         Ok(Box::new(SurrealTxn {
-            db: self.db.clone(),
+            conn: self.pool.get_db().await?.clone(),
         }))
     }
 
@@ -384,7 +361,7 @@ impl InternalPersistence for SurrealWsPersistence {
         }
 
         let mut res = self
-            .db
+            .pool.get_db().await?
             .query(format!(
                 "SELECT source_key, processed_source_ordinal, processed_source_fp, process_logic_fingerprint, max_process_ordinal, process_ordinal FROM {TRACKING_TABLE} WHERE flow_table = $flow_table AND source_id = $source_id;"
             ))
@@ -419,7 +396,7 @@ impl InternalPersistence for SurrealWsPersistence {
         }
         let id = tracking_record_id(&db_setup.table_name, source_id, source_key_json);
         let mut res = self
-            .db
+            .pool.get_db().await?
             .query(format!(
                 "SELECT processed_source_ordinal, process_logic_fingerprint, process_time_micros FROM {TRACKING_TABLE}:{id};"
             ))
@@ -451,7 +428,7 @@ impl InternalPersistenceTxn for SurrealTxn {
     ) -> Result<Option<SourceTrackingInfoForProcessing>> {
         let id = tracking_record_id(&db_setup.table_name, source_id, source_key_json);
         let mut res = self
-            .db
+            .conn
             .query(format!(
                 "SELECT memoization_info, processed_source_ordinal, processed_source_fp, process_logic_fingerprint, max_process_ordinal, process_ordinal FROM {TRACKING_TABLE}:{id};"
             ))
@@ -467,8 +444,7 @@ impl InternalPersistenceTxn for SurrealTxn {
         db_setup: &TrackingTableSetupState,
     ) -> Result<Option<SourceTrackingInfoForPrecommit>> {
         let id = tracking_record_id(&db_setup.table_name, source_id, source_key_json);
-        let mut res = self
-            .db
+        let mut res = self.conn
             .query(format!(
                 "SELECT max_process_ordinal, staging_target_keys, processed_source_ordinal, processed_source_fp, process_logic_fingerprint, process_ordinal, target_keys FROM {TRACKING_TABLE}:{id};"
             ))
@@ -489,7 +465,7 @@ impl InternalPersistenceTxn for SurrealTxn {
     ) -> Result<()> {
         let id = tracking_record_id(&db_setup.table_name, source_id, source_key_json);
         let memo = memoization_info.map(serde_json::to_value).transpose()?;
-        self.db
+        self.conn
             .query(format!(
                 "UPDATE {TRACKING_TABLE}:{id} MERGE {{ flow_table: $flow_table, source_id: $source_id, source_key: $source_key, max_process_ordinal: $max_ord, staging_target_keys: $staging, memoization_info: $memo }};"
             ))
@@ -516,7 +492,7 @@ impl InternalPersistenceTxn for SurrealTxn {
             max_process_ordinal: Option<i64>,
         }
         let mut res = self
-            .db
+            .conn
             .query(format!(
                 "SELECT max_process_ordinal FROM {TRACKING_TABLE}:{id};"
             ))
@@ -528,7 +504,7 @@ impl InternalPersistenceTxn for SurrealTxn {
             .and_then(|r| r.max_process_ordinal)
             .unwrap_or(0);
         let new_max = (existing + 1).max(process_ordinal);
-        self.db
+        self.conn
             .query(format!(
                 "UPDATE {TRACKING_TABLE}:{id} MERGE {{ flow_table: $flow_table, source_id: $source_id, source_key: $source_key, max_process_ordinal: $max_ord, staging_target_keys: [] }};"
             ))
@@ -548,7 +524,7 @@ impl InternalPersistenceTxn for SurrealTxn {
     ) -> Result<Option<SourceTrackingInfoForCommit>> {
         let id = tracking_record_id(&db_setup.table_name, source_id, source_key_json);
         let mut res = self
-            .db
+            .conn
             .query(format!(
                 "SELECT staging_target_keys, process_ordinal FROM {TRACKING_TABLE}:{id};"
             ))
@@ -601,7 +577,7 @@ impl InternalPersistenceTxn for SurrealTxn {
             max_process_ordinal: matches!(action, WriteAction::Insert)
                 .then_some(process_ordinal + 1),
         };
-        self.db
+        self.conn
             .query(format!("UPDATE {TRACKING_TABLE}:{id} MERGE $merge;"))
             .bind(("merge", merge))
             .await?;
@@ -615,7 +591,7 @@ impl InternalPersistenceTxn for SurrealTxn {
         db_setup: &TrackingTableSetupState,
     ) -> Result<()> {
         let id = tracking_record_id(&db_setup.table_name, source_id, source_key_json);
-        self.db
+        self.conn
             .query(format!("DELETE {TRACKING_TABLE}:{id};"))
             .await?;
         Ok(())
@@ -629,7 +605,7 @@ impl InternalPersistenceTxn for SurrealTxn {
         db_setup: &TrackingTableSetupState,
     ) -> Result<()> {
         let id = tracking_record_id(&db_setup.table_name, source_id, source_key_json);
-        self.db
+        self.conn
             .query(format!(
                 "UPDATE {TRACKING_TABLE}:{id} MERGE {{ processed_source_ordinal: $ord }};"
             ))
@@ -653,7 +629,7 @@ impl InternalPersistenceTxn for SurrealTxn {
             value: serde_json::Value,
         }
         let mut res = self
-            .db
+            .conn
             .query(format!("SELECT value FROM {SOURCE_STATE_TABLE}:{id};"))
             .await?;
         let rows: Vec<Row> = res.take(0)?;
@@ -671,7 +647,7 @@ impl InternalPersistenceTxn for SurrealTxn {
             bail!("Source state table not enabled for this flow");
         };
         let id = source_state_record_id(flow_table, source_id, source_key_json);
-        self.db
+        self.conn
             .query(format!(
                 "UPDATE {SOURCE_STATE_TABLE}:{id} MERGE {{ flow_table: $flow_table, source_id: $source_id, key: $key, value: $value }};"
             ))
