@@ -8,9 +8,7 @@ use crate::engine::profile::EngineProfile;
 use crate::state::effect_path::EffectPath;
 use crate::state::stable_path::StablePath;
 use crate::state::stable_path_set::StablePathSet;
-use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt, SharedResultExtRef};
-
-use tracing::Instrument;
+use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
 
 pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
@@ -21,7 +19,7 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     fn process(
         &self,
         context: &ComponentProcessorContext<Prof>,
-    ) -> Result<impl Future<Output = Result<Prof::ComponentProcRet, Prof::Error>> + Send + 'static>;
+    ) -> Result<impl Future<Output = Result<Prof::ComponentProcRet>> + Send + 'static>;
 }
 
 struct ComponentInner<Prof: EngineProfile> {
@@ -83,7 +81,7 @@ impl Drop for ComponentBgChildReadinessChildGuard {
         let mut state = self.readiness.state().lock().unwrap();
         state.remaining_count -= 1;
         state.maybe_set_readiness(
-            Err(SharedError::new(anyhow::anyhow!(
+            Err(SharedError::new(internal_error!(
                 "Child component build cancelled"
             ))),
             self.readiness.readiness(),
@@ -142,41 +140,34 @@ impl ComponentBgChildReadiness {
 }
 
 pub struct ComponentMountRunHandle<Prof: EngineProfile> {
-    join_handle: tokio::task::JoinHandle<Result<Result<ComponentBuildOutput<Prof>, Prof::Error>>>,
+    join_handle: tokio::task::JoinHandle<Result<ComponentBuildOutput<Prof>>>,
 }
 
 impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
     pub async fn result(
         self,
         parent_context: Option<&ComponentProcessorContext<Prof>>,
-    ) -> Result<Result<Prof::ComponentProcRet, Prof::Error>> {
-        let result = self.join_handle.await??;
-        let ret = match result {
-            Ok(output) => {
-                if let Some(parent_context) = parent_context {
-                    parent_context.update_building_state(|building_state| {
-                        for effect_path in output.provider_registry.curr_effect_paths {
-                            let Some(provider) =
-                                output.provider_registry.providers.get(&effect_path)
-                            else {
-                                error!("effect provider not found for path {}", effect_path);
-                                continue;
-                            };
-                            if !provider.is_orphaned() {
-                                building_state
-                                    .effect
-                                    .provider_registry
-                                    .add(effect_path, provider.clone())?;
-                            }
-                        }
-                        Ok(())
-                    })?;
+    ) -> Result<Prof::ComponentProcRet> {
+        let output = self.join_handle.await??;
+        if let Some(parent_context) = parent_context {
+            parent_context.update_building_state(|building_state| {
+                for effect_path in output.provider_registry.curr_effect_paths {
+                    let Some(provider) = output.provider_registry.providers.get(&effect_path)
+                    else {
+                        error!("effect provider not found for path {}", effect_path);
+                        continue;
+                    };
+                    if !provider.is_orphaned() {
+                        building_state
+                            .effect
+                            .provider_registry
+                            .add(effect_path, provider.clone())?;
+                    }
                 }
-                Ok(output.ret)
-            }
-            Err(err) => Err(err),
-        };
-        Ok(ret)
+                Ok(())
+            })?;
+        }
+        Ok(output.ret)
     }
 }
 pub struct ComponentMountHandle {
@@ -185,7 +176,7 @@ pub struct ComponentMountHandle {
 
 impl ComponentMountHandle {
     pub async fn ready(self) -> Result<()> {
-        self.join_handle.await?.anyhow_result()
+        self.join_handle.await?.into_result()
     }
 }
 
@@ -224,23 +215,11 @@ impl<Prof: EngineProfile> Component<Prof> {
         parent_context: Option<ComponentProcessorContext<Prof>>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
         let processor_context = self.new_processor_context_for_build(parent_context)?;
-        let span = tracing::info_span!("component.run", component_path = %self.stable_path());
-        let join_handle = get_runtime().spawn(
-            async move {
-                let output = self
-                    .execute_once(&processor_context, Some(processor))
-                    .await?;
-                let ret = match output {
-                    Ok(Some(output)) => Ok(output),
-                    Ok(None) => {
-                        bail!("component deletion can only run in background");
-                    }
-                    Err(err) => Err(err),
-                };
-                Ok(ret)
-            }
-            .instrument(span),
-        );
+        let join_handle = get_runtime().spawn(async move {
+            self.execute_once(&processor_context, Some(processor))
+                .await?
+                .ok_or_else(|| internal_error!("component deletion can only run in background"))
+        });
         Ok(ComponentMountRunHandle { join_handle })
     }
 
@@ -257,16 +236,12 @@ impl<Prof: EngineProfile> Component<Prof> {
         let processor_context = self.new_processor_context_for_build(parent_context)?;
         let join_handle = get_runtime().spawn(async move {
             let result = self.execute_once(&processor_context, Some(processor)).await;
-            let shared_result = match result {
-                Ok(Ok(_)) => Ok(()),
-                Ok(Err(err)) => {
-                    error!("component build failed:\n{err}");
-                    Ok(())
-                }
-                Err(err) => Err(SharedError::new(err)),
+            // For background child component, only log the error. Never propagate the error back to the parent.
+            if let Err(err) = result {
+                error!("component build failed:\n{err:?}");
             };
-            child_readiness_guard.map(|guard| guard.resolve(shared_result.clone()));
-            shared_result
+            child_readiness_guard.map(|guard| guard.resolve(Ok(())));
+            Ok(())
         });
         Ok(ComponentMountHandle { join_handle })
     }
@@ -294,13 +269,11 @@ impl<Prof: EngineProfile> Component<Prof> {
                     cleanup_tombstone(&processor_context)?;
                     Ok(ret)
                 });
-            let shared_result = match result {
-                Ok(Ok(_)) => Ok(()),
-                Ok(Err(err)) => Err(SharedError::new(err.into())),
-                Err(err) => Err(SharedError::new(err)),
+            // For deletion, only log the error. Never propagate the error back to the parent.
+            if let Err(err) = result {
+                error!("component deletion failed:\n{err}");
             };
-            child_readiness_guard.map(|guard| guard.resolve(shared_result.clone()));
-            shared_result
+            child_readiness_guard.map(|guard| guard.resolve(Ok(())));
         });
         Ok(())
     }
@@ -309,7 +282,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self,
         processor_context: &ComponentProcessorContext<Prof>,
         processor: Option<Prof::ComponentProc>,
-    ) -> Result<Result<Option<ComponentBuildOutput<Prof>>, Prof::Error>> {
+    ) -> Result<Option<ComponentBuildOutput<Prof>>> {
         // Acquire the semaphore to ensure `process()` and `commit_effects()` cannot happen in parallel.
         let output = {
             let _permit = self.inner.build_semaphore.acquire().await?;
@@ -343,9 +316,10 @@ impl<Prof: EngineProfile> Component<Prof> {
             .readiness()
             .wait()
             .await
-            .anyhow_result()?;
+            .clone()
+            .into_result()?;
 
-        Ok(output)
+        output
     }
 
     fn new_processor_context_for_build(

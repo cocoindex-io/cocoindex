@@ -17,9 +17,6 @@ uv.lock
 
 *.egg-info/
 
-# Output of `cocoindex eval`
-examples/**/eval_*
-
 /.vscode
 /*.session.sql
 
@@ -28,3 +25,7 @@ examples/**/eval_*
 
 # LMDB files
 *.mdb
+
+# Output of `cocoindex eval`
+examples/**/eval_*
+examples/**/uv.lock

@@ -144,7 +144,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             ComponentProcessingAction::Build(building_state) => {
                 let mut building_state = building_state.lock().unwrap();
                 let Some(building_state) = &mut *building_state else {
-                    bail!(
+                    internal_bail!(
                         "Processing for the component at {} is already finished",
                         self.stable_path()
                     );
@@ -152,7 +152,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 f(building_state)
             }
             ComponentProcessingAction::Delete { .. } => {
-                bail!(
+                internal_bail!(
                     "Processing for the component at {} is for deletion only",
                     self.stable_path()
                 )

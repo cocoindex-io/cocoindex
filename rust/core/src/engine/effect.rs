@@ -18,7 +18,7 @@ pub trait EffectSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
     async fn apply(
         &self,
         actions: Vec<Prof::EffectAction>,
-    ) -> Result<Option<Vec<Option<ChildEffectDef<Prof>>>>, Prof::Error>;
+    ) -> Result<Option<Vec<Option<ChildEffectDef<Prof>>>>>;
 }
 
 pub struct EffectReconcileOutput<Prof: EngineProfile> {
@@ -37,7 +37,7 @@ pub trait EffectHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
         desired_effect: Option<Prof::EffectValue>,
         prev_possible_states: &[Prof::EffectState],
         prev_may_be_missing: bool,
-    ) -> Result<Option<EffectReconcileOutput<Prof>>, Prof::Error>;
+    ) -> Result<Option<EffectReconcileOutput<Prof>>>;
 }
 
 pub(crate) struct EffectProviderInner<Prof: EngineProfile> {
@@ -73,7 +73,7 @@ impl<Prof: EngineProfile> EffectProvider<Prof> {
         self.inner
             .handler
             .set(handler)
-            .map_err(|_| anyhow!("Handler is already fulfilled"))
+            .map_err(|_| internal_error!("Handler is already fulfilled"))
     }
 
     pub fn is_orphaned(&self) -> bool {
@@ -97,7 +97,7 @@ impl<Prof: EngineProfile> EffectProviderRegistry<Prof> {
 
     pub fn add(&mut self, effect_path: EffectPath, provider: EffectProvider<Prof>) -> Result<()> {
         if self.providers.contains_key(&effect_path) {
-            bail!(
+            client_bail!(
                 "Effect provider already registered for path: {:?}",
                 effect_path
             );

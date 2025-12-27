@@ -36,7 +36,7 @@ impl std::fmt::Debug for PyKey {
 }
 
 impl PyKey {
-    pub fn new(py: Python<'_>, value: Py<PyAny>) -> PyResult<Self> {
+    pub fn new(py: Python<'_>, value: Py<PyAny>) -> Result<Self> {
         let serialized = python_functions().serialize(py, &value.bind(py))?;
         Ok(Self::from_value_and_bytes(value, serialized))
     }
@@ -61,13 +61,11 @@ impl PyKey {
 }
 
 impl Persist for PyKey {
-    type Error = PyErr;
-
-    fn to_bytes(&self) -> PyResult<bytes::Bytes> {
+    fn to_bytes(&self) -> Result<bytes::Bytes> {
         Ok(self.data.serialized.clone())
     }
 
-    fn from_bytes(data: &[u8]) -> PyResult<Self> {
+    fn from_bytes(data: &[u8]) -> Result<Self> {
         let value = Python::attach(|py| python_functions().deserialize(py, data))?;
         Ok(Self::from_value_and_bytes(
             value,
@@ -104,15 +102,13 @@ impl std::fmt::Debug for PyValue {
 }
 
 impl Persist for PyValue {
-    type Error = PyErr;
-
-    fn to_bytes(&self) -> PyResult<bytes::Bytes> {
+    fn to_bytes(&self) -> Result<bytes::Bytes> {
         let serialized =
             Python::attach(|py| python_functions().serialize(py, &self.data.bind(py)))?;
         Ok(serialized)
     }
 
-    fn from_bytes(data: &[u8]) -> PyResult<Self> {
+    fn from_bytes(data: &[u8]) -> Result<Self> {
         let value = Python::attach(|py| python_functions().deserialize(py, data))?;
         Ok(Self {
             data: Arc::new(value),
