@@ -1,6 +1,10 @@
-use crate::prelude::*;
+//! Programming language detection and tree-sitter support.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock};
 use unicase::UniCase;
 
+/// Tree-sitter language information for syntax-aware parsing.
 pub struct TreeSitterLanguageInfo {
     pub tree_sitter_lang: tree_sitter::Language,
     pub terminal_node_kind_ids: HashSet<u16>,
@@ -17,10 +21,9 @@ impl TreeSitterLanguageInfo {
             .filter_map(|kind| {
                 let id = tree_sitter_lang.id_for_node_kind(kind, true);
                 if id != 0 {
-                    trace!("Got id for node kind: `{kind}` -> {id}");
                     Some(id)
                 } else {
-                    error!("Failed in getting id for node kind: `{kind}`");
+                    // Node kind not found - this is a configuration issue
                     None
                 }
             })
@@ -32,12 +35,14 @@ impl TreeSitterLanguageInfo {
     }
 }
 
+/// Information about a programming language.
 pub struct ProgrammingLanguageInfo {
     /// The main name of the language.
     /// It's expected to be consistent with the language names listed at:
     ///   https://github.com/Goldziher/tree-sitter-language-pack?tab=readme-ov-file#available-languages
     pub name: Arc<str>,
 
+    /// Optional tree-sitter language info for syntax-aware parsing.
     pub treesitter_info: Option<TreeSitterLanguageInfo>,
 }
 
@@ -56,7 +61,7 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
             name: Arc::from(name),
             treesitter_info,
         });
-        for name in std::iter::once(name).chain(aliases.iter().map(|s| *s)) {
+        for name in std::iter::once(name).chain(aliases.iter().copied()) {
             if map.insert(name.into(), config.clone()).is_some() {
                 panic!("Language `{name}` already exists");
             }
@@ -488,8 +493,52 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     map
 });
 
+/// Get programming language info by name or file extension.
+///
+/// The lookup is case-insensitive and supports both language names
+/// (e.g., "rust", "python") and file extensions (e.g., ".rs", ".py").
 pub fn get_language_info(name: &str) -> Option<&ProgrammingLanguageInfo> {
     LANGUAGE_INFO_BY_NAME
         .get(&UniCase::new(name))
         .map(|info| info.as_ref())
+}
+
+/// Detect programming language from a filename.
+///
+/// Returns the language name if the file extension is recognized.
+pub fn detect_language(filename: &str) -> Option<&str> {
+    let last_dot = filename.rfind('.')?;
+    let extension = &filename[last_dot..];
+    get_language_info(extension).map(|info| info.name.as_ref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_language_info() {
+        let rust_info = get_language_info(".rs").unwrap();
+        assert_eq!(rust_info.name.as_ref(), "rust");
+        assert!(rust_info.treesitter_info.is_some());
+
+        let py_info = get_language_info(".py").unwrap();
+        assert_eq!(py_info.name.as_ref(), "python");
+
+        // Case insensitive
+        let rust_upper = get_language_info(".RS").unwrap();
+        assert_eq!(rust_upper.name.as_ref(), "rust");
+
+        // Unknown extension
+        assert!(get_language_info(".unknown").is_none());
+    }
+
+    #[test]
+    fn test_detect_language() {
+        assert_eq!(detect_language("test.rs"), Some("rust"));
+        assert_eq!(detect_language("main.py"), Some("python"));
+        assert_eq!(detect_language("app.js"), Some("javascript"));
+        assert_eq!(detect_language("noextension"), None);
+        assert_eq!(detect_language("unknown.xyz"), None);
+    }
 }
