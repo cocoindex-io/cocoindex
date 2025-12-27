@@ -68,7 +68,7 @@ impl SeparatorSplitter {
     }
 
     /// Split the text and return chunks with position information.
-    pub fn split<'a>(&self, text: &'a str) -> Vec<Chunk<'a>> {
+    pub fn split(&self, text: &str) -> Vec<Chunk> {
         let bytes = text.as_bytes();
 
         // Collect raw chunks (byte ranges)
@@ -128,8 +128,7 @@ impl SeparatorSplitter {
                 let start_pos = positions[i * 2].output.unwrap();
                 let end_pos = positions[i * 2 + 1].output.unwrap();
                 Chunk {
-                    text: &text[raw.start..raw.end],
-                    range: TextRange::new(start_pos.char_offset, end_pos.char_offset),
+                    range: TextRange::new(raw.start, raw.end),
                     start: start_pos,
                     end: end_pos,
                 }
@@ -155,9 +154,9 @@ mod tests {
         let chunks = splitter.split(text);
 
         assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0].text, "Para1");
-        assert_eq!(chunks[1].text, "Para2");
-        assert_eq!(chunks[2].text, "Para3");
+        assert_eq!(&text[chunks[0].range.start..chunks[0].range.end], "Para1");
+        assert_eq!(&text[chunks[1].range.start..chunks[1].range.end], "Para2");
+        assert_eq!(&text[chunks[2].range.start..chunks[2].range.end], "Para3");
     }
 
     #[test]
@@ -173,9 +172,9 @@ mod tests {
         let chunks = splitter.split(text);
 
         assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0].text, "A.");
-        assert_eq!(chunks[1].text, "B.");
-        assert_eq!(chunks[2].text, "C.");
+        assert_eq!(&text[chunks[0].range.start..chunks[0].range.end], "A.");
+        assert_eq!(&text[chunks[1].range.start..chunks[1].range.end], "B.");
+        assert_eq!(&text[chunks[2].range.start..chunks[2].range.end], "C.");
     }
 
     #[test]
@@ -191,9 +190,9 @@ mod tests {
         let chunks = splitter.split(text);
 
         assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0].text, "A");
-        assert_eq!(chunks[1].text, ". B");
-        assert_eq!(chunks[2].text, ". C");
+        assert_eq!(&text[chunks[0].range.start..chunks[0].range.end], "A");
+        assert_eq!(&text[chunks[1].range.start..chunks[1].range.end], ". B");
+        assert_eq!(&text[chunks[2].range.start..chunks[2].range.end], ". C");
     }
 
     #[test]
@@ -209,7 +208,10 @@ mod tests {
         let chunks = splitter.split(text);
 
         assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].text, "Hello World");
+        assert_eq!(
+            &text[chunks[0].range.start..chunks[0].range.end],
+            "Hello World"
+        );
     }
 
     #[test]
@@ -225,9 +227,9 @@ mod tests {
         let chunks = splitter.split(text);
 
         assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0].text, "A");
-        assert_eq!(chunks[1].text, "B");
-        assert_eq!(chunks[2].text, "C");
+        assert_eq!(&text[chunks[0].range.start..chunks[0].range.end], "A");
+        assert_eq!(&text[chunks[1].range.start..chunks[1].range.end], "B");
+        assert_eq!(&text[chunks[2].range.start..chunks[2].range.end], "C");
     }
 
     #[test]
@@ -243,9 +245,9 @@ mod tests {
         let chunks = splitter.split(text);
 
         assert_eq!(chunks.len(), 3);
-        assert_eq!(chunks[0].text, "A");
-        assert_eq!(chunks[1].text, "");
-        assert_eq!(chunks[2].text, "B");
+        assert_eq!(&text[chunks[0].range.start..chunks[0].range.end], "A");
+        assert_eq!(&text[chunks[1].range.start..chunks[1].range.end], "");
+        assert_eq!(&text[chunks[2].range.start..chunks[2].range.end], "B");
     }
 
     #[test]
