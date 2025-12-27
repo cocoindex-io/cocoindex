@@ -84,10 +84,14 @@ impl SimpleFunctionExecutor for Executor {
         let table = chunks
             .into_iter()
             .map(|chunk| {
+                let chunk_text = &full_text[chunk.range.start..chunk.range.end];
                 (
-                    KeyValue::from_single_part(RangeValue::new(chunk.range.start, chunk.range.end)),
+                    KeyValue::from_single_part(RangeValue::new(
+                        chunk.start.char_offset,
+                        chunk.end.char_offset,
+                    )),
                     fields_value!(
-                        Arc::<str>::from(chunk.text),
+                        Arc::<str>::from(chunk_text),
                         output_position_to_value(chunk.start),
                         output_position_to_value(chunk.end)
                     )
