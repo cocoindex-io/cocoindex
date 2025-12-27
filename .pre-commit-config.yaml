@@ -24,6 +24,22 @@ repos:
         exclude_types: [python]  # Covered by Ruff W291.
         exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"
 
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.0
+    hooks:
+      - id: ruff-format
+        types: [python]
+        pass_filenames: true
+
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.6.1
     hooks:
@@ -34,23 +50,9 @@ repos:
     hooks:
         - id: maturin-develop
           name: maturin develop
-          entry: uv run maturin develop -E all,dev
+          entry: uv run maturin develop
           language: system
           files: ^(rust/|python/|Cargo\.toml|pyproject\.toml)
-          pass_filenames: false
-
-        - id: generate-cli-docs
-          name: generate CLI documentation
-          entry: uv run python dev/generate_cli_docs.py
-          language: system
-          files: ^(python/cocoindex/cli\.py|dev/generate_cli_docs\.py)$
-          pass_filenames: false
-
-        - id: cargo-fmt
-          name: cargo fmt
-          entry: cargo fmt
-          language: system
-          types: [rust]
           pass_filenames: false
 
         - id: cargo-test
@@ -67,19 +69,17 @@ repos:
           files: ^(rust/|python/|examples/|Cargo\.toml|pyproject\.toml)
           pass_filenames: false
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.0
-    hooks:
-      - id: ruff-format
-        types: [python]
-        pass_filenames: true
-  
-  - repo: local
-    hooks:
-      - id: pytest
-        name: pytest
-        entry: uv run pytest python/
-        language: system
-        types: [python]
-        pass_filenames: false
-        always_run: false
+        - id: pytest
+          name: pytest
+          entry: uv run pytest python/
+          language: system
+          types: [python]
+          pass_filenames: false
+          always_run: false
+
+        - id: generate-cli-docs
+          name: generate CLI documentation
+          entry: uv run python dev/generate_cli_docs.py
+          language: system
+          files: ^(python/cocoindex/cli\.py|dev/generate_cli_docs\.py)$
+          pass_filenames: false
