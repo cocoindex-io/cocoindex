@@ -57,7 +57,7 @@ repos:
 
         - id: cargo-test
           name: cargo test
-          entry: dev/run_cargo_test.sh
+          entry: uv run cargo test
           language: system
           files: ^(rust/|Cargo\.toml)
           pass_filenames: false
