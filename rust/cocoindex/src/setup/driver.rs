@@ -556,6 +556,7 @@ async fn apply_changes_for_flow(
     flow_setup_change: &FlowSetupChange,
     existing_setup_state: &mut Option<setup::FlowSetupState<setup::ExistingMode>>,
     pool: &PgPool,
+    ignore_target_drop_failures: bool,
 ) -> Result<()> {
     let Some(status) = flow_setup_change.status else {
         return Ok(());
@@ -567,7 +568,8 @@ async fn apply_changes_for_flow(
         _ => bail!("invalid flow status"),
     };
     write!(write, "\n{verb} flow {}:\n", flow_ctx.flow_name())?;
-
+    // Precompute whether this operation is a deletion so closures can reference it.
+    let is_deletion = status == ObjectStatus::Deleted;
     let mut update_info =
         HashMap::<db_metadata::ResourceTypeKey, db_metadata::StateUpdateInfo>::new();
 
@@ -645,33 +647,59 @@ async fn apply_changes_for_flow(
             target_kind,
             write,
             resources.into_iter(),
-            |targets_change| async move {
-                let factory = get_export_target_factory(target_kind).ok_or_else(|| {
-                    anyhow::anyhow!("No factory found for target kind: {}", target_kind)
-                })?;
-                for target_change in targets_change.iter() {
-                    for delete in target_change.setup_change.attachments_change.deletes.iter() {
-                        delete.apply_change().await?;
+            |targets_change| {
+                let target_kind = target_kind.to_string();
+                let flow_instance_ctx = flow_ctx.flow.flow_instance_ctx.clone();
+                let flow_name = flow_ctx.flow_name().to_string();
+                async move {
+                    let factory = get_export_target_factory(&target_kind).ok_or_else(|| {
+                        anyhow::anyhow!("No factory found for target kind: {}", &target_kind)
+                    })?;
+                    for target_change in targets_change.iter() {
+                        for delete in target_change.setup_change.attachments_change.deletes.iter() {
+                            delete.apply_change().await?;
+                        }
                     }
-                }
-                factory
-                    .apply_setup_changes(
-                        targets_change
-                            .iter()
-                            .map(|s| interface::ResourceSetupChangeItem {
-                                key: &s.key.key,
-                                setup_change: s.setup_change.target_change.as_ref(),
-                            })
-                            .collect(),
-                        flow_ctx.flow.flow_instance_ctx.clone(),
-                    )
-                    .await?;
-                for target_change in targets_change.iter() {
-                    for delete in target_change.setup_change.attachments_change.upserts.iter() {
-                        delete.apply_change().await?;
+
+                    // Attempt to apply setup changes and handle failures according to the
+                    // `ignore_target_drop_failures` flag when we're deleting a flow.
+                    let apply_result: Result<()> = (async {
+                        factory
+                            .apply_setup_changes(
+                                targets_change
+                                    .iter()
+                                    .map(|s| interface::ResourceSetupChangeItem {
+                                        key: &s.key.key,
+                                        setup_change: s.setup_change.target_change.as_ref(),
+                                    })
+                                    .collect(),
+                                flow_instance_ctx.clone(),
+                            )
+                            .await?;
+                        for target_change in targets_change.iter() {
+                            for delete in target_change.setup_change.attachments_change.upserts.iter() {
+                                delete.apply_change().await?;
+                            }
+                        }
+                        Ok(())
+                    })
+                    .await;
+
+                    if let Err(e) = apply_result {
+                        if is_deletion && ignore_target_drop_failures {
+                            tracing::error!("Ignoring target drop failure for kind '{}' in flow '{}': {:#}",
+                                &target_kind, &flow_name, e);
+                            // swallow the error and continue
+                            return Ok(());
+                        }
+                        if is_deletion {
+                            return Err(anyhow::anyhow!("{}\n\nHint: set COCOINDEX_IGNORE_TARGET_DROP_FAILURES=true to ignore target drop failures.", e));
+                        }
+                        return Err(e);
                     }
+
+                    Ok(())
                 }
-                Ok(())
             },
         )
         .await?;
@@ -909,7 +937,19 @@ pub(crate) async fn apply_changes_for_flow_ctx(
         .all_setup_states
         .flows
         .remove(flow_ctx.flow_name());
-    apply_changes_for_flow(write, &flow_ctx, setup_change, &mut flow_states, db_pool).await?;
+    // Read runtime-wide setting to decide whether to ignore failures during target drops.
+    let lib_ctx = crate::lib_context::get_lib_context().await?;
+    let ignore_target_drop_failures = lib_ctx.ignore_target_drop_failures;
+
+    apply_changes_for_flow(
+        write,
+        &flow_ctx,
+        setup_change,
+        &mut flow_states,
+        db_pool,
+        ignore_target_drop_failures,
+    )
+    .await?;
 
     flow_exec_ctx
         .update_setup_state(&flow_ctx.flow, flow_states.as_ref())
