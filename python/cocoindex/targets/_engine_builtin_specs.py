@@ -170,8 +170,9 @@ class SurrealDB(op.TargetSpec):
     """Multi-model storage powered by SurrealDB (vectors + graph relations)."""
 
     connection: AuthEntryReference[SurrealDBConnection]
+    table_name: str | None = None
     # TODO: should we add vector indexes?
-    mapping: Nodes | Relationships
+    mapping: Nodes | Relationships | None = None
 
 
 class SurrealDBDeclaration(op.DeclarationSpec):

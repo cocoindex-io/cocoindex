@@ -6,20 +6,15 @@ import numpy as np
 from dotenv import load_dotenv
 from numpy.typing import NDArray
 from pydantic import BaseModel
-from surrealdb import AsyncWsSurrealConnection
+from surrealdb import BlockingWsSurrealConnection
 
-
-class QueryResult(BaseModel):
-    filename: str
-    text: str
-    score: float
-
+TOP_K = 5
 
 SURREALDB_URL = os.environ.get("COCOINDEX_SURREALDB_URL", "ws://localhost:8000")
 SURREALDB_USER = os.environ.get("COCOINDEX_SURREALDB_USER", "root")
 SURREALDB_PASSWORD = os.environ.get("COCOINDEX_SURREALDB_PASSWORD", "secret")
 SURREALDB_NS = os.environ.get("COCOINDEX_SURREALDB_NS", "cocoindex")
-SURREALDB_DB = os.environ.get("COCOINDEX_SURREALDB_DB", __name__)
+SURREALDB_DB = os.environ.get("COCOINDEX_SURREALDB_DB", "text_embedding_surrealdb")
 
 surrealdb_conn_spec = cocoindex.add_auth_entry(
     "SurrealDBConnection",
@@ -35,16 +30,28 @@ surrealdb_conn_spec = cocoindex.add_auth_entry(
 
 # SurrealDB connection generator
 class SurrealDBClient:
-    async def __aenter__(self):
-        self.async_conn = AsyncWsSurrealConnection(SURREALDB_URL)
-        await self.async_conn.signin(
-            {"username": SURREALDB_USER, "password": SURREALDB_PASSWORD}
-        )
-        await self.async_conn.use(SURREALDB_NS, SURREALDB_DB)
-        return self.async_conn
+    def __enter__(self):
+        self.conn = BlockingWsSurrealConnection(SURREALDB_URL)
+        self.conn.signin({"username": SURREALDB_USER, "password": SURREALDB_PASSWORD})
+        self.conn.use(SURREALDB_NS, SURREALDB_DB)
+        return self.conn
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.async_conn.close()
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.conn.close()
+
+
+# -- Asynchronous connection generator
+# class SurrealDBClientAsync:
+#     async def __aenter__(self):
+#         self.async_conn = AsyncWsSurrealConnection(SURREALDB_URL)
+#         await self.async_conn.signin(
+#             {"username": SURREALDB_USER, "password": SURREALDB_PASSWORD}
+#         )
+#         await self.async_conn.use(SURREALDB_NS, SURREALDB_DB)
+#         return self.async_conn
+
+#     async def __aexit__(self, exc_type, exc_val, exc_tb):
+#         await self.async_conn.close()
 
 
 @cocoindex.transform_flow()
@@ -103,7 +110,10 @@ def text_embedding_flow(
     doc_embeddings.export(
         "doc_embeddings",
         cocoindex.targets.SurrealDB(
-            surrealdb_conn_spec, mapping=cocoindex.targets.Nodes(label="Document")
+            surrealdb_conn_spec,
+            # TODO: remove table name and expect it to be TextEmbedding__doc_embeddings
+            "Chunk",
+            # cocoindex.targets.Nodes(label="Document"),
         ),
         primary_key_fields=["filename", "location"],
         vector_indexes=[
@@ -115,9 +125,6 @@ def text_embedding_flow(
     )
 
 
-TOP_K = 5
-
-
 # Declaring it as a query handler, so that you can easily run queries in CocoInsight.
 @text_embedding_flow.query_handler(
     result_fields=cocoindex.QueryHandlerResultFields(
@@ -125,27 +132,38 @@ TOP_K = 5
         score="score",
     ),
 )
-async def search(query: str) -> cocoindex.QueryOutput:
+def search(query: str) -> cocoindex.QueryOutput:
+    class QueryResult(BaseModel):
+        # filename: str
+        text: str
+        score: float
+
     # Get the table name, for the export target in the text_embedding_flow above.
-    table_name = cocoindex.utils.get_target_default_name(
-        text_embedding_flow, "doc_embeddings"
-    )
+    # TODO: get table name from text_embedding_flow
+    # table_name = cocoindex.utils.get_target_default_name(
+    #     text_embedding_flow, "doc_embeddings"
+    # )
+    table_name = "Chunk"
+
     # Evaluate the transform flow defined above with the input query, to get the embedding.
     query_vector = text_to_embedding.eval(query)
+
     # Run the query and get the results.
-    async with SurrealDBClient() as conn:
-        res = await conn.query(
-            f"""
-                SELECT *, score
-                FROM (
-                    SELECT *, (1 - vector::distance::knn()) AS score
-                    FROM {table_name}
-                    WHERE embedding <|{TOP_K},40|> $embedding
-                )
-                WHERE score >= $threshold
-                ORDER BY score DESC;
-            """,
-            {"embedding": list(query_vector)},
+    threshold = 0.1
+    query = f"""SELECT *, score
+        OMIT embedding
+        FROM (
+            SELECT *, (1 - vector::distance::knn()) AS score
+            FROM {table_name}
+            WHERE embedding <|{TOP_K},40|> $embedding
+        )
+        WHERE score >= {threshold}
+        ORDER BY score DESC;
+    """
+    with SurrealDBClient() as conn:
+        res = conn.query(
+            query,
+            {"embedding": query_vector.tolist()},
         )
         if isinstance(res, list):
             results = [QueryResult.model_validate(row) for row in res]
@@ -170,8 +188,10 @@ def _main() -> None:
         query_output = search(query)
         print("\nSearch results:")
         for result in query_output.results:
-            print(f"[{result['score']:.3f}] {result['filename']}")
-            print(f"    {result['text']}")
+            # TODO: fix filename is not included
+            # print(f"[{result.score:.3f}] {result.filename}")
+            print(f"[{result.score:.3f}]")
+            print(f"    {result.text}")
             print("---")
         print()
 

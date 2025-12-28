@@ -208,7 +208,7 @@ impl InternalPersistence for SurrealDBPersistence {
         );
         let q = conn
             .query(format!(
-                "UPDATE {SETUP_TABLE}:{version_id} MERGE {{ flow_name: $flow, resource_type: $rtype, key: $key, state: $state, staging_changes: [] }};"
+                "UPSERT {SETUP_TABLE}:{version_id} MERGE {{ flow_name: $flow, resource_type: $rtype, key: $key, state: $state, staging_changes: [] }};"
             ))
             .bind(("flow", flow_name.to_string()))
             .bind(("rtype", FLOW_VERSION_RESOURCE_TYPE))
@@ -256,7 +256,7 @@ impl InternalPersistence for SurrealDBPersistence {
             let rid = setup_record_id(flow_name, &type_id.resource_type, &type_id.key);
             conn
                 .query(format!(
-                    "UPDATE {SETUP_TABLE}:{rid} MERGE {{ flow_name: $flow, resource_type: $rtype, key: $key, staging_changes: $staging }};"
+                    "UPSERT {SETUP_TABLE}:{rid} MERGE {{ flow_name: $flow, resource_type: $rtype, key: $key, staging_changes: $staging }};"
                 ))
                 .bind(("flow", flow_name.to_string()))
                 .bind(("rtype", type_id.resource_type.clone()))
@@ -293,7 +293,10 @@ impl InternalPersistence for SurrealDBPersistence {
         let latest_version = parse_flow_version(&state);
         if latest_version != Some(curr_metadata_version) {
             return Err(ApiError::new(
-                "seen newer version in the metadata table",
+                &format!(
+                    "seen newer version ({:?}) in the metadata table ({})",
+                    latest_version, curr_metadata_version
+                ),
                 StatusCode::CONFLICT,
             ))?;
         }
