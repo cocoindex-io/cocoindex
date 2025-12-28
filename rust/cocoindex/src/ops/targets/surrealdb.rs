@@ -5,11 +5,10 @@ use crate::prelude::*;
 use crate::settings::SurrealDBConnectionSpec;
 use crate::{ops::sdk::*, setup::CombinedState};
 use async_trait::async_trait;
-use blake2::Digest;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use surrealdb::Surreal;
 use surrealdb::engine::any::Any;
+use surrealdb::{RecordId, Surreal};
 
 ////////////////////////////////////////////////////////////
 // Public Types
@@ -45,7 +44,6 @@ pub struct ExtendedVectorIndexDef {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct SetupState {
-    // TODO: understand this. Do we need them?
     // key_field_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rel_endpoints: Option<(String, String)>,
@@ -59,8 +57,7 @@ impl SetupState {
     fn new(
         // TODO: do we need this?
         _table_id: &SurrealTableId,
-        // TODO: understand key_fields_schema. Do we need them?
-        _key_fields_schema: &[FieldSchema],
+        // key_fields_schema: &[FieldSchema],
         value_fields_schema: &[FieldSchema],
         index_options: &IndexOptions,
         // column_options: &HashMap<String, ColumnOptions>,
@@ -195,8 +192,9 @@ impl setup::ResourceSetupChange for SetupChange {
 pub struct ExportContext {
     db_ref: spec::AuthEntryReference<SurrealDBConnectionSpec>,
     db_pool: SurrealDBPool,
-    // key_fields_schema: Box<[(FieldSchema, Option<ColumnOptions>)]>,
     table_name: String,
+    // key_fields_schema: Vec<FieldSchema>,
+    key_fields_schema: Box<[FieldSchema]>,
     value_fields_schema: Vec<FieldSchema>,
     analyzed_data_coll: Option<AnalyzedDataCollection>,
 }
@@ -213,53 +211,11 @@ fn sanitize_ident(s: &str) -> String {
         .collect()
 }
 
-fn canonical_json(v: &serde_json::Value, out: &mut String) {
-    match v {
-        serde_json::Value::Null => out.push_str("null"),
-        serde_json::Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        serde_json::Value::Number(n) => out.push_str(&n.to_string()),
-        serde_json::Value::String(s) => out.push_str(&serde_json::to_string(s).unwrap()),
-        serde_json::Value::Array(a) => {
-            out.push('[');
-            for (i, item) in a.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                canonical_json(item, out);
-            }
-            out.push(']');
-        }
-        serde_json::Value::Object(m) => {
-            out.push('{');
-            let mut keys: Vec<&String> = m.keys().collect();
-            keys.sort();
-            for (i, k) in keys.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&serde_json::to_string(k).unwrap());
-                out.push(':');
-                canonical_json(&m[*k].clone(), out);
-            }
-            out.push('}');
-        }
-    }
-}
-
-fn stable_hash_json(v: &serde_json::Value) -> String {
-    let mut s = String::new();
-    canonical_json(v, &mut s);
-    let mut hasher = blake2::Blake2b512::new();
-    hasher.update(s.as_bytes());
-    hex::encode(hasher.finalize())
-}
-
-fn record_id(table: &str, key: &KeyValue, additional_key: &serde_json::Value) -> String {
-    let v = serde_json::json!({
-        "k": key,
-        "a": additional_key,
-    });
-    format!("{}__{}", sanitize_ident(table), stable_hash_json(&v))
+fn record_id(table: &str, key: &KeyValue, additional_key: &serde_json::Value) -> RecordId {
+    let pk = surrealdb::value::to_value(serde_json::json!(key)).unwrap_or_default();
+    let sk = surrealdb::value::to_value(serde_json::json!(additional_key)).unwrap_or_default();
+    let key: Vec<surrealdb::Value> = vec![pk, sk];
+    RecordId::from_table_key(sanitize_ident(table), key)
 }
 
 fn parse_vector_field(field_type: &schema::ValueType) -> Result<(usize, &'static str)> {
@@ -313,6 +269,7 @@ fn method_to_surreal_params(method: &Option<spec::VectorIndexMethod>) -> Result<
     })
 }
 
+// TODO: define schemaless tables
 fn build_table_setup_surql(table: &str, state: &SetupState) -> Result<String> {
     let table = sanitize_ident(table);
     let mut out = String::new();
@@ -528,7 +485,7 @@ impl TargetFactoryBase for TargetFactory {
                 };
                 let desired_setup_state = SetupState::new(
                     &setup_key,
-                    &d.key_fields_schema,
+                    // &d.key_fields_schema,
                     &d.value_fields_schema,
                     &d.index_options,
                     graph_analysis.as_ref(),
@@ -536,12 +493,13 @@ impl TargetFactoryBase for TargetFactory {
 
                 let db_ref = d.spec.connection.clone();
                 let ctx = context.clone();
-                // TODO: how come table name is not specified?
+                // TODO: how come table name can be unspecified?
                 let table_name = d
                     .spec
                     .table_name
                     .clone()
                     .ok_or(anyhow!("Table name not specified"))?;
+                let key_fields_schema = d.key_fields_schema.clone();
                 let value_fields_schema = d.value_fields_schema.clone();
                 let export_context = async move {
                     let dbconf = ctx.auth_registry.get::<SurrealDBConnectionSpec>(&db_ref)?;
@@ -549,6 +507,7 @@ impl TargetFactoryBase for TargetFactory {
                         db_ref,
                         db_pool: SurrealDBPool::new(dbconf),
                         table_name,
+                        key_fields_schema,
                         value_fields_schema,
                         analyzed_data_coll: graph_analysis,
                     }))
@@ -573,7 +532,6 @@ impl TargetFactoryBase for TargetFactory {
                 };
                 let setup_state = SetupState::new(
                     &setup_key,
-                    &graph_elem_schema.key_fields,
                     &graph_elem_schema.value_fields,
                     &decl.decl.index_options,
                     None,
@@ -706,6 +664,7 @@ impl TargetFactoryBase for TargetFactory {
         for mutations in mutations_by_conn.into_values() {
             let db = &mutations[0].export_context.db_pool.get_db().await?;
 
+            // TODO: simplify
             // Apply node-only mutations first, then relationship mutations (which also upsert nodes).
             let (mut rel_mutations, node_mutations): (Vec<_>, Vec<_>) = mutations
                 .into_iter()
@@ -717,16 +676,12 @@ impl TargetFactoryBase for TargetFactory {
             // Mutations for non-graph records
             for m in node_mutations.iter() {
                 if m.export_context.analyzed_data_coll.is_none() {
-                    // ---------------------------------------------------------
-                    // TODO: next ----------------------------------------------
-                    // ---------------------------------------------------------
                     let table_name = m.export_context.table_name.clone();
                     for upsert in m.mutation.upserts.iter() {
                         let mut content = encode_key_fields_as_json(
                             &m.export_context.value_fields_schema,
                             &upsert.key,
                         )?;
-                        // Value fields are in upsert.value.fields (value-fields only). For nodes, schema.value_fields aligns.
                         for (field_schema, value) in std::iter::zip(
                             m.export_context.value_fields_schema.iter(),
                             upsert.value.fields.iter(),
@@ -736,19 +691,27 @@ impl TargetFactoryBase for TargetFactory {
                                 encode_value_as_json(&field_schema.value_type.typ, value)?,
                             );
                         }
+
+                        // Inserting primary key fields as columns too (they are also part of the record ID)
+                        for (field_schema, key_value) in std::iter::zip(
+                            m.export_context.key_fields_schema.iter(),
+                            upsert.key.iter(),
+                        ) {
+                            content.insert(
+                                field_schema.name.clone(),
+                                serde_json::to_value(key_value)?,
+                            );
+                        }
+
                         let rid = record_id(&table_name, &upsert.key, &upsert.additional_key);
-                        db.query(format!(
-                            "UPSERT {}:{} MERGE $content;",
-                            sanitize_ident(&table_name),
-                            rid
-                        ))
-                        .bind(("content", serde_json::Value::Object(content)))
-                        .await?;
+                        db.query("UPSERT $rid MERGE $content;")
+                            .bind(("rid", rid))
+                            .bind(("content", serde_json::Value::Object(content)))
+                            .await?;
                     }
                     for del in m.mutation.deletes.iter() {
                         let rid = record_id(&table_name, &del.key, &del.additional_key);
-                        db.query(format!("DELETE {}:{};", sanitize_ident(&table_name), rid))
-                            .await?;
+                        db.query("DELETE $rid;").bind(("rid", rid)).await?;
                     }
                 }
             }
@@ -770,18 +733,14 @@ impl TargetFactoryBase for TargetFactory {
                             );
                         }
                         let rid = record_id(table, &upsert.key, &upsert.additional_key);
-                        db.query(format!(
-                            "UPSERT {}:{} MERGE $content;",
-                            sanitize_ident(table),
-                            rid
-                        ))
-                        .bind(("content", serde_json::Value::Object(content)))
-                        .await?;
+                        db.query("UPSERT $rid MERGE $content;")
+                            .bind(("rid", rid))
+                            .bind(("content", serde_json::Value::Object(content)))
+                            .await?;
                     }
                     for del in m.mutation.deletes.iter() {
                         let rid = record_id(table, &del.key, &del.additional_key);
-                        db.query(format!("DELETE {}:{};", sanitize_ident(table), rid))
-                            .await?;
+                        db.query("DELETE $rid;").bind(("rid", rid)).await?;
                     }
                 };
             }
@@ -828,13 +787,10 @@ impl TargetFactoryBase for TargetFactory {
                         )?;
                         src_content.extend(src_values);
                         let src_rid = record_id(src_table, &src_key, &serde_json::Value::Null);
-                        db.query(format!(
-                            "UPSERT {}:{} MERGE $content;",
-                            sanitize_ident(src_table),
-                            src_rid
-                        ))
-                        .bind(("content", serde_json::Value::Object(src_content)))
-                        .await?;
+                        db.query("UPSERT $rid MERGE $content;")
+                            .bind(("rid", src_rid.clone()))
+                            .bind(("content", serde_json::Value::Object(src_content)))
+                            .await?;
 
                         // Upsert target node.
                         let mut tgt_content = encode_key_fields_as_json(
@@ -848,13 +804,10 @@ impl TargetFactoryBase for TargetFactory {
                         )?;
                         tgt_content.extend(tgt_values);
                         let tgt_rid = record_id(tgt_table, &tgt_key, &serde_json::Value::Null);
-                        db.query(format!(
-                            "UPSERT {}:{} MERGE $content;",
-                            sanitize_ident(tgt_table),
-                            tgt_rid
-                        ))
-                        .bind(("content", serde_json::Value::Object(tgt_content)))
-                        .await?;
+                        db.query("UPSERT $rid MERGE $content;")
+                            .bind(("rid", tgt_rid.clone()))
+                            .bind(("content", serde_json::Value::Object(tgt_content)))
+                            .await?;
 
                         // Upsert edge record with in/out links and relationship properties.
                         let mut edge_props =
@@ -868,37 +821,18 @@ impl TargetFactoryBase for TargetFactory {
 
                         let edge_rid = record_id(edge_table, &upsert.key, &upsert.additional_key);
 
-                        let in_thing = surrealdb::sql::Thing::from((
-                            sanitize_ident(src_table),
-                            src_rid.clone(),
-                        ));
-                        let out_thing = surrealdb::sql::Thing::from((
-                            sanitize_ident(tgt_table),
-                            tgt_rid.clone(),
-                        ));
-
                         // First set in/out as Things, then merge props.
-                        db.query(format!(
-                        "UPSERT {}:{} MERGE {{ in: $in, out: $out }}; UPSERT {}:{} MERGE $props;",
-                        sanitize_ident(edge_table),
-                        edge_rid,
-                        sanitize_ident(edge_table),
-                        edge_rid,
-                    ))
-                    .bind(("in", in_thing))
-                    .bind(("out", out_thing))
-                    .bind(("props", serde_json::Value::Object(edge_props)))
-                    .await?;
+                        db.query("UPSERT $edge MERGE {{ in: $in, out: $out }}; UPSERT $edge MERGE $props;")
+                            .bind(("in", src_rid))
+                            .bind(("out", tgt_rid))
+                            .bind(("edge", edge_rid))
+                            .bind(("props", serde_json::Value::Object(edge_props)))
+                            .await?;
                     }
 
                     for del in m.mutation.deletes.iter() {
                         let edge_rid = record_id(edge_table, &del.key, &del.additional_key);
-                        db.query(format!(
-                            "DELETE {}:{};",
-                            sanitize_ident(edge_table),
-                            edge_rid
-                        ))
-                        .await?;
+                        db.query("DELETE $edge;").bind(("edge", edge_rid)).await?;
                     }
                 }
             }

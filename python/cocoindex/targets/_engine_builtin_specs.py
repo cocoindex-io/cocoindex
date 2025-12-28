@@ -180,6 +180,5 @@ class SurrealDBDeclaration(op.DeclarationSpec):
 
     kind = "SurrealDB"
     connection: AuthEntryReference[SurrealDBConnection]
-    nodes_label: str
     primary_key_fields: Sequence[str]
     vector_indexes: Sequence[index.VectorIndexDef] = ()
