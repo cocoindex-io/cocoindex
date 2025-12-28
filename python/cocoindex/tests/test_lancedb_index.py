@@ -3,71 +3,22 @@ Test suite for LanceDB VectorIndexMethod support.
 
 This module tests the VectorIndexMethod configuration for LanceDB target,
 including HNSW and IVF Flat index types.
-
-Note: This test file uses standalone copies of the VectorIndexMethod classes
-and helper functions to avoid importing the cocoindex module, which requires
-the Rust engine to be built. When running in CI, the full module will be tested.
 """
 
 import pytest
-from dataclasses import dataclass
-from typing import Any, Union, Optional
 
 # Skip all tests if lancedb is not installed
 lancedb = pytest.importorskip("lancedb")
 
+# Skip tests if cocoindex (which requires the Rust engine) is not available
+pytest.importorskip("cocoindex")
+
 # Import lancedb index types for assertion
 from lancedb.index import HnswPq, IvfFlat  # type: ignore
 
-
-# Standalone copies of VectorIndexMethod classes for testing
-# These mirror the definitions in cocoindex/index.py
-@dataclass
-class HnswVectorIndexMethod:
-    """HNSW vector index parameters."""
-
-    kind: str = "Hnsw"
-    m: Optional[int] = None
-    ef_construction: Optional[int] = None
-
-
-@dataclass
-class IvfFlatVectorIndexMethod:
-    """IVFFlat vector index parameters."""
-
-    kind: str = "IvfFlat"
-    lists: Optional[int] = None
-
-
-VectorIndexMethod = Union[HnswVectorIndexMethod, IvfFlatVectorIndexMethod]
-
-
-def _create_vector_index_config(
-    method: Optional[VectorIndexMethod],
-    distance_type: str,
-) -> Union[HnswPq, IvfFlat]:
-    """
-    Create the appropriate LanceDB index configuration based on the VectorIndexMethod.
-    This mirrors the function from lancedb.py for testing without engine dependency.
-    """
-    if method is None:
-        return HnswPq(distance_type=distance_type)
-
-    if isinstance(method, HnswVectorIndexMethod):
-        kwargs: dict[str, Any] = {"distance_type": distance_type}
-        if method.m is not None:
-            kwargs["m"] = method.m
-        if method.ef_construction is not None:
-            kwargs["ef_construction"] = method.ef_construction
-        return HnswPq(**kwargs)
-
-    if isinstance(method, IvfFlatVectorIndexMethod):
-        kwargs = {"distance_type": distance_type}
-        if method.lists is not None:
-            kwargs["num_partitions"] = method.lists
-        return IvfFlat(**kwargs)
-
-    return HnswPq(distance_type=distance_type)
+# Import actual VectorIndexMethod classes and configuration function
+from cocoindex.index import HnswVectorIndexMethod, IvfFlatVectorIndexMethod
+from cocoindex.targets.lancedb import _create_vector_index_config
 
 
 class TestCreateVectorIndexConfig:

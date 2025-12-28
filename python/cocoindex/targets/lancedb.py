@@ -351,14 +351,27 @@ class _Connector:
             raise ValueError("LanceDB only supports a single key field")
 
         def _get_method_suffix(method: VectorIndexMethod | None) -> str:
-            """Get a suffix string representing the index method for the index name."""
+            """Get a suffix string representing the index method for the index name.
+
+            Returns empty string for default HNSW method to maintain backward compatibility.
+            Only non-default methods get a suffix.
+            """
             if method is None:
-                return "hnsw_pq"  # default
+                return ""  # default, no suffix for backward compatibility
             if isinstance(method, HnswVectorIndexMethod):
-                return "hnsw_pq"
+                return ""  # HNSW is default, no suffix for backward compatibility
             if isinstance(method, IvfFlatVectorIndexMethod):
-                return "ivf_flat"
-            return "hnsw_pq"
+                return "_ivf_flat"
+            return ""
+
+        def _make_index_name(field_name: str, metric: VectorSimilarityMetric, method: VectorIndexMethod | None) -> str:
+            """Generate index name with optional method suffix."""
+            base_name = f"__{field_name}__{_LANCEDB_VECTOR_METRIC[metric]}__idx"
+            suffix = _get_method_suffix(method)
+            if suffix:
+                # Insert suffix before __idx
+                return f"__{field_name}__{_LANCEDB_VECTOR_METRIC[metric]}{suffix}__idx"
+            return base_name
 
         return _State(
             key_field_schema=key_fields_schema[0],
@@ -367,7 +380,7 @@ class _Connector:
             vector_indexes=(
                 [
                     _VectorIndex(
-                        name=f"__{index.field_name}__{_LANCEDB_VECTOR_METRIC[index.metric]}__{_get_method_suffix(index.method)}__idx",
+                        name=_make_index_name(index.field_name, index.metric, index.method),
                         field_name=index.field_name,
                         metric=index.metric,
                         method=index.method,
