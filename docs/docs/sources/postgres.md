@@ -32,17 +32,21 @@ The spec takes the following fields:
 * `ordinal_column` (`str`, optional): to specify a non-primary-key column used for change tracking and ordering, e.g. can be a modified timestamp or a monotonic version number. Supported types are integer-like (`bigint`/`integer`) and timestamps (`timestamp`, `timestamptz`).
     `ordinal_column` must not be a primary key column.
 
-* `filter` (`str`, optional): arbitrary SQL boolean expression to filter rows. Only rows satisfying this condition will be included. For example: `"age > 18"`, `"status = 'active'"`, or `"created_at > '2023-01-01'"`. The expression is added as a WHERE clause to the SQL queries.
+* `filter` (`str`, optional): arbitrary SQL boolean expression to filter rows. Only rows satisfying this condition will be included. For example: `"age > 18"`, `"status = 'active'"`, or `"created_at > '2023-01-01'"`. The expression is added as a WHERE clause to the SQL queries. CocoIndex validates all filter expressions to prevent SQL injection by rejecting dangerous SQL keywords and suspicious patterns.
 
-    :::info
+    :::warning
 
-    The `filter` expression is inserted directly into SQL queries. Ensure that:
-  * The expression uses valid PostgreSQL syntax
-  * Column names and values are properly quoted if needed
-  * The expression evaluates to a boolean result
-  * You trust the source of the filter expression to avoid SQL injection
+    **SECURITY NOTICE - FILTER EXPRESSIONS**: To maintain security:
+  * **ONLY** use filter expressions with hardcoded, static values that you control in your code
+  * **NEVER** construct filter expressions from untrusted user input, API parameters, or external sources
+  * **NEVER** concatenate user input into filter expressions - implement filtering in your application layer instead
+  * CocoIndex validates filter expressions at runtime to reject obvious injection patterns (dangerous keywords, comments, multiple statements)
+  * However, the validation is defense-in-depth and NOT a substitute for never using untrusted input
+  * The `filter` parameter accepts SQL boolean expressions only - these are subject to PostgreSQL syntax validation
+  * **Safe approach**: Hardcode filters in your code: `filter="amount > 0 AND status='active'"`
+  * **Unsafe approach**: Never do this: `filter=f"amount > {user_input}"` or `filter="amount > " + api_value`
 
-    :::
+    :::warning
 
 * `notification` (`cocoindex.sources.PostgresNotification`, optional): when present, enable change capture based on Postgres LISTEN/NOTIFY. It has the following fields:
   * `channel_name` (`str`, optional): the Postgres notification channel to listen on. CocoIndex will automatically create the channel with the given name. If omitted, CocoIndex uses `{flow_name}__{source_name}__cocoindex`.

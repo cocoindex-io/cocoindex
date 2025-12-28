@@ -818,6 +818,79 @@ impl PostgresSourceExecutor {
     }
 }
 
+/// Validates filter expressions to prevent SQL injection from untrusted input.
+/// IMPORTANT: This function performs pattern-based validation and is NOT foolproof.
+/// 
+/// THE CORRECT AND ONLY SAFE APPROACH IS:
+/// 1. Never construct filter expressions from user input, API parameters, or untrusted sources
+/// 2. Only use hardcoded, static filter expressions in your code
+/// 3. If you must use dynamic filtering, implement it in your application layer with proper parameterization
+/// 4. Pass only the filtered row data to CocoIndex, not dynamic WHERE clauses
+///
+/// This validation function blocks obvious injection patterns but should not be relied upon
+/// as the sole security mechanism. It is a defense-in-depth measure.
+fn validate_filter_expression(filter: &str) -> Result<()> {
+    if filter.is_empty() {
+        api_bail!("Filter expression cannot be empty");
+    }
+    
+    // Reject expressions with multiple statements (semicolon indicates statement boundary)
+    if filter.contains(';') {
+        api_bail!(
+            "Filter expression contains semicolon - multiple SQL statements are not allowed. \
+            Use only a single boolean expression (e.g., 'age > 18 AND status = \\'active\\'')"
+        );
+    }
+    
+    // Reject comments which could hide malicious SQL
+    if filter.contains("--") || filter.contains("/*") || filter.contains("*/") {
+        api_bail!(
+            "Filter expression contains SQL comments which are not allowed. \
+            Remove comment syntax from the filter expression."
+        );
+    }
+    
+    let filter_upper = filter.to_uppercase();
+    
+    // Reject statements that modify the database or execute code (most dangerous keywords)
+    let modifying_keywords = [
+        "DROP", "DELETE", "INSERT", "UPDATE", "CREATE", "ALTER", "TRUNCATE",
+        "EXEC", "EXECUTE", "CALL", "GRANT", "REVOKE",
+    ];
+    
+    for keyword in &modifying_keywords {
+        // Check for keywords at word boundaries to avoid false positives on column names
+        if filter_upper.starts_with(keyword) || 
+           filter_upper.contains(&format!(" {}", keyword)) ||
+           filter_upper.contains(&format!("({}", keyword)) {
+            api_bail!(
+                "Filter expression contains disallowed SQL keyword '{}'. \
+                Filter expressions must be read-only WHERE clauses (e.g., 'age > 18 AND status = \\'active\\''). \
+                CRITICAL SECURITY NOTICE: Do not construct filter expressions from user input or external sources.",
+                keyword
+            );
+        }
+    }
+    
+    // Warn about UNION which is commonly used for injection attacks
+    if filter_upper.contains("UNION") {
+        api_bail!(
+            "Filter expression contains 'UNION' keyword which is not allowed. \
+            Filter expressions must be simple boolean predicates."
+        );
+    }
+    
+    // Additional check: filter should not contain suspicious patterns like command injection
+    if filter.contains("${") || filter.contains("$(") || filter.contains("`") {
+        api_bail!(
+            "Filter expression contains shell/template injection patterns. \
+            Use plain SQL boolean expressions only."
+        );
+    }
+    
+    Ok(())
+}
+
 pub struct Factory;
 
 #[async_trait]
@@ -878,6 +951,11 @@ impl SourceFactoryBase for Factory {
             &spec.ordinal_column,
         )
         .await?;
+
+        // Validate filter expression to prevent SQL injection from untrusted sources
+        if let Some(ref filter) = spec.filter {
+            validate_filter_expression(filter)?;
+        }
 
         let notification_ctx = spec.notification.map(|spec| {
             let channel_name = spec.channel_name.unwrap_or_else(|| {
