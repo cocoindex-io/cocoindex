@@ -213,7 +213,8 @@ impl DbPools {
                     pg_options = pg_options.password(password);
                 }
                 if let Some(schema) = &conn_spec.schema {
-                    pg_options = pg_options.options([("search_path", schema.as_str())]);
+                    let path = format!("{},public", schema);
+                    pg_options = pg_options.options([("search_path", path.as_str())]);
                 }
                 // Try to connect to the database with a low timeout first.
                 {
