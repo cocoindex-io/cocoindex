@@ -209,17 +209,37 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self.inner.stable_path
     }
 
+    pub(crate) fn relative_path(
+        &self,
+        parent_context: Option<&ComponentProcessorContext<Prof>>,
+    ) -> Result<StablePath> {
+        if let Some(parent_ctx) = parent_context {
+            let relative = self
+                .stable_path()
+                .as_ref()
+                .strip_parent(parent_ctx.stable_path().as_ref())?;
+            Ok(relative.into())
+        } else {
+            Ok(StablePath::root())
+        }
+    }
+
     pub fn run(
         self,
         processor: Prof::ComponentProc,
         parent_context: Option<ComponentProcessorContext<Prof>>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
+        let relative_path = self.relative_path(parent_context.as_ref())?;
         let processor_context = self.new_processor_context_for_build(parent_context)?;
-        let join_handle = get_runtime().spawn(async move {
-            self.execute_once(&processor_context, Some(processor))
-                .await?
-                .ok_or_else(|| internal_error!("component deletion can only run in background"))
-        });
+        let span = info_span!("component.run", component_path = %relative_path);
+        let join_handle = get_runtime().spawn(
+            async move {
+                self.execute_once(&processor_context, Some(processor))
+                    .await?
+                    .ok_or_else(|| internal_error!("component deletion can only run in background"))
+            }
+            .instrument(span),
+        );
         Ok(ComponentMountRunHandle { join_handle })
     }
 
