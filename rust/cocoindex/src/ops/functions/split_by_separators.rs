@@ -1,8 +1,10 @@
-use regex::Regex;
 use std::sync::Arc;
 
 use crate::ops::registry::ExecutorFactoryRegistry;
-use crate::ops::shared::split::{Position, make_common_chunk_schema, set_output_positions};
+use crate::ops::shared::split::{
+    KeepSeparator, SeparatorSplitConfig, SeparatorSplitter, make_common_chunk_schema,
+    output_position_to_value,
+};
 use crate::{fields_value, ops::sdk::*};
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -10,6 +12,15 @@ use crate::{fields_value, ops::sdk::*};
 enum KeepSep {
     Left,
     Right,
+}
+
+impl From<KeepSep> for KeepSeparator {
+    fn from(value: KeepSep) -> Self {
+        match value {
+            KeepSep::Left => KeepSeparator::Left,
+            KeepSep::Right => KeepSeparator::Right,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -26,98 +37,48 @@ struct Args {
 }
 
 struct Executor {
-    spec: Spec,
-    regex: Option<Regex>,
+    splitter: SeparatorSplitter,
     args: Args,
 }
 
 impl Executor {
     fn new(args: Args, spec: Spec) -> Result<Self> {
-        let regex = if spec.separators_regex.is_empty() {
-            None
-        } else {
-            // OR-join all separators, multiline
-            let pattern = format!(
-                "(?m){}",
-                spec.separators_regex
-                    .iter()
-                    .map(|s| format!("(?:{s})"))
-                    .collect::<Vec<_>>()
-                    .join("|")
-            );
-            Some(Regex::new(&pattern).with_context(|| "failed to compile separators_regex")?)
+        let config = SeparatorSplitConfig {
+            separators_regex: spec.separators_regex,
+            keep_separator: spec.keep_separator.map(Into::into),
+            include_empty: spec.include_empty,
+            trim: spec.trim,
         };
-        Ok(Self { args, spec, regex })
+        let splitter =
+            SeparatorSplitter::new(config).with_context(|| "failed to compile separators_regex")?;
+        Ok(Self { args, splitter })
     }
-}
-
-struct ChunkOutput<'s> {
-    start_pos: Position,
-    end_pos: Position,
-    text: &'s str,
 }
 
 #[async_trait]
 impl SimpleFunctionExecutor for Executor {
     async fn evaluate(&self, input: Vec<Value>) -> Result<Value> {
         let full_text = self.args.text.value(&input)?.as_str()?;
-        let bytes = full_text.as_bytes();
 
-        // add_range applies trim/include_empty and records the text slice
-        let mut chunks: Vec<ChunkOutput<'_>> = Vec::new();
-        let mut add_range = |mut s: usize, mut e: usize| {
-            if self.spec.trim {
-                while s < e && bytes[s].is_ascii_whitespace() {
-                    s += 1;
-                }
-                while e > s && bytes[e - 1].is_ascii_whitespace() {
-                    e -= 1;
-                }
-            }
-            if self.spec.include_empty || e > s {
-                chunks.push(ChunkOutput {
-                    start_pos: Position::new(s),
-                    end_pos: Position::new(e),
-                    text: &full_text[s..e],
-                });
-            }
-        };
+        // Use the extra_text splitter
+        let chunks = self.splitter.split(&full_text);
 
-        if let Some(re) = &self.regex {
-            let mut start = 0usize;
-            for m in re.find_iter(full_text) {
-                let end = match self.spec.keep_separator {
-                    Some(KeepSep::Left) => m.end(),
-                    Some(KeepSep::Right) | None => m.start(),
-                };
-                add_range(start, end);
-                start = match self.spec.keep_separator {
-                    Some(KeepSep::Right) => m.start(),
-                    _ => m.end(),
-                };
-            }
-            add_range(start, full_text.len());
-        } else {
-            // No separators: emit whole text
-            add_range(0, full_text.len());
-        }
-
-        set_output_positions(
-            full_text,
-            chunks.iter_mut().flat_map(|c| {
-                std::iter::once(&mut c.start_pos).chain(std::iter::once(&mut c.end_pos))
-            }),
-        );
-
+        // Convert chunks to cocoindex table format
         let table = chunks
             .into_iter()
             .map(|c| {
-                let s = c.start_pos.output.unwrap();
-                let e = c.end_pos.output.unwrap();
+                let chunk_text = &full_text[c.range.start..c.range.end];
                 (
-                    KeyValue::from_single_part(RangeValue::new(s.char_offset, e.char_offset)),
-                    fields_value!(Arc::<str>::from(c.text), s.into_output(), e.into_output())
-                        .into(),
+                    KeyValue::from_single_part(RangeValue::new(
+                        c.start.char_offset,
+                        c.end.char_offset,
+                    )),
+                    fields_value!(
+                        Arc::<str>::from(chunk_text),
+                        output_position_to_value(c.start),
+                        output_position_to_value(c.end)
+                    )
+                    .into(),
                 )
             })
             .collect();

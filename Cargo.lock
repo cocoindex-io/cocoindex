@@ -1193,6 +1193,7 @@ dependencies = [
  "blake2",
  "bytes",
  "chrono",
+ "cocoindex_extra_text",
  "cocoindex_py_utils",
  "cocoindex_utils",
  "config",
@@ -1245,6 +1246,18 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "unicase",
+ "urlencoding",
+ "uuid",
+ "yaml-rust2",
+ "yup-oauth2 12.1.0",
+]
+
+[[package]]
+name = "cocoindex_extra_text"
+version = "999.0.0"
+dependencies = [
+ "regex",
  "tree-sitter",
  "tree-sitter-c",
  "tree-sitter-c-sharp",
@@ -1274,10 +1287,6 @@ dependencies = [
  "tree-sitter-xml",
  "tree-sitter-yaml",
  "unicase",
- "urlencoding",
- "uuid",
- "yaml-rust2",
- "yup-oauth2 12.1.0",
 ]
 
 [[package]]

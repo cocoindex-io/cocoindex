@@ -26,40 +26,12 @@ repos:
 
   - repo: local
     hooks:
-        - id: maturin-develop
-          name: maturin develop
-          entry: maturin develop -E all,dev
-          language: system
-          files: ^(rust/|python/|Cargo\.toml|pyproject\.toml)
-          pass_filenames: false
-
-        - id: generate-cli-docs
-          name: generate CLI documentation
-          entry: python dev/generate_cli_docs.py
-          language: system
-          files: ^(python/cocoindex/cli\.py|dev/generate_cli_docs\.py)$
-          pass_filenames: false
-
-        - id: cargo-fmt
-          name: cargo fmt
-          entry: cargo fmt
-          language: system
-          types: [rust]
-          pass_filenames: false
-
-        - id: cargo-test
-          name: cargo test
-          entry: dev/run_cargo_test.sh
-          language: system
-          files: ^(rust/|Cargo\.toml)
-          pass_filenames: false
-
-        - id: mypy-check
-          name: mypy type check
-          entry: dmypy run
-          language: system
-          files: ^(rust/|python/|examples/|Cargo\.toml|pyproject\.toml)
-          pass_filenames: false
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt
+        language: system
+        types: [rust]
+        pass_filenames: false
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.0
@@ -67,13 +39,47 @@ repos:
       - id: ruff-format
         types: [python]
         pass_filenames: true
-  
-  - repo: https://github.com/christophmeissner/pytest-pre-commit
-    rev: 1.0.0
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.6.1
     hooks:
-      - id: pytest
-        language: system
-        types: [python]
-        pass_filenames: false
-        always_run: false
-        args: ["python"]
+      - id: uv-lock
+        # Ensures uv.lock is up to date with pyproject.toml
+
+  - repo: local
+    hooks:
+        - id: maturin-develop
+          name: maturin develop
+          entry: uv run maturin develop
+          language: system
+          files: ^(rust/|python/|Cargo\.toml|pyproject\.toml)
+          pass_filenames: false
+
+        - id: cargo-test
+          name: cargo test
+          entry: uv run cargo test
+          language: system
+          files: ^(rust/|Cargo\.toml)
+          pass_filenames: false
+
+        - id: mypy-check
+          name: mypy type check
+          entry: uv run dmypy run
+          language: system
+          files: ^(rust/|python/|examples/|Cargo\.toml|pyproject\.toml)
+          pass_filenames: false
+
+        - id: pytest
+          name: pytest
+          entry: uv run pytest python/
+          language: system
+          types: [python]
+          pass_filenames: false
+          always_run: false
+
+        - id: generate-cli-docs
+          name: generate CLI documentation
+          entry: uv run python dev/generate_cli_docs.py
+          language: system
+          files: ^(python/cocoindex/cli\.py|dev/generate_cli_docs\.py)$
+          pass_filenames: false
