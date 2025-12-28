@@ -255,6 +255,7 @@ def setup_tables(scope: coco.Scope) -> TableTargets[coco.PendingS]:
             scope,
             table_name="hn_messages",
             table_schema=postgres.TableSchema(HnMessage, primary_key=["id"]),
+            pg_schema_name="coco_examples",
         ),
         topics=_state.db.table_target(
             scope,
@@ -262,6 +263,7 @@ def setup_tables(scope: coco.Scope) -> TableTargets[coco.PendingS]:
             table_schema=postgres.TableSchema(
                 HnTopic, primary_key=["topic", "message_id"]
             ),
+            pg_schema_name="coco_examples",
         ),
     )
 

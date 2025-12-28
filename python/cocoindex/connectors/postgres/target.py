@@ -42,6 +42,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_struct_type,
 )
+from cocoindex.resources.schema import VectorSpec
 
 try:
     import asyncpg
@@ -62,11 +63,11 @@ ValueEncoder = Callable[[Any], Any]
 _BIND_LIMIT: int = 65535
 
 
-def _qualified_table_name(table_name: str, schema_name: str | None) -> str:
+def _qualified_table_name(table_name: str, pg_schema_name: str | None) -> str:
     """Return a properly quoted (optionally schema-qualified) table name."""
 
-    if schema_name:
-        return f'"{schema_name}"."{table_name}"'
+    if pg_schema_name:
+        return f'"{pg_schema_name}"."{table_name}"'
     return f'"{table_name}"'
 
 
@@ -101,6 +102,41 @@ def _json_encoder(value: Any) -> str:
     return json.dumps(value, default=str)
 
 
+_PGVECTOR_TYPE_BASES: frozenset[str] = frozenset({"vector", "halfvec"})
+_PGVECTOR_TYPE_PREFIXES: frozenset[str] = frozenset(
+    {f"{base}(" for base in _PGVECTOR_TYPE_BASES}
+)
+
+
+def _is_pgvector_pg_type(pg_type: str) -> bool:
+    """
+    Return True if `pg_type` is a pgvector type (`vector(n)`, ...).
+
+    This is used for extension checks and validation.
+    """
+    t = pg_type.lower().strip()
+    return any(t.startswith(p) for p in _PGVECTOR_TYPE_PREFIXES)
+
+
+def _pgvector_text_encoder(value: Any) -> str:
+    """
+    Encode a vector value into pgvector's text input format: `[1,2,3]`.
+
+    We intentionally emit text because asyncpg doesn't natively support pgvector.
+    Postgres can cast from text to pgvector types (`vector` / `halfvec`).
+    """
+    if isinstance(value, np.ndarray):
+        arr = value.ravel()
+        items = (float(x) for x in arr.tolist())
+    elif isinstance(value, (list, tuple)):
+        items = (float(x) for x in value)
+    else:
+        raise TypeError(
+            f"pgvector column expects a numpy.ndarray or sequence, got {type(value)}"
+        )
+    return "[" + ",".join(str(x) for x in items) + "]"
+
+
 class _TypeMapping(NamedTuple):
     """Mapping from Python type to PostgreSQL type with optional encoder."""
 
@@ -118,6 +154,23 @@ _LEAF_TYPE_MAPPINGS: dict[type, _TypeMapping] = {
     int: _TypeMapping("bigint"),
     float: _TypeMapping("double precision"),
     decimal.Decimal: _TypeMapping("numeric"),
+    # NumPy scalar integer types (finer-grained)
+    np.int8: _TypeMapping("smallint"),
+    np.int16: _TypeMapping("smallint"),
+    np.int32: _TypeMapping("integer"),
+    np.int64: _TypeMapping("bigint"),
+    # NumPy scalar unsigned integer types (Postgres has no unsigned ints)
+    np.uint8: _TypeMapping("smallint"),  # always fits
+    np.uint16: _TypeMapping("integer"),  # can exceed smallint
+    np.uint32: _TypeMapping("bigint"),  # can exceed integer
+    np.uint64: _TypeMapping("numeric"),  # can exceed bigint
+    # Platform-dependent aliases
+    np.int_: _TypeMapping("bigint"),
+    np.uint: _TypeMapping("numeric"),
+    # NumPy scalar float types (finer-grained)
+    np.float16: _TypeMapping("real"),
+    np.float32: _TypeMapping("real"),
+    np.float64: _TypeMapping("double precision"),
     # String types
     str: _TypeMapping("text"),
     bytes: _TypeMapping("bytea"),
@@ -164,12 +217,14 @@ def _get_type_mapping(python_type: Any) -> _TypeMapping:
     if base_type in _LEAF_TYPE_MAPPINGS:
         return _LEAF_TYPE_MAPPINGS[base_type]
 
-    # NumPy number types
-    if isinstance(base_type, type):
-        if issubclass(base_type, np.integer):
-            return _TypeMapping("bigint")
-        if issubclass(base_type, np.floating):
-            return _TypeMapping("double precision")
+    # NumPy ndarray: map to pgvector type bases; dimension is handled at the schema layer.
+    if base_type is np.ndarray:
+        elem_type: Any | None = None
+        if isinstance(type_info.variant, SequenceType):
+            elem_type = type_info.variant.elem_type
+        # Default to `vector` (float32/float64/int64/etc.). Use `halfvec` for float16.
+        base = "halfvec" if elem_type in (np.half, np.float16) else "vector"
+        return _TypeMapping(base, _pgvector_text_encoder)
 
     # Complex types that need JSON encoding
     if isinstance(
@@ -214,12 +269,16 @@ class TableSchema(Generic[RowT]):
         self: "TableSchema[RowT]",
         columns: type[RowT],
         primary_key: list[str],
+        *,
+        column_specs: dict[str, ColumnDef | VectorSpec] | None = None,
     ) -> None: ...
 
     def __init__(
         self,
         columns: type[RowT] | dict[str, ColumnDef],
         primary_key: list[str],
+        *,
+        column_specs: dict[str, ColumnDef | VectorSpec] | None = None,
     ) -> None:
         """
         Create a TableSchema.
@@ -230,12 +289,15 @@ class TableSchema(Generic[RowT]):
                      When a struct type is provided, Python types are automatically
                      mapped to PostgreSQL types based on asyncpg's type conversion.
             primary_key: List of column names that form the primary key.
+            column_specs: Optional dict mapping column names to ColumnDef or VectorSpec.
+                         If not provided, Python types are automatically
+                         mapped to PostgreSQL types based on asyncpg's type conversion.
         """
         if isinstance(columns, dict):
             self.columns = columns
             self.row_type = None
         elif is_struct_type(columns):
-            self.columns = self._columns_from_struct_type(columns)
+            self.columns = self._columns_from_struct_type(columns, column_specs)
             self.row_type = columns  # type: ignore[assignment]
         else:
             raise TypeError(
@@ -253,16 +315,46 @@ class TableSchema(Generic[RowT]):
                 )
 
     @staticmethod
-    def _columns_from_struct_type(struct_type: type) -> dict[str, ColumnDef]:
+    def _columns_from_struct_type(
+        struct_type: type, column_specs: dict[str, ColumnDef | VectorSpec] | None
+    ) -> dict[str, ColumnDef]:
         """Convert a struct type to a dict of column name -> ColumnDef."""
         struct_info = StructType(struct_type)
         columns: dict[str, ColumnDef] = {}
 
         for field in struct_info.fields:
+            spec = column_specs.get(field.name) if column_specs else None
+            if isinstance(spec, ColumnDef):
+                columns[field.name] = spec
+                continue
+
             type_info = analyze_type_info(field.type_hint)
             type_mapping = _get_type_mapping(field.type_hint)
+            col_type = type_mapping.pg_type.strip()
+
+            vector_spec = spec if isinstance(spec, VectorSpec) else None
+            if vector_spec is not None:
+                if col_type in _PGVECTOR_TYPE_BASES:
+                    if vector_spec.dim <= 0:
+                        raise ValueError(
+                            f"Invalid pgvector dimension: {vector_spec.dim}"
+                        )
+                    col_type = f"{col_type}({vector_spec.dim})"
+                elif not _is_pgvector_pg_type(col_type):
+                    raise ValueError(
+                        f"VectorSpec provided for non-pgvector column '{field.name}' "
+                        f"(inferred type: {col_type})"
+                    )
+
+            elif col_type in _PGVECTOR_TYPE_BASES:
+                # If we ended up with a pgvector base type, require a fixed dimension.
+                raise ValueError(
+                    f"Field '{field.name}' inferred as pgvector type {col_type!r} but "
+                    f"no dimension was provided. Use VectorSpec(dim=...)."
+                )
+
             columns[field.name] = ColumnDef(
-                type=type_mapping.pg_type,
+                type=col_type,
                 nullable=type_info.nullable,
                 encoder=type_mapping.encoder,
             )
@@ -290,12 +382,12 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         self,
         pool: asyncpg.Pool,
         table_name: str,
-        schema_name: str | None,
+        pg_schema_name: str | None,
         table_schema: TableSchema,
     ) -> None:
         self._pool = pool
         self._table_name = table_name
-        self._schema_name = schema_name
+        self._schema_name = pg_schema_name
         self._table_schema = table_schema
         self._sink = coco.EffectSink.from_async_fn(self._apply_actions)
 
@@ -429,10 +521,10 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
 
 
 class _TableKey(NamedTuple):
-    """Key identifying a table: (database_key, schema_name, table_name)."""
+    """Key identifying a table: (database_key, pg_schema_name, table_name)."""
 
     db_key: str  # Stable key for the database
-    schema_name: str | None
+    pg_schema_name: str | None
     table_name: str
 
 
@@ -458,24 +550,43 @@ class _NonPkColumnState(NamedTuple):
     nullable: bool
 
 
+_EXT_PGVECTOR_SUBKEY: str = "ext:pgvector"
+_COL_SUBKEY_PREFIX: str = "col:"
+
+
+def _schema_uses_pgvector(schema: TableSchema[Any]) -> bool:
+    return any(_is_pgvector_pg_type(c.type) for c in schema.columns.values())
+
+
+def _col_subkey(col_name: str) -> str:
+    return f"{_COL_SUBKEY_PREFIX}{col_name}"
+
+
+_TableSubState = _NonPkColumnState | None
+
+
 def _table_composite_state_from_spec(
     spec: _TableSpec,
-) -> statediff.CompositeState[tuple[_PkColumnState, ...], str, _NonPkColumnState]:
+) -> statediff.CompositeState[tuple[_PkColumnState, ...], str, _TableSubState]:
     schema = spec.table_schema
     col_by_name = schema.columns
     pk_sig = tuple(
         _PkColumnState(name=pk, type=col_by_name[pk].type) for pk in schema.primary_key
     )
-    sub = {
-        col_name: _NonPkColumnState(type=col_def.type, nullable=col_def.nullable)
+    sub: dict[str, _TableSubState] = {
+        _col_subkey(col_name): _NonPkColumnState(
+            type=col_def.type, nullable=col_def.nullable
+        )
         for col_name, col_def in schema.columns.items()
         if col_name not in schema.primary_key
     }
+    if _schema_uses_pgvector(schema):
+        sub[_EXT_PGVECTOR_SUBKEY] = None
     return statediff.CompositeState(main=pk_sig, sub=sub)
 
 
 _TableState = statediff.MutualState[
-    statediff.CompositeState[tuple[_PkColumnState, ...], str, _NonPkColumnState]
+    statediff.CompositeState[tuple[_PkColumnState, ...], str, _TableSubState]
 ]
 
 
@@ -556,7 +667,7 @@ class _TableHandler(
 
                         if action.main_action in ("replace", "delete"):
                             await self._drop_table(
-                                conn, key.table_name, key.schema_name
+                                conn, key.table_name, key.pg_schema_name
                             )
 
                         if coco.is_non_existence(action.spec):
@@ -568,7 +679,7 @@ class _TableHandler(
                             handler=_RowHandler(
                                 pool=pool,
                                 table_name=key.table_name,
-                                schema_name=key.schema_name,
+                                pg_schema_name=key.pg_schema_name,
                                 table_schema=spec.table_schema,
                             )
                         )
@@ -594,11 +705,25 @@ class _TableHandler(
         self,
         conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
         table_name: str,
-        schema_name: str | None,
+        pg_schema_name: str | None,
     ) -> None:
         """Drop a table if it exists."""
-        qualified_name = _qualified_table_name(table_name, schema_name)
+        qualified_name = _qualified_table_name(table_name, pg_schema_name)
         await conn.execute(f"DROP TABLE IF EXISTS {qualified_name}")
+
+    async def _ensure_pgvector_extension(
+        self,
+        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        pg_schema_name: str | None,
+    ) -> None:
+        """
+        Ensure the pgvector extension is installed.
+
+        Postgres extensions are installed per-database but can live in a chosen
+        schema; when `pg_schema_name` is provided we request installing into it.
+        """
+        schema_clause = f' WITH SCHEMA "{pg_schema_name}"' if pg_schema_name else ""
+        await conn.execute(f"CREATE EXTENSION IF NOT EXISTS vector{schema_clause}")
 
     async def _create_table(
         self,
@@ -609,11 +734,15 @@ class _TableHandler(
         if_not_exists: bool,
     ) -> None:
         """Create a table."""
-        qualified_name = _qualified_table_name(key.table_name, key.schema_name)
+        qualified_name = _qualified_table_name(key.table_name, key.pg_schema_name)
 
         # Create schema if specified
-        if key.schema_name:
-            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{key.schema_name}"')
+        if key.pg_schema_name:
+            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{key.pg_schema_name}"')
+
+        # Ensure pgvector extension exists if needed by any column type.
+        if _schema_uses_pgvector(schema):
+            await self._ensure_pgvector_extension(conn, key.pg_schema_name)
 
         # Build column definitions
         col_defs = []
@@ -641,12 +770,23 @@ class _TableHandler(
         schema: TableSchema[Any],
         column_actions: dict[str, statediff.DiffAction],
     ) -> None:
-        qualified_name = _qualified_table_name(key.table_name, key.schema_name)
+        qualified_name = _qualified_table_name(key.table_name, key.pg_schema_name)
         pk_cols = set(schema.primary_key)
         non_pk_col_by_name = {
             n: c for n, c in schema.columns.items() if n not in pk_cols
         }
-        for col_name, action in column_actions.items():
+        for sub_key, action in column_actions.items():
+            if sub_key == _EXT_PGVECTOR_SUBKEY:
+                if action != "delete":
+                    await self._ensure_pgvector_extension(conn, key.pg_schema_name)
+                continue
+
+            if not sub_key.startswith(_COL_SUBKEY_PREFIX):
+                raise ValueError(
+                    f"Unexpected column subkey format: {sub_key!r}, expected to start with {_COL_SUBKEY_PREFIX!r}"
+                )
+            col_name = sub_key[len(_COL_SUBKEY_PREFIX) :]
+
             # Defensive: we never ALTER PK columns here.
             if col_name in pk_cols:
                 continue
@@ -718,7 +858,7 @@ class _TableHandler(
         resolved = statediff.resolve_system_transition(
             statediff.StateTransition(
                 desired_state,
-                list(prev_possible_states),
+                prev_possible_states,
                 prev_may_be_missing,
             )
         )
@@ -726,10 +866,10 @@ class _TableHandler(
 
         column_actions: dict[str, statediff.DiffAction] = {}
         if main_action is None:
-            for col_name, t in column_transitions.items():
+            for sub_key, t in column_transitions.items():
                 action = statediff.diff(t)
                 if action is not None:
-                    column_actions[col_name] = action
+                    column_actions[sub_key] = action
 
         return coco.EffectReconcileOutput(
             action=_TableAction(
@@ -851,7 +991,7 @@ class PgDatabase:
         table_name: str,
         table_schema: TableSchema[RowT],
         *,
-        schema_name: str | None = None,
+        pg_schema_name: str | None = None,
         managed_by: Literal["system", "user"] = "system",
     ) -> TableTarget[RowT, coco.PendingS]:
         """
@@ -861,7 +1001,7 @@ class PgDatabase:
             scope: The scope for effect declaration.
             table_name: Name of the table.
             table_schema: Schema definition including columns and primary key.
-            schema_name: Optional PostgreSQL schema name (default is "public").
+            pg_schema_name: Optional PostgreSQL schema name (default is "public").
             managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
                         or "user" (table must exist, CocoIndex only manages rows).
 
@@ -869,7 +1009,7 @@ class PgDatabase:
             A TableTarget that can be used to declare rows.
         """
         key = _TableKey(
-            db_key=self._key, schema_name=schema_name, table_name=table_name
+            db_key=self._key, pg_schema_name=pg_schema_name, table_name=table_name
         )
         spec = _TableSpec(
             table_schema=table_schema,
