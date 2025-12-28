@@ -84,8 +84,11 @@ fn get_export_target_factory(target_type: &str) -> Option<Arc<dyn TargetFactory 
     get_optional_target_factory(target_type)
 }
 
-pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupStates<ExistingMode>> {
-    let setup_metadata_records = db_metadata::read_setup_metadata(pool).await?;
+pub async fn get_existing_setup_state(
+    schema_name: &str,
+    pool: &PgPool,
+) -> Result<AllSetupStates<ExistingMode>> {
+    let setup_metadata_records = db_metadata::read_setup_metadata(schema_name, &pool).await?;
 
     let setup_metadata_records = if let Some(records) = setup_metadata_records {
         records

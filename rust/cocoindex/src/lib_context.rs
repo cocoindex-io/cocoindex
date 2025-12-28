@@ -179,6 +179,19 @@ pub struct DbPools {
     pub pools: Mutex<HashMap<PoolKey, PoolValue>>,
 }
 
+pub async fn create_schema(schema_name: &str, pool: &PgPool) -> Result<()> {
+    let query = format!(
+        "CREATE SCHEMA IF NOT EXISTS \"{}\"",
+        schema_name.replace('"', "\"\"") // Escape double quotes to be safe
+    );
+
+    sqlx::query(&query)
+        .execute(pool)
+        .await
+        .with_context(|| format!("Failed to create schema `{}`", schema_name))?;
+    Ok(())
+}
+
 impl DbPools {
     pub async fn get_pool(&self, conn_spec: &settings::DatabaseConnectionSpec) -> Result<PgPool> {
         let db_pool_cell = {
@@ -306,7 +319,9 @@ pub async fn create_lib_context(settings: settings::Settings) -> Result<LibConte
     let db_pools = DbPools::default();
     let persistence_ctx = if let Some(database_spec) = &settings.database {
         let pool = db_pools.get_pool(database_spec).await?;
-        let all_setup_states = setup::get_existing_setup_state(&pool).await?;
+        let schema_name = database_spec.schema.as_deref().unwrap_or("public");
+        create_schema(schema_name, &pool).await?;
+        let all_setup_states = setup::get_existing_setup_state(schema_name, &pool).await?;
         Some(PersistenceContext {
             builtin_db_pool: pool,
             setup_ctx: tokio::sync::RwLock::new(LibSetupContext {

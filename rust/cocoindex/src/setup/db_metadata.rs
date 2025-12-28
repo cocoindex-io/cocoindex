@@ -26,7 +26,10 @@ pub fn parse_flow_version(state: &Option<serde_json::Value>) -> Option<u64> {
 }
 
 /// Returns None if metadata table doesn't exist.
-pub async fn read_setup_metadata(pool: &PgPool) -> Result<Option<Vec<SetupMetadataRecord>>> {
+pub async fn read_setup_metadata(
+    schema_name: &str,
+    pool: &PgPool,
+) -> Result<Option<Vec<SetupMetadataRecord>>> {
     let mut db_conn = pool.acquire().await?;
     let query_str = format!(
         "SELECT flow_name, resource_type, key, state, staging_changes FROM {SETUP_METADATA_TABLE_NAME}",
@@ -35,12 +38,13 @@ pub async fn read_setup_metadata(pool: &PgPool) -> Result<Option<Vec<SetupMetada
     let result = match metadata {
         Ok(metadata) => Some(metadata),
         Err(err) => {
-            let exists: Option<bool> = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = $1)",
-            )
-            .bind(SETUP_METADATA_TABLE_NAME)
-            .fetch_one(&mut *db_conn)
-            .await?;
+            let check_query_str =
+                "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = $1 AND tablename = $2)";
+            let exists: Option<bool> = sqlx::query_scalar(&check_query_str)
+                .bind(schema_name)
+                .bind(SETUP_METADATA_TABLE_NAME)
+                .fetch_one(&mut *db_conn)
+                .await?;
             if !exists.unwrap_or(false) {
                 None
             } else {
