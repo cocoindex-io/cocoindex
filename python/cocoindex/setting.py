@@ -35,7 +35,7 @@ class DatabaseConnectionSpec:
     url: str
     user: str | None = None
     password: str | None = None
-    schema: str | None = None
+    internal_schema: str | None = None
     max_connections: int = 25
     min_connections: int = 5
 
@@ -89,7 +89,7 @@ class Settings:
             db_kwargs: dict[str, Any] = {"url": database_url}
             _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
             _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
-            _load_field(db_kwargs, "schema", "COCOINDEX_DATABASE_SCHEMA")
+            _load_field(db_kwargs, "schema", "COCOINDEX_INTERNAL_DATABASE_SCHEMA")
             _load_field(
                 db_kwargs,
                 "max_connections",
