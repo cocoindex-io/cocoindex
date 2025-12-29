@@ -117,6 +117,10 @@ If not set, all flows are in a default unnamed namespace.
 
     *Environment variable* for `Settings.database.user`: `COCOINDEX_DATABASE_USER`
 
+* `schema` (type: `Optional[str]`, default: `None`): The schema for the Postgres database. It sets the search path in database url to `schema` and public.
+
+    *Environment variable* for `Settings.database.schema` : `COCOINDEX_DATABASE_SCHEMA`
+
 * `password` (type: `Optional[str]`, default: `None`): The password for the Postgres database. If not provided, password will come from `url`.
 
     *Environment variable* for `Settings.database.password`: `COCOINDEX_DATABASE_PASSWORD`
