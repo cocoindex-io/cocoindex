@@ -18,5 +18,6 @@
 ^https://us-east-1\.console\.aws\.amazon\.com/
 ^https://cloud\.google\.com/
 ^https://aws\.amazon\.com/console/
+^https://github\.com/lancedb/lance/issues/
 
 ^https://platform\.openai\.com/api/ # may require auth
