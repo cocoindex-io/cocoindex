@@ -18,7 +18,7 @@ jobs:
   generate-3p-notices:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
       - uses: actions/setup-python@v5
@@ -52,7 +52,7 @@ jobs:
           - { os: macos, runner: macos-15-intel, target: x86_64 }
           - { os: windows, runner: windows-latest, target: x64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
       - uses: actions/download-artifact@v4
@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [generate-3p-notices]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
       - uses: actions/setup-python@v5
@@ -132,7 +132,7 @@ jobs:
       attestations: write
     environment: release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
       - uses: actions/setup-python@v5
