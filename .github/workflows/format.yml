@@ -30,7 +30,7 @@ jobs:
     name: Check Rust formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
       - uses: dtolnay/rust-toolchain@stable
@@ -44,7 +44,7 @@ jobs:
     name: Check Python formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
       - uses: actions/setup-python@v5
