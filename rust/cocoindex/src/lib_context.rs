@@ -171,7 +171,7 @@ pub fn get_auth_registry() -> &'static Arc<AuthRegistry> {
     &AUTH_REGISTRY
 }
 
-type PoolKey = (String, Option<String>, Option<String>);
+type PoolKey = (String, Option<String>);
 type PoolValue = Arc<tokio::sync::OnceCell<PgPool>>;
 
 #[derive(Default)]
@@ -182,11 +182,7 @@ pub struct DbPools {
 impl DbPools {
     pub async fn get_pool(&self, conn_spec: &settings::DatabaseConnectionSpec) -> Result<PgPool> {
         let db_pool_cell = {
-            let key = (
-                conn_spec.url.clone(),
-                conn_spec.user.clone(),
-                conn_spec.schema.clone(),
-            );
+            let key = (conn_spec.url.clone(), conn_spec.user.clone());
             let mut db_pools = self.pools.lock().unwrap();
             db_pools.entry(key).or_default().clone()
         };
