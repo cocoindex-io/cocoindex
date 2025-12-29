@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: THIRD_PARTY_NOTICES.html
       - uses: actions/setup-python@v5
@@ -83,7 +83,7 @@ jobs:
       matrix:
         py: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: wheels-linux-x86_64
       - uses: actions/setup-python@v5
@@ -105,7 +105,7 @@ jobs:
         with:
           python-version: 3.13
       - run: python ./.github/scripts/update_version.py
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: THIRD_PARTY_NOTICES.html
       - name: Build sdist
@@ -139,10 +139,10 @@ jobs:
         with:
           python-version: 3.13
       - run: python ./.github/scripts/update_version.py
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: THIRD_PARTY_NOTICES.html
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: wheels-*
       - name: Generate artifact attestation
