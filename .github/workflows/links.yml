@@ -6,6 +6,15 @@ on:
     paths:
       - "docs/**/*.md"
       - "docs/**/*.mdx"
+      - ".lycheeignore"
+      - ".github/workflows/links.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**/*.md"
+      - "docs/**/*.mdx"
+      - ".lycheeignore"
+      - ".github/workflows/links.yml"
   schedule:
     - cron: "0 0 * * *"
   workflow_dispatch:
