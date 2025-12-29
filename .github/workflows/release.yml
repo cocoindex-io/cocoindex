@@ -35,7 +35,7 @@ jobs:
       - name: Generate THIRD_PARTY_NOTICES.html
         run: cargo about generate -o THIRD_PARTY_NOTICES.html about.hbs
       - name: Upload THIRD_PARTY_NOTICES.html artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: THIRD_PARTY_NOTICES.html
           path: THIRD_PARTY_NOTICES.html
@@ -71,7 +71,7 @@ jobs:
           manylinux: auto
           container: ${{ matrix.platform.container }}
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
           path: dist
@@ -114,7 +114,7 @@ jobs:
           command: sdist
           args: --out dist
       - name: Upload sdist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-sdist
           path: dist
