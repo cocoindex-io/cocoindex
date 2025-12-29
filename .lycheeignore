@@ -1,6 +1,9 @@
 # Link checker ignore file (lychee)
 # Patterns to exclude from link checking to avoid false positives
 
+# internal doc links - docusaurus validates these during build                                                                       
+^file://
+
 # used in the docs (as part of setup/launch instructions)
 ^http://localhost
 ^https://localhost
@@ -17,3 +20,4 @@
 ^https://aws\.amazon\.com/console/
 
 ^https://platform\.openai\.com/api/ # may require auth
+
