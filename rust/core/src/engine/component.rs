@@ -6,7 +6,7 @@ use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
 use crate::engine::execution::{cleanup_tombstone, submit};
 use crate::engine::profile::EngineProfile;
 use crate::state::effect_path::EffectPath;
-use crate::state::stable_path::StablePath;
+use crate::state::stable_path::{StablePath, StablePathRef};
 use crate::state::stable_path_set::StablePathSet;
 use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
 
@@ -212,15 +212,13 @@ impl<Prof: EngineProfile> Component<Prof> {
     pub(crate) fn relative_path(
         &self,
         parent_context: Option<&ComponentProcessorContext<Prof>>,
-    ) -> Result<StablePath> {
+    ) -> Result<StablePathRef<'_>> {
         if let Some(parent_ctx) = parent_context {
-            let relative = self
-                .stable_path()
+            self.stable_path()
                 .as_ref()
-                .strip_parent(parent_ctx.stable_path().as_ref())?;
-            Ok(relative.into())
+                .strip_parent(parent_ctx.stable_path().as_ref())
         } else {
-            Ok(StablePath::root())
+            Ok(self.stable_path().as_ref())
         }
     }
 
