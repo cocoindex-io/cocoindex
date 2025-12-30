@@ -2,6 +2,8 @@ import base64
 import pathlib
 from typing import Iterator
 
+from dotenv import load_dotenv
+
 import cocoindex as coco
 from cocoindex.resources.files import FileLike, PatternFilePathMatcher
 from cocoindex.connectors import localfs
@@ -58,8 +60,6 @@ app = coco.App("PatientIntakeExtractionBaml", app_main)
 
 
 def main() -> None:
-    from dotenv import load_dotenv
-
     load_dotenv()
 
     app.run(
