@@ -27,6 +27,8 @@ from .stable_path import ROOT_PATH, StablePath, StableKey
 
 from .setting import Settings
 
+from .memo_key import register_memo_key_function
+
 __all__ = [
     # .scope
     "Scope",
@@ -63,4 +65,6 @@ __all__ = [
     "StableKey",
     # .setting
     "Settings",
+    # .memo_key
+    "register_memo_key_function",
 ]

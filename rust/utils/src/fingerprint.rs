@@ -154,16 +154,16 @@ impl Fingerprinter {
         self.hasher.update(bytes);
     }
 
-    fn write_type_tag(&mut self, tag: &str) {
+    pub fn write_type_tag(&mut self, tag: &str) {
         self.hasher.update(tag.as_bytes());
         self.hasher.update(b";");
     }
 
-    fn write_end_tag(&mut self) {
+    pub fn write_end_tag(&mut self) {
         self.hasher.update(b".");
     }
 
-    fn write_varlen_bytes(&mut self, bytes: &[u8]) {
+    pub fn write_varlen_bytes(&mut self, bytes: &[u8]) {
         self.write_usize(bytes.len());
         self.hasher.update(bytes);
     }
