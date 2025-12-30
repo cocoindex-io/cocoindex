@@ -6,7 +6,7 @@ use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
 use crate::engine::execution::{cleanup_tombstone, submit};
 use crate::engine::profile::EngineProfile;
 use crate::state::effect_path::EffectPath;
-use crate::state::stable_path::StablePath;
+use crate::state::stable_path::{StablePath, StablePathRef};
 use crate::state::stable_path_set::StablePathSet;
 use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
 
@@ -209,17 +209,35 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self.inner.stable_path
     }
 
+    pub(crate) fn relative_path(
+        &self,
+        parent_context: Option<&ComponentProcessorContext<Prof>>,
+    ) -> Result<StablePathRef<'_>> {
+        if let Some(parent_ctx) = parent_context {
+            self.stable_path()
+                .as_ref()
+                .strip_parent(parent_ctx.stable_path().as_ref())
+        } else {
+            Ok(self.stable_path().as_ref())
+        }
+    }
+
     pub fn run(
         self,
         processor: Prof::ComponentProc,
         parent_context: Option<ComponentProcessorContext<Prof>>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
+        let relative_path = self.relative_path(parent_context.as_ref())?;
         let processor_context = self.new_processor_context_for_build(parent_context)?;
-        let join_handle = get_runtime().spawn(async move {
-            self.execute_once(&processor_context, Some(processor))
-                .await?
-                .ok_or_else(|| internal_error!("component deletion can only run in background"))
-        });
+        let span = info_span!("component.run", component_path = %relative_path);
+        let join_handle = get_runtime().spawn(
+            async move {
+                self.execute_once(&processor_context, Some(processor))
+                    .await?
+                    .ok_or_else(|| internal_error!("component deletion can only run in background"))
+            }
+            .instrument(span),
+        );
         Ok(ComponentMountRunHandle { join_handle })
     }
 

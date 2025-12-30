@@ -449,6 +449,7 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
     }
 }
 
+#[instrument(name = "submit", skip_all)]
 pub(crate) async fn submit<Prof: EngineProfile>(
     context: &ComponentProcessorContext<Prof>,
 ) -> Result<Option<EffectProviderRegistry<Prof>>> {
