@@ -3,6 +3,7 @@ mod component;
 mod context;
 mod effect;
 mod environment;
+mod extras;
 mod inspect;
 mod prelude;
 mod profile;
@@ -44,5 +45,12 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<runtime::PyAsyncContext>()?;
 
     m.add_class::<stable_path::PyStablePath>()?;
+
+    // Extras text processing
+    m.add_class::<extras::PyChunk>()?;
+    m.add_class::<extras::PySeparatorSplitter>()?;
+    m.add_class::<extras::PyCustomLanguageConfig>()?;
+    m.add_class::<extras::PyRecursiveSplitter>()?;
+    m.add_function(wrap_pyfunction!(extras::detect_code_language, m)?)?;
     Ok(())
 }

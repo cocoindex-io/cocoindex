@@ -72,7 +72,7 @@ impl GraphPool {
                 if let Some(db) = &spec.db {
                     config_builder = config_builder.db(db.clone());
                 }
-                anyhow::Ok(Arc::new(Graph::connect(config_builder.build()?).await?))
+                Ok::<_, Error>(Arc::new(Graph::connect(config_builder.build()?).await?))
             })
             .await?;
         Ok(graph.clone())
@@ -115,7 +115,7 @@ fn json_value_to_bolt_value(value: &serde_json::Value) -> Result<BoltType> {
             } else if let Some(f) = v.as_f64() {
                 BoltType::Float(neo4rs::BoltFloat::new(f))
             } else {
-                anyhow::bail!("Unsupported JSON number: {}", v)
+                client_bail!("Unsupported JSON number: {}", v)
             }
         }
         serde_json::Value::String(v) => BoltType::String(neo4rs::BoltString::new(v)),
@@ -213,7 +213,7 @@ fn basic_value_to_bolt(value: &BasicValue, schema: &BasicValueType) -> Result<Bo
                     .map(|v| basic_value_to_bolt(v, &t.element_type))
                     .collect::<Result<_>>()?,
             }),
-            _ => anyhow::bail!("Non-vector type got vector value: {}", schema),
+            _ => internal_bail!("Non-vector type got vector value: {}", schema),
         },
         BasicValue::Json(v) => json_value_to_bolt_value(v)?,
         BasicValue::UnionVariant { tag_id, value } => match schema {
@@ -221,11 +221,11 @@ fn basic_value_to_bolt(value: &BasicValue, schema: &BasicValueType) -> Result<Bo
                 let typ = s
                     .types
                     .get(*tag_id)
-                    .ok_or_else(|| anyhow::anyhow!("Invalid `tag_id`: {}", tag_id))?;
+                    .ok_or_else(|| internal_error!("Invalid `tag_id`: {}", tag_id))?;
 
                 basic_value_to_bolt(value, typ)?
             }
-            _ => anyhow::bail!("Non-union type got union value: {}", schema),
+            _ => internal_bail!("Non-union type got union value: {}", schema),
         },
     };
     Ok(bolt_value)
@@ -236,11 +236,11 @@ fn value_to_bolt(value: &Value, schema: &schema::ValueType) -> Result<BoltType> 
         Value::Null => BoltType::Null(neo4rs::BoltNull),
         Value::Basic(v) => match schema {
             ValueType::Basic(t) => basic_value_to_bolt(v, t)?,
-            _ => anyhow::bail!("Non-basic type got basic value: {}", schema),
+            _ => internal_bail!("Non-basic type got basic value: {}", schema),
         },
         Value::Struct(v) => match schema {
             ValueType::Struct(t) => field_values_to_bolt(v.fields.iter(), t.fields.iter())?,
-            _ => anyhow::bail!("Non-struct type got struct value: {}", schema),
+            _ => internal_bail!("Non-struct type got struct value: {}", schema),
         },
         Value::UTable(v) | Value::LTable(v) => match schema {
             ValueType::Table(t) => BoltType::List(neo4rs::BoltList {
@@ -249,7 +249,7 @@ fn value_to_bolt(value: &Value, schema: &schema::ValueType) -> Result<BoltType> 
                     .map(|v| field_values_to_bolt(v.0.fields.iter(), t.row.fields.iter()))
                     .collect::<Result<_>>()?,
             }),
-            _ => anyhow::bail!("Non-table type got table value: {}", schema),
+            _ => internal_bail!("Non-table type got table value: {}", schema),
         },
         Value::KTable(v) => match schema {
             ValueType::Table(t) => BoltType::List(neo4rs::BoltList {
@@ -263,7 +263,7 @@ fn value_to_bolt(value: &Value, schema: &schema::ValueType) -> Result<BoltType> 
                     })
                     .collect::<Result<_>>()?,
             }),
-            _ => anyhow::bail!("Non-table type got table value: {}", schema),
+            _ => internal_bail!("Non-table type got table value: {}", schema),
         },
     };
     Ok(bolt_value)

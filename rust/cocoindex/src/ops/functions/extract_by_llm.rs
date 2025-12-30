@@ -1,5 +1,6 @@
 use crate::llm::{
-    LlmGenerateRequest, LlmGenerationClient, LlmSpec, OutputFormat, new_llm_generation_client,
+    GeneratedOutput, LlmGenerateRequest, LlmGenerationClient, LlmSpec, OutputFormat,
+    new_llm_generation_client,
 };
 use crate::ops::sdk::*;
 use crate::prelude::*;
@@ -117,7 +118,12 @@ impl SimpleFunctionExecutor for Executor {
             }),
         };
         let res = self.client.generate(req).await?;
-        let json_value: serde_json::Value = utils::deser::from_json_str(res.text.as_str())?;
+        let json_value = match res.output {
+            GeneratedOutput::Json(json) => json,
+            GeneratedOutput::Text(text) => {
+                internal_bail!("Expected JSON response but got text: {}", text)
+            }
+        };
         let value = self.value_extractor.extract_value(json_value)?;
         Ok(value)
     }

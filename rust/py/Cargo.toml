@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 cocoindex_core = { path = "../core" }
 cocoindex_utils = { path = "../utils" }
 cocoindex_py_utils = { path = "../py_utils" }
+cocoindex_extra_text = { path = "../extra_text" }
 
 pyo3 = { workspace = true, features = ["uuid", "bytes"] }
 pyo3-async-runtimes = { workspace = true, features = ["tokio-runtime"] }

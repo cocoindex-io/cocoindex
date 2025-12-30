@@ -7,11 +7,9 @@ use crate::engine::{
 use crate::prelude::*;
 
 pub trait Persist: Sized {
-    type Error;
+    fn to_bytes(&self) -> Result<bytes::Bytes>;
 
-    fn to_bytes(&self) -> Result<bytes::Bytes, Self::Error>;
-
-    fn from_bytes(data: &[u8]) -> Result<Self, Self::Error>;
+    fn from_bytes(data: &[u8]) -> Result<Self>;
 }
 
 pub trait StableFingerprint {
@@ -19,8 +17,6 @@ pub trait StableFingerprint {
 }
 
 pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'static {
-    type Error: Send + Sync + std::error::Error + 'static;
-
     type HostStateCtx: Send + Sync + Clone;
 
     type ComponentProc: ComponentProcessor<Self>;
@@ -32,10 +28,10 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
         + Send
         + Eq
         + Hash
-        + Persist<Error = Self::Error>
+        + Persist
         + StableFingerprint
         + 'static;
-    type EffectState: Clone + Send + Persist<Error = Self::Error> + 'static;
+    type EffectState: Clone + Send + Persist + 'static;
     type EffectAction: Send + 'static;
     type EffectSink: EffectSink<Self>;
     type EffectValue: Send + 'static;

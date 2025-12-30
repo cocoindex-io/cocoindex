@@ -219,7 +219,7 @@ impl Executor {
                 if modified_time <= *cutoff_time {
                     break 'paginate;
                 }
-                let file_id = file.id.ok_or_else(|| anyhow!("File has no id"))?;
+                let file_id = file.id.ok_or_else(|| internal_error!("File has no id"))?;
                 if self.is_file_covered(&file_id).await? {
                     changes.push(SourceChange {
                         key: KeyValue::from_single_part(file_id),

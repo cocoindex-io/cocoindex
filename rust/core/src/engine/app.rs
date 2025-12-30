@@ -29,10 +29,7 @@ impl<Prof: EngineProfile> App<Prof> {
 }
 
 impl<Prof: EngineProfile> App<Prof> {
-    pub async fn run(
-        &self,
-        root_processor: Prof::ComponentProc,
-    ) -> Result<Result<Prof::ComponentProcRet, Prof::Error>> {
+    pub async fn run(&self, root_processor: Prof::ComponentProc) -> Result<Prof::ComponentProcRet> {
         self.root_component
             .clone()
             .run(root_processor, None)?

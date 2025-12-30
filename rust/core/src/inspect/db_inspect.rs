@@ -21,7 +21,7 @@ pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<Sta
         }
         let key: DbEntryKey = DbEntryKey::decode(raw_key)?;
         let DbEntryKey::StablePath(path, _) = key else {
-            bail!("Expected StablePath, got {key:?}");
+            internal_bail!("Expected StablePath, got {key:?}");
         };
         last_prefix = Some(DbEntryKey::StablePathPrefix(path.as_ref()).encode()?);
         result.push(path);

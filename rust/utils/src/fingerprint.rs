@@ -1,4 +1,7 @@
-use anyhow::bail;
+use crate::{
+    client_bail,
+    error::{Error, Result},
+};
 use base64::prelude::*;
 use blake2::digest::typenum;
 use blake2::{Blake2b, Digest};
@@ -36,7 +39,7 @@ impl serde::ser::Error for FingerprinterError {
 pub struct Fingerprint(#[serde_as(as = "IfIsHumanReadable<Base64, Bytes>")] pub [u8; 16]);
 
 impl Fingerprint {
-    pub fn from<T: Serialize + ?Sized>(data: &T) -> anyhow::Result<Self> {
+    pub fn from<T: Serialize + ?Sized>(data: &T) -> Result<Self> {
         let mut fingerprinter = Fingerprinter::default();
         fingerprinter.write(data)?;
         Ok(fingerprinter.into_fingerprint())
@@ -52,18 +55,21 @@ impl Fingerprint {
         BASE64_STANDARD.encode(self.0)
     }
 
-    pub fn from_base64(s: &str) -> anyhow::Result<Self> {
+    pub fn from_base64(s: &str) -> Result<Self> {
         let bytes = match s.len() {
             24 => BASE64_STANDARD.decode(s)?,
 
             // For backward compatibility. Some old version (<= v0.1.2) is using hex encoding.
             32 => hex::decode(s)?,
-            _ => bail!("Encoded fingerprint length is unexpected: {}", s.len()),
+            _ => client_bail!("Encoded fingerprint length is unexpected: {}", s.len()),
         };
-        match bytes.try_into() {
-            Ok(bytes) => Ok(Fingerprint(bytes)),
-            Err(e) => bail!("Fingerprint bytes length is unexpected: {}", e.len()),
-        }
+        let bytes: [u8; 16] = bytes.try_into().map_err(|e: Vec<u8>| {
+            Error::client(format!(
+                "Fingerprint bytes length is unexpected: {}",
+                e.len()
+            ))
+        })?;
+        Ok(Fingerprint(bytes))
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -128,13 +134,19 @@ impl Fingerprinter {
         Fingerprint(self.hasher.finalize().into())
     }
 
-    pub fn with<S: Serialize + ?Sized>(self, value: &S) -> Result<Self, FingerprinterError> {
+    pub fn with<S: Serialize + ?Sized>(
+        self,
+        value: &S,
+    ) -> std::result::Result<Self, FingerprinterError> {
         let mut fingerprinter = self;
         value.serialize(&mut fingerprinter)?;
         Ok(fingerprinter)
     }
 
-    pub fn write<S: Serialize + ?Sized>(&mut self, value: &S) -> Result<(), FingerprinterError> {
+    pub fn write<S: Serialize + ?Sized>(
+        &mut self,
+        value: &S,
+    ) -> std::result::Result<(), FingerprinterError> {
         value.serialize(self)
     }
 
@@ -173,107 +185,107 @@ impl Serializer for &mut Fingerprinter {
     type SerializeStruct = Self;
     type SerializeStructVariant = Self;
 
-    fn serialize_bool(self, v: bool) -> Result<(), Self::Error> {
+    fn serialize_bool(self, v: bool) -> std::result::Result<(), Self::Error> {
         self.write_type_tag(if v { "t" } else { "f" });
         Ok(())
     }
 
-    fn serialize_i8(self, v: i8) -> Result<(), Self::Error> {
+    fn serialize_i8(self, v: i8) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("i1");
         self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
-    fn serialize_i16(self, v: i16) -> Result<(), Self::Error> {
+    fn serialize_i16(self, v: i16) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("i2");
         self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
-    fn serialize_i32(self, v: i32) -> Result<(), Self::Error> {
+    fn serialize_i32(self, v: i32) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("i4");
         self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
-    fn serialize_i64(self, v: i64) -> Result<(), Self::Error> {
+    fn serialize_i64(self, v: i64) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("i8");
         self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
-    fn serialize_u8(self, v: u8) -> Result<(), Self::Error> {
+    fn serialize_u8(self, v: u8) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("u1");
         self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
-    fn serialize_u16(self, v: u16) -> Result<(), Self::Error> {
+    fn serialize_u16(self, v: u16) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("u2");
         self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
-    fn serialize_u32(self, v: u32) -> Result<(), Self::Error> {
+    fn serialize_u32(self, v: u32) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("u4");
         self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
-    fn serialize_u64(self, v: u64) -> Result<(), Self::Error> {
+    fn serialize_u64(self, v: u64) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("u8");
         self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
-    fn serialize_f32(self, v: f32) -> Result<(), Self::Error> {
+    fn serialize_f32(self, v: f32) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("f4");
         self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
-    fn serialize_f64(self, v: f64) -> Result<(), Self::Error> {
+    fn serialize_f64(self, v: f64) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("f8");
         self.hasher.update(v.to_le_bytes());
         Ok(())
     }
 
-    fn serialize_char(self, v: char) -> Result<(), Self::Error> {
+    fn serialize_char(self, v: char) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("c");
         self.write_usize(v as usize);
         Ok(())
     }
 
-    fn serialize_str(self, v: &str) -> Result<(), Self::Error> {
+    fn serialize_str(self, v: &str) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("s");
         self.write_varlen_bytes(v.as_bytes());
         Ok(())
     }
 
-    fn serialize_bytes(self, v: &[u8]) -> Result<(), Self::Error> {
+    fn serialize_bytes(self, v: &[u8]) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("b");
         self.write_varlen_bytes(v);
         Ok(())
     }
 
-    fn serialize_none(self) -> Result<(), Self::Error> {
+    fn serialize_none(self) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("");
         Ok(())
     }
 
-    fn serialize_some<T>(self, value: &T) -> Result<(), Self::Error>
+    fn serialize_some<T>(self, value: &T) -> std::result::Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
         value.serialize(self)
     }
 
-    fn serialize_unit(self) -> Result<(), Self::Error> {
+    fn serialize_unit(self) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("()");
         Ok(())
     }
 
-    fn serialize_unit_struct(self, name: &'static str) -> Result<(), Self::Error> {
+    fn serialize_unit_struct(self, name: &'static str) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("US");
         self.write_varlen_bytes(name.as_bytes());
         Ok(())
@@ -284,14 +296,18 @@ impl Serializer for &mut Fingerprinter {
         name: &'static str,
         _variant_index: u32,
         variant: &'static str,
-    ) -> Result<(), Self::Error> {
+    ) -> std::result::Result<(), Self::Error> {
         self.write_type_tag("UV");
         self.write_varlen_bytes(name.as_bytes());
         self.write_varlen_bytes(variant.as_bytes());
         Ok(())
     }
 
-    fn serialize_newtype_struct<T>(self, name: &'static str, value: &T) -> Result<(), Self::Error>
+    fn serialize_newtype_struct<T>(
+        self,
+        name: &'static str,
+        value: &T,
+    ) -> std::result::Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
@@ -306,7 +322,7 @@ impl Serializer for &mut Fingerprinter {
         _variant_index: u32,
         variant: &'static str,
         value: &T,
-    ) -> Result<(), Self::Error>
+    ) -> std::result::Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
@@ -316,12 +332,18 @@ impl Serializer for &mut Fingerprinter {
         value.serialize(self)
     }
 
-    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+    fn serialize_seq(
+        self,
+        _len: Option<usize>,
+    ) -> std::result::Result<Self::SerializeSeq, Self::Error> {
         self.write_type_tag("L");
         Ok(self)
     }
 
-    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+    fn serialize_tuple(
+        self,
+        _len: usize,
+    ) -> std::result::Result<Self::SerializeTuple, Self::Error> {
         self.write_type_tag("T");
         Ok(self)
     }
@@ -330,7 +352,7 @@ impl Serializer for &mut Fingerprinter {
         self,
         name: &'static str,
         _len: usize,
-    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
+    ) -> std::result::Result<Self::SerializeTupleStruct, Self::Error> {
         self.write_type_tag("TS");
         self.write_varlen_bytes(name.as_bytes());
         Ok(self)
@@ -342,14 +364,17 @@ impl Serializer for &mut Fingerprinter {
         _variant_index: u32,
         variant: &'static str,
         _len: usize,
-    ) -> Result<Self::SerializeTupleVariant, Self::Error> {
+    ) -> std::result::Result<Self::SerializeTupleVariant, Self::Error> {
         self.write_type_tag("TV");
         self.write_varlen_bytes(name.as_bytes());
         self.write_varlen_bytes(variant.as_bytes());
         Ok(self)
     }
 
-    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+    fn serialize_map(
+        self,
+        _len: Option<usize>,
+    ) -> std::result::Result<Self::SerializeMap, Self::Error> {
         self.write_type_tag("M");
         Ok(self)
     }
@@ -358,7 +383,7 @@ impl Serializer for &mut Fingerprinter {
         self,
         name: &'static str,
         _len: usize,
-    ) -> Result<Self::SerializeStruct, Self::Error> {
+    ) -> std::result::Result<Self::SerializeStruct, Self::Error> {
         self.write_type_tag("S");
         self.write_varlen_bytes(name.as_bytes());
         Ok(self)
@@ -370,7 +395,7 @@ impl Serializer for &mut Fingerprinter {
         _variant_index: u32,
         variant: &'static str,
         _len: usize,
-    ) -> Result<Self::SerializeStructVariant, Self::Error> {
+    ) -> std::result::Result<Self::SerializeStructVariant, Self::Error> {
         self.write_type_tag("SV");
         self.write_varlen_bytes(name.as_bytes());
         self.write_varlen_bytes(variant.as_bytes());
@@ -386,14 +411,14 @@ impl SerializeSeq for &mut Fingerprinter {
     type Ok = ();
     type Error = FingerprinterError;
 
-    fn serialize_element<T>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_element<T>(&mut self, value: &T) -> std::result::Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
         value.serialize(&mut **self)
     }
 
-    fn end(self) -> Result<(), Self::Error> {
+    fn end(self) -> std::result::Result<(), Self::Error> {
         self.write_end_tag();
         Ok(())
     }
@@ -403,14 +428,14 @@ impl SerializeTuple for &mut Fingerprinter {
     type Ok = ();
     type Error = FingerprinterError;
 
-    fn serialize_element<T>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_element<T>(&mut self, value: &T) -> std::result::Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
         value.serialize(&mut **self)
     }
 
-    fn end(self) -> Result<(), Self::Error> {
+    fn end(self) -> std::result::Result<(), Self::Error> {
         self.write_end_tag();
         Ok(())
     }
@@ -420,14 +445,14 @@ impl SerializeTupleStruct for &mut Fingerprinter {
     type Ok = ();
     type Error = FingerprinterError;
 
-    fn serialize_field<T>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_field<T>(&mut self, value: &T) -> std::result::Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
         value.serialize(&mut **self)
     }
 
-    fn end(self) -> Result<(), Self::Error> {
+    fn end(self) -> std::result::Result<(), Self::Error> {
         self.write_end_tag();
         Ok(())
     }
@@ -437,14 +462,14 @@ impl SerializeTupleVariant for &mut Fingerprinter {
     type Ok = ();
     type Error = FingerprinterError;
 
-    fn serialize_field<T>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_field<T>(&mut self, value: &T) -> std::result::Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
         value.serialize(&mut **self)
     }
 
-    fn end(self) -> Result<(), Self::Error> {
+    fn end(self) -> std::result::Result<(), Self::Error> {
         self.write_end_tag();
         Ok(())
     }
@@ -454,21 +479,21 @@ impl SerializeMap for &mut Fingerprinter {
     type Ok = ();
     type Error = FingerprinterError;
 
-    fn serialize_key<T>(&mut self, key: &T) -> Result<(), Self::Error>
+    fn serialize_key<T>(&mut self, key: &T) -> std::result::Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
         key.serialize(&mut **self)
     }
 
-    fn serialize_value<T>(&mut self, value: &T) -> Result<(), Self::Error>
+    fn serialize_value<T>(&mut self, value: &T) -> std::result::Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
         value.serialize(&mut **self)
     }
 
-    fn end(self) -> Result<(), Self::Error> {
+    fn end(self) -> std::result::Result<(), Self::Error> {
         self.write_end_tag();
         Ok(())
     }
@@ -478,7 +503,11 @@ impl SerializeStruct for &mut Fingerprinter {
     type Ok = ();
     type Error = FingerprinterError;
 
-    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
+    fn serialize_field<T>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> std::result::Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
@@ -487,7 +516,7 @@ impl SerializeStruct for &mut Fingerprinter {
         value.serialize(&mut **self)
     }
 
-    fn end(self) -> Result<(), Self::Error> {
+    fn end(self) -> std::result::Result<(), Self::Error> {
         self.write_end_tag();
         Ok(())
     }
@@ -497,7 +526,11 @@ impl SerializeStructVariant for &mut Fingerprinter {
     type Ok = ();
     type Error = FingerprinterError;
 
-    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
+    fn serialize_field<T>(
+        &mut self,
+        key: &'static str,
+        value: &T,
+    ) -> std::result::Result<(), Self::Error>
     where
         T: ?Sized + Serialize,
     {
@@ -506,7 +539,7 @@ impl SerializeStructVariant for &mut Fingerprinter {
         value.serialize(&mut **self)
     }
 
-    fn end(self) -> Result<(), Self::Error> {
+    fn end(self) -> std::result::Result<(), Self::Error> {
         self.write_end_tag();
         Ok(())
     }

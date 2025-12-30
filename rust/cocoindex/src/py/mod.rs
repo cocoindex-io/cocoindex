@@ -26,14 +26,9 @@ pub(crate) use py_utils::*;
 fn set_settings_fn(get_settings_fn: Py<PyAny>) -> PyResult<()> {
     let get_settings_closure = move || {
         Python::attach(|py| {
-            let obj = get_settings_fn
-                .bind(py)
-                .call0()
-                .to_result_with_py_trace(py)?;
-            let py_settings = obj
-                .extract::<Pythonized<Settings>>()
-                .to_result_with_py_trace(py)?;
-            anyhow::Ok(py_settings.into_inner())
+            let obj = get_settings_fn.bind(py).call0().from_py_result()?;
+            let py_settings = obj.extract::<Pythonized<Settings>>().from_py_result()?;
+            Ok::<_, Error>(py_settings.into_inner())
         })
     };
     crate::lib_context::set_settings_fn(Box::new(get_settings_closure));
@@ -47,7 +42,7 @@ fn init_pyo3_runtime() {
 
 #[pyfunction]
 fn init(py: Python<'_>, settings: Pythonized<Option<Settings>>) -> PyResult<()> {
-    py.detach(|| -> anyhow::Result<()> {
+    py.detach(|| -> Result<()> {
         get_runtime().block_on(async move { init_lib_context(settings.into_inner()).await })
     })
     .into_py_result()
@@ -55,7 +50,7 @@ fn init(py: Python<'_>, settings: Pythonized<Option<Settings>>) -> PyResult<()> 
 
 #[pyfunction]
 fn start_server(py: Python<'_>, settings: Pythonized<ServerSettings>) -> PyResult<()> {
-    py.detach(|| -> anyhow::Result<()> {
+    py.detach(|| -> Result<()> {
         let server = get_runtime().block_on(async move {
             server::init_server(get_lib_context().await?, settings.into_inner()).await
         })?;
@@ -394,29 +389,28 @@ impl Flow {
                 let result_fut = Python::attach(|py| -> Result<_> {
                     let handler = self.handler.clone_ref(py);
                     // Build args: pass a dict with the query input
-                    let args = pyo3::types::PyTuple::new(py, [input.query])?;
-                    let result_coro = handler.call(py, args, None).to_result_with_py_trace(py)?;
+                    let args = pyo3::types::PyTuple::new(py, [input.query]).from_py_result()?;
+                    let result_coro = handler.call(py, args, None).from_py_result()?;
 
                     let py_exec_ctx = flow_ctx
                         .py_exec_ctx
                         .as_ref()
-                        .ok_or_else(|| anyhow!("Python execution context is missing"))?;
+                        .ok_or_else(|| internal_error!("Python execution context is missing"))?;
                     let task_locals = pyo3_async_runtimes::TaskLocals::new(
                         py_exec_ctx.event_loop.bind(py).clone(),
                     );
-                    Ok(py_utils::from_py_future(
-                        py,
-                        &task_locals,
-                        result_coro.into_bound(py),
-                    )?)
+                    Ok(
+                        py_utils::from_py_future(py, &task_locals, result_coro.into_bound(py))
+                            .from_py_result()?,
+                    )
                 })?;
 
                 let py_obj = result_fut.await;
                 // Convert Python result to Rust type with proper traceback handling
                 let output = Python::attach(|py| -> Result<_> {
-                    let output_any = py_obj.to_result_with_py_trace(py)?;
+                    let output_any = py_obj.from_py_result()?;
                     let output: crate::py::Pythonized<crate::service::query_handler::QueryOutput> =
-                        output_any.extract(py)?;
+                        output_any.extract(py).from_py_result()?;
                     Ok(output.into_inner())
                 })?;
 
@@ -545,9 +539,9 @@ fn make_drop_bundle(flow_names: Vec<String>) -> PyResult<SetupChangeBundle> {
 
 #[pyfunction]
 fn remove_flow_context(py: Python<'_>, flow_name: String) -> PyResult<()> {
-    py.detach(|| -> anyhow::Result<()> {
+    py.detach(|| -> Result<()> {
         get_runtime().block_on(async move {
-            let lib_context = get_lib_context().await.into_py_result()?;
+            let lib_context = get_lib_context().await?;
             lib_context.remove_flow_context(&flow_name);
             Ok(())
         })
@@ -580,7 +574,7 @@ fn get_auth_entry(key: String) -> PyResult<Pythonized<serde_json::Value>> {
 #[pyfunction]
 fn get_app_namespace(py: Python<'_>) -> PyResult<String> {
     let app_namespace = py
-        .detach(|| -> anyhow::Result<_> {
+        .detach(|| -> Result<_> {
             get_runtime().block_on(async move {
                 let lib_context = get_lib_context().await?;
                 Ok(lib_context.app_namespace.clone())
@@ -591,14 +585,14 @@ fn get_app_namespace(py: Python<'_>) -> PyResult<String> {
 }
 
 #[pyfunction]
-fn seder_roundtrip<'py>(
+fn serde_roundtrip<'py>(
     py: Python<'py>,
     value: Bound<'py, PyAny>,
     typ: Pythonized<ValueType>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let typ = typ.into_inner();
     let value = value_from_py_object(&typ, &value)?;
-    let value = value::test_util::seder_roundtrip(&value, &typ).into_py_result()?;
+    let value = value::test_util::serde_roundtrip(&value, &typ).into_py_result()?;
     value_to_py_object(py, &value)
 }
 
@@ -639,7 +633,7 @@ fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RenderedSpecLine>()?;
 
     let testutil_module = PyModule::new(m.py(), "testutil")?;
-    testutil_module.add_function(wrap_pyfunction!(seder_roundtrip, &testutil_module)?)?;
+    testutil_module.add_function(wrap_pyfunction!(serde_roundtrip, &testutil_module)?)?;
     m.add_submodule(&testutil_module)?;
 
     Ok(())
