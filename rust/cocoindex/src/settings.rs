@@ -5,7 +5,7 @@ pub struct DatabaseConnectionSpec {
     pub url: String,
     pub user: Option<String>,
     pub password: Option<String>,
-    pub schema: Option<String>,
+    pub internal_schema: Option<String>,
     pub max_connections: u32,
     pub min_connections: u32,
 }
@@ -38,7 +38,7 @@ mod tests {
                 "url": "postgresql://localhost:5432/test",
                 "user": "testuser",
                 "password": "testpass",
-                "schema" : "coco_index",
+                "internal_schema" : "coco_index",
                 "min_connections": 1,
                 "max_connections": 10
             },
