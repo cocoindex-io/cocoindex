@@ -3,12 +3,15 @@ use crate::prelude::*;
 
 use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
 use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
-use crate::engine::execution::{cleanup_tombstone, submit};
+use crate::engine::execution::{
+    cleanup_tombstone, read_component_memoization, submit, write_component_memoization,
+};
 use crate::engine::profile::EngineProfile;
 use crate::state::effect_path::EffectPath;
 use crate::state::stable_path::{StablePath, StablePathRef};
 use crate::state::stable_path_set::StablePathSet;
 use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
+use cocoindex_utils::fingerprint::Fingerprint;
 
 pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
@@ -20,6 +23,10 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
         &self,
         context: &ComponentProcessorContext<Prof>,
     ) -> Result<impl Future<Output = Result<Prof::ComponentProcRet>> + Send + 'static>;
+
+    /// Fingerprint of the memoization key. When matching, re-processing can be skipped.
+    /// When None, memoization is not enabled for the component.
+    fn memo_key_fingerprint(&self) -> Option<Fingerprint>;
 }
 
 struct ComponentInner<Prof: EngineProfile> {
@@ -301,22 +308,40 @@ impl<Prof: EngineProfile> Component<Prof> {
         processor_context: &ComponentProcessorContext<Prof>,
         processor: Option<Prof::ComponentProc>,
     ) -> Result<Option<ComponentBuildOutput<Prof>>> {
+        // Fast-path: component memoization check does not require acquiring the build permit.
+        // If it hits, we can immediately return without processing/submitting/waiting.
+        let memo_fp_to_store: Option<Fingerprint> =
+            processor.as_ref().and_then(|p| p.memo_key_fingerprint());
+        if let Some(fp) = memo_fp_to_store {
+            if let Some(ret) = read_component_memoization(processor_context, fp)? {
+                return Ok(Some(ComponentBuildOutput {
+                    ret,
+                    provider_registry: Default::default(),
+                }));
+            }
+        }
+
         // Acquire the semaphore to ensure `process()` and `commit_effects()` cannot happen in parallel.
         let output = {
             let _permit = self.inner.build_semaphore.acquire().await?;
 
-            let ret = match processor {
+            let ret: Result<Option<Prof::ComponentProcRet>> = match processor {
                 Some(processor) => processor.process(&processor_context)?.await.map(Some),
                 None => Ok(None),
             };
+
             match ret {
                 Ok(ret) => {
+                    // Commit effects / child existence changes.
+                    //
+                    // - Build: required to apply effect changes.
+                    // - Delete: required to cleanup effects/children even without running a processor.
                     let provider_registry = submit(&processor_context).await?;
                     if let Some(ret) = ret {
                         Ok(Some(ComponentBuildOutput {
                             ret,
                             provider_registry: provider_registry.ok_or_else(|| {
-                                anyhow::anyhow!("expect a provider registry for component build")
+                                internal_error!("expect a provider registry for component build")
                             })?,
                         }))
                     } else {
@@ -336,6 +361,13 @@ impl<Prof: EngineProfile> Component<Prof> {
             .await
             .clone()
             .into_result()?;
+
+        // Persist memoization as the *last* step, after children are ready.
+        if let Some(fp) = memo_fp_to_store {
+            if let Ok(Some(output)) = &output {
+                write_component_memoization(processor_context, fp, &output.ret)?;
+            }
+        }
 
         output
     }

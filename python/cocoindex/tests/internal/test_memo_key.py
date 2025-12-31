@@ -39,6 +39,8 @@ def test_different_types_do_not_collide() -> None:
     assert f_int != f_str
     assert f_int != f_bytes
     assert f_str != f_bytes
+    # Fingerprint is a stable 16-byte digest.
+    assert len(bytes(f_int)) == 16
 
 
 def test_nan_is_deterministic() -> None:
@@ -51,29 +53,78 @@ def test_nan_is_deterministic() -> None:
 
 def test_hook_overrides_default_behavior() -> None:
     class X:
-        def __init__(self, v: object) -> None:
+        def __init__(self, v: object, irrelevant: object) -> None:
             self.v = v
+            self.irrelevant = irrelevant
 
         def __coco_memo_key__(self) -> object:
             return ("x", self.v)
 
-    assert fingerprint_call(_dummy_fn, (X(123),), {}) == fingerprint_call(
-        _dummy_fn, (("x", 123),), {}
-    )
+    # Behavioral properties (avoid asserting on canonical form implementation details):
+    # - Same memo-key-relevant data => same fingerprint
+    # - Different memo-key-relevant data => different fingerprint
+    fp_a = fingerprint_call(_dummy_fn, (X(123, "a"),), {})
+    fp_irrelevant_changed = fingerprint_call(_dummy_fn, (X(123, "b"),), {})
+    fp_b = fingerprint_call(_dummy_fn, (X(124, "a"),), {})
+    assert fp_a == fp_irrelevant_changed
+    assert fp_a != fp_b
 
 
 def test_registry_overrides_default_behavior() -> None:
     class Y:
-        def __init__(self, v: object) -> None:
+        def __init__(self, v: object, irrelevant: object) -> None:
             self.v = v
+            self.irrelevant = irrelevant
 
     register_memo_key_function(Y, lambda y: ("y", y.v))
     try:
-        assert fingerprint_call(_dummy_fn, (Y(5),), {}) == fingerprint_call(
-            _dummy_fn, (("y", 5),), {}
-        )
+        fp_a = fingerprint_call(_dummy_fn, (Y(5, "a"),), {})
+        fp_irrelevant_changed = fingerprint_call(_dummy_fn, (Y(5, "b"),), {})
+        fp_b = fingerprint_call(_dummy_fn, (Y(6, "a"),), {})
+        assert fp_a == fp_irrelevant_changed
+        assert fp_a != fp_b
     finally:
         unregister_memo_key_function(Y)
+
+
+def test_hook_and_registry_include_type_name_to_avoid_collisions() -> None:
+    class A:
+        def __init__(self, v: object) -> None:
+            self.v = v
+
+        def __coco_memo_key__(self) -> object:
+            # Identical payload as B on purpose.
+            return ("same", self.v)
+
+    class B:
+        def __init__(self, v: object) -> None:
+            self.v = v
+
+        def __coco_memo_key__(self) -> object:
+            # Identical payload as A on purpose.
+            return ("same", self.v)
+
+    assert fingerprint_call(_dummy_fn, (A(1),), {}) != fingerprint_call(
+        _dummy_fn, (B(1),), {}
+    )
+
+    class C:
+        def __init__(self, v: object) -> None:
+            self.v = v
+
+    class D:
+        def __init__(self, v: object) -> None:
+            self.v = v
+
+    register_memo_key_function(C, lambda x: ("same", x.v))
+    register_memo_key_function(D, lambda x: ("same", x.v))
+    try:
+        assert fingerprint_call(_dummy_fn, (C(1),), {}) != fingerprint_call(
+            _dummy_fn, (D(1),), {}
+        )
+    finally:
+        unregister_memo_key_function(C)
+        unregister_memo_key_function(D)
 
 
 def test_cycles_are_supported_and_deterministic() -> None:

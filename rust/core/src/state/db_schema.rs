@@ -5,6 +5,7 @@ use crate::{
 
 use std::{borrow::Cow, collections::BTreeMap, io::Write};
 
+use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{
@@ -16,14 +17,25 @@ pub type Database = heed::Database<heed::types::Bytes, heed::types::Bytes>;
 
 #[derive(Debug)]
 pub enum StablePathEntryKey {
+    /// Value type: ComponentMetadata
     Metadata,
 
-    ChildExistencePrefix,
-    ChildExistence(StableKey),
+    /// Value type: ComponentMemoizationInfo
+    ComponentMemoization,
 
+    /// Value type: FunctionMemoizationInfo
+    FunctionMemoization,
+
+    /// Required.
+    /// Value type: StablePathEntryEffectInfo
     Effects,
 
+    ChildExistencePrefix,
+    /// Value type: ChildExistenceInfo
+    ChildExistence(StableKey),
+
     ChildComponentTombstonePrefix,
+    /// Relative path to the parent component.
     ChildComponentTombstone(StablePath),
 }
 
@@ -32,15 +44,17 @@ impl storekey::Encode for StablePathEntryKey {
         match self {
             // Should not be less than 2.
             StablePathEntryKey::Metadata => e.write_u8(0x10),
-            StablePathEntryKey::ChildExistencePrefix => e.write_u8(0x20),
+            StablePathEntryKey::ComponentMemoization => e.write_u8(0x20),
+            StablePathEntryKey::FunctionMemoization => e.write_u8(0x30),
+            StablePathEntryKey::Effects => e.write_u8(0x40),
+            StablePathEntryKey::ChildExistencePrefix => e.write_u8(0xa0),
             StablePathEntryKey::ChildExistence(key) => {
-                e.write_u8(0x20)?;
+                e.write_u8(0xa0)?;
                 key.encode(e)
             }
-            StablePathEntryKey::Effects => e.write_u8(0x30),
-            StablePathEntryKey::ChildComponentTombstonePrefix => e.write_u8(0xa0),
+            StablePathEntryKey::ChildComponentTombstonePrefix => e.write_u8(0xb0),
             StablePathEntryKey::ChildComponentTombstone(path) => {
-                e.write_u8(0xa0)?;
+                e.write_u8(0xb0)?;
                 path.encode(e)
             }
         }
@@ -53,12 +67,14 @@ impl storekey::Decode for StablePathEntryKey {
     ) -> Result<Self, storekey::DecodeError> {
         let key = match d.read_u8()? {
             0x10 => StablePathEntryKey::Metadata,
-            0x20 => {
+            0x20 => StablePathEntryKey::ComponentMemoization,
+            0x30 => StablePathEntryKey::FunctionMemoization,
+            0x40 => StablePathEntryKey::Effects,
+            0xa0 => {
                 let key: StableKey = storekey::Decode::decode(d)?;
                 StablePathEntryKey::ChildExistence(key)
             }
-            0x30 => StablePathEntryKey::Effects,
-            0xa0 => {
+            0xb0 => {
                 let path: StablePath = storekey::Decode::decode(d)?;
                 StablePathEntryKey::ChildComponentTombstone(path)
             }
@@ -132,6 +148,49 @@ impl<'a> DbEntryKey<'a> {
     pub fn decode(data: &[u8]) -> Result<Self> {
         Ok(storekey::decode(data)?)
     }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum MemoizedValue<'a> {
+    #[serde(untagged)]
+    Inlined(Cow<'a, [u8]>),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ComponentMemoizationInfo<'a> {
+    #[serde(rename = "F")]
+    pub processor_fp: Fingerprint,
+    #[serde(rename = "R")]
+    pub return_value: MemoizedValue<'a>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FunctionMemoizationEntry<'a> {
+    /// None if the function call is the root for the component.
+    /// Memoization info is stored in the component metadata
+    #[serde(rename = "R")]
+    pub return_value: Option<MemoizedValue<'a>>,
+
+    /// Relative paths to the parent components.
+    #[serde(rename = "C")]
+    pub child_components: Vec<StablePath>,
+    /// Effects that are declared by the function.
+    #[serde(rename = "E")]
+    pub effects: Vec<EffectPath>,
+    /// Dependency entries that are declared by the function.
+    /// Only needs to keep dependencies with side effects (child components / effects / dependency entries with side effects).
+    #[serde(rename = "D")]
+    pub dependency_entries: Vec<Fingerprint>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FunctionMemoizationInfo<'a> {
+    /// Return value of the memoized function call.
+    #[serde(rename = "R")]
+    pub return_value: Cow<'a, [u8]>,
+
+    #[serde(rename = "E")]
+    pub entries: HashMap<Fingerprint, FunctionMemoizationEntry<'a>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

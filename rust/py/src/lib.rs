@@ -4,6 +4,7 @@ mod context;
 mod effect;
 mod environment;
 mod extras;
+mod fingerprint;
 mod inspect;
 mod memo_key;
 mod prelude;
@@ -46,6 +47,9 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<runtime::PyAsyncContext>()?;
 
     m.add_class::<stable_path::PyStablePath>()?;
+
+    // Fingerprints (stable 16-byte digest wrapper)
+    m.add_class::<fingerprint::PyFingerprint>()?;
 
     // Memoization fingerprinting (deterministic)
     m.add_function(wrap_pyfunction!(memo_key::fingerprint_memo_key, m)?)?;

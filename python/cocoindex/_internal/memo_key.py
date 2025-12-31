@@ -18,6 +18,15 @@ from . import core
 
 _KeyFn = typing.Callable[[typing.Any], typing.Any]
 
+
+class Fingerprint(typing.Protocol):
+    """Structural type for `cocoindex._internal.core.Fingerprint` (pyo3, untyped)."""
+
+    def as_bytes(self) -> bytes: ...
+    def to_base64(self) -> str: ...
+    def __bytes__(self) -> bytes: ...
+
+
 # Canonical values are composed of primitives and tuples of canonical values.
 _CanonicalValue: typing.TypeAlias = typing.Union[
     None,
@@ -83,17 +92,7 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> _CanonicalValue:
     if _seen is None:
         _seen = {}
 
-    # 1) Hook / registry (apply once, then recurse on returned key fragment)
-    hook = getattr(obj, "__coco_memo_key__", None)
-    if hook is not None and callable(hook):
-        return _canonicalize(hook(), _seen)
-
-    for base in type(obj).__mro__:
-        fn = _memo_key_fns.get(base)
-        if fn is not None:
-            return _canonicalize(fn(obj), _seen)
-
-    # 2) Primitives
+    # 1) Primitives
     if obj is None:
         return None
     if isinstance(obj, _PRIMITIVE_TYPES):
@@ -101,6 +100,19 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> _CanonicalValue:
         return obj  # type: ignore[return-value]
     if isinstance(obj, (bytearray, memoryview)):
         return bytes(obj)
+
+    # 2) Hook / registry (apply once, then recurse on returned key fragment)
+    hook = getattr(obj, "__coco_memo_key__", None)
+    if hook is not None and callable(hook):
+        k = hook()
+        typ = type(obj)
+        return ("hook", typ.__module__, typ.__qualname__, _canonicalize(k, _seen))
+
+    for base in type(obj).__mro__:
+        fn = _memo_key_fns.get(base)
+        if fn is not None:
+            k = fn(obj)
+            return ("hook", base.__module__, base.__qualname__, _canonicalize(k, _seen))
 
     # 3) Cycle / shared-reference tracking
     #
@@ -114,7 +126,7 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> _CanonicalValue:
 
     # 4) Containers
     if isinstance(obj, tuple):
-        return tuple(_canonicalize(e, _seen) for e in obj)
+        return ("tuple", tuple(_canonicalize(e, _seen) for e in obj))
 
     if isinstance(obj, list):
         return ("list", tuple(_canonicalize(e, _seen) for e in obj))
@@ -173,8 +185,12 @@ def fingerprint_call(
     kwargs: dict[str, object],
     *,
     version: str | int | None = None,
-) -> bytes:
-    """Compute the deterministic fingerprint bytes for a function call."""
+) -> Fingerprint:
+    """Compute the deterministic fingerprint for a function call.
+
+    Returns a `cocoindex._internal.core.Fingerprint` object (Python wrapper around a
+    stable 16-byte digest). Use `bytes(fp)` or `fp.as_bytes()` to get raw bytes.
+    """
 
     call_key_obj = _make_call_key_obj(
         func,
@@ -187,6 +203,7 @@ def fingerprint_call(
 
 
 __all__ = [
+    "Fingerprint",
     "register_memo_key_function",
     "unregister_memo_key_function",
     "fingerprint_call",

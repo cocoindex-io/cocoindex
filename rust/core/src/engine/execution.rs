@@ -14,6 +14,59 @@ use crate::engine::profile::{EngineProfile, Persist, StableFingerprint};
 use crate::state::effect_path::EffectPath;
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
+use cocoindex_utils::fingerprint::Fingerprint;
+
+pub(crate) fn read_component_memoization<Prof: EngineProfile>(
+    context: &ComponentProcessorContext<Prof>,
+    processor_fp: Fingerprint,
+) -> Result<Option<Prof::ComponentProcRet>> {
+    let key = db_schema::DbEntryKey::StablePath(
+        context.stable_path().clone(),
+        db_schema::StablePathEntryKey::ComponentMemoization,
+    )
+    .encode()?;
+
+    let db_env = context.app_ctx().env().db_env();
+    let db = context.app_ctx().db();
+    let rtxn = db_env.read_txn()?;
+    let Some(data) = db.get(&rtxn, key.as_slice())? else {
+        return Ok(None);
+    };
+    let memo_info: db_schema::ComponentMemoizationInfo<'_> = rmp_serde::from_slice(&data)?;
+    if memo_info.processor_fp != processor_fp {
+        return Ok(None);
+    }
+    let bytes = match memo_info.return_value {
+        db_schema::MemoizedValue::Inlined(b) => b,
+    };
+    Ok(Some(Prof::ComponentProcRet::from_bytes(bytes.as_ref())?))
+}
+
+pub(crate) fn write_component_memoization<Prof: EngineProfile>(
+    context: &ComponentProcessorContext<Prof>,
+    processor_fp: Fingerprint,
+    return_value: &Prof::ComponentProcRet,
+) -> Result<()> {
+    let key = db_schema::DbEntryKey::StablePath(
+        context.stable_path().clone(),
+        db_schema::StablePathEntryKey::ComponentMemoization,
+    )
+    .encode()?;
+
+    let bytes = return_value.to_bytes()?;
+    let memo_info = db_schema::ComponentMemoizationInfo {
+        processor_fp,
+        return_value: db_schema::MemoizedValue::Inlined(std::borrow::Cow::Owned(bytes.to_vec())),
+    };
+    let encoded = rmp_serde::to_vec(&memo_info)?;
+
+    let db_env = context.app_ctx().env().db_env();
+    let db = context.app_ctx().db();
+    let mut wtxn = db_env.write_txn()?;
+    db.put(&mut wtxn, key.as_slice(), encoded.as_slice())?;
+    wtxn.commit()?;
+    Ok(())
+}
 
 pub fn declare_effect<Prof: EngineProfile>(
     context: &ComponentProcessorContext<Prof>,
@@ -561,7 +614,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             let recon_output = effect_provider
                 .handler()
                 .ok_or_else(|| {
-                    anyhow::anyhow!("effect provider not ready for effect with key {effect_key:?}")
+                    internal_error!("effect provider not ready for effect with key {effect_key:?}")
                 })?
                 .reconcile(effect_key, declared_decl, &prev_states, prev_may_be_missing)?;
             if let Some(recon_output) = recon_output {
@@ -591,7 +644,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 .provider
                 .handler()
                 .ok_or_else(|| {
-                    anyhow::anyhow!(
+                    internal_error!(
                         "effect provider not ready for effect with key {:?}",
                         effect.key
                     )

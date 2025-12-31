@@ -11,19 +11,16 @@ class DictDataWithPrev(NamedTuple):
     prev_may_be_missing: bool
 
 
-MetricsName = Literal["sink", "insert", "upsert", "delete"]
-
-
 class Metrics:
-    data: dict[MetricsName, int]
+    data: dict[str, int]
 
-    def __init__(self, data: dict[MetricsName, int] | None = None) -> None:
+    def __init__(self, data: dict[str, int] | None = None) -> None:
         self.data = data or {}
 
-    def increment(self, metric: MetricsName) -> None:
+    def increment(self, metric: str) -> None:
         self.data[metric] = self.data.get(metric, 0) + 1
 
-    def collect(self) -> dict[MetricsName, int]:
+    def collect(self) -> dict[str, int]:
         m = self.data
         self.data = {}
         return m
@@ -127,6 +124,7 @@ class DictEffectStore:
 
     def clear(self) -> None:
         self.data.clear()
+        self.metrics.clear()
 
 
 class GlobalDictTarget:
@@ -239,7 +237,7 @@ class DictsEffectStore:
         self._stores.clear()
         self.metrics.clear()
 
-    def collect_child_metrics(self) -> dict[MetricsName, int]:
+    def collect_child_metrics(self) -> dict[str, int]:
         return sum(
             (Metrics(store.metrics.collect()) for store in self._stores.values()),
             Metrics(),

@@ -2,22 +2,18 @@ use cocoindex_core::engine::profile::{Persist, StableFingerprint};
 
 use crate::{prelude::*, runtime::python_functions};
 
-struct PyKeyData {
+pub struct PyKey {
     value: Py<PyAny>,
     serialized: bytes::Bytes,
     fingerprint: utils::fingerprint::Fingerprint,
 }
-#[derive(Clone)]
-pub struct PyKey {
-    data: Arc<PyKeyData>,
-}
 
 impl PartialEq for PyKey {
     fn eq(&self, other: &Self) -> bool {
-        if self.data.value.is(other.data.value.as_ref()) {
+        if self.value.is(other.value.as_ref()) {
             return true;
         }
-        self.data.serialized == other.data.serialized
+        self.serialized == other.serialized
     }
 }
 
@@ -25,13 +21,13 @@ impl Eq for PyKey {}
 
 impl std::hash::Hash for PyKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.data.fingerprint.hash(state);
+        self.fingerprint.hash(state);
     }
 }
 
 impl std::fmt::Debug for PyKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        debug_py_any(f, &self.data.value)
+        debug_py_any(f, &self.value)
     }
 }
 
@@ -42,7 +38,7 @@ impl PyKey {
     }
 
     pub fn value(&self) -> &Py<PyAny> {
-        &self.data.value
+        &self.value
     }
 
     fn from_value_and_bytes(value: Py<PyAny>, bytes: bytes::Bytes) -> Self {
@@ -51,18 +47,16 @@ impl PyKey {
         let fingerprint = fingerprinter.into_fingerprint();
 
         Self {
-            data: Arc::new(PyKeyData {
-                value,
-                serialized: bytes,
-                fingerprint,
-            }),
+            value,
+            serialized: bytes,
+            fingerprint,
         }
     }
 }
 
 impl Persist for PyKey {
     fn to_bytes(&self) -> Result<bytes::Bytes> {
-        Ok(self.data.serialized.clone())
+        Ok(self.serialized.clone())
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self> {
@@ -76,22 +70,25 @@ impl Persist for PyKey {
 
 impl StableFingerprint for PyKey {
     fn stable_fingerprint(&self) -> utils::fingerprint::Fingerprint {
-        self.data.fingerprint
+        self.fingerprint
     }
 }
 
-#[derive(Clone)]
 pub struct PyValue {
-    data: Arc<Py<PyAny>>,
+    data: Py<PyAny>,
 }
 
 impl PyValue {
-    pub fn new(data: Arc<Py<PyAny>>) -> Self {
+    pub fn new(data: Py<PyAny>) -> Self {
         Self { data }
     }
 
     pub fn value(&self) -> &Py<PyAny> {
         &self.data
+    }
+
+    pub fn into_inner(self) -> Py<PyAny> {
+        self.data
     }
 }
 
@@ -110,9 +107,7 @@ impl Persist for PyValue {
 
     fn from_bytes(data: &[u8]) -> Result<Self> {
         let value = Python::attach(|py| python_functions().deserialize(py, data))?;
-        Ok(Self {
-            data: Arc::new(value),
-        })
+        Ok(Self { data: value })
     }
 }
 

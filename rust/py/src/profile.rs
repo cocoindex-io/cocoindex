@@ -13,11 +13,11 @@ impl EngineProfile for PyEngineProfile {
     type HostStateCtx = Arc<Py<PyAny>>;
 
     type ComponentProc = PyComponentProcessor;
-    type ComponentProcRet = Py<PyAny>;
+    type ComponentProcRet = crate::value::PyValue;
 
     type EffectHdl = PyEffectHandler;
-    type EffectKey = crate::value::PyKey;
-    type EffectState = crate::value::PyValue;
+    type EffectKey = Arc<crate::value::PyKey>;
+    type EffectState = Arc<crate::value::PyValue>;
     type EffectAction = Py<PyAny>;
     type EffectSink = PyEffectSink;
     type EffectValue = Py<PyAny>;

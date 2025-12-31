@@ -1,4 +1,5 @@
 use crate::prelude::*;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{fmt::Write as FmtWrite, io::Write};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -12,6 +13,72 @@ pub enum StableKey {
     Uuid(uuid::Uuid),
     Array(Arc<[StableKey]>),
     Fingerprint(utils::fingerprint::Fingerprint),
+}
+
+impl Serialize for StableKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        match self {
+            StableKey::Null => serializer.serialize_unit(),
+            StableKey::Bool(b) => serializer.serialize_bool(*b),
+            StableKey::Int(i) => serializer.serialize_i64(*i),
+            StableKey::Str(s) => serializer.serialize_str(s),
+            StableKey::Bytes(b) => serializer.serialize_bytes(b.as_ref()),
+            StableKey::Uuid(u) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("uuid", u)?;
+                map.end()
+            }
+            StableKey::Array(a) => a.as_ref().serialize(serializer),
+            StableKey::Fingerprint(fp) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("fp", fp)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StableKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Null(()),
+            Bool(bool),
+            Int(i64),
+            Str(String),
+            // Intentionally before Array to preserve StableKey::Bytes roundtrip in formats
+            // (like JSON) where bytes can be represented as a sequence of integers.
+            Bytes(Vec<u8>),
+            Uuid { uuid: uuid::Uuid },
+            Fp { fp: utils::fingerprint::Fingerprint },
+            Array(Vec<Repr>),
+        }
+
+        impl Repr {
+            fn into_stable_key(self) -> StableKey {
+                match self {
+                    Repr::Null(()) => StableKey::Null,
+                    Repr::Bool(b) => StableKey::Bool(b),
+                    Repr::Int(i) => StableKey::Int(i),
+                    Repr::Str(s) => StableKey::Str(Arc::from(s)),
+                    Repr::Bytes(b) => StableKey::Bytes(Arc::from(b)),
+                    Repr::Uuid { uuid } => StableKey::Uuid(uuid),
+                    Repr::Fp { fp } => StableKey::Fingerprint(fp),
+                    Repr::Array(items) => StableKey::Array(Arc::from(
+                        items
+                            .into_iter()
+                            .map(Repr::into_stable_key)
+                            .collect::<Vec<_>>(),
+                    )),
+                }
+            }
+        }
+
+        Ok(Repr::deserialize(deserializer)?.into_stable_key())
+    }
 }
 
 impl std::fmt::Display for StableKey {
@@ -178,7 +245,7 @@ impl<'p> StablePathRef<'p> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct StablePath(pub Arc<[StableKey]>);
 
 impl storekey::Encode for StablePath {
@@ -311,5 +378,70 @@ mod tests {
         let empty = StablePath::root();
         let decoded_empty = roundtrip(&empty);
         assert_eq!(decoded_empty, empty);
+    }
+
+    #[test]
+    fn stable_key_serde_json_shape() {
+        use serde_json::{Value, json};
+
+        let uuid = uuid::Uuid::from_bytes([3u8; 16]);
+        let fp = utils::fingerprint::Fingerprint([7u8; 16]);
+
+        let cases: Vec<(StableKey, Value)> = vec![
+            (StableKey::Null, Value::Null),
+            (StableKey::Bool(true), json!(true)),
+            (StableKey::Int(-7), json!(-7)),
+            (StableKey::Str(Arc::from("hi")), json!("hi")),
+            (
+                StableKey::Bytes(Arc::from(&b"\x00\x01\xff"[..])),
+                json!([0, 1, 255]),
+            ),
+            (StableKey::Uuid(uuid), json!({ "uuid": uuid.to_string() })),
+            (
+                StableKey::Fingerprint(fp),
+                json!({ "fp": serde_json::to_value(fp).expect("fp to value") }),
+            ),
+            (
+                StableKey::Array(Arc::from([
+                    StableKey::Int(1),
+                    StableKey::Str(Arc::from("a")),
+                ])),
+                json!([1, "a"]),
+            ),
+        ];
+
+        for (key, expected) in cases {
+            let got = serde_json::to_value(&key).expect("serialize");
+            assert_eq!(got, expected);
+            let roundtrip: StableKey = serde_json::from_value(got).expect("deserialize");
+            assert_eq!(roundtrip, key);
+        }
+    }
+
+    #[test]
+    fn stable_path_serde_json_shape() {
+        use serde_json::json;
+
+        let uuid = uuid::Uuid::from_bytes([3u8; 16]);
+        let fp = utils::fingerprint::Fingerprint([7u8; 16]);
+
+        let path = StablePath(Arc::from(vec![
+            StableKey::Int(42),
+            StableKey::Bytes(Arc::from(&b"\0term"[..])),
+            StableKey::Uuid(uuid),
+            StableKey::Fingerprint(fp),
+        ]));
+
+        let got = serde_json::to_value(&path).expect("serialize");
+        let expected = json!([
+            42,
+            [0, 116, 101, 114, 109],
+            { "uuid": uuid.to_string() },
+            { "fp": serde_json::to_value(fp).expect("fp to value") },
+        ]);
+        assert_eq!(got, expected);
+
+        let roundtrip: StablePath = serde_json::from_value(got).expect("deserialize");
+        assert_eq!(roundtrip, path);
     }
 }

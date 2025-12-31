@@ -112,9 +112,9 @@ pub struct PyEffectHandler(Py<PyAny>);
 impl EffectHandler<PyEngineProfile> for PyEffectHandler {
     fn reconcile(
         &self,
-        key: PyKey,
+        key: Arc<PyKey>,
         desired_effect: Option<Py<PyAny>>,
-        prev_possible_states: &[PyValue],
+        prev_possible_states: &[Arc<PyValue>],
         prev_may_be_missing: bool,
     ) -> Result<Option<EffectReconcileOutput<PyEngineProfile>>> {
         Python::attach(|py| -> PyResult<_> {
@@ -145,7 +145,7 @@ impl EffectHandler<PyEngineProfile> for PyEffectHandler {
                     state: if non_existence.is(&state) {
                         None
                     } else {
-                        Some(PyValue::new(Arc::new(state)))
+                        Some(Arc::new(PyValue::new(state)))
                     },
                 })
             };
@@ -170,7 +170,7 @@ pub fn declare_effect<'py>(
     cocoindex_core::engine::execution::declare_effect(
         &context.0,
         provider.0.clone(),
-        py_key,
+        Arc::new(py_key),
         value,
     )
     .into_py_result()?;
@@ -189,7 +189,7 @@ pub fn declare_effect_with_child<'py>(
     let output = cocoindex_core::engine::execution::declare_effect_with_child(
         &context.0,
         provider.0.clone(),
-        py_key,
+        Arc::new(py_key),
         value,
     )
     .into_py_result()?;

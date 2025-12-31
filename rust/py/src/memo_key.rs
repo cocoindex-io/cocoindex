@@ -87,11 +87,11 @@ fn write_py_memo_key(
 
 #[pyfunction]
 pub fn fingerprint_memo_key<'py>(
-    py: Python<'py>,
+    _py: Python<'py>,
     obj: Bound<'py, PyAny>,
-) -> PyResult<Bound<'py, PyBytes>> {
+) -> PyResult<crate::fingerprint::PyFingerprint> {
     let mut fp = utils::fingerprint::Fingerprinter::default();
     write_py_memo_key(&mut fp, obj.as_borrowed())?;
     let digest = fp.into_fingerprint();
-    Ok(PyBytes::new(py, digest.as_slice()))
+    Ok(crate::fingerprint::PyFingerprint(digest))
 }

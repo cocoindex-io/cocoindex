@@ -5,6 +5,7 @@ use crate::{
 };
 
 use crate::context::PyComponentProcessorContext;
+use crate::fingerprint::PyFingerprint;
 use cocoindex_core::engine::{
     component::{ComponentMountHandle, ComponentMountRunHandle, ComponentProcessor},
     context::ComponentProcessorContext,
@@ -16,24 +17,33 @@ use pyo3_async_runtimes::tokio::future_into_py;
 #[derive(Clone)]
 pub struct PyComponentProcessor {
     processor_fn: PyCallback,
+    memo_key_fingerprint: Option<utils::fingerprint::Fingerprint>,
 }
 
 #[pymethods]
 impl PyComponentProcessor {
     #[staticmethod]
-    pub fn new_sync(processor_fn: Py<PyAny>) -> Self {
+    #[pyo3(signature = (processor_fn, memo_key_fingerprint=None))]
+    pub fn new_sync(processor_fn: Py<PyAny>, memo_key_fingerprint: Option<PyFingerprint>) -> Self {
         Self {
             processor_fn: PyCallback::Sync(Arc::new(processor_fn)),
+            memo_key_fingerprint: memo_key_fingerprint.map(|f| f.0),
         }
     }
 
     #[staticmethod]
-    pub fn new_async<'py>(processor_fn: Py<PyAny>, async_context: PyAsyncContext) -> Self {
+    #[pyo3(signature = (processor_fn, async_context, memo_key_fingerprint=None))]
+    pub fn new_async<'py>(
+        processor_fn: Py<PyAny>,
+        async_context: PyAsyncContext,
+        memo_key_fingerprint: Option<PyFingerprint>,
+    ) -> Self {
         Self {
             processor_fn: PyCallback::Async {
                 async_fn: Arc::new(processor_fn),
                 async_context,
             },
+            memo_key_fingerprint: memo_key_fingerprint.map(|f| f.0),
         }
     }
 }
@@ -42,9 +52,17 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
     fn process(
         &self,
         context: &ComponentProcessorContext<PyEngineProfile>,
-    ) -> Result<impl Future<Output = Result<Py<PyAny>>> + Send + 'static> {
+    ) -> Result<impl Future<Output = Result<crate::value::PyValue>> + Send + 'static> {
         let py_context = PyComponentProcessorContext(context.clone());
-        self.processor_fn.call((py_context,))
+        let fut = self.processor_fn.call((py_context,))?;
+        Ok(async move {
+            let value = fut.await?;
+            Ok(crate::value::PyValue::new(value))
+        })
+    }
+
+    fn memo_key_fingerprint(&self) -> Option<utils::fingerprint::Fingerprint> {
+        self.memo_key_fingerprint
     }
 }
 
@@ -94,7 +112,8 @@ impl PyComponentMountRunHandle {
         let py = slf.py();
         let handle = slf.borrow_mut().take_handle()?;
         future_into_py(py, async move {
-            handle.result(Some(&parent_ctx.0)).await.into_py_result()
+            let ret = handle.result(Some(&parent_ctx.0)).await.into_py_result()?;
+            Ok(ret.into_inner())
         })
     }
 
@@ -105,8 +124,10 @@ impl PyComponentMountRunHandle {
         let py = slf.py();
         let handle = slf.take_handle()?;
         py.detach(|| {
-            get_runtime()
-                .block_on(async move { handle.result(Some(&parent_ctx.0)).await.into_py_result() })
+            get_runtime().block_on(async move {
+                let ret = handle.result(Some(&parent_ctx.0)).await.into_py_result()?;
+                Ok(ret.into_inner())
+            })
         })
     }
 }
