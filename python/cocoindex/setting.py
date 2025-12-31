@@ -35,7 +35,6 @@ class DatabaseConnectionSpec:
     url: str
     user: str | None = None
     password: str | None = None
-    internal_schema: str | None = None
     max_connections: int = 25
     min_connections: int = 5
 

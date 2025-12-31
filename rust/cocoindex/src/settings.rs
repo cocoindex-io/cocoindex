@@ -5,7 +5,7 @@ pub struct DatabaseConnectionSpec {
     pub url: String,
     pub user: Option<String>,
     pub password: Option<String>,
-    pub internal_schema: Option<String>,
+    pub db_schema_name: Option<String>,
     pub max_connections: u32,
     pub min_connections: u32,
 }
@@ -38,7 +38,7 @@ mod tests {
                 "url": "postgresql://localhost:5432/test",
                 "user": "testuser",
                 "password": "testpass",
-                "internal_schema" : "coco_index",
+                "db_schema_name" : "coco_index",
                 "min_connections": 1,
                 "max_connections": 10
             },
@@ -106,7 +106,7 @@ mod tests {
         let json = r#"{
             "url": "postgresql://localhost:5432/test",
             "user": "testuser",
-            "schema": "coco_index",
+            "db_schema_name": "coco_index",
             "password": "testpass",
             "min_connections": 1,
             "max_connections": 10

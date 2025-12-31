@@ -1,3 +1,4 @@
+use std::env;
 use std::time::Duration;
 
 use crate::prelude::*;
@@ -195,7 +196,7 @@ impl DbPools {
                 if let Some(password) = &conn_spec.password {
                     pg_options = pg_options.password(password);
                 }
-                if let Some(schema) = &conn_spec.internal_schema {
+                if let Some(schema) = &conn_spec.db_schema_name {
                     let path = format!("\"{}\",\"$user\",public", schema);
                     pg_options = pg_options.options([("search_path", path.as_str())]);
                 }
@@ -303,7 +304,7 @@ pub async fn create_lib_context(settings: settings::Settings) -> Result<LibConte
     let db_pools = DbPools::default();
     let persistence_ctx = if let Some(database_spec) = &settings.database {
         let pool = db_pools.get_pool(database_spec).await?;
-        let schema_name = database_spec.internal_schema.as_deref().unwrap_or("public");
+        let schema_name = database_spec.db_schema_name.as_deref().unwrap_or("public");
         let all_setup_states = setup::get_existing_setup_state(schema_name, &pool).await?;
         Some(PersistenceContext {
             builtin_db_pool: pool,
@@ -336,11 +337,16 @@ static GET_SETTINGS_FN: Mutex<Option<Box<dyn Fn() -> Result<settings::Settings> 
     Mutex::new(None);
 fn get_settings() -> Result<settings::Settings> {
     let get_settings_fn = GET_SETTINGS_FN.lock().unwrap();
-    let settings = if let Some(get_settings_fn) = &*get_settings_fn {
+    let mut settings = if let Some(get_settings_fn) = &*get_settings_fn {
         get_settings_fn()?
     } else {
         client_bail!("CocoIndex setting function is not provided");
     };
+    if let Some(db) = &mut settings.database {
+        if let Ok(schema) = env::var("COCOINDEX_DATABASE_SCHEMA_NAME") {
+            db.db_schema_name = Some(schema);
+        }
+    }
     Ok(settings)
 }
 
@@ -409,7 +415,7 @@ mod tests {
                 url: "postgresql://test".to_string(),
                 user: None,
                 password: None,
-                internal_schema: None,
+                db_schema_name: None,
                 max_connections: 10,
                 min_connections: 1,
             }),
