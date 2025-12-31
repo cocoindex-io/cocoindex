@@ -127,7 +127,13 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
         coco.mount(process_file, scope / "process" / str(f.relative_path), f, target)
 
 
-app = coco.App("FilesTransform", app_main)
+app = coco.App(
+    app_main,
+    coco.AppConfig(name="FilesTransform"),
+    sourcedir=pathlib.Path("./docs"),
+    outdir=pathlib.Path("./out"),
+)
+app.run()
 ```
 
 ## Principles

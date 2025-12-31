@@ -34,5 +34,10 @@ def trivial_fn(scope: coco.Scope, s: str, i: int) -> str:
 
 
 def test_app_in_default_env(_default_env: None) -> None:
-    app = coco.App("trivial_app", trivial_fn)
-    assert app.run("Hello", 1) == "Hello 1"
+    app = coco.App(
+        trivial_fn,
+        coco.AppConfig(name="trivial_app"),
+        "Hello",
+        1,
+    )
+    assert app.run() == "Hello 1"

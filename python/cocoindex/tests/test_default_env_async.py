@@ -37,5 +37,10 @@ async def trivial_fn(scope: coco_aio.Scope, s: str, i: int) -> str:
 
 @pytest.mark.asyncio
 async def test_async_app_in_default_env(_default_async_env: None) -> None:
-    app = coco_aio.App("trivial_app", trivial_fn)
-    assert await app.run("Hello", 1) == "Hello 1"
+    app = coco_aio.App(
+        trivial_fn,
+        coco_aio.AppConfig(name="trivial_app"),
+        "Hello",
+        1,
+    )
+    assert await app.run() == "Hello 1"

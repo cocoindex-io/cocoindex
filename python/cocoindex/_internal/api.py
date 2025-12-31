@@ -29,6 +29,8 @@ from .setting import Settings
 
 from .memo_key import register_memo_key_function
 
+from .app import AppConfig
+
 __all__ = [
     # .scope
     "Scope",
@@ -65,6 +67,8 @@ __all__ = [
     "StableKey",
     # .setting
     "Settings",
+    # .app
+    "AppConfig",
     # .memo_key
     "register_memo_key_function",
 ]

@@ -40,9 +40,8 @@ def test_dicts_data_together_insert() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_dicts_data_together_insert",
         _declare_dicts_data_together,
-        environment=coco_env,
+        coco.AppConfig(name="test_dicts_data_together_insert", environment=coco_env),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -89,9 +88,10 @@ def test_dicts_data_together_delete_dict() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_dicts_data_together_delete_dict",
         _declare_dicts_data_together,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_dicts_data_together_delete_dict", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -165,9 +165,10 @@ def test_dicts_data_together_delete_entry() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_dicts_data_together_delete_entry",
         _declare_dicts_data_together,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_dicts_data_together_delete_entry", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -234,9 +235,10 @@ def test_dicts_in_sub_components_insert() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_dicts_in_sub_components_insert",
         _declare_dicts_in_sub_components,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_dicts_in_sub_components_insert", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -285,9 +287,10 @@ def test_dicts_in_sub_components_delete_dict() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_dicts_in_sub_components_delete_dict",
         _declare_dicts_in_sub_components,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_dicts_in_sub_components_delete_dict", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -365,9 +368,10 @@ def test_dicts_in_sub_components_delete_entry() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_dicts_in_sub_components_delete_entry",
         _declare_dicts_in_sub_components,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_dicts_in_sub_components_delete_entry", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -447,9 +451,10 @@ def test_dicts_containers_together_insert() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_dicts_containers_together_insert",
         _declare_dict_containers_together,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_dicts_containers_together_insert", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -496,9 +501,10 @@ def test_dicts_containers_together_delete_dict() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_dicts_containers_together_delete_dict",
         _declare_dict_containers_together,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_dicts_containers_together_delete_dict", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -572,9 +578,10 @@ def test_dicts_containers_together_delete_entry() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_dicts_containers_together_delete_entry",
         _declare_dict_containers_together,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_dicts_containers_together_delete_entry", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -633,9 +640,10 @@ async def test_dicts_containers_together_insert_async() -> None:
     _source_data.clear()
 
     app = coco_aio.App(
-        "test_dicts_containers_together_insert_async",
         _declare_dict_containers_together_async,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_dicts_containers_together_insert_async", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -683,9 +691,11 @@ async def test_dicts_containers_together_delete_dict_async() -> None:
     _source_data.clear()
 
     app = coco_aio.App(
-        "test_dicts_containers_together_delete_dict_async",
         _declare_dict_containers_together_async,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_dicts_containers_together_delete_dict_async",
+            environment=coco_env,
+        ),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -753,9 +763,11 @@ async def test_dicts_containers_together_delete_entry_async() -> None:
     _source_data.clear()
 
     app = coco_aio.App(
-        "test_dicts_containers_together_delete_entry_async",
         _declare_dict_containers_together_async,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_dicts_containers_together_delete_entry_async",
+            environment=coco_env,
+        ),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -808,9 +820,8 @@ def test_proceed_with_failed_creation() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_proceed_with_failed_creation",
         _declare_dicts_data_together,
-        environment=coco_env,
+        coco.AppConfig(name="test_proceed_with_failed_creation", environment=coco_env),
     )
 
     _source_data["D1"] = {"a": 1}
@@ -860,9 +871,10 @@ def test_cleanup_partially_built_components() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_cleanup_partially_built_components",
         _declare_dicts_in_sub_components_w_exception,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_cleanup_partially_built_components", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {"a": 1}
@@ -889,9 +901,10 @@ def test_retry_from_gc_failed_components() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_retry_from_gc_failed_components",
         _declare_dicts_data_together,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_retry_from_gc_failed_components", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {}
@@ -929,9 +942,10 @@ def test_restore_from_gc_failed_components() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_restore_from_gc_failed_components",
         _declare_dicts_data_together,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_restore_from_gc_failed_components", environment=coco_env
+        ),
     )
 
     _source_data["D1"] = {}
@@ -998,9 +1012,8 @@ async def test_async_dicts() -> None:
     _source_data.clear()
 
     app = coco_aio.App(
-        "test_async_dicts",
         _declare_async_dicts_data_together,
-        environment=coco_env,
+        coco.AppConfig(name="test_async_dicts", environment=coco_env),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -1047,9 +1060,8 @@ def test_async_dicts_sync_app() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_async_dicts_sync_app",
         _declare_async_dicts_data_together,
-        environment=coco_env,
+        coco.AppConfig(name="test_async_dicts_sync_app", environment=coco_env),
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}

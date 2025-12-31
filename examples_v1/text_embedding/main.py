@@ -165,7 +165,11 @@ async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         coco_aio.mount(process_file, scope / "file" / str(f.relative_path), f, table)
 
 
-app = coco_aio.App("TextEmbeddingV1", app_main)
+app = coco_aio.App(
+    app_main,
+    coco_aio.AppConfig(name="TextEmbeddingV1"),
+    sourcedir=pathlib.Path("./markdown_files"),
+)
 
 
 # ============================================================================
@@ -213,7 +217,7 @@ async def main() -> None:
             await query_once(q)
         return
 
-    await app.run(sourcedir=pathlib.Path("./markdown_files"))
+    await app.run()
 
 
 if __name__ == "__main__":

@@ -164,10 +164,12 @@ def mount(
 
 
 class App(AppBase[P, ReturnT]):
-    async def run(self, *args: P.args, **kwargs: P.kwargs) -> ReturnT:
+    async def run(self) -> ReturnT:
         root_path = core.StablePath()
         processor = self._main_fn._as_core_component_processor(
-            root_path, *args, **kwargs
+            root_path,
+            *self._app_args,
+            **self._app_kwargs,  # type: ignore[arg-type]
         )
         return await self._core.run_async(processor)  # type: ignore
 

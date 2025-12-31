@@ -23,9 +23,8 @@ def test_global_dict_effect_insert() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_global_dict_effect_insert",
         declare_global_dict_entries,
-        environment=coco_env,
+        coco.AppConfig(name="test_global_dict_effect_insert", environment=coco_env),
     )
 
     _source_data["a"] = 1
@@ -49,9 +48,8 @@ def test_global_dict_effect_upsert() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_global_dict_effect_upsert",
         declare_global_dict_entries,
-        environment=coco_env,
+        coco.AppConfig(name="test_global_dict_effect_upsert", environment=coco_env),
     )
 
     _source_data["a"] = 1
@@ -77,9 +75,8 @@ def test_global_dict_effect_delete() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_global_dict_effect_delete",
         declare_global_dict_entries,
-        environment=coco_env,
+        coco.AppConfig(name="test_global_dict_effect_delete", environment=coco_env),
     )
 
     _source_data["a"] = 1
@@ -100,9 +97,8 @@ def test_global_dict_effect_no_change() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_global_dict_effect_no_change",
         declare_global_dict_entries,
-        environment=coco_env,
+        coco.AppConfig(name="test_global_dict_effect_no_change", environment=coco_env),
     )
 
     _source_data["a"] = 1
@@ -150,9 +146,10 @@ def test_async_global_dict_effect_insert() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_async_global_dict_effect_insert",
         declare_async_global_dict_entries,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_async_global_dict_effect_insert", environment=coco_env
+        ),
     )
 
     _source_data["a"] = 1
@@ -176,9 +173,10 @@ def test_global_dict_effect_proceed_with_exception() -> None:
     _source_data.clear()
 
     app = coco.App(
-        "test_global_dict_effect_proceed_with_exception",
         declare_global_dict_entries,
-        environment=coco_env,
+        coco.AppConfig(
+            name="test_global_dict_effect_proceed_with_exception", environment=coco_env
+        ),
     )
 
     _source_data["a"] = 1

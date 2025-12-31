@@ -56,16 +56,17 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
         )
 
 
-app = coco.App("PatientIntakeExtractionBaml", app_main)
+app = coco.App(
+    app_main,
+    coco.AppConfig(name="PatientIntakeExtractionBaml"),
+    sourcedir=pathlib.Path("./data/patient_forms"),
+    outdir=pathlib.Path("./output_patients"),
+)
 
 
 def main() -> None:
     load_dotenv()
-
-    app.run(
-        sourcedir=pathlib.Path("./data/patient_forms"),
-        outdir=pathlib.Path("./output_patients"),
-    )
+    app.run()
 
 
 if __name__ == "__main__":

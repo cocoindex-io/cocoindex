@@ -364,7 +364,10 @@ async def app_main(scope: coco.Scope) -> None:
 # App definition
 # ============================================================================
 
-app = coco_aio.App("HNTrendingTopics", app_main)
+app = coco_aio.App(
+    app_main,
+    coco_aio.AppConfig(name="HNTrendingTopics"),
+)
 
 
 # ============================================================================
