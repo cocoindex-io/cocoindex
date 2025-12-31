@@ -52,7 +52,7 @@ Additional notes:
 
 :::info
 
-LanceDB has a limitation that it cannot build a vector index on an empty table (see [LanceDB issue #4034](https://github.com/lancedb/lance/issues/4034)).
+LanceDB has a limitation that it cannot build a vector index on an empty table (see [LanceDB issue #4034](https://github.com/lance-format/lance/issues/4034)).
 If you want to use vector indexes, you can run the flow once to populate the target table with data, and then create the vector indexes.
 
 :::
