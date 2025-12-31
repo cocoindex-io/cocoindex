@@ -56,7 +56,7 @@ pub(crate) fn write_component_memoization<Prof: EngineProfile>(
     let bytes = return_value.to_bytes()?;
     let memo_info = db_schema::ComponentMemoizationInfo {
         processor_fp,
-        return_value: db_schema::MemoizedValue::Inlined(std::borrow::Cow::Owned(bytes.to_vec())),
+        return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(bytes.as_ref())),
     };
     let encoded = rmp_serde::to_vec(&memo_info)?;
 
