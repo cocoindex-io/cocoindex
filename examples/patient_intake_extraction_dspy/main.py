@@ -77,7 +77,7 @@ class Patient(BaseModel):
 
 
 # DSPy Signature for patient information extraction from images
-class PatientExtractionSignature(dspy.Signature):  # type: ignore[misc]
+class PatientExtractionSignature(dspy.Signature):
     """Extract structured patient information from a medical intake form image."""
 
     form_images: list[dspy.Image] = dspy.InputField(
@@ -88,7 +88,7 @@ class PatientExtractionSignature(dspy.Signature):  # type: ignore[misc]
     )
 
 
-class PatientExtractor(dspy.Module):  # type: ignore[misc]
+class PatientExtractor(dspy.Module):
     """DSPy module for extracting patient information from intake form images."""
 
     def __init__(self) -> None:
@@ -98,7 +98,7 @@ class PatientExtractor(dspy.Module):  # type: ignore[misc]
     def forward(self, form_images: list[dspy.Image]) -> Patient:
         """Extract patient information from form images and return as a Pydantic model."""
         result = self.extract(form_images=form_images)
-        return result.patient  # type: ignore
+        return result.patient
 
 
 @cocoindex.op.function(cache=True, behavior_version=1)
@@ -123,7 +123,7 @@ def extract_patient(pdf_content: bytes) -> Patient:
     extractor = PatientExtractor()
     patient = extractor(form_images=form_images)
 
-    return patient  # type: ignore
+    return patient
 
 
 @cocoindex.flow_def(name="PatientIntakeExtractionDSPy")

@@ -7,6 +7,8 @@ pub mod fingerprint;
 pub mod immutable;
 pub mod retryable;
 
+pub mod prelude;
+
 #[cfg(feature = "bytes_decode")]
 pub mod bytes_decode;
 #[cfg(feature = "reqwest")]

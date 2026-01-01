@@ -42,9 +42,9 @@ impl Display for MetadataRecordType {
 }
 
 impl std::str::FromStr for MetadataRecordType {
-    type Err = anyhow::Error;
+    type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self> {
         if s == db_metadata::FLOW_VERSION_RESOURCE_TYPE {
             Ok(Self::FlowVersion)
         } else if s == "FlowMetadata" {
@@ -54,7 +54,7 @@ impl std::str::FromStr for MetadataRecordType {
         } else if let Some(target_id) = s.strip_prefix("Target:") {
             Ok(Self::Target(target_id.to_string()))
         } else {
-            anyhow::bail!("Invalid MetadataRecordType string: {}", s)
+            internal_bail!("Invalid MetadataRecordType string: {}", s)
         }
     }
 }
@@ -106,7 +106,7 @@ pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupStates<Ex
 
     let flows = setup_metadata_records
         .into_iter()
-        .map(|(flow_name, metadata_records)| -> anyhow::Result<_> {
+        .map(|(flow_name, metadata_records)| -> Result<_> {
             let mut flow_ss = FlowSetupState::default();
             for metadata_record in metadata_records {
                 let state = metadata_record.state;
@@ -222,7 +222,7 @@ fn group_states<K: Hash + Eq + std::fmt::Display + std::fmt::Debug + Clone, S: D
         if state.current.is_some() {
             if let indexmap::map::Entry::Occupied(entry) = &entry {
                 if entry.get().existing.current.is_some() {
-                    bail!("Duplicate existing state for key: {}", entry.key());
+                    internal_bail!("Duplicate existing state for key: {}", entry.key());
                 }
             }
         }
@@ -565,7 +565,7 @@ async fn apply_changes_for_flow(
         ObjectStatus::New => "Creating",
         ObjectStatus::Deleted => "Deleting",
         ObjectStatus::Existing => "Updating resources for ",
-        _ => bail!("invalid flow status"),
+        _ => internal_bail!("invalid flow status"),
     };
     write!(write, "\n{verb} flow {}:\n", flow_ctx.flow_name())?;
     // Precompute whether this operation is a deletion so closures can reference it.
@@ -820,7 +820,7 @@ impl SetupChangeBundle {
                 let flows = lib_context.flows.lock().unwrap();
                 flows
                     .get(flow_name)
-                    .ok_or_else(|| anyhow::anyhow!("Flow instance not found: {flow_name}"))?
+                    .ok_or_else(|| client_error!("Flow instance not found: {flow_name}"))?
                     .clone()
             };
             let flow_exec_ctx = flow_ctx.get_execution_ctx_for_setup().read().await;
@@ -872,7 +872,7 @@ impl SetupChangeBundle {
                 let flows = lib_context.flows.lock().unwrap();
                 flows
                     .get(flow_name)
-                    .ok_or_else(|| anyhow::anyhow!("Flow instance not found: {flow_name}"))?
+                    .ok_or_else(|| client_error!("Flow instance not found: {flow_name}"))?
                     .clone()
             };
             let mut flow_exec_ctx = flow_ctx.get_execution_ctx_for_setup().write().await;

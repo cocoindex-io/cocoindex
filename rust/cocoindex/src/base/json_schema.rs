@@ -346,7 +346,7 @@ impl ValueExtractor {
                         .remove(object_wrapper_field_name)
                         .unwrap_or(serde_json::Value::Null),
                     _ => {
-                        bail!("Field `{}` not found", object_wrapper_field_name)
+                        client_bail!("Field `{}` not found", object_wrapper_field_name)
                     }
                 }
             } else {

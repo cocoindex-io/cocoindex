@@ -8,10 +8,11 @@ import datetime
 from typing import Any
 
 import lancedb  # type: ignore
+from lancedb.index import FTS  # type: ignore
 import pyarrow as pa  # type: ignore
 
-from .. import op
-from ..typing import (
+from cocoindex import op
+from cocoindex.engine_type import (
     FieldSchema,
     EnrichedValueType,
     BasicValueType,
@@ -20,7 +21,7 @@ from ..typing import (
     VectorTypeSchema,
     TableType,
 )
-from ..index import VectorIndexDef, FtsIndexDef, IndexOptions, VectorSimilarityMetric
+from cocoindex.index import IndexOptions, VectorSimilarityMetric
 
 _logger = logging.getLogger(__name__)
 
@@ -446,7 +447,7 @@ class _Connector:
                     # Create FTS index using create_fts_index() API
                     # Pass parameters as kwargs to support any future FTS index options
                     kwargs = fts_index.parameters if fts_index.parameters else {}
-                    await table.create_fts_index(fts_index.field_name, **kwargs)
+                    await table.create_index(fts_index.field_name, config=FTS(**kwargs))
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     raise RuntimeError(
                         f"Exception in creating FTS index on field {fts_index.field_name}: {e}"

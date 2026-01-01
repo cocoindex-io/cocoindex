@@ -2,10 +2,9 @@ use crate::prelude::*;
 use base64::prelude::*;
 
 use crate::llm::{
-    LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
+    GeneratedOutput, LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
     ToJsonSchemaOptions, detect_image_mime_type,
 };
-use anyhow::Context;
 use urlencoding::encode;
 
 pub struct Client {
@@ -83,6 +82,7 @@ impl LlmGenerationClient for Client {
         }
 
         // Handle structured output using tool schema
+        let has_json_schema = request.output_format.is_some();
         if let Some(OutputFormat::JsonSchema { schema, name }) = request.output_format.as_ref() {
             let schema_json = serde_json::to_value(schema)?;
             payload["toolConfig"] = serde_json::json!({
@@ -117,13 +117,13 @@ impl LlmGenerationClient for Client {
                 .json(&payload)
         })
         .await
-        .context("Bedrock API error")?;
+        .with_context(|| "Bedrock API error")?;
 
-        let resp_json: serde_json::Value = resp.json().await.context("Invalid JSON")?;
+        let resp_json: serde_json::Value = resp.json().await.with_context(|| "Invalid JSON")?;
 
         // Check for errors in the response
         if let Some(error) = resp_json.get("error") {
-            bail!("Bedrock API error: {:?}", error);
+            client_bail!("Bedrock API error: {:?}", error);
         }
 
         // Debug print full response (uncomment for debugging)
@@ -134,7 +134,7 @@ impl LlmGenerationClient for Client {
         let message = &output["message"];
         let content = &message["content"];
 
-        let text = if let Some(content_array) = content.as_array() {
+        let generated_output = if let Some(content_array) = content.as_array() {
             // Look for tool use first (structured output)
             let mut extracted_json: Option<serde_json::Value> = None;
             for item in content_array {
@@ -148,7 +148,19 @@ impl LlmGenerationClient for Client {
 
             if let Some(json) = extracted_json {
                 // Return the structured output as JSON
-                serde_json::to_string(&json)?
+                GeneratedOutput::Json(json)
+            } else if has_json_schema {
+                // If JSON schema was requested but no tool output found, try parsing text as JSON
+                let mut text_parts = Vec::new();
+                for item in content_array {
+                    if let Some(text) = item.get("text") {
+                        if let Some(text_str) = text.as_str() {
+                            text_parts.push(text_str);
+                        }
+                    }
+                }
+                let text = text_parts.join("");
+                GeneratedOutput::Json(serde_json::from_str(&text)?)
             } else {
                 // Fall back to text content
                 let mut text_parts = Vec::new();
@@ -159,13 +171,15 @@ impl LlmGenerationClient for Client {
                         }
                     }
                 }
-                text_parts.join("")
+                GeneratedOutput::Text(text_parts.join(""))
             }
         } else {
-            return Err(anyhow::anyhow!("No content found in Bedrock response"));
+            return Err(client_error!("No content found in Bedrock response"));
         };
 
-        Ok(LlmGenerateResponse { text })
+        Ok(LlmGenerateResponse {
+            output: generated_output,
+        })
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {

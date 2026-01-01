@@ -9,23 +9,14 @@ type ButtonProps = {
 };
 
 function Button({ href, children, margin = '0' }: ButtonProps): ReactNode {
-    return (
+  return (
         <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-                display: 'inline-block',
-                padding: '8px 12px',
-                margin: margin,
-                borderRadius: '4px',
-                textDecoration: 'none',
-                border: '1px solid #ccc',
-                color: 'var(--ifm-color-default)',
-                fontSize: '0.85rem',
-            }}
-        >
-            {children}
+        href={href}
+        target='_blank'
+        rel='noopener noreferrer'
+        className='button-interactive'
+    >
+        {children}
         </a>
     );
 }
@@ -38,7 +29,7 @@ type GitHubButtonProps = {
 function GitHubButton({ url, margin = '0' }: GitHubButtonProps): ReactNode {
     return (
         <Button href={url} margin={margin}>
-            <FaGithub style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
+            <FaGithub className='icon-button' />
             View on GitHub
         </Button>
     );
@@ -52,7 +43,7 @@ type YouTubeButtonProps = {
 function YouTubeButton({ url, margin = '0' }: YouTubeButtonProps): ReactNode {
     return (
         <Button href={url} margin={margin}>
-            <FaYoutube style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
+            <FaYoutube className='icon-button' />
             Watch on YouTube
         </Button>
     );
