@@ -2,7 +2,7 @@
 Library level functions and states.
 """
 
-from . import core as _core
+from . import core as _core  # type: ignore
 from . import serde as _serde
 from .memo_key import register_memo_key_function as _register_memo_key_function
 

@@ -12,7 +12,7 @@ from typing import (
     overload,
 )
 
-from . import core
+from . import core  # type: ignore
 from .app import AppBase
 from .scope import Scope
 from .function import Function

@@ -12,7 +12,7 @@ __all__ = [
 
 import typing as _typing
 
-from cocoindex._internal import core as _core
+from cocoindex._internal import core as _core  # type: ignore
 from cocoindex.resources import chunk as _chunk
 
 

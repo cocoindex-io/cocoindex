@@ -15,7 +15,7 @@ import threading
 import weakref
 from typing_extensions import TypeIs, TypeVar
 
-from . import core
+from . import core  # type: ignore
 from .scope import Scope
 from .pending_marker import PendingS, MaybePendingS, ResolvesTo
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from ._internal import core as _engine
+from ._internal import core as _engine  # type: ignore
 from . import __version__
 
 

@@ -13,7 +13,7 @@ import pickle
 import struct
 import typing
 
-from . import core
+from . import core  # type: ignore
 
 
 _KeyFn = typing.Callable[[typing.Any], typing.Any]

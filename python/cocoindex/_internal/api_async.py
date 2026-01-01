@@ -12,7 +12,7 @@ from typing import (
     overload,
 )
 
-from . import core
+from . import core  # type: ignore
 from .app import AppBase
 from .pending_marker import ResolvesTo
 from .scope import Scope
