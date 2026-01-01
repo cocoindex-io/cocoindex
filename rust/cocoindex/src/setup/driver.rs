@@ -514,7 +514,7 @@ async fn maybe_update_resource_setup<
     K: 'a,
     S: 'a,
     C: ResourceSetupChange,
-    ChangeApplierResultFut: Future<Output = Result<()>>,
+    ChangeApplierResultFut: Future<Output = Result<(), Error>>,
 >(
     resource_kind: &str,
     write: &mut (dyn std::io::Write + Send),
@@ -653,7 +653,7 @@ async fn apply_changes_for_flow(
                 let flow_name = flow_ctx.flow_name().to_string();
                 async move {
                     let factory = get_export_target_factory(&target_kind).ok_or_else(|| {
-                        anyhow::anyhow!("No factory found for target kind: {}", &target_kind)
+                        internal_error!("No factory found for target kind: {}", &target_kind)
                     })?;
                     for target_change in targets_change.iter() {
                         for delete in target_change.setup_change.attachments_change.deletes.iter() {
@@ -689,15 +689,19 @@ async fn apply_changes_for_flow(
                         if is_deletion && ignore_target_drop_failures {
                             tracing::error!("Ignoring target drop failure for kind '{}' in flow '{}': {:#}",
                                 &target_kind, &flow_name, e);
-                            return Ok(());
+                            return Ok::<(), Error>(());
                         }
                         if is_deletion {
-                            return Err(anyhow::anyhow!("{}\n\nHint: set COCOINDEX_IGNORE_TARGET_DROP_FAILURES=true to ignore target drop failures.", e));
+                            tracing::error!(
+                                "{}\n\nHint: set COCOINDEX_IGNORE_TARGET_DROP_FAILURES=true to ignore target drop failures.",
+                                e
+                            );
+                            return Err(e);
                         }
                         return Err(e);
                     }
 
-                    Ok(())
+                   Ok::<(), Error>(())
                 }
             },
         )
