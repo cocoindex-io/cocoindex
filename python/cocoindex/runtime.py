@@ -1,18 +1,15 @@
 """
-This module provides a standalone execution runtime for executing coroutines in a thread-safe
-manner.
+Thread-safe execution runtime for running coroutines from sync code.
 """
 
-import threading
-import asyncio
-import inspect
-import warnings
+from __future__ import annotations
 
-from typing import Any, Callable, Awaitable, TypeVar, Coroutine, ParamSpec
-from typing_extensions import TypeIs
+import asyncio
+import threading
+import warnings
+from typing import Any, Coroutine, TypeVar
 
 T = TypeVar("T")
-P = ParamSpec("P")
 
 
 class _ExecutionContext:
@@ -24,28 +21,29 @@ class _ExecutionContext:
 
     @property
     def event_loop(self) -> asyncio.AbstractEventLoop:
-        """Get the event loop for the cocoindex library."""
+        """A long-lived background event loop owned by CocoIndex."""
         with self._lock:
-            if self._event_loop is None:
+            if self._event_loop is None or self._event_loop.is_closed():
                 loop = asyncio.new_event_loop()
                 self._event_loop = loop
 
-                def _runner(l: asyncio.AbstractEventLoop) -> None:
-                    asyncio.set_event_loop(l)
-                    l.run_forever()
+                def _runner(loop: asyncio.AbstractEventLoop) -> None:
+                    asyncio.set_event_loop(loop)
+                    loop.run_forever()
 
                 threading.Thread(target=_runner, args=(loop,), daemon=True).start()
             return self._event_loop
 
     def run(self, coro: Coroutine[Any, Any, T]) -> T:
-        """Run a coroutine in the event loop, blocking until it finishes. Return its result."""
+        """
+        Run a coroutine on the CocoIndex background loop, blocking until it finishes.
+        """
         try:
             running_loop = asyncio.get_running_loop()
         except RuntimeError:
             running_loop = None
 
         loop = self.event_loop
-
         if running_loop is not None:
             if running_loop is loop:
                 raise RuntimeError(
@@ -68,18 +66,3 @@ class _ExecutionContext:
 
 
 execution_context = _ExecutionContext()
-
-
-def is_coroutine_fn(
-    fn: Callable[P, T] | Callable[P, Coroutine[Any, Any, T]],
-) -> TypeIs[Callable[P, Coroutine[Any, Any, T]]]:
-    if isinstance(fn, (staticmethod, classmethod)):
-        return inspect.iscoroutinefunction(fn.__func__)
-    else:
-        return inspect.iscoroutinefunction(fn)
-
-
-def to_async_call(fn: Callable[P, T]) -> Callable[P, Awaitable[T]]:
-    if is_coroutine_fn(fn):
-        return fn
-    return lambda *args, **kwargs: asyncio.to_thread(fn, *args, **kwargs)

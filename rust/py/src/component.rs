@@ -32,17 +32,10 @@ impl PyComponentProcessor {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (processor_fn, async_context, memo_key_fingerprint=None))]
-    pub fn new_async<'py>(
-        processor_fn: Py<PyAny>,
-        async_context: PyAsyncContext,
-        memo_key_fingerprint: Option<PyFingerprint>,
-    ) -> Self {
+    #[pyo3(signature = (processor_fn, memo_key_fingerprint=None))]
+    pub fn new_async(processor_fn: Py<PyAny>, memo_key_fingerprint: Option<PyFingerprint>) -> Self {
         Self {
-            processor_fn: PyCallback::Async {
-                async_fn: Arc::new(processor_fn),
-                async_context,
-            },
+            processor_fn: PyCallback::Async(Arc::new(processor_fn)),
             memo_key_fingerprint: memo_key_fingerprint.map(|f| f.0),
         }
     }
@@ -51,10 +44,11 @@ impl PyComponentProcessor {
 impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
     fn process(
         &self,
+        host_runtime_ctx: &PyAsyncContext,
         context: &ComponentProcessorContext<PyEngineProfile>,
     ) -> Result<impl Future<Output = Result<crate::value::PyValue>> + Send + 'static> {
         let py_context = PyComponentProcessorContext(context.clone());
-        let fut = self.processor_fn.call((py_context,))?;
+        let fut = self.processor_fn.call(host_runtime_ctx, (py_context,))?;
         Ok(async move {
             let value = fut.await?;
             Ok(crate::value::PyValue::new(value))

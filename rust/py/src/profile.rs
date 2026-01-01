@@ -10,7 +10,7 @@ use crate::{
 pub struct PyEngineProfile;
 
 impl EngineProfile for PyEngineProfile {
-    type HostStateCtx = Arc<Py<PyAny>>;
+    type HostRuntimeCtx = crate::runtime::PyAsyncContext;
 
     type ComponentProc = PyComponentProcessor;
     type ComponentProcRet = crate::value::PyValue;

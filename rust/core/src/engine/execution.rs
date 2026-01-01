@@ -689,8 +689,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     };
 
     // Apply actions
+    let host_runtime_ctx = context.app_ctx().env().host_runtime_ctx();
     for (sink, input) in actions_by_sinks {
-        let handlers = sink.apply(input.actions).await?;
+        let handlers = sink.apply(host_runtime_ctx, input.actions).await?;
         if let Some(child_providers) = input.child_providers {
             let Some(handlers) = handlers else {
                 client_bail!("expect child providers returned by Sink");

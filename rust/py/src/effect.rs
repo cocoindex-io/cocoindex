@@ -43,13 +43,10 @@ impl PyEffectSink {
     }
 
     #[staticmethod]
-    pub fn new_async(callback: Py<PyAny>, async_context: PyAsyncContext) -> Self {
+    pub fn new_async(callback: Py<PyAny>) -> Self {
         Self {
             key: callback.as_ptr() as usize,
-            callback: PyCallback::Async {
-                async_fn: Arc::new(callback),
-                async_context,
-            },
+            callback: PyCallback::Async(Arc::new(callback)),
         }
     }
 }
@@ -78,9 +75,10 @@ fn get_core_field(py: Python<'_>, obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
 impl EffectSink<PyEngineProfile> for PyEffectSink {
     async fn apply(
         &self,
+        host_runtime_ctx: &PyAsyncContext,
         actions: Vec<Py<PyAny>>,
     ) -> Result<Option<Vec<Option<ChildEffectDef<PyEngineProfile>>>>> {
-        let ret = self.callback.call((actions,))?.await?;
+        let ret = self.callback.call(host_runtime_ctx, (actions,))?.await?;
         Python::attach(|py| -> PyResult<_> {
             if ret.is_none(py) {
                 return Ok(None);

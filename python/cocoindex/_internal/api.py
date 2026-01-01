@@ -17,7 +17,7 @@ from .effect import (
 )
 
 from .environment import Environment, EnvironmentBuilder, LifespanFn
-from .environment import lifespan, default_env
+from .environment import lifespan
 
 from .function import function
 
@@ -53,7 +53,6 @@ __all__ = [
     "EnvironmentBuilder",
     "LifespanFn",
     "lifespan",
-    "default_env",
     # .fn
     "function",
     # .pending_marker

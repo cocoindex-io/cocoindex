@@ -30,7 +30,8 @@ class AppBase(Generic[P, R]):
     _app_args: tuple[Any, ...]
     _app_kwargs: dict[str, Any]
 
-    _core: core.App
+    _environment: Environment | None
+    _core: core.App | None
 
     def __init__(
         self,
@@ -50,5 +51,11 @@ class AppBase(Generic[P, R]):
         self._app_args = tuple(args)
         self._app_kwargs = dict(kwargs)
 
-        env = config.environment or default_env()
-        self._core = core.App(config.name, env._core_env)
+        self._environment = config.environment
+        self._core = None
+
+    async def _get_core(self) -> core.App:
+        if self._core is None:
+            env = self._environment or await default_env()
+            self._core = core.App(self._name, env._core_env)
+        return self._core

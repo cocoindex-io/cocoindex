@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import inspect
 
 from typing import (
     Callable,
@@ -10,13 +11,13 @@ from typing import (
     Awaitable,
     Coroutine,
     Protocol,
+    cast,
     overload,
 )
 
-from . import core
+from . import core  # type: ignore
 
 from .scope import Scope
-from .runtime import execution_context, is_coroutine_fn, get_async_context
 from .memo_key import fingerprint_call
 
 
@@ -26,12 +27,6 @@ R_co = TypeVar("R_co", covariant=True)
 
 
 class Function(Protocol[P, R_co]):
-    def call(self, scope: Scope, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
-
-    def acall(
-        self, scope: Scope, *args: P.args, **kwargs: P.kwargs
-    ) -> Awaitable[R_co]: ...
-
     def _as_core_component_processor(
         self,
         path: core.StablePath,
@@ -104,13 +99,7 @@ class AsyncFunction(Function[P, R_co]):
         memo_fp = (
             fingerprint_call(self._fn, (path, *args), kwargs) if self._memo else None
         )
-        return core.ComponentProcessor.new_async(_build, get_async_context(), memo_fp)
-
-    def call(self, scope: Scope, *args: P.args, **kwargs: P.kwargs) -> R_co:
-        return execution_context.run(self._fn(scope, *args, **kwargs))
-
-    def acall(self, scope: Scope, *args: P.args, **kwargs: P.kwargs) -> Awaitable[R_co]:
-        return self._fn(scope, *args, **kwargs)
+        return core.ComponentProcessor.new_async(_build, memo_fp)
 
 
 class FunctionBuilder:
@@ -132,10 +121,12 @@ class FunctionBuilder:
         | Callable[Concatenate[Scope, P], R_co],
     ) -> Function[P, R_co]:
         wrapper: Function[P, R_co]
-        if is_coroutine_fn(fn):
+        if inspect.iscoroutinefunction(fn):
             wrapper = AsyncFunction(fn, memo=self._memo)
         else:
-            wrapper = SyncFunction(fn, memo=self._memo)
+            wrapper = SyncFunction(
+                cast(Callable[Concatenate[Scope, P], R_co], fn), memo=self._memo
+            )
         functools.update_wrapper(wrapper, fn)
         return wrapper
 

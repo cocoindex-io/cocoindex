@@ -2,7 +2,7 @@ from typing import Iterator
 import pytest
 
 import cocoindex as coco
-from cocoindex._internal.environment import clear_default_env
+from cocoindex._internal.environment import reset_default_lifespan_for_tests
 from .common import get_env_db_path
 
 _env_db_path = get_env_db_path("_default")
@@ -19,25 +19,27 @@ def _default_env() -> Iterator[None]:
 
         yield
     finally:
-        clear_default_env()
+        reset_default_lifespan_for_tests()
 
 
 def test_default_env(_default_env: None) -> None:
     assert not _env_db_path.exists()
-    coco.default_env()
+    with coco.runtime():
+        coco.default_env()
     assert _env_db_path.exists()
 
 
 @coco.function()
-def trivial_fn(scope: coco.Scope, s: str, i: int) -> str:
+def trivial_fn(_scope: coco.Scope, s: str, i: int) -> str:
     return f"{s} {i}"
 
 
 def test_app_in_default_env(_default_env: None) -> None:
-    app = coco.App(
-        trivial_fn,
-        coco.AppConfig(name="trivial_app"),
-        "Hello",
-        1,
-    )
-    assert app.run() == "Hello 1"
+    with coco.runtime():
+        app = coco.App(
+            trivial_fn,
+            coco.AppConfig(name="trivial_app"),
+            "Hello",
+            1,
+        )
+        assert app.run() == "Hello 1"

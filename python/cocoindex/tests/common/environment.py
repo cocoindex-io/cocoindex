@@ -1,6 +1,5 @@
 import pathlib
 import tempfile
-from typing import Iterator
 from logging import getLogger
 
 import cocoindex
@@ -22,9 +21,5 @@ def create_test_env(test_file_path: str) -> cocoindex.Environment:
     base_name = (
         test_file_path.removeprefix(_PATH_PREFIX).removesuffix(".py").replace("/", "__")
     )
-
-    def lifespan(builder: cocoindex.EnvironmentBuilder) -> Iterator[None]:
-        builder.settings.db_path = get_env_db_path(base_name)
-        yield
-
-    return cocoindex.Environment(lifespan)
+    settings = cocoindex.Settings.from_env(db_path=get_env_db_path(base_name))
+    return cocoindex.Environment(settings)

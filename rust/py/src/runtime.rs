@@ -75,15 +75,13 @@ impl PyAsyncContext {
 #[derive(Clone)]
 pub enum PyCallback {
     Sync(Arc<Py<PyAny>>),
-    Async {
-        async_fn: Arc<Py<PyAny>>,
-        async_context: PyAsyncContext,
-    },
+    Async(Arc<Py<PyAny>>),
 }
 
 impl PyCallback {
     pub fn call<A>(
         &self,
+        host_runtime_ctx: &PyAsyncContext,
         args: A,
     ) -> Result<impl Future<Output = Result<Py<PyAny>>> + Send + 'static>
     where
@@ -103,12 +101,9 @@ impl PyCallback {
                 }
                 .boxed()
             }
-            PyCallback::Async {
-                async_fn,
-                async_context,
-            } => Python::attach(|py| {
+            PyCallback::Async(async_fn) => Python::attach(|py| {
                 let result_coro = async_fn.call(py, args, None)?;
-                from_py_future(py, &async_context.0, result_coro.into_bound(py))
+                from_py_future(py, &host_runtime_ctx.0, result_coro.into_bound(py))
             })?
             .boxed(),
         };

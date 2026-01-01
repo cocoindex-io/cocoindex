@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from typing import (
     Any,
     Generic,
@@ -16,6 +17,7 @@ from .app import AppBase
 from .pending_marker import ResolvesTo
 from .scope import Scope
 from .function import Function
+from . import environment as _env
 
 
 P = ParamSpec("P")
@@ -171,7 +173,35 @@ class App(AppBase[P, ReturnT]):
             *self._app_args,
             **self._app_kwargs,  # type: ignore[arg-type]
         )
-        return await self._core.run_async(processor)  # type: ignore
+        core_app = await self._get_core()
+        return await core_app.run_async(processor)  # type: ignore
+
+
+async def start() -> None:
+    """Start the default environment (and enter its lifespan, if any)."""
+    await _env.start()
+
+
+async def stop() -> None:
+    """Stop the default environment (and exit its lifespan, if any)."""
+    await _env.stop()
+
+
+async def default_env() -> _env.Environment:
+    """Get the default environment (starting it if needed)."""
+    return await _env.default_env()
+
+
+@asynccontextmanager
+async def runtime() -> Any:
+    """
+    Async context manager that calls `start()` on enter and `stop()` on exit.
+    """
+    await start()
+    try:
+        yield
+    finally:
+        await stop()
 
 
 __all__ = [
@@ -180,4 +210,8 @@ __all__ = [
     "ComponentMountRunHandle",
     "mount",
     "mount_run",
+    "start",
+    "stop",
+    "default_env",
+    "runtime",
 ]

@@ -16,6 +16,7 @@ struct EnvironmentInner<Prof: EngineProfile> {
     db_env: heed::Env,
     app_names: Mutex<BTreeSet<String>>,
     effect_providers: Arc<Mutex<EffectProviderRegistry<Prof>>>,
+    host_runtime_ctx: Prof::HostRuntimeCtx,
 }
 
 #[derive(Clone)]
@@ -27,6 +28,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
     pub fn new(
         settings: EnvironmentSettings,
         effect_providers: Arc<Mutex<EffectProviderRegistry<Prof>>>,
+        host_runtime_ctx: Prof::HostRuntimeCtx,
     ) -> Result<Self> {
         // Create the directory if not exists.
         std::fs::create_dir_all(&settings.db_path)?;
@@ -45,6 +47,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
             db_env,
             app_names: Mutex::new(BTreeSet::new()),
             effect_providers,
+            host_runtime_ctx,
         });
         Ok(Self { inner: state })
     }
@@ -55,6 +58,10 @@ impl<Prof: EngineProfile> Environment<Prof> {
 
     pub fn effect_providers(&self) -> &Arc<Mutex<EffectProviderRegistry<Prof>>> {
         &self.inner.effect_providers
+    }
+
+    pub fn host_runtime_ctx(&self) -> &Prof::HostRuntimeCtx {
+        &self.inner.host_runtime_ctx
     }
 }
 

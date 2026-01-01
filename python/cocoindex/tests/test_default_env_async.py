@@ -2,7 +2,7 @@ import pytest
 from typing import Iterator, AsyncIterator
 
 import cocoindex.aio as coco_aio
-from cocoindex._internal.environment import clear_default_env
+from cocoindex._internal.environment import reset_default_lifespan_for_tests
 from .common import get_env_db_path
 
 _env_db_path = get_env_db_path("_async_default")
@@ -21,17 +21,19 @@ def _default_async_env() -> Iterator[None]:
 
         yield
     finally:
-        clear_default_env()
+        reset_default_lifespan_for_tests()
 
 
-def test_async_default_env(_default_async_env: None) -> None:
+@pytest.mark.asyncio
+async def test_async_default_env(_default_async_env: None) -> None:
     assert not _env_db_path.exists()
-    coco_aio.default_env()
+    async with coco_aio.runtime():
+        await coco_aio.default_env()
     assert _env_db_path.exists()
 
 
 @coco_aio.function()
-async def trivial_fn(scope: coco_aio.Scope, s: str, i: int) -> str:
+async def trivial_fn(_scope: coco_aio.Scope, s: str, i: int) -> str:
     return f"{s} {i}"
 
 
@@ -43,4 +45,5 @@ async def test_async_app_in_default_env(_default_async_env: None) -> None:
         "Hello",
         1,
     )
-    assert await app.run() == "Hello 1"
+    async with coco_aio.runtime():
+        assert await app.run() == "Hello 1"

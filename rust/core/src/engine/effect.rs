@@ -17,6 +17,7 @@ pub trait EffectSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'static {
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
     async fn apply(
         &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
         actions: Vec<Prof::EffectAction>,
     ) -> Result<Option<Vec<Option<ChildEffectDef<Prof>>>>>;
 }

@@ -21,6 +21,7 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     /// We expect the implementation of this method to spawn the logic to a separate thread or task when needed.
     fn process(
         &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
         context: &ComponentProcessorContext<Prof>,
     ) -> Result<impl Future<Output = Result<Prof::ComponentProcRet>> + Send + 'static>;
 
@@ -326,7 +327,13 @@ impl<Prof: EngineProfile> Component<Prof> {
             let _permit = self.inner.build_semaphore.acquire().await?;
 
             let ret: Result<Option<Prof::ComponentProcRet>> = match processor {
-                Some(processor) => processor.process(&processor_context)?.await.map(Some),
+                Some(processor) => processor
+                    .process(
+                        processor_context.app_ctx().env().host_runtime_ctx(),
+                        &processor_context,
+                    )?
+                    .await
+                    .map(Some),
                 None => Ok(None),
             };
 

@@ -17,7 +17,6 @@ from typing_extensions import TypeIs, TypeVar
 
 from . import core
 from .scope import Scope
-from .runtime import get_async_context
 from .pending_marker import PendingS, MaybePendingS, ResolvesTo
 
 
@@ -128,7 +127,7 @@ class EffectSink(Generic[ActionT_contra, OptChildHandlerT_co]):
         fn: AsyncEffectSinkFn[ActionT_contra, OptChildHandlerT_co],
     ) -> "EffectSink[ActionT_contra, OptChildHandlerT_co]":
         canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
-        return EffectSink(core.EffectSink.new_async(canonical, get_async_context()))
+        return EffectSink(core.EffectSink.new_async(canonical))
 
 
 class _ObjectDeduper:
