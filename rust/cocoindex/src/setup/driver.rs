@@ -689,7 +689,6 @@ async fn apply_changes_for_flow(
                         if is_deletion && ignore_target_drop_failures {
                             tracing::error!("Ignoring target drop failure for kind '{}' in flow '{}': {:#}",
                                 &target_kind, &flow_name, e);
-                            // swallow the error and continue
                             return Ok(());
                         }
                         if is_deletion {
