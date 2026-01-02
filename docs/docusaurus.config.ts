@@ -2,6 +2,7 @@ import webpack from 'webpack';
 import { themes as prismThemes } from 'prism-react-renderer';
 import type { Config } from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
+import type { PluginOptions } from '@signalwire/docusaurus-plugin-llms-txt/public';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
@@ -84,6 +85,58 @@ const config: Config = {
           },
         ],
       },
+    ],
+    [
+      '@signalwire/docusaurus-plugin-llms-txt',
+      {
+        siteTitle: 'CocoIndex',
+        siteDescription: 'Ultra performant data transformation framework for AI, with core engine written in Rust. Support incremental processing and data lineage out-of-box.',
+        depth: 2,
+        enableDescriptions: true,
+        content: {
+          enableMarkdownFiles: false,
+          enableLlmsFullTxt: false,
+          includeDocs: true,
+          includeVersionedDocs: false,
+          includeBlog: false,
+          includePages: false,
+          relativePaths: true,
+        },
+        includeOrder: [
+          '/getting_started/**',
+          '/core/**',
+          '/tutorials/**',
+          '/query',
+          '/sources/**',
+          '/ops/functions',
+          '/targets/**',
+          '/custom_ops/**',
+          '/ai/**',
+          '/cocoinsight_access',
+          '/contributing/**',
+          '/about/**',
+        ],
+        optionalLinks: [
+          {
+            title: 'GitHub Repository',
+            url: 'https://github.com/cocoindex-io/cocoindex',
+            description: 'Source code, issues, and contributions',
+          },
+          {
+            title: 'Discord Community',
+            url: 'https://discord.com/invite/zpA9S2DR7s',
+            description: 'Community support and discussions',
+          },
+          {
+            title: 'CocoIndex Homepage',
+            url: 'https://cocoindex.io',
+            description: 'Main website with examples and blogs',
+          },
+        ],
+        runOnPostBuild: true,
+        logLevel: 2,
+        onRouteError: 'warn',
+      } satisfies PluginOptions,
     ],
   ],
 
