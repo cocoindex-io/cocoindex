@@ -4,8 +4,8 @@ import pytest
 
 import cocoindex as coco
 
-from . import common
-from .common.effects import GlobalDictTarget, AsyncGlobalDictTarget, DictDataWithPrev
+from .. import common
+from ..common.effects import GlobalDictTarget, AsyncGlobalDictTarget, DictDataWithPrev
 
 coco_env = common.create_test_env(__file__)
 
