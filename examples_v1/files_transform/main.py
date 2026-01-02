@@ -15,7 +15,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 
 
-@coco.function
+@coco.function(memo=True)
 def process_file(scope: coco.Scope, file: FileLike, target: localfs.DirTarget) -> None:
     html = _markdown_it.render(file.read_text())
     outname = "__".join(file.relative_path.parts) + ".html"

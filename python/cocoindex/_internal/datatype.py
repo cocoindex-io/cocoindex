@@ -8,7 +8,6 @@ from typing import (
     Annotated,
     Any,
     Iterator,
-    Mapping,
     NamedTuple,
     get_type_hints,
 )

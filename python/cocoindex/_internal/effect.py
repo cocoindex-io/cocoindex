@@ -176,11 +176,13 @@ class EffectProvider(
     Generic[KeyT, ValueT, OptChildHandlerT, MaybePendingS],
     ResolvesTo["EffectProvider[KeyT, ValueT, OptChildHandlerT]"],
 ):
-    __slots__ = ("_core",)
+    __slots__ = ("_core", "memo_key")
     _core: core.EffectProvider
+    memo_key: str
 
     def __init__(self, core_effect_provider: core.EffectProvider):
         self._core = core_effect_provider
+        self.memo_key = core_effect_provider.coco_memo_key()
 
     def effect(
         self: EffectProvider[KeyT, ValueT, OptChildHandlerT],
@@ -188,6 +190,9 @@ class EffectProvider(
         value: ValueT,
     ) -> "Effect[OptChildHandlerT]":
         return Effect(self, key, value)
+
+    def __coco_memo_key__(self) -> str:
+        return self.memo_key
 
 
 PendingEffectProvider: TypeAlias = EffectProvider[

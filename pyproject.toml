@@ -70,13 +70,15 @@ editable-profile = "dev" # local editable builds
 embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
-postgres = ["asyncpg>=0.31.0"]
+postgres = ["asyncpg>=0.31.0", "pgvector>=0.4.2"]
 
 all = [
     "sentence-transformers>=3.3.1",
     "colpali-engine",
     "lancedb>=0.25.0",
     "pyarrow>=19.0.0",
+    "asyncpg>=0.31.0",
+    "pgvector>=0.4.2",
 ]
 
 [dependency-groups]
@@ -123,7 +125,7 @@ disable_error_code = ["unused-ignore"]
 
 [[tool.mypy.overrides]]
 # Ignore missing imports for optional dependencies from cocoindex library
-module = ["sentence_transformers", "torch", "colpali_engine", "PIL", "asyncpg"]
+module = ["sentence_transformers", "torch", "colpali_engine", "PIL"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

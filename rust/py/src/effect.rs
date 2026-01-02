@@ -156,6 +156,13 @@ impl EffectHandler<PyEngineProfile> for PyEffectHandler {
 #[pyclass(name = "EffectProvider")]
 pub struct PyEffectProvider(EffectProvider<PyEngineProfile>);
 
+#[pymethods]
+impl PyEffectProvider {
+    pub fn coco_memo_key(&self) -> String {
+        self.0.effect_path().to_string()
+    }
+}
+
 #[pyfunction]
 pub fn declare_effect<'py>(
     py: Python<'py>,

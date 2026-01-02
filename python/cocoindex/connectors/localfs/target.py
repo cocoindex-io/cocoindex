@@ -189,6 +189,9 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
             content = content.encode()
         coco.declare_effect(scope, self._provider.effect(filename, content))
 
+    def __coco_memo_key__(self) -> object:
+        return self._provider.memo_key
+
 
 @coco.function
 def dir_target(

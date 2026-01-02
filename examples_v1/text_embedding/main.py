@@ -21,7 +21,6 @@ from typing import AsyncIterator
 import asyncpg
 import numpy as np
 from numpy.typing import NDArray
-from pgvector.asyncpg import register_vector
 from sentence_transformers import SentenceTransformer
 
 import cocoindex as coco
@@ -64,7 +63,7 @@ def embed_text(text: str) -> NDArray[np.float32]:
     with _gpu_lock:
         return embedder().encode(
             [text], convert_to_numpy=True, normalize_embeddings=True
-        )
+        )[0]
 
 
 # ============================================================================
@@ -112,7 +111,9 @@ async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+
+    # register_vector is needed for query
+    async with await postgres.create_pool(DATABASE_URL) as pool:
         _state.pool = pool
         _state.db = postgres.register_db("text_embedding_db", pool)
         yield
@@ -137,7 +138,7 @@ def process_chunk(
     )
 
 
-@coco.function
+@coco.function(memo=True)
 def process_file(
     scope: coco.Scope,
     file: FileLike,
@@ -179,22 +180,23 @@ app = coco_aio.App(
 
 async def query_once(query: str, *, top_k: int = TOP_K) -> None:
     query_vec = await asyncio.to_thread(embed_text, query)
+    pool = _state.pool
+    assert pool is not None
 
-    async with await asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                f"""
-                SELECT
-                    filename,
-                    text,
-                    embedding <=> $1 AS distance
-                FROM "{PG_SCHEMA_NAME}"."{TABLE_NAME}"
-                ORDER BY distance ASC
-                LIMIT $2
-                """,
-                query_vec,
-                top_k,
-            )
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                filename,
+                text,
+                embedding <=> $1 AS distance
+            FROM "{PG_SCHEMA_NAME}"."{TABLE_NAME}"
+            ORDER BY distance ASC
+            LIMIT $2
+            """,
+            query_vec,
+            top_k,
+        )
 
     for r in rows:
         score = 1.0 - float(r["distance"])
@@ -204,20 +206,21 @@ async def query_once(query: str, *, top_k: int = TOP_K) -> None:
 
 
 async def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(q)
+    async with coco_aio.runtime():
+        if len(sys.argv) > 1 and sys.argv[1] == "query":
+            if len(sys.argv) > 2:
+                q = " ".join(sys.argv[2:])
+                await query_once(q)
+                return
+
+            while True:
+                q = input("Enter search query (or Enter to quit): ").strip()
+                if not q:
+                    break
+                await query_once(q)
             return
 
-        while True:
-            q = input("Enter search query (or Enter to quit): ").strip()
-            if not q:
-                break
-            await query_once(q)
-        return
-
-    await app.run()
+        await app.run()
 
 
 if __name__ == "__main__":

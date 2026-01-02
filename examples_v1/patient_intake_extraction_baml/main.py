@@ -25,7 +25,7 @@ async def extract_patient_info(scope: coco.Scope, content: bytes) -> Patient:
     return await b.ExtractPatientInfo(pdf)
 
 
-@coco.function
+@coco.function(memo=True)
 async def process_patient_form(
     scope: coco.Scope, file: FileLike, target: localfs.DirTarget
 ) -> None:

@@ -12,6 +12,7 @@ import datetime
 import decimal
 import hashlib
 import ipaddress
+import inspect
 import json
 import threading
 import uuid
@@ -44,13 +45,8 @@ from cocoindex._internal.datatype import (
 )
 from cocoindex.resources.schema import VectorSpec
 
-try:
-    import asyncpg
-except ImportError as e:
-    raise ImportError(
-        "asyncpg is required for PostgreSQL target. "
-        "Install it with: pip install asyncpg"
-    ) from e
+import asyncpg  # type: ignore
+import pgvector.asyncpg  # type: ignore
 
 
 # Type aliases
@@ -116,25 +112,6 @@ def _is_pgvector_pg_type(pg_type: str) -> bool:
     """
     t = pg_type.lower().strip()
     return any(t.startswith(p) for p in _PGVECTOR_TYPE_PREFIXES)
-
-
-def _pgvector_text_encoder(value: Any) -> str:
-    """
-    Encode a vector value into pgvector's text input format: `[1,2,3]`.
-
-    We intentionally emit text because asyncpg doesn't natively support pgvector.
-    Postgres can cast from text to pgvector types (`vector` / `halfvec`).
-    """
-    if isinstance(value, np.ndarray):
-        arr = value.ravel()
-        items = (float(x) for x in arr.tolist())
-    elif isinstance(value, (list, tuple)):
-        items = (float(x) for x in value)
-    else:
-        raise TypeError(
-            f"pgvector column expects a numpy.ndarray or sequence, got {type(value)}"
-        )
-    return "[" + ",".join(str(x) for x in items) + "]"
 
 
 class _TypeMapping(NamedTuple):
@@ -224,7 +201,7 @@ def _get_type_mapping(python_type: Any) -> _TypeMapping:
             elem_type = type_info.variant.elem_type
         # Default to `vector` (float32/float64/int64/etc.). Use `halfvec` for float16.
         base = "halfvec" if elem_type in (np.half, np.float16) else "vector"
-        return _TypeMapping(base, _pgvector_text_encoder)
+        return _TypeMapping(base)
 
     # Complex types that need JSON encoding
     if isinstance(
@@ -943,6 +920,9 @@ class TableTarget(
             out[col_name] = value
         return out
 
+    def __coco_memo_key__(self) -> str:
+        return self._provider.memo_key
+
 
 class PgDatabase:
     """
@@ -1061,6 +1041,43 @@ def register_db(key: str, pool: asyncpg.Pool) -> PgDatabase:
     return PgDatabase(key)
 
 
+async def create_pool(
+    dsn: str | None = None,
+    *,
+    init: Callable[[asyncpg.Connection], Any] | None = None,
+    **kwargs: Any,
+) -> asyncpg.Pool:
+    """
+    Create an asyncpg connection pool with pgvector support.
+
+    This is a wrapper around `asyncpg.create_pool()` that automatically
+    registers the pgvector extension on each connection.
+
+    Args:
+        dsn: Connection string or None.
+        init: Optional connection initialization callback. If provided,
+              it will be called after pgvector is registered.
+        **kwargs: All other arguments are passed to `asyncpg.create_pool()`.
+
+    Returns:
+        An asyncpg connection pool with pgvector support.
+
+    Example:
+        ```python
+        pool = await create_pool("postgresql://localhost/mydb")
+        ```
+    """
+
+    async def _init_with_pgvector(conn: asyncpg.Connection) -> None:
+        await pgvector.asyncpg.register_vector(conn)
+        if init is not None:
+            result = init(conn)
+            if inspect.isawaitable(result):
+                await result
+
+    return await asyncpg.create_pool(dsn, init=_init_with_pgvector, **kwargs)
+
+
 __all__ = [
     "ColumnDef",
     "ValueEncoder",
@@ -1068,5 +1085,6 @@ __all__ = [
     "PgType",
     "TableSchema",
     "TableTarget",
+    "create_pool",
     "register_db",
 ]

@@ -49,6 +49,9 @@ class FileLike(Protocol):
         """
         return _decode_bytes(self.read(), encoding, errors)
 
+    def __coco_memo_key__(self) -> object:
+        return (self.relative_path, self.modified_time)
+
 
 class FilePathMatcher(Protocol):
     """Protocol for file path matchers that filter directories and files."""
