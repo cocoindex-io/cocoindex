@@ -94,7 +94,13 @@ def _initialize_cocoindex_in_process() -> None:
 
 
 @click.group()
-@click.version_option(None, "-V", "--version", package_name="cocoindex", message="%(prog)s version %(version)s")
+@click.version_option(
+    None,
+    "-V",
+    "--version",
+    package_name="cocoindex",
+    message="%(prog)s version %(version)s",
+)
 @click.option(
     "-e",
     "--env-file",
@@ -183,7 +189,9 @@ def ls(app_target: str | None) -> None:
 @click.option(
     "--color/--no-color", default=True, help="Enable or disable colored output."
 )
-@click.option("-v", "--verbose", is_flag=True, help="Show verbose output with full details.")
+@click.option(
+    "-v", "--verbose", is_flag=True, help="Show verbose output with full details."
+)
 def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
     """
     Show the flow spec and schema.
