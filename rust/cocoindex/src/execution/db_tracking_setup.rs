@@ -3,32 +3,7 @@ use crate::prelude::*;
 use crate::setup::{CombinedState, ResourceSetupChange, ResourceSetupInfo, SetupChangeType};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-
-pub async fn create_schema(pool: &PgPool) -> Result<()> {
-    let search_path: String = sqlx::query_scalar("SHOW search_path")
-        .fetch_one(pool)
-        .await?;
-
-    // Parse the first schema that is not pg_catalog or information_schema
-    let schema_opt = search_path
-        .split(',')
-        .map(|s| s.trim().trim_matches('"'))
-        .find(|s| *s != "pg_catalog" && *s != "information_schema");
-
-    if let Some(schema) = schema_opt {
-        let query = format!(
-            "CREATE SCHEMA IF NOT EXISTS \"{}\"",
-            schema.replace('"', "\"\"")
-        );
-
-        sqlx::query(&query)
-            .execute(pool)
-            .await
-            .with_context(|| format!("Failed to create schema `{}`", schema))?;
-    }
-
-    Ok(())
-}
+use utils::db;
 
 pub fn default_tracking_table_name(flow_name: &str) -> String {
     format!(
@@ -57,7 +32,7 @@ async fn upgrade_tracking_table(
             .has_fast_fingerprint_column
             .then(|| "processed_source_fp BYTEA,")
             .unwrap_or("");
-        create_schema(&pool).await?;
+        db::ensure_schema_from_search_path(&pool).await?;
         let query =  format!(
             "CREATE TABLE IF NOT EXISTS {table_name} (
                 source_id INTEGER NOT NULL,

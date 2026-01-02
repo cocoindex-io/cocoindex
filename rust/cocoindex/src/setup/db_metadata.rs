@@ -3,7 +3,7 @@ use crate::prelude::*;
 use super::{ResourceSetupChange, ResourceSetupInfo, SetupChangeType, StateChange};
 use axum::http::StatusCode;
 use sqlx::PgPool;
-use utils::db::WriteAction;
+use utils::db::{WriteAction, ensure_schema_from_search_path};
 
 const SETUP_METADATA_TABLE_NAME: &str = "cocoindex_setup_metadata";
 pub const FLOW_VERSION_RESOURCE_TYPE: &str = "__FlowVersion";
@@ -362,6 +362,7 @@ impl MetadataTableSetup {
         }
         let lib_context = get_lib_context().await?;
         let pool = lib_context.require_builtin_db_pool()?;
+        ensure_schema_from_search_path(&pool).await?;
         let query_str = format!(
             "CREATE TABLE IF NOT EXISTS {SETUP_METADATA_TABLE_NAME} (
                 flow_name TEXT NOT NULL,
