@@ -16,9 +16,9 @@ use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use cocoindex_utils::fingerprint::Fingerprint;
 
-pub(crate) fn read_component_memoization<Prof: EngineProfile>(
+pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
     context: &ComponentProcessorContext<Prof>,
-    processor_fp: Fingerprint,
+    processor_fp: Option<Fingerprint>,
 ) -> Result<Option<Prof::ComponentProcRet>> {
     let key = db_schema::DbEntryKey::StablePath(
         context.stable_path().clone(),
@@ -28,18 +28,53 @@ pub(crate) fn read_component_memoization<Prof: EngineProfile>(
 
     let db_env = context.app_ctx().env().db_env();
     let db = context.app_ctx().db();
-    let rtxn = db_env.read_txn()?;
-    let Some(data) = db.get(&rtxn, key.as_slice())? else {
-        return Ok(None);
-    };
-    let memo_info: db_schema::ComponentMemoizationInfo<'_> = rmp_serde::from_slice(&data)?;
-    if memo_info.processor_fp != processor_fp {
-        return Ok(None);
+    {
+        let rtxn = db_env.read_txn()?;
+        let Some(data) = db.get(&rtxn, key.as_slice())? else {
+            return Ok(None);
+        };
+        if let Some(processor_fp) = processor_fp {
+            let memo_info: db_schema::ComponentMemoizationInfo<'_> = rmp_serde::from_slice(&data)?;
+            if memo_info.processor_fp == processor_fp {
+                let bytes = match memo_info.return_value {
+                    db_schema::MemoizedValue::Inlined(b) => b,
+                };
+                let ret = Prof::ComponentProcRet::from_bytes(bytes.as_ref());
+                match ret {
+                    Ok(ret) => return Ok(Some(ret)),
+                    Err(e) => {
+                        warn!(
+                            "Skip memoized return value because it failed in deserialization: {:?}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
     }
-    let bytes = match memo_info.return_value {
-        db_schema::MemoizedValue::Inlined(b) => b,
-    };
-    Ok(Some(Prof::ComponentProcRet::from_bytes(bytes.as_ref())?))
+
+    // Invalidate the memoization.
+    {
+        let mut wtxn = db_env.write_txn()?;
+        db.delete(&mut wtxn, key.as_slice())?;
+        wtxn.commit()?;
+    }
+
+    Ok(None)
+}
+
+fn delete_component_memoization<Prof: EngineProfile>(
+    context: &ComponentProcessorContext<Prof>,
+    wtxn: &mut RwTxn<'_>,
+) -> Result<()> {
+    let db = context.app_ctx().db();
+    let key = db_schema::DbEntryKey::StablePath(
+        context.stable_path().clone(),
+        db_schema::StablePathEntryKey::ComponentMemoization,
+    )
+    .encode()?;
+    db.delete(wtxn, key.as_slice())?;
+    Ok(())
 }
 
 pub(crate) fn write_component_memoization<Prof: EngineProfile>(
@@ -543,6 +578,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // Reconcile and pre-commit effects
     let curr_version = {
         let mut wtxn = db_env.write_txn()?;
+
+        if context.mode() == ComponentProcessingMode::Delete {
+            delete_component_memoization(&context, &mut wtxn)?;
+        }
 
         if let Some((parent_path, key)) = context.stable_path().as_ref().split_parent() {
             match context.mode() {

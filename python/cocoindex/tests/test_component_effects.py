@@ -857,7 +857,7 @@ def _declare_one_dict_w_exception(scope: coco.Scope, name: str) -> None:
     ).result()
     for key, value in _source_data[name].items():
         coco.declare_effect(scope, dict_provider.effect(key, value))
-    raise ValueError("test exception")
+    raise ValueError("injected test exception (which is expected)")
 
 
 @coco.function

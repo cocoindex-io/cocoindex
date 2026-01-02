@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import NamedTuple
 
+import pytest
+
 import cocoindex as coco
 from . import common
 from .common.effects import GlobalDictTarget, DictDataWithPrev, Metrics
@@ -13,6 +15,7 @@ class SourceDataEntry(NamedTuple):
     name: str
     version: int
     content: str
+    err: bool = False
 
     def __coco_memo_key__(self) -> object:
         return (self.name, self.version)
@@ -35,6 +38,8 @@ _run_source_data_entry_metrics = Metrics()
 @coco.function(memo=True)
 def _declare_source_data_entry(scope: coco.Scope, entry: SourceDataEntry) -> None:
     # Track the actual number of component executions for this function.
+    if entry.err:
+        raise Exception("injected test exception (which is expected)")
     _declare_source_data_entry_metrics.increment("calls")
     coco.declare_effect(scope, GlobalDictTarget.effect(entry.name, entry.content))
 
@@ -49,6 +54,8 @@ def _declare_source_data(scope: coco.Scope) -> None:
 def _run_source_data_entry(
     _scope: coco.Scope, entry: SourceDataEntry
 ) -> SourceDataResult:
+    if entry.err:
+        raise Exception("injected test exception (which is expected)")
     _run_source_data_entry_metrics.increment("calls")
     return SourceDataResult(name=entry.name, content=entry.content)
 
@@ -98,6 +105,43 @@ def test_source_data_memo() -> None:
         ),
     }
 
+    # Test deletion and re-insertion.
+    del _source_data["A"]
+    app.run()
+    assert _declare_source_data_entry_metrics.collect() == {}
+    assert GlobalDictTarget.store.data == {
+        "B": DictDataWithPrev(
+            data="contentB2", prev=["contentB1"], prev_may_be_missing=False
+        ),
+    }
+
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    app.run()
+    assert _declare_source_data_entry_metrics.collect() == {"calls": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(data="contentA2", prev=[], prev_may_be_missing=True),
+        "B": DictDataWithPrev(
+            data="contentB2", prev=["contentB1"], prev_may_be_missing=False
+        ),
+    }
+
+    # When the component starts to run on a new version, memoization is expected to be invalidated,
+    # even if it doesn't finish (e.g. an exception is raised).
+    # Because once it starts, there can be effects created by child components.
+    _source_data["A"] = SourceDataEntry(
+        name="A", version=2, content="contentA2", err=True
+    )
+    app.run()
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    app.run()
+    assert _declare_source_data_entry_metrics.collect() == {"calls": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(data="contentA2", prev=[], prev_may_be_missing=True),
+        "B": DictDataWithPrev(
+            data="contentB2", prev=["contentB1"], prev_may_be_missing=False
+        ),
+    }
+
 
 def test_source_data_memo_mount_run() -> None:
     _source_data_run.clear()
@@ -131,6 +175,38 @@ def test_source_data_memo_mount_run() -> None:
     ret3 = app.run()
     assert _run_source_data_entry_metrics.collect() == {"calls": 1}
     assert ret3 == [
+        SourceDataResult(name="A", content="contentA2"),
+        SourceDataResult(name="B", content="contentB2"),
+    ]
+
+    # Test deletion and re-insertion.
+    del _source_data_run["A"]
+    ret4 = app.run()
+    assert _run_source_data_entry_metrics.collect() == {}
+    assert ret4 == [
+        SourceDataResult(name="B", content="contentB2"),
+    ]
+
+    _source_data_run["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    ret5 = app.run()
+    assert _run_source_data_entry_metrics.collect() == {"calls": 1}
+    assert ret5 == [
+        SourceDataResult(name="A", content="contentA2"),
+        SourceDataResult(name="B", content="contentB2"),
+    ]
+
+    # When the component starts to run on a new version, memoization is expected to be invalidated,
+    # even if it doesn't finish (e.g. an exception is raised).
+    # Because once it starts, there can be effects created by child components.
+    _source_data_run["A"] = SourceDataEntry(
+        name="A", version=2, content="contentA2", err=True
+    )
+    with pytest.raises(Exception):
+        app.run()
+    _source_data_run["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    ret6 = app.run()
+    assert _run_source_data_entry_metrics.collect() == {"calls": 1}
+    assert ret6 == [
         SourceDataResult(name="A", content="contentA2"),
         SourceDataResult(name="B", content="contentB2"),
     ]

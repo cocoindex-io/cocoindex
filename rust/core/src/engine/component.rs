@@ -4,7 +4,7 @@ use crate::prelude::*;
 use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
 use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
 use crate::engine::execution::{
-    cleanup_tombstone, read_component_memoization, submit, write_component_memoization,
+    cleanup_tombstone, submit, use_or_invalidate_component_memoization, write_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
 use crate::state::effect_path::EffectPath;
@@ -313,13 +313,13 @@ impl<Prof: EngineProfile> Component<Prof> {
         // If it hits, we can immediately return without processing/submitting/waiting.
         let memo_fp_to_store: Option<Fingerprint> =
             processor.as_ref().and_then(|p| p.memo_key_fingerprint());
-        if let Some(fp) = memo_fp_to_store {
-            if let Some(ret) = read_component_memoization(processor_context, fp)? {
-                return Ok(Some(ComponentBuildOutput {
-                    ret,
-                    provider_registry: Default::default(),
-                }));
-            }
+        if let Some(ret) =
+            use_or_invalidate_component_memoization(processor_context, memo_fp_to_store)?
+        {
+            return Ok(Some(ComponentBuildOutput {
+                ret,
+                provider_registry: Default::default(),
+            }));
         }
 
         // Acquire the semaphore to ensure `process()` and `commit_effects()` cannot happen in parallel.
