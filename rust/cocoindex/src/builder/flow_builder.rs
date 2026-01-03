@@ -669,6 +669,7 @@ impl FlowBuilder {
                                 .all_setup_states
                                 .flows
                                 .get(&self.flow_instance_name),
+                            persistence_ctx.db_schema.as_deref(),
                         )
                         .await?
                     };
@@ -689,6 +690,7 @@ impl FlowBuilder {
                                 &mut *lib_setup_ctx,
                                 &persistence_ctx.builtin_db_pool,
                                 &mut output_buffer,
+                                persistence_ctx.db_schema.as_deref(),
                             )
                             .await?;
                             trace!(
