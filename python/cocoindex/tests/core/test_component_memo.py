@@ -1,3 +1,6 @@
+import cocoindex as coco
+import cocoindex.inspect as coco_inspect
+
 from dataclasses import dataclass
 from typing import NamedTuple
 import sys
@@ -5,8 +8,6 @@ import pathlib
 
 import pytest
 
-
-import cocoindex as coco
 from .. import common
 from ..common.effects import GlobalDictTarget, DictDataWithPrev, Metrics
 from ..common.module_utils import load_module_as
@@ -149,6 +150,34 @@ def test_source_data_memo() -> None:
     }
 
 
+def test_source_data_memo_cleanup() -> None:
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _declare_source_data_entry_metrics.clear()
+
+    app = coco.App(
+        _declare_source_data,
+        coco.AppConfig(name="test_source_data_memo_cleanup", environment=coco_env),
+    )
+
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
+    app.run()
+    assert _declare_source_data_entry_metrics.collect() == {"calls": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
+    }
+    assert coco_inspect.list_stable_paths(app) == [
+        coco.ROOT_PATH,
+        coco.ROOT_PATH / "A",
+    ]
+
+    del _source_data["A"]
+    app.run()
+    assert _declare_source_data_entry_metrics.collect() == {}
+    assert GlobalDictTarget.store.data == {}
+    assert coco_inspect.list_stable_paths(app) == [coco.ROOT_PATH]
+
+
 def test_source_data_memo_mount_run() -> None:
     _source_data_run.clear()
     _run_source_data_entry_metrics.clear()
@@ -216,6 +245,35 @@ def test_source_data_memo_mount_run() -> None:
         SourceDataResult(name="A", content="contentA3"),
         SourceDataResult(name="B", content="contentB2"),
     ]
+
+
+def test_source_data_memo_mount_run_cleanup() -> None:
+    _source_data_run.clear()
+    _run_source_data_entry_metrics.clear()
+
+    app = coco.App(
+        _run_source_data,
+        coco.AppConfig(
+            name="test_source_data_memo_mount_run_cleanup", environment=coco_env
+        ),
+    )
+
+    _source_data_run["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
+    ret1 = app.run()
+    assert ret1 == [
+        SourceDataResult(name="A", content="contentA1"),
+    ]
+    assert _run_source_data_entry_metrics.collect() == {"calls": 1}
+    assert coco_inspect.list_stable_paths(app) == [
+        coco.ROOT_PATH,
+        coco.ROOT_PATH / "A",
+    ]
+
+    del _source_data_run["A"]
+    ret2 = app.run()
+    assert ret2 == []
+    assert _run_source_data_entry_metrics.collect() == {}
+    assert coco_inspect.list_stable_paths(app) == [coco.ROOT_PATH]
 
 
 def test_memo_invalidation_on_decorator_change() -> None:
