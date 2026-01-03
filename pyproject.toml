@@ -98,6 +98,8 @@ dev = [
 [tool.uv]
 package = false
 
+free-threaded = ["sentence-transformers>=3.3.1", "colpali-engine"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
