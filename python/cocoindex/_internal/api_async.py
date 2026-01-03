@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import (
     Any,
+    Concatenate,
     Generic,
     Mapping,
     Sequence,
@@ -80,41 +81,41 @@ class ComponentMountHandle:
 
 @overload
 def mount_run(
-    processor_fn: Function[P, ResolvesTo[ReturnT]],
+    processor_fn: Function[Concatenate[Scope, P], ResolvesTo[ReturnT]],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[ReturnT]: ...
 @overload
 def mount_run(
-    processor_fn: Function[P, Sequence[ResolvesTo[ReturnT]]],
+    processor_fn: Function[Concatenate[Scope, P], Sequence[ResolvesTo[ReturnT]]],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
 @overload
 def mount_run(
-    processor_fn: Function[P, Sequence[ResolvesTo[ReturnT]]],
+    processor_fn: Function[Concatenate[Scope, P], Sequence[ResolvesTo[ReturnT]]],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
 @overload
 def mount_run(
-    processor_fn: Function[P, Mapping[K, ResolvesTo[ReturnT]]],
+    processor_fn: Function[Concatenate[Scope, P], Mapping[K, ResolvesTo[ReturnT]]],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[Mapping[K, ReturnT]]: ...
 @overload
 def mount_run(
-    processor_fn: Function[P, ReturnT],
+    processor_fn: Function[Concatenate[Scope, P], ReturnT],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[ReturnT]: ...
 def mount_run(
-    processor_fn: Function[P, ReturnT],
+    processor_fn: Function[Concatenate[Scope, P], ReturnT],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
@@ -140,7 +141,7 @@ def mount_run(
 
 
 def mount(
-    processor_fn: Function[P, ReturnT],
+    processor_fn: Function[Concatenate[Scope, P], ReturnT],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,

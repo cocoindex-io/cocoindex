@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import (
     Any,
+    Concatenate,
     Generic,
     ParamSpec,
     TypeVar,
@@ -12,6 +13,7 @@ from . import core  # type: ignore
 from .environment import Environment
 from .function import Function
 from .environment import default_env
+from .scope import Scope
 
 
 P = ParamSpec("P")
@@ -26,7 +28,7 @@ class AppConfig:
 
 class AppBase(Generic[P, R]):
     _name: str
-    _main_fn: Function[P, R]
+    _main_fn: Function[Concatenate[Scope, P], R]
     _app_args: tuple[Any, ...]
     _app_kwargs: dict[str, Any]
 
@@ -35,7 +37,7 @@ class AppBase(Generic[P, R]):
 
     def __init__(
         self,
-        main_fn: Function[P, R],
+        main_fn: Function[Concatenate[Scope, P], R],
         name_or_config: str | AppConfig,
         /,
         *args: P.args,
