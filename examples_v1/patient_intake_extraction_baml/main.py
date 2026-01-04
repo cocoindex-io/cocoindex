@@ -40,7 +40,9 @@ async def process_patient_form(
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     """Main application function that processes patient intake forms."""
-    target = coco.mount_run(localfs.dir_target, scope / "setup", outdir).result()
+    target = coco.mount_run(
+        localfs.declare_dir_target, scope / "setup", outdir
+    ).result()
 
     files = localfs.walk_dir(
         sourcedir,

@@ -969,7 +969,7 @@ class PgDatabase:
     ) -> None:
         _unregister_db(self._key)
 
-    def table_target(
+    def declare_table_target(
         self,
         scope: coco.Scope,
         table_name: str,

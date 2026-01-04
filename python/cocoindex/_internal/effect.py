@@ -234,7 +234,7 @@ def declare_effect(scope: Scope, effect: Effect[None]) -> None:
 def declare_effect_with_child(
     scope: Scope,
     effect: Effect[EffectHandler[KeyT, ValueT, Any, OptChildHandlerT]],
-) -> EffectProvider[KeyT, ValueT, OptChildHandlerT, PendingS]:
+) -> PendingEffectProvider[KeyT, ValueT, OptChildHandlerT]:
     """
     Declare an effect with a child handler within the given scope.
 
