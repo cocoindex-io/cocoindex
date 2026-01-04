@@ -4,7 +4,6 @@ import inspect
 import types
 import typing
 from typing import (
-    TYPE_CHECKING,
     Annotated,
     Any,
     Iterator,
@@ -20,14 +19,7 @@ try:
 
     PYDANTIC_AVAILABLE = True
 except ImportError:
-    pydantic = None  # type: ignore[assignment]
     PYDANTIC_AVAILABLE = False
-
-if TYPE_CHECKING:
-    if PYDANTIC_AVAILABLE:
-        from pydantic import BaseModel
-    else:
-        BaseModel = object  # type: ignore[misc,assignment]
 
 
 def extract_ndarray_elem_dtype(ndarray_type: Any) -> Any:
