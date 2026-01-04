@@ -74,7 +74,7 @@ def test_dicts_data_together_insert() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
@@ -106,7 +106,7 @@ def test_dicts_data_together_delete_dict() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
@@ -127,7 +127,7 @@ def test_dicts_data_together_delete_dict() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1, "delete": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D2",
@@ -151,7 +151,7 @@ def test_dicts_data_together_delete_dict() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
@@ -205,7 +205,7 @@ def test_dicts_data_together_delete_entry() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
@@ -271,7 +271,7 @@ def test_dicts_in_sub_components_insert() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D1" / "setup",
@@ -305,7 +305,7 @@ def test_dicts_in_sub_components_delete_dict() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D1" / "setup",
@@ -327,7 +327,7 @@ def test_dicts_in_sub_components_delete_dict() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1, "delete": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D2",
         coco.ROOT_PATH / "D2" / "setup",
@@ -352,7 +352,7 @@ def test_dicts_in_sub_components_delete_dict() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D1" / "setup",
@@ -408,7 +408,7 @@ def test_dicts_in_sub_components_delete_entry() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D1" / "setup",
@@ -487,7 +487,7 @@ def test_dicts_containers_together_insert() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D2",
@@ -519,7 +519,7 @@ def test_dicts_containers_together_delete_dict() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 2}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D2",
@@ -540,7 +540,7 @@ def test_dicts_containers_together_delete_dict() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1, "delete": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D2",
         coco.ROOT_PATH / "D3",
@@ -564,7 +564,7 @@ def test_dicts_containers_together_delete_dict() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D2",
@@ -618,7 +618,7 @@ def test_dicts_containers_together_delete_entry() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "setup",
@@ -676,7 +676,7 @@ async def test_dicts_containers_together_insert_async() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D2",
@@ -703,7 +703,7 @@ async def test_dicts_containers_together_delete_dict_async() -> None:
     await app.run()
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 2}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D2",
@@ -724,7 +724,7 @@ async def test_dicts_containers_together_delete_dict_async() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1, "delete": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D2",
         coco.ROOT_PATH / "D3",
@@ -748,7 +748,7 @@ async def test_dicts_containers_together_delete_dict_async() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D2",
@@ -804,7 +804,7 @@ async def test_dicts_containers_together_delete_entry_async() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "setup",
@@ -839,7 +839,7 @@ def test_proceed_with_failed_creation() -> None:
         },
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
@@ -880,7 +880,7 @@ def test_cleanup_partially_built_components() -> None:
     _source_data["D1"] = {"a": 1}
     app.run()
     assert DictsTarget.store.data == {"D1": {}}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "D1",
         coco.ROOT_PATH / "D1" / "setup",
@@ -889,7 +889,7 @@ def test_cleanup_partially_built_components() -> None:
     del _source_data["D1"]
     app.run()
     assert DictsTarget.store.data == {}
-    assert coco_inspect.list_stable_paths(app) == [coco.ROOT_PATH]
+    assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
 
 
 ##################################################################################
@@ -910,7 +910,7 @@ def test_retry_from_gc_failed_components() -> None:
     _source_data["D1"] = {}
     app.run()
     assert DictsTarget.store.data == {"D1": {}}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
@@ -924,7 +924,7 @@ def test_retry_from_gc_failed_components() -> None:
     finally:
         DictsTarget.store.sink_exception = False
     assert DictsTarget.store.data == {"D1": {}}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict" / "D1",
     ]
@@ -932,7 +932,7 @@ def test_retry_from_gc_failed_components() -> None:
     # After retry, it should proceed with GC
     app.run()
     assert DictsTarget.store.data == {}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
     ]
 
@@ -951,7 +951,7 @@ def test_restore_from_gc_failed_components() -> None:
     _source_data["D1"] = {}
     app.run()
     assert DictsTarget.store.data == {"D1": {}}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
@@ -965,7 +965,7 @@ def test_restore_from_gc_failed_components() -> None:
     finally:
         DictsTarget.store.sink_exception = False
     assert DictsTarget.store.data == {"D1": {}}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict" / "D1",
     ]
@@ -976,7 +976,7 @@ def test_restore_from_gc_failed_components() -> None:
     assert DictsTarget.store.data == {
         "D1": {"a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True)}
     }
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
@@ -1046,7 +1046,7 @@ async def test_async_dicts() -> None:
     }
     assert AsyncDictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
     assert AsyncDictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",
@@ -1094,7 +1094,7 @@ def test_async_dicts_sync_app() -> None:
     }
     assert AsyncDictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
     assert AsyncDictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "dict",
         coco.ROOT_PATH / "dict" / "D1",

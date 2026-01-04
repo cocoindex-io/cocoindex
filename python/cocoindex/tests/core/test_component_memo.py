@@ -166,7 +166,7 @@ def test_source_data_memo_cleanup() -> None:
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
     }
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "A",
     ]
@@ -175,7 +175,7 @@ def test_source_data_memo_cleanup() -> None:
     app.run()
     assert _declare_source_data_entry_metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
-    assert coco_inspect.list_stable_paths(app) == [coco.ROOT_PATH]
+    assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
 
 
 def test_source_data_memo_mount_run() -> None:
@@ -264,7 +264,7 @@ def test_source_data_memo_mount_run_cleanup() -> None:
         SourceDataResult(name="A", content="contentA1"),
     ]
     assert _run_source_data_entry_metrics.collect() == {"calls": 1}
-    assert coco_inspect.list_stable_paths(app) == [
+    assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "A",
     ]
@@ -273,7 +273,7 @@ def test_source_data_memo_mount_run_cleanup() -> None:
     ret2 = app.run()
     assert ret2 == []
     assert _run_source_data_entry_metrics.collect() == {}
-    assert coco_inspect.list_stable_paths(app) == [coco.ROOT_PATH]
+    assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
 
 
 def test_memo_invalidation_on_decorator_change() -> None:
