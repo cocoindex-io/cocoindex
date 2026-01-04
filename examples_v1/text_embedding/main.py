@@ -89,7 +89,7 @@ def setup_table(
     dim = embedder().get_sentence_embedding_dimension()
     if dim is None:
         raise RuntimeError(f"Embedding dimension is unknown for model {EMBED_MODEL}.")
-    return _state.db.table_target(
+    return _state.db.declare_table_target(
         scope,
         table_name=TABLE_NAME,
         table_schema=postgres.TableSchema(

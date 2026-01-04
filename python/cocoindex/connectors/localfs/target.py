@@ -194,7 +194,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
 
 
 @coco.function
-def dir_target(
+def declare_dir_target(
     scope: coco.Scope,
     path: pathlib.Path,
     *,
@@ -218,4 +218,4 @@ def dir_target(
     return DirTarget(provider)
 
 
-__all__ = ["DirTarget", "dir_target"]
+__all__ = ["DirTarget", "declare_dir_target"]

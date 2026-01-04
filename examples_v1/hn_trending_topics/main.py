@@ -251,13 +251,13 @@ def setup_tables(scope: coco.Scope) -> TableTargets[coco.PendingS]:
     """Create table targets for messages and topics."""
     assert _state.db is not None
     return TableTargets(
-        messages=_state.db.table_target(
+        messages=_state.db.declare_table_target(
             scope,
             table_name="hn_messages",
             table_schema=postgres.TableSchema(HnMessage, primary_key=["id"]),
             pg_schema_name="coco_examples",
         ),
-        topics=_state.db.table_target(
+        topics=_state.db.declare_table_target(
             scope,
             table_name="hn_topics",
             table_schema=postgres.TableSchema(

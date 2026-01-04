@@ -251,10 +251,26 @@ class DictsEffectStore:
 class DictsTarget:
     store = DictsEffectStore()
     _provider = coco.register_root_effect_provider("test_effect/dicts", store)
-    effect = _provider.effect
+
+    @staticmethod
+    @coco.function
+    def declare_dict_target(
+        scope: coco.Scope, name: str
+    ) -> coco.PendingEffectProvider[str, None]:
+        return coco.declare_effect_with_child(
+            scope, DictsTarget._provider.effect(name, None)
+        )
 
 
 class AsyncDictsTarget:
     store = DictsEffectStore(use_async=True)
     _provider = coco.register_root_effect_provider("test_effect/async_dicts", store)
-    effect = _provider.effect
+
+    @staticmethod
+    @coco.function
+    def declare_dict_target(
+        scope: coco.Scope, name: str
+    ) -> coco.PendingEffectProvider[str, None]:
+        return coco.declare_effect_with_child(
+            scope, AsyncDictsTarget._provider.effect(name, None)
+        )

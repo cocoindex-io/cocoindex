@@ -13,13 +13,6 @@ coco_env = common.create_test_env(__file__)
 _source_data: dict[str, dict[str, Any]] = {}
 
 
-@coco.function
-def _declare_dict_container(
-    scope: coco.Scope, name: str
-) -> coco.PendingEffectProvider[str]:
-    return coco.declare_effect_with_child(scope, DictsTarget.effect(name, None))
-
-
 ##################################################################################
 
 
@@ -27,7 +20,7 @@ def _declare_dict_container(
 def _declare_dicts_data_together(scope: coco.Scope) -> None:
     for name, data in _source_data.items():
         single_dict_provider = coco.mount_run(
-            _declare_dict_container,
+            DictsTarget.declare_dict_target,
             scope / "dict" / name,
             name,
         ).result()
@@ -218,7 +211,7 @@ def test_dicts_data_together_delete_entry() -> None:
 @coco.function
 def _declare_one_dict(scope: coco.Scope, name: str) -> None:
     dict_provider = coco.mount_run(
-        _declare_dict_container, scope / "setup", name
+        DictsTarget.declare_dict_target, scope / "setup", name
     ).result()
     for key, value in _source_data[name].items():
         coco.declare_effect(scope, dict_provider.effect(key, value))
@@ -422,10 +415,7 @@ def test_dicts_in_sub_components_delete_entry() -> None:
 def _declare_dict_containers(
     scope: coco.Scope, names: Collection[str]
 ) -> dict[str, coco.PendingEffectProvider[str]]:
-    providers = {
-        name: coco.declare_effect_with_child(scope, DictsTarget.effect(name, None))
-        for name in names
-    }
+    providers = {name: DictsTarget.declare_dict_target(scope, name) for name in names}
     return providers
 
 
@@ -853,7 +843,7 @@ def test_proceed_with_failed_creation() -> None:
 @coco.function
 def _declare_one_dict_w_exception(scope: coco.Scope, name: str) -> None:
     dict_provider = coco.mount_run(
-        _declare_dict_container, scope / "setup", name
+        DictsTarget.declare_dict_target, scope / "setup", name
     ).result()
     for key, value in _source_data[name].items():
         coco.declare_effect(scope, dict_provider.effect(key, value))
@@ -988,17 +978,10 @@ def test_restore_from_gc_failed_components() -> None:
 
 
 @coco.function
-async def _declare_async_dict_container(
-    scope: coco.Scope, name: str
-) -> coco.PendingEffectProvider[str]:
-    return coco.declare_effect_with_child(scope, AsyncDictsTarget.effect(name, None))
-
-
-@coco.function
 async def _declare_async_dicts_data_together(scope: coco.Scope) -> None:
     for name, data in _source_data.items():
         single_dict_provider = await coco_aio.mount_run(
-            _declare_async_dict_container,
+            AsyncDictsTarget.declare_dict_target,
             scope / "dict" / name,
             name,
         ).result()
