@@ -27,7 +27,7 @@ import cocoindex as coco
 import cocoindex.aio as coco_aio
 from cocoindex.connectors import localfs, postgres
 from cocoindex.extras.text import RecursiveSplitter
-from cocoindex.resources.files import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
 from cocoindex.resources.schema import VectorSpec
 

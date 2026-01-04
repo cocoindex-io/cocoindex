@@ -5,7 +5,7 @@ from typing import Iterator
 from datetime import datetime
 from pathlib import Path
 
-from cocoindex.resources.files import (
+from cocoindex.resources.file import (
     FileLike,
     FilePathMatcher,
     MatchAllFilePathMatcher,

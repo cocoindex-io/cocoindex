@@ -5,7 +5,7 @@ from typing import Iterator
 from dotenv import load_dotenv
 
 import cocoindex as coco
-from cocoindex.resources.files import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.connectors import localfs
 from baml_client import b
 from baml_client.types import Patient

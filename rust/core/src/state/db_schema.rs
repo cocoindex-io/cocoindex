@@ -23,8 +23,8 @@ pub enum StablePathEntryKey {
     /// Value type: ComponentMemoizationInfo
     ComponentMemoization,
 
-    /// Value type: FunctionMemoizationInfo
-    FunctionMemoization,
+    /// Value type: FunctionMemoizationEntry
+    FunctionMemoization(Fingerprint),
 
     /// Required.
     /// Value type: StablePathEntryEffectInfo
@@ -45,7 +45,10 @@ impl storekey::Encode for StablePathEntryKey {
             // Should not be less than 2.
             StablePathEntryKey::Metadata => e.write_u8(0x10),
             StablePathEntryKey::ComponentMemoization => e.write_u8(0x20),
-            StablePathEntryKey::FunctionMemoization => e.write_u8(0x30),
+            StablePathEntryKey::FunctionMemoization(fp) => {
+                e.write_u8(0x30)?;
+                fp.encode(e)
+            }
             StablePathEntryKey::Effects => e.write_u8(0x40),
             StablePathEntryKey::ChildExistencePrefix => e.write_u8(0xa0),
             StablePathEntryKey::ChildExistence(key) => {
@@ -68,7 +71,10 @@ impl storekey::Decode for StablePathEntryKey {
         let key = match d.read_u8()? {
             0x10 => StablePathEntryKey::Metadata,
             0x20 => StablePathEntryKey::ComponentMemoization,
-            0x30 => StablePathEntryKey::FunctionMemoization,
+            0x30 => {
+                let fp = Fingerprint::decode(d)?;
+                StablePathEntryKey::FunctionMemoization(fp)
+            }
             0x40 => StablePathEntryKey::Effects,
             0xa0 => {
                 let key: StableKey = storekey::Decode::decode(d)?;
@@ -181,16 +187,6 @@ pub struct FunctionMemoizationEntry<'a> {
     /// Only needs to keep dependencies with side effects (child components / effects / dependency entries with side effects).
     #[serde(rename = "D")]
     pub dependency_entries: Vec<Fingerprint>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct FunctionMemoizationInfo<'a> {
-    /// Return value of the memoized function call.
-    #[serde(rename = "R")]
-    pub return_value: Cow<'a, [u8]>,
-
-    #[serde(rename = "E")]
-    pub entries: HashMap<Fingerprint, FunctionMemoizationEntry<'a>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

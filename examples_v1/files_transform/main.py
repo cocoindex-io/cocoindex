@@ -2,7 +2,7 @@ import pathlib
 from typing import Iterator
 
 import cocoindex as coco
-from cocoindex.resources.files import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.connectors import localfs
 from markdown_it import MarkdownIt
 
