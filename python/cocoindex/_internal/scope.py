@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import core  # type: ignore
+from . import core
 from .stable_path import StableKey
 
 
@@ -32,7 +32,7 @@ class Scope:
         return self.concat_part(part)
 
     def __str__(self) -> str:
-        return self._core_path.to_string()  # type: ignore
+        return self._core_path.to_string()
 
     def __repr__(self) -> str:
         return f"Scope({self._core_path.to_string()})"

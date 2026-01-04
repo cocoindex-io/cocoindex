@@ -13,18 +13,10 @@ import pickle
 import struct
 import typing
 
-from . import core  # type: ignore
+from . import core
 
 
 _KeyFn = typing.Callable[[typing.Any], typing.Any]
-
-
-class Fingerprint(typing.Protocol):
-    """Structural type for `cocoindex._internal.core.Fingerprint` (pyo3, untyped)."""
-
-    def as_bytes(self) -> bytes: ...
-    def to_base64(self) -> str: ...
-    def __bytes__(self) -> bytes: ...
 
 
 # Canonical values are composed of primitives and tuples of canonical values.
@@ -84,9 +76,6 @@ def _stable_sort_key(v: _CanonicalValue) -> tuple[typing.Any, ...]:
     raise TypeError(f"Unexpected non-canonical value encountered: {type(v)!r}")
 
 
-_PRIMITIVE_TYPES: tuple[type, ...] = (bool, int, float, str, bytes)
-
-
 def _canonicalize(obj: object, _seen: dict[int, int] | None) -> _CanonicalValue:
     # 0) Cycle / shared-reference tracking for containers
     if _seen is None:
@@ -95,9 +84,9 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> _CanonicalValue:
     # 1) Primitives
     if obj is None:
         return None
-    if isinstance(obj, _PRIMITIVE_TYPES):
+    if isinstance(obj, (bool, int, float, str, bytes)):
         # bool is a subclass of int; returning as-is preserves bools correctly.
-        return obj  # type: ignore[return-value]
+        return obj
     if isinstance(obj, (bytearray, memoryview)):
         return bytes(obj)
 
@@ -185,7 +174,7 @@ def fingerprint_call(
     kwargs: dict[str, object],
     *,
     version: str | int | None = None,
-) -> Fingerprint:
+) -> core.Fingerprint:
     """Compute the deterministic fingerprint for a function call.
 
     Returns a `cocoindex._internal.core.Fingerprint` object (Python wrapper around a
@@ -199,11 +188,10 @@ def fingerprint_call(
         version=version,
     )
     # One Python -> Rust call.
-    return core.fingerprint_memo_key(call_key_obj)  # type: ignore
+    return core.fingerprint_memo_key(call_key_obj)
 
 
 __all__ = [
-    "Fingerprint",
     "register_memo_key_function",
     "unregister_memo_key_function",
     "fingerprint_call",

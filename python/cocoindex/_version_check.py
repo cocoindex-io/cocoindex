@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import sys
-from ._internal import core as _engine  # type: ignore
+from ._internal import core as _core
 from . import __version__
 
 
 def _sanity_check_engine() -> None:
-    engine_file = getattr(_engine, "__file__", "<unknown>")
-    engine_version = getattr(_engine, "__version__", None)
+    engine_file = getattr(_core, "__file__", "<unknown>")
+    engine_version = getattr(_core, "__version__", None)
 
     problems: list[str] = []
 

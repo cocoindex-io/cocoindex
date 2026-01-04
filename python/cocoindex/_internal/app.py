@@ -9,7 +9,7 @@ from typing import (
     TypeVar,
 )
 
-from . import core  # type: ignore
+from . import core
 from .environment import Environment
 from .function import Function
 from .environment import default_env

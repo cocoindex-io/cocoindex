@@ -15,7 +15,7 @@ from typing import (
     overload,
 )
 
-from . import core  # type: ignore
+from . import core
 
 from .scope import Scope
 from .memo_key import fingerprint_call
@@ -33,7 +33,7 @@ class Function(Protocol[P, R_co]):
         path: core.StablePath,
         *args: P0.args,
         **kwargs: P0.kwargs,
-    ) -> core.ComponentProcessor: ...
+    ) -> core.ComponentProcessor[R_co]: ...
 
 
 class SyncFunction(Function[P, R_co]):
@@ -52,10 +52,10 @@ class SyncFunction(Function[P, R_co]):
         path: core.StablePath,
         *args: P0.args,
         **kwargs: P0.kwargs,
-    ) -> core.ComponentProcessor:
+    ) -> core.ComponentProcessor[R_co]:
         def _build(builder_ctx: core.ComponentProcessorContext) -> R_co:
             scope = Scope(path, builder_ctx)
-            return self._fn(scope, *args, **kwargs)  # type: ignore
+            return self._fn(scope, *args, **kwargs)
 
         memo_fp = fingerprint_call(self._fn, args, kwargs) if self._memo else None
         return core.ComponentProcessor.new_sync(_build, memo_fp)
@@ -82,10 +82,10 @@ class AsyncFunction(Function[P, R_co]):
         path: core.StablePath,
         *args: P0.args,
         **kwargs: P0.kwargs,
-    ) -> core.ComponentProcessor:
+    ) -> core.ComponentProcessor[R_co]:
         async def _build(builder_ctx: core.ComponentProcessorContext) -> R_co:
             scope = Scope(path, builder_ctx)
-            return await self._fn(scope, *args, **kwargs)  # type: ignore
+            return await self._fn(scope, *args, **kwargs)
 
         memo_fp = fingerprint_call(self._fn, args, kwargs) if self._memo else None
         return core.ComponentProcessor.new_async(_build, memo_fp)

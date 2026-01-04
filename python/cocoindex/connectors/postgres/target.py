@@ -30,6 +30,14 @@ from typing import (
 
 from typing_extensions import TypeVar
 
+try:
+    import asyncpg  # type: ignore
+    import pgvector.asyncpg  # type: ignore
+except ImportError as e:
+    raise ImportError(
+        "asyncpg and pgvector are required to use the PostgreSQL connector. Please install cocoindex[postgres]."
+    ) from e
+
 import numpy as np
 
 import cocoindex as coco
@@ -44,10 +52,6 @@ from cocoindex._internal.datatype import (
     is_struct_type,
 )
 from cocoindex.resources.schema import VectorSpec
-
-import asyncpg  # type: ignore
-import pgvector.asyncpg  # type: ignore
-
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -275,7 +279,7 @@ class TableSchema(Generic[RowT]):
             self.row_type = None
         elif is_struct_type(columns):
             self.columns = self._columns_from_struct_type(columns, column_specs)
-            self.row_type = columns  # type: ignore[assignment]
+            self.row_type = columns
         else:
             raise TypeError(
                 f"columns must be a struct type (dataclass, NamedTuple, Pydantic model) "
@@ -911,7 +915,7 @@ class TableTarget(
         out: dict[str, Any] = {}
         for col_name, col in self._table_schema.columns.items():
             if isinstance(row, dict):
-                value = row.get(col_name)  # type: ignore[union-attr]
+                value = row.get(col_name)
             else:
                 value = getattr(row, col_name)
 

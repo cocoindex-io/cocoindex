@@ -13,12 +13,13 @@ from typing import (
     overload,
 )
 
-from . import core  # type: ignore
+from . import core
 from .app import AppBase
 from .scope import Scope
 from .function import Function
 from .pending_marker import ResolvesTo
 from . import environment as _env
+from .typing import NOT_SET, NotSetType
 from contextlib import contextmanager
 
 
@@ -27,35 +28,33 @@ K = TypeVar("K")
 ReturnT = TypeVar("ReturnT")
 ResolvedT = TypeVar("ResolvedT")
 
-_NOT_SET = object()
-
 
 class ComponentMountRunHandle(Generic[ReturnT]):
     """Handle for a component that was started with `mount_run()`. Allows getting the result."""
 
     __slots__ = ("_core", "_lock", "_cached_result", "_parent_ctx")
 
-    _core: core.ComponentMountRunHandle
+    _core: core.ComponentMountRunHandle[ReturnT]
     _lock: threading.Lock
-    _cached_result: ReturnT | object
+    _cached_result: ReturnT | NotSetType
     _parent_ctx: core.ComponentProcessorContext
 
     def __init__(
         self,
-        core_handle: core.ComponentMountRunHandle,
+        core_handle: core.ComponentMountRunHandle[ReturnT],
         parent_ctx: core.ComponentProcessorContext,
     ) -> None:
         self._core = core_handle
         self._lock = threading.Lock()
-        self._cached_result = _NOT_SET
+        self._cached_result = NOT_SET
         self._parent_ctx = parent_ctx
 
     def result(self) -> ReturnT:
         """Get the result of the component. Can be called multiple times."""
         with self._lock:
-            if self._cached_result is _NOT_SET:
+            if isinstance(self._cached_result, NotSetType):
                 self._cached_result = self._core.result(self._parent_ctx)
-            return self._cached_result  # type: ignore
+            return self._cached_result
 
 
 class ComponentMountHandle:
@@ -173,14 +172,14 @@ class App(AppBase[P, ReturnT]):
         processor = self._main_fn._as_core_component_processor(
             root_path,
             *self._app_args,
-            **self._app_kwargs,  # type: ignore[arg-type]
+            **self._app_kwargs,
         )
         if self._environment is not None:
             loop = self._environment.event_loop
         else:
             loop = _env.default_env_sync().event_loop
         core_app = asyncio.run_coroutine_threadsafe(self._get_core(), loop).result()
-        return core_app.run(processor)  # type: ignore
+        return core_app.run(processor)
 
 
 def start() -> None:

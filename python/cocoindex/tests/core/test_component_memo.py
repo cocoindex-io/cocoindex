@@ -317,7 +317,7 @@ def test_memo_invalidation_on_decorator_change() -> None:
 
     # Step 1: Load with memo=True and run.
     mod_with = load_module_as(with_memo_path, fake_module_name)
-    mod_with.set_metrics(metrics)  # type: ignore[attr-defined]
+    mod_with.set_metrics(metrics)
     current_module.clear()
     current_module.append(mod_with)
 
@@ -328,7 +328,7 @@ def test_memo_invalidation_on_decorator_change() -> None:
 
     # Step 2: Load without memo=True and run.
     mod_without = load_module_as(without_memo_path, fake_module_name)
-    mod_without.set_metrics(metrics)  # type: ignore[attr-defined]
+    mod_without.set_metrics(metrics)
     current_module.clear()
     current_module.append(mod_without)
 
@@ -339,7 +339,7 @@ def test_memo_invalidation_on_decorator_change() -> None:
 
     # Step 3: Load with memo=True again and run.
     mod_with_again = load_module_as(with_memo_path, fake_module_name)
-    mod_with_again.set_metrics(metrics)  # type: ignore[attr-defined]
+    mod_with_again.set_metrics(metrics)
     current_module.clear()
     current_module.append(mod_with_again)
 

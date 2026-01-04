@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from . import core  # type: ignore
+from . import core
 
 StableKey = None | bool | int | str | bytes | uuid.UUID | tuple["StableKey", ...]
 
@@ -29,7 +29,7 @@ class StablePath:
         return self.concat_part(part)
 
     def __str__(self) -> str:
-        return self._core.to_string()  # type: ignore
+        return self._core.to_string()
 
     def __repr__(self) -> str:
         return str(self)
@@ -37,7 +37,7 @@ class StablePath:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, StablePath):
             return False
-        return self._core == other._core  # type: ignore
+        return self._core == other._core
 
     def __hash__(self) -> int:
         return hash(self._core)

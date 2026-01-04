@@ -19,7 +19,7 @@ from typing import (
 )
 
 
-from . import core  # type: ignore
+from . import core
 from . import setting
 from ..engine_object import dump_engine_object
 

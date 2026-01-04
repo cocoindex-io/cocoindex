@@ -13,11 +13,12 @@ from typing import (
     overload,
 )
 
-from . import core  # type: ignore
+from . import core
 from .app import AppBase
 from .pending_marker import ResolvesTo
 from .scope import Scope
 from .function import Function
+from .typing import NOT_SET, NotSetType
 from . import environment as _env
 
 
@@ -26,35 +27,33 @@ K = TypeVar("K")
 ReturnT = TypeVar("ReturnT")
 ResolvedT = TypeVar("ResolvedT")
 
-_NOT_SET = object()
-
 
 class ComponentMountRunHandle(Generic[ReturnT]):
     """Handle for a component that was started with `mount_run()`. Allows awaiting the result."""
 
     __slots__ = ("_core", "_lock", "_cached_result", "_parent_ctx")
 
-    _core: core.ComponentMountRunHandle
+    _core: core.ComponentMountRunHandle[ReturnT]
     _lock: asyncio.Lock
-    _cached_result: ReturnT | object
+    _cached_result: ReturnT | NotSetType
     _parent_ctx: core.ComponentProcessorContext
 
     def __init__(
         self,
-        core_handle: core.ComponentMountRunHandle,
+        core_handle: core.ComponentMountRunHandle[ReturnT],
         parent_ctx: core.ComponentProcessorContext,
     ) -> None:
         self._core = core_handle
         self._lock = asyncio.Lock()
-        self._cached_result = _NOT_SET
+        self._cached_result = NOT_SET
         self._parent_ctx = parent_ctx
 
     async def result(self) -> ReturnT:
         """Get the result of the component. Can be called multiple times."""
         async with self._lock:
-            if self._cached_result is _NOT_SET:
+            if isinstance(self._cached_result, NotSetType):
                 self._cached_result = await self._core.result_async(self._parent_ctx)
-            return self._cached_result  # type: ignore
+            return self._cached_result
 
 
 class ComponentMountHandle:
@@ -172,10 +171,10 @@ class App(AppBase[P, ReturnT]):
         processor = self._main_fn._as_core_component_processor(
             root_path,
             *self._app_args,
-            **self._app_kwargs,  # type: ignore[arg-type]
+            **self._app_kwargs,
         )
         core_app = await self._get_core()
-        return await core_app.run_async(processor)  # type: ignore
+        return await core_app.run_async(processor)
 
 
 async def start() -> None:

@@ -15,14 +15,14 @@ import threading
 import weakref
 from typing_extensions import TypeIs, TypeVar
 
-from . import core  # type: ignore
+from . import core
 from .scope import Scope
 from .pending_marker import PendingS, MaybePendingS, ResolvesTo
 
 
 class NonExistenceType:
     __slots__ = ()
-    _instance: "NonExistenceType | None" = None
+    _instance: NonExistenceType | None = None
 
     def __new__(cls) -> NonExistenceType:
         if cls._instance is None:

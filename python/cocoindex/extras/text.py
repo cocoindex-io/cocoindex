@@ -12,7 +12,7 @@ __all__ = [
 
 import typing as _typing
 
-from cocoindex._internal import core as _core  # type: ignore
+from cocoindex._internal import core as _core
 from cocoindex.resources import chunk as _chunk
 
 
@@ -33,7 +33,7 @@ def detect_code_language(*, filename: str) -> str | None:
         >>> detect_code_language(filename="unknown.xyz")
         None
     """
-    return _core.detect_code_language(filename=filename)  # type: ignore
+    return _core.detect_code_language(filename=filename)
 
 
 class SeparatorSplitter:

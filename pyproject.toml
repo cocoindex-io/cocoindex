@@ -96,6 +96,7 @@ dev = [
     { include-group = "build-test" },
     { include-group = "format" },
     { include-group = "dev-local" },
+    { include-group = "ci-enabled-optional-deps" },
     "asyncpg-stubs",
 ]
 
