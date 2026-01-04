@@ -37,6 +37,7 @@ struct ComponentInner<Prof: EngineProfile> {
     //   live_sub_components: HashMap<StablePath, std::rc::Weak<ComponentInner<Prof>>>,
     /// Semaphore to ensure `process()` and `commit_effects()` calls cannot happen in parallel.
     build_semaphore: tokio::sync::Semaphore,
+    last_memo_fp: Mutex<Option<Fingerprint>>,
 }
 
 #[derive(Clone)]
@@ -200,6 +201,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 app_ctx,
                 stable_path,
                 build_semaphore: tokio::sync::Semaphore::const_new(1),
+                last_memo_fp: Mutex::new(None),
             }),
         }
     }
@@ -326,6 +328,12 @@ impl<Prof: EngineProfile> Component<Prof> {
         let output = {
             let _permit = self.inner.build_semaphore.acquire().await?;
 
+            if memo_fp_to_store.is_some() {
+                *self.inner.last_memo_fp.lock().unwrap() = memo_fp_to_store;
+                // TODO: when matching, it means there're ongoing processing for the same memoization key pending on children.
+                // We can piggyback on the same processing to avoid duplicating the work.
+            }
+
             let ret: Result<Option<Prof::ComponentProcRet>> = match processor {
                 Some(processor) => processor
                     .process(
@@ -370,8 +378,16 @@ impl<Prof: EngineProfile> Component<Prof> {
             .into_result()?;
 
         // Persist memoization as the *last* step, after children are ready.
-        if let Some(fp) = memo_fp_to_store {
-            if let Ok(Some(output)) = &output {
+        if let Some(fp) = memo_fp_to_store
+            && let Ok(Some(output)) = &output
+        {
+            let last_memo_fp = processor_context
+                .component()
+                .inner
+                .last_memo_fp
+                .lock()
+                .unwrap();
+            if *last_memo_fp == memo_fp_to_store {
                 write_component_memoization(processor_context, fp, &output.ret)?;
             }
         }
