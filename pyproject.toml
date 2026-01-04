@@ -93,7 +93,11 @@ ci = [
     { include-group = "type-stubs" },
 ]
 dev-local = ["pre-commit"]
-dev = [{ include-group = "ci" }, { include-group = "dev-local" }]
+dev = [
+    { include-group = "ci" },
+    { include-group = "format" },
+    { include-group = "dev-local" },
+]
 
 [tool.uv]
 package = false

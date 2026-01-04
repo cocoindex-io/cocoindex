@@ -274,6 +274,7 @@ dev = [
     { name = "pydantic" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "ruff" },
     { name = "types-psutil" },
 ]
 dev-local = [
@@ -336,6 +337,7 @@ dev = [
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "ruff" },
     { name = "types-psutil" },
 ]
 dev-local = [{ name = "pre-commit" }]
