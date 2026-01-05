@@ -648,10 +648,10 @@ async fn apply_changes_for_flow(
             write,
             resources.into_iter(),
             |targets_change| async move {
-                    let factory = get_export_target_factory(target_kind).ok_or_else(|| {
+                let factory = get_export_target_factory(target_kind).ok_or_else(|| {
                     internal_error!("No factory found for target kind: {}", target_kind)
-                        })?;
-                    for target_change in targets_change.iter() {
+                })?;
+                for target_change in targets_change.iter() {
                     for delete in target_change.setup_change.attachments_change.deletes.iter() {
                         delete.apply_change().await?;
                         }
