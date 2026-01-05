@@ -514,7 +514,7 @@ async fn maybe_update_resource_setup<
     K: 'a,
     S: 'a,
     C: ResourceSetupChange,
-    ChangeApplierResultFut: Future<Output = Result<(), Error>>,
+    ChangeApplierResultFut: Future<Output = Result<()>>,
 >(
     resource_kind: &str,
     write: &mut (dyn std::io::Write + Send),
@@ -647,38 +647,34 @@ async fn apply_changes_for_flow(
             target_kind,
             write,
             resources.into_iter(),
-            |targets_change| {
-                let target_kind = target_kind.to_string();
-                let flow_instance_ctx = flow_ctx.flow.flow_instance_ctx.clone();
-                let flow_name = flow_ctx.flow_name().to_string();
-                async move {
-                    let factory = get_export_target_factory(&target_kind).ok_or_else(|| {
-                        internal_error!("No factory found for target kind: {}", &target_kind)
-                    })?;
+            |targets_change| async move {
+                    let factory = get_export_target_factory(target_kind).ok_or_else(|| {
+                    internal_error!("No factory found for target kind: {}", target_kind)
+                        })?;
                     for target_change in targets_change.iter() {
-                        for delete in target_change.setup_change.attachments_change.deletes.iter() {
-                            delete.apply_change().await?;
+                    for delete in target_change.setup_change.attachments_change.deletes.iter() {
+                        delete.apply_change().await?;
                         }
                     }
 
                     // Attempt to apply setup changes and handle failures according to the
                     // `ignore_target_drop_failures` flag when we're deleting a flow.
                     let apply_result: Result<()> = (async {
-                        factory
-                            .apply_setup_changes(
-                                targets_change
-                                    .iter()
-                                    .map(|s| interface::ResourceSetupChangeItem {
-                                        key: &s.key.key,
-                                        setup_change: s.setup_change.target_change.as_ref(),
-                                    })
-                                    .collect(),
-                                flow_instance_ctx.clone(),
-                            )
-                            .await?;
-                        for target_change in targets_change.iter() {
-                            for delete in target_change.setup_change.attachments_change.upserts.iter() {
-                                delete.apply_change().await?;
+                       factory
+                    .apply_setup_changes(
+                        targets_change
+                            .iter()
+                            .map(|s| interface::ResourceSetupChangeItem {
+                                key: &s.key.key,
+                                setup_change: s.setup_change.target_change.as_ref(),
+                            })
+                            .collect(),
+                        flow_ctx.flow.flow_instance_ctx.clone(),
+                    )
+                    .await?;
+                for target_change in targets_change.iter() {
+                    for delete in target_change.setup_change.attachments_change.upserts.iter() {
+                        delete.apply_change().await?;
                             }
                         }
                         Ok(())
@@ -688,7 +684,7 @@ async fn apply_changes_for_flow(
                     if let Err(e) = apply_result {
                         if is_deletion && ignore_target_drop_failures {
                             tracing::error!("Ignoring target drop failure for kind '{}' in flow '{}': {:#}",
-                                &target_kind, &flow_name, e);
+                                target_kind, flow_ctx.flow_name(), e);
                             return Ok::<(), Error>(());
                         }
                         if is_deletion {
@@ -696,14 +692,12 @@ async fn apply_changes_for_flow(
                                 "{}\n\nHint: set COCOINDEX_IGNORE_TARGET_DROP_FAILURES=true to ignore target drop failures.",
                                 e
                             );
-                            return Err(e);
                         }
                         return Err(e);
                     }
 
                    Ok::<(), Error>(())
-                }
-            },
+                },
         )
         .await?;
     }
