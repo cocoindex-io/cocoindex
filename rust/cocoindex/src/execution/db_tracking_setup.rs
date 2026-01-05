@@ -281,51 +281,21 @@ impl TrackingTableSetupChange {
         let lib_context = get_lib_context().await?;
         let pool = lib_context.require_builtin_db_pool()?;
         if let Some(desired) = &self.desired_state {
-            for legacy_name in self.legacy_tracking_table_names.iter() {
-                let (legacy_schema, legacy_table) = split_qualified_name(legacy_name);
-                let (desired_schema, desired_table) = split_qualified_name(&desired.table_name);
-
-                if legacy_schema != desired_schema {
-                    if let Some(desired_schema) = desired_schema {
-                        let query = format!(
-                            "CREATE SCHEMA IF NOT EXISTS {}",
-                            utils::db::sanitize_identifier(desired_schema)
-                        );
-                        sqlx::query(&query).execute(pool).await?;
-                    }
-                    // Move schema
-                    let query = format!(
-                        "ALTER TABLE IF EXISTS {} SET SCHEMA {}",
-                        legacy_name,
-                        utils::db::sanitize_identifier(desired_schema.unwrap_or("public"))
-                    );
-                    sqlx::query(&query).execute(pool).await?;
-                }
-
-                // If schema moved, the table is now at desired_schema.legacy_table
-                // We construct the intermediate name to rename from.
-                let intermediate_name = if legacy_schema != desired_schema {
-                    qualify_table_name(desired_schema, legacy_table)
-                } else {
-                    legacy_name.clone()
-                };
-
-                if legacy_table != desired_table {
-                    let query = format!(
-                        "ALTER TABLE IF EXISTS {} RENAME TO {}",
-                        intermediate_name,
-                        utils::db::sanitize_identifier(desired_table)
-                    );
-                    sqlx::query(&query).execute(pool).await?;
-                }
-            }
-
             if self.min_existing_version_id != Some(desired.version_id) {
                 upgrade_tracking_table(pool, desired, self.min_existing_version_id.unwrap_or(0))
                     .await?;
             }
-        } else {
-            for legacy_name in self.legacy_tracking_table_names.iter() {
+        }
+
+        // Remove legacy tracking tables not matching desired state
+        for legacy_name in self.legacy_tracking_table_names.iter() {
+            // If desired state exists, we only drop if it's strictly a legacy name different from current
+            let keep = self
+                .desired_state
+                .as_ref()
+                .map(|s| &s.table_name == legacy_name)
+                .unwrap_or(false);
+            if !keep {
                 let query = format!("DROP TABLE IF EXISTS {legacy_name}");
                 sqlx::query(&query).execute(pool).await?;
             }
@@ -335,42 +305,8 @@ impl TrackingTableSetupChange {
             .desired_state
             .as_ref()
             .and_then(|v| v.source_state_table_name.as_ref());
+
         if let Some(source_state_table_name) = source_state_table_name {
-            for legacy_name in self.legacy_source_state_table_names.iter() {
-                let (legacy_schema, legacy_table) = split_qualified_name(legacy_name);
-                let (desired_schema, desired_table) = split_qualified_name(source_state_table_name);
-
-                if legacy_schema != desired_schema {
-                    if let Some(desired_schema) = desired_schema {
-                        let query = format!(
-                            "CREATE SCHEMA IF NOT EXISTS {}",
-                            utils::db::sanitize_identifier(desired_schema)
-                        );
-                        sqlx::query(&query).execute(pool).await?;
-                    }
-                    let query = format!(
-                        "ALTER TABLE IF EXISTS {} SET SCHEMA {}",
-                        legacy_name,
-                        utils::db::sanitize_identifier(desired_schema.unwrap_or("public"))
-                    );
-                    sqlx::query(&query).execute(pool).await?;
-                }
-
-                let intermediate_name = if legacy_schema != desired_schema {
-                    qualify_table_name(desired_schema, legacy_table)
-                } else {
-                    legacy_name.clone()
-                };
-
-                if legacy_table != desired_table {
-                    let query = format!(
-                        "ALTER TABLE IF EXISTS {} RENAME TO {}",
-                        intermediate_name,
-                        utils::db::sanitize_identifier(desired_table)
-                    );
-                    sqlx::query(&query).execute(pool).await?;
-                }
-            }
             if !self.source_state_table_always_exists {
                 // Ensure schema exists before creation
                 let (schema, _) = split_qualified_name(source_state_table_name);
@@ -395,8 +331,14 @@ impl TrackingTableSetupChange {
                 )
                 .await?;
             }
-        } else {
-            for legacy_name in self.legacy_source_state_table_names.iter() {
+        }
+
+        // Remove legacy source state tables
+        for legacy_name in self.legacy_source_state_table_names.iter() {
+            let keep = source_state_table_name
+                .map(|n| n == legacy_name)
+                .unwrap_or(false);
+            if !keep {
                 let query = format!("DROP TABLE IF EXISTS {legacy_name}");
                 sqlx::query(&query).execute(pool).await?;
             }

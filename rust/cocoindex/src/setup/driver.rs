@@ -345,7 +345,6 @@ pub async fn diff_flow_setup_states(
     desired_state: Option<&FlowSetupState<DesiredMode>>,
     existing_state: Option<&FlowSetupState<ExistingMode>>,
     flow_instance_ctx: &Arc<FlowInstanceContext>,
-    schema: Option<&str>,
 ) -> Result<FlowSetupChange> {
     let metadata_change = diff_state(
         existing_state.map(|e| &e.metadata),
@@ -812,10 +811,6 @@ impl SetupChangeBundle {
                 &flow_exec_ctx,
                 &self.action,
                 &mut setup_change_buffer,
-                lib_context
-                    .persistence_ctx
-                    .as_ref()
-                    .and_then(|p| p.db_schema.as_deref()),
             )
             .await?;
 
@@ -883,20 +878,14 @@ async fn get_flow_setup_change<'a>(
     flow_exec_ctx: &'a FlowExecutionContext,
     action: &FlowSetupChangeAction,
     buffer: &'a mut Option<FlowSetupChange>,
-    schema: Option<&str>,
 ) -> Result<&'a FlowSetupChange> {
     let result = match action {
         FlowSetupChangeAction::Setup => &flow_exec_ctx.setup_change,
         FlowSetupChangeAction::Drop => {
             let existing_state = setup_ctx.all_setup_states.flows.get(flow_ctx.flow_name());
             buffer.insert(
-                diff_flow_setup_states(
-                    None,
-                    existing_state,
-                    &flow_ctx.flow.flow_instance_ctx,
-                    schema,
-                )
-                .await?,
+                diff_flow_setup_states(None, existing_state, &flow_ctx.flow.flow_instance_ctx)
+                    .await?,
             )
         }
     };
@@ -920,7 +909,6 @@ pub(crate) async fn apply_changes_for_flow_ctx(
         &flow_exec_ctx,
         &action,
         &mut setup_change_buffer,
-        schema,
     )
     .await?;
     if setup_change.is_up_to_date() {

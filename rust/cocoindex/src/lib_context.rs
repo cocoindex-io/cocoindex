@@ -41,7 +41,6 @@ async fn build_setup_context(
         Some(&setup_execution_context.setup_state),
         existing_flow_ss,
         &analyzed_flow.flow_instance_ctx,
-        db_schema,
     )
     .await?;
 

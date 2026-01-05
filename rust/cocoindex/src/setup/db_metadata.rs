@@ -48,20 +48,7 @@ pub async fn read_setup_metadata(
     let metadata = sqlx::query_as(&query_str).fetch_all(&mut *db_conn).await;
     let result = match metadata {
         Ok(metadata) => Some(metadata),
-        Err(err) => {
-            let exists: Option<bool> = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = $1 AND tablename = $2)",
-            )
-            .bind(schema.unwrap_or("public"))
-            .bind(SETUP_METADATA_TABLE_NAME_UNQUALIFIED)
-            .fetch_one(&mut *db_conn)
-            .await?;
-            if !exists.unwrap_or(false) {
-                None
-            } else {
-                return Err(err.into());
-            }
-        }
+        Err(_) => None,
     };
     Ok(result)
 }
