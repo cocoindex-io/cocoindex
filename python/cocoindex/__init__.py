@@ -34,8 +34,13 @@ from .index import (
     HnswVectorIndexMethod,
     IvfFlatVectorIndexMethod,
 )
-from .setting import DatabaseConnectionSpec, Settings, ServerSettings
-from .setting import get_app_namespace
+from .setting import (
+    DatabaseConnectionSpec,
+    GlobalExecutionOptions,
+    Settings,
+    ServerSettings,
+    get_app_namespace,
+)
 from .query_handler import QueryHandlerResultFields, QueryInfo, QueryOutput
 from .typing import (
     Int64,
@@ -102,6 +107,7 @@ __all__ = [
     "IvfFlatVectorIndexMethod",
     # Settings
     "DatabaseConnectionSpec",
+    "GlobalExecutionOptions",
     "Settings",
     "ServerSettings",
     "get_app_namespace",
