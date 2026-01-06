@@ -25,12 +25,15 @@ struct Executor {
     max_file_size: Option<i64>,
 }
 
-async fn ensure_metadata(path: &Path, metadata: &mut Option<Metadata>) -> std::io::Result<()> {
+async fn ensure_metadata<'a>(
+    path: &Path,
+    metadata: &'a mut Option<Metadata>,
+) -> std::io::Result<&'a Metadata> {
     if metadata.is_none() {
         // Follow symlinks.
         *metadata = Some(tokio::fs::metadata(path).await?);
     }
-    Ok(())
+    Ok(metadata.as_ref().unwrap())
 }
 
 #[async_trait]
@@ -74,7 +77,7 @@ impl SourceExecutor for Executor {
                         true
                     } else if file_type.is_symlink() {
                         // Follow symlinks to classify the target.
-                        metadata.as_ref().is_some_and(|m| m.is_dir())
+                        ensure_metadata(&path, &mut metadata).await?.is_dir()
                     } else {
                         false
                     };
@@ -85,15 +88,15 @@ impl SourceExecutor for Executor {
                     } else if self.pattern_matcher.is_file_included(relative_path) {
                         // Check file size limit
                         if let Some(max_size) = self.max_file_size {
-                            if ensure_metadata(&path, &mut metadata).await.is_ok()
-                                && metadata.as_ref().unwrap().len() > max_size as u64
+                            let metadata = ensure_metadata(&path, &mut metadata).await?;
+                            if metadata.len() > max_size as u64
                             {
                                 continue;
                             }
                         }
                         let ordinal: Option<Ordinal> = if options.include_ordinal {
-                            ensure_metadata(&path, &mut metadata).await?;
-                            Some(metadata.as_ref().unwrap().modified()?.try_into()?)
+                            let metadata = ensure_metadata(&path, &mut metadata).await?;
+                            Some(metadata.modified()?.try_into()?)
                         } else {
                             None
                         };
