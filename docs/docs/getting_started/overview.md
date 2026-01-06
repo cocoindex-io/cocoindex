@@ -7,14 +7,9 @@ slug: /
 
 CocoIndex is an ultra performant compute framework for AI workloads, with incremental processing. 
 
-![CocoIndex architecture diagram](/img/quickstart/cocoindex_diagram.png)
-
 
 ## Programming Model
 CocoIndex follows a Peristent-State-Driven model. Each transformation creates a new field solely based on input fields, without hidden states and value mutation. All data before/after each transformation is observable, with lineage out of the box.
-
-![CocoIndex execution flow](/img/quickstart/persistent_state_driven_example.png)
-
 
 ## CocoIndex features
 ### High Performance Rust Engine

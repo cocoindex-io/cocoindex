@@ -65,10 +65,6 @@ CocoIndex runs the function asynchronously. During the run, the function may cal
 When the run finishes, CocoIndex diffs effects this run against effects from the previous run, then applies a bundled change to external systems (creates, updates, deletes) to keep them in sync. 
 
 Each component should have a distinct scope, each with a unique path. The unique path should be stable, and CocoIndex uses it to identify effects declared for the same component across runs. This is essential to make sure effects declared by the same component are synced atomically whenever possible.
-The code above could create the following hierarchies:
-
-![Component hierarchy visual](/img/quickstart/component_hierarchies.png)
-
 
 For example, imagine the following scenarios:
 - If a file like `1.txt` changes (for instance, its title is updated), the corresponding component at `/Papers/files/1.txt` is re-executed, and CocoIndex updates the target table with a single atomic operation (such as a delete followed by an insert within a transaction).
