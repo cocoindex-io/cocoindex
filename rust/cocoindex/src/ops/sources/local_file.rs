@@ -87,12 +87,11 @@ impl SourceExecutor for Executor {
                         }
                     } else if self.pattern_matcher.is_file_included(relative_path) {
                         // Check file size limit
-                        if let Some(max_size) = self.max_file_size {
-                            let metadata = ensure_metadata(&path, &mut metadata).await?;
-                            if metadata.len() > max_size as u64
-                            {
-                                continue;
-                            }
+                        if let Some(max_size) = self.max_file_size
+                            && let Ok(metadata) = ensure_metadata(&path, &mut metadata).await
+                            && metadata.len() > max_size as u64
+                        {
+                            continue;
                         }
                         let ordinal: Option<Ordinal> = if options.include_ordinal {
                             let metadata = ensure_metadata(&path, &mut metadata).await?;
@@ -132,9 +131,10 @@ impl SourceExecutor for Executor {
             });
         }
         let path = self.root_path.join(path);
+        let mut metadata: Option<Metadata> = None;
         // Check file size limit
         if let Some(max_size) = self.max_file_size {
-            if let Ok(metadata) = path.metadata() {
+            if let Ok(metadata) = ensure_metadata(&path, &mut metadata).await {
                 if metadata.len() > max_size as u64 {
                     return Ok(PartialSourceRowData {
                         value: Some(SourceValue::NonExistence),
@@ -145,7 +145,8 @@ impl SourceExecutor for Executor {
             }
         }
         let ordinal = if options.include_ordinal {
-            Some(path.metadata()?.modified()?.try_into()?)
+            let metadata = ensure_metadata(&path, &mut metadata).await?;
+            Some(metadata.modified()?.try_into()?)
         } else {
             None
         };
