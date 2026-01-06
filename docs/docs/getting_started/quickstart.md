@@ -166,11 +166,11 @@ That's it for the main indexing flow.
 
 ## End to end: Query the index (Optional)
 
-If you want to build a end to end query flow that also searches the index, you can follow the [simple_vector_index](https://cocoindex.io/docs/examples/simple_vector_index#query-the-index) example.
+If you want to build a end to end query flow that also searches the index, you can follow the [simple_vector_index](https://cocoindex.io/examples/simple_vector_index#query-the-index) example.
 
 ## Next Steps
 
 Next, you may want to:
 
 - Learn about [CocoIndex Basics](../core/basics.md).
-- Explore more of what you can build with CocoIndex in the [examples](https://cocoindex.io/docs/examples) directory.
+- Explore more of what you can build with CocoIndex in the [examples](https://cocoindex.io/examples) directory.
