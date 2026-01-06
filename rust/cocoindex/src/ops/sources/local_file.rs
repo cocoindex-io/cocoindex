@@ -1,5 +1,7 @@
 use async_stream::try_stream;
 use std::borrow::Cow;
+use std::fs::Metadata;
+use std::path::Path;
 use std::{path::PathBuf, sync::Arc};
 use tracing::warn;
 
@@ -21,6 +23,14 @@ struct Executor {
     binary: bool,
     pattern_matcher: PatternMatcher,
     max_file_size: Option<i64>,
+}
+
+async fn ensure_metadata(path: &Path, metadata: &mut Option<Metadata>) -> std::io::Result<()> {
+    if metadata.is_none() {
+        // Follow symlinks.
+        *metadata = Some(tokio::fs::metadata(path).await?);
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -46,21 +56,44 @@ impl SourceExecutor for Executor {
                         warn!("Skipped ill-formed file path: {}", path.display());
                         continue;
                     };
-                    if path.is_dir() {
+                    // We stat per entry at most once when needed.
+                    let mut metadata: Option<Metadata> = None;
+
+                    // For symlinks, if the target doesn't exist, log and skip.
+                    let file_type = entry.file_type().await?;
+                    if file_type.is_symlink() {
+                        if let Err(e) = ensure_metadata(&path, &mut metadata).await {
+                            if e.kind() == std::io::ErrorKind::NotFound {
+                                warn!("Skipped broken symlink: {}", path.display());
+                                continue;
+                            }
+                            Err(e)?;
+                        }
+                    }
+                    let is_dir = if file_type.is_dir() {
+                        true
+                    } else if file_type.is_symlink() {
+                        // Follow symlinks to classify the target.
+                        metadata.as_ref().is_some_and(|m| m.is_dir())
+                    } else {
+                        false
+                    };
+                    if is_dir {
                         if !self.pattern_matcher.is_excluded(relative_path) {
                             new_dirs.push(Cow::Owned(path));
                         }
                     } else if self.pattern_matcher.is_file_included(relative_path) {
                         // Check file size limit
                         if let Some(max_size) = self.max_file_size {
-                            if let Ok(metadata) = path.metadata() {
-                                if metadata.len() > max_size as u64 {
-                                    continue;
-                                }
+                            if ensure_metadata(&path, &mut metadata).await.is_ok()
+                                && metadata.as_ref().unwrap().len() > max_size as u64
+                            {
+                                continue;
                             }
                         }
                         let ordinal: Option<Ordinal> = if options.include_ordinal {
-                            Some(path.metadata()?.modified()?.try_into()?)
+                            ensure_metadata(&path, &mut metadata).await?;
+                            Some(metadata.as_ref().unwrap().modified()?.try_into()?)
                         } else {
                             None
                         };
