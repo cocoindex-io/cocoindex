@@ -2,7 +2,7 @@
 
 This folder contains example CocoIndex projects, designed to help you learn CocoIndex features and inspire you to build powerful indexing solutions.
 
-Check out our [examples documentation](https://cocoindex.io/docs/examples) for more details.
+Check out our [examples documentation](https://cocoindex.io/examples) for more details.
 
 ## Vector Search & Embedding
 

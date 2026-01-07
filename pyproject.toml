@@ -16,7 +16,7 @@ dependencies = [
     "python-dotenv>=1.1.0",
     "watchfiles>=1.1.0",
     "numpy>=1.23.2",
-    "psutil>=7.0.0",
+    "psutil>=7.2.1",
 ]
 license = "Apache-2.0"
 license-files = ["THIRD_PARTY_NOTICES.html"]
@@ -81,16 +81,18 @@ all = [
 [dependency-groups]
 build-test = ["maturin>=1.10.0,<2.0", "pytest", "pytest-asyncio", "mypy"]
 format = ["ruff"]
-
+type-stubs = ["types-psutil>=7.2.1"]
 ci-enabled-optional-deps = ["pydantic>=2.11.9"]
+
 ci = [
     { include-group = "build-test" },
     { include-group = "ci-enabled-optional-deps" },
+    { include-group = "type-stubs" },
 ]
 
 dev-local = ["pre-commit"]
 dev = [
-    { include-group = "build-test" },
+    { include-group = "ci" },
     { include-group = "format" },
     { include-group = "dev-local" },
 ]
