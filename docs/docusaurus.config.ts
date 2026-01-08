@@ -56,32 +56,8 @@ const config: Config = {
       {
         redirects: [
           {
-            from: '/core/initialization',
-            to: '/core/settings',
-          },
-          {
-            from: '/core/custom_function',
-            to: '/custom_ops/custom_functions',
-          },
-          {
-            from: '/ops/storages',
-            to: '/targets',
-          },
-          {
             from: '/about/contributing',
             to: '/contributing/guide',
-          },
-          {
-            from: '/ops/targets',
-            to: '/targets',
-          },
-          {
-            from: '/ops/sources',
-            to: '/sources',
-          },
-          {
-            from: '/http_server',
-            to: '/cocoinsight_access',
           },
         ],
       },
@@ -105,14 +81,8 @@ const config: Config = {
         includeOrder: [
           '/getting_started/**',
           '/core/**',
-          '/tutorials/**',
-          '/query',
-          '/sources/**',
-          '/ops/functions',
-          '/targets/**',
-          '/custom_ops/**',
-          '/ai/**',
-          '/cocoinsight_access',
+          '/built_in_connectors/**',
+          '/custom_connectors/**',
           '/contributing/**',
           '/about/**',
         ],
