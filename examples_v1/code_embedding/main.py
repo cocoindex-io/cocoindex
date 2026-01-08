@@ -28,7 +28,6 @@ from sentence_transformers import SentenceTransformer
 import cocoindex as coco
 import cocoindex.aio as coco_aio
 from cocoindex.connectors import localfs, postgres
-from cocoindex.connectors.localfs.source import File as LocalFile
 from cocoindex.extras.text import RecursiveSplitter, detect_code_language
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
@@ -172,23 +171,26 @@ def process_file(
 async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
     table = await coco_aio.mount_run(setup_table, scope / "setup").result()
 
-    # Only process main.py
-    main_file_path = sourcedir / "main.py"
-    if main_file_path.exists():
-        # Create a File object for main.py
-        stat = main_file_path.stat()
-        main_file = LocalFile(
-            relative_path=pathlib.Path("main.py"),
-            base_path=sourcedir,
-            stat=stat,
+    # Process multiple file types across the repository
+    files = localfs.walk_dir(
+        sourcedir,
+        recursive=True,
+        path_matcher=PatternFilePathMatcher(
+            included_patterns=["*.py", "*.rs", "*.toml", "*.md", "*.mdx"],
+            excluded_patterns=[".*/**", "target/**", "node_modules/**"],
+        ),
+    )
+    for file in files:
+        print(f"Processing in background: {str(file.relative_path)}")
+        coco_aio.mount(
+            process_file, scope / "file" / str(file.relative_path), file, table
         )
-        coco_aio.mount(process_file, scope / "file" / "main.py", main_file, table)
 
 
 app = coco_aio.App(
     app_main,
     coco_aio.AppConfig(name="CodeEmbeddingV1"),
-    sourcedir=pathlib.Path(__file__).parent,  # Index the code_embedding directory
+    sourcedir=pathlib.Path(__file__).parent / ".." / "..",  # Index from repository root
 )
 
 
