@@ -71,6 +71,7 @@ embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
 postgres = ["asyncpg>=0.31.0", "pgvector>=0.4.2"]
+qdrant = ["qdrant-client>=1.6.0"]
 
 all = [
     "sentence-transformers>=3.3.1",
@@ -79,6 +80,7 @@ all = [
     "pyarrow>=19.0.0",
     "asyncpg>=0.31.0",
     "pgvector>=0.4.2",
+    "qdrant-client>=1.6.0",
 ]
 
 [dependency-groups]
@@ -126,7 +128,7 @@ disable_error_code = ["unused-ignore"]
 
 [[tool.mypy.overrides]]
 # Ignore missing imports for optional dependencies from cocoindex library
-module = ["sentence_transformers", "torch", "colpali_engine", "PIL"]
+module = ["sentence_transformers", "torch", "colpali_engine", "PIL", "qdrant_client"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
