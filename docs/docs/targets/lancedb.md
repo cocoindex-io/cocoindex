@@ -44,6 +44,7 @@ The spec `coco_lancedb.LanceDB` takes the following fields:
 * `table_name` (`str`, required): The name of the table to export the data to.
 * `db_options` (`coco_lancedb.DatabaseOptions`, optional): Advanced database options.
   * `storage_options` (`dict[str, Any]`, optional): Passed through to LanceDB when connecting.
+* `num_transactions_before_optimize` (`int`, optional, default: 50): The number of transactions before calling `optimize()` for the LanceDB table.
 
 Additional notes:
 
