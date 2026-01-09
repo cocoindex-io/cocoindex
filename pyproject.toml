@@ -128,7 +128,14 @@ disable_error_code = ["unused-ignore"]
 
 [[tool.mypy.overrides]]
 # Ignore missing imports for optional dependencies from cocoindex library
-module = ["sentence_transformers", "torch", "colpali_engine", "PIL", "qdrant_client"]
+module = [
+    "sentence_transformers",
+    "torch",
+    "colpali_engine",
+    "PIL",
+    "qdrant_client",
+    "qdrant_client.http",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
