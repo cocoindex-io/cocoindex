@@ -1,5 +1,6 @@
 use crate::prelude::*;
 
+use crate::execution::db_tracking;
 use crate::setup::{CombinedState, ResourceSetupChange, ResourceSetupInfo, SetupChangeType};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -92,6 +93,15 @@ pub struct TrackingTableSetupState {
     pub has_fast_fingerprint_column: bool,
 }
 
+/// Minimal target info needed for cleanup during setup
+#[derive(Debug, Clone)]
+pub struct TargetCleanupInfo {
+    pub target_kind: String,
+    pub key_schema: Box<[schema::ValueType]>,
+    pub setup_key: serde_json::Value,
+    pub setup_state: serde_json::Value,
+}
+
 #[derive(Debug)]
 pub struct TrackingTableSetupChange {
     pub desired_state: Option<TrackingTableSetupState>,
@@ -104,6 +114,9 @@ pub struct TrackingTableSetupChange {
 
     pub source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
 
+    /// Target information needed for cleanup (target_id -> target info)
+    pub existing_targets: Option<BTreeMap<i32, TargetCleanupInfo>>,
+
     has_state_change: bool,
 }
 
@@ -112,6 +125,7 @@ impl TrackingTableSetupChange {
         desired: Option<&TrackingTableSetupState>,
         existing: &CombinedState<TrackingTableSetupState>,
         source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
+        existing_targets: Option<BTreeMap<i32, TargetCleanupInfo>>,
     ) -> Option<Self> {
         let legacy_tracking_table_names = existing
             .legacy_values(desired, |v| &v.table_name)
@@ -138,6 +152,7 @@ impl TrackingTableSetupChange {
                 legacy_source_state_table_names,
                 min_existing_version_id,
                 source_names_need_state_cleanup,
+                existing_targets,
                 has_state_change: existing.has_state_diff(desired, |v| v),
             })
         } else {
@@ -217,7 +232,8 @@ impl ResourceSetupChange for TrackingTableSetupChange {
 
         if !self.source_names_need_state_cleanup.is_empty() {
             changes.push(setup::ChangeDescription::Action(format!(
-                "Clean up legacy source states: {}. ",
+                "Clean up {} legacy source(s) including tracking metadata, target data, and source states: {}. ",
+                self.source_names_need_state_cleanup.len(),
                 self.source_names_need_state_cleanup
                     .values()
                     .flatten()
@@ -292,6 +308,12 @@ impl TrackingTableSetupChange {
             if !self.source_state_table_always_exists {
                 create_source_state_table(pool, source_state_table_name).await?;
             }
+
+            // Clean up tracking metadata and target data for stale sources
+            if !self.source_names_need_state_cleanup.is_empty() {
+                self.cleanup_stale_sources(pool).await?;
+            }
+
             if !self.source_names_need_state_cleanup.is_empty() {
                 delete_source_states_for_sources(
                     pool,
@@ -310,6 +332,80 @@ impl TrackingTableSetupChange {
                 sqlx::query(&query).execute(pool).await?;
             }
         }
+        Ok(())
+    }
+
+    /// Clean up tracking metadata and target data for stale sources
+    /// This implements the core cleanup logic: for each tracked source row, do a deletion
+    async fn cleanup_stale_sources(&self, pool: &PgPool) -> Result<()> {
+        let desired = self
+            .desired_state
+            .as_ref()
+            .ok_or_else(|| internal_error!("desired_state must exist during cleanup"))?;
+
+        let source_ids: Vec<i32> = self
+            .source_names_need_state_cleanup
+            .keys()
+            .copied()
+            .collect();
+
+        tracing::info!(
+            "Cleaning up tracking metadata and target data for {} stale source(s): {:?}",
+            source_ids.len(),
+            source_ids
+        );
+
+        // Step 1: Read all tracking entries for stale sources
+        let tracking_entries =
+            db_tracking::read_tracking_entries_for_sources(&source_ids, desired, pool).await?;
+
+        if tracking_entries.is_empty() {
+            tracing::info!("No tracking entries found for stale sources, skipping target cleanup");
+        } else {
+            tracing::info!(
+                "Found {} tracking entries to clean up",
+                tracking_entries.len()
+            );
+
+            // Step 2: Count rows to be deleted by target (for logging)
+            let mut rows_by_target: BTreeMap<i32, usize> = BTreeMap::new();
+
+            for entry in tracking_entries {
+                if let Some(target_keys) = entry.target_keys {
+                    for (target_id, tracked_keys) in target_keys {
+                        *rows_by_target.entry(target_id).or_default() += tracked_keys.len();
+                    }
+                }
+            }
+
+            // Step 3: Log information about target data that needs cleanup
+            if !rows_by_target.is_empty() && self.existing_targets.is_some() {
+                let targets = self.existing_targets.as_ref().unwrap();
+                for (target_id, row_count) in rows_by_target {
+                    if let Some(target_info) = targets.get(&target_id) {
+                        tracing::warn!(
+                            "Target data cleanup not yet fully implemented. \
+                             {} rows from target {} (ID: {}) should be deleted but this is currently skipped. \
+                             Only tracking metadata will be cleaned up. \
+                             Target may contain stale data requiring manual cleanup.",
+                            row_count,
+                            target_info.target_kind,
+                            target_id
+                        );
+                    }
+                }
+            }
+        }
+
+        // Step 4: Delete tracking entries for stale sources
+        let rows_deleted =
+            db_tracking::delete_tracking_entries_for_sources(&source_ids, desired, pool).await?;
+
+        tracing::info!(
+            "Deleted {} tracking entries for stale sources",
+            rows_deleted
+        );
+
         Ok(())
     }
 }

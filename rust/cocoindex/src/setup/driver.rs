@@ -338,6 +338,40 @@ async fn collect_attachments_setup_change(
     Ok(attachments_change)
 }
 
+/// Extract target cleanup information from existing state
+fn extract_targets_for_cleanup(
+    existing_state: Option<&FlowSetupState<ExistingMode>>,
+) -> Option<BTreeMap<i32, db_tracking_setup::TargetCleanupInfo>> {
+    existing_state.and_then(|state| {
+        let targets: BTreeMap<i32, db_tracking_setup::TargetCleanupInfo> = state
+            .targets
+            .iter()
+            .filter_map(|(resource_id, combined_state)| {
+                combined_state.current.as_ref().map(|target_state| {
+                    let target_id = target_state.common.target_id;
+                    let info = db_tracking_setup::TargetCleanupInfo {
+                        target_kind: resource_id.target_kind.clone(),
+                        key_schema: target_state
+                            .common
+                            .key_type
+                            .clone()
+                            .unwrap_or_else(|| Box::new([])),
+                        setup_key: resource_id.key.clone(),
+                        setup_state: target_state.state.clone(),
+                    };
+                    (target_id, info)
+                })
+            })
+            .collect();
+
+        if targets.is_empty() {
+            None
+        } else {
+            Some(targets)
+        }
+    })
+}
+
 pub async fn diff_flow_setup_states(
     desired_state: Option<&FlowSetupState<DesiredMode>>,
     existing_state: Option<&FlowSetupState<ExistingMode>>,
@@ -398,12 +432,16 @@ pub async fn diff_flow_setup_states(
             BTreeMap::new()
         };
 
+    // Extract target cleanup info from existing state for stale source cleanup
+    let existing_targets = extract_targets_for_cleanup(existing_state);
+
     let tracking_table_change = db_tracking_setup::TrackingTableSetupChange::new(
         desired_state.map(|d| &d.tracking_table),
         &existing_state
             .map(|e| Cow::Borrowed(&e.tracking_table))
             .unwrap_or_default(),
         source_names_needs_states_cleanup,
+        existing_targets,
     );
 
     let mut target_resources = Vec::new();
