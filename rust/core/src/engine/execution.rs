@@ -2,13 +2,15 @@ use crate::prelude::*;
 
 use std::borrow::Cow;
 use std::cmp::{Ord, Ordering};
-use std::collections::{HashMap, VecDeque, btree_map};
+use std::collections::{HashMap, HashSet, VecDeque, btree_map};
 
 use heed::{RoTxn, RwTxn};
 
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext, DeclaredEffect,
+    FnCallMemo,
 };
+use crate::engine::context::{FnCallContext, FnCallMemoEntry};
 use crate::engine::effect::{EffectHandler, EffectProvider, EffectProviderRegistry, EffectSink};
 use crate::engine::profile::{EngineProfile, Persist, StableFingerprint};
 use crate::state::effect_path::EffectPath;
@@ -17,17 +19,17 @@ use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use cocoindex_utils::fingerprint::Fingerprint;
 
 pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
-    context: &ComponentProcessorContext<Prof>,
+    comp_ctx: &ComponentProcessorContext<Prof>,
     processor_fp: Option<Fingerprint>,
-) -> Result<Option<Prof::ComponentProcRet>> {
+) -> Result<Option<Prof::FunctionData>> {
     let key = db_schema::DbEntryKey::StablePath(
-        context.stable_path().clone(),
+        comp_ctx.stable_path().clone(),
         db_schema::StablePathEntryKey::ComponentMemoization,
     )
     .encode()?;
 
-    let db_env = context.app_ctx().env().db_env();
-    let db = context.app_ctx().db();
+    let db_env = comp_ctx.app_ctx().env().db_env();
+    let db = comp_ctx.app_ctx().db();
     {
         let rtxn = db_env.read_txn()?;
         let Some(data) = db.get(&rtxn, key.as_slice())? else {
@@ -39,7 +41,7 @@ pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
                 let bytes = match memo_info.return_value {
                     db_schema::MemoizedValue::Inlined(b) => b,
                 };
-                let ret = Prof::ComponentProcRet::from_bytes(bytes.as_ref());
+                let ret = Prof::FunctionData::from_bytes(bytes.as_ref());
                 match ret {
                     Ok(ret) => return Ok(Some(ret)),
                     Err(e) => {
@@ -64,12 +66,12 @@ pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
 }
 
 fn delete_component_memoization<Prof: EngineProfile>(
-    context: &ComponentProcessorContext<Prof>,
+    comp_ctx: &ComponentProcessorContext<Prof>,
     wtxn: &mut RwTxn<'_>,
 ) -> Result<()> {
-    let db = context.app_ctx().db();
+    let db = comp_ctx.app_ctx().db();
     let key = db_schema::DbEntryKey::StablePath(
-        context.stable_path().clone(),
+        comp_ctx.stable_path().clone(),
         db_schema::StablePathEntryKey::ComponentMemoization,
     )
     .encode()?;
@@ -77,13 +79,15 @@ fn delete_component_memoization<Prof: EngineProfile>(
     Ok(())
 }
 
-pub(crate) fn write_component_memoization<Prof: EngineProfile>(
-    context: &ComponentProcessorContext<Prof>,
+fn write_component_memoization<Prof: EngineProfile>(
+    wtxn: &mut RwTxn<'_>,
+    db: &db_schema::Database,
+    comp_ctx: &ComponentProcessorContext<Prof>,
     processor_fp: Fingerprint,
-    return_value: &Prof::ComponentProcRet,
+    return_value: &Prof::FunctionData,
 ) -> Result<()> {
     let key = db_schema::DbEntryKey::StablePath(
-        context.stable_path().clone(),
+        comp_ctx.stable_path().clone(),
         db_schema::StablePathEntryKey::ComponentMemoization,
     )
     .encode()?;
@@ -94,17 +98,76 @@ pub(crate) fn write_component_memoization<Prof: EngineProfile>(
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(bytes.as_ref())),
     };
     let encoded = rmp_serde::to_vec(&memo_info)?;
-
-    let db_env = context.app_ctx().env().db_env();
-    let db = context.app_ctx().db();
-    let mut wtxn = db_env.write_txn()?;
-    db.put(&mut wtxn, key.as_slice(), encoded.as_slice())?;
-    wtxn.commit()?;
+    db.put(wtxn, key.as_slice(), encoded.as_slice())?;
     Ok(())
 }
 
+fn write_fn_call_memo<Prof: EngineProfile>(
+    wtxn: &mut RwTxn<'_>,
+    db: &db_schema::Database,
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    memo_fp: Fingerprint,
+    memo: FnCallMemo<Prof>,
+) -> Result<()> {
+    let key = db_schema::DbEntryKey::StablePath(
+        comp_ctx.stable_path().clone(),
+        db_schema::StablePathEntryKey::FunctionMemoization(memo_fp),
+    )
+    .encode()?;
+    let ret_bytes = memo.ret.to_bytes()?;
+    let fn_call_memo = db_schema::FunctionMemoizationEntry {
+        return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
+        child_components: memo.child_components,
+        effect_paths: memo.effect_paths,
+        dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
+    };
+    let encoded = rmp_serde::to_vec(&fn_call_memo)?;
+    db.put(wtxn, key.as_slice(), encoded.as_slice())?;
+    Ok(())
+}
+
+fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
+    rtxn: &RoTxn,
+    db: &db_schema::Database,
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    memo_fp: Fingerprint,
+) -> Result<Option<FnCallMemo<Prof>>> {
+    let key = db_schema::DbEntryKey::StablePath(
+        comp_ctx.stable_path().clone(),
+        db_schema::StablePathEntryKey::FunctionMemoization(memo_fp),
+    )
+    .encode()?;
+
+    let data = db.get(rtxn, key.as_slice())?;
+    let Some(data) = data else {
+        return Ok(None);
+    };
+    let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = rmp_serde::from_slice(&data)?;
+    let return_value_bytes = match fn_call_memo.return_value {
+        db_schema::MemoizedValue::Inlined(b) => b,
+    };
+    let ret = Prof::FunctionData::from_bytes(return_value_bytes.as_ref())?;
+    Ok(Some(FnCallMemo {
+        ret,
+        child_components: fn_call_memo.child_components,
+        effect_paths: fn_call_memo.effect_paths,
+        dependency_memo_entries: fn_call_memo.dependency_memo_entries.into_iter().collect(),
+        already_stored: true,
+    }))
+}
+
+pub(crate) fn read_fn_call_memo<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    memo_fp: Fingerprint,
+) -> Result<Option<FnCallMemo<Prof>>> {
+    let db_env = comp_ctx.app_ctx().env().db_env();
+    let rtxn = db_env.read_txn()?;
+    read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().db(), comp_ctx, memo_fp)
+}
+
 pub fn declare_effect<Prof: EngineProfile>(
-    context: &ComponentProcessorContext<Prof>,
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    fn_ctx: &FnCallContext,
     provider: EffectProvider<Prof>,
     key: Prof::EffectKey,
     value: Prof::EffectValue,
@@ -116,8 +179,12 @@ pub fn declare_effect<Prof: EngineProfile>(
         value,
         child_provider: None,
     };
-    context.update_building_state(|building_state| {
-        match building_state.effect.declared_effects.entry(effect_path) {
+    comp_ctx.update_building_state(|building_state| {
+        match building_state
+            .effect
+            .declared_effects
+            .entry(effect_path.clone())
+        {
             btree_map::Entry::Occupied(entry) => {
                 client_bail!("Effect already declared with key: {:?}", entry.get().key);
             }
@@ -126,17 +193,20 @@ pub fn declare_effect<Prof: EngineProfile>(
             }
         }
         Ok(())
-    })
+    })?;
+    fn_ctx.update(|inner| inner.effect_paths.push(effect_path));
+    Ok(())
 }
 
 pub fn declare_effect_with_child<Prof: EngineProfile>(
-    context: &ComponentProcessorContext<Prof>,
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    fn_ctx: &FnCallContext,
     provider: EffectProvider<Prof>,
     key: Prof::EffectKey,
     value: Prof::EffectValue,
 ) -> Result<EffectProvider<Prof>> {
     let effect_path = make_effect_path(&provider, &key);
-    context.update_building_state(|building_state| {
+    let child_provider = comp_ctx.update_building_state(|building_state| {
         let child_provider = building_state
             .effect
             .provider_registry
@@ -147,7 +217,11 @@ pub fn declare_effect_with_child<Prof: EngineProfile>(
             value,
             child_provider: Some(child_provider.clone()),
         };
-        match building_state.effect.declared_effects.entry(effect_path) {
+        match building_state
+            .effect
+            .declared_effects
+            .entry(effect_path.clone())
+        {
             btree_map::Entry::Occupied(entry) => {
                 client_bail!("Effect already declared with key: {:?}", entry.get().key);
             }
@@ -156,7 +230,11 @@ pub fn declare_effect_with_child<Prof: EngineProfile>(
             }
         }
         Ok(child_provider)
-    })
+    })?;
+    fn_ctx.update(|inner| {
+        inner.effect_paths.push(effect_path);
+    });
+    Ok(child_provider)
 }
 
 fn make_effect_path<Prof: EngineProfile>(
@@ -197,10 +275,10 @@ struct Committer<'a, Prof: EngineProfile> {
 impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
     fn new(
         component_ctx: &'a ComponentProcessorContext<Prof>,
-        component_path: &'a StablePath,
         effect_providers: &'a rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
         demote_component_only: bool,
     ) -> Result<Self> {
+        let component_path = component_ctx.stable_path();
         let tombstone_key_prefix = db_schema::DbEntryKey::StablePath(
             component_path.clone(),
             db_schema::StablePathEntryKey::ChildComponentTombstonePrefix,
@@ -222,6 +300,8 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
         &mut self,
         child_path_set: Option<ChildStablePathSet>,
         effect_info_key: &db_schema::DbEntryKey,
+        all_memo_fps: &HashSet<Fingerprint>,
+        memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
         curr_version: u64,
     ) -> Result<()> {
         let encoded_effect_info_key = effect_info_key.encode()?;
@@ -265,6 +345,34 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                     encoded_effect_info_key.as_ref(),
                     data_bytes.as_slice(),
                 )?;
+            }
+
+            // Write memos.
+            for (fp, memo) in memos_without_mounts_to_store {
+                write_fn_call_memo(&mut wtxn, self.db, self.component_ctx, fp, memo)?;
+            }
+
+            // Delete all function memo entries that are not in the all_memo_fps.
+            {
+                let fn_memo_key_prefix = db_schema::DbEntryKey::StablePath(
+                    self.component_path.clone(),
+                    db_schema::StablePathEntryKey::FunctionMemoizationPrefix,
+                );
+                let encoded_fn_memo_key_prefix = fn_memo_key_prefix.encode()?;
+                let mut fn_memo_key_prefix_iter = self
+                    .db
+                    .prefix_iter_mut(&mut wtxn, encoded_fn_memo_key_prefix.as_ref())?;
+                while let Some((key, _)) = fn_memo_key_prefix_iter.next().transpose()? {
+                    // Decode key
+                    let decoded_fp: Fingerprint =
+                        storekey::decode(key[encoded_fn_memo_key_prefix.len()..].as_ref())?;
+                    if all_memo_fps.contains(&decoded_fp) {
+                        continue;
+                    }
+                    unsafe {
+                        fn_memo_key_prefix_iter.del_current()?;
+                    }
+                }
             }
 
             if !self.demote_component_only {
@@ -537,38 +645,58 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
     }
 }
 
+pub(crate) struct BuildSubmitOutput<Prof: EngineProfile> {
+    pub effect_providers: EffectProviderRegistry<Prof>,
+    pub memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
+}
+
 #[instrument(name = "submit", skip_all)]
 pub(crate) async fn submit<Prof: EngineProfile>(
-    context: &ComponentProcessorContext<Prof>,
-) -> Result<Option<EffectProviderRegistry<Prof>>> {
-    let mut provider_registry: Option<EffectProviderRegistry<Prof>> = None;
-    let (effect_providers, declared_effects, child_path_set) = match context.processing_state() {
-        ComponentProcessingAction::Build(building_state) => {
-            let mut building_state = building_state.lock().unwrap();
-            let Some(building_state) = building_state.take() else {
-                internal_bail!(
-                    "Processing for the component at {} is already finished",
-                    context.stable_path()
-                );
-            };
-            (
-                &provider_registry
-                    .insert(building_state.effect.provider_registry)
-                    .providers,
-                building_state.effect.declared_effects,
-                Some(building_state.child_path_set),
-            )
-        }
-        ComponentProcessingAction::Delete(delete_context) => {
-            (&delete_context.providers, Default::default(), None)
-        }
-    };
+    comp_ctx: &ComponentProcessorContext<Prof>,
+) -> Result<Option<BuildSubmitOutput<Prof>>> {
+    let mut build_submit_output: Option<BuildSubmitOutput<Prof>> = None;
+    let (effect_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
+        match comp_ctx.processing_state() {
+            ComponentProcessingAction::Build(building_state) => {
+                let mut building_state = building_state.lock().unwrap();
+                let Some(building_state) = building_state.take() else {
+                    internal_bail!(
+                        "Processing for the component at {} is already finished",
+                        comp_ctx.stable_path()
+                    );
+                };
+                let post_submit_info = build_submit_output.insert(BuildSubmitOutput {
+                    effect_providers: building_state.effect.provider_registry,
+                    memos_with_mounts_to_store: Vec::new(),
+                });
 
-    let db_env = context.app_ctx().env().db_env();
-    let db = context.app_ctx().db();
+                let mut child_path_set = building_state.child_path_set;
+                let finalized_fn_call_memos = finalize_fn_call_memoization(
+                    comp_ctx,
+                    building_state.fn_call_memos,
+                    post_submit_info,
+                    &mut child_path_set,
+                )?;
+                (
+                    &post_submit_info.effect_providers.providers,
+                    building_state.effect.declared_effects,
+                    Some(child_path_set),
+                    finalized_fn_call_memos,
+                )
+            }
+            ComponentProcessingAction::Delete(delete_context) => (
+                &delete_context.providers,
+                Default::default(),
+                None,
+                Default::default(),
+            ),
+        };
+
+    let db_env = comp_ctx.app_ctx().env().db_env();
+    let db = comp_ctx.app_ctx().db();
 
     let effect_info_key = db_schema::DbEntryKey::StablePath(
-        context.stable_path().clone(),
+        comp_ctx.stable_path().clone(),
         db_schema::StablePathEntryKey::Effects,
     );
 
@@ -579,12 +707,12 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let curr_version = {
         let mut wtxn = db_env.write_txn()?;
 
-        if context.mode() == ComponentProcessingMode::Delete {
-            delete_component_memoization(&context, &mut wtxn)?;
+        if comp_ctx.mode() == ComponentProcessingMode::Delete {
+            delete_component_memoization(comp_ctx, &mut wtxn)?;
         }
 
-        if let Some((parent_path, key)) = context.stable_path().as_ref().split_parent() {
-            match context.mode() {
+        if let Some((parent_path, key)) = comp_ctx.stable_path().as_ref().split_parent() {
+            match comp_ctx.mode() {
                 ComponentProcessingMode::Build => {
                     ensure_path_node_type(
                         db,
@@ -637,12 +765,21 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     declared_effect.child_provider,
                 ),
                 None => {
+                    if finalized_fn_call_memos
+                        .contained_effect_paths
+                        .contains(effect_path)
+                    {
+                        for (version, _) in item.states.iter_mut() {
+                            *version = curr_version;
+                        }
+                        continue;
+                    }
                     let Some(effect_provider) = effect_providers.get(effect_path.provider_path())
                     else {
                         // TODO: Verify the parent is gone.
                         trace!(
                             "skip deleting effect with path {effect_path} in {} because effect provider not found",
-                            context.stable_path()
+                            comp_ctx.stable_path()
                         );
                         continue;
                     };
@@ -728,7 +865,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     };
 
     // Apply actions
-    let host_runtime_ctx = context.app_ctx().env().host_runtime_ctx();
+    let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
     for (sink, input) in actions_by_sinks {
         let handlers = sink.apply(host_runtime_ctx, input.actions).await?;
         if let Some(child_providers) = input.child_providers {
@@ -754,25 +891,49 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         }
     }
 
-    let mut committer = Committer::new(
-        context,
-        context.stable_path(),
-        &effect_providers,
-        demote_component_only,
+    let mut committer = Committer::new(comp_ctx, &effect_providers, demote_component_only)?;
+    committer.commit(
+        child_path_set,
+        &effect_info_key,
+        &finalized_fn_call_memos.all_memos_fps,
+        finalized_fn_call_memos.memos_without_mounts_to_store,
+        curr_version,
     )?;
-    committer.commit(child_path_set, &effect_info_key, curr_version)?;
 
-    Ok(provider_registry)
+    Ok(build_submit_output)
+}
+
+#[instrument(name = "post_submit_after_ready", skip_all)]
+pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    comp_memo: Option<(Fingerprint, &'_ Prof::FunctionData)>,
+    memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
+) -> Result<()> {
+    if comp_memo.is_none() && memos_with_mounts_to_store.is_empty() {
+        return Ok(());
+    }
+    let db_env = comp_ctx.app_ctx().env().db_env();
+    let mut wtxn = db_env.write_txn()?;
+    let db = comp_ctx.app_ctx().db();
+
+    if let Some((fp, ret)) = comp_memo {
+        write_component_memoization(&mut wtxn, db, comp_ctx, fp, &ret)?;
+    }
+    for (fp, memo) in memos_with_mounts_to_store {
+        write_fn_call_memo(&mut wtxn, db, comp_ctx, fp, memo)?;
+    }
+    wtxn.commit()?;
+    Ok(())
 }
 
 pub(crate) fn cleanup_tombstone<Prof: EngineProfile>(
-    context: &ComponentProcessorContext<Prof>,
+    comp_ctx: &ComponentProcessorContext<Prof>,
 ) -> Result<()> {
-    let Some(parent_ctx) = context.parent_context() else {
+    let Some(parent_ctx) = comp_ctx.parent_context() else {
         return Ok(());
     };
     let parent_path = parent_ctx.stable_path();
-    let relative_path = context
+    let relative_path = comp_ctx
         .stable_path()
         .as_ref()
         .strip_parent(parent_path.as_ref())?;
@@ -782,8 +943,8 @@ pub(crate) fn cleanup_tombstone<Prof: EngineProfile>(
     );
     let encoded_tombstone_key = tombstone_key.encode()?;
 
-    let db_env = context.app_ctx().env().db_env();
-    let db = context.app_ctx().db();
+    let db_env = comp_ctx.app_ctx().env().db_env();
+    let db = comp_ctx.app_ctx().db();
     {
         let mut wtxn = db_env.write_txn()?;
         db.delete(&mut wtxn, encoded_tombstone_key.as_ref())?;
@@ -812,13 +973,10 @@ fn ensure_path_node_type(
             Some(db_schema::StablePathNodeType::Directory),
             db_schema::StablePathNodeType::Component,
         ) => {
-            db.put(
-                wtxn,
-                encoded_db_key.as_slice(),
-                &rmp_serde::to_vec(&db_schema::ChildExistenceInfo {
-                    node_type: target_node_type,
-                })?,
-            )?;
+            let encoded_db_value = rmp_serde::to_vec(&db_schema::ChildExistenceInfo {
+                node_type: target_node_type,
+            })?;
+            db.put(wtxn, encoded_db_key.as_slice(), encoded_db_value.as_slice())?;
         }
         _ => {
             // No-op for all other cases
@@ -863,4 +1021,78 @@ fn get_path_node_type_with_raw_key(
     };
     let child_existence_info: db_schema::ChildExistenceInfo = rmp_serde::from_slice(db_value)?;
     Ok(Some(child_existence_info.node_type))
+}
+
+#[derive(Default)]
+struct FinalizedFnCallMemoization<Prof: EngineProfile> {
+    memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
+    // Fingerprints of all memos, including dependencies that is not populated in the current processing.
+    all_memos_fps: HashSet<Fingerprint>,
+    // Effect paths covered by memos but not explicitly declared in the current run, because of contained by memos that already stored, including dependency memos of already stored ones.
+    // We collect them to avoid GC of these effects.
+    contained_effect_paths: HashSet<EffectPath>,
+}
+
+fn finalize_fn_call_memoization<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
+    build_submit_output: &mut BuildSubmitOutput<Prof>,
+    stable_path_set: &mut ChildStablePathSet,
+) -> Result<FinalizedFnCallMemoization<Prof>> {
+    let mut result = FinalizedFnCallMemoization::default();
+
+    let mut deps_to_process: VecDeque<Fingerprint> = VecDeque::new();
+
+    // Extract memos from the in-memory map.
+    for (fp, memo_lock) in fn_call_memos.iter() {
+        let mut guard = memo_lock
+            .try_write()
+            .map_err(|_| internal_error!("fn call memo entry is locked during finalize"))?;
+        let FnCallMemoEntry::Ready(Some(memo)) = std::mem::take(&mut *guard) else {
+            continue;
+        };
+
+        result.all_memos_fps.insert(*fp);
+
+        if memo.already_stored {
+            for child_component in &memo.child_components {
+                stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
+            }
+            result
+                .contained_effect_paths
+                .extend(memo.effect_paths.into_iter());
+            deps_to_process.extend(memo.dependency_memo_entries.into_iter());
+        } else if memo.child_components.is_empty() {
+            result.memos_without_mounts_to_store.push((*fp, memo));
+        } else {
+            build_submit_output
+                .memos_with_mounts_to_store
+                .push((*fp, memo));
+        }
+        // For non-stored memos, their dependencies were already resolved in this run,
+        // so they exist in `fn_call_memos` and will be visited by the outer loop.
+    }
+
+    // Transitively expand deps of already-stored memos (read from DB).
+    // Collect their effect_paths so those effects are not GC'd.
+    // Use a single read transaction for all DB reads.
+    let db_env = comp_ctx.app_ctx().env().db_env();
+    let rtxn = db_env.read_txn()?;
+    let db = comp_ctx.app_ctx().db();
+    while let Some(fp) = deps_to_process.pop_front() {
+        if !result.all_memos_fps.insert(fp) {
+            continue;
+        }
+        let Some(memo) = read_fn_call_memo_with_txn(&rtxn, db, comp_ctx, fp)? else {
+            continue;
+        };
+        for child_component in &memo.child_components {
+            stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
+        }
+        result
+            .contained_effect_paths
+            .extend(memo.effect_paths.into_iter());
+        deps_to_process.extend(memo.dependency_memo_entries.into_iter());
+    }
+    Ok(result)
 }

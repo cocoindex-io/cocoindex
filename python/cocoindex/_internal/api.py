@@ -1,8 +1,6 @@
 from .scope import Scope
 
 from .effect import (
-    NonExistenceType,
-    NON_EXISTENCE,
     ChildEffectDef,
     Effect,
     EffectProvider,
@@ -12,7 +10,6 @@ from .effect import (
     PendingEffectProvider,
     declare_effect,
     declare_effect_with_child,
-    is_non_existence,
     register_root_effect_provider,
 )
 
@@ -27,6 +24,9 @@ from .stable_path import ROOT_PATH, StablePath, StableKey
 
 from .setting import Settings
 
+
+from .typing import NonExistenceType, NON_EXISTENCE, is_non_existence
+
 from .memo_key import register_memo_key_function
 
 from .app import AppConfig
@@ -35,8 +35,6 @@ __all__ = [
     # .scope
     "Scope",
     # .effect
-    "NonExistenceType",
-    "NON_EXISTENCE",
     "ChildEffectDef",
     "Effect",
     "EffectProvider",
@@ -46,7 +44,6 @@ __all__ = [
     "PendingEffectProvider",
     "declare_effect",
     "declare_effect_with_child",
-    "is_non_existence",
     "register_root_effect_provider",
     # .environment
     "Environment",
@@ -66,6 +63,10 @@ __all__ = [
     "StableKey",
     # .setting
     "Settings",
+    # .typing
+    "NON_EXISTENCE",
+    "NonExistenceType",
+    "is_non_existence",
     # .app
     "AppConfig",
     # .memo_key

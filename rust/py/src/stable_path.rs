@@ -66,4 +66,8 @@ impl PyStablePath {
         self.0.hash(&mut hasher);
         hasher.finish()
     }
+
+    pub fn __coco_memo_key__(&self) -> String {
+        self.0.to_string()
+    }
 }

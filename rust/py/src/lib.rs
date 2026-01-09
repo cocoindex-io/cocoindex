@@ -5,6 +5,7 @@ mod effect;
 mod environment;
 mod extras;
 mod fingerprint;
+mod function;
 mod inspect;
 mod memo_key;
 mod prelude;
@@ -31,8 +32,8 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_function(wrap_pyfunction!(component::mount_run, m)?)?;
 
     m.add_class::<context::PyComponentProcessorContext>()?;
+    m.add_class::<context::PyFnCallContext>()?;
 
-    m.add_function(wrap_pyfunction!(effect::init_effect_module, m)?)?;
     m.add_class::<effect::PyEffectSink>()?;
     m.add_class::<effect::PyEffectHandler>()?;
     m.add_class::<effect::PyEffectProvider>()?;
@@ -50,6 +51,11 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     // Fingerprints (stable 16-byte digest wrapper)
     m.add_class::<fingerprint::PyFingerprint>()?;
+
+    // Function memoization
+    m.add_class::<function::PyPendingFnCallMemo>()?;
+    m.add_function(wrap_pyfunction!(function::reserve_memoization, m)?)?;
+    m.add_function(wrap_pyfunction!(function::reserve_memoization_async, m)?)?;
 
     // Memoization fingerprinting (deterministic)
     m.add_function(wrap_pyfunction!(memo_key::fingerprint_memo_key, m)?)?;

@@ -36,7 +36,7 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
     type HostRuntimeCtx: Clone + Send + Sync + 'static;
 
     type ComponentProc: ComponentProcessor<Self>;
-    type ComponentProcRet: Send + Persist;
+    type FunctionData: Clone + Send + Sync + Persist + 'static;
 
     type EffectHdl: EffectHandler<Self>;
     type EffectKey: Clone
@@ -47,7 +47,7 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
         + Persist
         + StableFingerprint
         + 'static;
-    type EffectState: Clone + Send + Persist + 'static;
+    type EffectState: Send + Persist + 'static;
     type EffectAction: Send + 'static;
     type EffectSink: EffectSink<Self>;
     type EffectValue: Send + 'static;

@@ -1,29 +1,18 @@
 use std::hash::{Hash, Hasher};
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 
 use cocoindex_core::engine::effect::{
     ChildEffectDef, EffectHandler, EffectProvider, EffectProviderRegistry, EffectReconcileOutput,
     EffectSink,
 };
 use cocoindex_core::state::effect_path::EffectPath;
-use pyo3::exceptions::PyException;
 use pyo3::types::{PyList, PySequence};
 
-use crate::context::PyComponentProcessorContext;
+use crate::context::{PyComponentProcessorContext, PyFnCallContext};
 use crate::prelude::*;
 
-use crate::runtime::{PyAsyncContext, PyCallback};
+use crate::runtime::{PyAsyncContext, PyCallback, python_objects};
 use crate::value::{PyKey, PyValue};
-
-static NON_EXISTENCE: OnceLock<Py<PyAny>> = OnceLock::new();
-
-#[pyfunction]
-pub fn init_effect_module(non_existence: Py<PyAny>) -> PyResult<()> {
-    NON_EXISTENCE.set(non_existence).map_err(|_| {
-        PyException::new_err("Failed to initialize effect module: already initialized")
-    })?;
-    Ok(())
-}
 
 #[pyclass(name = "EffectSink")]
 #[derive(Clone)]
@@ -112,15 +101,13 @@ impl EffectHandler<PyEngineProfile> for PyEffectHandler {
         &self,
         key: Arc<PyKey>,
         desired_effect: Option<Py<PyAny>>,
-        prev_possible_states: &[Arc<PyValue>],
+        prev_possible_states: &[PyValue],
         prev_may_be_missing: bool,
     ) -> Result<Option<EffectReconcileOutput<PyEngineProfile>>> {
         Python::attach(|py| -> PyResult<_> {
             let prev_possible_states =
                 PyList::new(py, prev_possible_states.iter().map(|s| s.value().bind(py)))?;
-            let non_existence = NON_EXISTENCE
-                .get()
-                .ok_or_else(|| PyException::new_err("Effect module not initialized"))?;
+            let non_existence = &python_objects().non_existence;
             let py_output = self.0.call_method(
                 py,
                 "reconcile",
@@ -143,7 +130,7 @@ impl EffectHandler<PyEngineProfile> for PyEffectHandler {
                     state: if non_existence.is(&state) {
                         None
                     } else {
-                        Some(Arc::new(PyValue::new(state)))
+                        Some(PyValue::new(state))
                     },
                 })
             };
@@ -166,14 +153,16 @@ impl PyEffectProvider {
 #[pyfunction]
 pub fn declare_effect<'py>(
     py: Python<'py>,
-    context: &'py PyComponentProcessorContext,
+    comp_ctx: &'py PyComponentProcessorContext,
+    fn_ctx: &'py PyFnCallContext,
     provider: &PyEffectProvider,
     key: Py<PyAny>,
     value: Py<PyAny>,
 ) -> PyResult<()> {
     let py_key = PyKey::new(py, key).into_py_result()?;
     cocoindex_core::engine::execution::declare_effect(
-        &context.0,
+        &comp_ctx.0,
+        &fn_ctx.0,
         provider.0.clone(),
         Arc::new(py_key),
         value,
@@ -185,14 +174,16 @@ pub fn declare_effect<'py>(
 #[pyfunction]
 pub fn declare_effect_with_child<'py>(
     py: Python<'py>,
-    context: &'py PyComponentProcessorContext,
+    comp_ctx: &'py PyComponentProcessorContext,
+    fn_ctx: &'py PyFnCallContext,
     provider: &PyEffectProvider,
     key: Py<PyAny>,
     value: Py<PyAny>,
 ) -> PyResult<PyEffectProvider> {
     let py_key = PyKey::new(py, key).into_py_result()?;
     let output = cocoindex_core::engine::execution::declare_effect_with_child(
-        &context.0,
+        &comp_ctx.0,
+        &fn_ctx.0,
         provider.0.clone(),
         Arc::new(py_key),
         value,

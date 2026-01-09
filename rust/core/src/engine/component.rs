@@ -1,10 +1,11 @@
 use crate::engine::runtime::get_runtime;
 use crate::prelude::*;
 
+use crate::engine::context::FnCallContext;
 use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
 use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
 use crate::engine::execution::{
-    cleanup_tombstone, submit, use_or_invalidate_component_memoization, write_component_memoization,
+    cleanup_tombstone, post_submit_for_build, submit, use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
 use crate::state::effect_path::EffectPath;
@@ -22,8 +23,8 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     fn process(
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
-        context: &ComponentProcessorContext<Prof>,
-    ) -> Result<impl Future<Output = Result<Prof::ComponentProcRet>> + Send + 'static>;
+        comp_ctx: &ComponentProcessorContext<Prof>,
+    ) -> Result<impl Future<Output = Result<Prof::FunctionData>> + Send + 'static>;
 
     /// Fingerprint of the memoization key. When matching, re-processing can be skipped.
     /// When None, memoization is not enabled for the component.
@@ -49,27 +50,50 @@ struct ComponentBgChildReadinessState {
     remaining_count: usize,
     build_done: bool,
     is_readiness_set: bool,
+    outcome: ComponentRunOutcome,
 }
 
 impl ComponentBgChildReadinessState {
     fn maybe_set_readiness(
         &mut self,
-        result: Result<(), SharedError>,
-        readiness: &tokio::sync::SetOnce<SharedResult<()>>,
+        result: Option<Result<ComponentRunOutcome, SharedError>>,
+        readiness: &tokio::sync::SetOnce<SharedResult<ComponentRunOutcome>>,
     ) {
         if self.is_readiness_set {
             return;
         }
-        if result.is_err() || self.remaining_count == 0 && self.build_done {
-            self.is_readiness_set = true;
-            readiness.set(result).expect("readiness set more than once");
+        if let Some(result) = result {
+            if let Ok(outcome) = result {
+                self.outcome.merge(outcome);
+            } else {
+                self.is_readiness_set = true;
+                readiness.set(result).expect("readiness set more than once");
+                return;
+            }
         }
+        if self.remaining_count == 0 && self.build_done {
+            self.is_readiness_set = true;
+            readiness
+                .set(Ok(std::mem::take(&mut self.outcome)))
+                .expect("readiness set more than once");
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct ComponentRunOutcome {
+    has_exception: bool,
+}
+
+impl ComponentRunOutcome {
+    fn merge(&mut self, other: Self) {
+        self.has_exception |= other.has_exception;
     }
 }
 
 struct ComponentBgChildReadinessInner {
     state: Mutex<ComponentBgChildReadinessState>,
-    readiness: tokio::sync::SetOnce<SharedResult<()>>,
+    readiness: tokio::sync::SetOnce<SharedResult<ComponentRunOutcome>>,
 }
 
 #[derive(Clone)]
@@ -90,20 +114,20 @@ impl Drop for ComponentBgChildReadinessChildGuard {
         let mut state = self.readiness.state().lock().unwrap();
         state.remaining_count -= 1;
         state.maybe_set_readiness(
-            Err(SharedError::new(internal_error!(
+            Some(Err(SharedError::new(internal_error!(
                 "Child component build cancelled"
-            ))),
+            )))),
             self.readiness.readiness(),
         );
     }
 }
 
 impl ComponentBgChildReadinessChildGuard {
-    fn resolve(mut self, result: Result<(), SharedError>) {
+    fn resolve(mut self, outcome: ComponentRunOutcome) {
         {
             let mut state = self.readiness.state().lock().unwrap();
             state.remaining_count -= 1;
-            state.maybe_set_readiness(result, self.readiness.readiness());
+            state.maybe_set_readiness(Some(Ok(outcome)), self.readiness.readiness());
         }
         self.resolved = true;
     }
@@ -117,6 +141,7 @@ impl Default for ComponentBgChildReadiness {
                     remaining_count: 0,
                     is_readiness_set: false,
                     build_done: false,
+                    outcome: Default::default(),
                 }),
                 readiness: tokio::sync::SetOnce::new(),
             }),
@@ -129,7 +154,7 @@ impl ComponentBgChildReadiness {
         &self.inner.state
     }
 
-    pub fn readiness(&self) -> &tokio::sync::SetOnce<SharedResult<()>> {
+    fn readiness(&self) -> &tokio::sync::SetOnce<SharedResult<ComponentRunOutcome>> {
         &self.inner.readiness
     }
 
@@ -144,7 +169,7 @@ impl ComponentBgChildReadiness {
     fn set_build_done(&self) {
         let mut state = self.state().lock().unwrap();
         state.build_done = true;
-        state.maybe_set_readiness(Ok(()), self.readiness());
+        state.maybe_set_readiness(None, self.readiness());
     }
 }
 
@@ -156,7 +181,7 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
     pub async fn result(
         self,
         parent_context: Option<&ComponentProcessorContext<Prof>>,
-    ) -> Result<Prof::ComponentProcRet> {
+    ) -> Result<Prof::FunctionData> {
         let output = self.join_handle.await??;
         if let Some(parent_context) = parent_context {
             parent_context.update_building_state(|building_state| {
@@ -190,7 +215,7 @@ impl ComponentMountHandle {
 }
 
 struct ComponentBuildOutput<Prof: EngineProfile> {
-    ret: Prof::ComponentProcRet,
+    ret: Prof::FunctionData,
     provider_registry: EffectProviderRegistry<Prof>,
 }
 
@@ -204,6 +229,15 @@ impl<Prof: EngineProfile> Component<Prof> {
                 last_memo_fp: Mutex::new(None),
             }),
         }
+    }
+
+    pub fn mount_child(&self, fn_ctx: &FnCallContext, stable_path: StablePath) -> Result<Self> {
+        let relative_path: StablePath = stable_path
+            .as_ref()
+            .strip_parent(self.stable_path().as_ref())?
+            .into();
+        fn_ctx.update(|inner| inner.child_components.push(relative_path));
+        Ok(self.get_child(stable_path))
     }
 
     pub fn get_child(&self, stable_path: StablePath) -> Self {
@@ -238,12 +272,25 @@ impl<Prof: EngineProfile> Component<Prof> {
         parent_context: Option<ComponentProcessorContext<Prof>>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
         let relative_path = self.relative_path(parent_context.as_ref())?;
+        let child_readiness_guard = parent_context
+            .as_ref()
+            .map(|c| c.components_readiness().clone().add_child());
         let processor_context = self.new_processor_context_for_build(parent_context)?;
         let span = info_span!("component.run", component_path = %relative_path);
         let join_handle = get_runtime().spawn(
             async move {
-                self.execute_once(&processor_context, Some(processor))
-                    .await?
+                let result = self.execute_once(&processor_context, Some(processor)).await;
+                let (outcome, output) = match result {
+                    Ok((outcome, output)) => (outcome, Ok(output)),
+                    Err(err) => (
+                        ComponentRunOutcome {
+                            has_exception: true,
+                        },
+                        Err(err),
+                    ),
+                };
+                child_readiness_guard.map(|guard| guard.resolve(outcome));
+                output?
                     .ok_or_else(|| internal_error!("component deletion can only run in background"))
             }
             .instrument(span),
@@ -265,10 +312,16 @@ impl<Prof: EngineProfile> Component<Prof> {
         let join_handle = get_runtime().spawn(async move {
             let result = self.execute_once(&processor_context, Some(processor)).await;
             // For background child component, only log the error. Never propagate the error back to the parent.
-            if let Err(err) = result {
+            if let Err(err) = &result {
                 error!("component build failed:\n{err:?}");
-            };
-            child_readiness_guard.map(|guard| guard.resolve(Ok(())));
+            }
+            child_readiness_guard.map(|guard| {
+                guard.resolve(result.map(|(outcome, _)| outcome).unwrap_or_else(|_| {
+                    ComponentRunOutcome {
+                        has_exception: true,
+                    }
+                }))
+            });
             Ok(())
         });
         Ok(ComponentMountHandle { join_handle })
@@ -290,18 +343,18 @@ impl<Prof: EngineProfile> Component<Prof> {
         );
         get_runtime().spawn(async move {
             trace!("deleting component at {}", self.stable_path());
-            let result = self
-                .execute_once(&processor_context, None)
-                .await
-                .and_then(|ret| {
-                    cleanup_tombstone(&processor_context)?;
-                    Ok(ret)
-                });
+            let result = self.execute_once(&processor_context, None).await;
             // For deletion, only log the error. Never propagate the error back to the parent.
-            if let Err(err) = result {
+            if let Err(err) = &result {
                 error!("component deletion failed:\n{err}");
             };
-            child_readiness_guard.map(|guard| guard.resolve(Ok(())));
+            child_readiness_guard.map(|guard| {
+                guard.resolve(result.map(|(outcome, _)| outcome).unwrap_or_else(|_| {
+                    ComponentRunOutcome {
+                        has_exception: true,
+                    }
+                }))
+            });
         });
         Ok(())
     }
@@ -310,7 +363,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self,
         processor_context: &ComponentProcessorContext<Prof>,
         processor: Option<Prof::ComponentProc>,
-    ) -> Result<Option<ComponentBuildOutput<Prof>>> {
+    ) -> Result<(ComponentRunOutcome, Option<ComponentBuildOutput<Prof>>)> {
         // Fast-path: component memoization check does not require acquiring the build permit.
         // If it hits, we can immediately return without processing/submitting/waiting.
         let memo_fp_to_store: Option<Fingerprint> =
@@ -318,14 +371,17 @@ impl<Prof: EngineProfile> Component<Prof> {
         if let Some(ret) =
             use_or_invalidate_component_memoization(processor_context, memo_fp_to_store)?
         {
-            return Ok(Some(ComponentBuildOutput {
-                ret,
-                provider_registry: Default::default(),
-            }));
+            return Ok((
+                ComponentRunOutcome::default(),
+                Some(ComponentBuildOutput {
+                    ret,
+                    provider_registry: Default::default(),
+                }),
+            ));
         }
 
         // Acquire the semaphore to ensure `process()` and `commit_effects()` cannot happen in parallel.
-        let output = {
+        let ret_n_submit_output = {
             let _permit = self.inner.build_semaphore.acquire().await?;
 
             if memo_fp_to_store.is_some() {
@@ -334,7 +390,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // We can piggyback on the same processing to avoid duplicating the work.
             }
 
-            let ret: Result<Option<Prof::ComponentProcRet>> = match processor {
+            let ret: Result<Option<Prof::FunctionData>> = match processor {
                 Some(processor) => processor
                     .process(
                         processor_context.app_ctx().env().host_runtime_ctx(),
@@ -344,23 +400,15 @@ impl<Prof: EngineProfile> Component<Prof> {
                     .map(Some),
                 None => Ok(None),
             };
-
             match ret {
                 Ok(ret) => {
-                    // Commit effects / child existence changes.
-                    //
-                    // - Build: required to apply effect changes.
-                    // - Delete: required to cleanup effects/children even without running a processor.
-                    let provider_registry = submit(&processor_context).await?;
-                    if let Some(ret) = ret {
-                        Ok(Some(ComponentBuildOutput {
-                            ret,
-                            provider_registry: provider_registry.ok_or_else(|| {
-                                internal_error!("expect a provider registry for component build")
-                            })?,
-                        }))
-                    } else {
-                        Ok(None)
+                    let build_submit_output = submit(&processor_context).await?;
+                    match (ret, build_submit_output) {
+                        (Some(ret), Some(build_submit_output)) => {
+                            Ok(Some((ret, build_submit_output)))
+                        }
+                        (None, None) => Ok(None),
+                        _ => internal_bail!("expect ret and build submit output to coexist"),
                     }
                 }
                 Err(err) => Err(err),
@@ -370,29 +418,47 @@ impl<Prof: EngineProfile> Component<Prof> {
         // Wait until children components ready.
         let components_readiness = processor_context.components_readiness();
         components_readiness.set_build_done();
-        components_readiness
+        let children_outcome = components_readiness
             .readiness()
             .wait()
             .await
             .clone()
             .into_result()?;
 
-        // Persist memoization as the *last* step, after children are ready.
-        if let Some(fp) = memo_fp_to_store
-            && let Ok(Some(output)) = &output
-        {
-            let last_memo_fp = processor_context
-                .component()
-                .inner
-                .last_memo_fp
-                .lock()
-                .unwrap();
-            if *last_memo_fp == memo_fp_to_store {
-                write_component_memoization(processor_context, fp, &output.ret)?;
+        let result = match ret_n_submit_output? {
+            Some((ret, build_submit_output)) => {
+                if !children_outcome.has_exception {
+                    let comp_memo = if let Some(fp) = memo_fp_to_store
+                        && let last_memo_fp = processor_context
+                            .component()
+                            .inner
+                            .last_memo_fp
+                            .lock()
+                            .unwrap()
+                        && *last_memo_fp == memo_fp_to_store
+                    {
+                        Some((fp, &ret))
+                    } else {
+                        None
+                    };
+                    post_submit_for_build(
+                        processor_context,
+                        comp_memo,
+                        build_submit_output.memos_with_mounts_to_store,
+                    )
+                    .await?;
+                }
+                Some(ComponentBuildOutput {
+                    ret,
+                    provider_registry: build_submit_output.effect_providers,
+                })
             }
-        }
-
-        output
+            None => {
+                cleanup_tombstone(&processor_context)?;
+                None
+            }
+        };
+        Ok((children_outcome, result))
     }
 
     fn new_processor_context_for_build(

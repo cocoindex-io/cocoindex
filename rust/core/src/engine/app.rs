@@ -30,7 +30,7 @@ impl<Prof: EngineProfile> App<Prof> {
 
 impl<Prof: EngineProfile> App<Prof> {
     #[instrument(name = "app.run", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
-    pub async fn run(&self, root_processor: Prof::ComponentProc) -> Result<Prof::ComponentProcRet> {
+    pub async fn run(&self, root_processor: Prof::ComponentProc) -> Result<Prof::FunctionData> {
         self.root_component
             .clone()
             .run(root_processor, None)?

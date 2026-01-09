@@ -13,31 +13,12 @@ from typing import (
 )
 import threading
 import weakref
-from typing_extensions import TypeIs, TypeVar
+from typing_extensions import TypeVar
 
 from . import core
 from .scope import Scope
 from .pending_marker import PendingS, MaybePendingS, ResolvesTo
-
-
-class NonExistenceType:
-    __slots__ = ()
-    _instance: NonExistenceType | None = None
-
-    def __new__(cls) -> NonExistenceType:
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return "NON_EXISTENCE"
-
-
-NON_EXISTENCE = NonExistenceType()
-
-
-def is_non_existence(obj: Any) -> TypeIs[NonExistenceType]:
-    return obj is NON_EXISTENCE
+from .typing import NonExistenceType
 
 
 ActionT = TypeVar("ActionT")
@@ -225,9 +206,13 @@ def declare_effect(scope: Scope, effect: Effect[None]) -> None:
         scope: The scope for the effect declaration.
         effect: The effect to declare.
     """
-    processor_ctx = scope._core_processor_ctx
+    comp_ctx = scope._core_processor_ctx
     core.declare_effect(
-        processor_ctx, effect._provider._core, effect._key, effect._value
+        comp_ctx,
+        scope._core_fn_call_ctx,
+        effect._provider._core,
+        effect._key,
+        effect._value,
     )
 
 
@@ -245,9 +230,13 @@ def declare_effect_with_child(
     Returns:
         An EffectProvider for the child effects.
     """
-    processor_ctx = scope._core_processor_ctx
+    comp_ctx = scope._core_processor_ctx
     provider = core.declare_effect_with_child(
-        processor_ctx, effect._provider._core, effect._key, effect._value
+        comp_ctx,
+        scope._core_fn_call_ctx,
+        effect._provider._core,
+        effect._key,
+        effect._value,
     )
     return EffectProvider(provider)
 
@@ -257,6 +246,3 @@ def register_root_effect_provider(
 ) -> EffectProvider[KeyT, ValueT, OptChildHandlerT]:
     provider = core.register_root_effect_provider(name, handler)
     return EffectProvider(provider)
-
-
-core.init_effect_module(NON_EXISTENCE)

@@ -1,4 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+
+use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::engine::component::{Component, ComponentBgChildReadiness};
 use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
@@ -59,9 +61,31 @@ pub(crate) struct ComponentEffectContext<Prof: EngineProfile> {
     pub provider_registry: EffectProviderRegistry<Prof>,
 }
 
+pub struct FnCallMemo<Prof: EngineProfile> {
+    pub ret: Prof::FunctionData,
+    pub(crate) child_components: Vec<StablePath>,
+    pub(crate) effect_paths: Vec<EffectPath>,
+    pub(crate) dependency_memo_entries: HashSet<Fingerprint>,
+    pub(crate) already_stored: bool,
+}
+
+pub enum FnCallMemoEntry<Prof: EngineProfile> {
+    /// Memoization result is pending, i.e. the function call is not finished yet.
+    Pending,
+    /// Memoization result is ready. None means memoization is disabled, e.g. it creates effect providers.
+    Ready(Option<FnCallMemo<Prof>>),
+}
+
+impl<Prof: EngineProfile> Default for FnCallMemoEntry<Prof> {
+    fn default() -> Self {
+        Self::Pending
+    }
+}
+
 pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub effect: ComponentEffectContext<Prof>,
     pub child_path_set: ChildStablePathSet,
+    pub fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
@@ -106,6 +130,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                     provider_registry: EffectProviderRegistry::new(providers),
                 },
                 child_path_set: Default::default(),
+                fn_call_memos: Default::default(),
             })))
         } else {
             ComponentProcessingAction::Delete(ComponentDeleteContext { providers })
@@ -173,5 +198,43 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             ComponentProcessingAction::Build(_) => ComponentProcessingMode::Build,
             ComponentProcessingAction::Delete { .. } => ComponentProcessingMode::Delete,
         }
+    }
+
+    pub fn join_fn_call(&self, _fn_ctx: &FnCallContext) {
+        // Nothing needs to be incorporated for now
+    }
+}
+
+#[derive(Default)]
+pub struct FnCallContextInner {
+    /// Effects that are declared by the function.
+    pub effect_paths: Vec<EffectPath>,
+    /// Dependency entries that are declared by the function. Only needs to keep dependencies with side effects (child components / effects / dependency entries with side effects).
+    pub dependency_memo_entries: HashSet<Fingerprint>,
+
+    pub child_components: Vec<StablePath>,
+}
+
+#[derive(Default)]
+pub struct FnCallContext {
+    pub(crate) inner: Mutex<FnCallContextInner>,
+}
+
+impl FnCallContext {
+    pub fn join_child(&self, child_fn_ctx: &FnCallContext) {
+        // Take the child's inner first to keep lock scope small (and avoid deadlock).
+        let child_inner = child_fn_ctx.update(std::mem::take);
+        self.update(|inner| {
+            inner.effect_paths.extend(child_inner.effect_paths);
+            inner
+                .dependency_memo_entries
+                .extend(child_inner.dependency_memo_entries);
+            inner.child_components.extend(child_inner.child_components);
+        });
+    }
+
+    pub fn update<T>(&self, f: impl FnOnce(&mut FnCallContextInner) -> T) -> T {
+        let mut guard = self.inner.lock().unwrap();
+        f(&mut guard)
     }
 }

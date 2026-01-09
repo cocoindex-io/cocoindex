@@ -4,7 +4,7 @@ use crate::{
     stable_path::PyStablePath,
 };
 
-use crate::context::PyComponentProcessorContext;
+use crate::context::{PyComponentProcessorContext, PyFnCallContext};
 use crate::fingerprint::PyFingerprint;
 use cocoindex_core::engine::{
     component::{ComponentMountHandle, ComponentMountRunHandle, ComponentProcessor},
@@ -45,9 +45,9 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
     fn process(
         &self,
         host_runtime_ctx: &PyAsyncContext,
-        context: &ComponentProcessorContext<PyEngineProfile>,
+        comp_ctx: &ComponentProcessorContext<PyEngineProfile>,
     ) -> Result<impl Future<Output = Result<crate::value::PyValue>> + Send + 'static> {
-        let py_context = PyComponentProcessorContext(context.clone());
+        let py_context = PyComponentProcessorContext(comp_ctx.clone());
         let fut = self.processor_fn.call(host_runtime_ctx, (py_context,))?;
         Ok(async move {
             let value = fut.await?;
@@ -64,11 +64,16 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
 pub fn mount_run(
     processor: PyComponentProcessor,
     stable_path: PyStablePath,
-    parent_ctx: PyComponentProcessorContext,
+    comp_ctx: PyComponentProcessorContext,
+    fn_ctx: &PyFnCallContext,
 ) -> PyResult<PyComponentMountRunHandle> {
-    let component = parent_ctx.0.component().get_child(stable_path.0);
+    let component = comp_ctx
+        .0
+        .component()
+        .mount_child(&fn_ctx.0, stable_path.0)
+        .into_py_result()?;
     let handle = component
-        .run(processor, Some(parent_ctx.0))
+        .run(processor, Some(comp_ctx.0))
         .into_py_result()?;
     Ok(PyComponentMountRunHandle(Some(handle)))
 }
@@ -77,11 +82,16 @@ pub fn mount_run(
 pub fn mount(
     processor: PyComponentProcessor,
     stable_path: PyStablePath,
-    parent_ctx: PyComponentProcessorContext,
+    comp_ctx: PyComponentProcessorContext,
+    fn_ctx: &PyFnCallContext,
 ) -> PyResult<PyComponentMountHandle> {
-    let component = parent_ctx.0.component().get_child(stable_path.0);
+    let component = comp_ctx
+        .0
+        .component()
+        .mount_child(&fn_ctx.0, stable_path.0)
+        .into_py_result()?;
     let handle = component
-        .run_in_background(processor, Some(parent_ctx.0))
+        .run_in_background(processor, Some(comp_ctx.0))
         .into_py_result()?;
     Ok(PyComponentMountHandle(Some(handle)))
 }
@@ -100,26 +110,26 @@ impl PyComponentMountRunHandle {
 #[pymethods]
 impl PyComponentMountRunHandle {
     pub fn result_async<'py>(
-        slf: Bound<'py, Self>,
-        parent_ctx: PyComponentProcessorContext,
+        &mut self,
+        py: Python<'py>,
+        comp_ctx: PyComponentProcessorContext,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let py = slf.py();
-        let handle = slf.borrow_mut().take_handle()?;
+        let handle = self.take_handle()?;
         future_into_py(py, async move {
-            let ret = handle.result(Some(&parent_ctx.0)).await.into_py_result()?;
+            let ret = handle.result(Some(&comp_ctx.0)).await.into_py_result()?;
             Ok(ret.into_inner())
         })
     }
 
     pub fn result<'py>(
-        mut slf: PyRefMut<'py, Self>,
-        parent_ctx: PyComponentProcessorContext,
+        &mut self,
+        py: Python<'py>,
+        comp_ctx: PyComponentProcessorContext,
     ) -> PyResult<Py<PyAny>> {
-        let py = slf.py();
-        let handle = slf.take_handle()?;
+        let handle = self.take_handle()?;
         py.detach(|| {
             get_runtime().block_on(async move {
-                let ret = handle.result(Some(&parent_ctx.0)).await.into_py_result()?;
+                let ret = handle.result(Some(&comp_ctx.0)).await.into_py_result()?;
                 Ok(ret.into_inner())
             })
         })
@@ -139,15 +149,13 @@ impl PyComponentMountHandle {
 
 #[pymethods]
 impl PyComponentMountHandle {
-    pub fn ready_async<'py>(slf: Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
-        let py = slf.py();
-        let handle = slf.borrow_mut().take_handle()?;
+    pub fn ready_async<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let handle = self.take_handle()?;
         future_into_py(py, async move { handle.ready().await.into_py_result() })
     }
 
-    pub fn ready<'py>(mut slf: PyRefMut<'py, Self>) -> PyResult<()> {
-        let py = slf.py();
-        let handle = slf.take_handle()?;
+    pub fn ready<'py>(&mut self, py: Python<'py>) -> PyResult<()> {
+        let handle = self.take_handle()?;
         py.detach(|| get_runtime().block_on(async move { handle.ready().await.into_py_result() }))
     }
 }

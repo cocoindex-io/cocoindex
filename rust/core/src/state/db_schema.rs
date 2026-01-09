@@ -23,6 +23,7 @@ pub enum StablePathEntryKey {
     /// Value type: ComponentMemoizationInfo
     ComponentMemoization,
 
+    FunctionMemoizationPrefix,
     /// Value type: FunctionMemoizationEntry
     FunctionMemoization(Fingerprint),
 
@@ -45,6 +46,7 @@ impl storekey::Encode for StablePathEntryKey {
             // Should not be less than 2.
             StablePathEntryKey::Metadata => e.write_u8(0x10),
             StablePathEntryKey::ComponentMemoization => e.write_u8(0x20),
+            StablePathEntryKey::FunctionMemoizationPrefix => e.write_u8(0x30),
             StablePathEntryKey::FunctionMemoization(fp) => {
                 e.write_u8(0x30)?;
                 fp.encode(e)
@@ -102,13 +104,13 @@ impl<'a> storekey::Encode for DbEntryKey<'a> {
     fn encode<W: Write>(&self, e: &mut storekey::Writer<W>) -> Result<(), storekey::EncodeError> {
         match self {
             // Should not be less than 2.
-            DbEntryKey::StablePathPrefixPrefix(prefix) => {
+            DbEntryKey::StablePathPrefixPrefix(path_prefix) => {
                 e.write_u8(0x10)?;
-                prefix.encode(e)?;
+                path_prefix.encode(e)?;
             }
-            DbEntryKey::StablePathPrefix(prefix) => {
+            DbEntryKey::StablePathPrefix(path) => {
                 e.write_u8(0x10)?;
-                prefix.encode(e)?;
+                path.encode(e)?;
             }
             DbEntryKey::StablePath(path, key) => {
                 e.write_u8(0x10)?;
@@ -172,21 +174,20 @@ pub struct ComponentMemoizationInfo<'a> {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FunctionMemoizationEntry<'a> {
-    /// None if the function call is the root for the component.
     /// Memoization info is stored in the component metadata
     #[serde(rename = "R")]
-    pub return_value: Option<MemoizedValue<'a>>,
+    pub return_value: MemoizedValue<'a>,
 
     /// Relative paths to the parent components.
     #[serde(rename = "C")]
     pub child_components: Vec<StablePath>,
     /// Effects that are declared by the function.
     #[serde(rename = "E")]
-    pub effects: Vec<EffectPath>,
+    pub effect_paths: Vec<EffectPath>,
     /// Dependency entries that are declared by the function.
     /// Only needs to keep dependencies with side effects (child components / effects / dependency entries with side effects).
     #[serde(rename = "D")]
-    pub dependency_entries: Vec<Fingerprint>,
+    pub dependency_memo_entries: Vec<Fingerprint>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

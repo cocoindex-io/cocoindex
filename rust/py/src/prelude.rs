@@ -1,6 +1,6 @@
 #![allow(unused_imports)]
 
-pub use std::sync::Arc;
+pub use std::sync::{Arc, Mutex};
 
 pub use pyo3::prelude::*;
 

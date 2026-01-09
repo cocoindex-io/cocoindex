@@ -67,7 +67,7 @@ with the same state, and implement the `ResolvesTo` mixin:
 
 from __future__ import annotations
 
-from typing import Generic, cast
+from typing import Generic
 from typing_extensions import TypeVar
 
 

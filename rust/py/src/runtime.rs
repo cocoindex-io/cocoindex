@@ -9,12 +9,14 @@ use pyo3::{call::PyCallArgs, exceptions::PyException};
 use pyo3_async_runtimes::TaskLocals;
 use tokio_util::task::AbortOnDropHandle;
 
-pub struct PythonFunctions {
+pub struct PythonObjects {
     pub serialize_fn: Py<PyAny>,
     pub deserialize_fn: Py<PyAny>,
+    pub non_existence: Py<PyAny>,
+    pub not_set: Py<PyAny>,
 }
 
-impl PythonFunctions {
+impl PythonObjects {
     pub fn serialize<'py>(
         &self,
         py: Python<'py>,
@@ -36,28 +38,33 @@ impl PythonFunctions {
     }
 }
 
-static PY_FUNCTIONS: OnceLock<PythonFunctions> = OnceLock::new();
+static PY_OBJECTS: OnceLock<PythonObjects> = OnceLock::new();
 
 #[pyfunction]
-pub fn init_runtime(serialize_fn: Py<PyAny>, deserialize_fn: Py<PyAny>) -> PyResult<()> {
+pub fn init_runtime(
+    serialize_fn: Py<PyAny>,
+    deserialize_fn: Py<PyAny>,
+    non_existence: Py<PyAny>,
+    not_set: Py<PyAny>,
+) -> PyResult<()> {
     if let Err(_) = pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()) {
         return Err(PyException::new_err(
             "Failed to initialize Tokio runtime: already initialized",
         ));
     }
-    PY_FUNCTIONS
-        .set(PythonFunctions {
+    PY_OBJECTS
+        .set(PythonObjects {
             serialize_fn,
             deserialize_fn,
+            non_existence,
+            not_set,
         })
-        .map_err(|_| PyException::new_err("Failed to set Python functions: already initialized"))?;
+        .map_err(|_| PyException::new_err("Failed to set Python objects: already initialized"))?;
     Ok(())
 }
 
-pub fn python_functions() -> &'static PythonFunctions {
-    PY_FUNCTIONS
-        .get()
-        .expect("Python functions not initialized")
+pub fn python_objects() -> &'static PythonObjects {
+    PY_OBJECTS.get().expect("Python objects not initialized")
 }
 
 #[pyclass(name = "AsyncContext")]

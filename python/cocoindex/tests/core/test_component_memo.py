@@ -27,7 +27,7 @@ class SourceDataEntry(NamedTuple):
 
 
 _source_data: dict[str, SourceDataEntry] = {}
-_declare_source_data_entry_metrics = Metrics()
+_metrics = Metrics()
 
 
 @dataclass(frozen=True)
@@ -36,42 +36,41 @@ class SourceDataResult:
     content: str
 
 
-_source_data_run: dict[str, SourceDataEntry] = {}
-_run_source_data_entry_metrics = Metrics()
-
-
 @coco.function(memo=True)
-def _declare_source_data_entry(scope: coco.Scope, entry: SourceDataEntry) -> None:
+def _declare_dict_entry(scope: coco.Scope, entry: SourceDataEntry) -> None:
     # Track the actual number of component executions for this function.
     if entry.err:
         raise Exception("injected test exception (which is expected)")
-    _declare_source_data_entry_metrics.increment("calls")
+    _metrics.increment("calls")
     coco.declare_effect(scope, GlobalDictTarget.effect(entry.name, entry.content))
 
 
 @coco.function
-def _declare_source_data(scope: coco.Scope) -> None:
+def _declare_dict_data(scope: coco.Scope) -> None:
     for entry in _source_data.values():
-        coco.mount(_declare_source_data_entry, scope / entry.name, entry)
+        coco.mount(_declare_dict_entry, scope / entry.name, entry)
 
 
 @coco.function(memo=True)
-def _run_source_data_entry(
-    _scope: coco.Scope, entry: SourceDataEntry
+def _declare_transform_dict_entry(
+    scope: coco.Scope, entry: SourceDataEntry
 ) -> SourceDataResult:
     if entry.err:
         raise Exception("injected test exception (which is expected)")
-    _run_source_data_entry_metrics.increment("calls")
+    _metrics.increment("calls")
+    coco.declare_effect(scope, GlobalDictTarget.effect(entry.name, entry.content))
     return SourceDataResult(name=entry.name, content=entry.content)
 
 
 @coco.function
-def _run_source_data(scope: coco.Scope) -> list[SourceDataResult]:
+def _declare_transform_dict_data(scope: coco.Scope) -> list[SourceDataResult]:
     # Deterministic ordering for stable assertions.
     results: list[SourceDataResult] = []
-    for name in sorted(_source_data_run):
-        entry = _source_data_run[name]
-        handle = coco.mount_run(_run_source_data_entry, scope / entry.name, entry)
+    for name in sorted(_source_data):
+        entry = _source_data[name]
+        handle = coco.mount_run(
+            _declare_transform_dict_entry, scope / entry.name, entry
+        )
         results.append(handle.result())
     return results
 
@@ -79,10 +78,10 @@ def _run_source_data(scope: coco.Scope) -> list[SourceDataResult]:
 def test_source_data_memo() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
-    _declare_source_data_entry_metrics.clear()
+    _metrics.clear()
 
     app = coco.App(
-        _declare_source_data,
+        _declare_dict_data,
         coco.AppConfig(name="test_source_data_memo", environment=coco_env),
     )
 
@@ -91,7 +90,7 @@ def test_source_data_memo() -> None:
 
     app.run()
     # 2 children, each updates 1 key => 2 calls into _declare_source_data_entry.
-    assert _declare_source_data_entry_metrics.collect() == {"calls": 2}
+    assert _metrics.collect() == {"calls": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
         "B": DictDataWithPrev(data="contentB1", prev=[], prev_may_be_missing=True),
@@ -102,7 +101,7 @@ def test_source_data_memo() -> None:
     _source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
     app.run()
     # A is skipped (memo hit), B runs (memo miss) => 1 call into _declare_source_data_entry.
-    assert _declare_source_data_entry_metrics.collect() == {"calls": 1}
+    assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
         "B": DictDataWithPrev(
@@ -113,7 +112,7 @@ def test_source_data_memo() -> None:
     # Test deletion and re-insertion.
     del _source_data["A"]
     app.run()
-    assert _declare_source_data_entry_metrics.collect() == {}
+    assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "B": DictDataWithPrev(
             data="contentB2", prev=["contentB1"], prev_may_be_missing=False
@@ -122,7 +121,7 @@ def test_source_data_memo() -> None:
 
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     app.run()
-    assert _declare_source_data_entry_metrics.collect() == {"calls": 1}
+    assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA2", prev=[], prev_may_be_missing=True),
         "B": DictDataWithPrev(
@@ -139,7 +138,7 @@ def test_source_data_memo() -> None:
     app.run()
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA3")
     app.run()
-    assert _declare_source_data_entry_metrics.collect() == {"calls": 1}
+    assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
             data="contentA3", prev=["contentA2"], prev_may_be_missing=False
@@ -153,16 +152,16 @@ def test_source_data_memo() -> None:
 def test_source_data_memo_cleanup() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
-    _declare_source_data_entry_metrics.clear()
+    _metrics.clear()
 
     app = coco.App(
-        _declare_source_data,
+        _declare_dict_data,
         coco.AppConfig(name="test_source_data_memo_cleanup", environment=coco_env),
     )
 
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     app.run()
-    assert _declare_source_data_entry_metrics.collect() == {"calls": 1}
+    assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
     }
@@ -173,58 +172,88 @@ def test_source_data_memo_cleanup() -> None:
 
     del _source_data["A"]
     app.run()
-    assert _declare_source_data_entry_metrics.collect() == {}
+    assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
     assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
 
 
 def test_source_data_memo_mount_run() -> None:
-    _source_data_run.clear()
-    _run_source_data_entry_metrics.clear()
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _metrics.clear()
 
     app = coco.App(
-        _run_source_data,
+        _declare_transform_dict_data,
         coco.AppConfig(name="test_source_data_memo_mount_run", environment=coco_env),
     )
 
-    _source_data_run["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
-    _source_data_run["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
+    _source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
     ret1 = app.run()
-    assert _run_source_data_entry_metrics.collect() == {"calls": 2}
+    assert _metrics.collect() == {"calls": 2}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
+        "B": DictDataWithPrev(data="contentB1", prev=[], prev_may_be_missing=True),
+    }
     assert ret1 == [
         SourceDataResult(name="A", content="contentA1"),
         SourceDataResult(name="B", content="contentB1"),
     ]
 
     # A memo key unchanged => cached return is used; B changes => recomputed.
-    _source_data_run["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
-    _source_data_run["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    _source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
     ret2 = app.run()
-    assert _run_source_data_entry_metrics.collect() == {"calls": 1}
+    assert _metrics.collect() == {"calls": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
+        "B": DictDataWithPrev(
+            data="contentB2", prev=["contentB1"], prev_may_be_missing=False
+        ),
+    }
     assert ret2 == [
         SourceDataResult(name="A", content="contentA1"),
         SourceDataResult(name="B", content="contentB2"),
     ]
 
-    _source_data_run["A"] = SourceDataEntry(name="A", version=2, content="contentA2")
+    _source_data["A"] = SourceDataEntry(name="A", version=2, content="contentA2")
     ret3 = app.run()
-    assert _run_source_data_entry_metrics.collect() == {"calls": 1}
+    assert _metrics.collect() == {"calls": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="contentA2", prev=["contentA1"], prev_may_be_missing=False
+        ),
+        "B": DictDataWithPrev(
+            data="contentB2", prev=["contentB1"], prev_may_be_missing=False
+        ),
+    }
     assert ret3 == [
         SourceDataResult(name="A", content="contentA2"),
         SourceDataResult(name="B", content="contentB2"),
     ]
 
     # Test deletion and re-insertion.
-    del _source_data_run["A"]
+    del _source_data["A"]
     ret4 = app.run()
-    assert _run_source_data_entry_metrics.collect() == {}
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == {
+        "B": DictDataWithPrev(
+            data="contentB2", prev=["contentB1"], prev_may_be_missing=False
+        ),
+    }
     assert ret4 == [
         SourceDataResult(name="B", content="contentB2"),
     ]
 
-    _source_data_run["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     ret5 = app.run()
-    assert _run_source_data_entry_metrics.collect() == {"calls": 1}
+    assert _metrics.collect() == {"calls": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(data="contentA2", prev=[], prev_may_be_missing=True),
+        "B": DictDataWithPrev(
+            data="contentB2", prev=["contentB1"], prev_may_be_missing=False
+        ),
+    }
     assert ret5 == [
         SourceDataResult(name="A", content="contentA2"),
         SourceDataResult(name="B", content="contentB2"),
@@ -233,14 +262,22 @@ def test_source_data_memo_mount_run() -> None:
     # When the component starts to run on a new version, memoization is expected to be invalidated,
     # even if it doesn't finish (e.g. an exception is raised).
     # Because once it starts, there can be effects created by child components.
-    _source_data_run["A"] = SourceDataEntry(
+    _source_data["A"] = SourceDataEntry(
         name="A", version=2, content="contentA2", err=True
     )
     with pytest.raises(Exception):
         app.run()
-    _source_data_run["A"] = SourceDataEntry(name="A", version=1, content="contentA3")
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA3")
     ret6 = app.run()
-    assert _run_source_data_entry_metrics.collect() == {"calls": 1}
+    assert _metrics.collect() == {"calls": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="contentA3", prev=["contentA2"], prev_may_be_missing=False
+        ),
+        "B": DictDataWithPrev(
+            data="contentB2", prev=["contentB1"], prev_may_be_missing=False
+        ),
+    }
     assert ret6 == [
         SourceDataResult(name="A", content="contentA3"),
         SourceDataResult(name="B", content="contentB2"),
@@ -248,31 +285,36 @@ def test_source_data_memo_mount_run() -> None:
 
 
 def test_source_data_memo_mount_run_cleanup() -> None:
-    _source_data_run.clear()
-    _run_source_data_entry_metrics.clear()
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _metrics.clear()
 
     app = coco.App(
-        _run_source_data,
+        _declare_transform_dict_data,
         coco.AppConfig(
             name="test_source_data_memo_mount_run_cleanup", environment=coco_env
         ),
     )
 
-    _source_data_run["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     ret1 = app.run()
     assert ret1 == [
         SourceDataResult(name="A", content="contentA1"),
     ]
-    assert _run_source_data_entry_metrics.collect() == {"calls": 1}
+    assert _metrics.collect() == {"calls": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
+    }
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
         coco.ROOT_PATH / "A",
     ]
 
-    del _source_data_run["A"]
+    del _source_data["A"]
     ret2 = app.run()
     assert ret2 == []
-    assert _run_source_data_entry_metrics.collect() == {}
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == {}
     assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
 
 

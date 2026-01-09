@@ -4,6 +4,6 @@ pub mod context;
 pub mod effect;
 pub mod environment;
 pub mod execution;
-pub mod fn_info;
+pub mod function;
 pub mod profile;
 pub mod runtime;

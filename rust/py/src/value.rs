@@ -1,6 +1,6 @@
 use cocoindex_core::engine::profile::{Persist, StableFingerprint};
 
-use crate::{prelude::*, runtime::python_functions};
+use crate::{prelude::*, runtime::python_objects};
 
 pub struct PyKey {
     value: Py<PyAny>,
@@ -33,7 +33,7 @@ impl std::fmt::Debug for PyKey {
 
 impl PyKey {
     pub fn new(py: Python<'_>, value: Py<PyAny>) -> Result<Self> {
-        let serialized = python_functions().serialize(py, &value.bind(py))?;
+        let serialized = python_objects().serialize(py, &value.bind(py))?;
         Ok(Self::from_value_and_bytes(value, serialized))
     }
 
@@ -60,7 +60,7 @@ impl Persist for PyKey {
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self> {
-        let value = Python::attach(|py| python_functions().deserialize(py, data))?;
+        let value = Python::attach(|py| python_objects().deserialize(py, data))?;
         Ok(Self::from_value_and_bytes(
             value,
             bytes::Bytes::copy_from_slice(data),
@@ -100,14 +100,21 @@ impl std::fmt::Debug for PyValue {
 
 impl Persist for PyValue {
     fn to_bytes(&self) -> Result<bytes::Bytes> {
-        let serialized =
-            Python::attach(|py| python_functions().serialize(py, &self.data.bind(py)))?;
+        let serialized = Python::attach(|py| python_objects().serialize(py, &self.data.bind(py)))?;
         Ok(serialized)
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self> {
-        let value = Python::attach(|py| python_functions().deserialize(py, data))?;
+        let value = Python::attach(|py| python_objects().deserialize(py, data))?;
         Ok(Self { data: value })
+    }
+}
+
+impl Clone for PyValue {
+    fn clone(&self) -> Self {
+        Python::attach(|py| Self {
+            data: self.data.clone_ref(py),
+        })
     }
 }
 

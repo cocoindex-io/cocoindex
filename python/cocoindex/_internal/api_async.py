@@ -131,12 +131,13 @@ def mount_run(
     Returns:
         A handle that can be used to get the result.
     """
-    parent_ctx = scope._core_processor_ctx
+    comp_ctx = scope._core_processor_ctx
+    fn_ctx = scope._core_fn_call_ctx
     processor = processor_fn._as_core_component_processor(
         scope._core_path, *args, **kwargs
     )
-    core_handle = core.mount_run(processor, scope._core_path, parent_ctx)
-    return ComponentMountRunHandle(core_handle, parent_ctx)
+    core_handle = core.mount_run(processor, scope._core_path, comp_ctx, fn_ctx)
+    return ComponentMountRunHandle(core_handle, comp_ctx)
 
 
 def mount(
@@ -157,11 +158,12 @@ def mount(
     Returns:
         A handle that can be used to wait until the component is ready.
     """
-    parent_ctx = scope._core_processor_ctx
+    comp_ctx = scope._core_processor_ctx
+    fn_ctx = scope._core_fn_call_ctx
     processor = processor_fn._as_core_component_processor(
         scope._core_path, *args, **kwargs
     )
-    core_handle = core.mount(processor, scope._core_path, parent_ctx)
+    core_handle = core.mount(processor, scope._core_path, comp_ctx, fn_ctx)
     return ComponentMountHandle(core_handle)
 
 
