@@ -1,5 +1,5 @@
 """
-FastAPI wrapper for the v1 image search pipeline.
+FastAPI wrapper for the v1 ColPali image search pipeline.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ except ImportError:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[override]
     async with coco_aio.runtime():
-        # Build/update the index once on startup so the collection exists.
         await image_search.app.run()
         yield
 

@@ -59,10 +59,12 @@ ValueEncoder = Callable[[Any], Any]
 
 
 class QdrantVectorSpec(NamedTuple):
-    """Qdrant vector specification with optional distance override."""
+    """Qdrant vector specification with optional distance and multivector config."""
 
     dim: int
     distance: Literal["cosine", "dot", "euclid"] = "cosine"
+    multivector: bool = False
+    multivector_comparator: Literal["max_sim"] = "max_sim"
 
 
 def _json_encoder(value: Any) -> str:
@@ -235,7 +237,7 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
             row = action.value
             point_id = _qdrant_id_from_key(action.key)
 
-            vectors: dict[str, list[float]] = {}
+            vectors: dict[str, list[float] | list[list[float]]] = {}
             payload: dict[str, Any] = {}
 
             for col_name, value in row.items():
@@ -452,13 +454,18 @@ class _CollectionHandler(
         ):
             return
 
-        vectors_config = {
-            name: qdrant_models.VectorParams(
+        vectors_config = {}
+        for name, spec in schema.vector_specs.items():
+            multivector_config = None
+            if spec.multivector:
+                multivector_config = qdrant_models.MultiVectorConfig(
+                    comparator=_multivector_comparator(spec.multivector_comparator)
+                )
+            vectors_config[name] = qdrant_models.VectorParams(
                 size=spec.dim,
                 distance=_distance_from_spec(spec.distance),
+                multivector_config=multivector_config,
             )
-            for name, spec in schema.vector_specs.items()
-        }
 
         await asyncio.to_thread(
             client.create_collection,
@@ -613,10 +620,26 @@ def _distance_from_spec(distance: str) -> qdrant_models.Distance:
     raise ValueError(f"Unsupported Qdrant distance metric: {distance}")
 
 
-def _vector_to_list(value: Any) -> list[float]:
+def _multivector_comparator(
+    comparator: str,
+) -> qdrant_models.MultiVectorComparator:
+    if comparator.lower() == "max_sim":
+        return qdrant_models.MultiVectorComparator.MAX_SIM
+    raise ValueError(f"Unsupported multivector comparator: {comparator}")
+
+
+def _vector_to_list(value: Any) -> list[float] | list[list[float]]:
     if isinstance(value, np.ndarray):
-        return [float(v) for v in value.astype(float).tolist()]
+        if value.ndim == 1:
+            return [float(v) for v in value.astype(float).tolist()]
+        if value.ndim == 2:
+            return [[float(v) for v in row.astype(float).tolist()] for row in value]
+        raise TypeError("Vector ndarray must be 1D or 2D.")
     if isinstance(value, (list, tuple)):
+        if not value:
+            return []
+        if isinstance(value[0], (list, tuple, np.ndarray)):
+            return [[float(v) for v in row] for row in value]  # type: ignore[arg-type]
         return [float(v) for v in value]
     raise TypeError(f"Vector value must be a numpy array or list, got {type(value)}")
 
