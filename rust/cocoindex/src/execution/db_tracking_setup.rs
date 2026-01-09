@@ -367,33 +367,10 @@ impl TrackingTableSetupChange {
                 tracking_entries.len()
             );
 
-            // Step 2: Count rows to be deleted by target (for logging)
-            let mut rows_by_target: BTreeMap<i32, usize> = BTreeMap::new();
-
-            for entry in tracking_entries {
-                if let Some(target_keys) = entry.target_keys {
-                    for (target_id, tracked_keys) in target_keys {
-                        *rows_by_target.entry(target_id).or_default() += tracked_keys.len();
-                    }
-                }
-            }
-
-            // Step 3: Log information about target data that needs cleanup
-            if !rows_by_target.is_empty() && self.existing_targets.is_some() {
-                let targets = self.existing_targets.as_ref().unwrap();
-                for (target_id, row_count) in rows_by_target {
-                    if let Some(target_info) = targets.get(&target_id) {
-                        tracing::warn!(
-                            "Target data cleanup not yet fully implemented. \
-                             {} rows from target {} (ID: {}) should be deleted but this is currently skipped. \
-                             Only tracking metadata will be cleaned up. \
-                             Target may contain stale data requiring manual cleanup.",
-                            row_count,
-                            target_info.target_kind,
-                            target_id
-                        );
-                    }
-                }
+            // Step 2: Apply target data deletions using direct SQL for Postgres
+            if let Some(targets) = &self.existing_targets {
+                self.delete_target_data_for_postgres(&tracking_entries, targets)
+                    .await?;
             }
         }
 
@@ -407,5 +384,170 @@ impl TrackingTableSetupChange {
         );
 
         Ok(())
+    }
+
+    /// Delete target data for Postgres targets using direct SQL
+    /// This implements the "for each tracked source row, do a deletion" requirement
+    ///
+    /// Note: Currently only supports targets using the builtin database.
+    /// Targets with custom databases will require manual cleanup.
+    async fn delete_target_data_for_postgres(
+        &self,
+        tracking_entries: &[db_tracking::SourceTrackingEntryForCleanup],
+        targets: &BTreeMap<i32, TargetCleanupInfo>,
+    ) -> Result<()> {
+        // Group tracked keys by target_id
+        let mut keys_by_target: BTreeMap<i32, Vec<serde_json::Value>> = BTreeMap::new();
+
+        for entry in tracking_entries {
+            if let Some(target_keys) = &entry.target_keys {
+                for (target_id, tracked_keys) in target_keys {
+                    for tracked_key_info in tracked_keys {
+                        keys_by_target
+                            .entry(*target_id)
+                            .or_default()
+                            .push(tracked_key_info.key.clone());
+                    }
+                }
+            }
+        }
+
+        // Delete from each Postgres target
+        let lib_context = get_lib_context().await?;
+        let builtin_pool = lib_context.require_builtin_db_pool()?;
+
+        for (target_id, keys_to_delete) in keys_by_target {
+            if let Some(target_info) = targets.get(&target_id) {
+                if target_info.target_kind == "Postgres" {
+                    // Check if target uses a custom database
+                    let uses_custom_db = target_info
+                        .setup_key
+                        .get("database")
+                        .and_then(|v| v.as_object())
+                        .is_some();
+
+                    if uses_custom_db {
+                        tracing::warn!(
+                            "Target (ID: {}) uses a custom database. \
+                             Automatic cleanup is not yet supported for custom databases. \
+                             You may need to manually clean up {} rows from this target.",
+                            target_id,
+                            keys_to_delete.len()
+                        );
+                        continue;
+                    }
+
+                    tracing::info!(
+                        "Deleting {} rows from Postgres target (ID: {})",
+                        keys_to_delete.len(),
+                        target_id
+                    );
+
+                    // Extract table information from setup_key JSON
+                    let table_name = self.extract_postgres_table_name(&target_info.setup_key)?;
+
+                    // Extract key column names from setup_state JSON
+                    let key_columns =
+                        self.extract_postgres_key_columns(&target_info.setup_state)?;
+
+                    // Delete in batches to avoid too many parameters
+                    const BATCH_SIZE: usize = 1000;
+                    let mut total_deleted = 0;
+
+                    for keys_batch in keys_to_delete.chunks(BATCH_SIZE) {
+                        // Build WHERE clause: WHERE (col1, col2, ...) IN ((val1, val2), ...)
+                        let mut where_values = Vec::new();
+                        for key_json in keys_batch {
+                            // Parse key JSON into individual values
+                            if let serde_json::Value::Array(key_parts) = key_json {
+                                let values: Vec<String> = key_parts
+                                    .iter()
+                                    .map(|v| match v {
+                                        serde_json::Value::String(s) => {
+                                            format!("'{}'", s.replace('\'', "''"))
+                                        }
+                                        serde_json::Value::Number(n) => n.to_string(),
+                                        serde_json::Value::Bool(b) => b.to_string(),
+                                        serde_json::Value::Null => "NULL".to_string(),
+                                        _ => format!(
+                                            "'{}'",
+                                            serde_json::to_string(v).unwrap_or_default()
+                                        ),
+                                    })
+                                    .collect();
+                                where_values.push(format!("({})", values.join(", ")));
+                            }
+                        }
+
+                        if !where_values.is_empty() {
+                            let delete_sql = format!(
+                                "DELETE FROM {} WHERE ({}) IN ({})",
+                                table_name,
+                                key_columns.join(", "),
+                                where_values.join(", ")
+                            );
+
+                            let result = sqlx::query(&delete_sql).execute(builtin_pool).await?;
+                            total_deleted += result.rows_affected();
+                        }
+                    }
+
+                    tracing::info!(
+                        "Deleted {} rows from Postgres target (ID: {})",
+                        total_deleted,
+                        target_id
+                    );
+                } else {
+                    tracing::warn!(
+                        "Target cleanup for {} not yet implemented. \
+                         Target (ID: {}) may contain stale data requiring manual cleanup.",
+                        target_info.target_kind,
+                        target_id
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Extract qualified table name from Postgres setup_key JSON
+    fn extract_postgres_table_name(&self, setup_key: &serde_json::Value) -> Result<String> {
+        let table_name = setup_key
+            .get("table_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| internal_error!("Missing table_name in Postgres setup_key"))?;
+
+        let schema = setup_key.get("schema").and_then(|v| v.as_str());
+
+        Ok(match schema {
+            Some(schema) => format!("\"{}\".{}", schema, table_name),
+            None => table_name.to_string(),
+        })
+    }
+
+    /// Extract key column names from Postgres setup_state JSON
+    fn extract_postgres_key_columns(&self, setup_state: &serde_json::Value) -> Result<Vec<String>> {
+        let key_columns = setup_state
+            .get("key_columns")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| internal_error!("Missing key_columns in Postgres setup_state"))?;
+
+        let column_names: Vec<String> = key_columns
+            .iter()
+            .filter_map(|col| {
+                col.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|n| format!("\"{}\"", n))
+            })
+            .collect();
+
+        if column_names.is_empty() {
+            return Err(internal_error!(
+                "No key columns found in Postgres setup_state"
+            ));
+        }
+
+        Ok(column_names)
     }
 }
