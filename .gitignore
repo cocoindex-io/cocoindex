@@ -29,3 +29,4 @@ uv.lock
 # Output of `cocoindex eval`
 examples/**/eval_*
 examples/**/uv.lock
+/examples_v1/code_embedding_lancedb/lancedb_data

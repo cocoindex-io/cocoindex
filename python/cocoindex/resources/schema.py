@@ -16,4 +16,10 @@ class VectorSpec(_typing.NamedTuple):
     dim: int
 
 
-__all__ = ["VectorSpec"]
+class FtsSpec(_typing.NamedTuple):
+    """Additional information for a full-text search column."""
+
+    tokenizer: str = "simple"  # "simple", "en_stem", "raw"
+
+
+__all__ = ["VectorSpec", "FtsSpec"]
