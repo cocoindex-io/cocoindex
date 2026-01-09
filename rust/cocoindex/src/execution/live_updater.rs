@@ -361,7 +361,7 @@ impl SourceUpdateTask {
     ) -> String {
         self.source_update_stats.merge(stats);
         let mut message = format!(
-            "{}.{} ({update_title}): {stats}",
+            "{}.{} ({update_title}):{stats}",
             self.flow.flow_instance.name,
             self.import_op().name
         );
