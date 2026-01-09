@@ -1,7 +1,7 @@
 import pytest
 from typing import Iterator, AsyncIterator
 
-import cocoindex.aio as coco_aio
+import cocoindex.asyncio as coco_aio
 from cocoindex._internal.environment import reset_default_lifespan_for_tests
 from ..common import get_env_db_path
 

@@ -31,7 +31,7 @@ from colpali_engine.utils.torch_utils import (
 )
 
 import cocoindex as coco
-import cocoindex.aio as coco_aio
+import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, qdrant
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 

@@ -26,7 +26,7 @@ from qdrant_client.http import models as qdrant_models
 from sentence_transformers import SentenceTransformer
 
 import cocoindex as coco
-import cocoindex.aio as coco_aio
+import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, qdrant
 from cocoindex.extras.text import RecursiveSplitter
 from cocoindex.resources.chunk import Chunk

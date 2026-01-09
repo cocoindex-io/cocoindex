@@ -21,7 +21,7 @@ from litellm import acompletion
 from pydantic import BaseModel, Field
 
 import cocoindex as coco
-import cocoindex.aio as coco_aio
+import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import postgres
 
 # Configuration

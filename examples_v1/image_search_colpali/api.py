@@ -11,7 +11,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-import cocoindex.aio as coco_aio
+import cocoindex.asyncio as coco_aio
 
 try:
     from . import main as image_search

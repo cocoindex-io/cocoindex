@@ -26,7 +26,7 @@ from numpy.typing import NDArray
 from sentence_transformers import SentenceTransformer
 
 import cocoindex as coco
-import cocoindex.aio as coco_aio
+import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
 from cocoindex.extras.text import RecursiveSplitter, detect_code_language
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher

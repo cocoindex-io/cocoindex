@@ -26,7 +26,7 @@ from qdrant_client.http import models as qdrant_models
 from transformers import CLIPModel, CLIPProcessor
 
 import cocoindex as coco
-import cocoindex.aio as coco_aio
+import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, qdrant
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 

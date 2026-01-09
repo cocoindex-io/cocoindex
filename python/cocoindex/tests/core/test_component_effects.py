@@ -1,5 +1,5 @@
 import cocoindex as coco
-import cocoindex.aio as coco_aio
+import cocoindex.asyncio as coco_aio
 import cocoindex.inspect as coco_inspect
 import pytest
 
