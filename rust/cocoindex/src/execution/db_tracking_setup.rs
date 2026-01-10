@@ -287,18 +287,10 @@ impl TrackingTableSetupChange {
             }
         }
 
-        // Remove legacy tracking tables not matching desired state
+        // Remove legacy tracking tables
         for legacy_name in self.legacy_tracking_table_names.iter() {
-            // If desired state exists, we only drop if it's strictly a legacy name different from current
-            let keep = self
-                .desired_state
-                .as_ref()
-                .map(|s| &s.table_name == legacy_name)
-                .unwrap_or(false);
-            if !keep {
-                let query = format!("DROP TABLE IF EXISTS {legacy_name}");
-                sqlx::query(&query).execute(pool).await?;
-            }
+            let query = format!("DROP TABLE IF EXISTS {legacy_name}");
+            sqlx::query(&query).execute(pool).await?;
         }
 
         let source_state_table_name = self
@@ -335,13 +327,8 @@ impl TrackingTableSetupChange {
 
         // Remove legacy source state tables
         for legacy_name in self.legacy_source_state_table_names.iter() {
-            let keep = source_state_table_name
-                .map(|n| n == legacy_name)
-                .unwrap_or(false);
-            if !keep {
-                let query = format!("DROP TABLE IF EXISTS {legacy_name}");
-                sqlx::query(&query).execute(pool).await?;
-            }
+            let query = format!("DROP TABLE IF EXISTS {legacy_name}");
+            sqlx::query(&query).execute(pool).await?;
         }
         Ok(())
     }
