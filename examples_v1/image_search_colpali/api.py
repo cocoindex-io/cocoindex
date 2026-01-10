@@ -10,8 +10,10 @@ from typing import Any, AsyncIterator
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from qdrant_client import QdrantClient
 
 import cocoindex.asyncio as coco_aio
+from cocoindex.connectors import qdrant
 
 try:
     from . import main as image_search
@@ -21,11 +23,19 @@ except ImportError:
     image_search = importlib.import_module("main")
 
 
+# Module-level client reference for API endpoints
+_client: QdrantClient | None = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[override]
+    global _client
     async with coco_aio.runtime():
+        # Initialize client for API endpoints
+        _client = qdrant.create_client(image_search.QDRANT_URL, prefer_grpc=True)
         await image_search.app.run()
         yield
+        _client = None
 
 
 app = FastAPI(lifespan=lifespan)
@@ -48,12 +58,12 @@ async def search(
     limit: int = Query(5, description="Number of results"),
 ) -> dict[str, Any]:
     query_embedding = image_search.embed_query(q)
-    client = image_search._state.client
-    if client is None:
+
+    if _client is None:
         raise RuntimeError("Qdrant client is not initialized.")
 
     results = image_search._qdrant_search(
-        client,
+        _client,
         image_search.QDRANT_COLLECTION,
         query_embedding,
         limit,

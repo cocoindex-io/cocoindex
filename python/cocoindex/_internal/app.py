@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -32,8 +33,8 @@ class AppBase(Generic[P, R]):
     _app_args: tuple[Any, ...]
     _app_kwargs: dict[str, Any]
 
-    _environment: Environment | None
-    _core: core.App | None
+    _lock: asyncio.Lock
+    _inner: tuple[Environment, core.App] | None
 
     def __init__(
         self,
@@ -53,11 +54,23 @@ class AppBase(Generic[P, R]):
         self._app_args = tuple(args)
         self._app_kwargs = dict(kwargs)
 
-        self._environment = config.environment
-        self._core = None
+        self._lock = asyncio.Lock()
+        self._inner = (
+            self._create_inner(config.environment) if config.environment else None
+        )
+
+    async def _ensure_inner(self) -> tuple[Environment, core.App]:
+        if self._inner is not None:
+            return self._inner
+
+        async with self._lock:
+            if self._inner is None:
+                self._inner = self._create_inner(await default_env())
+            return self._inner
 
     async def _get_core(self) -> core.App:
-        if self._core is None:
-            env = self._environment or await default_env()
-            self._core = core.App(self._name, env._core_env)
-        return self._core
+        _env, core_app = await self._ensure_inner()
+        return core_app
+
+    def _create_inner(self, env: Environment) -> tuple[Environment, core.App]:
+        return (env, core.App(self._name, env._core_env))

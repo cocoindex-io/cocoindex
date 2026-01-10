@@ -19,7 +19,7 @@ from .pending_marker import ResolvesTo
 from .scope import Scope
 from .function import Function
 from .typing import NOT_SET, NotSetType
-from . import environment as _env
+from . import environment as _environment
 
 
 P = ParamSpec("P")
@@ -134,7 +134,7 @@ def mount_run(
     comp_ctx = scope._core_processor_ctx
     fn_ctx = scope._core_fn_call_ctx
     processor = processor_fn._as_core_component_processor(
-        scope._core_path, *args, **kwargs
+        scope._env, scope._core_path, *args, **kwargs
     )
     core_handle = core.mount_run(processor, scope._core_path, comp_ctx, fn_ctx)
     return ComponentMountRunHandle(core_handle, comp_ctx)
@@ -161,7 +161,7 @@ def mount(
     comp_ctx = scope._core_processor_ctx
     fn_ctx = scope._core_fn_call_ctx
     processor = processor_fn._as_core_component_processor(
-        scope._core_path, *args, **kwargs
+        scope._env, scope._core_path, *args, **kwargs
     )
     core_handle = core.mount(processor, scope._core_path, comp_ctx, fn_ctx)
     return ComponentMountHandle(core_handle)
@@ -170,28 +170,29 @@ def mount(
 class App(AppBase[P, ReturnT]):
     async def run(self) -> ReturnT:
         root_path = core.StablePath()
+        env, core_app = await self._ensure_inner()
         processor = self._main_fn._as_core_component_processor(
+            env,
             root_path,
             *self._app_args,
             **self._app_kwargs,
         )
-        core_app = await self._get_core()
         return await core_app.run_async(processor)
 
 
 async def start() -> None:
     """Start the default environment (and enter its lifespan, if any)."""
-    await _env.start()
+    await _environment.start()
 
 
 async def stop() -> None:
     """Stop the default environment (and exit its lifespan, if any)."""
-    await _env.stop()
+    await _environment.stop()
 
 
-async def default_env() -> _env.Environment:
+async def default_env() -> _environment.Environment:
     """Get the default environment (starting it if needed)."""
-    return await _env.default_env()
+    return await _environment.default_env()
 
 
 @asynccontextmanager

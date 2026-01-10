@@ -34,14 +34,9 @@ PG_SCHEMA_NAME = "coco_examples_v1"
 TOP_K = 5
 
 
-@dataclass
-class _GlobalState:
-    source_pool: asyncpg.Pool | None = None
-    target_pool: asyncpg.Pool | None = None
-    db: postgres.PgDatabase | None = None
+PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
+SOURCE_POOL = coco.ContextKey[asyncpg.Pool]("source_pool")
 
-
-_state = _GlobalState()
 _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
 
@@ -69,8 +64,7 @@ class OutputProduct:
 def setup_table(
     scope: coco.Scope,
 ) -> postgres.TableTarget[OutputProduct, coco.PendingS]:
-    assert _state.db is not None
-    return _state.db.declare_table_target(
+    return scope.use(PG_DB).declare_table_target(
         scope,
         table_name=TABLE_NAME,
         table_schema=postgres.TableSchema(
@@ -91,9 +85,8 @@ async def coco_lifespan(
         await postgres.create_pool(DATABASE_URL) as target_pool,
         await postgres.create_pool(SOURCE_DATABASE_URL) as source_pool,
     ):
-        _state.target_pool = target_pool
-        _state.source_pool = source_pool
-        _state.db = postgres.register_db("postgres_source_db", target_pool)
+        builder.provide(PG_DB, postgres.register_db("postgres_source_db", target_pool))
+        builder.provide(SOURCE_POOL, source_pool)
         yield
 
 
@@ -124,11 +117,8 @@ async def process_product(
 async def app_main(scope: coco.Scope) -> None:
     table = await coco_aio.mount_run(setup_table, scope / "setup").result()
 
-    source_pool = _state.source_pool
-    assert source_pool is not None
-
     source = postgres.PgTableSource(
-        source_pool,
+        scope.use(SOURCE_POOL),
         table_name="source_products",
         columns=["product_category", "product_name", "description", "price", "amount"],
         row_factory=lambda row: SourceProduct(**row),
@@ -153,11 +143,8 @@ app = coco_aio.App(
 )
 
 
-async def query_once(query: str, *, top_k: int = TOP_K) -> None:
+async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> None:
     query_vec = await _embedder.embed_async(query)
-    pool = _state.target_pool
-    assert pool is not None
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""
@@ -186,16 +173,16 @@ async def query_once(query: str, *, top_k: int = TOP_K) -> None:
 
 
 async def main() -> None:
-    async with coco_aio.runtime():
-        if len(sys.argv) > 1 and sys.argv[1] == "query":
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        async with await postgres.create_pool(DATABASE_URL) as pool:
             if len(sys.argv) > 2:
                 q = " ".join(sys.argv[2:])
-                await query_once(q)
+                await query_once(pool, q)
                 return
             print('Usage: python main.py query "your search query"')
-            return
+        return
 
-        await app.run()
+    await app.run()
 
 
 if __name__ == "__main__":

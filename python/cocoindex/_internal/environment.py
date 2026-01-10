@@ -8,13 +8,15 @@ from inspect import isasyncgenfunction
 import asyncio
 import threading
 import warnings
+from contextlib import AsyncExitStack
 from typing import (
     Any,
+    AsyncContextManager,
     AsyncGenerator,
     Callable,
+    ContextManager,
     Iterator,
     AsyncIterator,
-    cast,
     overload,
 )
 
@@ -22,6 +24,7 @@ from typing import (
 from . import core
 from . import setting
 from ..engine_object import dump_engine_object
+from .context_keys import ContextKey, ContextProvider
 
 
 class _LoopRunner:
@@ -76,13 +79,26 @@ class EnvironmentBuilder:
     """Builder for the Environment."""
 
     _settings: setting.Settings
+    _context_provider: ContextProvider
 
     def __init__(self, settings: setting.Settings | None = None):
         self._settings = settings or setting.Settings.from_env()
+        self._context_provider = ContextProvider()
 
     @property
     def settings(self) -> setting.Settings:
         return self._settings
+
+    def provide(self, key: ContextKey[Any], value: Any) -> Any:
+        return self._context_provider.provide(key, value)
+
+    def provide_with(self, key: ContextKey[Any], cm: ContextManager[Any]) -> Any:
+        return self._context_provider.provide_with(key, cm)
+
+    async def provide_async_with(
+        self, key: ContextKey[Any], cm: AsyncContextManager[Any]
+    ) -> Any:
+        return await self._context_provider.provide_async_with(key, cm)
 
 
 LifespanFn = (
@@ -103,18 +119,24 @@ class Environment:
     API `runtime()` context managers) to control the default environment lifespan.
     """
 
+    __slots__ = ("_core_env", "_settings", "_context_provider", "_loop_runner")
+
     _core_env: core.Environment
     _settings: setting.Settings
+    _context_provider: ContextProvider
     _loop_runner: _LoopRunner
 
     def __init__(
         self,
         settings: setting.Settings,
+        *,
+        context_provider: ContextProvider | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
     ):
         if not settings.db_path:
             raise ValueError("Settings.db_path must be provided")
         self._settings = settings
+        self._context_provider = context_provider or ContextProvider()
 
         if event_loop is None:
             try:
@@ -138,6 +160,10 @@ class Environment:
         return self._settings
 
     @property
+    def context_provider(self) -> ContextProvider:
+        return self._context_provider
+
+    @property
     def event_loop(self) -> asyncio.AbstractEventLoop:
         return self._loop_runner.loop
 
@@ -146,8 +172,7 @@ _default_env_lifespan_fn_lock: threading.Lock = threading.Lock()
 _default_env_lifespan_fn: LifespanFn | None = None
 
 _default_env_start_stop_lock: asyncio.Lock = asyncio.Lock()
-_default_env_lifespan_iter: Iterator[None] | None = None
-_default_env_async_lifespan_iter: AsyncGenerator[None, None] | None = None
+_default_env_exit_stack: AsyncExitStack | None = None
 _default_env_lock: threading.Lock = threading.Lock()
 _default_env: Environment | None = None
 
@@ -183,8 +208,7 @@ async def start() -> Environment:
     Start the default environment (executes on the default environment's event loop).
     """
     global _default_env  # pylint: disable=global-statement
-    global _default_env_lifespan_iter  # pylint: disable=global-statement
-    global _default_env_async_lifespan_iter  # pylint: disable=global-statement
+    global _default_env_exit_stack  # pylint: disable=global-statement
 
     async with _default_env_start_stop_lock:
         with _default_env_lock:
@@ -194,24 +218,59 @@ async def start() -> Environment:
             fn = _default_env_lifespan_fn or _noop_lifespan_fn
 
         env_builder = EnvironmentBuilder()
-        if isasyncgenfunction(fn):
-            ait = cast(AsyncGenerator[None, None], fn(env_builder))
-            _default_env_async_lifespan_iter = ait
-            await anext(ait)
-        else:
-            it = cast(Iterator[None], fn(env_builder))
-            _default_env_lifespan_iter = it
-            next(it)
+        exit_stack = AsyncExitStack()
+        _default_env_exit_stack = exit_stack
 
-        built_settings = env_builder.settings
-        if not built_settings.db_path:
-            raise ValueError("Environment settings must provide Settings.db_path")
+        try:
+            if isasyncgenfunction(fn):
+                # Start async generator and register cleanup
+                async_gen: AsyncGenerator[None, None] = fn(env_builder)  # type: ignore[assignment]
+                await anext(async_gen)
 
-        loop = asyncio.get_running_loop()
-        env = Environment(built_settings, event_loop=loop)
-        with _default_env_lock:
-            _default_env = env
-        return env
+                async def _aclose() -> None:
+                    try:
+                        await anext(async_gen)
+                    except StopAsyncIteration:
+                        pass
+                    finally:
+                        await async_gen.aclose()
+
+                exit_stack.push_async_callback(_aclose)
+            else:
+                # Start sync generator and register cleanup
+                sync_gen: Iterator[None] = fn(env_builder)  # type: ignore[assignment]
+                next(sync_gen)
+
+                def _close() -> None:
+                    try:
+                        next(sync_gen)
+                    except StopIteration:
+                        pass
+                    finally:
+                        close_fn = getattr(sync_gen, "close", None)
+                        if callable(close_fn):
+                            close_fn()
+
+                exit_stack.callback(_close)
+
+            built_settings = env_builder.settings
+            if not built_settings.db_path:
+                raise ValueError("Environment settings must provide Settings.db_path")
+
+            context_provider = env_builder._context_provider
+            _default_env_exit_stack.push_async_callback(context_provider.aclose)
+
+            loop = asyncio.get_running_loop()
+            env = Environment(
+                built_settings, context_provider=context_provider, event_loop=loop
+            )
+            with _default_env_lock:
+                _default_env = env
+            return env
+        except:
+            await exit_stack.aclose()
+            _default_env_exit_stack = None
+            raise
 
 
 async def stop() -> None:
@@ -219,34 +278,16 @@ async def stop() -> None:
     Stop the default environment (executes on the default environment's event loop).
     """
     global _default_env  # pylint: disable=global-statement
-    global _default_env_lifespan_iter  # pylint: disable=global-statement
-    global _default_env_async_lifespan_iter  # pylint: disable=global-statement
+    global _default_env_exit_stack  # pylint: disable=global-statement
 
     async with _default_env_start_stop_lock:
-        it = _default_env_lifespan_iter
-        _default_env_lifespan_iter = None
-        ait = _default_env_async_lifespan_iter
-        _default_env_async_lifespan_iter = None
+        exit_stack = _default_env_exit_stack
+        _default_env_exit_stack = None
         with _default_env_lock:
             _default_env = None
 
-    if it is not None:
-        try:
-            next(it)
-        except StopIteration:
-            pass
-        finally:
-            close = getattr(it, "close", None)
-            if callable(close):
-                close()
-
-    if ait is not None:
-        try:
-            await anext(ait)
-        except StopAsyncIteration:
-            pass
-        finally:
-            await ait.aclose()
+    if exit_stack is not None:
+        await exit_stack.aclose()
 
 
 _bg_loop_lock: threading.Lock = threading.Lock()

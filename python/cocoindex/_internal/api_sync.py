@@ -18,7 +18,7 @@ from .app import AppBase
 from .scope import Scope
 from .function import Function
 from .pending_marker import ResolvesTo
-from . import environment as _env
+from . import environment as _environment
 from .typing import NOT_SET, NotSetType
 from contextlib import contextmanager
 
@@ -135,7 +135,7 @@ def mount_run(
     comp_ctx = scope._core_processor_ctx
     fn_ctx = scope._core_fn_call_ctx
     processor = processor_fn._as_core_component_processor(
-        scope._core_path, *args, **kwargs
+        scope._env, scope._core_path, *args, **kwargs
     )
     core_handle = core.mount_run(processor, scope._core_path, comp_ctx, fn_ctx)
     return ComponentMountRunHandle(core_handle, comp_ctx)
@@ -162,7 +162,7 @@ def mount(
     comp_ctx = scope._core_processor_ctx
     fn_ctx = scope._core_fn_call_ctx
     processor = processor_fn._as_core_component_processor(
-        scope._core_path, *args, **kwargs
+        scope._env, scope._core_path, *args, **kwargs
     )
     core_handle = core.mount(processor, scope._core_path, comp_ctx, fn_ctx)
     return ComponentMountHandle(core_handle)
@@ -170,33 +170,37 @@ def mount(
 
 class App(AppBase[P, ReturnT]):
     def run(self) -> ReturnT:
+        if self._inner is not None:
+            env, core_app = self._inner
+        else:
+            loop = _environment.default_env_sync().event_loop
+            env, core_app = asyncio.run_coroutine_threadsafe(
+                self._ensure_inner(), loop
+            ).result()
+
         root_path = core.StablePath()
         processor = self._main_fn._as_core_component_processor(
+            env,
             root_path,
             *self._app_args,
             **self._app_kwargs,
         )
-        if self._environment is not None:
-            loop = self._environment.event_loop
-        else:
-            loop = _env.default_env_sync().event_loop
-        core_app = asyncio.run_coroutine_threadsafe(self._get_core(), loop).result()
         return core_app.run(processor)
 
 
 def start() -> None:
     """Start the default environment (and enter its lifespan, if any)."""
-    _env.start_sync()
+    _environment.start_sync()
 
 
 def stop() -> None:
     """Stop the default environment (and exit its lifespan, if any)."""
-    _env.stop_sync()
+    _environment.stop_sync()
 
 
-def default_env() -> _env.Environment:
+def default_env() -> _environment.Environment:
     """Get the default environment (starting it if needed)."""
-    return _env.default_env_sync()
+    return _environment.default_env_sync()
 
 
 @contextmanager

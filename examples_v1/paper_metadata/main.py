@@ -44,13 +44,8 @@ LLM_MODEL = "gpt-4o"
 TOP_K = 5
 
 
-@dataclass
-class _GlobalState:
-    pool: asyncpg.Pool | None = None
-    db: postgres.PgDatabase | None = None
+PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
 
-
-_state = _GlobalState()
 _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
 _abstract_splitter = RecursiveSplitter(
@@ -181,8 +176,7 @@ def extract_metadata(scope: coco.Scope, markdown: str) -> PaperMetadataModel:
 def setup_paper_metadata(
     scope: coco.Scope,
 ) -> postgres.TableTarget[PaperMetadataRow, coco.PendingS]:
-    assert _state.db is not None
-    return _state.db.declare_table_target(
+    return scope.use(PG_DB).declare_table_target(
         scope,
         table_name=TABLE_METADATA,
         table_schema=postgres.TableSchema(
@@ -197,8 +191,7 @@ def setup_paper_metadata(
 def setup_author_papers(
     scope: coco.Scope,
 ) -> postgres.TableTarget[AuthorPaperRow, coco.PendingS]:
-    assert _state.db is not None
-    return _state.db.declare_table_target(
+    return scope.use(PG_DB).declare_table_target(
         scope,
         table_name=TABLE_AUTHOR_PAPERS,
         table_schema=postgres.TableSchema(
@@ -213,8 +206,7 @@ def setup_author_papers(
 def setup_metadata_embeddings(
     scope: coco.Scope,
 ) -> postgres.TableTarget[MetadataEmbeddingRow, coco.PendingS]:
-    assert _state.db is not None
-    return _state.db.declare_table_target(
+    return scope.use(PG_DB).declare_table_target(
         scope,
         table_name=TABLE_EMBEDDINGS,
         table_schema=postgres.TableSchema(
@@ -241,8 +233,7 @@ async def coco_lifespan(
         raise ValueError("COCOINDEX_DATABASE_URL or DATABASE_URL is not set")
 
     async with await postgres.create_pool(database_url) as pool:
-        _state.pool = pool
-        _state.db = postgres.register_db("paper_metadata_db", pool)
+        builder.provide(PG_DB, postgres.register_db("paper_metadata_db", pool))
         yield
 
 
@@ -355,11 +346,8 @@ app = coco_aio.App(
 # =========================================================================
 
 
-async def query_once(query: str, *, top_k: int = TOP_K) -> None:
+async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> None:
     query_vec = await _embedder.embed_async(query)
-    pool = _state.pool
-    assert pool is not None
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""
@@ -384,21 +372,25 @@ async def query_once(query: str, *, top_k: int = TOP_K) -> None:
 
 
 async def main() -> None:
-    async with coco_aio.runtime():
-        if len(sys.argv) > 1 and sys.argv[1] == "query":
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        database_url = os.getenv("COCOINDEX_DATABASE_URL") or os.getenv("DATABASE_URL")
+        if not database_url:
+            raise ValueError("COCOINDEX_DATABASE_URL or DATABASE_URL is not set")
+
+        async with await postgres.create_pool(database_url) as pool:
             if len(sys.argv) > 2:
                 q = " ".join(sys.argv[2:])
-                await query_once(q)
+                await query_once(pool, q)
                 return
 
             while True:
                 q = input("Enter search query (or Enter to quit): ").strip()
                 if not q:
                     break
-                await query_once(q)
-            return
+                await query_once(pool, q)
+        return
 
-        await app.run()
+    await app.run()
 
 
 if __name__ == "__main__":

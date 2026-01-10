@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+from cocoindex._internal.context_keys import ContextKey
 from dataclasses import dataclass
+from typing import TypeVar
+
+from cocoindex._internal.environment import Environment
 
 from . import core
 from .stable_path import StableKey
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +24,7 @@ class Scope:
         scope / "part" / "subpart"
     """
 
+    _env: Environment
     _core_path: core.StablePath
     _core_processor_ctx: core.ComponentProcessorContext
     _core_fn_call_ctx: core.FnCallContext
@@ -25,13 +32,18 @@ class Scope:
     def concat_part(self, part: StableKey) -> Scope:
         """Return a new Scope with the given part appended to the path."""
         return Scope(
+            self._env,
             self._core_path.concat(part),
             self._core_processor_ctx,
             self._core_fn_call_ctx,
         )
 
+    def use(self, key: ContextKey[T]) -> T:
+        return self._env.context_provider.use(key)
+
     def _with_fn_call_ctx(self, fn_call_ctx: core.FnCallContext) -> Scope:
         return Scope(
+            self._env,
             self._core_path,
             self._core_processor_ctx,
             fn_call_ctx,

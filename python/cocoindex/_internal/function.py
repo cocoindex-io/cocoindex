@@ -15,6 +15,8 @@ from typing import (
     overload,
 )
 
+from cocoindex._internal.environment import Environment
+
 from . import core
 
 from .scope import Scope
@@ -47,6 +49,7 @@ def _get_scope_from_ctx() -> Scope:
 class Function(Protocol[P, R_co]):
     def _as_core_component_processor(
         self: Function[Concatenate[Scope, P0], R_co],
+        env: Environment,
         path: core.StablePath,
         *args: P0.args,
         **kwargs: P0.kwargs,
@@ -102,13 +105,14 @@ class SyncFunction(Function[P, R_co]):
 
     def _as_core_component_processor(
         self: SyncFunction[Concatenate[Scope, P0], R_co],
+        env: Environment,
         path: core.StablePath,
         *args: P0.args,
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
         def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
             fn_ctx = core.FnCallContext()
-            scope = Scope(path, comp_ctx, fn_ctx)
+            scope = Scope(env, path, comp_ctx, fn_ctx)
             tok = _scope_var.set(scope)
             try:
                 return self._fn(scope, *args, **kwargs)
@@ -175,13 +179,14 @@ class AsyncFunction(Function[P, R_co]):
 
     def _as_core_component_processor(
         self: AsyncFunction[Concatenate[Scope, P0], R_co],
+        env: Environment,
         path: core.StablePath,
         *args: P0.args,
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
         async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
             fn_ctx = core.FnCallContext()
-            scope = Scope(path, comp_ctx, fn_ctx)
+            scope = Scope(env, path, comp_ctx, fn_ctx)
             tok = _scope_var.set(scope)
             try:
                 return await self._fn(scope, *args, **kwargs)

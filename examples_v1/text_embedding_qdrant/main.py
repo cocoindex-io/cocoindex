@@ -35,13 +35,9 @@ QDRANT_COLLECTION = "TextEmbedding"
 TOP_K = 5
 
 
-@dataclass
-class _GlobalState:
-    db: qdrant.QdrantDatabase | None = None
-    client: QdrantClient | None = None
+QDRANT_DB = coco.ContextKey[qdrant.QdrantDatabase]("qdrant_db")
+QDRANT_CLIENT = coco.ContextKey[QdrantClient]("qdrant_client")
 
-
-_state = _GlobalState()
 _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 _splitter = RecursiveSplitter()
 
@@ -65,9 +61,7 @@ class DocEmbedding:
 def setup_collection(
     scope: coco.Scope,
 ) -> qdrant.TableTarget[DocEmbedding, coco.PendingS]:
-    assert _state.db is not None
-
-    return _state.db.declare_collection_target(
+    return scope.use(QDRANT_DB).declare_collection_target(
         scope,
         collection_name=QDRANT_COLLECTION,
         table_schema=qdrant.TableSchema(
@@ -89,8 +83,8 @@ async def coco_lifespan(
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
 
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
-    _state.client = client
-    _state.db = qdrant.register_db("text_embedding_qdrant", client)
+    builder.provide(QDRANT_DB, qdrant.register_db("text_embedding_qdrant", client))
+    builder.provide(QDRANT_CLIENT, client)
     yield
 
 
@@ -155,11 +149,8 @@ app = coco_aio.App(
 # ============================================================================
 
 
-async def query_once(query: str, *, top_k: int = TOP_K) -> None:
+async def query_once(client: QdrantClient, query: str, *, top_k: int = TOP_K) -> None:
     query_vec = await _embedder.embed_async(query)
-    client = _state.client
-    assert client is not None
-
     results = await asyncio.to_thread(
         _qdrant_search,
         client,
@@ -176,21 +167,21 @@ async def query_once(query: str, *, top_k: int = TOP_K) -> None:
 
 
 async def main() -> None:
-    async with coco_aio.runtime():
-        if len(sys.argv) > 1 and sys.argv[1] == "query":
-            if len(sys.argv) > 2:
-                q = " ".join(sys.argv[2:])
-                await query_once(q)
-                return
-
-            while True:
-                q = input("Enter search query (or Enter to quit): ").strip()
-                if not q:
-                    break
-                await query_once(q)
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
+        if len(sys.argv) > 2:
+            q = " ".join(sys.argv[2:])
+            await query_once(client, q)
             return
 
-        await app.run()
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(client, q)
+        return
+
+    await app.run()
 
 
 def _chunk_id(filename: pathlib.PurePath, chunk: Chunk) -> str:

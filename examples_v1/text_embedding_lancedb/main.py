@@ -33,12 +33,8 @@ TABLE_NAME = "doc_embeddings"
 TOP_K = 5
 
 
-@dataclass
-class _GlobalState:
-    db: lancedb.LanceDatabase | None = None
+LANCE_DB = coco.ContextKey[lancedb.LanceDatabase]("lance_db")
 
-
-_state = _GlobalState()
 _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 _splitter = RecursiveSplitter()
 
@@ -61,9 +57,7 @@ class DocEmbedding:
 def setup_table(
     scope: coco.Scope,
 ) -> lancedb.TableTarget[DocEmbedding, coco.PendingS]:
-    assert _state.db is not None
-
-    return _state.db.declare_table_target(
+    return scope.use(LANCE_DB).declare_table_target(
         scope,
         table_name=TABLE_NAME,
         table_schema=lancedb.TableSchema(
@@ -89,7 +83,7 @@ async def coco_lifespan(
 
     # Register LanceDB connection
     await lancedb._register_db_async("text_embedding_db", LANCEDB_URI)
-    _state.db = lancedb.LanceDatabase("text_embedding_db")
+    builder.provide(LANCE_DB, lancedb.LanceDatabase("text_embedding_db"))
     yield
 
 
@@ -152,11 +146,12 @@ app = coco_aio.App(
 # ============================================================================
 
 
-async def query_once(query: str, *, top_k: int = TOP_K) -> None:
+async def query_once(
+    db: lancedb.LanceDatabase, query: str, *, top_k: int = TOP_K
+) -> None:
     query_vec = await _embedder.embed_async(query)
 
-    assert _state.db is not None
-    conn = lancedb._get_connection(_state.db.key)
+    conn = lancedb._get_connection(db.key)
     table = await conn.open_table(TABLE_NAME)
 
     search = await table.search(query_vec, vector_column_name="embedding")
@@ -170,21 +165,23 @@ async def query_once(query: str, *, top_k: int = TOP_K) -> None:
 
 
 async def main() -> None:
-    async with coco_aio.runtime():
-        if len(sys.argv) > 1 and sys.argv[1] == "query":
-            if len(sys.argv) > 2:
-                q = " ".join(sys.argv[2:])
-                await query_once(q)
-                return
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        await lancedb._register_db_async("text_embedding_db", LANCEDB_URI)
+        db = lancedb.LanceDatabase("text_embedding_db")
 
-            while True:
-                q = input("Enter search query (or Enter to quit): ").strip()
-                if not q:
-                    break
-                await query_once(q)
+        if len(sys.argv) > 2:
+            q = " ".join(sys.argv[2:])
+            await query_once(db, q)
             return
 
-        await app.run()
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(db, q)
+        return
+
+    await app.run()
 
 
 if __name__ == "__main__":

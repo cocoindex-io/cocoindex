@@ -35,6 +35,8 @@ LLM_MODEL = "gemini/gemini-2.5-flash"
 THREAD_LEVEL_MENTION_SCORE = 5
 COMMENT_LEVEL_MENTION_SCORE = 1
 
+PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
+
 
 # ============================================================================
 # Data models for HackerNews content
@@ -212,24 +214,13 @@ async def fetch_thread(session: aiohttp.ClientSession, thread_id: str) -> Thread
 # ============================================================================
 
 
-# Global reference for database handle (set in lifespan)
-@dataclass(slots=True)
-class _GlobalState:
-    db: postgres.PgDatabase | None = None
-    pool: asyncpg.Pool | None = None
-
-
-_state = _GlobalState()
-
-
 @coco_aio.lifespan
 async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[None]:
     """Set up CocoIndex environment with PostgreSQL database."""
 
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
     async with await asyncpg.create_pool(DATABASE_URL) as pool:
-        _state.pool = pool
-        _state.db = postgres.register_db("hn_db", pool)
+        builder.provide(PG_DB, postgres.register_db("hn_db", pool))
         yield
 
 
@@ -249,15 +240,15 @@ class TableTargets(Generic[coco.MaybePendingS], coco.ResolvesTo["TableTargets"])
 @coco.function
 def setup_tables(scope: coco.Scope) -> TableTargets[coco.PendingS]:
     """Create table targets for messages and topics."""
-    assert _state.db is not None
+    db = scope.use(PG_DB)
     return TableTargets(
-        messages=_state.db.declare_table_target(
+        messages=db.declare_table_target(
             scope,
             table_name="hn_messages",
             table_schema=postgres.TableSchema(HnMessage, primary_key=["id"]),
             pg_schema_name="coco_examples",
         ),
-        topics=_state.db.declare_table_target(
+        topics=db.declare_table_target(
             scope,
             table_name="hn_topics",
             table_schema=postgres.TableSchema(
