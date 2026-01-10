@@ -3,10 +3,7 @@ name = "text-embedding-lancedb-v1"
 version = "0.1.0"
 description = "CocoIndex v1 example: embed markdown files and store in LanceDB."
 requires-python = ">=3.11"
-dependencies = [
-    "cocoindex[embeddings,lancedb]>=0.3.9",
-    "sentence-transformers>=3.3.1",
-]
+dependencies = ["cocoindex[sentence_transformers,lancedb]>=0.3.9"]
 
 [tool.setuptools]
 packages = []

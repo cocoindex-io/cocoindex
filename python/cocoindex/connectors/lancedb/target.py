@@ -47,7 +47,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_struct_type,
 )
-from cocoindex.resources.schema import VectorSpec, FtsSpec
+from cocoindex.resources.schema import VectorSchema, VectorSchemaProvider, FtsSpec
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -130,7 +130,9 @@ _LEAF_TYPE_MAPPINGS: dict[type, _TypeMapping] = {
 _JSON_MAPPING = _TypeMapping(pa.string(), _json_encoder)
 
 
-def _get_type_mapping(python_type: Any) -> _TypeMapping:
+def _get_type_mapping(
+    python_type: Any, *, vector_schema_provider: VectorSchemaProvider | None = None
+) -> _TypeMapping:
     """
     Get the PyArrow type mapping for a Python type.
 
@@ -152,13 +154,26 @@ def _get_type_mapping(python_type: Any) -> _TypeMapping:
 
     # NumPy ndarray: map to fixed-size list; dimension is handled at the schema layer
     if base_type is np.ndarray:
-        elem_type: Any | None = None
-        if isinstance(type_info.variant, SequenceType):
-            elem_type = type_info.variant.elem_type
+        if vector_schema_provider is None:
+            raise ValueError("VectorSchemaProvider is required for NumPy ndarray type.")
+        vector_schema = vector_schema_provider.__coco_vector_schema__()
+
+        if vector_schema.size <= 0:
+            raise ValueError(f"Invalid vector dimension: {vector_schema.size}")
+
         # Default to float32 for vectors; use float16 for half-precision
-        pa_elem = pa.float16() if elem_type in (np.half, np.float16) else pa.float32()
-        # Note: list_size will be set at the schema layer when VectorSpec provides dim
-        return _TypeMapping(pa_elem)
+        pa_elem = (
+            pa.float16()
+            if vector_schema.dtype in (np.half, np.float16)
+            else pa.float32()
+        )
+        # Create fixed-size list type for vector
+        return _TypeMapping(pa.list_(pa_elem, list_size=vector_schema.size))
+
+    elif vector_schema_provider is not None:
+        raise ValueError(
+            f"VectorSchemaProvider is only supported for NumPy ndarray type. Got type: {python_type}"
+        )
 
     # Complex types that need JSON encoding
     if isinstance(
@@ -184,13 +199,16 @@ class ColumnDef(NamedTuple):
 RowT = TypeVar("RowT", default=dict[str, Any])
 
 
+@dataclass(slots=True)
 class TableSchema(Generic[RowT]):
     """Schema definition for a LanceDB table."""
 
     columns: dict[str, ColumnDef]  # column name -> definition
     primary_key: list[str]  # Column names that form the primary key
     row_type: type[RowT] | None  # The row type, if provided
-    vector_specs: dict[str, VectorSpec]  # Column name -> VectorSpec for vector columns
+    vector_schemas: dict[
+        str, VectorSchema
+    ]  # Column name -> VectorSpec for vector columns
     fts_specs: dict[str, FtsSpec]  # Column name -> FtsSpec for FTS columns
 
     @overload
@@ -206,7 +224,8 @@ class TableSchema(Generic[RowT]):
         columns: type[RowT],
         primary_key: list[str],
         *,
-        column_specs: dict[str, ColumnDef | VectorSpec | FtsSpec] | None = None,
+        column_specs: dict[str, ColumnDef | VectorSchemaProvider | FtsSpec]
+        | None = None,
     ) -> None: ...
 
     def __init__(
@@ -214,7 +233,8 @@ class TableSchema(Generic[RowT]):
         columns: type[RowT] | dict[str, ColumnDef],
         primary_key: list[str],
         *,
-        column_specs: dict[str, ColumnDef | VectorSpec | FtsSpec] | None = None,
+        column_specs: dict[str, ColumnDef | VectorSchemaProvider | FtsSpec]
+        | None = None,
     ) -> None:
         """
         Create a TableSchema.
@@ -229,7 +249,7 @@ class TableSchema(Generic[RowT]):
                          VectorSpec is used for vector columns to specify dimension and metric.
                          FtsSpec is used for full-text search columns to specify tokenizer.
         """
-        self.vector_specs = {}
+        self.vector_schemas = {}
         self.fts_specs = {}
 
         if isinstance(columns, dict):
@@ -256,7 +276,7 @@ class TableSchema(Generic[RowT]):
     def _columns_from_struct_type(
         self,
         struct_type: type,
-        column_specs: dict[str, ColumnDef | VectorSpec | FtsSpec] | None,
+        column_specs: dict[str, ColumnDef | VectorSchemaProvider | FtsSpec] | None,
     ) -> dict[str, ColumnDef]:
         """Convert a struct type to a dict of column name -> ColumnDef."""
         struct_info = StructType(struct_type)
@@ -270,39 +290,31 @@ class TableSchema(Generic[RowT]):
                 columns[field.name] = spec
                 continue
 
-            # Handle VectorSpec
-            if isinstance(spec, VectorSpec):
-                self.vector_specs[field.name] = spec
-                if spec.dim <= 0:
-                    raise ValueError(f"Invalid vector dimension: {spec.dim}")
-                # Create fixed-size list type for vector
-                type_info = analyze_type_info(field.type_hint)
-                type_mapping = _get_type_mapping(field.type_hint)
-                # type_mapping.pa_type is the element type (e.g., pa.float32())
-                pa_type = pa.list_(type_mapping.pa_type, list_size=spec.dim)
-                columns[field.name] = ColumnDef(
-                    type=pa_type,
-                    nullable=type_info.nullable,
-                    encoder=type_mapping.encoder,
-                )
-                continue
+            type_info = analyze_type_info(field.type_hint)
+
+            # Handle VectorSchemaProvider
+            vector_schema_provider = None
+            for annotation in type_info.annotations:
+                if isinstance(annotation, VectorSchemaProvider):
+                    vector_schema_provider = annotation
+                    break
+            if isinstance(spec, VectorSchemaProvider):
+                vector_schema_provider = spec
+
+            if vector_schema_provider is not None:
+                vector_schema = vector_schema_provider.__coco_vector_schema__()
+                self.vector_schemas[field.name] = vector_schema
+                if vector_schema.size <= 0:
+                    raise ValueError(f"Invalid vector dimension: {vector_schema.size}")
 
             # Handle FtsSpec
             if isinstance(spec, FtsSpec):
                 self.fts_specs[field.name] = spec
-                # FTS columns are just regular text columns
-                type_info = analyze_type_info(field.type_hint)
-                type_mapping = _get_type_mapping(field.type_hint)
-                columns[field.name] = ColumnDef(
-                    type=type_mapping.pa_type,
-                    nullable=type_info.nullable,
-                    encoder=type_mapping.encoder,
-                )
-                continue
 
-            # Default type inference
-            type_info = analyze_type_info(field.type_hint)
-            type_mapping = _get_type_mapping(field.type_hint)
+            # Get type mapping with vector_schema_provider if applicable
+            type_mapping = _get_type_mapping(
+                field.type_hint, vector_schema_provider=vector_schema_provider
+            )
 
             columns[field.name] = ColumnDef(
                 type=type_mapping.pa_type,
@@ -543,7 +555,7 @@ def _table_composite_state_from_spec(
         )
 
     # Add vector index states
-    for col_name in schema.vector_specs.keys():
+    for col_name in schema.vector_schemas.keys():
         sub_key = _vector_index_subkey(col_name)
         sub[sub_key] = _IndexState(column_name=col_name, index_type="vector")
 
@@ -740,8 +752,8 @@ class _TableHandler(
                     # LanceDB doesn't have explicit index drop - recreate table if needed
                     continue
                 elif action in ("insert", "upsert") and can_create_indexes:
-                    vector_spec = schema.vector_specs.get(col_name)
-                    if vector_spec:
+                    vector_schema = schema.vector_schemas.get(col_name)
+                    if vector_schema:
                         # Map VectorSpec metric to LanceDB metric
                         # VectorSpec currently just has dim, but we'll use L2 as default
                         # In the future, VectorSpec could include metric
@@ -958,6 +970,9 @@ class LanceDatabase:
             scope, _table_provider.effect(key, spec)
         )
         return TableTarget(provider, table_schema)
+
+    def __coco_memo_key__(self) -> str:
+        return self._key
 
 
 def register_db(key: str, uri: str, **options: Any) -> LanceDatabase:

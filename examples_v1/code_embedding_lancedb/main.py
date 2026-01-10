@@ -12,29 +12,25 @@ Code Embedding with LanceDB (v1) - CocoIndex pipeline example.
 from __future__ import annotations
 
 import asyncio
-import functools
 import pathlib
 import sys
-import threading
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, Annotated
 
-import numpy as np
 from numpy.typing import NDArray
-from sentence_transformers import SentenceTransformer
 
 import cocoindex as coco
 import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, lancedb
 from cocoindex.extras.text import RecursiveSplitter, detect_code_language
+from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
-from cocoindex.resources.schema import VectorSpec, FtsSpec
+from cocoindex.resources.schema import FtsSpec
 
 
 LANCEDB_URI = "./lancedb_data"
 TABLE_NAME = "code_embeddings"
-EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 TOP_K = 5
 
 
@@ -44,24 +40,8 @@ class _GlobalState:
 
 
 _state = _GlobalState()
+_embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 _splitter = RecursiveSplitter()
-
-
-@functools.cache
-def embedder() -> SentenceTransformer:
-    # The model is cached in-process so repeated runs are fast.
-    return SentenceTransformer(EMBED_MODEL)
-
-
-_gpu_lock = threading.Lock()
-
-
-def embed_text(text: str) -> NDArray[np.float32]:
-    # TODO: convert to a cocoindex function with GPU and batching support
-    with _gpu_lock:
-        return embedder().encode(
-            [text], convert_to_numpy=True, normalize_embeddings=True
-        )[0]
 
 
 # ============================================================================
@@ -74,7 +54,7 @@ class CodeEmbedding:
     filename: str
     location: str
     code: str
-    embedding: NDArray[np.float32]
+    embedding: Annotated[NDArray, _embedder]
     start_line: int
     end_line: int
 
@@ -84,10 +64,6 @@ def setup_table(
     scope: coco.Scope,
 ) -> lancedb.TableTarget[CodeEmbedding, coco.PendingS]:
     assert _state.db is not None
-
-    dim = embedder().get_sentence_embedding_dimension()
-    if dim is None:
-        raise RuntimeError(f"Embedding dimension is unknown for model {EMBED_MODEL}.")
     return _state.db.declare_table_target(
         scope,
         table_name=TABLE_NAME,
@@ -95,7 +71,6 @@ def setup_table(
             CodeEmbedding,
             primary_key=["filename", "location"],
             column_specs={
-                "embedding": VectorSpec(dim),
                 "code": FtsSpec(tokenizer="simple"),
             },
         ),
@@ -119,8 +94,8 @@ async def coco_lifespan(
     yield
 
 
-@coco.function
-def process_chunk(
+@coco.function(memo=True)
+async def process_chunk(
     scope: coco.Scope,
     filename: pathlib.PurePath,
     chunk: Chunk,
@@ -134,7 +109,7 @@ def process_chunk(
             filename=str(filename),
             location=location,
             code=chunk.text,
-            embedding=embed_text(chunk.text),
+            embedding=await _embedder.embed_async(chunk.text),
             start_line=chunk.start.line,
             end_line=chunk.end.line,
         ),
@@ -142,7 +117,7 @@ def process_chunk(
 
 
 @coco.function(memo=True)
-def process_file(
+async def process_file(
     scope: coco.Scope,
     file: FileLike,
     table: lancedb.TableTarget[CodeEmbedding],
@@ -159,14 +134,14 @@ def process_file(
         chunk_overlap=300,
         language=language,
     )
-    # TODO: Process chunks in parallel
-    for chunk in chunks:
-        process_chunk(scope, file.relative_path, chunk, table)
+    await asyncio.gather(
+        *(process_chunk(scope, file.relative_path, chunk, table) for chunk in chunks)
+    )
 
 
 @coco.function
-async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    table = await coco_aio.mount_run(setup_table, scope / "setup").result()
+def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
+    table = coco.mount_run(setup_table, scope / "setup").result()
 
     # Process multiple file types across the repository
     files = localfs.walk_dir(
@@ -179,9 +154,7 @@ async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
     )
     for file in files:
         print(f"Processing in background: {str(file.relative_path)}")
-        coco_aio.mount(
-            process_file, scope / "file" / str(file.relative_path), file, table
-        )
+        coco.mount(process_file, scope / "file" / str(file.relative_path), file, table)
     print(f"Waiting all background processing to finish")
 
 
@@ -198,7 +171,7 @@ app = coco_aio.App(
 
 
 async def query_once(query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await asyncio.to_thread(embed_text, query)
+    query_vec = await _embedder.embed_async(query)
 
     assert _state.db is not None
     # Get connection from registry
