@@ -14,8 +14,6 @@ function GitHubButton({ url, margin = '0' }: GitHubButtonProps): ReactNode {
             href={url} 
             variant="outline" 
             size="4"
-            target="_blank"
-            rel="noopener noreferrer"
             style={{ margin }}
         >
             <FaGithub />
@@ -35,8 +33,6 @@ function YouTubeButton({ url, margin = '0' }: YouTubeButtonProps): ReactNode {
             href={url} 
             variant="outline" 
             size="4"
-            target="_blank"
-            rel="noopener noreferrer"
             style={{ margin }}
         >
             <FaYoutube />
@@ -57,8 +53,6 @@ function DocumentationButton({ url, text, margin }: DocumentationButtonProps): R
             href={url} 
             variant="outline" 
             size="4"
-            target="_blank"
-            rel="noopener noreferrer"
             style={{ margin }}
         >
             <MdMenuBook />
@@ -80,8 +74,6 @@ function ExampleButton({ href, text, margin }: ExampleButtonProps): ReactNode {
             href={href} 
             variant="outline" 
             size="4"
-            target="_blank"
-            rel="noopener noreferrer"
             style={{ margin }}
         >
             <MdDriveEta />
@@ -91,3 +83,5 @@ function ExampleButton({ href, text, margin }: ExampleButtonProps): ReactNode {
 }
 
 export { GitHubButton, YouTubeButton, DocumentationButton, ExampleButton };
+
+
