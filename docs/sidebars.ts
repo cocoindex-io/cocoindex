@@ -44,6 +44,16 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Extra Utilities',
+      link: { type: 'doc', id: 'extras/index' },
+      collapsed: false,
+      items: [
+        'extras/sentence-transformers',
+        'extras/text',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Contributing',
       collapsed: false,
       items: [
