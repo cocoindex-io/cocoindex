@@ -7,6 +7,13 @@
 /* Import Questrial font from Google Fonts */
 @import url('https://fonts.googleapis.com/css2?family=Questrial&display=swap');
 
+/* Import custom scrollbar styles */
+@import './scrollbar.css';
+
+/* Import Radix UI color system */
+@import '../components/Color/colors.css';
+
+
 /* You can override the default Infima variables here. */
 :root {
   /* Iris color scheme from Radix UI */
@@ -17,18 +24,17 @@
   --ifm-color-primary-light: #7373DE;
   --ifm-color-primary-lighter: #8F8FE6;
   --ifm-color-primary-lightest: #ABABEF;
-
-
+  --ifm-code-font-size: 95%;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
   --my-color-text-black: #111827;
-
+  
   /* Additional colors */
   --ifm-navbar-background-color: var(--ifm-background-color);
   --ifm-background-color: #ffffff;
   --ifm-footer-background-color: #ffffff;
   --ifm-menu-color: #374151;
   --ifm-toc-link-color: #374151;
-
+  
   /* Theme colors for breadcrumbs */
   --theme-color-text-light: #6b7280;
   --theme-color-text-default: #111827;
@@ -44,60 +50,21 @@
   --ifm-color-primary-light: #ABABEF;
   --ifm-color-primary-lighter: #C4C4F5;
   --ifm-color-primary-lightest: #E1E1FF;
-
+  
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
   --my-color-text-black: #f9fafb;
-
+  
   /* Dark mode specific colors */
   --ifm-navbar-background-color: var(--ifm-background-color);
   --ifm-background-color: #111827;
-  --ifm-footer-background-color: #111827;
+  --ifm-footer-background-color: var(--ifm-background-color);
   --ifm-menu-color: #f3f4f6;
   --ifm-toc-link-color: #f3f4f6;
-
+  
   /* Dark mode theme colors for breadcrumbs */
   --theme-color-text-light: #9ca3af;
   --theme-color-text-default: #f9fafb;
   --theme-color-keyline: #374151;
-}
-
-
-.table-of-contents {
-  code {
-    border: none;
-  }
-}
-
-.markdown {
-  line-height: 150%;
-
-  code {
-    font-size: var(--ifm-code-font-size);
-    border: none;
-  }
-
-  a {
-    font-weight: var(--ifm-font-weight-semibold);
-  }
-
-  h1,
-  h1:first-child,
-  h2,
-  h3,
-  h4,
-  h5,
-  h6 {
-    --ifm-h1-font-size: 1.8rem;
-    --ifm-h1-vertical-rhythm-bottom: 0.5;
-    --ifm-h2-font-size: 1.5rem;
-    --ifm-heading-vertical-rhythm-bottom: 1;
-    --ifm-h3-font-size: 1.2rem;
-    --ifm-h4-font-size: 1rem;
-    --ifm-h5-font-size: 0.8rem;
-  }
-}
-.markdown h1:first-child {
-  margin-bottom: 20px;
 }
 
 .navbar__logo{
@@ -115,91 +82,18 @@
 
 .navbar {
   box-shadow: none;
-  font-size: 0.875rem;
-  /* 14px */
+  font-size: 0.875rem; /* 14px */
   border-bottom: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.navbar__items {
+  font-family: 'Questrial', sans-serif;
 }
 .navbar__item{
   margin-top: 3px;
 }
-.sidebarItemTitle_pO2u,
-.navbar__items {
-  font-family: 'Questrial', sans-serif;
-}
 
-
-
-.footer {
-  padding: 4rem 2rem;
-  border-top: 1px solid var(--ifm-color-emphasis-100);
-}
-
-.footer__title {
-  font-family: 'Questrial', sans-serif;
-  font-size: 1rem;
-  font-weight: 600;
-  margin-bottom: 1rem;
-  color: var(--my-color-text-black);
-}
-
-.footer__item {
-  font-family: 'Questrial', sans-serif;
-  font-size: 0.9rem;
-  padding: 0.25rem 0;
-}
-
-.footer__copyright {
-  font-family: 'Questrial', sans-serif;
-  font-size: 0.9rem;
-  margin-top: 3rem;
-  text-align: left;
-  color: var(--ifm-color-emphasis-600);
-}
-
-.footer__link-item {
-  color: var(--ifm-color-emphasis-700);
-  line-height: 2;
-}
-
-.footer__link-item:hover {
-  color: var(--ifm-color-primary);
-  text-decoration: none;
-}
-
-.theme-doc-sidebar-menu {
-  font-size: 0.875rem;
-  /* 14px */
-}
-
-.table-of-contents {
-  font-size: 0.8125rem;
-  /* 13px */
-}
-
-.breadcrumbs {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  color: var(--theme-color-text-light);
-  display: none;
-
-  .breadcrumbs__item:first-child {
-    display: none;
-  }
-
-  .breadcrumbs__link {
-    padding: 0;
-    background: none;
-  }
-}
-
-/* Sidebar caret styles */
-.menu__caret:before,
-.menu__link--sublist-caret:after {
-  background: var(--ifm-menu-link-sublist-icon) 50% / 1rem 1rem;
-}
-
-.navbar__item.navbar-github-link {
+.navbar__item.navbar-github-link{
   display: block;
   width: 120px;
 }
@@ -211,40 +105,7 @@
 }
 
 @media (max-width: 768px) {
-.navbar__item.navbar-github-link {
-  margin-right: 40px;
-}
-}
-
- .button-interactive{
-  display: inline-flex;
-  align-items: center;
-  padding: 0.5rem 1rem;
-  font-size: 0.85rem;
-  cursor: pointer;
-  text-decoration: none;
-  border: 1px solid var(--ifm-color-primary);
-  border-radius: var(--ifm-button-border-radius, 4px);
-  color: var(--ifm-color-primary);
-  background: transparent;
-  transition: background-color 150ms ease, color 150ms ease;
-}
-
-.button-interactive:hover,
-.button-interactive:active,
-.button-interactive:focus{
-  color: #fff;
-  background-color: var(--ifm-color-primary);
-}
-
-.button-interactive:focus-visible{
-  outline: none;
-}
-
-/* Icon spacing */
-.icon-button,
-.button-interactive svg {
-  margin-right: 8px;
-  vertical-align: middle;
-  font-size: 1rem;
+  .navbar__item.navbar-github-link {
+    margin-right: 40px;
+  }
 }
