@@ -49,7 +49,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_struct_type,
 )
-from cocoindex.resources.schema import VectorSpec
+from cocoindex.resources.schema import VectorSchemaProvider
 
 # Type aliases
 _RowKey = tuple[Any, ...]
@@ -81,13 +81,14 @@ class ColumnDef(NamedTuple):
 RowT = TypeVar("RowT", default=dict[str, Any])
 
 
+@dataclass(slots=True)
 class TableSchema(Generic[RowT]):
     """Schema definition for a Qdrant collection."""
 
     columns: dict[str, ColumnDef]
     primary_key: list[str]
     row_type: type[RowT] | None
-    vector_specs: dict[str, QdrantVectorSpec]
+    vector_schemas: dict[str, QdrantVectorSpec]
 
     @overload
     def __init__(
@@ -102,7 +103,7 @@ class TableSchema(Generic[RowT]):
         columns: type[RowT],
         primary_key: list[str],
         *,
-        column_specs: dict[str, ColumnDef | VectorSpec | QdrantVectorSpec]
+        column_specs: dict[str, ColumnDef | VectorSchemaProvider | QdrantVectorSpec]
         | None = None,
     ) -> None: ...
 
@@ -111,10 +112,10 @@ class TableSchema(Generic[RowT]):
         columns: type[RowT] | dict[str, ColumnDef],
         primary_key: list[str],
         *,
-        column_specs: dict[str, ColumnDef | VectorSpec | QdrantVectorSpec]
+        column_specs: dict[str, ColumnDef | VectorSchemaProvider | QdrantVectorSpec]
         | None = None,
     ) -> None:
-        self.vector_specs = {}
+        self.vector_schemas = {}
 
         if isinstance(columns, dict):
             self.columns = columns
@@ -142,7 +143,8 @@ class TableSchema(Generic[RowT]):
     def _columns_from_struct_type(
         self,
         struct_type: type,
-        column_specs: dict[str, ColumnDef | VectorSpec | QdrantVectorSpec] | None,
+        column_specs: dict[str, ColumnDef | VectorSchemaProvider | QdrantVectorSpec]
+        | None,
     ) -> dict[str, ColumnDef]:
         struct_info = StructType(struct_type)
         columns: dict[str, ColumnDef] = {}
@@ -154,25 +156,37 @@ class TableSchema(Generic[RowT]):
                 columns[field.name] = spec
                 continue
 
-            if isinstance(spec, VectorSpec):
-                if spec.dim <= 0:
-                    raise ValueError(f"Invalid vector dimension: {spec.dim}")
-                self.vector_specs[field.name] = QdrantVectorSpec(dim=spec.dim)
+            type_info = analyze_type_info(field.type_hint)
+
+            # Handle VectorSchemaProvider
+            vector_schema_provider = None
+            for annotation in type_info.annotations:
+                if isinstance(annotation, VectorSchemaProvider):
+                    vector_schema_provider = annotation
+                    break
+            if isinstance(spec, VectorSchemaProvider):
+                vector_schema_provider = spec
+
+            if vector_schema_provider is not None:
+                vector_schema = vector_schema_provider.__coco_vector_schema__()
+                if vector_schema.size <= 0:
+                    raise ValueError(f"Invalid vector dimension: {vector_schema.size}")
+                self.vector_schemas[field.name] = QdrantVectorSpec(
+                    dim=vector_schema.size
+                )
                 columns[field.name] = ColumnDef()
                 continue
 
             if isinstance(spec, QdrantVectorSpec):
                 if spec.dim <= 0:
                     raise ValueError(f"Invalid vector dimension: {spec.dim}")
-                self.vector_specs[field.name] = spec
+                self.vector_schemas[field.name] = spec
                 columns[field.name] = ColumnDef()
                 continue
 
-            type_info = analyze_type_info(field.type_hint)
-
             if type_info.base_type is np.ndarray:
                 raise ValueError(
-                    f"Vector field '{field.name}' requires a VectorSpec or QdrantVectorSpec."
+                    f"Vector field '{field.name}' requires a VectorSchemaProvider or QdrantVectorSpec."
                 )
 
             encoder = _get_encoder(type_info)
@@ -230,7 +244,7 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         upserts: list[_RowAction],
     ) -> None:
         points: list[qdrant_models.PointStruct] = []
-        vector_fields = set(self._table_schema.vector_specs.keys())
+        vector_fields = set(self._table_schema.vector_schemas.keys())
 
         for action in upserts:
             assert action.value is not None
@@ -376,7 +390,7 @@ def _unregister_db(key: str) -> None:
 def _collection_state_from_spec(spec: _CollectionSpec) -> _CollectionStateCore:
     vectors = {
         name: _VectorState(name=name, dim=vs.dim, distance=vs.distance)
-        for name, vs in spec.table_schema.vector_specs.items()
+        for name, vs in spec.table_schema.vector_schemas.items()
     }
     return _CollectionStateCore(vectors=vectors)
 
@@ -446,7 +460,7 @@ class _CollectionHandler(
         *,
         if_not_exists: bool,
     ) -> None:
-        if not schema.vector_specs:
+        if not schema.vector_schemas:
             raise ValueError("Qdrant collection requires at least one vector field.")
 
         if if_not_exists and await asyncio.to_thread(
@@ -455,7 +469,7 @@ class _CollectionHandler(
             return
 
         vectors_config = {}
-        for name, spec in schema.vector_specs.items():
+        for name, spec in schema.vector_schemas.items():
             multivector_config = None
             if spec.multivector:
                 multivector_config = qdrant_models.MultiVectorConfig(
@@ -539,7 +553,7 @@ class TableTarget(
 
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
         out: dict[str, Any] = {}
-        vector_fields = set(self._table_schema.vector_specs.keys())
+        vector_fields = set(self._table_schema.vector_schemas.keys())
 
         for col_name, col_def in self._table_schema.columns.items():
             if isinstance(row, dict):
@@ -597,6 +611,9 @@ class QdrantDatabase:
             scope, _collection_provider.effect(key, spec)
         )
         return TableTarget(provider, table_schema)
+
+    def __coco_memo_key__(self) -> str:
+        return self._key
 
 
 def _collection_exists(client: QdrantClient, collection_name: str) -> bool:

@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -238,9 +238,6 @@ all = [
 colpali = [
     { name = "colpali-engine" },
 ]
-embeddings = [
-    { name = "sentence-transformers" },
-]
 lancedb = [
     { name = "lancedb" },
     { name = "pyarrow" },
@@ -251,6 +248,9 @@ postgres = [
 ]
 qdrant = [
     { name = "qdrant-client" },
+]
+sentence-transformers = [
+    { name = "sentence-transformers" },
 ]
 
 [package.dev-dependencies]
@@ -318,11 +318,11 @@ requires-dist = [
     { name = "qdrant-client", marker = "extra == 'qdrant'", specifier = ">=1.6.0" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "sentence-transformers", marker = "extra == 'all'", specifier = ">=3.3.1" },
-    { name = "sentence-transformers", marker = "extra == 'embeddings'", specifier = ">=3.3.1" },
+    { name = "sentence-transformers", marker = "extra == 'sentence-transformers'", specifier = ">=3.3.1" },
     { name = "typing-extensions", specifier = ">=4.12" },
     { name = "watchfiles", specifier = ">=1.1.0" },
 ]
-provides-extras = ["all", "colpali", "embeddings", "lancedb", "postgres", "qdrant"]
+provides-extras = ["all", "colpali", "lancedb", "postgres", "qdrant", "sentence-transformers"]
 
 [package.metadata.requires-dev]
 build-test = [

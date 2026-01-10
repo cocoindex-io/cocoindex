@@ -51,7 +51,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_struct_type,
 )
-from cocoindex.resources.schema import VectorSpec
+from cocoindex.resources.schema import VectorSchema, VectorSchemaProvider
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -175,7 +175,9 @@ _LEAF_TYPE_MAPPINGS: dict[type, _TypeMapping] = {
 _JSONB_MAPPING = _TypeMapping("jsonb", _json_encoder)
 
 
-def _get_type_mapping(python_type: Any) -> _TypeMapping:
+def _get_type_mapping(
+    python_type: Any, *, vector_schema_provider: VectorSchemaProvider | None = None
+) -> _TypeMapping:
     """
     Get the PostgreSQL type mapping for a Python type.
 
@@ -200,12 +202,21 @@ def _get_type_mapping(python_type: Any) -> _TypeMapping:
 
     # NumPy ndarray: map to pgvector type bases; dimension is handled at the schema layer.
     if base_type is np.ndarray:
-        elem_type: Any | None = None
-        if isinstance(type_info.variant, SequenceType):
-            elem_type = type_info.variant.elem_type
+        if vector_schema_provider is None:
+            raise ValueError("VectorSpecProvider is required for NumPy ndarray type.")
+        vector_schema = vector_schema_provider.__coco_vector_schema__()
+
+        if vector_schema.size <= 0:
+            raise ValueError(f"Invalid pgvector dimension: {vector_schema.size}")
+
         # Default to `vector` (float32/float64/int64/etc.). Use `halfvec` for float16.
-        base = "halfvec" if elem_type in (np.half, np.float16) else "vector"
-        return _TypeMapping(base)
+        base = "halfvec" if vector_schema.dtype in (np.half, np.float16) else "vector"
+        return _TypeMapping(pg_type=f"{base}({vector_schema.size})")
+
+    elif vector_schema_provider is not None:
+        raise ValueError(
+            f"VectorSpecProvider is only supported for NumPy ndarray type. Got type: {python_type}"
+        )
 
     # Complex types that need JSON encoding
     if isinstance(
@@ -231,6 +242,7 @@ class ColumnDef(NamedTuple):
 RowT = TypeVar("RowT", default=dict[str, Any])
 
 
+@dataclass(slots=True)
 class TableSchema(Generic[RowT]):
     """Schema definition for a PostgreSQL table."""
 
@@ -251,7 +263,7 @@ class TableSchema(Generic[RowT]):
         columns: type[RowT],
         primary_key: list[str],
         *,
-        column_specs: dict[str, ColumnDef | VectorSpec] | None = None,
+        column_specs: dict[str, ColumnDef | VectorSchemaProvider] | None = None,
     ) -> None: ...
 
     def __init__(
@@ -259,7 +271,7 @@ class TableSchema(Generic[RowT]):
         columns: type[RowT] | dict[str, ColumnDef],
         primary_key: list[str],
         *,
-        column_specs: dict[str, ColumnDef | VectorSpec] | None = None,
+        column_specs: dict[str, ColumnDef | VectorSchemaProvider] | None = None,
     ) -> None:
         """
         Create a TableSchema.
@@ -297,7 +309,8 @@ class TableSchema(Generic[RowT]):
 
     @staticmethod
     def _columns_from_struct_type(
-        struct_type: type, column_specs: dict[str, ColumnDef | VectorSpec] | None
+        struct_type: type,
+        column_specs: dict[str, ColumnDef | VectorSchemaProvider] | None,
     ) -> dict[str, ColumnDef]:
         """Convert a struct type to a dict of column name -> ColumnDef."""
         struct_info = StructType(struct_type)
@@ -310,29 +323,19 @@ class TableSchema(Generic[RowT]):
                 continue
 
             type_info = analyze_type_info(field.type_hint)
-            type_mapping = _get_type_mapping(field.type_hint)
+
+            vector_schema_provider = None
+            for annotation in type_info.annotations:
+                if isinstance(annotation, VectorSchemaProvider):
+                    vector_schema_provider = annotation
+                    break
+            if isinstance(spec, VectorSchemaProvider):
+                vector_schema_provider = spec
+
+            type_mapping = _get_type_mapping(
+                field.type_hint, vector_schema_provider=vector_schema_provider
+            )
             col_type = type_mapping.pg_type.strip()
-
-            vector_spec = spec if isinstance(spec, VectorSpec) else None
-            if vector_spec is not None:
-                if col_type in _PGVECTOR_TYPE_BASES:
-                    if vector_spec.dim <= 0:
-                        raise ValueError(
-                            f"Invalid pgvector dimension: {vector_spec.dim}"
-                        )
-                    col_type = f"{col_type}({vector_spec.dim})"
-                elif not _is_pgvector_pg_type(col_type):
-                    raise ValueError(
-                        f"VectorSpec provided for non-pgvector column '{field.name}' "
-                        f"(inferred type: {col_type})"
-                    )
-
-            elif col_type in _PGVECTOR_TYPE_BASES:
-                # If we ended up with a pgvector base type, require a fixed dimension.
-                raise ValueError(
-                    f"Field '{field.name}' inferred as pgvector type {col_type!r} but "
-                    f"no dimension was provided. Use VectorSpec(dim=...)."
-                )
 
             columns[field.name] = ColumnDef(
                 type=col_type,
@@ -1003,6 +1006,9 @@ class PgDatabase:
             scope, _table_provider.effect(key, spec)
         )
         return TableTarget(provider, table_schema)
+
+    def __coco_memo_key__(self) -> str:
+        return self._key
 
 
 def register_db(key: str, pool: asyncpg.Pool) -> PgDatabase:

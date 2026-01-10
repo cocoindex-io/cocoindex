@@ -67,7 +67,7 @@ profile = "release"      # wheel / normal builds
 editable-profile = "dev" # local editable builds
 
 [project.optional-dependencies]
-embeddings = ["sentence-transformers>=3.3.1"]
+sentence_transformers = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
 postgres = ["asyncpg>=0.31.0", "pgvector>=0.4.2"]

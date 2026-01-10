@@ -17,32 +17,28 @@ import os
 import pathlib
 import sys
 import tempfile
-import threading
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, Annotated
 
 from dotenv import load_dotenv
 from marker.config.parser import ConfigParser
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
-import numpy as np
 from numpy.typing import NDArray
-from sentence_transformers import SentenceTransformer
 import asyncpg
 
 import cocoindex as coco
 import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
 from cocoindex.extras.text import RecursiveSplitter
+from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.chunk import Chunk
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
-from cocoindex.resources.schema import VectorSpec
 
 
 TABLE_NAME = "pdf_embeddings"
 PG_SCHEMA_NAME = "coco_examples"
-EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 TOP_K = 5
 
 
@@ -53,13 +49,8 @@ class _GlobalState:
 
 
 _state = _GlobalState()
+_embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 _splitter = RecursiveSplitter()
-
-
-@functools.cache
-def embedder() -> SentenceTransformer:
-    # The model is cached in-process so repeated runs are fast.
-    return SentenceTransformer(EMBED_MODEL)
 
 
 @functools.cache
@@ -68,17 +59,6 @@ def pdf_converter() -> PdfConverter:
     return PdfConverter(
         create_model_dict(), config=config_parser.generate_config_dict()
     )
-
-
-_gpu_lock = threading.Lock()
-
-
-def embed_text(text: str) -> NDArray[np.float32]:
-    # TODO: convert to a cocoindex function with GPU and batching support
-    with _gpu_lock:
-        return embedder().encode(
-            [text], convert_to_numpy=True, normalize_embeddings=True
-        )[0]
 
 
 def pdf_to_markdown(content: bytes) -> str:
@@ -101,7 +81,7 @@ class PdfEmbedding:
     chunk_start: int
     chunk_end: int
     text: str
-    embedding: NDArray[np.float32]
+    embedding: Annotated[NDArray, _embedder]
 
 
 @coco.function
@@ -109,17 +89,12 @@ def setup_table(
     scope: coco.Scope,
 ) -> postgres.TableTarget[PdfEmbedding, coco.PendingS]:
     assert _state.db is not None
-
-    dim = embedder().get_sentence_embedding_dimension()
-    if dim is None:
-        raise RuntimeError(f"Embedding dimension is unknown for model {EMBED_MODEL}.")
     return _state.db.declare_table_target(
         scope,
         table_name=TABLE_NAME,
         table_schema=postgres.TableSchema(
             PdfEmbedding,
             primary_key=["filename", "chunk_start"],
-            column_specs={"embedding": VectorSpec(dim)},
         ),
         pg_schema_name=PG_SCHEMA_NAME,
     )
@@ -146,8 +121,8 @@ async def coco_lifespan(
         yield
 
 
-@coco.function
-def process_chunk(
+@coco.function(memo=True)
+async def process_chunk(
     scope: coco.Scope,
     filename: pathlib.PurePath,
     chunk: Chunk,
@@ -160,13 +135,13 @@ def process_chunk(
             chunk_start=chunk.start.char_offset,
             chunk_end=chunk.end.char_offset,
             text=chunk.text,
-            embedding=embed_text(chunk.text),
+            embedding=await _embedder.embed_async(chunk.text),
         ),
     )
 
 
 @coco.function(memo=True)
-def process_file(
+async def process_file(
     scope: coco.Scope,
     file: FileLike,
     table: postgres.TableTarget[PdfEmbedding],
@@ -176,14 +151,14 @@ def process_file(
     chunks = _splitter.split(
         markdown, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
-    # TODO: Process chunks in parallel
-    for chunk in chunks:
-        process_chunk(scope, file.relative_path, chunk, table)
+    await asyncio.gather(
+        *(process_chunk(scope, file.relative_path, chunk, table) for chunk in chunks)
+    )
 
 
 @coco.function
-async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    table = await coco_aio.mount_run(setup_table, scope / "setup").result()
+def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
+    table = coco.mount_run(setup_table, scope / "setup").result()
 
     files = localfs.walk_dir(
         sourcedir,
@@ -191,7 +166,7 @@ async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
     )
     for f in files:
-        coco_aio.mount(process_file, scope / "file" / str(f.relative_path), f, table)
+        coco.mount(process_file, scope / "file" / str(f.relative_path), f, table)
 
 
 app = coco_aio.App(
@@ -207,7 +182,7 @@ app = coco_aio.App(
 
 
 async def query_once(query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await asyncio.to_thread(embed_text, query)
+    query_vec = await _embedder.embed_async(query)
     pool = _state.pool
     assert pool is not None
 

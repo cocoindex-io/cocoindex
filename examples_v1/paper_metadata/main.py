@@ -17,33 +17,29 @@ import io
 import os
 import pathlib
 import sys
-import threading
 import uuid
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, Annotated
 
 import asyncpg
-import numpy as np
 from numpy.typing import NDArray
 from openai import OpenAI
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from pypdf import PdfReader, PdfWriter
-from sentence_transformers import SentenceTransformer
 
 import cocoindex as coco
 import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
 from cocoindex.extras.text import CustomLanguageConfig, RecursiveSplitter
+from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
-from cocoindex.resources.schema import VectorSpec
 
 
 TABLE_METADATA = "paper_metadata"
 TABLE_AUTHOR_PAPERS = "author_papers"
 TABLE_EMBEDDINGS = "metadata_embeddings"
 PG_SCHEMA_NAME = "coco_examples_v1"
-EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LLM_MODEL = "gpt-4o"
 TOP_K = 5
 
@@ -55,6 +51,7 @@ class _GlobalState:
 
 
 _state = _GlobalState()
+_embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
 _abstract_splitter = RecursiveSplitter(
     custom_languages=[
@@ -67,25 +64,8 @@ _abstract_splitter = RecursiveSplitter(
 
 
 @functools.cache
-def embedder() -> SentenceTransformer:
-    # The model is cached in-process so repeated runs are fast.
-    return SentenceTransformer(EMBED_MODEL)
-
-
-@functools.cache
 def openai_client() -> OpenAI:
     return OpenAI()
-
-
-_gpu_lock = threading.Lock()
-
-
-def embed_text(text: str) -> NDArray[np.float32]:
-    # TODO: convert to a cocoindex function with GPU and batching support
-    with _gpu_lock:
-        return embedder().encode(
-            [text], convert_to_numpy=True, normalize_embeddings=True
-        )[0]
 
 
 # =========================================================================
@@ -132,7 +112,7 @@ class MetadataEmbeddingRow:
     filename: str
     location: str
     text: str
-    embedding: NDArray[np.float32]
+    embedding: Annotated[NDArray, _embedder]
 
 
 # =========================================================================
@@ -234,17 +214,12 @@ def setup_metadata_embeddings(
     scope: coco.Scope,
 ) -> postgres.TableTarget[MetadataEmbeddingRow, coco.PendingS]:
     assert _state.db is not None
-
-    dim = embedder().get_sentence_embedding_dimension()
-    if dim is None:
-        raise RuntimeError(f"Embedding dimension is unknown for model {EMBED_MODEL}.")
     return _state.db.declare_table_target(
         scope,
         table_name=TABLE_EMBEDDINGS,
         table_schema=postgres.TableSchema(
             MetadataEmbeddingRow,
             primary_key=["id"],
-            column_specs={"embedding": VectorSpec(dim)},
         ),
         pg_schema_name=PG_SCHEMA_NAME,
     )
@@ -272,7 +247,7 @@ async def coco_lifespan(
 
 
 @coco.function(memo=True)
-def process_file(
+async def process_file(
     scope: coco.Scope,
     file: FileLike,
     metadata_table: postgres.TableTarget[PaperMetadataRow],
@@ -308,7 +283,7 @@ def process_file(
                 ),
             )
 
-    title_embedding = embed_text(metadata.title)
+    title_embedding = await _embedder.embed_async(metadata.title)
     embedding_table.declare_row(
         scope,
         row=MetadataEmbeddingRow(
@@ -335,20 +310,20 @@ def process_file(
                 filename=str(file.relative_path),
                 location="abstract",
                 text=chunk.text,
-                embedding=embed_text(chunk.text),
+                embedding=await _embedder.embed_async(chunk.text),
             ),
         )
 
 
 @coco.function
-async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    metadata_table = await coco_aio.mount_run(
+def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
+    metadata_table = coco.mount_run(
         setup_paper_metadata, scope / "setup" / "paper_metadata"
     ).result()
-    author_table = await coco_aio.mount_run(
+    author_table = coco.mount_run(
         setup_author_papers, scope / "setup" / "author_papers"
     ).result()
-    embedding_table = await coco_aio.mount_run(
+    embedding_table = coco.mount_run(
         setup_metadata_embeddings, scope / "setup" / "metadata_embeddings"
     ).result()
 
@@ -358,7 +333,7 @@ async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
     )
     for f in files:
-        coco_aio.mount(
+        coco.mount(
             process_file,
             scope / "file" / str(f.relative_path),
             f,
@@ -381,7 +356,7 @@ app = coco_aio.App(
 
 
 async def query_once(query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await asyncio.to_thread(embed_text, query)
+    query_vec = await _embedder.embed_async(query)
     pool = _state.pool
     assert pool is not None
 
