@@ -276,11 +276,41 @@ fn split_qualified_name(name: &str) -> (Option<&str>, &str) {
     }
 }
 
+async fn table_exists(pool: &PgPool, name: &str) -> Result<bool> {
+    let (schema, table) = split_qualified_name(name);
+    let schema = schema.unwrap_or("public");
+    let query = "SELECT EXISTS (
+        SELECT FROM information_schema.tables
+        WHERE  table_schema = $1
+        AND    table_name   = $2
+    )";
+    let exists: bool = sqlx::query_scalar(query)
+        .bind(schema)
+        .bind(table)
+        .fetch_one(pool)
+        .await?;
+    Ok(exists)
+}
+
 impl TrackingTableSetupChange {
     pub async fn apply_change(&self) -> Result<()> {
         let lib_context = get_lib_context().await?;
         let pool = lib_context.require_builtin_db_pool()?;
         if let Some(desired) = &self.desired_state {
+            // Attempt to rename legacy tables within the same schema
+            for legacy_name in self.legacy_tracking_table_names.iter() {
+                let (legacy_schema, _) = split_qualified_name(legacy_name);
+                let (desired_schema, desired_table) = split_qualified_name(&desired.table_name);
+                if legacy_schema == desired_schema && table_exists(pool, legacy_name).await? {
+                    let query = format!(
+                        "ALTER TABLE {legacy_name} RENAME TO {}",
+                        utils::db::sanitize_identifier(desired_table)
+                    );
+                    sqlx::query(&query).execute(pool).await?;
+                    break; // Use the first matching legacy table
+                }
+            }
+
             if self.min_existing_version_id != Some(desired.version_id) {
                 upgrade_tracking_table(pool, desired, self.min_existing_version_id.unwrap_or(0))
                     .await?;
@@ -300,6 +330,21 @@ impl TrackingTableSetupChange {
 
         if let Some(source_state_table_name) = source_state_table_name {
             if !self.source_state_table_always_exists {
+                // Attempt rename for source state table
+                for legacy_name in self.legacy_source_state_table_names.iter() {
+                    let (legacy_schema, _) = split_qualified_name(legacy_name);
+                    let (desired_schema, desired_table) =
+                        split_qualified_name(source_state_table_name);
+                    if legacy_schema == desired_schema && table_exists(pool, legacy_name).await? {
+                        let query = format!(
+                            "ALTER TABLE {legacy_name} RENAME TO {}",
+                            utils::db::sanitize_identifier(desired_table)
+                        );
+                        sqlx::query(&query).execute(pool).await?;
+                        break;
+                    }
+                }
+
                 // Ensure schema exists before creation
                 let (schema, _) = split_qualified_name(source_state_table_name);
                 if let Some(schema) = schema {
