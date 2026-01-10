@@ -10,6 +10,9 @@
 /* Import custom scrollbar styles */
 @import './scrollbar.css';
 
+/* Import sidebar styles */
+@import './sidebar.css';
+
 /* Import Radix UI color system */
 @import '../components/Color/colors.css';
 

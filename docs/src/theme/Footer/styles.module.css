@@ -2,7 +2,7 @@
 .footerCustom {
   padding: 0;
   background-color: var(--ifm-footer-background-color);
-  border-top: 1px solid #d4d7dc;
+  border-top: 1px solid var(--radix-gray-4);
   font-family: 'Questrial', sans-serif;
 }
 
@@ -164,7 +164,7 @@
 
 /* Dark mode adjustments */
 [data-theme='dark'] .footerCustom {
-  border-top-color: var(--theme-color-keyline);
+  border-top-color: var(--radix-gray-4);
 }
 
 [data-theme='dark'] .footerLink {
