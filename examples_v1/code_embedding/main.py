@@ -41,9 +41,6 @@ _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2"
 _splitter = RecursiveSplitter()
 
 
-# ============================================================================
-# Table schema
-# ============================================================================
 @dataclass
 class CodeEmbedding:
     filename: str
@@ -54,31 +51,13 @@ class CodeEmbedding:
     end_line: int
 
 
-@coco.function
-def setup_table(
-    scope: coco.Scope,
-) -> postgres.TableTarget[CodeEmbedding, coco.PendingS]:
-    return scope.use(PG_DB).declare_table_target(
-        scope,
-        table_name=TABLE_NAME,
-        table_schema=postgres.TableSchema(
-            CodeEmbedding,
-            primary_key=["filename", "location"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    )
-
-
-# ============================================================================
-# CocoIndex environment + app
-# ============================================================================
-
-
 @coco_aio.lifespan
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
+    # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
+    # Provide resources needed across the CocoIndex environment
     async with await postgres.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, postgres.register_db("code_embedding_db", pool))
         yield
@@ -131,7 +110,17 @@ async def process_file(
 
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    table = coco.mount_run(setup_table, scope / "setup").result()
+    target_db = scope.use(PG_DB)
+    target_table = coco.mount_run(
+        target_db.declare_table_target,
+        scope / "setup" / "table",
+        table_name=TABLE_NAME,
+        table_schema=postgres.TableSchema(
+            CodeEmbedding,
+            primary_key=["filename", "location"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    ).result()
 
     # Process multiple file types across the repository
     files = localfs.walk_dir(
@@ -144,7 +133,9 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
     )
     for file in files:
         print(f"Processing in background: {str(file.relative_path)}")
-        coco.mount(process_file, scope / "file" / str(file.relative_path), file, table)
+        coco.mount(
+            process_file, scope / "file" / str(file.relative_path), file, target_table
+        )
 
 
 app = coco_aio.App(

@@ -44,15 +44,14 @@ _splitter = RecursiveSplitter()
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
+    # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
+    # Provide resources needed across the CocoIndex environment
     async with await postgres.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, postgres.register_db("text_embedding_db", pool))
         yield
 
 
-# ============================================================================
-# Table schema
-# ============================================================================
 @dataclass
 class DocEmbedding:
     filename: str
@@ -60,26 +59,6 @@ class DocEmbedding:
     chunk_end: int
     text: str
     embedding: Annotated[NDArray, _embedder]
-
-
-@coco.function
-def setup_table(
-    scope: coco.Scope,
-) -> postgres.TableTarget[DocEmbedding, coco.PendingS]:
-    return scope.use(PG_DB).declare_table_target(
-        scope,
-        table_name=TABLE_NAME,
-        table_schema=postgres.TableSchema(
-            DocEmbedding,
-            primary_key=["filename", "chunk_start"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    )
-
-
-# ============================================================================
-# CocoIndex app
-# ============================================================================
 
 
 @coco.function(memo=True)
@@ -118,7 +97,17 @@ async def process_file(
 
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    table = coco.mount_run(setup_table, scope / "setup").result()
+    target_db = scope.use(PG_DB)
+    target_table = coco.mount_run(
+        target_db.declare_table_target,
+        scope / "setup" / "table",
+        table_name=TABLE_NAME,
+        table_schema=postgres.TableSchema(
+            DocEmbedding,
+            primary_key=["filename", "chunk_start"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    ).result()
 
     files = localfs.walk_dir(
         sourcedir,
@@ -126,7 +115,7 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         path_matcher=PatternFilePathMatcher(included_patterns=["*.md"]),
     )
     for f in files:
-        coco.mount(process_file, scope / "file" / str(f.relative_path), f, table)
+        coco.mount(process_file, scope / "file" / str(f.relative_path), f, target_table)
 
 
 app = coco_aio.App(

@@ -42,11 +42,6 @@ _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2"
 _splitter = RecursiveSplitter()
 
 
-# ============================================================================
-# Table schema
-# ============================================================================
-
-
 @dataclass
 class DocEmbedding:
     id: str
@@ -57,31 +52,13 @@ class DocEmbedding:
     embedding: Annotated[NDArray, _embedder]
 
 
-@coco.function
-def setup_collection(
-    scope: coco.Scope,
-) -> qdrant.TableTarget[DocEmbedding, coco.PendingS]:
-    return scope.use(QDRANT_DB).declare_collection_target(
-        scope,
-        collection_name=QDRANT_COLLECTION,
-        table_schema=qdrant.TableSchema(
-            DocEmbedding,
-            primary_key=["id"],
-        ),
-    )
-
-
-# ============================================================================
-# CocoIndex environment + app
-# ============================================================================
-
-
 @coco_aio.lifespan
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
+    # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
-
+    # Provide resources needed across the CocoIndex environment
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
     builder.provide(QDRANT_DB, qdrant.register_db("text_embedding_qdrant", client))
     builder.provide(QDRANT_CLIENT, client)
@@ -126,7 +103,16 @@ async def process_file(
 
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    table = coco.mount_run(setup_collection, scope / "setup").result()
+    target_db = scope.use(QDRANT_DB)
+    target_table = coco.mount_run(
+        target_db.declare_collection_target,
+        scope / "setup" / "table",
+        collection_name=QDRANT_COLLECTION,
+        table_schema=qdrant.TableSchema(
+            DocEmbedding,
+            primary_key=["id"],
+        ),
+    ).result()
 
     files = localfs.walk_dir(
         sourcedir,
@@ -134,7 +120,7 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         path_matcher=PatternFilePathMatcher(included_patterns=["*.md"]),
     )
     for f in files:
-        coco.mount(process_file, scope / "file" / str(f.relative_path), f, table)
+        coco.mount(process_file, scope / "file" / str(f.relative_path), f, target_table)
 
 
 app = coco_aio.App(

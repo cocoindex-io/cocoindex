@@ -13,6 +13,7 @@ from typing import (
     Protocol,
     cast,
     overload,
+    TypeAlias,
 )
 
 from cocoindex._internal.environment import Environment
@@ -27,6 +28,11 @@ P = ParamSpec("P")
 R = TypeVar("R")
 R_co = TypeVar("R_co", covariant=True)
 P0 = ParamSpec("P0")
+
+
+AsyncCallable: TypeAlias = Callable[P, Coroutine[Any, Any, R_co]]
+AnyCallable: TypeAlias = Callable[P, R_co] | AsyncCallable[P, R_co]
+
 
 _scope_var: ContextVar[Scope] = ContextVar("coco_scope")
 
@@ -47,13 +53,34 @@ def _get_scope_from_ctx() -> Scope:
 
 
 class Function(Protocol[P, R_co]):
-    def _as_core_component_processor(
+    def _core_processor(
         self: Function[Concatenate[Scope, P0], R_co],
         env: Environment,
         path: core.StablePath,
         *args: P0.args,
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]: ...
+
+
+def _build_sync_core_processor(
+    fn: Callable[Concatenate[Scope, P0], R_co],
+    env: Environment,
+    path: core.StablePath,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    memo_fp: core.Fingerprint | None = None,
+) -> core.ComponentProcessor[R_co]:
+    def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
+        fn_ctx = core.FnCallContext()
+        scope = Scope(env, path, comp_ctx, fn_ctx)
+        tok = _scope_var.set(scope)
+        try:
+            return fn(scope, *args, **kwargs)
+        finally:
+            _scope_var.reset(tok)
+            comp_ctx.join_fn_call(fn_ctx)
+
+    return core.ComponentProcessor.new_sync(_build, memo_fp)
 
 
 class SyncFunction(Function[P, R_co]):
@@ -103,25 +130,36 @@ class SyncFunction(Function[P, R_co]):
             if fn_ctx is not None:
                 parent_scope._core_fn_call_ctx.join_child(fn_ctx)
 
-    def _as_core_component_processor(
+    def _core_processor(
         self: SyncFunction[Concatenate[Scope, P0], R_co],
         env: Environment,
         path: core.StablePath,
         *args: P0.args,
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
-        def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
-            fn_ctx = core.FnCallContext()
-            scope = Scope(env, path, comp_ctx, fn_ctx)
-            tok = _scope_var.set(scope)
-            try:
-                return self._fn(scope, *args, **kwargs)
-            finally:
-                _scope_var.reset(tok)
-                comp_ctx.join_fn_call(fn_ctx)
-
         memo_fp = fingerprint_call(self._fn, args, kwargs) if self._memo else None
-        return core.ComponentProcessor.new_sync(_build, memo_fp)
+        return _build_sync_core_processor(self._fn, env, path, args, kwargs, memo_fp)
+
+
+def _build_async_core_processor(
+    fn: AsyncCallable[Concatenate[Scope, P0], R_co],
+    env: Environment,
+    path: core.StablePath,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    memo_fp: core.Fingerprint | None = None,
+) -> core.ComponentProcessor[R_co]:
+    async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
+        fn_ctx = core.FnCallContext()
+        scope = Scope(env, path, comp_ctx, fn_ctx)
+        tok = _scope_var.set(scope)
+        try:
+            return await fn(scope, *args, **kwargs)
+        finally:
+            _scope_var.reset(tok)
+            comp_ctx.join_fn_call(fn_ctx)
+
+    return core.ComponentProcessor.new_async(_build, memo_fp)
 
 
 class AsyncFunction(Function[P, R_co]):
@@ -177,27 +215,17 @@ class AsyncFunction(Function[P, R_co]):
             if fn_ctx is not None:
                 parent_scope._core_fn_call_ctx.join_child(fn_ctx)
 
-    def _as_core_component_processor(
+    def _core_processor(
         self: AsyncFunction[Concatenate[Scope, P0], R_co],
         env: Environment,
         path: core.StablePath,
         *args: P0.args,
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
-        async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
-            fn_ctx = core.FnCallContext()
-            scope = Scope(env, path, comp_ctx, fn_ctx)
-            tok = _scope_var.set(scope)
-            try:
-                return await self._fn(scope, *args, **kwargs)
-            finally:
-                _scope_var.reset(tok)
-                comp_ctx.join_fn_call(fn_ctx)
-
         memo_fp = (
             fingerprint_call(self._fn, (path, *args), kwargs) if self._memo else None
         )
-        return core.ComponentProcessor.new_async(_build, memo_fp)
+        return _build_async_core_processor(self._fn, env, path, args, kwargs, memo_fp)
 
 
 class FunctionBuilder:
@@ -243,3 +271,22 @@ def function(fn: Any = None, /, *, memo: bool = False) -> Any:
         return builder(fn)
     else:
         return builder
+
+
+def create_core_component_processor(
+    fn: AnyCallable[Concatenate[Scope, P], R_co],
+    env: Environment,
+    path: core.StablePath,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    /,
+) -> core.ComponentProcessor[R_co]:
+    if (as_processor := getattr(fn, "_core_processor", None)) is not None:
+        return as_processor(env, path, *args, **kwargs)  # type: ignore[no-any-return]
+
+    if inspect.iscoroutinefunction(fn):
+        return _build_async_core_processor(fn, env, path, args, kwargs)
+    else:
+        return _build_sync_core_processor(
+            cast(Callable[Concatenate[Scope, P], R_co], fn), env, path, args, kwargs
+        )

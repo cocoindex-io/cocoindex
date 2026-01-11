@@ -17,7 +17,7 @@ from . import core
 from .app import AppBase
 from .pending_marker import ResolvesTo
 from .scope import Scope
-from .function import Function
+from .function import AnyCallable, create_core_component_processor
 from .typing import NOT_SET, NotSetType
 from . import environment as _environment
 
@@ -80,41 +80,34 @@ class ComponentMountHandle:
 
 @overload
 def mount_run(
-    processor_fn: Function[Concatenate[Scope, P], ResolvesTo[ReturnT]],
+    processor_fn: AnyCallable[Concatenate[Scope, P], ResolvesTo[ReturnT]],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[ReturnT]: ...
 @overload
 def mount_run(
-    processor_fn: Function[Concatenate[Scope, P], Sequence[ResolvesTo[ReturnT]]],
+    processor_fn: AnyCallable[Concatenate[Scope, P], Sequence[ResolvesTo[ReturnT]]],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
 @overload
 def mount_run(
-    processor_fn: Function[Concatenate[Scope, P], Sequence[ResolvesTo[ReturnT]]],
-    scope: Scope,
-    *args: P.args,
-    **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
-@overload
-def mount_run(
-    processor_fn: Function[Concatenate[Scope, P], Mapping[K, ResolvesTo[ReturnT]]],
+    processor_fn: AnyCallable[Concatenate[Scope, P], Mapping[K, ResolvesTo[ReturnT]]],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[Mapping[K, ReturnT]]: ...
 @overload
 def mount_run(
-    processor_fn: Function[Concatenate[Scope, P], ReturnT],
+    processor_fn: AnyCallable[Concatenate[Scope, P], ReturnT],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountRunHandle[ReturnT]: ...
 def mount_run(
-    processor_fn: Function[Concatenate[Scope, P], ReturnT],
+    processor_fn: AnyCallable[Concatenate[Scope, P], Any],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
@@ -133,15 +126,15 @@ def mount_run(
     """
     comp_ctx = scope._core_processor_ctx
     fn_ctx = scope._core_fn_call_ctx
-    processor = processor_fn._as_core_component_processor(
-        scope._env, scope._core_path, *args, **kwargs
+    processor = create_core_component_processor(
+        processor_fn, scope._env, scope._core_path, args, kwargs
     )
     core_handle = core.mount_run(processor, scope._core_path, comp_ctx, fn_ctx)
     return ComponentMountRunHandle(core_handle, comp_ctx)
 
 
 def mount(
-    processor_fn: Function[Concatenate[Scope, P], ReturnT],
+    processor_fn: AnyCallable[Concatenate[Scope, P], Any],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
@@ -160,8 +153,8 @@ def mount(
     """
     comp_ctx = scope._core_processor_ctx
     fn_ctx = scope._core_fn_call_ctx
-    processor = processor_fn._as_core_component_processor(
-        scope._env, scope._core_path, *args, **kwargs
+    processor = create_core_component_processor(
+        processor_fn, scope._env, scope._core_path, args, kwargs
     )
     core_handle = core.mount(processor, scope._core_path, comp_ctx, fn_ctx)
     return ComponentMountHandle(core_handle)
@@ -171,11 +164,8 @@ class App(AppBase[P, ReturnT]):
     async def run(self) -> ReturnT:
         root_path = core.StablePath()
         env, core_app = await self._ensure_inner()
-        processor = self._main_fn._as_core_component_processor(
-            env,
-            root_path,
-            *self._app_args,
-            **self._app_kwargs,
+        processor = create_core_component_processor(
+            self._main_fn, env, root_path, self._app_args, self._app_kwargs
         )
         return await core_app.run_async(processor)
 

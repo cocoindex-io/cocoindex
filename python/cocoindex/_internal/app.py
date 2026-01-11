@@ -4,15 +4,17 @@ import asyncio
 from dataclasses import dataclass
 from typing import (
     Any,
+    Callable,
     Concatenate,
     Generic,
     ParamSpec,
     TypeVar,
+    overload,
 )
 
 from . import core
 from .environment import Environment
-from .function import Function
+from .function import AnyCallable, AsyncCallable
 from .environment import default_env
 from .scope import Scope
 
@@ -29,16 +31,34 @@ class AppConfig:
 
 class AppBase(Generic[P, R]):
     _name: str
-    _main_fn: Function[Concatenate[Scope, P], R]
+    _main_fn: AnyCallable[Concatenate[Scope, P], R]
     _app_args: tuple[Any, ...]
     _app_kwargs: dict[str, Any]
 
     _lock: asyncio.Lock
     _inner: tuple[Environment, core.App] | None
 
+    @overload
     def __init__(
         self,
-        main_fn: Function[Concatenate[Scope, P], R],
+        main_fn: AsyncCallable[Concatenate[Scope, P], R],
+        name_or_config: str | AppConfig,
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> None: ...
+    @overload
+    def __init__(
+        self,
+        main_fn: Callable[Concatenate[Scope, P], R],
+        name_or_config: str | AppConfig,
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> None: ...
+    def __init__(
+        self,
+        main_fn: Any,
         name_or_config: str | AppConfig,
         /,
         *args: P.args,

@@ -84,11 +84,6 @@ def embed_image_bytes(img_bytes: bytes) -> list[list[float]]:
     return _postprocess_embeddings(embeddings, processor)
 
 
-# ============================================================================
-# Table schema
-# ============================================================================
-
-
 @dataclass
 class ImageEmbedding:
     id: str
@@ -96,41 +91,13 @@ class ImageEmbedding:
     embedding: list[list[float]]
 
 
-@coco.function
-def setup_collection(
-    scope: coco.Scope,
-) -> qdrant.TableTarget[ImageEmbedding, coco.PendingS]:
-    model, _, _ = get_colpali()
-    dim = int(getattr(model, "dim", 128))
-    return scope.use(QDRANT_DB).declare_collection_target(
-        scope,
-        collection_name=QDRANT_COLLECTION,
-        table_schema=qdrant.TableSchema(
-            ImageEmbedding,
-            primary_key=["id"],
-            column_specs={
-                "embedding": qdrant.QdrantVectorSpec(
-                    dim,
-                    distance="cosine",
-                    multivector=True,
-                    multivector_comparator="max_sim",
-                )
-            },
-        ),
-    )
-
-
-# ============================================================================
-# CocoIndex environment + app
-# ============================================================================
-
-
 @coco_aio.lifespan
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
+    # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
-
+    # Provide resources needed across the CocoIndex environment
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
     builder.provide(QDRANT_DB, qdrant.register_db("image_search_colpali", client))
     builder.provide(QDRANT_CLIENT, client)
@@ -158,7 +125,27 @@ def process_file(
 
 @coco.function
 async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    table = await coco_aio.mount_run(setup_collection, scope / "setup").result()
+    model, _, _ = get_colpali()
+    dim = int(getattr(model, "dim", 128))
+
+    target_db = scope.use(QDRANT_DB)
+    target_table = await coco_aio.mount_run(
+        target_db.declare_collection_target,
+        scope / "setup" / "table",
+        collection_name=QDRANT_COLLECTION,
+        table_schema=qdrant.TableSchema(
+            ImageEmbedding,
+            primary_key=["id"],
+            column_specs={
+                "embedding": qdrant.QdrantVectorSpec(
+                    dim,
+                    distance="cosine",
+                    multivector=True,
+                    multivector_comparator="max_sim",
+                )
+            },
+        ),
+    ).result()
 
     files = localfs.walk_dir(
         sourcedir,
@@ -168,7 +155,9 @@ async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         ),
     )
     for f in files:
-        coco_aio.mount(process_file, scope / "file" / str(f.relative_path), f, table)
+        coco_aio.mount(
+            process_file, scope / "file" / str(f.relative_path), f, target_table
+        )
 
 
 app = coco_aio.App(

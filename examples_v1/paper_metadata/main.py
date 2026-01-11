@@ -167,67 +167,13 @@ def extract_metadata(scope: coco.Scope, markdown: str) -> PaperMetadataModel:
     return PaperMetadataModel.model_validate_json(content)
 
 
-# =========================================================================
-# Table schemas
-# =========================================================================
-
-
-@coco.function
-def setup_paper_metadata(
-    scope: coco.Scope,
-) -> postgres.TableTarget[PaperMetadataRow, coco.PendingS]:
-    return scope.use(PG_DB).declare_table_target(
-        scope,
-        table_name=TABLE_METADATA,
-        table_schema=postgres.TableSchema(
-            PaperMetadataRow,
-            primary_key=["filename"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    )
-
-
-@coco.function
-def setup_author_papers(
-    scope: coco.Scope,
-) -> postgres.TableTarget[AuthorPaperRow, coco.PendingS]:
-    return scope.use(PG_DB).declare_table_target(
-        scope,
-        table_name=TABLE_AUTHOR_PAPERS,
-        table_schema=postgres.TableSchema(
-            AuthorPaperRow,
-            primary_key=["author_name", "filename"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    )
-
-
-@coco.function
-def setup_metadata_embeddings(
-    scope: coco.Scope,
-) -> postgres.TableTarget[MetadataEmbeddingRow, coco.PendingS]:
-    return scope.use(PG_DB).declare_table_target(
-        scope,
-        table_name=TABLE_EMBEDDINGS,
-        table_schema=postgres.TableSchema(
-            MetadataEmbeddingRow,
-            primary_key=["id"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    )
-
-
-# =========================================================================
-# CocoIndex environment + app
-# =========================================================================
-
-
 @coco_aio.lifespan
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
+    # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
-
+    # Provide resources needed across the CocoIndex environment
     database_url = os.getenv("COCOINDEX_DATABASE_URL") or os.getenv("DATABASE_URL")
     if not database_url:
         raise ValueError("COCOINDEX_DATABASE_URL or DATABASE_URL is not set")
@@ -308,14 +254,36 @@ async def process_file(
 
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
+    target_db = scope.use(PG_DB)
     metadata_table = coco.mount_run(
-        setup_paper_metadata, scope / "setup" / "paper_metadata"
+        target_db.declare_table_target,
+        scope / "setup" / "paper_metadata",
+        table_name=TABLE_METADATA,
+        table_schema=postgres.TableSchema(
+            PaperMetadataRow,
+            primary_key=["filename"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
     ).result()
     author_table = coco.mount_run(
-        setup_author_papers, scope / "setup" / "author_papers"
+        target_db.declare_table_target,
+        scope / "setup" / "author_papers",
+        table_name=TABLE_AUTHOR_PAPERS,
+        table_schema=postgres.TableSchema(
+            AuthorPaperRow,
+            primary_key=["author_name", "filename"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
     ).result()
     embedding_table = coco.mount_run(
-        setup_metadata_embeddings, scope / "setup" / "metadata_embeddings"
+        target_db.declare_table_target,
+        scope / "setup" / "metadata_embeddings",
+        table_name=TABLE_EMBEDDINGS,
+        table_schema=postgres.TableSchema(
+            MetadataEmbeddingRow,
+            primary_key=["id"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
     ).result()
 
     files = localfs.walk_dir(

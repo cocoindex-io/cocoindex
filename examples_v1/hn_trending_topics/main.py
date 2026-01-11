@@ -13,7 +13,7 @@ import sys
 import pathlib
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Generic, AsyncIterator
+from typing import Any, AsyncIterator
 
 import aiohttp
 import asyncpg
@@ -217,51 +217,20 @@ async def fetch_thread(session: aiohttp.ClientSession, thread_id: str) -> Thread
 @coco_aio.lifespan
 async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[None]:
     """Set up CocoIndex environment with PostgreSQL database."""
-
+    # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
+    # Provide resources needed across the CocoIndex environment
     async with await asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, postgres.register_db("hn_db", pool))
         yield
 
 
-# ============================================================================
-# Table targets
-# ============================================================================
-
-
 @dataclass
-class TableTargets(Generic[coco.MaybePendingS], coco.ResolvesTo["TableTargets"]):
+class TableTargets:
     """Container for table targets."""
 
-    messages: postgres.TableTarget[HnMessage, coco.MaybePendingS]
-    topics: postgres.TableTarget[HnTopic, coco.MaybePendingS]
-
-
-@coco.function
-def setup_tables(scope: coco.Scope) -> TableTargets[coco.PendingS]:
-    """Create table targets for messages and topics."""
-    db = scope.use(PG_DB)
-    return TableTargets(
-        messages=db.declare_table_target(
-            scope,
-            table_name="hn_messages",
-            table_schema=postgres.TableSchema(HnMessage, primary_key=["id"]),
-            pg_schema_name="coco_examples",
-        ),
-        topics=db.declare_table_target(
-            scope,
-            table_name="hn_topics",
-            table_schema=postgres.TableSchema(
-                HnTopic, primary_key=["topic", "message_id"]
-            ),
-            pg_schema_name="coco_examples",
-        ),
-    )
-
-
-# ============================================================================
-# Processing functions
-# ============================================================================
+    messages: postgres.TableTarget[HnMessage]
+    topics: postgres.TableTarget[HnTopic]
 
 
 @coco.function
@@ -340,7 +309,22 @@ async def app_main(scope: coco.Scope) -> None:
     print()
 
     # Set up table targets
-    targets = await coco_aio.mount_run(setup_tables, scope / "setup").result()
+    target_db = scope.use(PG_DB)
+    messages_table = await coco_aio.mount_run(
+        target_db.declare_table_target,
+        scope / "setup" / "messages",
+        table_name="hn_messages",
+        table_schema=postgres.TableSchema(HnMessage, primary_key=["id"]),
+        pg_schema_name="coco_examples",
+    ).result()
+    topics_table = await coco_aio.mount_run(
+        target_db.declare_table_target,
+        scope / "setup" / "topics",
+        table_name="hn_topics",
+        table_schema=postgres.TableSchema(HnTopic, primary_key=["topic", "message_id"]),
+        pg_schema_name="coco_examples",
+    ).result()
+    targets = TableTargets(messages=messages_table, topics=topics_table)
 
     # Fetch thread IDs from HackerNews
     async with aiohttp.ClientSession() as session:

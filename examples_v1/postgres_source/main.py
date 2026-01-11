@@ -60,27 +60,13 @@ class OutputProduct:
     embedding: Annotated[NDArray, _embedder]
 
 
-@coco.function
-def setup_table(
-    scope: coco.Scope,
-) -> postgres.TableTarget[OutputProduct, coco.PendingS]:
-    return scope.use(PG_DB).declare_table_target(
-        scope,
-        table_name=TABLE_NAME,
-        table_schema=postgres.TableSchema(
-            OutputProduct,
-            primary_key=["product_category", "product_name"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    )
-
-
 @coco_aio.lifespan
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
+    # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
-
+    # Provide resources needed across the CocoIndex environment
     async with (
         await postgres.create_pool(DATABASE_URL) as target_pool,
         await postgres.create_pool(SOURCE_DATABASE_URL) as source_pool,
@@ -115,7 +101,17 @@ async def process_product(
 
 @coco.function
 async def app_main(scope: coco.Scope) -> None:
-    table = await coco_aio.mount_run(setup_table, scope / "setup").result()
+    target_db = scope.use(PG_DB)
+    target_table = await coco_aio.mount_run(
+        target_db.declare_table_target,
+        scope / "setup" / "table",
+        table_name=TABLE_NAME,
+        table_schema=postgres.TableSchema(
+            OutputProduct,
+            primary_key=["product_category", "product_name"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    ).result()
 
     source = postgres.PgTableSource(
         scope.use(SOURCE_POOL),
@@ -133,7 +129,7 @@ async def app_main(scope: coco.Scope) -> None:
             process_product,
             scope / "row" / product.product_category / product.product_name,
             product,
-            table,
+            target_table,
         )
 
 

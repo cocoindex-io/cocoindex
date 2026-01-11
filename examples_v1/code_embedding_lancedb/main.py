@@ -40,11 +40,6 @@ _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2"
 _splitter = RecursiveSplitter()
 
 
-# ============================================================================
-# Table schema
-# ============================================================================
-
-
 @dataclass
 class CodeEmbedding:
     filename: str
@@ -55,35 +50,13 @@ class CodeEmbedding:
     end_line: int
 
 
-@coco.function
-def setup_table(
-    scope: coco.Scope,
-) -> lancedb.TableTarget[CodeEmbedding, coco.PendingS]:
-    return scope.use(LANCE_DB).declare_table_target(
-        scope,
-        table_name=TABLE_NAME,
-        table_schema=lancedb.TableSchema(
-            CodeEmbedding,
-            primary_key=["filename", "location"],
-            column_specs={
-                "code": FtsSpec(tokenizer="simple"),
-            },
-        ),
-    )
-
-
-# ============================================================================
-# CocoIndex environment + app
-# ============================================================================
-
-
 @coco_aio.lifespan
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
+    # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
-
-    # Register LanceDB connection
+    # Provide resources needed across the CocoIndex environment
     await lancedb._register_db_async("code_embedding_db", LANCEDB_URI)
     builder.provide(LANCE_DB, lancedb.LanceDatabase("code_embedding_db"))
     yield
@@ -136,7 +109,19 @@ async def process_file(
 
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    table = coco.mount_run(setup_table, scope / "setup").result()
+    target_db = scope.use(LANCE_DB)
+    target_table = coco.mount_run(
+        target_db.declare_table_target,
+        scope / "setup" / "table",
+        table_name=TABLE_NAME,
+        table_schema=lancedb.TableSchema(
+            CodeEmbedding,
+            primary_key=["filename", "location"],
+            column_specs={
+                "code": FtsSpec(tokenizer="simple"),
+            },
+        ),
+    ).result()
 
     # Process multiple file types across the repository
     files = localfs.walk_dir(
@@ -149,7 +134,9 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
     )
     for file in files:
         print(f"Processing in background: {str(file.relative_path)}")
-        coco.mount(process_file, scope / "file" / str(file.relative_path), file, table)
+        coco.mount(
+            process_file, scope / "file" / str(file.relative_path), file, target_table
+        )
     print(f"Waiting all background processing to finish")
 
 

@@ -39,11 +39,6 @@ _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2"
 _splitter = RecursiveSplitter()
 
 
-# ============================================================================
-# Table schema
-# ============================================================================
-
-
 @dataclass
 class DocEmbedding:
     filename: str
@@ -53,35 +48,13 @@ class DocEmbedding:
     embedding: Annotated[NDArray, _embedder]
 
 
-@coco.function
-def setup_table(
-    scope: coco.Scope,
-) -> lancedb.TableTarget[DocEmbedding, coco.PendingS]:
-    return scope.use(LANCE_DB).declare_table_target(
-        scope,
-        table_name=TABLE_NAME,
-        table_schema=lancedb.TableSchema(
-            DocEmbedding,
-            primary_key=["filename", "chunk_start"],
-            column_specs={
-                "text": FtsSpec(tokenizer="simple"),
-            },
-        ),
-    )
-
-
-# ============================================================================
-# CocoIndex environment + app
-# ============================================================================
-
-
 @coco_aio.lifespan
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
+    # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
-
-    # Register LanceDB connection
+    # Provide resources needed across the CocoIndex environment
     await lancedb._register_db_async("text_embedding_db", LANCEDB_URI)
     builder.provide(LANCE_DB, lancedb.LanceDatabase("text_embedding_db"))
     yield
@@ -123,7 +96,19 @@ async def process_file(
 
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    table = coco.mount_run(setup_table, scope / "setup").result()
+    target_db = scope.use(LANCE_DB)
+    target_table = coco.mount_run(
+        target_db.declare_table_target,
+        scope / "setup" / "table",
+        table_name=TABLE_NAME,
+        table_schema=lancedb.TableSchema(
+            DocEmbedding,
+            primary_key=["filename", "chunk_start"],
+            column_specs={
+                "text": FtsSpec(tokenizer="simple"),
+            },
+        ),
+    ).result()
 
     files = localfs.walk_dir(
         sourcedir,
@@ -131,7 +116,7 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         path_matcher=PatternFilePathMatcher(included_patterns=["*.md"]),
     )
     for f in files:
-        coco.mount(process_file, scope / "file" / str(f.relative_path), f, table)
+        coco.mount(process_file, scope / "file" / str(f.relative_path), f, target_table)
 
 
 app = coco_aio.App(
