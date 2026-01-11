@@ -67,22 +67,6 @@ class DocEmbedding:
     embedding: Annotated[NDArray, _embedder]
 
 
-@coco.function
-def setup_table(
-    scope: coco.Scope,
-) -> postgres.TableTarget[DocEmbedding, coco.PendingS]:
-    assert _state.db is not None
-    return _state.db.declare_table_target(
-        scope,
-        table_name=TABLE_NAME,
-        table_schema=postgres.TableSchema(
-            DocEmbedding,
-            primary_key=["filename", "location"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    )
-
-
 @coco.function(memo=True)
 async def process_file(
     scope: coco.Scope,
@@ -122,7 +106,19 @@ async def _emit_chunk(
 
 @coco.function
 def app_main(scope: coco.Scope) -> None:
-    table = coco.mount_run(setup_table, scope / "setup").result()
+    assert _state.db is not None
+    table = coco.mount_run(
+        lambda inner_scope: _state.db.declare_table_target(
+            inner_scope,
+            table_name=TABLE_NAME,
+            table_schema=postgres.TableSchema(
+                DocEmbedding,
+                primary_key=["filename", "location"],
+            ),
+            pg_schema_name=PG_SCHEMA_NAME,
+        ),
+        scope / "setup",
+    ).result()
 
     credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
     root_folder_ids = [
