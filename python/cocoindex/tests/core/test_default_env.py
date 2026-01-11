@@ -48,7 +48,6 @@ def test_default_env(_default_env: None) -> None:
     assert _env_db_path.exists()
 
 
-@coco.function()
 def _trivial_fn(_scope: coco.Scope, s: str, i: int) -> str:
     assert isinstance(_scope.use(_RESOURCE_KEY), _Resource)
     return f"{s} {i}"

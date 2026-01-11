@@ -16,7 +16,6 @@ _source_data: dict[str, dict[str, Any]] = {}
 ##################################################################################
 
 
-@coco.function
 def _declare_dicts_data_together(scope: coco.Scope) -> None:
     for name, data in _source_data.items():
         single_dict_provider = coco.mount_run(
@@ -208,7 +207,6 @@ def test_dicts_data_together_delete_entry() -> None:
 ##################################################################################
 
 
-@coco.function
 def _declare_one_dict(scope: coco.Scope, name: str) -> None:
     dict_provider = coco.mount_run(
         DictsTarget.declare_dict_target, scope / "setup", name
@@ -217,7 +215,6 @@ def _declare_one_dict(scope: coco.Scope, name: str) -> None:
         coco.declare_effect(scope, dict_provider.effect(key, value))
 
 
-@coco.function
 def _declare_dicts_in_sub_components(scope: coco.Scope) -> None:
     for name in _source_data.keys():
         coco.mount(_declare_one_dict, scope / name, name)
@@ -411,7 +408,6 @@ def test_dicts_in_sub_components_delete_entry() -> None:
 ##################################################################################
 
 
-@coco.function
 def _declare_dict_containers(
     scope: coco.Scope, names: Collection[str]
 ) -> dict[str, coco.PendingEffectProvider[str]]:
@@ -419,7 +415,6 @@ def _declare_dict_containers(
     return providers
 
 
-@coco.function
 def _declare_one_dict_data(
     scope: coco.Scope, name: str, provider: coco.EffectProvider[str]
 ) -> None:
@@ -427,7 +422,6 @@ def _declare_one_dict_data(
         coco.declare_effect(scope, provider.effect(key, value))
 
 
-@coco.function
 def _declare_dict_containers_together(scope: coco.Scope) -> None:
     providers = coco.mount_run(
         _declare_dict_containers, scope / "setup", _source_data.keys()
@@ -615,7 +609,6 @@ def test_dicts_containers_together_delete_entry() -> None:
     ]
 
 
-@coco.function
 async def _declare_dict_containers_together_async(scope: coco.Scope) -> None:
     providers = await coco_aio.mount_run(
         _declare_dict_containers, scope / "setup", _source_data.keys()
@@ -840,7 +833,6 @@ def test_proceed_with_failed_creation() -> None:
 # Test for cleanup of partially-built components
 
 
-@coco.function
 def _declare_one_dict_w_exception(scope: coco.Scope, name: str) -> None:
     dict_provider = coco.mount_run(
         DictsTarget.declare_dict_target, scope / "setup", name
@@ -850,7 +842,6 @@ def _declare_one_dict_w_exception(scope: coco.Scope, name: str) -> None:
     raise ValueError("injected test exception (which is expected)")
 
 
-@coco.function
 def _declare_dicts_in_sub_components_w_exception(scope: coco.Scope) -> None:
     for name in _source_data.keys():
         coco.mount(_declare_one_dict_w_exception, scope / name, name)
@@ -977,7 +968,6 @@ def test_restore_from_gc_failed_components() -> None:
 # Test for async effects
 
 
-@coco.function
 async def _declare_async_dicts_data_together(scope: coco.Scope) -> None:
     for name, data in _source_data.items():
         single_dict_provider = await coco_aio.mount_run(

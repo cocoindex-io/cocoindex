@@ -12,7 +12,6 @@ coco_env = common.create_test_env(__file__)
 _source_data: dict[str, Any] = {}
 
 
-@coco.function
 def declare_global_dict_entries(scope: coco.Scope) -> None:
     for key, value in _source_data.items():
         coco.declare_effect(scope, GlobalDictTarget.effect(key, value))
@@ -135,7 +134,6 @@ def test_global_dict_effect_no_change() -> None:
     assert GlobalDictTarget.store.metrics.collect() == {}
 
 
-@coco.function
 def declare_async_global_dict_entries(scope: coco.Scope) -> None:
     for key, value in _source_data.items():
         coco.declare_effect(scope, AsyncGlobalDictTarget.effect(key, value))
