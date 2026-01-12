@@ -37,6 +37,11 @@
   --ifm-footer-background-color: #ffffff;
   --ifm-menu-color: #374151;
   --ifm-toc-link-color: #374151;
+
+  /* Navbar colors */
+  --navbar-background-color: var(--ifm-background-color);
+  --navbar-link-color: #1f2328;
+  --navbar-mobile-button-hover: rgba(0, 0, 0, 0.05);
   
   /* Theme colors for breadcrumbs */
   --theme-color-text-light: #6b7280;
@@ -63,6 +68,11 @@
   --ifm-footer-background-color: var(--ifm-background-color);
   --ifm-menu-color: #f3f4f6;
   --ifm-toc-link-color: #f3f4f6;
+
+  /* Navbar colors - dark mode */
+  --navbar-background-color: var(--ifm-background-color);
+  --navbar-link-color: var(--ifm-font-color-base);
+  --navbar-mobile-button-hover: rgba(255, 255, 255, 0.1);
   
   /* Dark mode theme colors for breadcrumbs */
   --theme-color-text-light: #9ca3af;

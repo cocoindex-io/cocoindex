@@ -128,6 +128,7 @@
   margin-right: 12px;
   align-items: center;
   justify-content: center;
+  color: inherit;
 }
 
 .navbarMobileMenuButton:hover {
@@ -137,7 +138,7 @@
 .navbarMobileMenuIcon {
   width: 20px;
   height: 20px;
-  color: var(--navbar-link-color);
+  color: var(--navbar-link-color, #1f2328);
 }
 
 /* Mobile styles */
