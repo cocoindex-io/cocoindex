@@ -14,6 +14,17 @@ use crate::state::stable_path_set::StablePathSet;
 use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
 use cocoindex_utils::fingerprint::Fingerprint;
 
+#[derive(Debug, Clone)]
+pub struct ComponentProcessorInfo {
+    pub name: String,
+}
+
+impl ComponentProcessorInfo {
+    pub fn new(name: String) -> Self {
+        Self { name }
+    }
+}
+
 pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
 
@@ -29,11 +40,14 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     /// Fingerprint of the memoization key. When matching, re-processing can be skipped.
     /// When None, memoization is not enabled for the component.
     fn memo_key_fingerprint(&self) -> Option<Fingerprint>;
+
+    fn processor_info(&self) -> &ComponentProcessorInfo;
 }
 
 struct ComponentInner<Prof: EngineProfile> {
     app_ctx: AppContext<Prof>,
     stable_path: StablePath,
+
     // For check existence / dedup
     //   live_sub_components: HashMap<StablePath, std::rc::Weak<ComponentInner<Prof>>>,
     /// Semaphore to ensure `process()` and `commit_effects()` calls cannot happen in parallel.
@@ -390,7 +404,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // We can piggyback on the same processing to avoid duplicating the work.
             }
 
-            let ret: Result<Option<Prof::FunctionData>> = match processor {
+            let ret: Result<Option<Prof::FunctionData>> = match &processor {
                 Some(processor) => processor
                     .process(
                         processor_context.app_ctx().env().host_runtime_ctx(),
@@ -402,7 +416,9 @@ impl<Prof: EngineProfile> Component<Prof> {
             };
             match ret {
                 Ok(ret) => {
-                    let build_submit_output = submit(&processor_context).await?;
+                    let processor_name =
+                        processor.as_ref().map(|p| p.processor_info().name.as_str());
+                    let build_submit_output = submit(&processor_context, processor_name).await?;
                     match (ret, build_submit_output) {
                         (Some(ret), Some(build_submit_output)) => {
                             Ok(Some((ret, build_submit_output)))

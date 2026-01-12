@@ -2,19 +2,17 @@ use crate::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct EffectPath {
-    inner: Arc<[utils::fingerprint::Fingerprint]>,
-}
+pub struct EffectPath(Arc<[utils::fingerprint::Fingerprint]>);
 
 impl std::borrow::Borrow<[utils::fingerprint::Fingerprint]> for EffectPath {
     fn borrow(&self) -> &[utils::fingerprint::Fingerprint] {
-        &self.inner
+        &self.0
     }
 }
 
 impl std::fmt::Display for EffectPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for part in self.inner.iter() {
+        for part in self.0.iter() {
             write!(f, "/{part}")?;
         }
         Ok(())
@@ -26,7 +24,7 @@ impl storekey::Encode for EffectPath {
         &self,
         e: &mut storekey::Writer<W>,
     ) -> Result<(), storekey::EncodeError> {
-        self.inner.encode(e)
+        self.0.encode(e)
     }
 }
 
@@ -35,9 +33,7 @@ impl storekey::Decode for EffectPath {
         d: &mut storekey::Reader<D>,
     ) -> Result<Self, storekey::DecodeError> {
         let parts: Vec<utils::fingerprint::Fingerprint> = storekey::Decode::decode(d)?;
-        Ok(Self {
-            inner: Arc::from(parts),
-        })
+        Ok(Self(Arc::from(parts)))
     }
 }
 
@@ -45,32 +41,31 @@ impl EffectPath {
     pub fn new(key_part: utils::fingerprint::Fingerprint, parent: Option<&Self>) -> Self {
         let inner: Arc<[utils::fingerprint::Fingerprint]> = match parent {
             Some(parent) => parent
-                .inner
+                .0
                 .iter()
                 .chain(std::iter::once(&key_part))
                 .cloned()
                 .collect(),
             None => Arc::new([key_part]),
         };
-        Self { inner }
+        Self(inner)
     }
 
     pub fn concat(&self, part: utils::fingerprint::Fingerprint) -> Self {
-        Self {
-            inner: self
-                .inner
+        Self(
+            self.0
                 .iter()
                 .chain(std::iter::once(&part))
                 .cloned()
                 .collect(),
-        }
+        )
     }
 
     pub fn provider_path(&self) -> &[utils::fingerprint::Fingerprint] {
-        &self.inner[..self.inner.len() - 1]
+        &self.0[..self.0.len() - 1]
     }
 
     pub fn as_slice(&self) -> &[utils::fingerprint::Fingerprint] {
-        &self.inner
+        &self.0
     }
 }

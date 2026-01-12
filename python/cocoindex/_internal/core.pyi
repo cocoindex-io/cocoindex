@@ -38,16 +38,24 @@ class Fingerprint:
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
 
+# --- ComponentProcessorInfo ---
+class ComponentProcessorInfo:
+    def __new__(cls, name: str) -> ComponentProcessorInfo: ...
+    @property
+    def name(self) -> str: ...
+
 # --- ComponentProcessor ---
 class ComponentProcessor(Generic[T_co]):
     @staticmethod
     def new_sync(
         processor_fn: Callable[[ComponentProcessorContext], T_co],
+        processor_info: ComponentProcessorInfo,
         memo_key_fingerprint: Fingerprint | None = None,
     ) -> ComponentProcessor[T_co]: ...
     @staticmethod
     def new_async(
         processor_fn: Callable[[ComponentProcessorContext], Coroutine[Any, Any, T_co]],
+        processor_info: ComponentProcessorInfo,
         memo_key_fingerprint: Fingerprint | None = None,
     ) -> ComponentProcessor[T_co]: ...
 

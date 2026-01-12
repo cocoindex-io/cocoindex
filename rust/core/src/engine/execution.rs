@@ -16,6 +16,7 @@ use crate::engine::profile::{EngineProfile, Persist, StableFingerprint};
 use crate::state::effect_path::EffectPath;
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
+use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
 pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
@@ -36,7 +37,7 @@ pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
             return Ok(None);
         };
         if let Some(processor_fp) = processor_fp {
-            let memo_info: db_schema::ComponentMemoizationInfo<'_> = rmp_serde::from_slice(&data)?;
+            let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&data)?;
             if memo_info.processor_fp == processor_fp {
                 let bytes = match memo_info.return_value {
                     db_schema::MemoizedValue::Inlined(b) => b,
@@ -97,7 +98,7 @@ fn write_component_memoization<Prof: EngineProfile>(
         processor_fp,
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(bytes.as_ref())),
     };
-    let encoded = rmp_serde::to_vec(&memo_info)?;
+    let encoded = rmp_serde::to_vec_named(&memo_info)?;
     db.put(wtxn, key.as_slice(), encoded.as_slice())?;
     Ok(())
 }
@@ -121,7 +122,7 @@ fn write_fn_call_memo<Prof: EngineProfile>(
         effect_paths: memo.effect_paths,
         dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
     };
-    let encoded = rmp_serde::to_vec(&fn_call_memo)?;
+    let encoded = rmp_serde::to_vec_named(&fn_call_memo)?;
     db.put(wtxn, key.as_slice(), encoded.as_slice())?;
     Ok(())
 }
@@ -142,7 +143,7 @@ fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
     let Some(data) = data else {
         return Ok(None);
     };
-    let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = rmp_serde::from_slice(&data)?;
+    let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = from_msgpack_slice(&data)?;
     let return_value_bytes = match fn_call_memo.return_value {
         db_schema::MemoizedValue::Inlined(b) => b,
     };
@@ -303,6 +304,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
         all_memo_fps: &HashSet<Fingerprint>,
         memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
         curr_version: u64,
+        processor_name: Option<&str>,
     ) -> Result<()> {
         let encoded_effect_info_key = effect_info_key.encode()?;
         let db_env = self.component_ctx.app_ctx().env().db_env();
@@ -312,34 +314,38 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                 self.db
                     .delete(&mut wtxn, encoded_effect_info_key.as_ref())?;
             } else {
-                let mut effect_info: db_schema::StablePathEntryEffectInfo = self
+                let mut tracking_info: db_schema::StablePathEntryTrackingInfo = self
                     .db
                     .get(&wtxn, encoded_effect_info_key.as_ref())?
-                    .map(|data| rmp_serde::from_slice(&data))
+                    .map(|data| from_msgpack_slice(&data))
                     .transpose()?
                     .unwrap_or_default();
 
-                for item in effect_info.items.values_mut() {
+                tracking_info.processor_name = processor_name.map(Cow::Borrowed);
+
+                for item in tracking_info.effect_items.values_mut() {
                     item.states.retain(|(version, state)| {
-                        *version > curr_version || *version == curr_version && state.is_some()
+                        *version > curr_version || *version == curr_version && !state.is_deleted()
                     });
                 }
-                effect_info.items.retain(|_, item| !item.states.is_empty());
-                let is_version_converged = effect_info.items.iter().all(|(_, item)| {
+                tracking_info
+                    .effect_items
+                    .retain(|_, item| !item.states.is_empty());
+                let is_version_converged = tracking_info.effect_items.iter().all(|(_, item)| {
                     item.states
                         .iter()
                         .all(|(version, _)| *version == curr_version)
                 });
                 if is_version_converged {
-                    effect_info.version = 1;
-                    for item in effect_info.items.values_mut() {
+                    tracking_info.version = 1;
+                    for item in tracking_info.effect_items.values_mut() {
                         for (version, _) in item.states.iter_mut() {
                             *version = 1;
                         }
                     }
                 }
 
-                let data_bytes = rmp_serde::to_vec(&effect_info)?;
+                let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
                 self.db.put(
                     &mut wtxn,
                     encoded_effect_info_key.as_ref(),
@@ -492,7 +498,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                             match curr_next_v.path_set {
                                 StablePathSet::Directory(curr_dir_set) => {
                                     let db_value: db_schema::ChildExistenceInfo =
-                                        rmp_serde::from_slice(db_next_entry.1)?;
+                                        from_msgpack_slice(db_next_entry.1)?;
                                     if db_value.node_type
                                         == db_schema::StablePathNodeType::Component
                                     {
@@ -566,7 +572,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
         let (raw_db_key, raw_db_value) = db_entry;
         let stable_key: StableKey =
             storekey::decode(raw_db_key[encoded_db_key_prefix.len()..].as_ref())?;
-        let db_value: db_schema::ChildExistenceInfo = rmp_serde::from_slice(raw_db_value)?;
+        let db_value: db_schema::ChildExistenceInfo = from_msgpack_slice(raw_db_value)?;
         match db_value.node_type {
             db_schema::StablePathNodeType::Directory => {
                 self.existence_processing_queue.push_back(ChildrenPathInfo {
@@ -605,7 +611,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                 node_type: db_schema::StablePathNodeType::Component,
             },
         };
-        Ok(rmp_serde::to_vec(&existence_info)?)
+        Ok(rmp_serde::to_vec_named(&existence_info)?)
     }
 
     fn relative_path<'p>(&self, path: StablePathRef<'p>) -> Result<StablePathRef<'p>> {
@@ -653,6 +659,7 @@ pub(crate) struct BuildSubmitOutput<Prof: EngineProfile> {
 #[instrument(name = "submit", skip_all)]
 pub(crate) async fn submit<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
+    processor_name: Option<&str>,
 ) -> Result<Option<BuildSubmitOutput<Prof>>> {
     let mut build_submit_output: Option<BuildSubmitOutput<Prof>> = None;
     let (effect_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
@@ -697,7 +704,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     let effect_info_key = db_schema::DbEntryKey::StablePath(
         comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::Effects,
+        db_schema::StablePathEntryKey::TrackingInfo,
     );
 
     let mut actions_by_sinks = HashMap::<Prof::EffectSink, SinkInput<Prof>>::new();
@@ -735,24 +742,24 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             }
         }
 
-        let mut effect_info: db_schema::StablePathEntryEffectInfo = db
+        let mut tracking_info: db_schema::StablePathEntryTrackingInfo = db
             .get(&wtxn, effect_info_key.encode()?.as_ref())?
-            .map(|data| rmp_serde::from_slice(&data))
+            .map(|data| from_msgpack_slice(&data))
             .transpose()?
             .unwrap_or_default();
-        let curr_version = effect_info.version + 1;
-        effect_info.version = curr_version;
+        let curr_version = tracking_info.version + 1;
+        tracking_info.version = curr_version;
 
         let mut declared_effects_to_process = declared_effects;
 
         // Deal with existing effects
-        for (effect_path, item) in effect_info.items.iter_mut() {
-            let prev_may_be_missing = item.states.iter().any(|(_, s)| s.is_none());
+        for (effect_path, item) in tracking_info.effect_items.iter_mut() {
+            let prev_may_be_missing = item.states.iter().any(|(_, s)| s.is_deleted());
             let prev_states = item
                 .states
                 .iter()
                 .filter_map(|(_, s)| s.as_ref())
-                .map(|s_bytes| Prof::EffectState::from_bytes(s_bytes.as_ref()))
+                .map(|s_bytes| Prof::EffectState::from_bytes(s_bytes))
                 .collect::<Result<Vec<_>>>()?;
 
             let declared_effect = declared_effects_to_process.remove(effect_path);
@@ -800,11 +807,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     .add_action(recon_output.action, child_provider);
                 item.states.push((
                     curr_version,
-                    recon_output
-                        .state
-                        .map(|s| s.to_bytes())
-                        .transpose()?
-                        .map(|s| Cow::Owned(s.into())),
+                    match recon_output.state.map(|s| s.to_bytes()).transpose()? {
+                        Some(s) => db_schema::EffectInfoItemState::Existing(Cow::Owned(s.into())),
+                        None => db_schema::EffectInfoItemState::Deleted,
+                    },
                 ));
             } else {
                 for (version, _) in item.states.iter_mut() {
@@ -848,12 +854,18 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             };
             let item = db_schema::EffectInfoItem {
                 key: Cow::Owned(effect_key_bytes.into()),
-                states: vec![(0, None), (curr_version, Some(new_state))],
+                states: vec![
+                    (0, db_schema::EffectInfoItemState::Deleted),
+                    (
+                        curr_version,
+                        db_schema::EffectInfoItemState::Existing(new_state),
+                    ),
+                ],
             };
-            effect_info.items.insert(effect_path, item);
+            tracking_info.effect_items.insert(effect_path, item);
         }
 
-        let data_bytes = rmp_serde::to_vec(&effect_info)?;
+        let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
         db.put(
             &mut wtxn,
             effect_info_key.encode()?.as_ref(),
@@ -898,6 +910,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         &finalized_fn_call_memos.all_memos_fps,
         finalized_fn_call_memos.memos_without_mounts_to_store,
         curr_version,
+        processor_name,
     )?;
 
     Ok(build_submit_output)
@@ -973,7 +986,7 @@ fn ensure_path_node_type(
             Some(db_schema::StablePathNodeType::Directory),
             db_schema::StablePathNodeType::Component,
         ) => {
-            let encoded_db_value = rmp_serde::to_vec(&db_schema::ChildExistenceInfo {
+            let encoded_db_value = rmp_serde::to_vec_named(&db_schema::ChildExistenceInfo {
                 node_type: target_node_type,
             })?;
             db.put(wtxn, encoded_db_key.as_slice(), encoded_db_value.as_slice())?;
@@ -1019,7 +1032,7 @@ fn get_path_node_type_with_raw_key(
     let Some(db_value) = db_value else {
         return Ok(None);
     };
-    let child_existence_info: db_schema::ChildExistenceInfo = rmp_serde::from_slice(db_value)?;
+    let child_existence_info: db_schema::ChildExistenceInfo = from_msgpack_slice(db_value)?;
     Ok(Some(child_existence_info.node_type))
 }
 

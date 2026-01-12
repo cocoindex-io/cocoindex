@@ -7,36 +7,67 @@ use crate::{
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
 use crate::fingerprint::PyFingerprint;
 use cocoindex_core::engine::{
-    component::{ComponentMountHandle, ComponentMountRunHandle, ComponentProcessor},
+    component::{
+        ComponentMountHandle, ComponentMountRunHandle, ComponentProcessor, ComponentProcessorInfo,
+    },
     context::ComponentProcessorContext,
     runtime::get_runtime,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
+
+/// Python wrapper for ComponentProcessorInfo that shares the same Arc instance.
+#[pyclass(name = "ComponentProcessorInfo")]
+#[derive(Clone)]
+pub struct PyComponentProcessorInfo(pub Arc<ComponentProcessorInfo>);
+
+#[pymethods]
+impl PyComponentProcessorInfo {
+    #[new]
+    pub fn new(name: String) -> Self {
+        Self(Arc::new(ComponentProcessorInfo::new(name)))
+    }
+
+    #[getter]
+    pub fn name(&self) -> &str {
+        &self.0.name
+    }
+}
 
 #[pyclass(name = "ComponentProcessor")]
 #[derive(Clone)]
 pub struct PyComponentProcessor {
     processor_fn: PyCallback,
     memo_key_fingerprint: Option<utils::fingerprint::Fingerprint>,
+    processor_info: Arc<ComponentProcessorInfo>,
 }
 
 #[pymethods]
 impl PyComponentProcessor {
     #[staticmethod]
-    #[pyo3(signature = (processor_fn, memo_key_fingerprint=None))]
-    pub fn new_sync(processor_fn: Py<PyAny>, memo_key_fingerprint: Option<PyFingerprint>) -> Self {
+    #[pyo3(signature = (processor_fn, processor_info, memo_key_fingerprint=None))]
+    pub fn new_sync(
+        processor_fn: Py<PyAny>,
+        processor_info: PyComponentProcessorInfo,
+        memo_key_fingerprint: Option<PyFingerprint>,
+    ) -> Self {
         Self {
             processor_fn: PyCallback::Sync(Arc::new(processor_fn)),
             memo_key_fingerprint: memo_key_fingerprint.map(|f| f.0),
+            processor_info: processor_info.0,
         }
     }
 
     #[staticmethod]
-    #[pyo3(signature = (processor_fn, memo_key_fingerprint=None))]
-    pub fn new_async(processor_fn: Py<PyAny>, memo_key_fingerprint: Option<PyFingerprint>) -> Self {
+    #[pyo3(signature = (processor_fn, processor_info, memo_key_fingerprint=None))]
+    pub fn new_async(
+        processor_fn: Py<PyAny>,
+        processor_info: PyComponentProcessorInfo,
+        memo_key_fingerprint: Option<PyFingerprint>,
+    ) -> Self {
         Self {
             processor_fn: PyCallback::Async(Arc::new(processor_fn)),
             memo_key_fingerprint: memo_key_fingerprint.map(|f| f.0),
+            processor_info: processor_info.0,
         }
     }
 }
@@ -57,6 +88,10 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
 
     fn memo_key_fingerprint(&self) -> Option<utils::fingerprint::Fingerprint> {
         self.memo_key_fingerprint
+    }
+
+    fn processor_info(&self) -> &ComponentProcessorInfo {
+        &self.processor_info
     }
 }
 
