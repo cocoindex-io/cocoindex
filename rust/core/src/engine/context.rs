@@ -5,6 +5,7 @@ use cocoindex_utils::fingerprint::Fingerprint;
 use crate::engine::component::{Component, ComponentBgChildReadiness};
 use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
 use crate::engine::profile::EngineProfile;
+use crate::engine::stats::ProcessingStats;
 use crate::prelude::*;
 
 use crate::state::effect_path::EffectPath;
@@ -108,6 +109,8 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     parent_context: Option<ComponentProcessorContext<Prof>>,
     processing_action: ComponentProcessingAction<Prof>,
     components_readiness: ComponentBgChildReadiness,
+
+    processing_stats: ProcessingStats,
     // TODO: Add fields to record states, children components, etc.
 }
 
@@ -121,6 +124,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         component: Component<Prof>,
         providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
+        processing_stats: ProcessingStats,
         mode: ComponentProcessingMode,
     ) -> Self {
         let processing_state = if mode == ComponentProcessingMode::Build {
@@ -141,6 +145,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 parent_context,
                 processing_action: processing_state,
                 components_readiness: Default::default(),
+                processing_stats,
             }),
         }
     }
@@ -202,6 +207,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
     pub fn join_fn_call(&self, _fn_ctx: &FnCallContext) {
         // Nothing needs to be incorporated for now
+    }
+
+    pub fn processing_stats(&self) -> &ProcessingStats {
+        &self.inner.processing_stats
     }
 }
 

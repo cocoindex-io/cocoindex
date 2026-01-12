@@ -555,10 +555,11 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                 storekey::decode(&ts_key[self.encoded_tombstone_key_prefix.len()..])?;
             let stable_path = self.component_path.concat(relative_path.as_ref());
             let component = self.component_ctx.component().get_child(stable_path);
-            component.delete(
-                Some(self.component_ctx.clone()),
+            let delete_ctx = component.new_processor_context_for_delete(
+                &self.component_ctx,
                 self.effect_providers.clone(),
-            )?;
+            );
+            component.delete(delete_ctx)?;
         }
         Ok(())
     }

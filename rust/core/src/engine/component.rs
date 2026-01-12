@@ -8,6 +8,7 @@ use crate::engine::execution::{
     cleanup_tombstone, post_submit_for_build, submit, use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
+use crate::engine::stats::ProcessingStats;
 use crate::state::effect_path::EffectPath;
 use crate::state::stable_path::{StablePath, StablePathRef};
 use crate::state::stable_path_set::StablePathSet;
@@ -269,9 +270,9 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     pub(crate) fn relative_path(
         &self,
-        parent_context: Option<&ComponentProcessorContext<Prof>>,
+        context: &ComponentProcessorContext<Prof>,
     ) -> Result<StablePathRef<'_>> {
-        if let Some(parent_ctx) = parent_context {
+        if let Some(parent_ctx) = context.parent_context() {
             self.stable_path()
                 .as_ref()
                 .strip_parent(parent_ctx.stable_path().as_ref())
@@ -283,17 +284,16 @@ impl<Prof: EngineProfile> Component<Prof> {
     pub fn run(
         self,
         processor: Prof::ComponentProc,
-        parent_context: Option<ComponentProcessorContext<Prof>>,
+        context: ComponentProcessorContext<Prof>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
-        let relative_path = self.relative_path(parent_context.as_ref())?;
-        let child_readiness_guard = parent_context
-            .as_ref()
+        let relative_path = self.relative_path(&context)?;
+        let child_readiness_guard = context
+            .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
-        let processor_context = self.new_processor_context_for_build(parent_context)?;
         let span = info_span!("component.run", component_path = %relative_path);
         let join_handle = get_runtime().spawn(
             async move {
-                let result = self.execute_once(&processor_context, Some(processor)).await;
+                let result = self.execute_once(&context, Some(processor)).await;
                 let (outcome, output) = match result {
                     Ok((outcome, output)) => (outcome, Ok(output)),
                     Err(err) => (
@@ -315,16 +315,15 @@ impl<Prof: EngineProfile> Component<Prof> {
     pub fn run_in_background(
         self,
         processor: Prof::ComponentProc,
-        parent_context: Option<ComponentProcessorContext<Prof>>,
+        context: ComponentProcessorContext<Prof>,
     ) -> Result<ComponentMountHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
 
-        let child_readiness_guard = parent_context
-            .as_ref()
+        let child_readiness_guard = context
+            .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
-        let processor_context = self.new_processor_context_for_build(parent_context)?;
         let join_handle = get_runtime().spawn(async move {
-            let result = self.execute_once(&processor_context, Some(processor)).await;
+            let result = self.execute_once(&context, Some(processor)).await;
             // For background child component, only log the error. Never propagate the error back to the parent.
             if let Err(err) = &result {
                 error!("component build failed:\n{err:?}");
@@ -341,23 +340,13 @@ impl<Prof: EngineProfile> Component<Prof> {
         Ok(ComponentMountHandle { join_handle })
     }
 
-    pub fn delete(
-        self,
-        parent_context: Option<ComponentProcessorContext<Prof>>,
-        providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
-    ) -> Result<()> {
-        let child_readiness_guard = parent_context
-            .as_ref()
+    pub fn delete(self, context: ComponentProcessorContext<Prof>) -> Result<()> {
+        let child_readiness_guard = context
+            .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
-        let processor_context = ComponentProcessorContext::new(
-            self.clone(),
-            providers,
-            parent_context,
-            ComponentProcessingMode::Delete,
-        );
         get_runtime().spawn(async move {
             trace!("deleting component at {}", self.stable_path());
-            let result = self.execute_once(&processor_context, None).await;
+            let result = self.execute_once(&context, None).await;
             // For deletion, only log the error. Never propagate the error back to the parent.
             if let Err(err) = &result {
                 error!("component deletion failed:\n{err}");
@@ -477,11 +466,12 @@ impl<Prof: EngineProfile> Component<Prof> {
         Ok((children_outcome, result))
     }
 
-    fn new_processor_context_for_build(
+    pub fn new_processor_context_for_build(
         &self,
-        parent_ctx: Option<ComponentProcessorContext<Prof>>,
+        parent_ctx: Option<&ComponentProcessorContext<Prof>>,
+        processing_stats: ProcessingStats,
     ) -> Result<ComponentProcessorContext<Prof>> {
-        let providers = if let Some(parent_ctx) = &parent_ctx {
+        let providers = if let Some(parent_ctx) = parent_ctx {
             let sub_path = self
                 .stable_path()
                 .as_ref()
@@ -504,8 +494,24 @@ impl<Prof: EngineProfile> Component<Prof> {
         Ok(ComponentProcessorContext::new(
             self.clone(),
             providers,
-            parent_ctx,
+            parent_ctx.cloned(),
+            processing_stats,
             ComponentProcessingMode::Build,
         ))
+    }
+
+    pub fn new_processor_context_for_delete(
+        &self,
+        parent_ctx: &ComponentProcessorContext<Prof>,
+        providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
+    ) -> ComponentProcessorContext<Prof> {
+        let processing_stats = parent_ctx.processing_stats().clone();
+        ComponentProcessorContext::new(
+            self.clone(),
+            providers,
+            Some(parent_ctx.clone()),
+            processing_stats,
+            ComponentProcessingMode::Delete,
+        )
     }
 }

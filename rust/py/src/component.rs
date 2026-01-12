@@ -107,9 +107,10 @@ pub fn mount_run(
         .component()
         .mount_child(&fn_ctx.0, stable_path.0)
         .into_py_result()?;
-    let handle = component
-        .run(processor, Some(comp_ctx.0))
+    let child_ctx = component
+        .new_processor_context_for_build(Some(&comp_ctx.0), comp_ctx.0.processing_stats().clone())
         .into_py_result()?;
+    let handle = component.run(processor, child_ctx).into_py_result()?;
     Ok(PyComponentMountRunHandle(Some(handle)))
 }
 
@@ -125,8 +126,11 @@ pub fn mount(
         .component()
         .mount_child(&fn_ctx.0, stable_path.0)
         .into_py_result()?;
+    let child_ctx = component
+        .new_processor_context_for_build(Some(&comp_ctx.0), comp_ctx.0.processing_stats().clone())
+        .into_py_result()?;
     let handle = component
-        .run_in_background(processor, Some(comp_ctx.0))
+        .run_in_background(processor, child_ctx)
         .into_py_result()?;
     Ok(PyComponentMountHandle(Some(handle)))
 }
@@ -147,11 +151,11 @@ impl PyComponentMountRunHandle {
     pub fn result_async<'py>(
         &mut self,
         py: Python<'py>,
-        comp_ctx: PyComponentProcessorContext,
+        parent_ctx: PyComponentProcessorContext,
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = self.take_handle()?;
         future_into_py(py, async move {
-            let ret = handle.result(Some(&comp_ctx.0)).await.into_py_result()?;
+            let ret = handle.result(Some(&parent_ctx.0)).await.into_py_result()?;
             Ok(ret.into_inner())
         })
     }
@@ -159,12 +163,12 @@ impl PyComponentMountRunHandle {
     pub fn result<'py>(
         &mut self,
         py: Python<'py>,
-        comp_ctx: PyComponentProcessorContext,
+        parent_ctx: PyComponentProcessorContext,
     ) -> PyResult<Py<PyAny>> {
         let handle = self.take_handle()?;
         py.detach(|| {
             get_runtime().block_on(async move {
-                let ret = handle.result(Some(&comp_ctx.0)).await.into_py_result()?;
+                let ret = handle.result(Some(&parent_ctx.0)).await.into_py_result()?;
                 Ok(ret.into_inner())
             })
         })
