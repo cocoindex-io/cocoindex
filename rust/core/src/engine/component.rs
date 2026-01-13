@@ -8,11 +8,23 @@ use crate::engine::execution::{
     cleanup_tombstone, post_submit_for_build, submit, use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
+use crate::engine::stats::ProcessingStats;
 use crate::state::effect_path::EffectPath;
 use crate::state::stable_path::{StablePath, StablePathRef};
 use crate::state::stable_path_set::StablePathSet;
 use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
 use cocoindex_utils::fingerprint::Fingerprint;
+
+#[derive(Debug, Clone)]
+pub struct ComponentProcessorInfo {
+    pub name: String,
+}
+
+impl ComponentProcessorInfo {
+    pub fn new(name: String) -> Self {
+        Self { name }
+    }
+}
 
 pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     // TODO: Add method to expose function info and arguments, for tracing purpose & no-change detection.
@@ -29,11 +41,14 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     /// Fingerprint of the memoization key. When matching, re-processing can be skipped.
     /// When None, memoization is not enabled for the component.
     fn memo_key_fingerprint(&self) -> Option<Fingerprint>;
+
+    fn processor_info(&self) -> &ComponentProcessorInfo;
 }
 
 struct ComponentInner<Prof: EngineProfile> {
     app_ctx: AppContext<Prof>,
     stable_path: StablePath,
+
     // For check existence / dedup
     //   live_sub_components: HashMap<StablePath, std::rc::Weak<ComponentInner<Prof>>>,
     /// Semaphore to ensure `process()` and `commit_effects()` calls cannot happen in parallel.
@@ -185,8 +200,8 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
         let output = self.join_handle.await??;
         if let Some(parent_context) = parent_context {
             parent_context.update_building_state(|building_state| {
-                for effect_path in output.provider_registry.curr_effect_paths {
-                    let Some(provider) = output.provider_registry.providers.get(&effect_path)
+                for effect_path in output.built_effect_providers.curr_effect_paths {
+                    let Some(provider) = output.built_effect_providers.providers.get(&effect_path)
                     else {
                         error!("effect provider not found for path {}", effect_path);
                         continue;
@@ -216,7 +231,7 @@ impl ComponentMountHandle {
 
 struct ComponentBuildOutput<Prof: EngineProfile> {
     ret: Prof::FunctionData,
-    provider_registry: EffectProviderRegistry<Prof>,
+    built_effect_providers: EffectProviderRegistry<Prof>,
 }
 
 impl<Prof: EngineProfile> Component<Prof> {
@@ -255,9 +270,9 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     pub(crate) fn relative_path(
         &self,
-        parent_context: Option<&ComponentProcessorContext<Prof>>,
+        context: &ComponentProcessorContext<Prof>,
     ) -> Result<StablePathRef<'_>> {
-        if let Some(parent_ctx) = parent_context {
+        if let Some(parent_ctx) = context.parent_context() {
             self.stable_path()
                 .as_ref()
                 .strip_parent(parent_ctx.stable_path().as_ref())
@@ -269,17 +284,16 @@ impl<Prof: EngineProfile> Component<Prof> {
     pub fn run(
         self,
         processor: Prof::ComponentProc,
-        parent_context: Option<ComponentProcessorContext<Prof>>,
+        context: ComponentProcessorContext<Prof>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
-        let relative_path = self.relative_path(parent_context.as_ref())?;
-        let child_readiness_guard = parent_context
-            .as_ref()
+        let relative_path = self.relative_path(&context)?;
+        let child_readiness_guard = context
+            .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
-        let processor_context = self.new_processor_context_for_build(parent_context)?;
         let span = info_span!("component.run", component_path = %relative_path);
         let join_handle = get_runtime().spawn(
             async move {
-                let result = self.execute_once(&processor_context, Some(processor)).await;
+                let result = self.execute_once(&context, Some(&processor)).await;
                 let (outcome, output) = match result {
                     Ok((outcome, output)) => (outcome, Ok(output)),
                     Err(err) => (
@@ -301,16 +315,15 @@ impl<Prof: EngineProfile> Component<Prof> {
     pub fn run_in_background(
         self,
         processor: Prof::ComponentProc,
-        parent_context: Option<ComponentProcessorContext<Prof>>,
+        context: ComponentProcessorContext<Prof>,
     ) -> Result<ComponentMountHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
 
-        let child_readiness_guard = parent_context
-            .as_ref()
+        let child_readiness_guard = context
+            .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
-        let processor_context = self.new_processor_context_for_build(parent_context)?;
         let join_handle = get_runtime().spawn(async move {
-            let result = self.execute_once(&processor_context, Some(processor)).await;
+            let result = self.execute_once(&context, Some(&processor)).await;
             // For background child component, only log the error. Never propagate the error back to the parent.
             if let Err(err) = &result {
                 error!("component build failed:\n{err:?}");
@@ -327,23 +340,13 @@ impl<Prof: EngineProfile> Component<Prof> {
         Ok(ComponentMountHandle { join_handle })
     }
 
-    pub fn delete(
-        self,
-        parent_context: Option<ComponentProcessorContext<Prof>>,
-        providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
-    ) -> Result<()> {
-        let child_readiness_guard = parent_context
-            .as_ref()
+    pub fn delete(self, context: ComponentProcessorContext<Prof>) -> Result<()> {
+        let child_readiness_guard = context
+            .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
-        let processor_context = ComponentProcessorContext::new(
-            self.clone(),
-            providers,
-            parent_context,
-            ComponentProcessingMode::Delete,
-        );
         get_runtime().spawn(async move {
             trace!("deleting component at {}", self.stable_path());
-            let result = self.execute_once(&processor_context, None).await;
+            let result = self.execute_once(&context, None).await;
             // For deletion, only log the error. Never propagate the error back to the parent.
             if let Err(err) = &result {
                 error!("component deletion failed:\n{err}");
@@ -362,110 +365,185 @@ impl<Prof: EngineProfile> Component<Prof> {
     async fn execute_once(
         &self,
         processor_context: &ComponentProcessorContext<Prof>,
-        processor: Option<Prof::ComponentProc>,
+        processor: Option<&Prof::ComponentProc>,
     ) -> Result<(ComponentRunOutcome, Option<ComponentBuildOutput<Prof>>)> {
-        // Fast-path: component memoization check does not require acquiring the build permit.
-        // If it hits, we can immediately return without processing/submitting/waiting.
-        let memo_fp_to_store: Option<Fingerprint> =
-            processor.as_ref().and_then(|p| p.memo_key_fingerprint());
-        if let Some(ret) =
-            use_or_invalidate_component_memoization(processor_context, memo_fp_to_store)?
-        {
-            return Ok((
-                ComponentRunOutcome::default(),
-                Some(ComponentBuildOutput {
-                    ret,
-                    provider_registry: Default::default(),
-                }),
-            ));
+        let mut reported_processor_name: Option<Cow<'_, str>> = None;
+        let mut memo_fp_to_store: Option<Fingerprint> = None;
+        let processing_stats = processor_context.processing_stats();
+
+        if let Some(processor) = processor {
+            let processor_name = processor.processor_info().name.as_str();
+            memo_fp_to_store = processor.memo_key_fingerprint();
+
+            // Fast-path: component memoization check does not require acquiring the build permit.
+            // If it hits, we can immediately return without processing/submitting/waiting.
+
+            match use_or_invalidate_component_memoization(processor_context, memo_fp_to_store) {
+                Ok(Some(ret)) => {
+                    processing_stats.update(processor_name.as_ref(), |stats| {
+                        stats.num_execution_starts += 1;
+                        stats.num_unchanged += 1;
+                    });
+                    return Ok((
+                        ComponentRunOutcome::default(),
+                        Some(ComponentBuildOutput {
+                            ret,
+                            built_effect_providers: Default::default(),
+                        }),
+                    ));
+                }
+                Err(err) => {
+                    error!("component memoization restore failed: {err:?}");
+                }
+                Ok(None) => {}
+            }
+
+            processor_context
+                .processing_stats()
+                .update(processor_name.as_ref(), |stats| {
+                    stats.num_execution_starts += 1;
+                });
+            reported_processor_name = Some(Cow::Borrowed(processor.processor_info().name.as_str()));
         }
 
-        // Acquire the semaphore to ensure `process()` and `commit_effects()` cannot happen in parallel.
-        let ret_n_submit_output = {
-            let _permit = self.inner.build_semaphore.acquire().await?;
+        let result = {
+            let reported_processor_name = &mut reported_processor_name;
+            async move {
+                // Acquire the semaphore to ensure `process()` and `commit_effects()` cannot happen in parallel.
+                let ret_n_submit_output = {
+                    let _permit = self.inner.build_semaphore.acquire().await?;
 
-            if memo_fp_to_store.is_some() {
-                *self.inner.last_memo_fp.lock().unwrap() = memo_fp_to_store;
-                // TODO: when matching, it means there're ongoing processing for the same memoization key pending on children.
-                // We can piggyback on the same processing to avoid duplicating the work.
-            }
-
-            let ret: Result<Option<Prof::FunctionData>> = match processor {
-                Some(processor) => processor
-                    .process(
-                        processor_context.app_ctx().env().host_runtime_ctx(),
-                        &processor_context,
-                    )?
-                    .await
-                    .map(Some),
-                None => Ok(None),
-            };
-            match ret {
-                Ok(ret) => {
-                    let build_submit_output = submit(&processor_context).await?;
-                    match (ret, build_submit_output) {
-                        (Some(ret), Some(build_submit_output)) => {
-                            Ok(Some((ret, build_submit_output)))
-                        }
-                        (None, None) => Ok(None),
-                        _ => internal_bail!("expect ret and build submit output to coexist"),
+                    if memo_fp_to_store.is_some() {
+                        *self.inner.last_memo_fp.lock().unwrap() = memo_fp_to_store;
+                        // TODO: when matching, it means there're ongoing processing for the same memoization key pending on children.
+                        // We can piggyback on the same processing to avoid duplicating the work.
                     }
-                }
-                Err(err) => Err(err),
-            }
-        };
 
-        // Wait until children components ready.
-        let components_readiness = processor_context.components_readiness();
-        components_readiness.set_build_done();
-        let children_outcome = components_readiness
-            .readiness()
-            .wait()
-            .await
-            .clone()
-            .into_result()?;
-
-        let result = match ret_n_submit_output? {
-            Some((ret, build_submit_output)) => {
-                if !children_outcome.has_exception {
-                    let comp_memo = if let Some(fp) = memo_fp_to_store
-                        && let last_memo_fp = processor_context
-                            .component()
-                            .inner
-                            .last_memo_fp
-                            .lock()
-                            .unwrap()
-                        && *last_memo_fp == memo_fp_to_store
-                    {
-                        Some((fp, &ret))
-                    } else {
-                        None
+                    let ret: Result<Option<Prof::FunctionData>> = match &processor {
+                        Some(processor) => processor
+                            .process(
+                                processor_context.app_ctx().env().host_runtime_ctx(),
+                                &processor_context,
+                            )?
+                            .await
+                            .map(Some),
+                        None => Ok(None),
                     };
-                    post_submit_for_build(
-                        processor_context,
-                        comp_memo,
-                        build_submit_output.memos_with_mounts_to_store,
-                    )
-                    .await?;
-                }
-                Some(ComponentBuildOutput {
-                    ret,
-                    provider_registry: build_submit_output.effect_providers,
-                })
+                    match ret {
+                        Ok(ret) => {
+                            let submit_output = submit(processor_context, processor, |name| {
+                                if reported_processor_name.is_none() {
+                                    processing_stats.update(&name, |stats| {
+                                        stats.num_execution_starts += 1;
+                                    });
+                                    *reported_processor_name = Some(Cow::Owned(name.to_string()));
+                                }
+                            })
+                            .await?;
+                            Ok((ret, submit_output))
+                        }
+                        Err(err) => Err(err),
+                    }
+                };
+
+                // Wait until children components ready.
+                let components_readiness = processor_context.components_readiness();
+                components_readiness.set_build_done();
+                let children_outcome = components_readiness
+                    .readiness()
+                    .wait()
+                    .await
+                    .clone()
+                    .into_result()?;
+
+                let (ret, submit_output) = ret_n_submit_output?;
+                let build_output = match ret {
+                    Some(ret) => {
+                        if !children_outcome.has_exception {
+                            let comp_memo = if let Some(fp) = memo_fp_to_store
+                                && let last_memo_fp = processor_context
+                                    .component()
+                                    .inner
+                                    .last_memo_fp
+                                    .lock()
+                                    .unwrap()
+                                && *last_memo_fp == memo_fp_to_store
+                            {
+                                Some((fp, &ret))
+                            } else {
+                                None
+                            };
+                            post_submit_for_build(
+                                processor_context,
+                                comp_memo,
+                                submit_output.memos_with_mounts_to_store,
+                            )
+                            .await?;
+                        }
+                        Some(ComponentBuildOutput {
+                            ret,
+                            built_effect_providers: submit_output
+                                .built_effect_providers
+                                .ok_or_else(|| internal_error!("expect built effect providers"))?,
+                        })
+                    }
+                    None => {
+                        cleanup_tombstone(&processor_context)?;
+                        None
+                    }
+                };
+                Ok::<_, Error>((
+                    children_outcome,
+                    build_output,
+                    submit_output.touched_previous_states,
+                ))
             }
-            None => {
-                cleanup_tombstone(&processor_context)?;
-                None
-            }
+            .await
         };
-        Ok((children_outcome, result))
+
+        let final_processor_name = reported_processor_name
+            .as_ref()
+            .map(|s| s.as_ref())
+            .unwrap_or(db_schema::UNKNOWN_PROCESSOR_NAME);
+        match result {
+            Ok((children_outcome, build_output, touched_previous_states)) => {
+                processing_stats.update(final_processor_name, |stats| {
+                    if reported_processor_name.is_none() {
+                        stats.num_execution_starts += 1;
+                    }
+                    match processor_context.mode() {
+                        ComponentProcessingMode::Build => {
+                            if touched_previous_states {
+                                stats.num_reprocesses += 1;
+                            } else {
+                                stats.num_adds += 1;
+                            }
+                        }
+                        ComponentProcessingMode::Delete => {
+                            stats.num_deletes += 1;
+                        }
+                    }
+                });
+                Ok((children_outcome, build_output))
+            }
+            Err(err) => {
+                processing_stats.update(final_processor_name, |stats| {
+                    if reported_processor_name.is_none() {
+                        stats.num_execution_starts += 1;
+                    }
+                    stats.num_errors += 1;
+                });
+                Err(err)
+            }
+        }
     }
 
-    fn new_processor_context_for_build(
+    pub fn new_processor_context_for_build(
         &self,
-        parent_ctx: Option<ComponentProcessorContext<Prof>>,
+        parent_ctx: Option<&ComponentProcessorContext<Prof>>,
+        processing_stats: ProcessingStats,
     ) -> Result<ComponentProcessorContext<Prof>> {
-        let providers = if let Some(parent_ctx) = &parent_ctx {
+        let providers = if let Some(parent_ctx) = parent_ctx {
             let sub_path = self
                 .stable_path()
                 .as_ref()
@@ -488,8 +566,24 @@ impl<Prof: EngineProfile> Component<Prof> {
         Ok(ComponentProcessorContext::new(
             self.clone(),
             providers,
-            parent_ctx,
+            parent_ctx.cloned(),
+            processing_stats,
             ComponentProcessingMode::Build,
         ))
+    }
+
+    pub fn new_processor_context_for_delete(
+        &self,
+        parent_ctx: &ComponentProcessorContext<Prof>,
+        providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
+    ) -> ComponentProcessorContext<Prof> {
+        let processing_stats = parent_ctx.processing_stats().clone();
+        ComponentProcessorContext::new(
+            self.clone(),
+            providers,
+            Some(parent_ctx.clone()),
+            processing_stats,
+            ComponentProcessingMode::Delete,
+        )
     }
 }

@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
         # Initialize client for API endpoints
         _client = qdrant.create_client(image_search.QDRANT_URL, prefer_grpc=True)
         # Build/update the index once on startup so the collection exists.
-        await image_search.app.run()
+        await image_search.app.run(report_to_stdout=True)
         yield
         _client = None
 

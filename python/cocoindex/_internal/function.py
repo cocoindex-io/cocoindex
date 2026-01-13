@@ -68,6 +68,7 @@ def _build_sync_core_processor(
     path: core.StablePath,
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
+    processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
 ) -> core.ComponentProcessor[R_co]:
     def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
@@ -80,16 +81,18 @@ def _build_sync_core_processor(
             _scope_var.reset(tok)
             comp_ctx.join_fn_call(fn_ctx)
 
-    return core.ComponentProcessor.new_sync(_build, memo_fp)
+    return core.ComponentProcessor.new_sync(_build, processor_info, memo_fp)
 
 
 class SyncFunction(Function[P, R_co]):
     _fn: Callable[P, R_co]
     _memo: bool
+    _processor_info: core.ComponentProcessorInfo
 
     def __init__(self, fn: Callable[P, R_co], *, memo: bool):
         self._fn = fn
         self._memo = memo
+        self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         scope_arg = _get_scope_from_args(args)
@@ -138,7 +141,9 @@ class SyncFunction(Function[P, R_co]):
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
         memo_fp = fingerprint_call(self._fn, args, kwargs) if self._memo else None
-        return _build_sync_core_processor(self._fn, env, path, args, kwargs, memo_fp)
+        return _build_sync_core_processor(
+            self._fn, env, path, args, kwargs, self._processor_info, memo_fp
+        )
 
 
 def _build_async_core_processor(
@@ -147,6 +152,7 @@ def _build_async_core_processor(
     path: core.StablePath,
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
+    processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
 ) -> core.ComponentProcessor[R_co]:
     async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
@@ -159,12 +165,13 @@ def _build_async_core_processor(
             _scope_var.reset(tok)
             comp_ctx.join_fn_call(fn_ctx)
 
-    return core.ComponentProcessor.new_async(_build, memo_fp)
+    return core.ComponentProcessor.new_async(_build, processor_info, memo_fp)
 
 
 class AsyncFunction(Function[P, R_co]):
     _fn: Callable[P, Coroutine[Any, Any, R_co]]
     _memo: bool
+    _processor_info: core.ComponentProcessorInfo
 
     def __init__(
         self,
@@ -174,6 +181,7 @@ class AsyncFunction(Function[P, R_co]):
     ):
         self._fn = fn
         self._memo = memo
+        self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         scope_arg = _get_scope_from_args(args)
@@ -225,7 +233,9 @@ class AsyncFunction(Function[P, R_co]):
         memo_fp = (
             fingerprint_call(self._fn, (path, *args), kwargs) if self._memo else None
         )
-        return _build_async_core_processor(self._fn, env, path, args, kwargs, memo_fp)
+        return _build_async_core_processor(
+            self._fn, env, path, args, kwargs, self._processor_info, memo_fp
+        )
 
 
 class FunctionBuilder:
@@ -284,9 +294,17 @@ def create_core_component_processor(
     if (as_processor := getattr(fn, "_core_processor", None)) is not None:
         return as_processor(env, path, *args, **kwargs)  # type: ignore[no-any-return]
 
+    # For non-decorated functions, create a new ComponentProcessorInfo each time.
+    # This is less efficient than using the decorated version which shares the same instance.
+    processor_info = core.ComponentProcessorInfo(fn.__qualname__)
     if inspect.iscoroutinefunction(fn):
-        return _build_async_core_processor(fn, env, path, args, kwargs)
+        return _build_async_core_processor(fn, env, path, args, kwargs, processor_info)
     else:
         return _build_sync_core_processor(
-            cast(Callable[Concatenate[Scope, P], R_co], fn), env, path, args, kwargs
+            cast(Callable[Concatenate[Scope, P], R_co], fn),
+            env,
+            path,
+            args,
+            kwargs,
+            processor_info,
         )

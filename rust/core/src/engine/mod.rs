@@ -7,3 +7,4 @@ pub mod execution;
 pub mod function;
 pub mod profile;
 pub mod runtime;
+pub mod stats;

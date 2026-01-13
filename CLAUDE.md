@@ -133,7 +133,7 @@ app = coco.App(
     sourcedir=pathlib.Path("./docs"),
     outdir=pathlib.Path("./out"),
 )
-app.run()
+app.run(reports_to_stdout=True)
 ```
 
 ## Principles

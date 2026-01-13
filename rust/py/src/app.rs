@@ -1,6 +1,9 @@
 use crate::prelude::*;
 
-use cocoindex_core::engine::{app::App, runtime::get_runtime};
+use cocoindex_core::engine::{
+    app::{App, AppRunOptions},
+    runtime::get_runtime,
+};
 use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{component::PyComponentProcessor, environment::PyEnvironment};
@@ -20,10 +23,12 @@ impl PyApp {
         &self,
         py: Python<'py>,
         root_processor: PyComponentProcessor,
+        report_to_stdout: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let app = self.0.clone();
+        let options = AppRunOptions { report_to_stdout };
         let fut = future_into_py(py, async move {
-            let ret = app.run(root_processor).await.into_py_result()?;
+            let ret = app.run(root_processor, options).await.into_py_result()?;
             Ok(ret.into_inner())
         })?;
         Ok(fut)
@@ -33,11 +38,13 @@ impl PyApp {
         &self,
         py: Python<'py>,
         root_processor: PyComponentProcessor,
+        report_to_stdout: bool,
     ) -> PyResult<Py<PyAny>> {
         let app = self.0.clone();
+        let options = AppRunOptions { report_to_stdout };
         py.detach(|| {
             get_runtime().block_on(async move {
-                let ret = app.run(root_processor).await.into_py_result()?;
+                let ret = app.run(root_processor, options).await.into_py_result()?;
                 Ok(ret.into_inner())
             })
         })

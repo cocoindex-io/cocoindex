@@ -12,6 +12,7 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 env_logger = { workspace = true }
 heed = "0.22.0"
+indicatif = { workspace = true }
 storekey = { workspace = true }
 serde = { workspace = true, features = ["rc", "derive"] }
 tokio = { workspace = true }
@@ -20,6 +21,7 @@ rmp-serde = { workspace = true }
 rpds = { workspace = true }
 serde_with = { workspace = true }
 uuid = { workspace = true }
+indexmap = { workspace = true }
 
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

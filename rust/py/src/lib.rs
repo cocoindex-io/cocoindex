@@ -25,6 +25,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     m.add_class::<app::PyApp>()?;
 
+    m.add_class::<component::PyComponentProcessorInfo>()?;
     m.add_class::<component::PyComponentProcessor>()?;
     m.add_class::<component::PyComponentMountHandle>()?;
     m.add_class::<component::PyComponentMountRunHandle>()?;

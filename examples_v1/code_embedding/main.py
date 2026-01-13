@@ -132,7 +132,6 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         ),
     )
     for file in files:
-        print(f"Processing in background: {str(file.relative_path)}")
         coco.mount(
             process_file, scope / "file" / str(file.relative_path), file, target_table
         )
@@ -191,7 +190,7 @@ async def main() -> None:
                 await query_once(pool, q)
         return
 
-    await app.run()
+    await app.run(report_to_stdout=True)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ use std::{borrow::Cow, collections::BTreeMap, io::Write};
 
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
+use serde_with::{Bytes, serde_as};
 
 use crate::state::{
     effect_path::EffectPath,
@@ -17,9 +18,6 @@ pub type Database = heed::Database<heed::types::Bytes, heed::types::Bytes>;
 
 #[derive(Debug)]
 pub enum StablePathEntryKey {
-    /// Value type: ComponentMetadata
-    Metadata,
-
     /// Value type: ComponentMemoizationInfo
     ComponentMemoization,
 
@@ -29,7 +27,7 @@ pub enum StablePathEntryKey {
 
     /// Required.
     /// Value type: StablePathEntryEffectInfo
-    Effects,
+    TrackingInfo,
 
     ChildExistencePrefix,
     /// Value type: ChildExistenceInfo
@@ -44,14 +42,13 @@ impl storekey::Encode for StablePathEntryKey {
     fn encode<W: Write>(&self, e: &mut storekey::Writer<W>) -> Result<(), storekey::EncodeError> {
         match self {
             // Should not be less than 2.
-            StablePathEntryKey::Metadata => e.write_u8(0x10),
             StablePathEntryKey::ComponentMemoization => e.write_u8(0x20),
             StablePathEntryKey::FunctionMemoizationPrefix => e.write_u8(0x30),
             StablePathEntryKey::FunctionMemoization(fp) => {
                 e.write_u8(0x30)?;
                 fp.encode(e)
             }
-            StablePathEntryKey::Effects => e.write_u8(0x40),
+            StablePathEntryKey::TrackingInfo => e.write_u8(0x40),
             StablePathEntryKey::ChildExistencePrefix => e.write_u8(0xa0),
             StablePathEntryKey::ChildExistence(key) => {
                 e.write_u8(0xa0)?;
@@ -71,13 +68,12 @@ impl storekey::Decode for StablePathEntryKey {
         d: &mut storekey::Reader<D>,
     ) -> Result<Self, storekey::DecodeError> {
         let key = match d.read_u8()? {
-            0x10 => StablePathEntryKey::Metadata,
             0x20 => StablePathEntryKey::ComponentMemoization,
             0x30 => {
                 let fp = Fingerprint::decode(d)?;
                 StablePathEntryKey::FunctionMemoization(fp)
             }
-            0x40 => StablePathEntryKey::Effects,
+            0x40 => StablePathEntryKey::TrackingInfo,
             0xa0 => {
                 let key: StableKey = storekey::Decode::decode(d)?;
                 StablePathEntryKey::ChildExistence(key)
@@ -158,24 +154,25 @@ impl<'a> DbEntryKey<'a> {
     }
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
 pub enum MemoizedValue<'a> {
-    #[serde(untagged)]
-    Inlined(Cow<'a, [u8]>),
+    #[serde(untagged, borrow)]
+    Inlined(#[serde_as(as = "Bytes")] Cow<'a, [u8]>),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ComponentMemoizationInfo<'a> {
     #[serde(rename = "F")]
     pub processor_fp: Fingerprint,
-    #[serde(rename = "R")]
+    #[serde(rename = "R", borrow)]
     pub return_value: MemoizedValue<'a>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FunctionMemoizationEntry<'a> {
     /// Memoization info is stored in the component metadata
-    #[serde(rename = "R")]
+    #[serde(rename = "R", borrow)]
     pub return_value: MemoizedValue<'a>,
 
     /// Relative paths to the parent components.
@@ -190,20 +187,66 @@ pub struct FunctionMemoizationEntry<'a> {
     pub dependency_memo_entries: Vec<Fingerprint>,
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug)]
-pub struct EffectInfoItem<'a> {
-    #[serde(rename = "P")]
-    pub key: Cow<'a, [u8]>,
-    #[serde(rename = "S", borrow)]
-    pub states: Vec<(/*version*/ u64, Option<Cow<'a, [u8]>>)>,
+pub enum EffectInfoItemState<'a> {
+    #[serde(rename = "D")]
+    Deleted,
+    #[serde(untagged)]
+    Existing(
+        #[serde_as(as = "Bytes")]
+        #[serde(borrow)]
+        Cow<'a, [u8]>,
+    ),
 }
 
-#[derive(Serialize, Deserialize, Default, Debug)]
-pub struct StablePathEntryEffectInfo<'a> {
+impl<'a> EffectInfoItemState<'a> {
+    pub fn is_deleted(&self) -> bool {
+        matches!(self, EffectInfoItemState::Deleted)
+    }
+
+    pub fn as_ref(&self) -> Option<&[u8]> {
+        match self {
+            EffectInfoItemState::Deleted => None,
+            EffectInfoItemState::Existing(s) => Some(s.as_ref()),
+        }
+    }
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug)]
+pub struct EffectInfoItem<'a> {
+    #[serde_as(as = "Bytes")]
+    #[serde(rename = "P", borrow)]
+    pub key: Cow<'a, [u8]>,
+    #[serde(rename = "S", borrow)]
+    pub states: Vec<(/*version*/ u64, EffectInfoItemState<'a>)>,
+}
+
+pub const UNKNOWN_PROCESSOR_NAME: &'static str = "<unknown>";
+
+fn unknown_processor_name() -> Cow<'static, str> {
+    Cow::Borrowed(UNKNOWN_PROCESSOR_NAME)
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct StablePathEntryTrackingInfo<'a> {
     #[serde(rename = "V")]
     pub version: u64,
     #[serde(rename = "I", borrow)]
-    pub items: BTreeMap<EffectPath, EffectInfoItem<'a>>,
+    pub effect_items: BTreeMap<EffectPath, EffectInfoItem<'a>>,
+    #[serde(rename = "N", borrow, default = "unknown_processor_name")]
+    pub processor_name: Cow<'a, str>,
+}
+
+impl<'a> StablePathEntryTrackingInfo<'a> {
+    pub fn new(processor_name: Cow<'a, str>) -> Self {
+        Self {
+            version: 0,
+            effect_items: BTreeMap::new(),
+            processor_name,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]

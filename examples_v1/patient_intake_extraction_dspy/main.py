@@ -177,7 +177,7 @@ def main() -> None:
     load_dotenv()
     lm = dspy.LM("gemini/gemini-2.5-flash")
     dspy.configure(lm=lm)
-    app.run()
+    app.run(report_to_stdout=True)
 
 
 if __name__ == "__main__":
