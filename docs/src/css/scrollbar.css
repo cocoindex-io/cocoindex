@@ -1,0 +1,55 @@
+/**
+ * Custom scrollbar styling inspired by Radix UI
+ * Provides modern, subtle scrollbars that match Radix UI's aesthetic
+ */
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* Webkit browsers (Chrome, Safari, Edge) */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.2s ease;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0, 0, 0, 0.35);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background-color: rgba(0, 0, 0, 0.5);
+}
+
+/* Dark mode scrollbar */
+[data-theme='dark'] * {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+[data-theme='dark'] *::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+[data-theme='dark'] *::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.35);
+}
+
+[data-theme='dark'] *::-webkit-scrollbar-thumb:active {
+  background-color: rgba(255, 255, 255, 0.5);
+}
+
+
