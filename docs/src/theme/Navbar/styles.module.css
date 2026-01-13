@@ -44,6 +44,12 @@
   width: auto;
 }
 
+.navbarIcon {
+  display: none;
+  height: 32px;
+  width: auto;
+}
+
 .navbarTitle {
   display: none;
 }
@@ -101,6 +107,11 @@
   flex-shrink: 0;
 }
 
+.versionSelectorWrapper {
+  display: flex;
+  align-items: center;
+}
+
 .githubStarWrapper {
   display: flex;
   align-items: center;
@@ -139,6 +150,10 @@
   width: 20px;
   height: 20px;
   color: var(--navbar-link-color, #1f2328);
+}
+
+.navbarMobileMenuButtonHidden {
+  display: none !important;
 }
 
 /* Mobile styles */
@@ -185,8 +200,12 @@
     margin-right: 12px;
   }
 
-  .navbarMobileMenuButtonHidden {
-    display: none !important;
+  .navbarLogo {
+    display: none;
+  }
+
+  .navbarIcon {
+    display: block;
   }
 }
 

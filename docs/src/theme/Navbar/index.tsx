@@ -9,6 +9,7 @@ import useBaseUrl from '@docusaurus/useBaseUrl';
 import Link from '@docusaurus/Link';
 import {FaBars} from 'react-icons/fa';
 import GitHubStar from '../../components/GitHubStar';
+import VersionSelector from '../../components/VersionSelector';
 import type {Props as NavbarItemConfig} from '@theme/NavbarItem';
 import styles from './styles.module.css';
 
@@ -17,6 +18,7 @@ export default function Navbar(): React.ReactElement {
   const {colorMode} = useColorMode();
   const {navbar: {items, logo, title}} = useThemeConfig();
   const logoSrc = colorMode === 'dark' ? 'img/logo-dark.svg' : 'img/logo.svg';
+  const iconSrc = 'img/icon.svg';
   const leftItems = items.filter(item => item.position === 'left');
   const rightItems = items.filter(item => item.position === 'right');
 
@@ -39,6 +41,11 @@ export default function Navbar(): React.ReactElement {
               src={useBaseUrl(logoSrc)}
               alt={logo?.alt || title}
             />
+            <img
+              className={styles.navbarIcon}
+              src={useBaseUrl(iconSrc)}
+              alt={logo?.alt || title}
+            />
           </Link>
         </div>
 
@@ -48,6 +55,9 @@ export default function Navbar(): React.ReactElement {
 
         <div className={styles.navbarItemsRight}>
           {rightItems.map((item, i) => <NavbarItem {...(item as NavbarItemConfig)} key={i} />)}
+          <div className={styles.versionSelectorWrapper}>
+            <VersionSelector />
+          </div>
           <div className={styles.githubStarWrapper}>
             <GitHubStar />
           </div>
