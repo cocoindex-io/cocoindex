@@ -358,7 +358,7 @@ async def main() -> None:
                 await query_once(pool, q)
         return
 
-    await app.run()
+    await app.run(report_to_stdout=True)
 
 
 if __name__ == "__main__":

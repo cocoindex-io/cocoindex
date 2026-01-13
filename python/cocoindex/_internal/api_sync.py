@@ -162,7 +162,16 @@ def mount(
 
 
 class App(AppBase[P, ReturnT]):
-    def run(self) -> ReturnT:
+    def run(self, *, report_to_stdout: bool = False) -> ReturnT:
+        """
+        Run the app.
+
+        Args:
+            report_to_stdout: If True, periodically report processing stats to stdout.
+
+        Returns:
+            The result of the main function.
+        """
         if self._inner is not None:
             env, core_app = self._inner
         else:
@@ -175,7 +184,7 @@ class App(AppBase[P, ReturnT]):
         processor = create_core_component_processor(
             self._main_fn, env, root_path, self._app_args, self._app_kwargs
         )
-        return core_app.run(processor)
+        return core_app.run(processor, report_to_stdout=report_to_stdout)
 
 
 def start() -> None:

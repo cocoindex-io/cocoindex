@@ -1,5 +1,5 @@
 use crate::engine::profile::EngineProfile;
-use crate::engine::stats::ProcessingStats;
+use crate::engine::stats::{ProcessingStats, ProgressReporter};
 use crate::prelude::*;
 
 use crate::engine::component::Component;
@@ -7,6 +7,13 @@ use crate::engine::context::AppContext;
 
 use crate::engine::environment::{AppRegistration, Environment};
 use crate::state::stable_path::StablePath;
+
+/// Options for running an app.
+#[derive(Debug, Clone, Default)]
+pub struct AppRunOptions {
+    /// If true, periodically report processing stats to stdout.
+    pub report_to_stdout: bool,
+}
 
 pub struct App<Prof: EngineProfile> {
     root_component: Component<Prof>,
@@ -31,16 +38,30 @@ impl<Prof: EngineProfile> App<Prof> {
 
 impl<Prof: EngineProfile> App<Prof> {
     #[instrument(name = "app.run", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
-    pub async fn run(&self, root_processor: Prof::ComponentProc) -> Result<Prof::FunctionData> {
+    pub async fn run(
+        &self,
+        root_processor: Prof::ComponentProc,
+        options: AppRunOptions,
+    ) -> Result<Prof::FunctionData> {
         let processing_stats = ProcessingStats::default();
         let context = self
             .root_component
-            .new_processor_context_for_build(None, processing_stats)?;
-        self.root_component
-            .clone()
-            .run(root_processor, context)?
-            .result(None)
-            .await
+            .new_processor_context_for_build(None, processing_stats.clone())?;
+
+        let run_fut = async {
+            self.root_component
+                .clone()
+                .run(root_processor, context)?
+                .result(None)
+                .await
+        };
+
+        if options.report_to_stdout {
+            let reporter = ProgressReporter::new(processing_stats);
+            reporter.run_with_progress(run_fut).await
+        } else {
+            run_fut.await
+        }
     }
 
     pub fn app_ctx(&self) -> &AppContext<Prof> {

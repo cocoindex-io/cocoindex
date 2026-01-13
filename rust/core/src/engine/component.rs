@@ -514,7 +514,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     match processor_context.mode() {
                         ComponentProcessingMode::Build => {
                             if touched_previous_states {
-                                stats.num_updates += 1;
+                                stats.num_reprocesses += 1;
                             } else {
                                 stats.num_adds += 1;
                             }

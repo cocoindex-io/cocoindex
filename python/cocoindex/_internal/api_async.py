@@ -161,13 +161,22 @@ def mount(
 
 
 class App(AppBase[P, ReturnT]):
-    async def run(self) -> ReturnT:
+    async def run(self, *, report_to_stdout: bool = False) -> ReturnT:
+        """
+        Run the app.
+
+        Args:
+            report_to_stdout: If True, periodically report processing stats to stdout.
+
+        Returns:
+            The result of the main function.
+        """
         root_path = core.StablePath()
         env, core_app = await self._ensure_inner()
         processor = create_core_component_processor(
             self._main_fn, env, root_path, self._app_args, self._app_kwargs
         )
-        return await core_app.run_async(processor)
+        return await core_app.run_async(processor, report_to_stdout=report_to_stdout)
 
 
 async def start() -> None:
