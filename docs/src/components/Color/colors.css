@@ -1,0 +1,358 @@
+/**
+ * Radix UI Color System
+ * Centralized color variables for all components
+ * Based on Radix UI Themes color palette
+ * 
+ * Color scales follow Radix UI convention:
+ * - 1-2: Very light backgrounds
+ * - 3-5: Subtle backgrounds
+ * - 6-8: Borders and dividers
+ * - 9-11: Text colors
+ * - 12: Highest contrast text
+ */
+
+:root {
+  /* Gray scale - Base neutral colors */
+  --radix-gray-1: #fcfcfc;
+  --radix-gray-2: #f9f9f9;
+  --radix-gray-3: #f0f0f0;
+  --radix-gray-4: #e8e8e8;
+  --radix-gray-5: #e0e0e0;
+  --radix-gray-6: #d9d9d9;
+  --radix-gray-7: #cecece;
+  --radix-gray-8: #bbbbbb;
+  --radix-gray-9: #8d8d8d;
+  --radix-gray-10: #838383;
+  --radix-gray-11: #646464;
+  --radix-gray-12: #202020;
+
+  /* Indigo scale */
+  --radix-indigo-1: #fdfdfe;
+  --radix-indigo-2: #f7f9ff;
+  --radix-indigo-3: #edf2ff;
+  --radix-indigo-4: #e1e9ff;
+  --radix-indigo-5: #d2deff;
+  --radix-indigo-6: #c1d0ff;
+  --radix-indigo-7: #acbafe;
+  --radix-indigo-8: #8b9cf8;
+  --radix-indigo-9: #6366f1;
+  --radix-indigo-10: #5855eb;
+  --radix-indigo-11: #4f46e5;
+  --radix-indigo-12: #312e81;
+
+  /* Cyan scale */
+  --radix-cyan-1: #fafdfe;
+  --radix-cyan-2: #f2fafb;
+  --radix-cyan-3: #e7f7f9;
+  --radix-cyan-4: #d8f0f4;
+  --radix-cyan-5: #c4e7ed;
+  --radix-cyan-6: #a8dae3;
+  --radix-cyan-7: #84c8d6;
+  --radix-cyan-8: #5db3c4;
+  --radix-cyan-9: #06b6d4;
+  --radix-cyan-10: #0891b2;
+  --radix-cyan-11: #0e7490;
+  --radix-cyan-12: #155e75;
+
+  /* Orange scale */
+  --radix-orange-1: #fefcfb;
+  --radix-orange-2: #fff7ed;
+  --radix-orange-3: #ffefd6;
+  --radix-orange-4: #ffdfb5;
+  --radix-orange-5: #ffd19a;
+  --radix-orange-6: #ffc182;
+  --radix-orange-7: #f5a872;
+  --radix-orange-8: #ec9455;
+  --radix-orange-9: #f97316;
+  --radix-orange-10: #ea580c;
+  --radix-orange-11: #c2410c;
+  --radix-orange-12: #7c2d12;
+
+  /* Crimson scale */
+  --radix-crimson-1: #fffcfd;
+  --radix-crimson-2: #fff7fb;
+  --radix-crimson-3: #feebf2;
+  --radix-crimson-4: #fddce7;
+  --radix-crimson-5: #fcc8d8;
+  --radix-crimson-6: #f9aec5;
+  --radix-crimson-7: #f48fb1;
+  --radix-crimson-8: #ed6a9a;
+  --radix-crimson-9: #dc2626;
+  --radix-crimson-10: #b91c1c;
+  --radix-crimson-11: #991b1b;
+  --radix-crimson-12: #7f1d1d;
+
+  /* Green scale */
+  --radix-green-1: #fbfefc;
+  --radix-green-2: #f2fcf5;
+  --radix-green-3: #e9f9ee;
+  --radix-green-4: #ddf3e4;
+  --radix-green-5: #ccebd7;
+  --radix-green-6: #b4dfc4;
+  --radix-green-7: #92ceac;
+  --radix-green-8: #5bb98c;
+  --radix-green-9: #22c55e;
+  --radix-green-10: #16a34a;
+  --radix-green-11: #15803d;
+  --radix-green-12: #166534;
+
+  /* Blue scale */
+  --radix-blue-1: #fbfdff;
+  --radix-blue-2: #f5faff;
+  --radix-blue-3: #edf6ff;
+  --radix-blue-4: #e1f0ff;
+  --radix-blue-5: #cee7fe;
+  --radix-blue-6: #b7d9f8;
+  --radix-blue-7: #96c7f2;
+  --radix-blue-8: #5eb0ef;
+  --radix-blue-9: #3b82f6;
+  --radix-blue-10: #2563eb;
+  --radix-blue-11: #1d4ed8;
+  --radix-blue-12: #1e3a8a;
+
+  /* Purple scale */
+  --radix-purple-1: #fefcfe;
+  --radix-purple-2: #fdfaff;
+  --radix-purple-3: #f9f1fe;
+  --radix-purple-4: #f3e7fc;
+  --radix-purple-5: #eddbf9;
+  --radix-purple-6: #e3ccf4;
+  --radix-purple-7: #d3b4ed;
+  --radix-purple-8: #be93e3;
+  --radix-purple-9: #a855f7;
+  --radix-purple-10: #9333ea;
+  --radix-purple-11: #7e22ce;
+  --radix-purple-12: #581c87;
+
+  /* Pink scale */
+  --radix-pink-1: #fffcfe;
+  --radix-pink-2: #fef7fb;
+  --radix-pink-3: #feebf6;
+  --radix-pink-4: #fddded;
+  --radix-pink-5: #fccde1;
+  --radix-pink-6: #f9b8d1;
+  --radix-pink-7: #f59ebe;
+  --radix-pink-8: #ef7ea8;
+  --radix-pink-9: #ec4899;
+  --radix-pink-10: #db2777;
+  --radix-pink-11: #be185d;
+  --radix-pink-12: #831843;
+
+  /* Red scale */
+  --radix-red-1: #fffcfc;
+  --radix-red-2: #fff8f8;
+  --radix-red-3: #ffefef;
+  --radix-red-4: #ffe5e5;
+  --radix-red-5: #fdd8d8;
+  --radix-red-6: #f9c6c6;
+  --radix-red-7: #f4b0b0;
+  --radix-red-8: #ed9090;
+  --radix-red-9: #ef4444;
+  --radix-red-10: #dc2626;
+  --radix-red-11: #b91c1c;
+  --radix-red-12: #7f1d1d;
+
+  /* Yellow scale */
+  --radix-yellow-1: #fefdfb;
+  --radix-yellow-2: #fff9ed;
+  --radix-yellow-3: #fff4d5;
+  --radix-yellow-4: #ffecbc;
+  --radix-yellow-5: #ffe3a2;
+  --radix-yellow-6: #ffd876;
+  --radix-yellow-7: #f3ca4c;
+  --radix-yellow-8: #eab308;
+  --radix-yellow-9: #eab308;
+  --radix-yellow-10: #ca8a04;
+  --radix-yellow-11: #a16207;
+  --radix-yellow-12: #713f12;
+
+  /* Semantic color aliases for common use cases */
+  --radix-color-text: var(--radix-gray-12);
+  --radix-color-text-subtle: var(--radix-gray-11);
+  --radix-color-text-muted: var(--radix-gray-10);
+  --radix-color-border: var(--radix-gray-6);
+  --radix-color-border-subtle: var(--radix-gray-4);
+  --radix-color-background: #ffffff;
+  --radix-color-background-subtle: var(--radix-gray-2);
+  --radix-color-background-muted: var(--radix-gray-3);
+  
+  /* Primary color (using indigo as default) */
+  --radix-color-primary: var(--radix-indigo-9);
+  --radix-color-primary-hover: var(--radix-indigo-10);
+  --radix-color-primary-active: var(--radix-indigo-11);
+  --radix-color-primary-text: var(--radix-indigo-12);
+}
+
+/* Dark mode colors */
+[data-theme='dark'] {
+  /* Gray scale - Dark mode */
+  --radix-gray-1: #111111;
+  --radix-gray-2: #1a1a1a;
+  --radix-gray-3: #262626;
+  --radix-gray-4: #2e2e2e;
+  --radix-gray-5: #363636;
+  --radix-gray-6: #3f3f3f;
+  --radix-gray-7: #4a4a4a;
+  --radix-gray-8: #575757;
+  --radix-gray-9: #6b6b6b;
+  --radix-gray-10: #7a7a7a;
+  --radix-gray-11: #9a9a9a;
+  --radix-gray-12: #e5e5e5;
+
+  /* Indigo scale - Dark mode */
+  --radix-indigo-1: #0f0f1e;
+  --radix-indigo-2: #16162e;
+  --radix-indigo-3: #1e1e3e;
+  --radix-indigo-4: #25254d;
+  --radix-indigo-5: #2d2d5c;
+  --radix-indigo-6: #35356b;
+  --radix-indigo-7: #3d3d7a;
+  --radix-indigo-8: #464689;
+  --radix-indigo-9: #6366f1;
+  --radix-indigo-10: #8183f4;
+  --radix-indigo-11: #a5a7f7;
+  --radix-indigo-12: #e0e1ff;
+
+  /* Cyan scale - Dark mode */
+  --radix-cyan-1: #0a1419;
+  --radix-cyan-2: #0f1e24;
+  --radix-cyan-3: #152830;
+  --radix-cyan-4: #1a323c;
+  --radix-cyan-5: #1f3c48;
+  --radix-cyan-6: #244654;
+  --radix-cyan-7: #2a5060;
+  --radix-cyan-8: #2f5a6c;
+  --radix-cyan-9: #06b6d4;
+  --radix-cyan-10: #22c5db;
+  --radix-cyan-11: #67d4e8;
+  --radix-cyan-12: #c2f0f9;
+
+  /* Orange scale - Dark mode */
+  --radix-orange-1: #1f1206;
+  --radix-orange-2: #2b1400;
+  --radix-orange-3: #391a03;
+  --radix-orange-4: #442005;
+  --radix-orange-5: #4f2605;
+  --radix-orange-6: #5f2f06;
+  --radix-orange-7: #763205;
+  --radix-orange-8: #943e00;
+  --radix-orange-9: #f97316;
+  --radix-orange-10: #ff802b;
+  --radix-orange-11: #ff8b3e;
+  --radix-orange-12: #fee4d6;
+
+  /* Crimson scale - Dark mode */
+  --radix-crimson-1: #1d1418;
+  --radix-crimson-2: #2a1419;
+  --radix-crimson-3: #3a1820;
+  --radix-crimson-4: #481a24;
+  --radix-crimson-5: #541b28;
+  --radix-crimson-6: #671e2e;
+  --radix-crimson-7: #822338;
+  --radix-crimson-8: #aa2739;
+  --radix-crimson-9: #dc2626;
+  --radix-crimson-10: #e5484d;
+  --radix-crimson-11: #f2555a;
+  --radix-crimson-12: #ffeef1;
+
+  /* Green scale - Dark mode */
+  --radix-green-1: #0d1912;
+  --radix-green-2: #0f1e13;
+  --radix-green-3: #132819;
+  --radix-green-4: #16301d;
+  --radix-green-5: #193921;
+  --radix-green-6: #1d4427;
+  --radix-green-7: #245530;
+  --radix-green-8: #2f6e3b;
+  --radix-green-9: #22c55e;
+  --radix-green-10: #2dd673;
+  --radix-green-11: #5ce19e;
+  --radix-green-12: #e5fbeb;
+
+  /* Blue scale - Dark mode */
+  --radix-blue-1: #0d1520;
+  --radix-blue-2: #111927;
+  --radix-blue-3: #0d2847;
+  --radix-blue-4: #003362;
+  --radix-blue-5: #004074;
+  --radix-blue-6: #104d87;
+  --radix-blue-7: #205d9e;
+  --radix-blue-8: #2870bd;
+  --radix-blue-9: #3b82f6;
+  --radix-blue-10: #4c8df5;
+  --radix-blue-11: #5da0f4;
+  --radix-blue-12: #e0f2fe;
+
+  /* Purple scale - Dark mode */
+  --radix-purple-1: #1b141d;
+  --radix-purple-2: #221527;
+  --radix-purple-3: #2a1a34;
+  --radix-purple-4: #331f42;
+  --radix-purple-5: #3c2450;
+  --radix-purple-6: #45295e;
+  --radix-purple-7: #4e2f6c;
+  --radix-purple-8: #57357a;
+  --radix-purple-9: #a855f7;
+  --radix-purple-10: #b875f8;
+  --radix-purple-11: #c895f9;
+  --radix-purple-12: #f3e8ff;
+
+  /* Pink scale - Dark mode */
+  --radix-pink-1: #1f1418;
+  --radix-pink-2: #2a141a;
+  --radix-pink-3: #3a1821;
+  --radix-pink-4: #481a27;
+  --radix-pink-5: #541b2d;
+  --radix-pink-6: #671e36;
+  --radix-pink-7: #822343;
+  --radix-pink-8: #aa2754;
+  --radix-pink-9: #ec4899;
+  --radix-pink-10: #f15fa8;
+  --radix-pink-11: #f576b7;
+  --radix-pink-12: #ffeef6;
+
+  /* Red scale - Dark mode */
+  --radix-red-1: #1f1415;
+  --radix-red-2: #2a1416;
+  --radix-red-3: #3a1819;
+  --radix-red-4: #481a1c;
+  --radix-red-5: #541b1e;
+  --radix-red-6: #671e22;
+  --radix-red-7: #822329;
+  --radix-red-8: #aa2730;
+  --radix-red-9: #ef4444;
+  --radix-red-10: #f2555a;
+  --radix-red-11: #f76b70;
+  --radix-red-12: #ffeef1;
+
+  /* Yellow scale - Dark mode */
+  --radix-yellow-1: #1f1a0a;
+  --radix-yellow-2: #2a2200;
+  --radix-yellow-3: #332a00;
+  --radix-yellow-4: #3d3300;
+  --radix-yellow-5: #473c00;
+  --radix-yellow-6: #544600;
+  --radix-yellow-7: #665400;
+  --radix-yellow-8: #7d6700;
+  --radix-yellow-9: #eab308;
+  --radix-yellow-10: #f5c842;
+  --radix-yellow-11: #f9d775;
+  --radix-yellow-12: #fef3c7;
+
+  /* Semantic color aliases for dark mode */
+  --radix-color-text: var(--radix-gray-12);
+  --radix-color-text-subtle: var(--radix-gray-11);
+  --radix-color-text-muted: var(--radix-gray-10);
+  --radix-color-border: var(--radix-gray-6);
+  --radix-color-border-subtle: var(--radix-gray-4);
+  --radix-color-background: #111827;
+  --radix-color-background-subtle: var(--radix-gray-2);
+  --radix-color-background-muted: var(--radix-gray-3);
+  
+  /* Primary color (using indigo as default) */
+  --radix-color-primary: var(--radix-indigo-9);
+  --radix-color-primary-hover: var(--radix-indigo-10);
+  --radix-color-primary-active: var(--radix-indigo-11);
+  --radix-color-primary-text: var(--radix-indigo-12);
+}
+

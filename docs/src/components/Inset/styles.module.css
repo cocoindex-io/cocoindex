@@ -1,0 +1,84 @@
+/* Import Radix UI color system */
+@import '../Color/colors.css';
+
+/* Base inset styles */
+.inset {
+  display: block;
+  box-sizing: border-box;
+}
+
+/* Side variants - negative margins
+   These will be overridden by Card size context or can be customized via CSS variables */
+.side-all {
+  margin: calc(-1 * var(--card-padding, 1rem));
+}
+
+.side-x {
+  margin-left: calc(-1 * var(--card-padding-x, var(--card-padding, 1rem)));
+  margin-right: calc(-1 * var(--card-padding-x, var(--card-padding, 1rem)));
+}
+
+.side-y {
+  margin-top: calc(-1 * var(--card-padding-y, var(--card-padding, 1rem)));
+  margin-bottom: calc(-1 * var(--card-padding-y, var(--card-padding, 1rem)));
+}
+
+.side-top {
+  margin-top: calc(-1 * var(--card-padding-top, var(--card-padding-y, var(--card-padding, 1rem))));
+}
+
+.side-right {
+  margin-right: calc(-1 * var(--card-padding-right, var(--card-padding-x, var(--card-padding, 1rem))));
+}
+
+.side-bottom {
+  margin-bottom: calc(-1 * var(--card-padding-bottom, var(--card-padding-y, var(--card-padding, 1rem))));
+}
+
+.side-left {
+  margin-left: calc(-1 * var(--card-padding-left, var(--card-padding-x, var(--card-padding, 1rem))));
+}
+
+/* Clip variants */
+.clip-border-box {
+  /* Content can extend to border edge */
+}
+
+.clip-padding-box {
+  /* Content is clipped to padding edge */
+  overflow: hidden;
+}
+
+/* Padding utilities - "current" means use parent's padding */
+.pt-current {
+  padding-top: var(--card-padding-top, var(--card-padding-y, var(--card-padding, 1rem)));
+}
+
+.pr-current {
+  padding-right: var(--card-padding-right, var(--card-padding-x, var(--card-padding, 1rem)));
+}
+
+.pb-current {
+  padding-bottom: var(--card-padding-bottom, var(--card-padding-y, var(--card-padding, 1rem)));
+}
+
+.pl-current {
+  padding-left: var(--card-padding-left, var(--card-padding-x, var(--card-padding, 1rem)));
+}
+
+.pt-0 {
+  padding-top: 0;
+}
+
+.pr-0 {
+  padding-right: 0;
+}
+
+.pb-0 {
+  padding-bottom: 0;
+}
+
+.pl-0 {
+  padding-left: 0;
+}
+
