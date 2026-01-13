@@ -2,9 +2,8 @@ use crate::prelude::*;
 
 #[derive(Default)]
 pub struct ProcessingStatsGroup {
-    pub num_starts: u64,
-    pub num_ends: u64,
-
+    pub num_execution_starts: u64,
+    pub num_unchanged: u64,
     pub num_adds: u64,
     pub num_deletes: u64,
     pub num_updates: u64,
@@ -13,7 +12,7 @@ pub struct ProcessingStatsGroup {
 
 #[derive(Default, Clone)]
 pub struct ProcessingStats {
-    pub stats: Arc<Mutex<HashMap<String, ProcessingStatsGroup>>>,
+    pub stats: Arc<Mutex<IndexMap<String, ProcessingStatsGroup>>>,
 }
 
 impl ProcessingStats {

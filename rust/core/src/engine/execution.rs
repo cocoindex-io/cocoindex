@@ -1,3 +1,4 @@
+use crate::engine::component::ComponentProcessor;
 use crate::prelude::*;
 
 use std::borrow::Cow;
@@ -303,8 +304,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
         effect_info_key: &db_schema::DbEntryKey,
         all_memo_fps: &HashSet<Fingerprint>,
         memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
-        curr_version: u64,
-        processor_name: Option<&str>,
+        curr_version: Option<u64>,
     ) -> Result<()> {
         let encoded_effect_info_key = effect_info_key.encode()?;
         let db_env = self.component_ctx.app_ctx().env().db_env();
@@ -314,14 +314,14 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                 self.db
                     .delete(&mut wtxn, encoded_effect_info_key.as_ref())?;
             } else {
+                let curr_version = curr_version
+                    .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
                 let mut tracking_info: db_schema::StablePathEntryTrackingInfo = self
                     .db
                     .get(&wtxn, encoded_effect_info_key.as_ref())?
                     .map(|data| from_msgpack_slice(&data))
                     .transpose()?
-                    .unwrap_or_default();
-
-                tracking_info.processor_name = processor_name.map(Cow::Borrowed);
+                    .ok_or_else(|| internal_error!("tracking info not found for commit"))?;
 
                 for item in tracking_info.effect_items.values_mut() {
                     item.states.retain(|(version, state)| {
@@ -652,17 +652,22 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
     }
 }
 
-pub(crate) struct BuildSubmitOutput<Prof: EngineProfile> {
-    pub effect_providers: EffectProviderRegistry<Prof>,
+pub(crate) struct SubmitOutput<Prof: EngineProfile> {
+    pub built_effect_providers: Option<EffectProviderRegistry<Prof>>,
     pub memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
+    pub touched_previous_states: bool,
 }
 
 #[instrument(name = "submit", skip_all)]
 pub(crate) async fn submit<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
-    processor_name: Option<&str>,
-) -> Result<Option<BuildSubmitOutput<Prof>>> {
-    let mut build_submit_output: Option<BuildSubmitOutput<Prof>> = None;
+    processor: Option<&Prof::ComponentProc>,
+    collect_processor_name_name_for_del: impl FnOnce(&str) -> (),
+) -> Result<SubmitOutput<Prof>> {
+    let processor_name = processor.map(|p| p.processor_info().name.as_str());
+
+    let mut built_effect_providers: Option<EffectProviderRegistry<Prof>> = None;
+    let mut memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)> = Vec::new();
     let (effect_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
         match comp_ctx.processing_state() {
             ComponentProcessingAction::Build(building_state) => {
@@ -673,20 +678,18 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         comp_ctx.stable_path()
                     );
                 };
-                let post_submit_info = build_submit_output.insert(BuildSubmitOutput {
-                    effect_providers: building_state.effect.provider_registry,
-                    memos_with_mounts_to_store: Vec::new(),
-                });
 
                 let mut child_path_set = building_state.child_path_set;
                 let finalized_fn_call_memos = finalize_fn_call_memoization(
                     comp_ctx,
                     building_state.fn_call_memos,
-                    post_submit_info,
+                    &mut memos_with_mounts_to_store,
                     &mut child_path_set,
                 )?;
                 (
-                    &post_submit_info.effect_providers.providers,
+                    &built_effect_providers
+                        .get_or_insert(building_state.effect.provider_registry)
+                        .providers,
                     building_state.effect.declared_effects,
                     Some(child_path_set),
                     finalized_fn_call_memos,
@@ -712,7 +715,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let mut demote_component_only = false;
 
     // Reconcile and pre-commit effects
-    let curr_version = {
+    let (curr_version, touched_previous_states) = {
         let mut wtxn = db_env.write_txn()?;
 
         if comp_ctx.mode() == ComponentProcessingMode::Delete {
@@ -733,7 +736,13 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 ComponentProcessingMode::Delete => {
                     let node_type = get_path_node_type(db, &wtxn, parent_path, key)?;
                     match node_type {
-                        Some(db_schema::StablePathNodeType::Component) => return Ok(None),
+                        Some(db_schema::StablePathNodeType::Component) => {
+                            return Ok(SubmitOutput {
+                                built_effect_providers: None,
+                                memos_with_mounts_to_store,
+                                touched_previous_states: false,
+                            });
+                        }
                         Some(db_schema::StablePathNodeType::Directory) => {
                             demote_component_only = true;
                         }
@@ -743,138 +752,158 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             }
         }
 
-        let mut tracking_info: db_schema::StablePathEntryTrackingInfo = db
+        let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo> = db
             .get(&wtxn, effect_info_key.encode()?.as_ref())?
             .map(|data| from_msgpack_slice(&data))
-            .transpose()?
-            .unwrap_or_default();
-        let curr_version = tracking_info.version + 1;
-        tracking_info.version = curr_version;
+            .transpose()?;
+        let previously_exists = tracking_info.is_some();
+        if let Some(tracking_info) = &mut tracking_info {
+            if let Some(processor_name) = processor_name {
+                tracking_info.processor_name = Cow::Borrowed(processor_name);
+            } else {
+                collect_processor_name_name_for_del(tracking_info.processor_name.as_ref());
+            }
+        } else if let Some(processor_name) = processor_name {
+            tracking_info = Some(db_schema::StablePathEntryTrackingInfo::new(Cow::Borrowed(
+                processor_name,
+            )));
+        }
+        let curr_version = if let Some(mut tracking_info) = tracking_info {
+            let curr_version = tracking_info.version + 1;
+            tracking_info.version = curr_version;
+            let mut declared_effects_to_process = declared_effects;
 
-        let mut declared_effects_to_process = declared_effects;
+            // Deal with existing effects
+            for (effect_path, item) in tracking_info.effect_items.iter_mut() {
+                let prev_may_be_missing = item.states.iter().any(|(_, s)| s.is_deleted());
+                let prev_states = item
+                    .states
+                    .iter()
+                    .filter_map(|(_, s)| s.as_ref())
+                    .map(|s_bytes| Prof::EffectState::from_bytes(s_bytes))
+                    .collect::<Result<Vec<_>>>()?;
 
-        // Deal with existing effects
-        for (effect_path, item) in tracking_info.effect_items.iter_mut() {
-            let prev_may_be_missing = item.states.iter().any(|(_, s)| s.is_deleted());
-            let prev_states = item
-                .states
-                .iter()
-                .filter_map(|(_, s)| s.as_ref())
-                .map(|s_bytes| Prof::EffectState::from_bytes(s_bytes))
-                .collect::<Result<Vec<_>>>()?;
-
-            let declared_effect = declared_effects_to_process.remove(effect_path);
-            let (effect_provider, effect_key, declared_decl, child_provider) = match declared_effect
-            {
-                Some(declared_effect) => (
-                    Cow::Owned(declared_effect.provider),
-                    declared_effect.key,
-                    Some(declared_effect.value),
-                    declared_effect.child_provider,
-                ),
-                None => {
-                    if finalized_fn_call_memos
-                        .contained_effect_paths
-                        .contains(effect_path)
-                    {
-                        for (version, _) in item.states.iter_mut() {
-                            *version = curr_version;
+                let declared_effect = declared_effects_to_process.remove(effect_path);
+                let (effect_provider, effect_key, declared_decl, child_provider) =
+                    match declared_effect {
+                        Some(declared_effect) => (
+                            Cow::Owned(declared_effect.provider),
+                            declared_effect.key,
+                            Some(declared_effect.value),
+                            declared_effect.child_provider,
+                        ),
+                        None => {
+                            if finalized_fn_call_memos
+                                .contained_effect_paths
+                                .contains(effect_path)
+                            {
+                                for (version, _) in item.states.iter_mut() {
+                                    *version = curr_version;
+                                }
+                                continue;
+                            }
+                            let Some(effect_provider) =
+                                effect_providers.get(effect_path.provider_path())
+                            else {
+                                // TODO: Verify the parent is gone.
+                                trace!(
+                                    "skip deleting effect with path {effect_path} in {} because effect provider not found",
+                                    comp_ctx.stable_path()
+                                );
+                                continue;
+                            };
+                            let effect_key = Prof::EffectKey::from_bytes(item.key.as_ref())?;
+                            (Cow::Borrowed(effect_provider), effect_key, None, None)
                         }
-                        continue;
-                    }
-                    let Some(effect_provider) = effect_providers.get(effect_path.provider_path())
-                    else {
-                        // TODO: Verify the parent is gone.
-                        trace!(
-                            "skip deleting effect with path {effect_path} in {} because effect provider not found",
-                            comp_ctx.stable_path()
-                        );
-                        continue;
                     };
-                    let effect_key = Prof::EffectKey::from_bytes(item.key.as_ref())?;
-                    (Cow::Borrowed(effect_provider), effect_key, None, None)
+                let recon_output = effect_provider
+                    .handler()
+                    .ok_or_else(|| {
+                        internal_error!(
+                            "effect provider not ready for effect with key {effect_key:?}"
+                        )
+                    })?
+                    .reconcile(effect_key, declared_decl, &prev_states, prev_may_be_missing)?;
+                if let Some(recon_output) = recon_output {
+                    actions_by_sinks
+                        .entry(recon_output.sink)
+                        .or_default()
+                        .add_action(recon_output.action, child_provider);
+                    item.states.push((
+                        curr_version,
+                        match recon_output.state.map(|s| s.to_bytes()).transpose()? {
+                            Some(s) => {
+                                db_schema::EffectInfoItemState::Existing(Cow::Owned(s.into()))
+                            }
+                            None => db_schema::EffectInfoItemState::Deleted,
+                        },
+                    ));
+                } else {
+                    for (version, _) in item.states.iter_mut() {
+                        *version = curr_version;
+                    }
                 }
-            };
-            let recon_output = effect_provider
-                .handler()
-                .ok_or_else(|| {
-                    internal_error!("effect provider not ready for effect with key {effect_key:?}")
-                })?
-                .reconcile(effect_key, declared_decl, &prev_states, prev_may_be_missing)?;
-            if let Some(recon_output) = recon_output {
+            }
+
+            // Deal with new effects
+            for (effect_path, effect) in declared_effects_to_process {
+                let effect_key_bytes = effect.key.to_bytes()?;
+                let Some(recon_output) = effect
+                    .provider
+                    .handler()
+                    .ok_or_else(|| {
+                        internal_error!(
+                            "effect provider not ready for effect with key {:?}",
+                            effect.key
+                        )
+                    })?
+                    .reconcile(
+                        effect.key,
+                        Some(effect.value),
+                        /*&prev_states=*/ &[],
+                        /*prev_may_be_missing=*/ true,
+                    )?
+                else {
+                    continue;
+                };
                 actions_by_sinks
                     .entry(recon_output.sink)
                     .or_default()
-                    .add_action(recon_output.action, child_provider);
-                item.states.push((
-                    curr_version,
-                    match recon_output.state.map(|s| s.to_bytes()).transpose()? {
-                        Some(s) => db_schema::EffectInfoItemState::Existing(Cow::Owned(s.into())),
-                        None => db_schema::EffectInfoItemState::Deleted,
-                    },
-                ));
-            } else {
-                for (version, _) in item.states.iter_mut() {
-                    *version = curr_version;
-                }
+                    .add_action(recon_output.action, effect.child_provider);
+                let Some(new_state) = recon_output
+                    .state
+                    .map(|s| s.to_bytes())
+                    .transpose()?
+                    .map(|s| Cow::Owned(s.into()))
+                else {
+                    continue;
+                };
+                let item = db_schema::EffectInfoItem {
+                    key: Cow::Owned(effect_key_bytes.into()),
+                    states: vec![
+                        (0, db_schema::EffectInfoItemState::Deleted),
+                        (
+                            curr_version,
+                            db_schema::EffectInfoItemState::Existing(new_state),
+                        ),
+                    ],
+                };
+                tracking_info.effect_items.insert(effect_path, item);
             }
-        }
 
-        // Deal with new effects
-        for (effect_path, effect) in declared_effects_to_process {
-            let effect_key_bytes = effect.key.to_bytes()?;
-            let Some(recon_output) = effect
-                .provider
-                .handler()
-                .ok_or_else(|| {
-                    internal_error!(
-                        "effect provider not ready for effect with key {:?}",
-                        effect.key
-                    )
-                })?
-                .reconcile(
-                    effect.key,
-                    Some(effect.value),
-                    /*&prev_states=*/ &[],
-                    /*prev_may_be_missing=*/ true,
-                )?
-            else {
-                continue;
-            };
-            actions_by_sinks
-                .entry(recon_output.sink)
-                .or_default()
-                .add_action(recon_output.action, effect.child_provider);
-            let Some(new_state) = recon_output
-                .state
-                .map(|s| s.to_bytes())
-                .transpose()?
-                .map(|s| Cow::Owned(s.into()))
-            else {
-                continue;
-            };
-            let item = db_schema::EffectInfoItem {
-                key: Cow::Owned(effect_key_bytes.into()),
-                states: vec![
-                    (0, db_schema::EffectInfoItemState::Deleted),
-                    (
-                        curr_version,
-                        db_schema::EffectInfoItemState::Existing(new_state),
-                    ),
-                ],
-            };
-            tracking_info.effect_items.insert(effect_path, item);
-        }
+            let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
+            db.put(
+                &mut wtxn,
+                effect_info_key.encode()?.as_ref(),
+                data_bytes.as_slice(),
+            )?;
+            Some(curr_version)
+        } else {
+            None
+        };
 
-        let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
-        db.put(
-            &mut wtxn,
-            effect_info_key.encode()?.as_ref(),
-            data_bytes.as_slice(),
-        )?;
         wtxn.commit()?;
-
-        curr_version
+        (curr_version, previously_exists)
     };
 
     // Apply actions
@@ -911,10 +940,13 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         &finalized_fn_call_memos.all_memos_fps,
         finalized_fn_call_memos.memos_without_mounts_to_store,
         curr_version,
-        processor_name,
     )?;
 
-    Ok(build_submit_output)
+    Ok(SubmitOutput {
+        built_effect_providers,
+        memos_with_mounts_to_store,
+        touched_previous_states,
+    })
 }
 
 #[instrument(name = "post_submit_after_ready", skip_all)]
@@ -1050,7 +1082,7 @@ struct FinalizedFnCallMemoization<Prof: EngineProfile> {
 fn finalize_fn_call_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
-    build_submit_output: &mut BuildSubmitOutput<Prof>,
+    memos_with_mounts_to_store: &mut Vec<(Fingerprint, FnCallMemo<Prof>)>,
     stable_path_set: &mut ChildStablePathSet,
 ) -> Result<FinalizedFnCallMemoization<Prof>> {
     let mut result = FinalizedFnCallMemoization::default();
@@ -1079,9 +1111,7 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
         } else if memo.child_components.is_empty() {
             result.memos_without_mounts_to_store.push((*fp, memo));
         } else {
-            build_submit_output
-                .memos_with_mounts_to_store
-                .push((*fp, memo));
+            memos_with_mounts_to_store.push((*fp, memo));
         }
         // For non-stored memos, their dependencies were already resolved in this run,
         // so they exist in `fn_call_memos` and will be visited by the outer loop.

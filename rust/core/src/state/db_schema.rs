@@ -223,14 +223,30 @@ pub struct EffectInfoItem<'a> {
     pub states: Vec<(/*version*/ u64, EffectInfoItemState<'a>)>,
 }
 
-#[derive(Serialize, Deserialize, Default, Debug)]
+pub const UNKNOWN_PROCESSOR_NAME: &'static str = "<unknown>";
+
+fn unknown_processor_name() -> Cow<'static, str> {
+    Cow::Borrowed(UNKNOWN_PROCESSOR_NAME)
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 pub struct StablePathEntryTrackingInfo<'a> {
-    #[serde(rename = "N", borrow, default, skip_serializing_if = "Option::is_none")]
-    pub processor_name: Option<Cow<'a, str>>,
     #[serde(rename = "V")]
     pub version: u64,
     #[serde(rename = "I", borrow)]
     pub effect_items: BTreeMap<EffectPath, EffectInfoItem<'a>>,
+    #[serde(rename = "N", borrow, default = "unknown_processor_name")]
+    pub processor_name: Cow<'a, str>,
+}
+
+impl<'a> StablePathEntryTrackingInfo<'a> {
+    pub fn new(processor_name: Cow<'a, str>) -> Self {
+        Self {
+            version: 0,
+            effect_items: BTreeMap::new(),
+            processor_name,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
