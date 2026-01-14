@@ -449,4 +449,3 @@ a.button:visited {
 [data-theme='dark'] .color-gray.variant-soft:active:not(:disabled) {
   background-color: var(--radix-gray-7);
 }
-

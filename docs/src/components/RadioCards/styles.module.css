@@ -417,4 +417,3 @@
 [data-theme='dark'] .root.variant-surface .item.checked:hover:not(.disabled) {
   background-color: var(--radix-indigo-5);
 }
-
