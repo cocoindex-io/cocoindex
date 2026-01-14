@@ -5,7 +5,7 @@ slug: /
 
 # Welcome to CocoIndex
 
-CocoIndex is an ultra performant compute framework for AI workloads, with incremental processing. 
+CocoIndex is an ultra performant compute framework for AI workloads, with incremental processing.
 
 
 ## Programming Model
@@ -37,8 +37,8 @@ The engine gracefully retries transient failures and resumes from previous progr
 ### Low operational overhead
 CocoIndex removes the plumbing: refreshing datasets, maintaining state, handling backfills, ensuring correctness, coordinating GPUs, scaling workers, and managing infra.
 
-## Incremental Processing 
-CocoIndex is a persistent data-processing framework that continuously maintains processed data. It is designed to support incremental indexing from day 0. 
+## Incremental Processing
+CocoIndex is a persistent data-processing framework that continuously maintains processed data. It is designed to support incremental indexing from day 0.
 
 What CocoIndex does for incremental
 - Avoid unnecessary recompute. Based on multi-level change detection
