@@ -64,23 +64,40 @@ jobs:
           with:
             path: ~/.cache/pre-commit
             key: precommit-${{ matrix.platform.runner }}-${{ matrix.python-version }}
-  
+
         - name: Install pre-commit
           run: pip install pre-commit
-  
-        - name: Run pre-commit
+
+        - name: Run build-test hooks
           env:
             RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
             CARGO_INCREMENTAL: "0"
             RUSTC_WRAPPER: "sccache"
             UV_NO_SYNC: "1"
+            # Skip mypy-check - it runs in e2e_type_check workflow
+            SKIP: mypy-check
           shell: bash
           run: |
             set +e
-            pre-commit run --all-files --show-diff-on-failure
-            status=$?
+
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              echo "Running pre-commit on PR diff against target branch: ${{ github.base_ref }}"
+              git fetch --no-tags --prune --depth=1 origin \
+                "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
+              pre-commit run \
+                --from-ref "origin/${{ github.base_ref }}" \
+                --to-ref "${{ github.sha }}" \
+                --show-diff-on-failure
+              status=$?
+            else
+              echo "Running pre-commit on all files (event: ${{ github.event_name }})"
+              pre-commit run --all-files --show-diff-on-failure
+              status=$?
+            fi
+
             if [ $status -ne 0 ]; then
-              echo "::error::Pre-commit checks failed. Please run 'uv run pre-commit run --all-files' locally."
+              echo "::error::Build-test checks failed. Please run 'uv run pre-commit run --all-files' locally."
               exit $status
             fi
 

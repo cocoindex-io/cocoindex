@@ -2,7 +2,7 @@ name: Test Docs
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, v1]
     paths:
       - docs/**
       - ".github/workflows/docs_test.yml"
