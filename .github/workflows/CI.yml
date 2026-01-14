@@ -2,14 +2,14 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, v1]
     paths:
       - rust/**
       - python/**
       - "*.toml"
       - ".github/workflows/*.yml"
   push:
-    branches: [main]
+    branches: [main, v1]
     paths:
       - rust/**
       - python/**
