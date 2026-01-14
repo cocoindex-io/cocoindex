@@ -57,21 +57,9 @@ jobs:
         run: |
           set +e
 
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "Running mypy-check on PR diff against target branch: ${{ github.base_ref }}"
-            git fetch --no-tags --prune --depth=1 origin \
-              "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
-
-            pre-commit run mypy-check \
-              --from-ref "origin/${{ github.base_ref }}" \
-              --to-ref "${{ github.sha }}" \
-              --show-diff-on-failure
-            status=$?
-          else
-            echo "Running mypy-check on all files (event: ${{ github.event_name }})"
-            pre-commit run mypy-check --all-files --show-diff-on-failure
-            status=$?
-          fi
+          echo "Running mypy-check on all files (event: ${{ github.event_name }})"
+          pre-commit run mypy-check --all-files --show-diff-on-failure
+          status=$?
 
           if [ $status -ne 0 ]; then
             echo "::error::E2E type check failed. Please run 'uv run pre-commit run --all-files' locally."
