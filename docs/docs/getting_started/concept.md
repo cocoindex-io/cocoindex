@@ -14,7 +14,7 @@ A **function** is just a Python function decorated with `@coco.function`. You ca
 - **Reuse computations.** Save from unnecessary recomputation by memoization (`memo=True`).
 - **Tracing.** Invocations are recorded for debugging and profiling.
 
-A function always takes `Scope` as the first argument, which carries CocoIndex runtime information and users should pass on when calling other CocoIndex functions or declare effects. 
+A function always takes `Scope` as the first argument, which carries CocoIndex runtime information and users should pass on when calling other CocoIndex functions or declare effects.
 
 ## Effect
 An **effect** is a unit of desired external state. Users declare effects; CocoIndex takes Actions to sync external systems to match those Effects.
@@ -62,7 +62,7 @@ A component is a long-lived instance that defines the boundary where CocoIndex s
 
 CocoIndex runs the function asynchronously. During the run, the function may call `declare_effect(...)` zero or more times. Those effects are owned by the component.
 
-When the run finishes, CocoIndex diffs effects this run against effects from the previous run, then applies a bundled change to external systems (creates, updates, deletes) to keep them in sync. 
+When the run finishes, CocoIndex diffs effects this run against effects from the previous run, then applies a bundled change to external systems (creates, updates, deletes) to keep them in sync.
 
 Each component should have a distinct scope, each with a unique path. The unique path should be stable, and CocoIndex uses it to identify effects declared for the same component across runs. This is essential to make sure effects declared by the same component are synced atomically whenever possible.
 

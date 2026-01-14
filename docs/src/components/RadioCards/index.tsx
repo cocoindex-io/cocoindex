@@ -59,7 +59,7 @@ export function RadioCardsRoot({
 }: RadioCardsRootProps): ReactNode {
   const [uncontrolledValue, setUncontrolledValue] = useState<string | undefined>(defaultValue);
   const name = useId();
-  
+
   const value = controlledValue !== undefined ? controlledValue : uncontrolledValue;
   const handleValueChange = (newValue: string) => {
     if (controlledValue === undefined) {
@@ -75,8 +75,8 @@ export function RadioCardsRoot({
     if (typeof columns === 'string' || typeof columns === 'number') {
       // Simple case: set directly
       columnStyle.display = 'grid';
-      columnStyle.gridTemplateColumns = typeof columns === 'number' 
-        ? `repeat(${columns}, 1fr)` 
+      columnStyle.gridTemplateColumns = typeof columns === 'number'
+        ? `repeat(${columns}, 1fr)`
         : columns;
     } else if (typeof columns === 'object' && columns !== null) {
       // Helper to convert string/number to grid-template-columns value
@@ -95,13 +95,13 @@ export function RadioCardsRoot({
 
       // Responsive case: use CSS custom properties only, let CSS handle grid-template-columns
       // Always set initial as CSS custom property
-      const initialValue = columns.initial 
+      const initialValue = columns.initial
         ? convertToGridValue(columns.initial)
         : 'repeat(auto-fit, minmax(160px, 1fr))';
-      
+
       columnStyle['--columns-initial' as any] = initialValue;
       // Don't set grid-template-columns inline for responsive - let CSS handle it
-      
+
       // Set CSS custom properties for responsive breakpoints
       if (columns.sm) {
         columnStyle['--columns-sm' as any] = convertToGridValue(columns.sm);
@@ -213,7 +213,7 @@ export function RadioCardsItem({
   style,
 }: RadioCardsItemProps): ReactNode {
   const context = React.useContext(RadioCardsContext);
-  
+
   if (!context) {
     throw new Error('RadioCardsItem must be used within RadioCardsRoot');
   }
@@ -258,4 +258,3 @@ export const RadioCards = {
   Root: RadioCardsRoot,
   Item: RadioCardsItem,
 };
-

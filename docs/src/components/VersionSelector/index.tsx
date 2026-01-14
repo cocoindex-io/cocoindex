@@ -56,11 +56,11 @@ export default function VersionSelector(): React.ReactElement {
         const enabledOptions = options.filter(opt => !opt.disabled);
         const enabledValues = enabledOptions.map(opt => opt.value);
         const currentIndex = enabledValues.indexOf(currentVersion);
-        const nextIndex = event.key === 'ArrowDown' 
+        const nextIndex = event.key === 'ArrowDown'
           ? (currentIndex + 1) % enabledValues.length
           : (currentIndex - 1 + enabledValues.length) % enabledValues.length;
         const newValue = enabledValues[nextIndex];
-        
+
         // Handle version change inline to avoid dependency issues
         if (newValue === currentVersion) {
           setIsOpen(false);
@@ -75,7 +75,7 @@ export default function VersionSelector(): React.ReactElement {
             newPath = '/docs';
           }
         }
-        
+
         setIsOpen(false);
         window.location.href = newPath;
       }
