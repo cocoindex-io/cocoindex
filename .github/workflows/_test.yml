@@ -22,22 +22,22 @@ jobs:
                   - { runner: windows-latest }
         runs-on: ${{ matrix.platform.runner }}
         env:
-          RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
-          CARGO_INCREMENTAL: "0"
           SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: "sccache"
 
         steps:
         - uses: actions/checkout@v6
           with:
             fetch-depth: 1
 
-        - name: Run sccache-cache
+        - name: Setup sccache
           uses: mozilla-actions/sccache-action@v0.0.9
+          with:
+            # Latest version doesn't work well because of https://github.com/mozilla/sccache/issues/2554
+            version: "v0.12.0"
 
         - run: rustup toolchain install stable --profile minimal
 
-        - name: Rust Cache
+        - name: Setup Rust Cache
           uses: Swatinem/rust-cache@v2
           with:
             key: rust-${{ matrix.platform.runner }}
@@ -58,20 +58,30 @@ jobs:
         - name: Sync Python dependencies
           run: uv sync --no-dev --group ci
 
-        - name: Rust tests (no default features)
-          run: uv run --no-sync cargo test --no-default-features --verbose
-
-        - name: Rust tests
-          run: uv run --no-sync cargo test --verbose
-
-        - name: Python build
-          run: uv run --no-sync maturin develop --strip
-
-        - name: Python type check (mypy)
-          run: uv run --no-sync mypy
-
-        - name: Python tests
-          run: uv run --no-sync pytest --capture=no python/cocoindex/tests
+        - name: Cache pre-commit
+          uses: actions/cache@v4
+          with:
+            path: ~/.cache/pre-commit
+            key: precommit-${{ matrix.platform.runner }}-${{ matrix.python-version }}
+  
+        - name: Install pre-commit
+          run: pip install pre-commit
+  
+        - name: Run pre-commit
+          env:
+            RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
+            CARGO_INCREMENTAL: "0"
+            RUSTC_WRAPPER: "sccache"
+            UV_NO_SYNC: "1"
+          shell: bash
+          run: |
+            set +e
+            pre-commit run --all-files --show-diff-on-failure
+            status=$?
+            if [ $status -ne 0 ]; then
+              echo "::error::Pre-commit checks failed. Please run 'uv run pre-commit run --all-files' locally."
+              exit $status
+            fi
 
     validate-3p-notices:
         runs-on: ubuntu-latest
