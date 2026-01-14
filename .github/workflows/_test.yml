@@ -79,7 +79,7 @@ jobs:
             pre-commit run --all-files --show-diff-on-failure
             status=$?
             if [ $status -ne 0 ]; then
-              echo "::error::Pre-commit checks failed. Please run 'uv run pre-commit run --all-files' locally to fix the issues."
+              echo "::error::Pre-commit checks failed. Please run 'uv run pre-commit run --all-files' locally."
               exit $status
             fi
 
