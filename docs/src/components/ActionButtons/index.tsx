@@ -10,9 +10,9 @@ type GitHubButtonProps = {
 
 function GitHubButton({ url, margin = '0' }: GitHubButtonProps): ReactNode {
     return (
-        <Button 
-            href={url} 
-            variant="outline" 
+        <Button
+            href={url}
+            variant="outline"
             size="4"
             style={{ margin }}
         >
@@ -29,9 +29,9 @@ type YouTubeButtonProps = {
 
 function YouTubeButton({ url, margin = '0' }: YouTubeButtonProps): ReactNode {
     return (
-        <Button 
-            href={url} 
-            variant="outline" 
+        <Button
+            href={url}
+            variant="outline"
             size="4"
             style={{ margin }}
         >
@@ -49,9 +49,9 @@ type DocumentationButtonProps = {
 
 function DocumentationButton({ url, text, margin }: DocumentationButtonProps): ReactNode {
     return (
-        <Button 
-            href={url} 
-            variant="outline" 
+        <Button
+            href={url}
+            variant="outline"
             size="4"
             style={{ margin }}
         >
@@ -70,9 +70,9 @@ type ExampleButtonProps = {
 
 function ExampleButton({ href, text, margin }: ExampleButtonProps): ReactNode {
     return (
-        <Button 
-            href={href} 
-            variant="outline" 
+        <Button
+            href={href}
+            variant="outline"
             size="4"
             style={{ margin }}
         >
@@ -83,5 +83,3 @@ function ExampleButton({ href, text, margin }: ExampleButtonProps): ReactNode {
 }
 
 export { GitHubButton, YouTubeButton, DocumentationButton, ExampleButton };
-
-

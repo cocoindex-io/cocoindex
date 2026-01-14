@@ -8,7 +8,7 @@
   position: sticky;
   top: 0;
   z-index: var(--ifm-z-index-fixed);
-  padding: 16px 0; 
+  padding: 16px 0;
 }
 
 .navbarContainer {
@@ -201,4 +201,3 @@
     margin-right: 0;
   }
 }
-

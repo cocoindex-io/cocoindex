@@ -46,7 +46,10 @@ impl GraphKey {
     fn from_spec(spec: &ConnectionSpec) -> Self {
         Self {
             uri: spec.uri.clone(),
-            graph: spec.graph.clone().unwrap_or_else(|| DEFAULT_GRAPH.to_string()),
+            graph: spec
+                .graph
+                .clone()
+                .unwrap_or_else(|| DEFAULT_GRAPH.to_string()),
         }
     }
 }
@@ -70,15 +73,18 @@ impl GraphPool {
         };
         let client = cell
             .get_or_try_init(|| async {
-                let connection_info: FalkorConnectionInfo = spec.uri.as_str().try_into()
+                let connection_info: FalkorConnectionInfo = spec
+                    .uri
+                    .as_str()
+                    .try_into()
                     .map_err(|e| api_error!("Invalid FalkorDB connection URI: {}", e))?;
-                
+
                 let client = FalkorClientBuilder::new_async()
                     .with_connection_info(connection_info)
                     .build()
                     .await
                     .map_err(|e| api_error!("Failed to connect to FalkorDB: {}", e))?;
-                
+
                 Ok::<_, Error>(Arc::new(ClientWithGraph {
                     client,
                     graph_name: graph_key.graph.clone(),
@@ -129,30 +135,34 @@ fn falkor_value_to_cypher_literal(value: &FalkorValue) -> String {
             } else {
                 f.to_string()
             }
-        },
+        }
         FalkorValue::String(s) => {
             // Escape quotes and backslashes
             let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
             format!("'{}'", escaped)
-        },
+        }
         FalkorValue::Array(arr) => {
             let items: Vec<String> = arr.iter().map(falkor_value_to_cypher_literal).collect();
             format!("[{}]", items.join(", "))
-        },
+        }
         FalkorValue::Map(map) => {
-            let items: Vec<String> = map.iter()
+            let items: Vec<String> = map
+                .iter()
                 .map(|(k, v)| format!("{}: {}", k, falkor_value_to_cypher_literal(v)))
                 .collect();
             format!("{{{}}}", items.join(", "))
-        },
+        }
         FalkorValue::Vec32(v) => {
             // Vector of f32 values for vector search
             let items: Vec<String> = v.values.iter().map(|f| f.to_string()).collect();
             format!("[{}]", items.join(", "))
-        },
+        }
         // These types are typically only returned from queries, not used as input
-        FalkorValue::Node(_) | FalkorValue::Edge(_) | FalkorValue::Path(_) | 
-        FalkorValue::Point(_) | FalkorValue::Unparseable(_) => {
+        FalkorValue::Node(_)
+        | FalkorValue::Edge(_)
+        | FalkorValue::Path(_)
+        | FalkorValue::Point(_)
+        | FalkorValue::Unparseable(_) => {
             "null".to_string() // Fallback for complex types
         }
     }
@@ -262,9 +272,9 @@ fn json_value_to_falkor(value: &serde_json::Value) -> Result<FalkorValue> {
             }
         }
         serde_json::Value::String(v) => FalkorValue::String(v.clone()),
-        serde_json::Value::Array(v) => FalkorValue::Array(
-            v.iter().map(json_value_to_falkor).collect::<Result<_>>()?,
-        ),
+        serde_json::Value::Array(v) => {
+            FalkorValue::Array(v.iter().map(json_value_to_falkor).collect::<Result<_>>()?)
+        }
         serde_json::Value::Object(v) => FalkorValue::Map(
             v.iter()
                 .map(|(k, v)| Ok((k.clone(), json_value_to_falkor(v)?)))
@@ -476,7 +486,10 @@ impl ExportContext {
         for (i, val) in upsert.key.iter().enumerate() {
             params.insert(
                 self.key_field_params[i].clone(),
-                key_to_falkor(val, &self.analyzed_data_coll.schema.key_fields[i].value_type.typ)?,
+                key_to_falkor(
+                    val,
+                    &self.analyzed_data_coll.schema.key_fields[i].value_type.typ,
+                )?,
             );
         }
 
@@ -542,32 +555,49 @@ impl ExportContext {
         Ok(params)
     }
 
-    fn build_delete_params(&self, delete_key: &value::KeyValue) -> Result<HashMap<String, FalkorValue>> {
+    fn build_delete_params(
+        &self,
+        delete_key: &value::KeyValue,
+    ) -> Result<HashMap<String, FalkorValue>> {
         let mut params = HashMap::new();
         for (i, val) in delete_key.iter().enumerate() {
             params.insert(
                 self.key_field_params[i].clone(),
-                key_to_falkor(val, &self.analyzed_data_coll.schema.key_fields[i].value_type.typ)?,
+                key_to_falkor(
+                    val,
+                    &self.analyzed_data_coll.schema.key_fields[i].value_type.typ,
+                )?,
             );
         }
         Ok(params)
     }
 
-    async fn execute_query(&self, cypher: &str, params: HashMap<String, FalkorValue>) -> Result<()> {
+    async fn execute_query(
+        &self,
+        cypher: &str,
+        params: HashMap<String, FalkorValue>,
+    ) -> Result<()> {
         let mut graph = self.client.client.select_graph(&self.client.graph_name);
-        
-        // FalkorDB's with_params only accepts HashMap<String, String>, so we 
+
+        // FalkorDB's with_params only accepts HashMap<String, String>, so we
         // interpolate the FalkorValue parameters directly into the Cypher query
         let interpolated_query = interpolate_cypher_params(cypher, &params);
-        
+
         // Debug: Log the query being executed
         tracing::debug!("Executing FalkorDB query: {}", interpolated_query);
-        
-        graph.query(&interpolated_query)
+
+        graph
+            .query(&interpolated_query)
             .execute()
             .await
-            .map_err(|e| api_error!("FalkorDB query failed: {}. Query was: {}", e, interpolated_query))?;
-        
+            .map_err(|e| {
+                api_error!(
+                    "FalkorDB query failed: {}. Query was: {}",
+                    e,
+                    interpolated_query
+                )
+            })?;
+
         Ok(())
     }
 }
@@ -804,23 +834,27 @@ impl components::SetupOperator for SetupComponentOperator {
         let client = self.graph_pool.get_client(&self.conn_spec).await?;
         let _key = state.key();
         let label = state.object_label.label();
-        
+
         let is_node = matches!(state.object_label, ElementType::Node(_));
         let entity_type = if is_node { "NODE" } else { "RELATIONSHIP" };
-        
+
         match &state.index_def {
             IndexDef::KeyConstraint { field_names } => {
-                tracing::info!("📋 Creating KeyConstraint for {}: fields={:?}", label, field_names);
+                tracing::info!(
+                    "📋 Creating KeyConstraint for {}: fields={:?}",
+                    label,
+                    field_names
+                );
                 // FalkorDB requires creating an index first, then a unique constraint
                 let fields = field_names.iter().map(|f| format!("e.{f}")).join(", ");
-                
+
                 // Step 1: Create the index
                 let index_cypher = if is_node {
                     format!("CREATE INDEX FOR (e:{label}) ON ({fields})")
                 } else {
                     format!("CREATE INDEX FOR ()-[e:{label}]-() ON ({fields})")
                 };
-                
+
                 tracing::info!("📝 Executing INDEX query: {}", index_cypher);
                 let mut graph = client.client.select_graph(&client.graph_name);
                 graph
@@ -829,7 +863,7 @@ impl components::SetupOperator for SetupComponentOperator {
                     .await
                     .map_err(|e| api_error!("Failed to create index: {}", e))?;
                 tracing::info!("✅ Index created successfully");
-                
+
                 // Step 2: Create the unique constraint using Redis command format
                 // Format: GRAPH.CONSTRAINT CREATE graph_name UNIQUE NODE/RELATIONSHIP label PROPERTIES count prop1 prop2...
                 let field_list = field_names.join(" ");
@@ -841,7 +875,7 @@ impl components::SetupOperator for SetupComponentOperator {
                     field_names.len(),
                     field_list
                 );
-                
+
                 tracing::info!("📝 Attempting CONSTRAINT query: {}", constraint_cmd);
                 // Execute as a raw Redis command via the client
                 // Note: This may fail if the Rust client doesn't support raw commands
@@ -856,7 +890,7 @@ impl components::SetupOperator for SetupComponentOperator {
                 } else {
                     tracing::info!("✅ Constraint created successfully");
                 }
-                
+
                 Ok(())
             }
             IndexDef::VectorIndex {
@@ -865,7 +899,13 @@ impl components::SetupOperator for SetupComponentOperator {
                 vector_size,
                 ..
             } => {
-                tracing::info!("📊 Creating VectorIndex for {}: field={}, metric={:?}, dim={}", label, field_name, metric, vector_size);
+                tracing::info!(
+                    "📊 Creating VectorIndex for {}: field={}, metric={:?}, dim={}",
+                    label,
+                    field_name,
+                    metric,
+                    vector_size
+                );
                 let similarity = match metric {
                     spec::VectorSimilarityMetric::CosineSimilarity => "cosine",
                     spec::VectorSimilarityMetric::L2Distance => "L2",
@@ -874,7 +914,7 @@ impl components::SetupOperator for SetupComponentOperator {
                 let cypher = format!(
                     "CREATE VECTOR INDEX FOR (e:{label}) ON (e.{field_name}) OPTIONS {{dimension: {vector_size}, similarityFunction: '{similarity}'}}"
                 );
-                
+
                 tracing::info!("📝 Executing VECTOR INDEX query: {}", cypher);
                 let mut graph = client.client.select_graph(&client.graph_name);
                 graph
@@ -882,17 +922,19 @@ impl components::SetupOperator for SetupComponentOperator {
                     .execute()
                     .await
                     .map_err(|e| api_error!("Failed to create vector index: {}", e))?;
-                
+
                 tracing::info!("✅ Vector index created successfully");
                 Ok(())
             }
             IndexDef::FullTextIndex { field_names } => {
-                tracing::info!("🔍 Creating FullTextIndex for {}: fields={:?}", label, field_names);
-                let fields = field_names.iter().map(|f| format!("e.{f}")).join(", ");
-                let cypher = format!(
-                    "CALL db.idx.fulltext.createNodeIndex('{label}', {fields})"
+                tracing::info!(
+                    "🔍 Creating FullTextIndex for {}: fields={:?}",
+                    label,
+                    field_names
                 );
-                
+                let fields = field_names.iter().map(|f| format!("e.{f}")).join(", ");
+                let cypher = format!("CALL db.idx.fulltext.createNodeIndex('{label}', {fields})");
+
                 tracing::info!("📝 Executing FULLTEXT INDEX query: {}", cypher);
                 let mut graph = client.client.select_graph(&client.graph_name);
                 graph
@@ -900,7 +942,7 @@ impl components::SetupOperator for SetupComponentOperator {
                     .execute()
                     .await
                     .map_err(|e| api_error!("Failed to create fulltext index: {}", e))?;
-                
+
                 tracing::info!("✅ Fulltext index created successfully");
                 Ok(())
             }
@@ -910,17 +952,14 @@ impl components::SetupOperator for SetupComponentOperator {
     async fn delete(&self, key: &ComponentKey, _context: &Self::Context) -> Result<()> {
         let client = self.graph_pool.get_client(&self.conn_spec).await?;
         let mut graph = client.client.select_graph(&client.graph_name);
-        
+
         match key.kind {
             ComponentKind::KeyConstraint => {
                 // Try to drop constraint first (may not exist)
-                let constraint_cmd = format!(
-                    "GRAPH.CONSTRAINT DROP {} {}",
-                    client.graph_name,
-                    key.name
-                );
+                let constraint_cmd =
+                    format!("GRAPH.CONSTRAINT DROP {} {}", client.graph_name, key.name);
                 let _ = graph.query(&constraint_cmd).execute().await;
-                
+
                 // Then drop the index
                 let index_drop = format!("DROP INDEX {}", key.name);
                 let _ = graph.query(&index_drop).execute().await;
@@ -934,7 +973,7 @@ impl components::SetupOperator for SetupComponentOperator {
                 let _ = graph.query(&cypher).execute().await;
             }
         }
-        
+
         Ok(())
     }
 }
@@ -1057,7 +1096,7 @@ async fn clear_graph_element_data(
         .execute()
         .await
         .map_err(|e| api_error!("Failed to clear graph element data: {}", e))?;
-    
+
     Ok(())
 }
 
@@ -1206,31 +1245,37 @@ impl TargetFactoryBase for Factory {
                 .or_insert_with(Vec::new)
                 .push(mut_with_ctx);
         }
-        
+
         for muts in muts_by_graph.values_mut() {
             muts.sort_by_key(|m| m.export_context.create_order);
-            
+
             for mut_with_ctx in muts.iter() {
                 let export_ctx = &mut_with_ctx.export_context;
-                
+
                 // Execute upserts
                 for upsert in mut_with_ctx.mutation.upserts.iter() {
                     if export_ctx.delete_before_upsert {
                         let delete_params = export_ctx.build_delete_params(&upsert.key)?;
-                        export_ctx.execute_query(&export_ctx.delete_cypher, delete_params).await?;
+                        export_ctx
+                            .execute_query(&export_ctx.delete_cypher, delete_params)
+                            .await?;
                     }
-                    
+
                     let params = export_ctx.build_params(upsert)?;
-                    export_ctx.execute_query(&export_ctx.insert_cypher, params).await?;
+                    export_ctx
+                        .execute_query(&export_ctx.insert_cypher, params)
+                        .await?;
                 }
             }
-            
+
             // Execute deletes in reverse order
             for mut_with_ctx in muts.iter().rev() {
                 let export_ctx = &mut_with_ctx.export_context;
                 for deletion in mut_with_ctx.mutation.deletes.iter() {
                     let params = export_ctx.build_delete_params(&deletion.key)?;
-                    export_ctx.execute_query(&export_ctx.delete_cypher, params).await?;
+                    export_ctx
+                        .execute_query(&export_ctx.delete_cypher, params)
+                        .await?;
                 }
             }
         }

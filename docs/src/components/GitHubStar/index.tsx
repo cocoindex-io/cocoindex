@@ -63,4 +63,3 @@ export default function GitHubStar(): React.ReactElement {
     </div>
   );
 }
-
