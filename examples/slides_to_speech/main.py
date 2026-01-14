@@ -2,17 +2,22 @@ import os
 import io
 import base64
 import datetime
+import lancedb
 import functools
 from pathlib import Path
 import cocoindex
 import cocoindex.targets.lancedb as coco_lancedb
 from dataclasses import dataclass
+from numpy.typing import NDArray
+import numpy as np
 import pymupdf
 from baml_client import b
 from baml_client.types import SlideTranscript
 import baml_py
 from piper import PiperVoice
 from pydub import AudioSegment
+
+LANCEDB_TABLE = "slides_to_speech"
 
 
 @dataclass
@@ -106,19 +111,26 @@ def text_to_speech(text: str) -> bytes:
     return mp3_data.getvalue()
 
 
+@cocoindex.transform_flow()
+def text_to_embedding(
+    text: cocoindex.DataSlice[str],
+) -> cocoindex.DataSlice[NDArray[np.float32]]:
+    """
+    Embed the text using a SentenceTransformer model.
+    This is a shared logic between indexing and querying, so extract it as a function."""
+    return text.transform(
+        cocoindex.functions.SentenceTransformerEmbed(
+            model="sentence-transformers/all-MiniLM-L6-v2"
+        )
+    )
+
+
 @cocoindex.flow_def(name="SlidesToSpeech")
 def slides_to_speech_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ) -> None:
     """
     Define a flow that converts slides from Google Drive to speech.
-
-    This flow:
-    1. Reads PDF slides from Google Drive
-    2. Converts each page to an image
-    3. Extracts transcript from the image using BAML
-    4. Converts transcript to speech audio
-    5. Stores results in LanceDB
     """
     # Set up Google Drive source
     credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
@@ -152,6 +164,9 @@ def slides_to_speech_flow(
                 text_to_speech
             )
 
+            # Convert speaker notes to embedding
+            page["embedding"] = text_to_embedding(page["transcript"]["speaker_notes"])
+
             # Collect the results
             slides_output.collect(
                 id=cocoindex.GeneratedField.UUID,
@@ -160,6 +175,7 @@ def slides_to_speech_flow(
                 image=page["image_data"],
                 transcript=page["transcript"],
                 voice=page["voice"],
+                embedding=page["embedding"],
             )
 
     # Export to LanceDB
@@ -167,7 +183,46 @@ def slides_to_speech_flow(
         "slides",
         coco_lancedb.LanceDB(
             db_uri=os.environ.get("LANCEDB_URI", "./lancedb_data"),
-            table_name="slides_to_speech",
+            table_name=LANCEDB_TABLE,
         ),
         primary_key_fields=["id"],
+    )
+
+
+@slides_to_speech_flow.query_handler(
+    result_fields=cocoindex.QueryHandlerResultFields(score="score"),
+)
+def search(query: str, top_k: int = 5) -> cocoindex.QueryOutput:
+    # Get the table name, for the export target in the flow above
+    db_uri = os.environ.get("LANCEDB_URI", "./lancedb_data")
+
+    # Evaluate the transform flow defined above with the input query, to get the embedding
+    query_vector = text_to_embedding.eval(query)
+
+    # Connect to LanceDB and run the query
+    db = lancedb.connect(db_uri)
+    table = db.open_table(LANCEDB_TABLE)
+
+    # Perform vector search
+    search_results = table.search(query_vector).limit(top_k).to_list()
+
+    # Convert results to the expected format
+    results = [
+        {
+            "filename": row["filename"],
+            "page": row["page"],
+            "image": row["image"],
+            "transcript": row["transcript"],
+            "voice": row["voice"],
+            "score": 1.0 - row["_distance"],  # Convert distance to similarity score
+        }
+        for row in search_results
+    ]
+
+    return cocoindex.QueryOutput(
+        results=results,
+        query_info=cocoindex.QueryInfo(
+            embedding=query_vector,
+            similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+        ),
     )
