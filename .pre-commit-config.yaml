@@ -64,9 +64,9 @@ repos:
 
         - id: mypy-check
           name: mypy type check
-          entry: uv run dmypy run
+          entry: uv run mypy
           language: system
-          files: ^(rust/|python/|examples/|Cargo\.toml|pyproject\.toml)
+          files: ^(python/|examples/|pyproject\.toml)
           pass_filenames: false
 
         - id: pytest

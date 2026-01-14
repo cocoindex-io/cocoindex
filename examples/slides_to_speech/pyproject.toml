@@ -1,0 +1,20 @@
+[project]
+name = "slides-to-speech"
+version = "0.1.0"
+description = "Convert slides from Google Drive to speech using image transcription and text-to-speech."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[lancedb,embeddings]>=0.3.9",
+    "python-dotenv>=1.0.1",
+    "baml-py==0.217.0,<0.218.0",
+    "pymupdf>=1.24.0",
+    "piper-tts>=1.2.0",
+    "pydub>=0.25.1",
+    "lancedb>=0.15.0",
+]
+
+[project.license]
+text = "GPL-3.0-or-later"
+
+[tool.setuptools]
+packages = []

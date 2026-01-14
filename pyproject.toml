@@ -95,15 +95,11 @@ examples = ["sentence-transformers>=3.0.0", "numpy"]
 
 ci = [
     { include-group = "build-test" },
-    { include-group = "ci-enabled-optional-deps" },
     { include-group = "type-stubs" },
+    { include-group = "ci-enabled-optional-deps" },
 ]
 dev-local = ["pre-commit"]
-dev = [
-    { include-group = "ci" },
-    { include-group = "format" },
-    { include-group = "dev-local" },
-]
+dev = [{ include-group = "ci" }, { include-group = "dev-local" }]
 
 [tool.uv]
 package = false
