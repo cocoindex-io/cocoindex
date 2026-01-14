@@ -93,15 +93,6 @@ pub struct TrackingTableSetupState {
     pub has_fast_fingerprint_column: bool,
 }
 
-/// Minimal target info needed for cleanup during setup
-#[derive(Debug, Clone)]
-pub struct TargetCleanupInfo {
-    pub target_kind: String,
-    pub key_schema: Box<[schema::ValueType]>,
-    pub setup_key: serde_json::Value,
-    pub setup_state: serde_json::Value,
-}
-
 #[derive(Debug)]
 pub struct TrackingTableSetupChange {
     pub desired_state: Option<TrackingTableSetupState>,
@@ -114,8 +105,15 @@ pub struct TrackingTableSetupChange {
 
     pub source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
 
-    /// Target information needed for cleanup (target_id -> target info)
-    pub existing_targets: Option<BTreeMap<i32, TargetCleanupInfo>>,
+    /// Target information from desired state for cleanup
+    /// Maps target_id -> (target_kind, key_schema)
+    /// Used to determine Case 1 (target not in map = dropped) vs Case 2 (target in map = still exists)
+    pub desired_targets: Option<BTreeMap<i32, (String, Box<[schema::ValueType]>)>>,
+
+    /// Export contexts for targets (available during apply phase)
+    /// Maps target_id -> export_context
+    /// Used to call factory.apply_mutation() for target data deletion
+    pub export_contexts: Option<Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>>>,
 
     has_state_change: bool,
 }
@@ -125,7 +123,7 @@ impl TrackingTableSetupChange {
         desired: Option<&TrackingTableSetupState>,
         existing: &CombinedState<TrackingTableSetupState>,
         source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
-        existing_targets: Option<BTreeMap<i32, TargetCleanupInfo>>,
+        desired_targets: Option<BTreeMap<i32, (String, Box<[schema::ValueType]>)>>,
     ) -> Option<Self> {
         let legacy_tracking_table_names = existing
             .legacy_values(desired, |v| &v.table_name)
@@ -152,12 +150,18 @@ impl TrackingTableSetupChange {
                 legacy_source_state_table_names,
                 min_existing_version_id,
                 source_names_need_state_cleanup,
-                existing_targets,
+                desired_targets,
+                export_contexts: None,
                 has_state_change: existing.has_state_diff(desired, |v| v),
             })
         } else {
             None
         }
+    }
+
+    /// Attach export contexts for targets (called after targets are built)
+    pub fn attach_export_contexts(&mut self, contexts: BTreeMap<i32, Arc<dyn Any + Send + Sync>>) {
+        self.export_contexts = Some(Arc::new(contexts));
     }
 
     pub fn into_setup_info(
@@ -338,10 +342,12 @@ impl TrackingTableSetupChange {
     /// Clean up tracking metadata and target data for stale sources
     /// This implements the core cleanup logic: for each tracked source row, do a deletion
     async fn cleanup_stale_sources(&self, pool: &PgPool) -> Result<()> {
-        let desired = self
-            .desired_state
-            .as_ref()
-            .ok_or_else(|| internal_error!("desired_state must exist during cleanup"))?;
+        // Early return for flow drop (desired_state = None)
+        // All targets are Case 1 (being dropped anyway), target setup cleanup will handle them
+        let Some(desired) = &self.desired_state else {
+            tracing::info!("Skipping stale source cleanup: flow is being dropped");
+            return Ok(());
+        };
 
         let source_ids: Vec<i32> = self
             .source_names_need_state_cleanup
@@ -360,19 +366,38 @@ impl TrackingTableSetupChange {
             db_tracking::read_tracking_entries_for_sources(&source_ids, desired, pool).await?;
 
         if tracking_entries.is_empty() {
-            tracing::info!("No tracking entries found for stale sources, skipping target cleanup");
-        } else {
-            tracing::info!(
-                "Found {} tracking entries to clean up",
-                tracking_entries.len()
-            );
-
-            // Step 2: Apply target data deletions using direct SQL for Postgres
-            if let Some(targets) = &self.existing_targets {
-                self.delete_target_data_for_postgres(&tracking_entries, targets)
+            tracing::info!("No tracking entries found for stale sources");
+            // Still delete tracking metadata even if no entries
+            let rows_deleted =
+                db_tracking::delete_tracking_entries_for_sources(&source_ids, desired, pool)
                     .await?;
+            tracing::info!("Deleted {} tracking entries", rows_deleted);
+            return Ok(());
+        }
+
+        tracing::info!(
+            "Found {} tracking entries to clean up",
+            tracking_entries.len()
+        );
+
+        // Step 2: Group tracked keys by target_id
+        let mut keys_by_target: BTreeMap<i32, Vec<serde_json::Value>> = BTreeMap::new();
+        for entry in &tracking_entries {
+            if let Some(target_keys) = &entry.target_keys {
+                for (target_id, tracked_keys) in target_keys {
+                    for tracked_key_info in tracked_keys {
+                        keys_by_target
+                            .entry(*target_id)
+                            .or_default()
+                            .push(tracked_key_info.key.clone());
+                    }
+                }
             }
         }
+
+        // Step 3: Delete from targets using target factory pattern
+        self.delete_target_data_via_factories(&keys_by_target)
+            .await?;
 
         // Step 4: Delete tracking entries for stale sources
         let rows_deleted =
@@ -386,168 +411,162 @@ impl TrackingTableSetupChange {
         Ok(())
     }
 
-    /// Delete target data for Postgres targets using direct SQL
-    /// This implements the "for each tracked source row, do a deletion" requirement
-    ///
-    /// Note: Currently only supports targets using the builtin database.
-    /// Targets with custom databases will require manual cleanup.
-    async fn delete_target_data_for_postgres(
+    /// Delete target data using target factories
+    /// This implements Case 1 vs Case 2 logic and uses the target factory pattern
+    async fn delete_target_data_via_factories(
         &self,
-        tracking_entries: &[db_tracking::SourceTrackingEntryForCleanup],
-        targets: &BTreeMap<i32, TargetCleanupInfo>,
+        keys_by_target: &BTreeMap<i32, Vec<serde_json::Value>>,
     ) -> Result<()> {
-        // Group tracked keys by target_id
-        let mut keys_by_target: BTreeMap<i32, Vec<serde_json::Value>> = BTreeMap::new();
-
-        for entry in tracking_entries {
-            if let Some(target_keys) = &entry.target_keys {
-                for (target_id, tracked_keys) in target_keys {
-                    for tracked_key_info in tracked_keys {
-                        keys_by_target
-                            .entry(*target_id)
-                            .or_default()
-                            .push(tracked_key_info.key.clone());
-                    }
-                }
+        let desired_targets = match &self.desired_targets {
+            Some(targets) => targets,
+            None => {
+                tracing::debug!("No desired targets available for cleanup");
+                return Ok(());
             }
-        }
-
-        // Delete from each Postgres target
-        let lib_context = get_lib_context().await?;
-        let builtin_pool = lib_context.require_builtin_db_pool()?;
+        };
 
         for (target_id, keys_to_delete) in keys_by_target {
-            if let Some(target_info) = targets.get(&target_id) {
-                if target_info.target_kind == "Postgres" {
-                    // Check if target uses a custom database
-                    let uses_custom_db = target_info
-                        .setup_key
-                        .get("database")
-                        .and_then(|v| v.as_object())
-                        .is_some();
+            // Check if target still exists in desired state (Case 1 vs Case 2)
+            let (target_kind, key_schema) = match desired_targets.get(target_id) {
+                Some((kind, schema)) => (kind, schema),
+                None => {
+                    // Case 1: Target no longer exists, will be dropped by target setup cleanup
+                    tracing::debug!(
+                        "Skipping cleanup for target_id {}: target no longer exists (Case 1)",
+                        target_id
+                    );
+                    continue;
+                }
+            };
 
-                    if uses_custom_db {
+            // Case 2: Target still exists, use factory to delete
+            tracing::info!(
+                "Deleting {} rows from {} target (ID: {}) using target factory",
+                keys_to_delete.len(),
+                target_kind,
+                target_id
+            );
+
+            // Parse keys from JSON using the key schema
+            let mut parsed_keys = Vec::new();
+            let mut parse_failures = 0;
+
+            for key_json in keys_to_delete {
+                match self.parse_key_from_json(key_json, key_schema) {
+                    Ok(key) => parsed_keys.push(key),
+                    Err(e) => {
+                        // Handle parse failure gracefully (partial cleanup)
                         tracing::warn!(
-                            "Target (ID: {}) uses a custom database. \
-                             Automatic cleanup is not yet supported for custom databases. \
-                             You may need to manually clean up {} rows from this target.",
+                            "Failed to parse key for target_id {}: {}. Skipping this key. Key JSON: {}",
                             target_id,
-                            keys_to_delete.len()
+                            e,
+                            key_json
                         );
-                        continue;
+                        parse_failures += 1;
                     }
-
-                    tracing::info!(
-                        "Deleting {} rows from Postgres target (ID: {})",
-                        keys_to_delete.len(),
-                        target_id
-                    );
-
-                    // Extract table information from setup_key JSON
-                    let table_name = self.extract_postgres_table_name(&target_info.setup_key)?;
-
-                    // Extract key column names from setup_state JSON
-                    let key_columns =
-                        self.extract_postgres_key_columns(&target_info.setup_state)?;
-
-                    // Delete in batches to avoid too many parameters
-                    const BATCH_SIZE: usize = 1000;
-                    let mut total_deleted = 0;
-
-                    for keys_batch in keys_to_delete.chunks(BATCH_SIZE) {
-                        // Build WHERE clause: WHERE (col1, col2, ...) IN ((val1, val2), ...)
-                        let mut where_values = Vec::new();
-                        for key_json in keys_batch {
-                            // Parse key JSON into individual values
-                            if let serde_json::Value::Array(key_parts) = key_json {
-                                let values: Vec<String> = key_parts
-                                    .iter()
-                                    .map(|v| match v {
-                                        serde_json::Value::String(s) => {
-                                            format!("'{}'", s.replace('\'', "''"))
-                                        }
-                                        serde_json::Value::Number(n) => n.to_string(),
-                                        serde_json::Value::Bool(b) => b.to_string(),
-                                        serde_json::Value::Null => "NULL".to_string(),
-                                        _ => format!(
-                                            "'{}'",
-                                            serde_json::to_string(v).unwrap_or_default()
-                                        ),
-                                    })
-                                    .collect();
-                                where_values.push(format!("({})", values.join(", ")));
-                            }
-                        }
-
-                        if !where_values.is_empty() {
-                            let delete_sql = format!(
-                                "DELETE FROM {} WHERE ({}) IN ({})",
-                                table_name,
-                                key_columns.join(", "),
-                                where_values.join(", ")
-                            );
-
-                            let result = sqlx::query(&delete_sql).execute(builtin_pool).await?;
-                            total_deleted += result.rows_affected();
-                        }
-                    }
-
-                    tracing::info!(
-                        "Deleted {} rows from Postgres target (ID: {})",
-                        total_deleted,
-                        target_id
-                    );
-                } else {
-                    tracing::warn!(
-                        "Target cleanup for {} not yet implemented. \
-                         Target (ID: {}) may contain stale data requiring manual cleanup.",
-                        target_info.target_kind,
-                        target_id
-                    );
                 }
             }
+
+            if parse_failures > 0 {
+                tracing::warn!(
+                    "Skipped {} key(s) due to parse failures for target_id {}",
+                    parse_failures,
+                    target_id
+                );
+            }
+
+            if parsed_keys.is_empty() {
+                tracing::warn!(
+                    "No valid keys to delete for target_id {} (all {} keys failed to parse)",
+                    target_id,
+                    keys_to_delete.len()
+                );
+                continue;
+            }
+
+            tracing::info!(
+                "Successfully parsed {}/{} keys for target_id {}",
+                parsed_keys.len(),
+                keys_to_delete.len(),
+                target_id
+            );
+
+            // Get export context for this target
+            let export_context = self
+                .export_contexts
+                .as_ref()
+                .and_then(|contexts| contexts.get(target_id))
+                .ok_or_else(|| {
+                    internal_error!(
+                        "Export context not found for target_id {}. \
+                     This should not happen - export contexts should be attached \
+                     during setup before cleanup runs.",
+                        target_id
+                    )
+                })?;
+
+            // Get target factory
+            let factory = crate::ops::get_target_factory(target_kind)?;
+
+            // Build mutation with deletes
+            let deletes: Vec<interface::ExportTargetDeleteEntry> = parsed_keys
+                .into_iter()
+                .map(|key| interface::ExportTargetDeleteEntry {
+                    key,
+                    additional_key: serde_json::Value::Null,
+                })
+                .collect();
+
+            let delete_count = deletes.len();
+
+            let mutation = interface::ExportTargetMutation {
+                upserts: vec![],
+                deletes,
+            };
+
+            // Call factory.apply_mutation() to delete the data
+            factory
+                .apply_mutation(vec![interface::ExportTargetMutationWithContext {
+                    mutation,
+                    export_context: &**export_context,
+                }])
+                .await?;
+
+            tracing::info!(
+                "Successfully deleted {} rows from target_id {} ({} target)",
+                delete_count,
+                target_id,
+                target_kind
+            );
         }
 
         Ok(())
     }
 
-    /// Extract qualified table name from Postgres setup_key JSON
-    fn extract_postgres_table_name(&self, setup_key: &serde_json::Value) -> Result<String> {
-        let table_name = setup_key
-            .get("table_name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| internal_error!("Missing table_name in Postgres setup_key"))?;
-
-        let schema = setup_key.get("schema").and_then(|v| v.as_str());
-
-        Ok(match schema {
-            Some(schema) => format!("\"{}\".{}", schema, table_name),
-            None => table_name.to_string(),
-        })
-    }
-
-    /// Extract key column names from Postgres setup_state JSON
-    fn extract_postgres_key_columns(&self, setup_state: &serde_json::Value) -> Result<Vec<String>> {
-        let key_columns = setup_state
-            .get("key_columns")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| internal_error!("Missing key_columns in Postgres setup_state"))?;
-
-        let column_names: Vec<String> = key_columns
+    /// Parse a key from JSON using the key schema
+    fn parse_key_from_json(
+        &self,
+        key_json: &serde_json::Value,
+        key_schema: &[schema::ValueType],
+    ) -> Result<value::KeyValue> {
+        // Convert ValueType to FieldSchema for parsing
+        // Use dummy field names since we only care about types for keys
+        let field_schemas: Vec<schema::FieldSchema> = key_schema
             .iter()
-            .filter_map(|col| {
-                col.get("name")
-                    .and_then(|n| n.as_str())
-                    .map(|n| format!("\"{}\"", n))
+            .enumerate()
+            .map(|(i, value_type)| schema::FieldSchema {
+                name: format!("_key_{}", i),
+                value_type: schema::EnrichedValueType {
+                    typ: value_type.clone(),
+                    nullable: false,
+                    attrs: Arc::new(BTreeMap::new()),
+                },
+                description: None,
             })
             .collect();
 
-        if column_names.is_empty() {
-            return Err(internal_error!(
-                "No key columns found in Postgres setup_state"
-            ));
-        }
-
-        Ok(column_names)
+        // Parse using KeyValue::from_json
+        value::KeyValue::from_json(key_json.clone(), &field_schemas)
+            .with_context(|| format!("Failed to parse key from JSON: {}", key_json))
     }
 }

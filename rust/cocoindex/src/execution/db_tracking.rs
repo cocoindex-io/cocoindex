@@ -314,7 +314,6 @@ pub async fn delete_source_tracking_info(
 
 /// Tracking data for cleanup - includes target keys for each source row
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct SourceTrackingEntryForCleanup {
     pub source_id: i32,
     pub source_key: serde_json::Value,

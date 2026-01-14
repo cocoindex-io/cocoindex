@@ -338,37 +338,26 @@ async fn collect_attachments_setup_change(
     Ok(attachments_change)
 }
 
-/// Extract target cleanup information from existing state
-fn extract_targets_for_cleanup(
-    existing_state: Option<&FlowSetupState<ExistingMode>>,
-) -> Option<BTreeMap<i32, db_tracking_setup::TargetCleanupInfo>> {
-    existing_state.and_then(|state| {
-        let targets: BTreeMap<i32, db_tracking_setup::TargetCleanupInfo> = state
+/// Extract target information from desired state for cleanup
+/// Returns mapping of target_id -> (target_kind, key_schema) for targets that still exist
+fn extract_desired_targets_for_cleanup(
+    desired_state: Option<&FlowSetupState<DesiredMode>>,
+) -> Option<BTreeMap<i32, (String, Box<[schema::ValueType]>)>> {
+    desired_state.map(|state| {
+        state
             .targets
             .iter()
-            .filter_map(|(resource_id, combined_state)| {
-                combined_state.current.as_ref().map(|target_state| {
-                    let target_id = target_state.common.target_id;
-                    let info = db_tracking_setup::TargetCleanupInfo {
-                        target_kind: resource_id.target_kind.clone(),
-                        key_schema: target_state
-                            .common
-                            .key_type
-                            .clone()
-                            .unwrap_or_else(|| Box::new([])),
-                        setup_key: resource_id.key.clone(),
-                        setup_state: target_state.state.clone(),
-                    };
-                    (target_id, info)
-                })
+            .map(|(resource_id, target_state)| {
+                let target_id = target_state.common.target_id;
+                let target_kind = resource_id.target_kind.clone();
+                let key_schema = target_state
+                    .common
+                    .key_type
+                    .clone()
+                    .unwrap_or_else(|| Box::new([]));
+                (target_id, (target_kind, key_schema))
             })
-            .collect();
-
-        if targets.is_empty() {
-            None
-        } else {
-            Some(targets)
-        }
+            .collect()
     })
 }
 
@@ -432,8 +421,9 @@ pub async fn diff_flow_setup_states(
             BTreeMap::new()
         };
 
-    // Extract target cleanup info from existing state for stale source cleanup
-    let existing_targets = extract_targets_for_cleanup(existing_state);
+    // Extract target info from desired state for stale source cleanup
+    // This is used to determine Case 1 (target dropped) vs Case 2 (target still exists)
+    let desired_targets_for_cleanup = extract_desired_targets_for_cleanup(desired_state);
 
     let tracking_table_change = db_tracking_setup::TrackingTableSetupChange::new(
         desired_state.map(|d| &d.tracking_table),
@@ -441,7 +431,7 @@ pub async fn diff_flow_setup_states(
             .map(|e| Cow::Borrowed(&e.tracking_table))
             .unwrap_or_default(),
         source_names_needs_states_cleanup,
-        existing_targets,
+        desired_targets_for_cleanup,
     );
 
     let mut target_resources = Vec::new();
@@ -955,6 +945,47 @@ pub(crate) async fn apply_changes_for_flow_ctx(
     db_pool: &PgPool,
     write: &mut (dyn std::io::Write + Send),
 ) -> Result<()> {
+    // Attach export contexts to tracking table setup change BEFORE getting the setup_change
+    // This is needed for stale source cleanup which uses target factories
+    if let FlowSetupChangeAction::Setup = action {
+        if let Some(tracking_table) = &mut flow_exec_ctx.setup_change.tracking_table {
+            if let Some(setup_change) = &mut tracking_table.setup_change {
+                // Get execution plan with export contexts
+                let execution_plan = flow_ctx
+                    .flow
+                    .execution_plan
+                    .clone()
+                    .await
+                    .map_err(|e| internal_error!("Failed to get execution plan: {:?}", e))?;
+
+                // Build map of target_id -> export_context using flow_exec_ctx.setup_execution_context
+                let mut export_contexts = BTreeMap::new();
+                for (export_op, exec_ctx_export_op) in execution_plan
+                    .export_ops
+                    .iter()
+                    .zip(flow_exec_ctx.setup_execution_context.export_ops.iter())
+                {
+                    export_contexts.insert(
+                        exec_ctx_export_op.target_id,
+                        export_op.export_context.clone(),
+                    );
+                }
+
+                // Attach to tracking change
+                setup_change.attach_export_contexts(export_contexts);
+
+                tracing::debug!(
+                    "Attached export contexts for {} targets to tracking table setup change",
+                    setup_change
+                        .export_contexts
+                        .as_ref()
+                        .map(|c| c.len())
+                        .unwrap_or(0)
+                );
+            }
+        }
+    }
+
     let mut setup_change_buffer = None;
     let setup_change = get_flow_setup_change(
         setup_ctx,
