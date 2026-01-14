@@ -173,7 +173,7 @@ def slides_to_speech_flow(
                 filename=doc["filename"],
                 page=page["page_number"],
                 image=page["image_data"],
-                transcript=page["transcript"],
+                speaker_notes=page["transcript"]["speaker_notes"],
                 voice=page["voice"],
                 embedding=page["embedding"],
             )
@@ -212,7 +212,7 @@ def search(query: str, top_k: int = 5) -> cocoindex.QueryOutput:
             "filename": row["filename"],
             "page": row["page"],
             "image": row["image"],
-            "transcript": row["transcript"],
+            "speaker_notes": row["speaker_notes"],
             "voice": row["voice"],
             "score": 1.0 - row["_distance"],  # Convert distance to similarity score
         }
