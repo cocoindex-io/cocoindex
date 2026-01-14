@@ -48,6 +48,13 @@ repos:
 
   - repo: local
     hooks:
+        - id: mypy-check
+          name: mypy type check
+          entry: uv run mypy
+          language: system
+          files: ^(python/|examples/|pyproject\.toml)
+          pass_filenames: false
+
         - id: maturin-develop
           name: maturin develop
           entry: uv run maturin develop
@@ -60,13 +67,6 @@ repos:
           entry: ./dev/run_cargo_test.sh
           language: system
           files: ^(rust/|Cargo\.toml)
-          pass_filenames: false
-
-        - id: mypy-check
-          name: mypy type check
-          entry: uv run mypy
-          language: system
-          files: ^(python/|examples/|pyproject\.toml)
           pass_filenames: false
 
         - id: pytest
