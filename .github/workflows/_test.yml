@@ -73,7 +73,15 @@ jobs:
             CARGO_INCREMENTAL: "0"
             RUSTC_WRAPPER: "sccache"
             UV_NO_SYNC: "1"
-          run: pre-commit run --all-files --show-diff-on-failure
+          shell: bash
+          run: |
+            set +e
+            pre-commit run --all-files --show-diff-on-failure
+            status=$?
+            if [ $status -ne 0 ]; then
+              echo "::error::Pre-commit checks failed. Please run 'uv run pre-commit run --all-files' locally to fix the issues."
+              exit $status
+            fi
 
     validate-3p-notices:
         runs-on: ubuntu-latest
