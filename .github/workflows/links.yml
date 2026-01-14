@@ -2,14 +2,14 @@ name: Link Check
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, v1]
     paths:
       - "docs/**/*.md"
       - "docs/**/*.mdx"
       - ".lycheeignore"
       - ".github/workflows/links.yml"
   push:
-    branches: [main]
+    branches: [main, v1]
     paths:
       - "docs/**/*.md"
       - "docs/**/*.mdx"
