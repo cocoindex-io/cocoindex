@@ -1,35 +1,31 @@
 use crate::prelude::*;
 
+use crate::lib_context::get_settings;
 use crate::setup::{CombinedState, ResourceSetupChange, ResourceSetupInfo, SetupChangeType};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
-pub fn qualify_table_name(schema: Option<&str>, table: &str) -> String {
+pub fn qualify_table_name(table: &str) -> String {
+    let schema = get_settings().unwrap().db_schema_name;
     if let Some(schema) = schema {
-        format!("{}.{}", utils::db::sanitize_identifier(schema), table)
+        return format!("{}.{}", utils::db::sanitize_identifier(&schema), table);
     } else {
-        table.to_string()
+        return table.to_string();
     }
 }
 
-pub fn default_tracking_table_name(schema: Option<&str>, flow_name: &str) -> String {
-    qualify_table_name(
-        schema,
-        &format!(
-            "{}__cocoindex_tracking",
-            utils::db::sanitize_identifier(flow_name)
-        ),
-    )
+pub fn default_tracking_table_name(flow_name: &str) -> String {
+    qualify_table_name(&format!(
+        "{}__cocoindex_tracking",
+        utils::db::sanitize_identifier(flow_name)
+    ))
 }
 
-pub fn default_source_state_table_name(schema: Option<&str>, flow_name: &str) -> String {
-    qualify_table_name(
-        schema,
-        &format!(
-            "{}__cocoindex_srcstate",
-            utils::db::sanitize_identifier(flow_name)
-        ),
-    )
+pub fn default_source_state_table_name(flow_name: &str) -> String {
+    qualify_table_name(&format!(
+        "{}__cocoindex_srcstate",
+        utils::db::sanitize_identifier(flow_name)
+    ))
 }
 
 pub const CURRENT_TRACKING_TABLE_VERSION: i32 = 1;

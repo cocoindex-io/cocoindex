@@ -84,11 +84,8 @@ fn get_export_target_factory(target_type: &str) -> Option<Arc<dyn TargetFactory 
     get_optional_target_factory(target_type)
 }
 
-pub async fn get_existing_setup_state(
-    pool: &PgPool,
-    schema: Option<&str>,
-) -> Result<AllSetupStates<ExistingMode>> {
-    let setup_metadata_records = db_metadata::read_setup_metadata(pool, schema).await?;
+pub async fn get_existing_setup_state(pool: &PgPool) -> Result<AllSetupStates<ExistingMode>> {
+    let setup_metadata_records = db_metadata::read_setup_metadata(pool).await?;
 
     let setup_metadata_records = if let Some(records) = setup_metadata_records {
         records
@@ -560,7 +557,6 @@ async fn apply_changes_for_flow(
     existing_setup_state: &mut Option<setup::FlowSetupState<setup::ExistingMode>>,
     pool: &PgPool,
     ignore_target_drop_failures: bool,
-    schema: Option<&str>,
 ) -> Result<()> {
     let Some(status) = flow_setup_change.status else {
         return Ok(());
@@ -626,7 +622,6 @@ async fn apply_changes_for_flow(
         flow_setup_change.seen_flow_metadata_version,
         &update_info,
         pool,
-        schema,
     )
     .await?;
 
@@ -714,7 +709,6 @@ async fn apply_changes_for_flow(
         &update_info,
         is_deletion,
         pool,
-        schema,
     )
     .await?;
     if is_deletion {
@@ -867,10 +861,8 @@ impl SetupChangeBundle {
                 &mut setup_ctx.all_setup_states,
             )
             .await?;
-            setup_ctx.global_setup_change = GlobalSetupChange::from_setup_states(
-                &setup_ctx.all_setup_states,
-                persistence_ctx.db_schema.clone(),
-            );
+            setup_ctx.global_setup_change =
+                GlobalSetupChange::from_setup_states(&setup_ctx.all_setup_states);
         }
 
         for flow_name in &self.flow_names {
@@ -889,7 +881,6 @@ impl SetupChangeBundle {
                 setup_ctx,
                 &persistence_ctx.builtin_db_pool,
                 write,
-                persistence_ctx.db_schema.as_deref(),
             )
             .await?;
         }
@@ -925,7 +916,6 @@ pub(crate) async fn apply_changes_for_flow_ctx(
     setup_ctx: &mut LibSetupContext,
     db_pool: &PgPool,
     write: &mut (dyn std::io::Write + Send),
-    schema: Option<&str>,
 ) -> Result<()> {
     let mut setup_change_buffer = None;
     let setup_change = get_flow_setup_change(
@@ -955,12 +945,11 @@ pub(crate) async fn apply_changes_for_flow_ctx(
         &mut flow_states,
         db_pool,
         ignore_target_drop_failures,
-        schema,
     )
     .await?;
 
     flow_exec_ctx
-        .update_setup_state(&flow_ctx.flow, flow_states.as_ref(), schema)
+        .update_setup_state(&flow_ctx.flow, flow_states.as_ref())
         .await?;
     if let Some(flow_states) = flow_states {
         setup_ctx

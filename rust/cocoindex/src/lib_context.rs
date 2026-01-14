@@ -24,7 +24,6 @@ pub struct FlowExecutionContext {
 async fn build_setup_context(
     analyzed_flow: &AnalyzedFlow,
     existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
-    db_schema: Option<&str>,
 ) -> Result<(
     Arc<exec_ctx::FlowSetupExecutionContext>,
     setup::FlowSetupChange,
@@ -34,7 +33,6 @@ async fn build_setup_context(
         &analyzed_flow.data_schema,
         &analyzed_flow.setup_state,
         existing_flow_ss,
-        db_schema,
     )?);
 
     let setup_change = setup::diff_flow_setup_states(
@@ -51,10 +49,9 @@ impl FlowExecutionContext {
     async fn new(
         analyzed_flow: &AnalyzedFlow,
         existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
-        db_schema: Option<&str>,
     ) -> Result<Self> {
         let (setup_execution_context, setup_change) =
-            build_setup_context(analyzed_flow, existing_flow_ss, db_schema).await?;
+            build_setup_context(analyzed_flow, existing_flow_ss).await?;
 
         let mut source_indexing_contexts = Vec::new();
         source_indexing_contexts.resize_with(analyzed_flow.flow_instance.import_ops.len(), || {
@@ -72,10 +69,9 @@ impl FlowExecutionContext {
         &mut self,
         analyzed_flow: &AnalyzedFlow,
         existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
-        db_schema: Option<&str>,
     ) -> Result<()> {
         let (setup_execution_context, setup_change) =
-            build_setup_context(analyzed_flow, existing_flow_ss, db_schema).await?;
+            build_setup_context(analyzed_flow, existing_flow_ss).await?;
 
         self.setup_execution_context = setup_execution_context;
         self.setup_change = setup_change;
@@ -123,10 +119,9 @@ impl FlowContext {
     pub async fn new(
         flow: Arc<AnalyzedFlow>,
         existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
-        db_schema: Option<&str>,
     ) -> Result<Self> {
         let execution_ctx = Arc::new(tokio::sync::RwLock::new(
-            FlowExecutionContext::new(&flow, existing_flow_ss, db_schema).await?,
+            FlowExecutionContext::new(&flow, existing_flow_ss).await?,
         ));
         Ok(Self {
             flow,
@@ -241,7 +236,6 @@ pub struct LibSetupContext {
 pub struct PersistenceContext {
     pub builtin_db_pool: PgPool,
     pub setup_ctx: tokio::sync::RwLock<LibSetupContext>,
-    pub db_schema: Option<String>,
 }
 
 pub struct LibContext {
@@ -307,18 +301,13 @@ pub async fn create_lib_context(settings: settings::Settings) -> Result<LibConte
     let db_pools = DbPools::default();
     let persistence_ctx = if let Some(database_spec) = &settings.database {
         let pool = db_pools.get_pool(database_spec).await?;
-        let all_setup_states =
-            setup::get_existing_setup_state(&pool, settings.db_schema_name.as_deref()).await?;
+        let all_setup_states = setup::get_existing_setup_state(&pool).await?;
         Some(PersistenceContext {
             builtin_db_pool: pool,
             setup_ctx: tokio::sync::RwLock::new(LibSetupContext {
-                global_setup_change: setup::GlobalSetupChange::from_setup_states(
-                    &all_setup_states,
-                    settings.db_schema_name.clone(),
-                ),
+                global_setup_change: setup::GlobalSetupChange::from_setup_states(&all_setup_states),
                 all_setup_states,
             }),
-            db_schema: settings.db_schema_name,
         })
     } else {
         // No database configured
@@ -343,7 +332,7 @@ pub async fn create_lib_context(settings: settings::Settings) -> Result<LibConte
 
 static GET_SETTINGS_FN: Mutex<Option<Box<dyn Fn() -> Result<settings::Settings> + Send + Sync>>> =
     Mutex::new(None);
-fn get_settings() -> Result<settings::Settings> {
+pub fn get_settings() -> Result<settings::Settings> {
     let get_settings_fn = GET_SETTINGS_FN.lock().unwrap();
     let settings = if let Some(get_settings_fn) = &*get_settings_fn {
         get_settings_fn()?

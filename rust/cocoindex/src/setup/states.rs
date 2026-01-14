@@ -515,14 +515,10 @@ pub struct GlobalSetupChange {
 }
 
 impl GlobalSetupChange {
-    pub fn from_setup_states(
-        setup_states: &AllSetupStates<ExistingMode>,
-        db_schema: Option<String>,
-    ) -> Self {
+    pub fn from_setup_states(setup_states: &AllSetupStates<ExistingMode>) -> Self {
         Self {
             metadata_table: db_metadata::MetadataTableSetup {
                 metadata_table_missing: !setup_states.has_metadata_table,
-                db_schema,
             }
             .into_setup_info(),
         }

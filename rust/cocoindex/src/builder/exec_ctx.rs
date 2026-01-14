@@ -218,7 +218,6 @@ pub fn build_flow_setup_execution_context(
     data_schema: &schema::FlowSchema,
     analyzed_ss: &AnalyzedSetupState,
     existing_flow_ss: Option<&setup::FlowSetupState<setup::ExistingMode>>,
-    db_schema_name: Option<&str>,
 ) -> Result<FlowSetupExecutionContext> {
     let existing_metadata_versions = || {
         existing_flow_ss
@@ -321,9 +320,7 @@ pub fn build_flow_setup_execution_context(
                         .as_ref()
                         .map(|v| v.table_name.clone())
                 })
-                .unwrap_or_else(|| {
-                    db_tracking_setup::default_tracking_table_name(db_schema_name, &flow_inst.name)
-                }),
+                .unwrap_or_else(|| db_tracking_setup::default_tracking_table_name(&flow_inst.name)),
             version_id: db_tracking_setup::CURRENT_TRACKING_TABLE_VERSION,
             source_state_table_name: metadata
                 .features
@@ -333,10 +330,7 @@ pub fn build_flow_setup_execution_context(
                         .and_then(|flow_ss| flow_ss.tracking_table.current.as_ref())
                         .and_then(|v| v.source_state_table_name.clone())
                         .unwrap_or_else(|| {
-                            db_tracking_setup::default_source_state_table_name(
-                                db_schema_name,
-                                &flow_inst.name,
-                            )
+                            db_tracking_setup::default_source_state_table_name(&flow_inst.name)
                         })
                 }),
             has_fast_fingerprint_column: metadata
