@@ -57,7 +57,7 @@ jobs:
           uses: astral-sh/setup-uv@v7
 
         - name: Sync Python dependencies
-          run: uv sync --no-dev --group ci
+          run: uv sync --no-dev --group ci --no-install-project
 
         - name: Cache pre-commit
           uses: actions/cache@v4

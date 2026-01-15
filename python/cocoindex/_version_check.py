@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from ._internal import core as _core
-from . import __version__
+from ._version import CORE_VERSION as _CORE_VERSION
 
 
 def _sanity_check_engine() -> None:
@@ -12,10 +12,10 @@ def _sanity_check_engine() -> None:
     problems: list[str] = []
 
     # Version mismatch (if the engine exposes its own version)
-    if engine_version is not None and engine_version != __version__:
+    if engine_version is not None and engine_version != _CORE_VERSION:
         problems.append(
-            f"Version mismatch: Python package is {__version__!r}, "
-            f"but cocoindex._engine reports {engine_version!r}."
+            f"Version mismatch: Python package expects core version {_CORE_VERSION!r}, "
+            f"but cocoindex._internal.core reports {engine_version!r}."
         )
 
     if problems:
