@@ -77,6 +77,7 @@ class Settings:
 
     ignore_target_drop_failures: bool = False
     database: DatabaseConnectionSpec | None = None
+    db_schema_name: str | None = None
     app_namespace: str = ""
     global_execution_options: GlobalExecutionOptions | None = None
 
@@ -126,6 +127,7 @@ class Settings:
             "COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES",
             parse=int,
         )
+        db_schema_name = os.getenv("COCOINDEX_DATABASE_SCHEMA_NAME")
         global_execution_options = GlobalExecutionOptions(**exec_kwargs)
 
         app_namespace = os.getenv("COCOINDEX_APP_NAMESPACE", "")
@@ -137,6 +139,7 @@ class Settings:
         return cls(
             ignore_target_drop_failures=ignore_target_drop_failures,
             database=database,
+            db_schema_name=db_schema_name,
             app_namespace=app_namespace,
             global_execution_options=global_execution_options,
         )
