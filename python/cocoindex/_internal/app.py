@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import threading
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -13,9 +13,8 @@ from typing import (
 )
 
 from . import core
-from .environment import Environment
+from .environment import Environment, LazyEnvironment, _default_env
 from .function import AnyCallable, AsyncCallable
-from .environment import default_env
 from .scope import Scope
 
 
@@ -26,7 +25,7 @@ R = TypeVar("R")
 @dataclass(frozen=True)
 class AppConfig:
     name: str
-    environment: Environment | None = None
+    environment: Environment | LazyEnvironment = _default_env
 
 
 class AppBase(Generic[P, R]):
@@ -34,9 +33,10 @@ class AppBase(Generic[P, R]):
     _main_fn: AnyCallable[Concatenate[Scope, P], R]
     _app_args: tuple[Any, ...]
     _app_kwargs: dict[str, Any]
+    _environment: Environment | LazyEnvironment
 
-    _lock: asyncio.Lock
-    _inner: tuple[Environment, core.App] | None
+    _lock: threading.Lock
+    _core_env_app: tuple[Environment, core.App] | None
 
     @overload
     def __init__(
@@ -73,24 +73,31 @@ class AppBase(Generic[P, R]):
         self._main_fn = main_fn
         self._app_args = tuple(args)
         self._app_kwargs = dict(kwargs)
+        self._environment = config.environment
 
-        self._lock = asyncio.Lock()
-        self._inner = (
-            self._create_inner(config.environment) if config.environment else None
-        )
+        self._lock = threading.Lock()
+        self._core_env_app = None
 
-    async def _ensure_inner(self) -> tuple[Environment, core.App]:
-        if self._inner is not None:
-            return self._inner
+    async def _get_core_env_app(self) -> tuple[Environment, core.App]:
+        with self._lock:
+            if self._core_env_app is not None:
+                return self._core_env_app
+        env = await self._environment._get_env()
+        return self._ensure_core_env_app(env)
 
-        async with self._lock:
-            if self._inner is None:
-                self._inner = self._create_inner(await default_env())
-            return self._inner
+    def _get_core_env_app_sync(self) -> tuple[Environment, core.App]:
+        with self._lock:
+            if self._core_env_app is not None:
+                return self._core_env_app
+        env = self._environment._get_env_sync()
+        return self._ensure_core_env_app(env)
 
     async def _get_core(self) -> core.App:
-        _env, core_app = await self._ensure_inner()
+        _env, core_app = await self._get_core_env_app()
         return core_app
 
-    def _create_inner(self, env: Environment) -> tuple[Environment, core.App]:
-        return (env, core.App(self._name, env._core_env))
+    def _ensure_core_env_app(self, env: Environment) -> tuple[Environment, core.App]:
+        with self._lock:
+            if self._core_env_app is None:
+                self._core_env_app = (env, core.App(self._name, env._core_env))
+            return self._core_env_app

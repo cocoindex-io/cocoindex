@@ -8,6 +8,7 @@ from inspect import isasyncgenfunction
 import asyncio
 import threading
 import warnings
+import weakref
 from contextlib import AsyncExitStack
 from typing import (
     Any,
@@ -111,6 +112,26 @@ def _noop_lifespan_fn(_builder: EnvironmentBuilder) -> Iterator[None]:
     yield
 
 
+_environment_info_lock = threading.Lock()
+_environment_infos: list[EnvironmentInfo] = []
+
+
+class EnvironmentInfo:
+    """
+    Per-environment information, for both already initialized and not-yet (lazily) initialized environments.
+    """
+
+    __slots__ = ("_env_ref",)
+
+    _env_ref: weakref.ReferenceType[Environment | LazyEnvironment] | None
+    # TODO: Add fields such as app registry for the current environment
+
+    def __init__(self, env: Environment | LazyEnvironment) -> None:
+        self._env_ref = weakref.ref(env)
+        with _environment_info_lock:
+            _environment_infos.append(self)
+
+
 class Environment:
     """
     CocoIndex runtime environment.
@@ -119,12 +140,20 @@ class Environment:
     API `runtime()` context managers) to control the default environment lifespan.
     """
 
-    __slots__ = ("_core_env", "_settings", "_context_provider", "_loop_runner")
+    __slots__ = (
+        "_core_env",
+        "_settings",
+        "_context_provider",
+        "_loop_runner",
+        "_info",
+        "__weakref__",
+    )
 
     _core_env: core.Environment
     _settings: setting.Settings
     _context_provider: ContextProvider
     _loop_runner: _LoopRunner
+    _info: EnvironmentInfo
 
     def __init__(
         self,
@@ -132,6 +161,7 @@ class Environment:
         *,
         context_provider: ContextProvider | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
+        info: EnvironmentInfo | None = None,
     ):
         if not settings.db_path:
             raise ValueError("Settings.db_path must be provided")
@@ -154,6 +184,7 @@ class Environment:
 
         async_context = core.AsyncContext(self._loop_runner.loop)
         self._core_env = core.Environment(dump_engine_object(settings), async_context)
+        self._info = info or EnvironmentInfo(self)
 
     @property
     def settings(self) -> setting.Settings:
@@ -167,14 +198,145 @@ class Environment:
     def event_loop(self) -> asyncio.AbstractEventLoop:
         return self._loop_runner.loop
 
+    async def _get_env(self) -> "Environment":
+        return self
 
-_default_env_lifespan_fn_lock: threading.Lock = threading.Lock()
-_default_env_lifespan_fn: LifespanFn | None = None
+    def _get_env_sync(self) -> "Environment":
+        return self
 
-_default_env_start_stop_lock: asyncio.Lock = asyncio.Lock()
-_default_env_exit_stack: AsyncExitStack | None = None
-_default_env_lock: threading.Lock = threading.Lock()
-_default_env: Environment | None = None
+
+class LazyEnvironment:
+    """
+    Lazy-initialized environment. To be initialized using lifespan function.
+    """
+
+    __slots__ = (
+        "_lifespan_fn_lock",
+        "_lifespan_fn",
+        "_start_stop_lock",
+        "_exit_stack",
+        "_env",
+        "_info",
+        "__weakref__",
+    )
+
+    _lifespan_fn_lock: threading.Lock
+    _lifespan_fn: LifespanFn | None
+    _start_stop_lock: asyncio.Lock
+    _exit_stack: AsyncExitStack | None
+    _env: Environment | None
+    _info: EnvironmentInfo
+
+    def __init__(self) -> None:
+        self._lifespan_fn_lock = threading.Lock()
+        self._start_stop_lock = asyncio.Lock()
+        self._lifespan_fn = None
+        self._exit_stack = None
+        self._env = None
+        self._info = EnvironmentInfo(self)
+
+    def lifespan(self, fn: LifespanFn) -> None:
+        with self._lifespan_fn_lock:
+            if self._lifespan_fn is not None:
+                warnings.warn(
+                    f"Overriding the default lifespan function {self._lifespan_fn} with {fn}."
+                )
+            self._lifespan_fn = fn
+
+    def _reset_lifespan(self) -> None:
+        with self._lifespan_fn_lock:
+            self._lifespan_fn = None
+
+    async def _get_env(self) -> Environment:
+        """
+        Start the default environment (executes on the default environment's event loop).
+        """
+        async with self._start_stop_lock:
+            if self._env is not None:
+                return self._env
+            with self._lifespan_fn_lock:
+                fn = self._lifespan_fn or _noop_lifespan_fn
+
+            env_builder = EnvironmentBuilder()
+            exit_stack = AsyncExitStack()
+            self._exit_stack = exit_stack
+
+            try:
+                if isasyncgenfunction(fn):
+                    # Start async generator and register cleanup
+                    async_gen: AsyncGenerator[None, None] = fn(env_builder)  # type: ignore[assignment]
+                    await anext(async_gen)
+
+                    async def _aclose() -> None:
+                        try:
+                            await anext(async_gen)
+                        except StopAsyncIteration:
+                            pass
+                        finally:
+                            await async_gen.aclose()
+
+                    exit_stack.push_async_callback(_aclose)
+                else:
+                    # Start sync generator and register cleanup
+                    sync_gen: Iterator[None] = fn(env_builder)  # type: ignore[assignment]
+                    next(sync_gen)
+
+                    def _close() -> None:
+                        try:
+                            next(sync_gen)
+                        except StopIteration:
+                            pass
+                        finally:
+                            close_fn = getattr(sync_gen, "close", None)
+                            if callable(close_fn):
+                                close_fn()
+
+                    exit_stack.callback(_close)
+
+                built_settings = env_builder.settings
+                if not built_settings.db_path:
+                    raise ValueError(
+                        "Environment settings must provide Settings.db_path"
+                    )
+
+                context_provider = env_builder._context_provider
+                self._exit_stack.push_async_callback(context_provider.aclose)
+
+                loop = asyncio.get_running_loop()
+                env = Environment(
+                    built_settings,
+                    context_provider=context_provider,
+                    event_loop=loop,
+                    info=self._info,
+                )
+                self._env = env
+                return env
+            except:
+                await exit_stack.aclose()
+                self._exit_stack = None
+                raise
+
+    def _get_env_sync(self) -> Environment:
+        if self._env is not None:
+            return self._env
+        env_loop = _default_env_loop()
+        fut = asyncio.run_coroutine_threadsafe(self._get_env(), env_loop)
+        return fut.result()
+
+    async def stop(self) -> None:
+        """
+        Stop the default environment (executes on the default environment's event loop).
+        """
+        async with self._start_stop_lock:
+            exit_stack = self._exit_stack
+            self._exit_stack = None
+            self._env = None
+
+        if exit_stack is not None:
+            await exit_stack.aclose()
+
+
+_default_env = LazyEnvironment()
 
 
 @overload
@@ -188,13 +350,7 @@ def lifespan(fn: LifespanFn | None = None) -> Any:
     """
 
     def _inner(fn: LifespanFn) -> LifespanFn:
-        global _default_env_lifespan_fn  # pylint: disable=global-statement
-        with _default_env_lifespan_fn_lock:
-            if _default_env_lifespan_fn is not None:
-                warnings.warn(
-                    f"Overriding the default lifespan function {_default_env_lifespan_fn} with {fn}."
-                )
-            _default_env_lifespan_fn = fn
+        _default_env.lifespan(fn)
         return fn
 
     if fn is not None:
@@ -207,87 +363,14 @@ async def start() -> Environment:
     """
     Start the default environment (executes on the default environment's event loop).
     """
-    global _default_env  # pylint: disable=global-statement
-    global _default_env_exit_stack  # pylint: disable=global-statement
-
-    async with _default_env_start_stop_lock:
-        with _default_env_lock:
-            if _default_env is not None:
-                return _default_env
-        with _default_env_lifespan_fn_lock:
-            fn = _default_env_lifespan_fn or _noop_lifespan_fn
-
-        env_builder = EnvironmentBuilder()
-        exit_stack = AsyncExitStack()
-        _default_env_exit_stack = exit_stack
-
-        try:
-            if isasyncgenfunction(fn):
-                # Start async generator and register cleanup
-                async_gen: AsyncGenerator[None, None] = fn(env_builder)  # type: ignore[assignment]
-                await anext(async_gen)
-
-                async def _aclose() -> None:
-                    try:
-                        await anext(async_gen)
-                    except StopAsyncIteration:
-                        pass
-                    finally:
-                        await async_gen.aclose()
-
-                exit_stack.push_async_callback(_aclose)
-            else:
-                # Start sync generator and register cleanup
-                sync_gen: Iterator[None] = fn(env_builder)  # type: ignore[assignment]
-                next(sync_gen)
-
-                def _close() -> None:
-                    try:
-                        next(sync_gen)
-                    except StopIteration:
-                        pass
-                    finally:
-                        close_fn = getattr(sync_gen, "close", None)
-                        if callable(close_fn):
-                            close_fn()
-
-                exit_stack.callback(_close)
-
-            built_settings = env_builder.settings
-            if not built_settings.db_path:
-                raise ValueError("Environment settings must provide Settings.db_path")
-
-            context_provider = env_builder._context_provider
-            _default_env_exit_stack.push_async_callback(context_provider.aclose)
-
-            loop = asyncio.get_running_loop()
-            env = Environment(
-                built_settings, context_provider=context_provider, event_loop=loop
-            )
-            with _default_env_lock:
-                _default_env = env
-            return env
-        except:
-            await exit_stack.aclose()
-            _default_env_exit_stack = None
-            raise
+    return await _default_env._get_env()
 
 
 async def stop() -> None:
     """
     Stop the default environment (executes on the default environment's event loop).
     """
-    global _default_env  # pylint: disable=global-statement
-    global _default_env_exit_stack  # pylint: disable=global-statement
-
-    async with _default_env_start_stop_lock:
-        exit_stack = _default_env_exit_stack
-        _default_env_exit_stack = None
-        with _default_env_lock:
-            _default_env = None
-
-    if exit_stack is not None:
-        await exit_stack.aclose()
+    await _default_env.stop()
 
 
 _bg_loop_lock: threading.Lock = threading.Lock()
@@ -320,17 +403,16 @@ async def default_env() -> Environment:
 
 def start_sync() -> Environment:
     loop = _default_env_loop()
-    fut = asyncio.run_coroutine_threadsafe(start(), loop)
+    fut = asyncio.run_coroutine_threadsafe(_default_env._get_env(), loop)
     return fut.result()
 
 
 def stop_sync() -> None:
-    with _default_env_lock:
-        env = _default_env
+    env = _default_env._env
     if env is None:
         return
     loop = env.event_loop
-    fut = asyncio.run_coroutine_threadsafe(stop(), loop)
+    fut = asyncio.run_coroutine_threadsafe(_default_env.stop(), loop)
     fut.result()
 
 
@@ -344,6 +426,4 @@ def reset_default_lifespan_for_tests() -> None:
 
     This is intended for tests so lifespan registration does not leak across test modules.
     """
-    global _default_env_lifespan_fn  # pylint: disable=global-statement
-    with _default_env_lifespan_fn_lock:
-        _default_env_lifespan_fn = None
+    _default_env._reset_lifespan()
