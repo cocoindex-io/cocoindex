@@ -151,3 +151,26 @@ class KuzuDeclaration(op.DeclarationSpec):
     connection: AuthEntryReference[KuzuConnection]
     nodes_label: str
     primary_key_fields: Sequence[str]
+
+
+@dataclass
+class LadybugConnection:
+    """Connection spec for Ladybug."""
+
+    api_server_url: str
+
+
+class Ladybug(op.TargetSpec):
+    """Graph storage powered by Ladybug."""
+
+    connection: AuthEntryReference[LadybugConnection]
+    mapping: Nodes | Relationships
+
+
+class LadybugDeclaration(op.DeclarationSpec):
+    """Declarations for Ladybug."""
+
+    kind = "Ladybug"
+    connection: AuthEntryReference[LadybugConnection]
+    nodes_label: str
+    primary_key_fields: Sequence[str]
