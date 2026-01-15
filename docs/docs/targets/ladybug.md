@@ -15,7 +15,7 @@ Read [Property Graph Targets](./index.md#property-graph-targets) for more inform
 
 ## Spec
 
-CocoIndex supports talking to Ladybug through its API server.
+CocoIndex supports talking to Ladybug through its API server. You can run the server from [LadybugDB/api-server](https://github.com/LadybugDB/api-server).
 
 The `Ladybug` target spec takes the following fields:
 
