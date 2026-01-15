@@ -172,14 +172,7 @@ class App(AppBase[P, ReturnT]):
         Returns:
             The result of the main function.
         """
-        if self._inner is not None:
-            env, core_app = self._inner
-        else:
-            loop = _environment.default_env_sync().event_loop
-            env, core_app = asyncio.run_coroutine_threadsafe(
-                self._ensure_inner(), loop
-            ).result()
-
+        env, core_app = self._get_core_env_app_sync()
         root_path = core.StablePath()
         processor = create_core_component_processor(
             self._main_fn, env, root_path, self._app_args, self._app_kwargs
