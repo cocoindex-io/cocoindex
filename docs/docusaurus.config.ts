@@ -15,12 +15,12 @@ const config: Config = {
   url: 'https://cocoindex.io',
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/<projectName>/'
-  baseUrl: '/docs/',
+  baseUrl: '/docs_v1/',
 
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
   organizationName: 'cocoindex-io', // Usually your GitHub org/user name.
-  projectName: 'docs', // Usually your repo name.
+  projectName: 'docs-v1', // Usually your repo name.
   trailingSlash: false,
 
   onBrokenLinks: 'throw',
