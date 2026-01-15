@@ -3,7 +3,10 @@ name = "files-transform"
 version = "0.1.0"
 description = "Simple example for cocoindex: transform files in a directory."
 requires-python = ">=3.11"
-dependencies = ["cocoindex>=0.3.9", "markdown-it-py[linkify,plugins]"]
+dependencies = ["cocoindex>=1.0.0a1", "markdown-it-py[linkify,plugins]"]
+
+[tool.uv]
+prerelease = "allow"
 
 [tool.setuptools]
 packages = []

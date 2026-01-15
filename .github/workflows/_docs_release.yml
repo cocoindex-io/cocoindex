@@ -10,7 +10,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: docs-release
+    environment: docs-release-v1
     steps:
       - uses: actions/checkout@v6
         with:
