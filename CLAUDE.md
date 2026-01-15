@@ -62,7 +62,6 @@ cocoindex/
 │       └── tests/              # Python tests
 │
 ├── examples/                   # Example applications
-├── examples_v1/                # v1 example applications
 ├── docs/                       # Documentation
 └── dev/                        # Development utilities
 ```

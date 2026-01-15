@@ -121,93 +121,14 @@ If you're new to CocoIndex, we recommend checking out
 pip install -U cocoindex
 ```
 
-2. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. CocoIndex uses it for incremental processing.
+1. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. CocoIndex uses it for incremental processing.
 
-3. (Optional) Install Claude Code skill for enhanced development experience. Run these commands in [Claude Code](https://claude.com/claude-code):
+2. (Optional) Install Claude Code skill for enhanced development experience. Run these commands in [Claude Code](https://claude.com/claude-code):
 
 ```
 /plugin marketplace add cocoindex-io/cocoindex-claude
 /plugin install cocoindex-skills@cocoindex
 ```
-
-## Define data flow
-
-Follow [Quick Start Guide](https://cocoindex.io/docs/getting_started/quickstart) to define your first indexing flow. An example flow looks like:
-
-```python
-@cocoindex.flow_def(name="TextEmbedding")
-def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-    # Add a data source to read files from a directory
-    data_scope["documents"] = flow_builder.add_source(cocoindex.sources.LocalFile(path="markdown_files"))
-
-    # Add a collector for data to be exported to the vector index
-    doc_embeddings = data_scope.add_collector()
-
-    # Transform data of each document
-    with data_scope["documents"].row() as doc:
-        # Split the document into chunks, put into `chunks` field
-        doc["chunks"] = doc["content"].transform(
-            cocoindex.functions.SplitRecursively(),
-            language="markdown", chunk_size=2000, chunk_overlap=500)
-
-        # Transform data of each chunk
-        with doc["chunks"].row() as chunk:
-            # Embed the chunk, put into `embedding` field
-            chunk["embedding"] = chunk["text"].transform(
-                cocoindex.functions.SentenceTransformerEmbed(
-                    model="sentence-transformers/all-MiniLM-L6-v2"))
-
-            # Collect the chunk into the collector.
-            doc_embeddings.collect(filename=doc["filename"], location=chunk["location"],
-                                   text=chunk["text"], embedding=chunk["embedding"])
-
-    # Export collected data to a vector index.
-    doc_embeddings.export(
-        "doc_embeddings",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["filename", "location"],
-        vector_indexes=[
-            cocoindex.VectorIndexDef(
-                field_name="embedding",
-                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY)])
-```
-
-It defines an index flow like this:
-
-<p align="center">
-    <img width="400" alt="Data Flow" src="https://github.com/user-attachments/assets/2ea7be6d-3d94-42b1-b2bd-22515577e463" />
-</p>
-
-## 🚀 Examples and demo
-
-| Example | Description |
-|---------|-------------|
-| [Text Embedding](examples/text_embedding) | Index text documents with embeddings for semantic search |
-| [Code Embedding](examples/code_embedding) | Index code embeddings for semantic search |
-| [PDF Embedding](examples/pdf_embedding) | Parse PDF and index text embeddings for semantic search |
-| [PDF Elements Embedding](examples/pdf_elements_embedding) | Extract text and images from PDFs; embed text with SentenceTransformers and images with CLIP; store in Qdrant for multimodal search |
-| [Manuals LLM Extraction](examples/manuals_llm_extraction) | Extract structured information from a manual using LLM |
-| [Amazon S3 Embedding](examples/amazon_s3_embedding) | Index text documents from Amazon S3 |
-| [Azure Blob Storage Embedding](examples/azure_blob_embedding) | Index text documents from Azure Blob Storage |
-| [Google Drive Text Embedding](examples/gdrive_text_embedding) | Index text documents from Google Drive |
-| [Meeting Notes to Knowledge Graph](examples/meeting_notes_graph) | Extract structured meeting info from Google Drive and build a knowledge graph |
-| [Docs to Knowledge Graph](examples/docs_to_knowledge_graph) | Extract relationships from Markdown documents and build a knowledge graph |
-| [Embeddings to Qdrant](examples/text_embedding_qdrant) | Index documents in a Qdrant collection for semantic search |
-| [Embeddings to LanceDB](examples/text_embedding_lancedb) | Index documents in a LanceDB collection for semantic search |
-| [FastAPI Server with Docker](examples/fastapi_server_docker) | Run the semantic search server in a Dockerized FastAPI setup |
-| [Product Recommendation](examples/product_recommendation) | Build real-time product recommendations with LLM and graph database|
-| [Image Search with Vision API](examples/image_search) | Generates detailed captions for images using a vision model, embeds them, enables live-updating semantic search via FastAPI and served on a React frontend|
-| [Face Recognition](examples/face_recognition) | Recognize faces in images and build embedding index |
-| [Paper Metadata](examples/paper_metadata) | Index papers in PDF files, and build metadata tables for each paper |
-| [Multi Format Indexing](examples/multi_format_indexing) | Build visual document index from PDFs and images with ColPali for semantic search |
-| [Custom Source HackerNews](examples/custom_source_hn) | Index HackerNews threads and comments, using *CocoIndex Custom Source* |
-| [Custom Output Files](examples/custom_output_files) | Convert markdown files to HTML files and save them to a local directory, using *CocoIndex Custom Targets* |
-| [Patient intake form extraction](examples/patient_intake_extraction) | Use LLM to extract structured data from patient intake forms with different formats |
-| [HackerNews Trending Topics](examples/hn_trending_topics) | Extract trending topics from HackerNews threads and comments, using *CocoIndex Custom Source* and LLM |
-| [Patient Intake Form Extraction with BAML](examples/patient_intake_extraction_baml) | Extract structured data from patient intake forms using BAML |
-| [Patient Intake Form Extraction with DSPy](examples/patient_intake_extraction_dspy) | Extract structured data from patient intake forms using DSPy |
-
-More coming and stay tuned 👀!
 
 ## 📖 Documentation
 

@@ -1,12 +1,13 @@
 [project]
-name = "gdrive-text-embedding"
+name = "gdrive-text-embedding-v1"
 version = "0.1.0"
-description = "Simple example for cocoindex: build embedding index based on Google Drive files."
+description = "CocoIndex v1 example: embed Google Drive text files into Postgres/pgvector."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[embeddings]>=0.3.26,<1",
-    "python-dotenv>=1.0.1",
-    "psycopg[binary,pool]",
+    "cocoindex[postgres,sentence_transformers,google_drive]>=0.3.9",
+    "asyncpg>=0.29.0",
+    "pgvector>=0.4.1",
+    "numpy",
 ]
 
 [tool.setuptools]

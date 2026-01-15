@@ -1,66 +1,36 @@
-# Build text embedding and semantic search 🔍 with LanceDB
+# Text Embedding with LanceDB (v1)
 
-[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+This example embeds local markdown files, stores the chunks + embeddings in LanceDB, and provides a simple semantic-search query demo.
 
-CocoIndex supports LanceDB natively. In this example, we will build index flow from text embedding from local markdown files, and query the index. We will use **LanceDB** as the vector database.
+## Key Features
 
-We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
+- **No database setup needed**: LanceDB is embedded - no external database required
+- **Vector search**: Semantic text search using sentence embeddings
+- **Full-text search**: FTS index on text content for keyword search
+- **Portable**: Data stored in `./lancedb_data/` directory - just copy to move it
 
-## Steps
+## Data Storage
 
-### Indexing Flow
+All data is stored in the `./lancedb_data/` directory in your project folder. This directory is created automatically on first run.
 
-1. We will ingest a list of local files.
-2. For each file, perform chunking (recursively split) and then embedding.
-3. We will save the embeddings and the metadata in LanceDB.
-
-### Query
-
-1. We have `search()` as a [query handler](https://cocoindex.io/docs/query#query-handler), to query the LanceDB table with LanceDB client.
-2. We share the embedding operation `text_to_embedding()` between indexing and querying,
-  by wrapping it as a [transform flow](https://cocoindex.io/docs/query#transform-flow).
-
-## Pre-requisites
-
-1. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. Although the target store is LanceDB, CocoIndex uses Postgres to track the data lineage for incremental processing.
-
-2. Install dependencies:
-
-    ```sh
-    pip install -e .
-    ```
-
-LanceDB will automatically create a local database directory when you run the example (no additional setup required).
+To start fresh, simply delete the `./lancedb_data/` directory and re-run the indexing.
 
 ## Run
 
-Update index, which will also setup LanceDB tables at the first time:
+Install deps:
 
 ```sh
-cocoindex update main
+pip install -e .
 ```
 
-You can also run the command with `-L`, which will watch for file changes and update the index automatically.
+Build/update the index (stores data in `./lancedb_data/`):
 
 ```sh
-cocoindex update -L main
+python main.py
 ```
 
-By default, the vector index is not enabled, because LanceDB requires at least 256 rows to be there before it can build the index (see [this issue](https://github.com/lance-format/lance/issues/4034) for more details).
-After your LanceDB target table has enough data, you can update `.env` file with the following environment variable to enable the vector index from there on:
+Query:
 
 ```sh
-ENABLE_LANCEDB_VECTOR_INDEX=true
+python main.py query "what is self-attention?"
 ```
-
-## CocoInsight
-
-I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
-It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
-
-```sh
-cocoindex server -ci main
-```
-
-Open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
-You can run queries in the CocoInsight UI.

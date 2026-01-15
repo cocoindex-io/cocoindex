@@ -1,7 +1,0 @@
-cocoindex[embeddings]>=0.3.26,<1
-python-dotenv>=1.0.1
-fastapi==0.115.12
-fastapi-cli==0.0.7
-uvicorn==0.34.2
-psycopg[binary]==3.2.6
-psycopg_pool==3.2.6

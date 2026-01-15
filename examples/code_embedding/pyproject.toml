@@ -1,13 +1,13 @@
 [project]
-name = "code-embedding"
+name = "code-embedding-v1"
 version = "0.1.0"
-description = "Simple example for cocoindex: build embedding index based on source code."
+description = "CocoIndex v1 example: embed code files and store in Postgres/pgvector."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[embeddings]>=0.3.26,<1",
-    "python-dotenv>=1.0.1",
+    "cocoindex[postgres,sentence_transformers]>=0.3.9",
+    "asyncpg>=0.29.0",
     "pgvector>=0.4.1",
-    "psycopg[binary,pool]",
+    "numpy",
 ]
 
 [tool.setuptools]

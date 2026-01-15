@@ -1,20 +1,3 @@
-# BAML generated files
 baml_client/
 .baml/
-
-# Environment files
-.env
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg-info/
-dist/
-build/
-
-# CocoIndex
-.cocoindex/
+output_patients/

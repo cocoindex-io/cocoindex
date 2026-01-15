@@ -1,123 +1,196 @@
-from dotenv import load_dotenv
-from psycopg_pool import ConnectionPool
-import cocoindex
-import datetime
+"""
+Google Drive Text Embedding (v1) - CocoIndex pipeline example.
+
+- Read text files from Google Drive
+- Chunk text (RecursiveSplitter)
+- Embed chunks (SentenceTransformers)
+- Store into Postgres with pgvector column (no vector index)
+- Query demo using pgvector cosine distance (<=>)
+"""
+
+from __future__ import annotations
+
+import asyncio
 import os
-from typing import Any
+import pathlib
+import sys
+from dataclasses import dataclass
+from typing import AsyncIterator, Annotated
+
+import asyncpg
+from numpy.typing import NDArray
+
+import cocoindex as coco
+import cocoindex.asyncio as coco_aio
+from cocoindex.connectors import google_drive, postgres
+from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.extras.text import RecursiveSplitter
+from cocoindex.resources.chunk import Chunk
 
 
-@cocoindex.transform_flow()
-def text_to_embedding(
-    text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[list[float]]:
-    """
-    Embed the text using a SentenceTransformer model.
-    This is a shared logic between indexing and querying, so extract it as a function.
-    """
-    return text.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"
-        )
-    )
+DATABASE_URL = os.getenv(
+    "COCOINDEX_DATABASE_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
+)
+TABLE_NAME = "doc_embeddings"
+PG_SCHEMA_NAME = "coco_examples_v1"
+TOP_K = 5
 
 
-@cocoindex.flow_def(name="GoogleDriveTextEmbedding")
-def gdrive_text_embedding_flow(
-    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
+@dataclass
+class _GlobalState:
+    pool: asyncpg.Pool | None = None
+    db: postgres.PgDatabase | None = None
+
+
+_state = _GlobalState()
+_embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
+_splitter = RecursiveSplitter()
+
+
+@coco_aio.lifespan
+async def coco_lifespan(
+    builder: coco_aio.EnvironmentBuilder,
+) -> AsyncIterator[None]:
+    builder.settings.db_path = pathlib.Path("./cocoindex.db")
+
+    async with await postgres.create_pool(DATABASE_URL) as pool:
+        _state.pool = pool
+        _state.db = postgres.register_db("gdrive_text_embedding_db", pool)
+        yield
+
+
+@dataclass
+class DocEmbedding:
+    filename: str
+    location: str
+    text: str
+    embedding: Annotated[NDArray, _embedder]
+
+
+@coco.function(memo=True)
+async def process_file(
+    scope: coco.Scope,
+    file: google_drive.DriveFile,
+    table: postgres.TableTarget[DocEmbedding],
 ) -> None:
-    """
-    Define an example flow that embeds text into a vector database.
-    """
-    credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
-    root_folder_ids = os.environ["GOOGLE_DRIVE_ROOT_FOLDER_IDS"].split(",")
-
-    data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.GoogleDrive(
-            service_account_credential_path=credential_path,
-            root_folder_ids=root_folder_ids,
-            recent_changes_poll_interval=datetime.timedelta(seconds=10),
-        ),
-        refresh_interval=datetime.timedelta(minutes=1),
+    text = file.read_text()
+    chunks = _splitter.split(
+        text, chunk_size=2000, chunk_overlap=500, language="markdown"
+    )
+    await asyncio.gather(
+        *(
+            _emit_chunk(scope, file.relative_path.as_posix(), chunk, table)
+            for chunk in chunks
+        )
     )
 
-    doc_embeddings = data_scope.add_collector()
 
-    with data_scope["documents"].row() as doc:
-        doc["chunks"] = doc["content"].transform(
-            cocoindex.functions.SplitRecursively(),
-            language="markdown",
-            chunk_size=2000,
-            chunk_overlap=500,
+@coco.function(memo=True)
+async def _emit_chunk(
+    scope: coco.Scope,
+    filename: str,
+    chunk: Chunk,
+    table: postgres.TableTarget[DocEmbedding],
+) -> None:
+    location = f"{chunk.start.char_offset}:{chunk.end.char_offset}"
+    table.declare_row(
+        scope,
+        row=DocEmbedding(
+            filename=filename,
+            location=location,
+            text=chunk.text,
+            embedding=await _embedder.embed_async(chunk.text),
+        ),
+    )
+
+
+@coco.function
+def app_main(scope: coco.Scope) -> None:
+    assert _state.db is not None
+    table = coco.mount_run(
+        lambda inner_scope: _state.db.declare_table_target(
+            inner_scope,
+            table_name=TABLE_NAME,
+            table_schema=postgres.TableSchema(
+                DocEmbedding,
+                primary_key=["filename", "location"],
+            ),
+            pg_schema_name=PG_SCHEMA_NAME,
+        ),
+        scope / "setup",
+    ).result()
+
+    credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
+    root_folder_ids = [
+        folder.strip()
+        for folder in os.environ["GOOGLE_DRIVE_ROOT_FOLDER_IDS"].split(",")
+        if folder.strip()
+    ]
+
+    source = google_drive.GoogleDriveSource(
+        service_account_credential_path=credential_path,
+        root_folder_ids=root_folder_ids,
+    )
+
+    for file in source.files():
+        coco.mount(
+            process_file,
+            scope / "file" / file.relative_path.as_posix(),
+            file,
+            table,
         )
 
-        with doc["chunks"].row() as chunk:
-            chunk["embedding"] = text_to_embedding(chunk["text"])
-            doc_embeddings.collect(
-                filename=doc["filename"],
-                location=chunk["location"],
-                text=chunk["text"],
-                embedding=chunk["embedding"],
-            )
 
-    doc_embeddings.export(
-        "doc_embeddings",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["filename", "location"],
-        vector_indexes=[
-            cocoindex.VectorIndexDef(
-                field_name="embedding",
-                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-            )
-        ],
-    )
+app = coco_aio.App(
+    app_main,
+    coco_aio.AppConfig(name="GoogleDriveTextEmbeddingV1"),
+)
 
 
-def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-    # Get the table name, for the export target in the gdrive_text_embedding_flow above.
-    table_name = cocoindex.utils.get_target_default_name(
-        gdrive_text_embedding_flow, "doc_embeddings"
-    )
-    # Evaluate the transform flow defined above with the input query, to get the embedding.
-    query_vector = text_to_embedding.eval(query)
-    # Run the query and get the results.
-    with pool.connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT filename, text, embedding <=> %s::vector AS distance
-                FROM {table_name} ORDER BY distance LIMIT %s
+async def query_once(query: str, *, top_k: int = TOP_K) -> None:
+    query_vec = await _embedder.embed_async(query)
+    pool = _state.pool
+    assert pool is not None
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                filename,
+                text,
+                embedding <=> $1 AS distance
+            FROM "{PG_SCHEMA_NAME}"."{TABLE_NAME}"
+            ORDER BY distance ASC
+            LIMIT $2
             """,
-                (query_vector, top_k),
-            )
-            return [
-                {"filename": row[0], "text": row[1], "score": 1.0 - row[2]}
-                for row in cur.fetchall()
-            ]
+            query_vec,
+            top_k,
+        )
+
+    for r in rows:
+        score = 1.0 - float(r["distance"])
+        print(f"[{score:.3f}] {r['filename']}")
+        print(f"    {r['text']}")
+        print("---")
 
 
-def _main() -> None:
-    # Initialize the database connection pool.
-    database_url = os.getenv("COCOINDEX_DATABASE_URL")
-    if database_url is None:
-        raise ValueError("COCOINDEX_DATABASE_URL is not set")
-    pool = ConnectionPool(database_url)
+async def main() -> None:
+    async with coco_aio.runtime():
+        if len(sys.argv) > 1 and sys.argv[1] == "query":
+            if len(sys.argv) > 2:
+                q = " ".join(sys.argv[2:])
+                await query_once(q)
+                return
 
-    # Run queries in a loop to demonstrate the query capabilities.
-    while True:
-        query = input("Enter search query (or Enter to quit): ")
-        if query == "":
-            break
-        # Run the query function with the database connection pool and the query.
-        results = search(pool, query)
-        print("\nSearch results:")
-        for result in results:
-            print(f"[{result['score']:.3f}] {result['filename']}")
-            print(f"    {result['text']}")
-            print("---")
-        print()
+            while True:
+                q = input("Enter search query (or Enter to quit): ").strip()
+                if not q:
+                    break
+                await query_once(q)
+            return
+
+        await app.run(report_to_stdout=True)
 
 
 if __name__ == "__main__":
-    load_dotenv()
-    cocoindex.init()
-    _main()
+    asyncio.run(main())

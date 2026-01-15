@@ -1,119 +1,173 @@
-import os
-import datetime
-import cocoindex
-import math
-import cocoindex.targets.lancedb as coco_lancedb
+"""
+Text Embedding with LanceDB (v1) - CocoIndex pipeline example.
 
-# Define LanceDB connection constants
-LANCEDB_URI = "./lancedb_data"  # Local directory for LanceDB
-LANCEDB_TABLE = "TextEmbedding"
+- Walk local markdown files
+- Chunk text (RecursiveSplitter)
+- Embed chunks (SentenceTransformers)
+- Store into LanceDB with vector column and FTS
+- Query demo using LanceDB native vector search
+"""
+
+from __future__ import annotations
+
+import asyncio
+import pathlib
+import sys
+from dataclasses import dataclass
+from typing import AsyncIterator, Annotated
+
+from numpy.typing import NDArray
+
+import cocoindex as coco
+import cocoindex.asyncio as coco_aio
+from cocoindex.connectors import lancedb, localfs
+from cocoindex.extras.text import RecursiveSplitter
+from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.resources.chunk import Chunk
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.schema import FtsSpec
 
 
-@cocoindex.transform_flow()
-def text_to_embedding(
-    text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[list[float]]:
-    """
-    Embed the text using a SentenceTransformer model.
-    This is a shared logic between indexing and querying, so extract it as a function.
-    """
-    return text.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"
-        )
-    )
+LANCEDB_URI = "./lancedb_data"
+TABLE_NAME = "doc_embeddings"
+TOP_K = 5
 
 
-@cocoindex.flow_def(name="TextEmbeddingWithLanceDB")
-def text_embedding_flow(
-    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
+LANCE_DB = coco.ContextKey[lancedb.LanceDatabase]("lance_db")
+
+_embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
+_splitter = RecursiveSplitter()
+
+
+@dataclass
+class DocEmbedding:
+    filename: str
+    chunk_start: int
+    chunk_end: int
+    text: str
+    embedding: Annotated[NDArray, _embedder]
+
+
+@coco_aio.lifespan
+async def coco_lifespan(
+    builder: coco_aio.EnvironmentBuilder,
+) -> AsyncIterator[None]:
+    # For CocoIndex internal states
+    builder.settings.db_path = pathlib.Path("./cocoindex.db")
+    # Provide resources needed across the CocoIndex environment
+    await lancedb._register_db_async("text_embedding_db", LANCEDB_URI)
+    builder.provide(LANCE_DB, lancedb.LanceDatabase("text_embedding_db"))
+    yield
+
+
+@coco.function(memo=True)
+async def process_chunk(
+    scope: coco.Scope,
+    filename: pathlib.PurePath,
+    chunk: Chunk,
+    table: lancedb.TableTarget[DocEmbedding],
 ) -> None:
-    """
-    Define an example flow that embeds text into a vector database.
-    """
-    ENABLE_LANCEDB_VECTOR_INDEX = os.environ.get(
-        "ENABLE_LANCEDB_VECTOR_INDEX", "0"
-    ).lower() in ("true", "1")
-
-    data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="markdown_files"),
-        refresh_interval=datetime.timedelta(seconds=5),
-    )
-
-    doc_embeddings = data_scope.add_collector()
-
-    with data_scope["documents"].row() as doc:
-        doc["chunks"] = doc["content"].transform(
-            cocoindex.functions.SplitRecursively(),
-            language="markdown",
-            chunk_size=500,
-            chunk_overlap=100,
-        )
-
-        with doc["chunks"].row() as chunk:
-            chunk["embedding"] = text_to_embedding(chunk["text"])
-            doc_embeddings.collect(
-                id=cocoindex.GeneratedField.UUID,
-                filename=doc["filename"],
-                location=chunk["location"],
-                text=chunk["text"],
-                # 'text_embedding' is the name of the vector we've created the LanceDB table with.
-                text_embedding=chunk["embedding"],
-            )
-
-    # We cannot enable index when the table has no data yet, as LanceDB requires data to train the index.
-    # See: https://github.com/lancedb/lance/issues/4034
-    # Guard it with ENABLE_LANCEDB_VECTOR_INDEX environment variable.
-    vector_indexes = []
-    if ENABLE_LANCEDB_VECTOR_INDEX:
-        vector_indexes.append(
-            cocoindex.VectorIndexDef(
-                "text_embedding", cocoindex.VectorSimilarityMetric.L2_DISTANCE
-            )
-        )
-    doc_embeddings.export(
-        "doc_embeddings",
-        coco_lancedb.LanceDB(db_uri=LANCEDB_URI, table_name=LANCEDB_TABLE),
-        primary_key_fields=["id"],
-        vector_indexes=vector_indexes,
-        fts_indexes=[
-            cocoindex.FtsIndexDef(
-                field_name="text", parameters={"base_tokenizer": "simple"}
-            )
-        ],
-    )
-
-
-@text_embedding_flow.query_handler(
-    result_fields=cocoindex.QueryHandlerResultFields(
-        embedding=["embedding"],
-        score="score",
-    ),
-)
-async def search(query: str) -> cocoindex.QueryOutput:
-    print("Searching...", query)
-    db = await coco_lancedb.connect_async(LANCEDB_URI)
-    table = await db.open_table(LANCEDB_TABLE)
-
-    # Get the embedding for the query
-    query_embedding = await text_to_embedding.eval_async(query)
-
-    search = await table.search(query_embedding, vector_column_name="text_embedding")
-    search_results = await search.limit(5).to_list()
-
-    return cocoindex.QueryOutput(
-        results=[
-            {
-                "filename": result["filename"],
-                "text": result["text"],
-                "embedding": result["text_embedding"],
-                # Qdrant's L2 "distance" is squared, so we take the square root to align with normal L2 distance
-                "score": math.sqrt(result["_distance"]),
-            }
-            for result in search_results
-        ],
-        query_info=cocoindex.QueryInfo(
-            embedding=query_embedding,
-            similarity_metric=cocoindex.VectorSimilarityMetric.L2_DISTANCE,
+    table.declare_row(
+        scope,
+        row=DocEmbedding(
+            filename=str(filename),
+            chunk_start=chunk.start.char_offset,
+            chunk_end=chunk.end.char_offset,
+            text=chunk.text,
+            embedding=await _embedder.embed_async(chunk.text),
         ),
     )
+
+
+@coco.function(memo=True)
+async def process_file(
+    scope: coco.Scope,
+    file: FileLike,
+    table: lancedb.TableTarget[DocEmbedding],
+) -> None:
+    text = file.read_text()
+    chunks = _splitter.split(
+        text, chunk_size=2000, chunk_overlap=500, language="markdown"
+    )
+    await asyncio.gather(
+        *(process_chunk(scope, file.relative_path, chunk, table) for chunk in chunks)
+    )
+
+
+@coco.function
+def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
+    target_db = scope.use(LANCE_DB)
+    target_table = coco.mount_run(
+        target_db.declare_table_target,
+        scope / "setup" / "table",
+        table_name=TABLE_NAME,
+        table_schema=lancedb.TableSchema(
+            DocEmbedding,
+            primary_key=["filename", "chunk_start"],
+            column_specs={
+                "text": FtsSpec(tokenizer="simple"),
+            },
+        ),
+    ).result()
+
+    files = localfs.walk_dir(
+        sourcedir,
+        recursive=True,
+        path_matcher=PatternFilePathMatcher(included_patterns=["*.md"]),
+    )
+    for f in files:
+        coco.mount(process_file, scope / "file" / str(f.relative_path), f, target_table)
+
+
+app = coco_aio.App(
+    app_main,
+    coco_aio.AppConfig(name="TextEmbeddingLanceDBV1"),
+    sourcedir=pathlib.Path("./markdown_files"),
+)
+
+
+# ============================================================================
+# Query demo
+# ============================================================================
+
+
+async def query_once(
+    db: lancedb.LanceDatabase, query: str, *, top_k: int = TOP_K
+) -> None:
+    query_vec = await _embedder.embed_async(query)
+
+    conn = lancedb._get_connection(db.key)
+    table = await conn.open_table(TABLE_NAME)
+
+    search = await table.search(query_vec, vector_column_name="embedding")
+    results = await search.limit(top_k).to_list()
+
+    for r in results:
+        score = 1.0 - r["_distance"]
+        print(f"[{score:.3f}] {r['filename']}")
+        print(f"    {r['text']}")
+        print("---")
+
+
+async def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        await lancedb._register_db_async("text_embedding_db", LANCEDB_URI)
+        db = lancedb.LanceDatabase("text_embedding_db")
+
+        if len(sys.argv) > 2:
+            q = " ".join(sys.argv[2:])
+            await query_once(db, q)
+            return
+
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(db, q)
+        return
+
+    await app.run(report_to_stdout=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

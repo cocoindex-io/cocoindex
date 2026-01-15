@@ -1,83 +1,37 @@
-# Build Google Drive text embedding and semantic search 🔍
-[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+# Google Drive Text Embedding (v1) 📄
 
-In this example, we will build an embedding index based on Google Drive files and perform semantic search.
+This example embeds text files from Google Drive, stores chunk embeddings in Postgres (pgvector), and includes a simple query demo.
 
-It continuously updates the index as files are added / updated / deleted in the source folders. It keeps the index in sync with the source folders in real-time.
+## Prerequisites
 
-We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
+- A running Postgres with the pgvector extension available
+- A Google Cloud service account with Drive access
+- Environment variables:
 
-## Steps
-
-### Indexing Flow
-<img width="801" alt="Google Drive File Ingestion" src="https://github.com/user-attachments/assets/bc772e1e-d7a0-46de-b57c-290a78c128ac" />
-
-1. We will ingest files from Google Drive folders.
-2. For each file, perform chunking (recursively split) and then embedding.
-3. We will save the embeddings and the metadata in Postgres with PGVector.
-
-### Query
-We will match against user-provided text by a SQL query, and reuse the embedding operation in the indexing flow.
-
-## Prerequisite
-
-Before running the example, you need to:
-
-1.  [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
-
-2.  Prepare for Google Drive:
-
-    -   Setup a service account in Google Cloud, and download the credential file.
-    -   Share folders containing files you want to import with the service account's email address.
-
-    See [Setup for Google Drive](https://cocoindex.io/docs/sources/googledrive#setup-for-google-drive) for more details.
-
-3.  Create `.env` file with your credential file and folder IDs.
-    Starting from copying the `.env.example`, and then edit it to fill in your credential file path and folder IDs.
-
-    ```sh
-    cp .env.exmaple .env
-    $EDITOR .env
-    ```
+```sh
+export COCOINDEX_DATABASE_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
+export GOOGLE_SERVICE_ACCOUNT_CREDENTIAL="/path/to/service-account.json"
+export GOOGLE_DRIVE_ROOT_FOLDER_IDS="folder_id_1,folder_id_2"
+```
 
 ## Run
 
-- Install dependencies:
-
-    ```sh
-    pip install -e .
-    ```
-
-- Setup:
-
-    ```sh
-    cocoindex setup main
-    ```
-
-- Run:
-
-    ```sh
-    python main.py
-    ```
-
-During running, it will keep observing changes in the source folders and update the index automatically.
-At the same time, it accepts queries from the terminal, and performs search on top of the up-to-date index.
-
-
-## CocoInsight
-I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline.
-It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
+Install deps:
 
 ```sh
-cocoindex server -ci main
+pip install -e .
 ```
 
-You can also add a `-L` flag to make the server keep updating the index to reflect source changes at the same time:
+Build/update the index:
 
 ```sh
-cocoindex server -ci main
+python main.py
 ```
 
-Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
+Query:
 
-<img width="1316" alt="Use CocoInsight to understand the data of the pipeline" src="https://github.com/user-attachments/assets/0ed848db-3cc3-43d3-8cb8-35069f503288" />
+```sh
+python main.py query "what is self-attention?"
+```
+
+Note: this example does not create a vector index; queries do a sequential scan.
