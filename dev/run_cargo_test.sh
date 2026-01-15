@@ -69,4 +69,8 @@ if [[ -n "${PYTHONPATH_DETECTED}" ]]; then
   fi
 fi
 
-exec uv run cargo test "$@"
+if [[ "${COCOINDEX_SKIP_UV:-}" == "1" ]]; then
+  exec cargo test "$@"
+else
+  exec uv run cargo test "$@"
+fi
