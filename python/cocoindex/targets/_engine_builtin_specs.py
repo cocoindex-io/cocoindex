@@ -131,6 +131,34 @@ class Neo4jDeclaration(op.DeclarationSpec):
 
 
 @dataclass
+class FalkorDBConnection:
+    """Connection spec for FalkorDB."""
+
+    uri: str
+    """FalkorDB connection URI (e.g., "falkor://localhost:6379" or "redis://localhost:6379")"""
+    graph: str | None = None
+    """Graph name to use (defaults to "default")"""
+
+
+class FalkorDB(op.TargetSpec):
+    """Graph storage powered by FalkorDB."""
+
+    connection: AuthEntryReference[FalkorDBConnection]
+    mapping: Nodes | Relationships
+
+
+class FalkorDBDeclaration(op.DeclarationSpec):
+    """Declarations for FalkorDB."""
+
+    kind = "FalkorDB"
+    connection: AuthEntryReference[FalkorDBConnection]
+    nodes_label: str
+    primary_key_fields: Sequence[str]
+    vector_indexes: Sequence[index.VectorIndexDef] = ()
+    fts_indexes: Sequence[index.FtsIndexDef] = ()
+
+
+@dataclass
 class KuzuConnection:
     """Connection spec for Kuzu."""
 

@@ -76,6 +76,7 @@ uuid = { workspace = true }
 tokio-stream = { workspace = true }
 async-stream = { workspace = true }
 neo4rs = { workspace = true }
+falkordb = { workspace = true }
 bytes = { workspace = true }
 rand = { workspace = true }
 indoc = { workspace = true }
