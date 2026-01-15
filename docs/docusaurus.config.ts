@@ -277,6 +277,7 @@ if (!!process.env.COCOINDEX_DOCS_ALGOLIA_API_KEY && !!process.env.COCOINDEX_DOCS
     indexName: 'cocoindex',
     contextualSearch: true,
     searchPagePath: 'search',
+    externalUrlRegex: `^(?!${(config.url + config.baseUrl).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`,
   };
 }
 
