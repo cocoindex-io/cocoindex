@@ -12,9 +12,8 @@ We are super excited for community contributions of all kinds - whether it's cod
 We would love to foster an inclusive, welcoming, and supportive environment. Contributing to CocoIndex should feel collaborative, friendly and enjoyable for everyone. Together, we can build better AI applications through robust data infrastructure.
 
 :::tip Start hacking CocoIndex
-Check out our [Contributing guide](/docs/contributing/guide) to get started!
+Check out our [Contributing guide](../contributing/guide) to get started!
 :::
-
 
 ## Connect With Us
 
