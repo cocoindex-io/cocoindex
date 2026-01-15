@@ -184,7 +184,7 @@
 }
 
 /* Dark mode colors */
-[data-theme='dark'] {
+html[data-theme='dark'] {
   /* Gray scale - Dark mode */
   --radix-gray-1: #111111;
   --radix-gray-2: #1a1a1a;
