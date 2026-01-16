@@ -66,6 +66,7 @@ const sidebars: SidebarsConfig = {
       label: 'Contributing',
       collapsed: false,
       items: [
+        'contributing/setup_dev_environment',
         'contributing/guide',
         'contributing/new_built_in_target',
       ],
