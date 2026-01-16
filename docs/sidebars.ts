@@ -8,56 +8,64 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'getting_started/overview',
-        {
-          type: 'doc',
-          id: 'getting_started/concept',
-          label: 'Concept',
-        },
         'getting_started/quickstart',
         'getting_started/installation',
       ],
     },
     {
       type: 'category',
-      label: 'CocoIndex Core',
+      label: 'Programming Guide',
       collapsed: false,
       items: [
-        'core/cli',
-        'core/memoization_keys',
+        'programming_guide/concepts',
+        'programming_guide/sdk_overview',
+        'programming_guide/component',
+        'programming_guide/function',
+        'programming_guide/effect',
+        'programming_guide/app',
+        'programming_guide/environment_settings',
+        'programming_guide/context',
       ],
     },
     {
       type: 'category',
-      label: 'Built-in Connectors',
+      label: 'Connectors',
       collapsed: false,
       items: [
-        'built_in_connectors/localfile',
-        'built_in_connectors/postgres',
+        'connectors/localfile',
+        'connectors/postgres',
+        'connectors/lancedb',
       ],
     },
     {
       type: 'category',
-      label: 'Custom Connectors',
-      link: { type: 'doc', id: 'custom_connectors/index' },
+      label: 'Utilities',
       collapsed: false,
-      items: [],
+      items: [
+        'utilities/index',
+        'utilities/sentence-transformers',
+        'utilities/text',
+      ],
     },
     {
       type: 'category',
-      label: 'Extra Utilities',
-      link: { type: 'doc', id: 'extras/index' },
+      label: 'Advanced Topics',
       collapsed: false,
       items: [
-        'extras/sentence-transformers',
-        'extras/text',
+        'advanced_topics/memoization_keys',
+        'advanced_topics/effect_provider',
       ],
+    },
+    {
+      type: 'doc',
+      id: 'cli',
+      label: 'CLI Reference',
     },
     {
       type: 'category',
       label: 'Contributing',
       collapsed: false,
       items: [
-        'contributing/setup_dev_environment',
         'contributing/guide',
         'contributing/new_built_in_target',
       ],
@@ -71,7 +79,6 @@ const sidebars: SidebarsConfig = {
       ],
     },
   ],
-
 };
 
 export default sidebars;

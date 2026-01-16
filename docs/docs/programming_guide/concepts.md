@@ -1,13 +1,13 @@
 ---
-title: Concept
+title: Concepts
 ---
 
-# Concept
+# Concepts
 
 This document explains the core concepts of CocoIndex.
 
-
 ## Function
+
 A **function** is just a Python function decorated with `@coco.function`. You can call it like any normal function. The decorator gives CocoIndex superpowers:
 
 - **Change tracking.** When a function’s implementation changes, it signals dependents to be reprocessed. We’ll also expose advanced controls, e.g. manually-controlled behavior version and ttl-based invalidation.
@@ -17,10 +17,10 @@ A **function** is just a Python function decorated with `@coco.function`. You ca
 A function always takes `Scope` as the first argument, which carries CocoIndex runtime information and users should pass on when calling other CocoIndex functions or declare effects.
 
 ## Effect
+
 An **effect** is a unit of desired external state. Users declare effects; CocoIndex takes Actions to sync external systems to match those Effects.
 
 Example effects and corresponding actions taken by CocoIndex:
-
 
 <table>
   <thead>
@@ -67,13 +67,16 @@ When the run finishes, CocoIndex diffs effects this run against effects from the
 Each component should have a distinct scope, each with a unique path. The unique path should be stable, and CocoIndex uses it to identify effects declared for the same component across runs. This is essential to make sure effects declared by the same component are synced atomically whenever possible.
 
 For example, imagine the following scenarios:
+
 - If a file like `1.txt` changes (for instance, its title is updated), the corresponding component at `/Papers/files/1.txt` is re-executed, and CocoIndex updates the target table with a single atomic operation (such as a delete followed by an insert within a transaction).
 - If `2.txt` is removed, the component for `/Papers/files/2.txt` is not remounted. When the parent component (e.g., `/Papers`) completes, CocoIndex notices the absence of the child component and its effects, and removes the corresponding row from the target table.
 
 For a small set of data, you can always use a single top-level component (e.g., `process_papers_main`) that owns all effects – all external actions are taken in one transaction. Once the data size is larger, you can use smaller components (one per file), so changes for each can happen piece by piece, which makes changes faster.
 
 ## Context
+
 **Context** is how your code gets handles to external resources (databases, object stores, HTTP clients) that live outside any single component run. You register them during `@coco.global_lifespan` so they’re available to all components and to out-of-band operations (e.g., `cocoindex drop`).
 
 ## App
+
 An app bundles your top-level function and arguments into something runnable, and mounts that function as the app’s top-level component.
