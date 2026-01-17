@@ -71,11 +71,11 @@ class ComponentMountHandle:
         self._lock = threading.Lock()
         self._ready_called = False
 
-    def ready(self) -> None:
+    def wait_until_ready(self) -> None:
         """Wait until the component is ready. Can be called multiple times."""
         with self._lock:
             if not self._ready_called:
-                self._core.ready()
+                self._core.wait_until_ready()
                 self._ready_called = True
 
 
