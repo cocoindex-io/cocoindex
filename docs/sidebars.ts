@@ -17,7 +17,7 @@ const sidebars: SidebarsConfig = {
       label: 'Programming Guide',
       collapsed: false,
       items: [
-        'programming_guide/concepts',
+        'programming_guide/core_concepts',
         'programming_guide/sdk_overview',
         'programming_guide/component',
         'programming_guide/function',
