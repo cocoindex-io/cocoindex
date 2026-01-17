@@ -5,12 +5,13 @@ Integration tests for Doris connector with VeloDB Cloud.
 Run with: pytest python/cocoindex/tests/targets/test_doris_integration.py -v
 
 Environment variables for custom Doris setup:
-- DORIS_FE_HOST: FE host (default: VeloDB Cloud)
+- DORIS_FE_HOST: FE host (required)
+- DORIS_PASSWORD: Password (required)
 - DORIS_HTTP_PORT: HTTP port for Stream Load (default: 8080)
 - DORIS_QUERY_PORT: MySQL protocol port (default: 9030)
-- DORIS_USERNAME: Username (default: VeloDB)
-- DORIS_PASSWORD: Password
+- DORIS_USERNAME: Username (default: root)
 - DORIS_DATABASE: Test database (default: cocoindex_test)
+- DORIS_ASYNC_TIMEOUT: Timeout in seconds for async operations like index changes (default: 15)
 """
 
 import asyncio
@@ -75,6 +76,10 @@ from cocoindex.index import (
 #   DORIS_QUERY_PORT - MySQL port (default: 9030)
 #   DORIS_USERNAME - Username (default: root)
 #   DORIS_DATABASE - Test database (default: cocoindex_test)
+#   DORIS_ASYNC_TIMEOUT - Timeout for async operations (default: 15)
+
+# Timeout for Doris async operations (index creation/removal, schema changes)
+ASYNC_OPERATION_TIMEOUT = int(os.getenv("DORIS_ASYNC_TIMEOUT", "15"))
 
 
 def get_test_config() -> dict[str, Any] | None:
@@ -476,6 +481,92 @@ class TestTableLifecycle:
         # Verify dropped
         exists = await _table_exists(doris_spec, doris_spec.database, doris_spec.table)
         assert not exists
+
+    @pytest.mark.asyncio
+    async def test_vector_without_dimension_stored_as_json(
+        self, doris_spec: DorisTarget, ensure_database, cleanup_table
+    ):
+        """Test that vector fields without dimension are stored as JSON.
+
+        When a vector field doesn't have a fixed dimension, it cannot be stored
+        as ARRAY<FLOAT> or have a vector index. Instead, it falls back to JSON
+        storage, which is consistent with how other targets (Postgres, Qdrant)
+        handle this case.
+        """
+        # Create a vector field without dimension
+        vec_schema = VectorTypeSchema(
+            element_type=BasicValueType(kind="Float32"),
+            dimension=None,  # No dimension specified
+        )
+        basic_type = BasicValueType(kind="Vector", vector=vec_schema)
+        key_fields = [_mock_field("id", "Int64")]
+        value_fields = [
+            _mock_field("content", "Str"),
+            FieldSchema(
+                name="embedding",
+                value_type=EnrichedValueType(type=basic_type),
+            ),
+        ]
+
+        state = _State(
+            key_fields_schema=key_fields,
+            value_fields_schema=value_fields,
+            fe_http_port=doris_spec.fe_http_port,
+            query_port=doris_spec.query_port,
+            username=doris_spec.username,
+            password=doris_spec.password,
+            vector_indexes=None,  # No vector index since no dimension
+        )
+
+        key = _TableKey(doris_spec.fe_host, doris_spec.database, doris_spec.table)
+        ddl = _generate_create_table_ddl(key, state)
+        await _execute_ddl(doris_spec, ddl)
+
+        # Verify table was created
+        exists = await _table_exists(doris_spec, doris_spec.database, doris_spec.table)
+        assert exists
+
+        # Verify the embedding column is JSON (not ARRAY<FLOAT>)
+        result = await _execute_ddl(
+            doris_spec,
+            f"SHOW CREATE TABLE `{doris_spec.database}`.`{doris_spec.table}`",
+        )
+        create_stmt = result[0].get("Create Table", "")
+        # JSON columns are stored as JSON type in Doris
+        assert (
+            "`embedding` JSON" in create_stmt
+            or "`embedding` json" in create_stmt.lower()
+        ), f"embedding should be JSON type, got: {create_stmt}"
+        assert "ARRAY<FLOAT>" not in create_stmt, (
+            f"embedding should NOT be ARRAY<FLOAT>, got: {create_stmt}"
+        )
+
+        # Test that we can insert JSON data into the vector column
+        async with aiohttp.ClientSession(
+            auth=aiohttp.BasicAuth(doris_spec.username, doris_spec.password),
+        ) as session:
+            # Insert data with embedding as a JSON array
+            data = [
+                {"id": 1, "content": "test", "embedding": [0.1, 0.2, 0.3]},
+                {
+                    "id": 2,
+                    "content": "test2",
+                    "embedding": [0.4, 0.5, 0.6, 0.7],
+                },  # Different length is OK for JSON
+            ]
+            result = await _stream_load(session, doris_spec, data)
+            assert result.get("Status") == "Success", f"Stream Load failed: {result}"
+
+        # Verify data was inserted
+        await asyncio.sleep(2)  # Wait for data to be visible
+        query_result = await _execute_ddl(
+            doris_spec,
+            f"SELECT id, embedding FROM `{doris_spec.database}`.`{doris_spec.table}` ORDER BY id",
+        )
+        assert len(query_result) == 2
+        # JSON stored vectors can have different lengths
+        assert query_result[0]["id"] == 1
+        assert query_result[1]["id"] == 2
 
 
 # ============================================================
@@ -885,15 +976,21 @@ class TestIndexLifecycle:
 
         await _sync_indexes(doris_spec, key, state_with_index, state_no_index)
 
-        await asyncio.sleep(3)
-
-        # Verify index was removed
-        result = await _execute_ddl(
-            doris_spec,
-            f"SHOW CREATE TABLE {doris_spec.database}.{doris_spec.table}",
-        )
-        create_stmt = result[0].get("Create Table", "")
-        assert "idx_content_inv" not in create_stmt, "Index should be removed"
+        # Wait for index removal with retry (Doris async operation)
+        for i in range(ASYNC_OPERATION_TIMEOUT):
+            await asyncio.sleep(1)
+            result = await _execute_ddl(
+                doris_spec,
+                f"SHOW CREATE TABLE {doris_spec.database}.{doris_spec.table}",
+            )
+            create_stmt = result[0].get("Create Table", "")
+            if "idx_content_inv" not in create_stmt:
+                break
+        else:
+            pytest.fail(
+                f"Index was not removed after {ASYNC_OPERATION_TIMEOUT}s. "
+                f"Current schema: {create_stmt}"
+            )
 
     @pytest.mark.asyncio
     async def test_change_index_parameters(

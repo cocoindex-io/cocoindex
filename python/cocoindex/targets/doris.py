@@ -110,6 +110,10 @@ class DorisTarget(op.TargetSpec):
     stream_load_timeout: int = 600
     auto_create_table: bool = True
 
+    # Timeout configuration (seconds)
+    schema_change_timeout: int = 60  # Timeout for ALTER TABLE operations
+    index_build_timeout: int = 300  # Timeout for BUILD INDEX operations
+
     # Retry configuration
     max_retries: int = 3
     retry_base_delay: float = 1.0
@@ -189,6 +193,9 @@ class _State:
     max_retries: int = 3
     retry_base_delay: float = 1.0
     retry_max_delay: float = 30.0
+    # Timeout configuration
+    schema_change_timeout: int = 60
+    index_build_timeout: int = 300
     # Table creation behavior
     auto_create_table: bool = True
     # Schema evolution mode
@@ -385,15 +392,21 @@ def _convert_value_type_to_doris_type(value_type: EnrichedValueType) -> str:
         kind: str = base_type.kind
 
         if kind == "Vector":
-            # Vector columns must be ARRAY<FLOAT> NOT NULL for index creation
-            return "ARRAY<FLOAT>"
+            # Only vectors with fixed dimension can be stored as ARRAY<FLOAT>
+            # for index creation. Others fall back to JSON.
+            if _is_vector_indexable(value_type):
+                return "ARRAY<FLOAT>"
+            else:
+                return "JSON"
 
         if kind in _DORIS_TYPE_MAPPING:
             return _DORIS_TYPE_MAPPING[kind]
 
-        raise ValueError(f"Unsupported type kind for Doris: {kind}")
+        # Fallback to JSON for unsupported types
+        return "JSON"
 
-    raise ValueError(f"Unsupported value type for Doris: {value_type}")
+    # Fallback to JSON for unknown value types
+    return "JSON"
 
 
 def _convert_value_for_doris(value: Any) -> Any:
@@ -424,8 +437,12 @@ def _convert_value_for_doris(value: Any) -> Any:
 
 def _get_vector_dimension(
     value_fields_schema: list[FieldSchema], field_name: str
-) -> int:
-    """Get the dimension of a vector field."""
+) -> int | None:
+    """Get the dimension of a vector field.
+
+    Returns None if the field is not found, not a vector type, or doesn't have a dimension.
+    This allows fallback to JSON storage for vectors without fixed dimensions.
+    """
     for field in value_fields_schema:
         if field.name == field_name:
             base_type = field.value_type.type
@@ -435,8 +452,10 @@ def _get_vector_dimension(
                     and base_type.vector.dimension is not None
                 ):
                     return base_type.vector.dimension
-            raise ValueError(f"Field {field_name} is not a vector type with dimension")
-    raise ValueError(f"Vector field {field_name} not found in schema")
+            # Field exists but is not a vector with dimension
+            return None
+    # Field not found
+    return None
 
 
 def _get_doris_metric_type(metric: VectorSimilarityMetric) -> str:
@@ -460,6 +479,11 @@ def _extract_vector_dimension(value_type: EnrichedValueType) -> int | None:
         if base_type.vector is not None:
             return base_type.vector.dimension
     return None
+
+
+def _is_vector_indexable(value_type: EnrichedValueType) -> bool:
+    """Check if a vector type can be indexed (has fixed dimension)."""
+    return _extract_vector_dimension(value_type) is not None
 
 
 def _extract_array_element_type(type_str: str) -> str | None:
@@ -1248,7 +1272,9 @@ async def _sync_indexes(
 
     # Wait for schema change to complete before creating new indexes
     if dropped_any and (vec_to_add or inv_to_add):
-        if not await _wait_for_schema_change(spec, key, timeout=60):
+        if not await _wait_for_schema_change(
+            spec, key, timeout=spec.schema_change_timeout
+        ):
             raise DorisSchemaError(
                 f"Timeout waiting for DROP INDEX to complete on table {key.table}"
             )
@@ -1263,7 +1289,9 @@ async def _sync_indexes(
 
         try:
             # Wait for any pending schema changes before CREATE INDEX
-            if not await _wait_for_schema_change(spec, key, timeout=60):
+            if not await _wait_for_schema_change(
+                spec, key, timeout=spec.schema_change_timeout
+            ):
                 raise DorisSchemaError(
                     f"Timeout waiting for schema change before creating index {idx_name}"
                 )
@@ -1283,7 +1311,9 @@ async def _sync_indexes(
             )
 
             # Wait for index build to complete using SHOW BUILD INDEX
-            if not await _wait_for_index_build(spec, key, idx.name, timeout=300):
+            if not await _wait_for_index_build(
+                spec, key, idx.name, timeout=spec.index_build_timeout
+            ):
                 raise DorisSchemaError(
                     f"Timeout waiting for index build {idx.name} to complete"
                 )
@@ -1304,7 +1334,9 @@ async def _sync_indexes(
 
         try:
             # Wait for any pending schema changes before CREATE INDEX
-            if not await _wait_for_schema_change(spec, key, timeout=60):
+            if not await _wait_for_schema_change(
+                spec, key, timeout=spec.schema_change_timeout
+            ):
                 raise DorisSchemaError(
                     f"Timeout waiting for schema change before creating index {idx_name}"
                 )
@@ -1441,6 +1473,18 @@ class _Connector:
 
                 dimension = _get_vector_dimension(value_fields_schema, idx.field_name)
 
+                # Skip vector index if dimension is not available
+                # The field will be stored as JSON instead
+                if dimension is None:
+                    _logger.warning(
+                        "Field '%s' does not have a fixed vector dimension. "
+                        "It will be stored as JSON and vector index will not be created. "
+                        "Only vectors with fixed dimensions support ARRAY<FLOAT> storage "
+                        "and vector indexing in Doris.",
+                        idx.field_name,
+                    )
+                    continue
+
                 # Determine index type and parameters from method
                 index_type = "hnsw"  # Default to HNSW
                 max_degree: int | None = None
@@ -1500,6 +1544,8 @@ class _Connector:
             max_retries=spec.max_retries,
             retry_base_delay=spec.retry_base_delay,
             retry_max_delay=spec.retry_max_delay,
+            schema_change_timeout=spec.schema_change_timeout,
+            index_build_timeout=spec.index_build_timeout,
             auto_create_table=spec.auto_create_table,
             schema_evolution=spec.schema_evolution,
         )
@@ -1751,7 +1797,9 @@ class _Connector:
                     # Wait for schema change to complete before proceeding
                     # Doris tables go through SCHEMA_CHANGE state during ALTER TABLE
                     # and reject writes to newly added columns until complete
-                    await _wait_for_schema_change(spec, key, timeout=60)
+                    await _wait_for_schema_change(
+                        spec, key, timeout=spec.schema_change_timeout
+                    )
 
                     # Update actual_schema with the new column
                     actual_schema[field.name] = _ColumnInfo(
