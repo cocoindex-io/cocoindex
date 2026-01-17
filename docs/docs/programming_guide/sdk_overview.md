@@ -15,8 +15,8 @@ The CocoIndex SDK is organized into several modules:
 
 | Package | Description |
 |---------|-------------|
-| `cocoindex` | Main package with synchronous core APIs |
 | `cocoindex.asyncio` | Asynchronous core APIs for `async`/`await` workflows |
+| `cocoindex` | Synchronous core APIs |
 
 ### Sub-packages
 
@@ -66,18 +66,18 @@ StableKey = None | bool | int | str | bytes | uuid.UUID | tuple[StableKey, ...]
 
 Common examples include strings (like `"setup"` or `"table"`), integers, and UUIDs. Tuples allow composite keys when needed.
 
-## Sync vs Async APIs
+## Async vs Sync APIs
 
-CocoIndex provides both synchronous and asynchronous APIs to fit different application patterns.
+CocoIndex provides both asynchronous and synchronous APIs to fit different application patterns.
 
-- **`cocoindex`** — Use for synchronous applications or simpler scripts.
 - **`cocoindex.asyncio`** — Use for applications that leverage `async`/`await`, or when integrating with async frameworks and I/O-bound workloads.
+- **`cocoindex`** — Use for synchronous applications or simpler scripts.
 
 The two packages relate as follows:
 
-- **APIs with sync/async variants** — Some core APIs have separate sync and async implementations. For example, the `App` class exists in both packages — `cocoindex.App` provides a blocking `run()` method, while `cocoindex.asyncio.App` provides an async `run()` method you call with `await`.
+- **APIs with async/sync variants** — Some core APIs have separate async and sync implementations. For example, the `App` class exists in both packages — `cocoindex.asyncio.App` provides an async `run()` method you call with `await`, while `cocoindex.App` provides a blocking `run()` method.
 
-- **Shared APIs** — Many APIs are non-blocking and work identically in both contexts. For instance, `Scope` and effect declaration APIs are shared between both packages. Decorators like `@function` and `@lifespan` are also shared — they accept both sync and async functions. You can import these from either `cocoindex` or `cocoindex.asyncio`.
+- **Shared APIs** — Many APIs are non-blocking and work identically in both contexts. For instance, `Scope` and effect declaration APIs are shared between both packages. Decorators like `@function` and `@lifespan` are also shared — they accept both sync and async functions. You can import these from either `cocoindex.asyncio` or `cocoindex`.
 
 ### Mixing Sync and Async
 
@@ -85,31 +85,7 @@ You cannot directly call an async function from a sync function, and you should 
 
 As a result, you need to make sure each component uses sync or async consistently internally, but there are no such constraints across components. This introduces extra flexibility and composability across your pipeline.
 
-## Example: Sync vs Async Usage
-
-### Synchronous APIs
-
-```python
-import cocoindex as coco
-
-@coco.lifespan
-def coco_lifespan(builder: coco.EnvironmentBuilder):
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
-    yield
-
-@coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path):
-    # ... processing logic ...
-    pass
-
-app = coco.App(app_main, coco.AppConfig(name="MyApp"), sourcedir=pathlib.Path("./data"))
-
-def main():
-    app.run(report_to_stdout=True)
-
-if __name__ == "__main__":
-    main()
-```
+## Example: Async vs Sync Usage
 
 ### Asynchronous APIs
 
@@ -137,8 +113,32 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### Synchronous APIs
+
+```python
+import cocoindex as coco
+
+@coco.lifespan
+def coco_lifespan(builder: coco.EnvironmentBuilder):
+    builder.settings.db_path = pathlib.Path("./cocoindex.db")
+    yield
+
+@coco.function
+def app_main(scope: coco.Scope, sourcedir: pathlib.Path):
+    # ... processing logic ...
+    pass
+
+app = coco.App(app_main, coco.AppConfig(name="MyApp"), sourcedir=pathlib.Path("./data"))
+
+def main():
+    app.run(report_to_stdout=True)
+
+if __name__ == "__main__":
+    main()
+```
+
 :::tip
-Whether `app_main` (the root component's function) is sync or async is orthogonal to whether you use `coco.App` or `coco_aio.App`.
+Whether `app_main` (the root component's function) is sync or async is orthogonal to whether you use `coco_aio.App` or `coco.App`.
 :::
 
 ## Common Import Pattern
@@ -146,11 +146,11 @@ Whether `app_main` (the root component's function) is sync or async is orthogona
 A typical CocoIndex application imports from multiple modules:
 
 ```python
-import cocoindex as coco  # or: import cocoindex.asyncio as coco_aio
+import cocoindex.asyncio as coco_aio  # or: import cocoindex as coco
 
 from cocoindex.connectors import localfs, postgres
 from cocoindex.extras.text import RecursiveSplitter
 from cocoindex.resources.file import FileLike
 ```
 
-The aliases `coco` and `coco_aio` are common conventions in examples.
+The aliases `coco_aio` and `coco` are common conventions in examples.

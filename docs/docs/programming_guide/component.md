@@ -31,40 +31,40 @@ CocoIndex provides two APIs to mount components: `mount()` and `mount_run()`.
 Use `mount()` when you don't need a return value from the component. It schedules the component to run and returns a handle:
 
 ```python
-handle = coco.mount(process_file, scope / "file" / filename, file, target)
+handle = coco_aio.mount(process_file, scope / "file" / filename, file, target)
 ```
 
 The handle provides a method you can call if you need to wait until the component is fully ***ready*** — meaning all its effects have been applied to external systems and all its children are ready:
 
 ```python
-handle.wait_until_ready()  # Blocks until ready (sync API)
+await handle.ready()  # Async API
 ```
 
-The corresponding async API:
+The corresponding sync API:
 
 ```python
-handle = coco_aio.mount(process_file, scope / "file" / filename, file, target)
-await handle.ready()
+handle = coco.mount(process_file, scope / "file" / filename, file, target)
+handle.wait_until_ready()  # Blocks until ready
 ```
 
-You usually only need to call `wait_until_ready()` (or `ready()` in async) when you have logic that depends on the component's effects being applied — for example, querying the latest data from a target table after syncing it.
+You usually only need to call `ready()` (or `wait_until_ready()` in sync) when you have logic that depends on the component's effects being applied — for example, querying the latest data from a target table after syncing it.
 
 ### `mount_run()` — When You Need the Return Value
 
 Use `mount_run()` when you need the component's return value. It returns a handle with a `result()` method:
 
 ```python
-handle = coco.mount_run(setup_table, scope / "setup", table_name="docs")
-table = handle.result()  # Blocks until ready, then returns the value
+handle = coco_aio.mount_run(setup_table, scope / "setup", table_name="docs")
+table = await handle.result()  # Waits until ready, then returns the value
 ```
 
 Calling `result()` waits until the component is ready and then returns the value.
 
-The corresponding async API:
+The corresponding sync API:
 
 ```python
-handle = coco_aio.mount_run(setup_table, scope / "setup", table_name="docs")
-table = await handle.result()
+handle = coco.mount_run(setup_table, scope / "setup", table_name="docs")
+table = handle.result()  # Blocks until ready, then returns the value
 ```
 
 A common use of `mount_run()` is to obtain an [effect provider](./effect#obtaining-effect-providers) after its parent effect is applied.
