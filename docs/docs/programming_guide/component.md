@@ -34,14 +34,20 @@ Use `mount()` when you don't need a return value from the component. It schedule
 handle = coco.mount(process_file, scope / "file" / filename, file, target)
 ```
 
-The handle provides a `ready()` method you can call if you need to wait until the component is fully ***ready*** — meaning all its effects have been applied to external systems and all its children are ready:
+The handle provides a method you can call if you need to wait until the component is fully ***ready*** — meaning all its effects have been applied to external systems and all its children are ready:
 
 ```python
-handle.ready()  # Blocks until ready (sync API)
-await handle.ready()  # Awaits until ready (async API)
+handle.wait_until_ready()  # Blocks until ready (sync API)
 ```
 
-You usually only need to call `ready()` when you have logic that depends on the component's effects being applied — for example, querying the latest data from a target table after syncing it.
+The corresponding async API:
+
+```python
+handle = coco_aio.mount(process_file, scope / "file" / filename, file, target)
+await handle.ready()
+```
+
+You usually only need to call `wait_until_ready()` (or `ready()` in async) when you have logic that depends on the component's effects being applied — for example, querying the latest data from a target table after syncing it.
 
 ### `mount_run()` — When You Need the Return Value
 
@@ -53,6 +59,13 @@ table = handle.result()  # Blocks until ready, then returns the value
 ```
 
 Calling `result()` waits until the component is ready and then returns the value.
+
+The corresponding async API:
+
+```python
+handle = coco_aio.mount_run(setup_table, scope / "setup", table_name="docs")
+table = await handle.result()
+```
 
 A common use of `mount_run()` is to obtain an [effect provider](./effect#obtaining-effect-providers) after its parent effect is applied.
 

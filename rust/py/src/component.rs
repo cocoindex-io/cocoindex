@@ -193,7 +193,7 @@ impl PyComponentMountHandle {
         future_into_py(py, async move { handle.ready().await.into_py_result() })
     }
 
-    pub fn ready<'py>(&mut self, py: Python<'py>) -> PyResult<()> {
+    pub fn wait_until_ready<'py>(&mut self, py: Python<'py>) -> PyResult<()> {
         let handle = self.take_handle()?;
         py.detach(|| get_runtime().block_on(async move { handle.ready().await.into_py_result() }))
     }
