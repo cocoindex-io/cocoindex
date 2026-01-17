@@ -1,61 +1,113 @@
 ---
 title: Effect
-description: Understanding effects as units of desired external state, and effect providers for declaring dependent effects.
+description: Understanding effects as units of desired external state, effect hierarchies, and how to declare effects.
 ---
 
 # Effect
 
 An **Effect** is a unit of desired external state produced by your transformations. On each run, CocoIndex compares the newly declared effects with those from the previous run and applies the necessary changes — creating, updating, or deleting — so that external systems match your intent.
 
-TODO: Add more content about effects.
+Effects can form hierarchies (e.g., a table contains rows). CocoIndex connectors provide specific APIs to declare effects at each level.
 
-## Effect Providers
+See [Core Concepts](./core_concepts.md#effects-desired-targets-in-external-systems) for examples of how effects map to external system operations.
 
-An **effect provider** is an object that allows you to declare effects that depend on a "parent" effect. This pattern is common when you have hierarchical relationships between effects — for example, a database table (parent) and its rows (children).
+## Declaring Effects with Target Connectors
 
-Effect providers:
+CocoIndex connectors provide **effect providers** with specific `declare_*` methods for declaring effects. For example:
 
-- Are returned by functions that declare the parent effect
-- Provide methods to declare child effects (e.g., `declare_row()`, `declare_file()`)
-- Ensure the parent effect exists before child effects can be declared
+- `postgres.TableTarget` provides `declare_row()` to declare a row in a table
+- `localfs.DirTarget` provides `declare_file()` to declare a file in a directory
 
-### Common Pattern: Dependent Effects
+```python
+# Declare a row effect
+table_target.declare_row(scope, row=DocEmbedding(...))
 
-A common pattern arises when one effect depends on another. For example, you might need to declare a database table before you can insert rows into it.
+# Declare a file effect
+dir_target.declare_file(scope, filename="output.html", content=html)
+```
+
+## Obtaining Effect Providers
+
+Some effect providers are created once a parent effect is ready. For example, you can only declare rows after the table exists, or files after the directory exists.
 
 The pattern is:
 
-1. Mount a child component that declares the parent effect and returns an effect provider
-2. Call `result()` to wait until the parent effect is applied and get the provider
-3. Pass the provider to other components, which use it to declare child effects
+1. **Mount** a component that declares the parent effect
+2. **Call `.result()`** to wait until the parent effect is applied and get the provider
+3. **Use the provider** to declare child effects
 
-Here's an example from a text embedding pipeline:
+### Example: Writing Rows to PostgreSQL
 
 ```python
+from cocoindex.connectors import postgres
+
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    target_db = scope.use(PG_DB)
+    db = scope.use(PG_DB)
 
-    # Mount a component that declares the table effect and returns an effect provider
-    # Call .result() to wait until the table exists and get the provider
-    target_table = coco.mount_run(
-        target_db.declare_table_target,
+    # Declare the table effect, wait for it, get back a TableTarget provider
+    table = coco.mount_run(
+        db.declare_table_target,
         scope / "setup" / "table",
         table_name="doc_embeddings",
         table_schema=postgres.TableSchema(DocEmbedding, primary_key=["filename", "chunk_start"]),
     ).result()
 
-    # Pass the effect provider to child components to declare row effects
-    files = localfs.walk_dir(sourcedir, ...)
-    for f in files:
-        coco.mount(process_file, scope / "file" / str(f.relative_path), f, target_table)
+    # Use the provider to declare row effects
+    for file in localfs.walk_dir(sourcedir, ...):
+        coco.mount(process_file, scope / "file" / str(file.relative_path), file, table)
+
+@coco.function(memo=True)
+def process_file(scope: coco.Scope, file: FileLike, table: postgres.TableTarget) -> None:
+    # ... process file into chunks ...
+    for chunk in chunks:
+        table.declare_row(scope, row=DocEmbedding(...))
 ```
 
-In this pattern:
+### Example: Writing Files to a Directory
 
-- The `declare_table_target` component declares the table effect and returns a `TableTarget` effect provider
-- Calling `.result()` ensures the table is created before proceeding
-- The `target_table` effect provider is passed to child components, which call methods like `declare_row()` to declare row effects
-- Each file gets its own component, so changes to individual files result in atomic updates to their rows
+```python
+from cocoindex.connectors import localfs
 
-See [Component](./component.md) for more on mounting and `mount_run()`.
+@coco.function
+def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+    # Declare the directory effect, wait for it, get back a DirTarget provider
+    target = coco.mount_run(
+        localfs.declare_dir_target, scope / "setup", outdir
+    ).result()
+
+    for file in localfs.walk_dir(sourcedir, ...):
+        coco.mount(process_file, scope / "file" / str(file.relative_path), file, target)
+
+@coco.function(memo=True)
+def process_file(scope: coco.Scope, file: FileLike, target: localfs.DirTarget) -> None:
+    html = render_markdown(file.read_text())
+    target.declare_file(scope, filename=file.name + ".html", content=html)
+```
+
+See [Component](./component.md) for more on `mount_run()`.
+
+:::tip Type Safety for Effect Providers
+Effect providers have two states: **pending** (just created) and **resolved** (after the parent effect is applied). The type system tracks this — if you try to use a pending provider in the same component that declares the parent effect, type checkers like mypy will flag the error.
+:::
+
+## Effect Hierarchies
+
+The pattern above reflects that effects often form **hierarchies** — a parent effect creates the container, and child effects populate it:
+
+| Parent Effect | Child Effects |
+|---------------|---------------|
+| A directory on disk | Files in that directory |
+| A relational database table (schema, columns) | Rows in that table |
+| A graph database table | Nodes and relationships in that graph |
+
+CocoIndex ensures the parent exists before children are added, and properly cleans up children when the parent changes.
+
+## Generic Effect APIs
+
+CocoIndex also provides generic effect APIs for cases where connector-specific APIs don't cover your needs:
+
+- `declare_effect()` — declare a leaf effect
+- `declare_effect_with_child()` — declare an effect that provides child effects
+
+These are exported from `cocoindex` and used internally by connectors like `postgres` and `localfs`. For defining custom effect providers, see [Effect Provider](../advanced_topics/effect_provider.md).
