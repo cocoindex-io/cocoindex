@@ -54,7 +54,7 @@ table = handle.result()  # Blocks until ready, then returns the value
 
 Calling `result()` waits until the component is ready and then returns the value.
 
-A common use of `mount_run()` is to obtain an [effect provider](./effect.md#effect-providers) after its parent effect is applied — see [Dependent Effects](./effect.md#common-pattern-dependent-effects) for this pattern.
+A common use of `mount_run()` is to obtain an [effect provider](./effect#obtaining-effect-providers) after its parent effect is applied.
 
 ## Granularity Trade-offs
 
