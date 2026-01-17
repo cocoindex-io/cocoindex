@@ -67,7 +67,7 @@ An ***App*** is the top-level thing you run.
 It names your pipeline, binds a top-level function and its parameters, which establishes the root Component, and all work happens within the component tree rooted there.
 Given the same code and inputs, runs are repeatable; when data or code changes, only the necessary parts re-execute.
 
-## Incrementality: data + code
+## Incremental computation: data + code
 
 CocoIndex minimizes work through **function-level memoization** and **change tracking**:
 

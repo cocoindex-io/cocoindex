@@ -58,7 +58,7 @@ def process_chunk(scope: coco.Scope, chunk: Chunk) -> Embedding:
 The change tracking capability is still under construction.
 :::
 
-## Accessing Scope
+## Propagation of Scope
 
 A function decorated with `@function` needs access to a `Scope` to achieve its capabilities. There are two ways to provide it:
 
@@ -97,10 +97,9 @@ However, implicit propagation **does not work** in situations where Python's con
 In these cases, pass `Scope` explicitly as the first argument.
 
 :::tip When to Pass Scope Explicitly
-You only need to pass `Scope` explicitly (as the first argument) when deemed necessary:
 
-- You already need to pass `Scope` down because another function explicitly needs it (e.g., to declare an effect)
-- You call a `@function` not through a regular call (e.g., call through your own thread pool)
+- If your function declares effects or mounts child components, you need `Scope` anyway — pass it explicitly as the first argument.
+- Otherwise, your function is likely a pure transformation. Prefer keeping the signature simple (which signals it's a pure transformation), and only pass `Scope` explicitly at the hop where context variables aren't preserved (e.g., `ThreadPoolExecutor`).
 
-Otherwise, there's no need to add this extra argument.
+**Rule of thumb:** You only need to pay special attention when invoking functions in a way that context variables are not preserved — such as `ThreadPoolExecutor`.
 :::

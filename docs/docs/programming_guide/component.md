@@ -1,27 +1,13 @@
 ---
 title: Component
-description: Understanding components as the sync boundaries for effects, including Scope and mounting APIs.
+description: Understanding components as the sync boundaries for effects, including mounting APIs.
 ---
 
 # Component
 
 A **Component** is a long-lived instance that defines the boundary where CocoIndex syncs effects to external systems. Components are identified by a stable path and own all effects declared within them.
 
-## Scope
-
-Every component function receives a `Scope` as its first argument. The scope carries:
-
-- A **stable path** that uniquely identifies the component across runs
-- Context information the engine uses for effect declaration and component mounting
-
-You create child scopes using the `/` operator:
-
-```python
-scope / "setup" / "table"    # Creates path like /setup/table
-scope / "file" / filename    # Creates path like /file/readme.md
-```
-
-The stable path must be unique for each component and should be consistent across runs — CocoIndex uses it to match effects from previous runs and determine what changed.
+See [Scope](./sdk_overview.md#scope) in the SDK Overview for details on how scopes and stable paths work.
 
 ## Effect Sync Boundaries
 

@@ -1,6 +1,6 @@
 ---
 title: SDK Overview
-description: Overview of the CocoIndex Python SDK package organization, sync vs async APIs, and how to mix sync/async across components.
+description: Overview of the CocoIndex Python SDK package organization, common types like Scope and StableKey, sync vs async APIs, and how to mix sync/async across components.
 ---
 
 # SDK Overview
@@ -35,6 +35,36 @@ from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
 ```
+
+## Common Types
+
+### Scope
+
+`Scope` is a handle that many CocoIndex APIs require. It carries:
+
+- A **stable path** that uniquely identifies the current position in the processing tree
+- Context for accessing provided resources and declaring effects
+
+You'll use `Scope` as the first argument for declaring effects, mounting components, accessing context values, etc. When your function requires `Scope`, pass it explicitly as the first argument.
+
+You create child scopes using the `/` operator:
+
+```python
+scope / "setup" / "table"    # Creates path like /setup/table
+scope / "file" / filename    # Creates path like /file/readme.md
+```
+
+The stable path should be consistent across runs — CocoIndex uses it to match effects from previous runs and determine what changed.
+
+### StableKey
+
+`StableKey` is a type alias defining what values can be used as path parts in stable paths:
+
+```python
+StableKey = None | bool | int | str | bytes | uuid.UUID | tuple[StableKey, ...]
+```
+
+Common examples include strings (like `"setup"` or `"table"`), integers, and UUIDs. Tuples allow composite keys when needed.
 
 ## Sync vs Async APIs
 
