@@ -1,5 +1,6 @@
 ---
 title: SDK Overview
+description: Overview of the CocoIndex Python SDK package organization, sync vs async APIs, and how to mix sync/async across components.
 ---
 
 # SDK Overview
