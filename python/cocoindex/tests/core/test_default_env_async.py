@@ -68,7 +68,7 @@ async def test_async_app(_default_async_env: None) -> None:
 
     assert _num_active_resources == 0
     async with coco_aio.runtime():
-        assert await app.run() == "Hello 1"
+        assert await app.update() == "Hello 1"
         assert _num_active_resources == 1
     assert _num_active_resources == 0
 
@@ -83,5 +83,5 @@ async def test_async_app_implicit_startup(_default_async_env: None) -> None:
     )
 
     assert _num_active_resources == 0
-    assert await app.run() == "Hello 1"
+    assert await app.update() == "Hello 1"
     assert _num_active_resources == 1

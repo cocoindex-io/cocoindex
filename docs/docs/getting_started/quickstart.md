@@ -11,7 +11,6 @@ In this tutorial, we'll build a simple flow that converts Markdown files to HTML
 
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/v1/examples/files_transform" />
 
-
 ## Flow Overview
 
 1. Read Markdown files from a local directory
@@ -24,22 +23,22 @@ CocoIndex automatically tracks changes — when you add, modify, or delete sourc
 
 1. Install CocoIndex and dependencies:
 
-```bash
-pip install 'cocoindex>=1.0.0a1' 'markdown-it-py[linkify,plugins]'
-```
+    ```bash
+    pip install 'cocoindex>=1.0.0a1' 'markdown-it-py[linkify,plugins]'
+    ```
 
 2. Create a new directory for your project:
 
-```bash
-mkdir cocoindex-quickstart
-cd cocoindex-quickstart
-```
+    ```bash
+    mkdir cocoindex-quickstart
+    cd cocoindex-quickstart
+    ```
 
 3. Create a `data/` directory with a sample Markdown file:
 
-```bash
-mkdir data
-```
+    ```bash
+    mkdir data
+    ```
 
 Add a sample file `data/hello.md`:
 
@@ -82,7 +81,6 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 This sets up a local database (`cocoindex.db`) for incremental processing.
 
-
 ### Define File Processing
 
 Use `@coco.function` with `memo=True` to create a memoized function that processes each file:
@@ -96,6 +94,7 @@ def process_file(scope: coco.Scope, file: FileLike, target: localfs.DirTarget) -
 ```
 
 Key concepts:
+
 - **`scope`**: A handle that carries the stable path and context for declaring effects
 - **`memo=True`**: Skips recomputation when inputs haven't changed
 - **`target.declare_file()`**: Declares an **effect** — the desired state of an output file
@@ -122,6 +121,7 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
 ```
 
 Key concepts:
+
 - **`coco.mount_run()`**: Mounts a component and waits for its result (the directory target)
 - **`coco.mount()`**: Mounts a component for each file to process
 - **`scope / "process" / ...`**: Creates a stable path to identify each component
@@ -140,7 +140,7 @@ app = coco.App(
 
 
 def main() -> None:
-    app.run(report_to_stdout=True)
+    app.update(report_to_stdout=True)
 
 
 if __name__ == "__main__":
@@ -156,6 +156,7 @@ python main.py
 ```
 
 CocoIndex will:
+
 1. Create the `output_html/` directory
 2. Convert `data/hello.md` to `output_html/hello.md.html`
 
@@ -171,26 +172,31 @@ ls output_html/
 The power of CocoIndex is **incremental processing**. Try these:
 
 **Add a new file:**
+
 ```bash
 echo "# New File" > data/world.md
 python main.py
 ```
+
 Only the new file is processed.
 
 **Modify a file:**
+
 ```bash
 echo "# Updated Hello" > data/hello.md
 python main.py
 ```
+
 Only the changed file is reprocessed.
 
 **Delete a file:**
+
 ```bash
 rm data/hello.md
 python main.py
 ```
-The corresponding HTML is automatically removed.
 
+The corresponding HTML is automatically removed.
 
 ## Next Steps
 

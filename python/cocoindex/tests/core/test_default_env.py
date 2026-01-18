@@ -63,7 +63,7 @@ def test_app(_default_env: None) -> None:
 
     assert _num_active_resources == 0
     with coco.runtime():
-        assert app.run() == "Hello 1"
+        assert app.update() == "Hello 1"
         assert _num_active_resources == 1
     assert _num_active_resources == 0
 
@@ -77,5 +77,5 @@ def test_app_implicit_startup(_default_env: None) -> None:
     )
 
     assert _num_active_resources == 0
-    assert app.run() == "Hello 1"
+    assert app.update() == "Hello 1"
     assert _num_active_resources == 1

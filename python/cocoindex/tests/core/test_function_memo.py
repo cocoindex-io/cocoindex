@@ -62,7 +62,7 @@ def test_memo_pure_function() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.transform_entry": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -75,7 +75,7 @@ def test_memo_pure_function() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.transform_entry": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -88,7 +88,7 @@ def test_memo_pure_function() -> None:
         ),
     }
 
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -102,13 +102,13 @@ def test_memo_pure_function() -> None:
     }
 
     _plain_source_data.clear()
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
 
     # The same version reappears after deletion. Verify cached values are not used.
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.transform_entry": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -142,7 +142,7 @@ def test_memo_pure_function_async() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.transform_entry_async": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -155,7 +155,7 @@ def test_memo_pure_function_async() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.transform_entry_async": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -168,7 +168,7 @@ def test_memo_pure_function_async() -> None:
         ),
     }
 
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -182,13 +182,13 @@ def test_memo_pure_function_async() -> None:
     }
 
     _plain_source_data.clear()
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
 
     # The same version reappears after deletion. Verify cached values are not used.
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.transform_entry_async": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -221,7 +221,7 @@ def test_memo_function_with_effects() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.declare_data_entry": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -230,7 +230,7 @@ def test_memo_function_with_effects() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.declare_data_entry": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -239,7 +239,7 @@ def test_memo_function_with_effects() -> None:
         ),
     }
 
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -249,13 +249,13 @@ def test_memo_function_with_effects() -> None:
     }
 
     _plain_source_data.clear()
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
 
     # The same version reappears after deletion. Verify cached values are not used.
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.declare_data_entry": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -290,7 +290,7 @@ def test_memo_function_with_effects_async() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.declare_data_entry_async": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -299,7 +299,7 @@ def test_memo_function_with_effects_async() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.declare_data_entry_async": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -308,7 +308,7 @@ def test_memo_function_with_effects_async() -> None:
         ),
     }
 
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -318,13 +318,13 @@ def test_memo_function_with_effects_async() -> None:
     }
 
     _plain_source_data.clear()
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
 
     # The same version reappears after deletion. Verify cached values are not used.
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.declare_data_entry_async": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -348,13 +348,13 @@ def test_memo_function_with_effects_with_exception() -> None:
     try:
         GlobalDictTarget.store.sink_exception = True
         with pytest.raises(Exception):
-            app.run()
+            app.update()
     finally:
         GlobalDictTarget.store.sink_exception = False
     assert _metrics.collect() == {"call.declare_data_entry": 1}
     assert GlobalDictTarget.store.data == {}
 
-    app.run()
+    app.update()
     assert _metrics.collect() == {"call.declare_data_entry": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -401,7 +401,7 @@ def test_memo_nested_functions_with_effects() -> None:
         version=1,
         content={"2A": SourceDataEntry(name="2A", version=1, content="content2A")},
     )
-    app.run()
+    app.update()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry": 2,
         "call.declare_data_entry": 3,
@@ -412,7 +412,7 @@ def test_memo_nested_functions_with_effects() -> None:
         "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
     }
 
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "1A": DictDataWithPrev(data="content1A", prev=[], prev_may_be_missing=True),
@@ -425,7 +425,7 @@ def test_memo_nested_functions_with_effects() -> None:
         name="1A", version=2, content="content1A2"
     )
     del _dict_source_data["D1"].content["1B"]
-    app.run()
+    app.update()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry": 1,
         "call.declare_data_entry": 1,
@@ -438,7 +438,7 @@ def test_memo_nested_functions_with_effects() -> None:
     }
 
     del _dict_source_data["D1"]
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
@@ -452,7 +452,7 @@ def test_memo_nested_functions_with_effects() -> None:
             "1A": SourceDataEntry(name="1A", version=2, content="content1A2.2"),
         },
     )
-    app.run()
+    app.update()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry": 1,
         "call.declare_data_entry": 1,
@@ -503,7 +503,7 @@ def test_memo_nested_functions_with_components() -> None:
         version=1,
         content={"2A": SourceDataEntry(name="2A", version=1, content="content2A")},
     )
-    app.run()
+    app.update()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry_w_components": 2,
         "call.declare_data_entry": 3,
@@ -514,7 +514,7 @@ def test_memo_nested_functions_with_components() -> None:
         "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
     }
 
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "1A": DictDataWithPrev(data="content1A", prev=[], prev_may_be_missing=True),
@@ -527,7 +527,7 @@ def test_memo_nested_functions_with_components() -> None:
         name="1A", version=2, content="content1A2"
     )
     del _dict_source_data["D1"].content["1B"]
-    app.run()
+    app.update()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry_w_components": 1,
         "call.declare_data_entry": 1,
@@ -540,7 +540,7 @@ def test_memo_nested_functions_with_components() -> None:
     }
 
     del _dict_source_data["D1"]
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
@@ -554,7 +554,7 @@ def test_memo_nested_functions_with_components() -> None:
             "1A": SourceDataEntry(name="1A", version=2, content="content1A2.2"),
         },
     )
-    app.run()
+    app.update()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry_w_components": 1,
         "call.declare_data_entry": 1,
@@ -587,7 +587,7 @@ def test_memo_nested_functions_with_components_with_exception() -> None:
     )
     try:
         GlobalDictTarget.store.sink_exception = True
-        app.run()
+        app.update()
     finally:
         GlobalDictTarget.store.sink_exception = False
     assert _metrics.collect() == {
@@ -596,7 +596,7 @@ def test_memo_nested_functions_with_components_with_exception() -> None:
     }
     assert GlobalDictTarget.store.data == {}
 
-    app.run()
+    app.update()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry_w_components": 1,
         "call.declare_data_entry": 1,
@@ -649,7 +649,7 @@ def test_memo_nested_functions_with_components_async() -> None:
         version=1,
         content={"2A": SourceDataEntry(name="2A", version=1, content="content2A")},
     )
-    app.run()
+    app.update()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry_w_components_async": 2,
         "call.declare_data_entry": 3,
@@ -660,7 +660,7 @@ def test_memo_nested_functions_with_components_async() -> None:
         "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
     }
 
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "1A": DictDataWithPrev(data="content1A", prev=[], prev_may_be_missing=True),
@@ -673,7 +673,7 @@ def test_memo_nested_functions_with_components_async() -> None:
         name="1A", version=2, content="content1A2"
     )
     del _dict_source_data["D1"].content["1B"]
-    app.run()
+    app.update()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry_w_components_async": 1,
         "call.declare_data_entry": 1,
@@ -686,7 +686,7 @@ def test_memo_nested_functions_with_components_async() -> None:
     }
 
     del _dict_source_data["D1"]
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
@@ -700,7 +700,7 @@ def test_memo_nested_functions_with_components_async() -> None:
             "1A": SourceDataEntry(name="1A", version=2, content="content1A2.2"),
         },
     )
-    app.run()
+    app.update()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry_w_components_async": 1,
         "call.declare_data_entry": 1,
@@ -733,7 +733,7 @@ def test_memo_nested_functions_with_components_with_exception_async() -> None:
     )
     try:
         GlobalDictTarget.store.sink_exception = True
-        app.run()
+        app.update()
     finally:
         GlobalDictTarget.store.sink_exception = False
     assert _metrics.collect() == {
@@ -742,7 +742,7 @@ def test_memo_nested_functions_with_components_with_exception_async() -> None:
     }
     assert GlobalDictTarget.store.data == {}
 
-    app.run()
+    app.update()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry_w_components_async": 1,
         "call.declare_data_entry": 1,

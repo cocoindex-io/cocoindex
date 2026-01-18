@@ -68,7 +68,7 @@ app = coco.App(
 
 def main() -> None:
     load_dotenv()
-    app.run(report_to_stdout=True)
+    app.update(report_to_stdout=True)
 
 
 if __name__ == "__main__":

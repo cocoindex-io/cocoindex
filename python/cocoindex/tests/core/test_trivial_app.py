@@ -21,7 +21,7 @@ def test_sync_app_sync_client() -> None:
         "Hello sync_app",
         1,
     )
-    assert app.run() == "Hello sync_app 1"
+    assert app.update() == "Hello sync_app 1"
 
 
 @pytest.mark.asyncio
@@ -32,7 +32,7 @@ async def test_sync_app_async_client() -> None:
         "Hello sync_app",
         1,
     )
-    assert await app.run() == "Hello sync_app 1"
+    assert await app.update() == "Hello sync_app 1"
 
 
 # === Sync Bare App ===
@@ -49,7 +49,7 @@ def test_sync_bare_app_sync_client() -> None:
         "Hello sync_bare_app",
         2,
     )
-    assert app.run() == "Hello sync_bare_app 2"
+    assert app.update() == "Hello sync_bare_app 2"
 
 
 @pytest.mark.asyncio
@@ -60,7 +60,7 @@ async def test_sync_bare_app_async_client() -> None:
         "Hello sync_bare_app",
         2,
     )
-    assert await app.run() == "Hello sync_bare_app 2"
+    assert await app.update() == "Hello sync_bare_app 2"
 
 
 # === Async App ===
@@ -78,7 +78,7 @@ def test_async_app_sync_client() -> None:
         "Hello async_app",
         3,
     )
-    assert app.run() == "Hello async_app 3"
+    assert app.update() == "Hello async_app 3"
 
 
 @pytest.mark.asyncio
@@ -89,7 +89,7 @@ async def test_async_app_async_client() -> None:
         "Hello async_app",
         3,
     )
-    assert await app.run() == "Hello async_app 3"
+    assert await app.update() == "Hello async_app 3"
 
 
 # === Async Bare App ===
@@ -106,7 +106,7 @@ def test_async_bare_app_sync_client() -> None:
         "Hello async_app",
         3,
     )
-    assert app.run() == "Hello async_app 3"
+    assert app.update() == "Hello async_app 3"
 
 
 @pytest.mark.asyncio
@@ -117,7 +117,7 @@ async def test_async_bare_app_async_client() -> None:
         "Hello async_app",
         3,
     )
-    assert await app.run() == "Hello async_app 3"
+    assert await app.update() == "Hello async_app 3"
 
 
 # === Apps from Member Functions ===
@@ -139,7 +139,7 @@ def test_sync_from_member_fn_app() -> None:
         "Hello sync_from_member_fn_app",
         4,
     )
-    assert app.run() == "Hello MyApp.sync_main: Hello sync_from_member_fn_app 4"
+    assert app.update() == "Hello MyApp.sync_main: Hello sync_from_member_fn_app 4"
 
 
 @pytest.mark.asyncio
@@ -151,4 +151,6 @@ async def test_async_from_member_fn_app() -> None:
         "Hello async_from_member_fn_app",
         4,
     )
-    assert await app.run() == "Hello MyApp.async_main: Hello async_from_member_fn_app 4"
+    assert (
+        await app.update() == "Hello MyApp.async_main: Hello async_from_member_fn_app 4"
+    )
