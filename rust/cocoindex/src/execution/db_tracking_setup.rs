@@ -1,5 +1,6 @@
 use crate::prelude::*;
 
+use crate::execution::db_tracking;
 use crate::setup::{CombinedState, ResourceSetupChange, ResourceSetupInfo, SetupChangeType};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -104,6 +105,16 @@ pub struct TrackingTableSetupChange {
 
     pub source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
 
+    /// Target information from desired state for cleanup
+    /// Maps target_id -> (target_kind, key_schema)
+    /// Used to determine Case 1 (target not in map = dropped) vs Case 2 (target in map = still exists)
+    pub desired_targets: Option<BTreeMap<i32, (String, Box<[schema::ValueType]>)>>,
+
+    /// Export contexts for targets (available during apply phase)
+    /// Maps target_id -> export_context
+    /// Used to call factory.apply_mutation() for target data deletion
+    pub export_contexts: Option<Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>>>,
+
     has_state_change: bool,
 }
 
@@ -112,6 +123,7 @@ impl TrackingTableSetupChange {
         desired: Option<&TrackingTableSetupState>,
         existing: &CombinedState<TrackingTableSetupState>,
         source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
+        desired_targets: Option<BTreeMap<i32, (String, Box<[schema::ValueType]>)>>,
     ) -> Option<Self> {
         let legacy_tracking_table_names = existing
             .legacy_values(desired, |v| &v.table_name)
@@ -138,11 +150,18 @@ impl TrackingTableSetupChange {
                 legacy_source_state_table_names,
                 min_existing_version_id,
                 source_names_need_state_cleanup,
+                desired_targets,
+                export_contexts: None,
                 has_state_change: existing.has_state_diff(desired, |v| v),
             })
         } else {
             None
         }
+    }
+
+    /// Attach export contexts for targets (called after targets are built)
+    pub fn attach_export_contexts(&mut self, contexts: BTreeMap<i32, Arc<dyn Any + Send + Sync>>) {
+        self.export_contexts = Some(Arc::new(contexts));
     }
 
     pub fn into_setup_info(
@@ -217,7 +236,8 @@ impl ResourceSetupChange for TrackingTableSetupChange {
 
         if !self.source_names_need_state_cleanup.is_empty() {
             changes.push(setup::ChangeDescription::Action(format!(
-                "Clean up legacy source states: {}. ",
+                "Clean up {} legacy source(s) including tracking metadata, target data, and source states: {}. ",
+                self.source_names_need_state_cleanup.len(),
                 self.source_names_need_state_cleanup
                     .values()
                     .flatten()
@@ -292,6 +312,12 @@ impl TrackingTableSetupChange {
             if !self.source_state_table_always_exists {
                 create_source_state_table(pool, source_state_table_name).await?;
             }
+
+            // Clean up tracking metadata and target data for stale sources
+            if !self.source_names_need_state_cleanup.is_empty() {
+                self.cleanup_stale_sources(pool).await?;
+            }
+
             if !self.source_names_need_state_cleanup.is_empty() {
                 delete_source_states_for_sources(
                     pool,
@@ -311,5 +337,217 @@ impl TrackingTableSetupChange {
             }
         }
         Ok(())
+    }
+
+    /// Clean up tracking metadata and target data for stale sources
+    /// This implements the core cleanup logic: for each tracked source row, do a deletion
+    async fn cleanup_stale_sources(&self, pool: &PgPool) -> Result<()> {
+        // Early return for flow drop (desired_state = None)
+        // All targets are Case 1 (being dropped anyway), target setup cleanup will handle them
+        let Some(desired) = &self.desired_state else {
+            tracing::info!("Skipping stale source cleanup: flow is being dropped");
+            return Ok(());
+        };
+
+        let source_ids: Vec<i32> = self
+            .source_names_need_state_cleanup
+            .keys()
+            .copied()
+            .collect();
+
+        tracing::info!(
+            "Cleaning up tracking metadata and target data for {} stale source(s): {:?}",
+            source_ids.len(),
+            source_ids
+        );
+
+        // Stream tracking entries instead of loading all at once
+        let entries_stream = db_tracking::read_tracking_entries_for_sources_stream(
+            source_ids.clone(),
+            desired.clone(),
+            pool.clone(),
+        );
+
+        // Process with limited parallelism
+        const MAX_CONCURRENT_ROW_CLEANUPS: usize = 10;
+        self.cleanup_tracking_entries_streaming(
+            Box::pin(entries_stream),
+            pool,
+            MAX_CONCURRENT_ROW_CLEANUPS,
+        )
+        .await?;
+
+        // Delete tracking metadata
+        let rows_deleted =
+            db_tracking::delete_tracking_entries_for_sources(&source_ids, desired, pool).await?;
+
+        tracing::info!(
+            "Deleted {} tracking entries for stale sources",
+            rows_deleted
+        );
+
+        Ok(())
+    }
+
+    /// Stream tracking entries and clean up target data with limited parallelism
+    async fn cleanup_tracking_entries_streaming(
+        &self,
+        mut entries_stream: std::pin::Pin<
+            Box<dyn Stream<Item = Result<db_tracking::SourceTrackingEntryForCleanup>> + Send>,
+        >,
+        _pool: &PgPool,
+        max_concurrent: usize,
+    ) -> Result<()> {
+        use tokio::sync::Semaphore;
+        use tokio::task::JoinSet;
+
+        let semaphore = Arc::new(Semaphore::new(max_concurrent));
+        let mut join_set = JoinSet::new();
+        let mut total_processed = 0u64;
+        let mut total_deleted = 0u64;
+
+        // Stream entries one by one
+        while let Some(entry) = entries_stream.try_next().await? {
+            total_processed += 1;
+
+            let permit = semaphore.clone().acquire_owned().await?;
+
+            let desired_targets = self.desired_targets.clone();
+            let export_contexts = self.export_contexts.clone();
+
+            join_set.spawn(async move {
+                let result = Self::cleanup_single_tracking_entry(
+                    entry,
+                    desired_targets.as_ref(),
+                    export_contexts.as_ref(),
+                )
+                .await;
+                drop(permit);
+                result
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok(deleted_count)) => total_deleted += deleted_count,
+                Ok(Err(e)) => return Err(e),
+                Err(e) if !e.is_cancelled() => {
+                    return Err(internal_error!("Task panicked: {:?}", e));
+                }
+                _ => {}
+            }
+        }
+
+        tracing::info!(
+            "Processed {} tracking entries, deleted {} target rows",
+            total_processed,
+            total_deleted
+        );
+
+        Ok(())
+    }
+
+    /// Process a single tracking entry and delete its target data
+    async fn cleanup_single_tracking_entry(
+        entry: db_tracking::SourceTrackingEntryForCleanup,
+        desired_targets: Option<&BTreeMap<i32, (String, Box<[schema::ValueType]>)>>,
+        export_contexts: Option<&Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>>>,
+    ) -> Result<u64> {
+        let Some(desired_targets) = desired_targets else {
+            return Ok(0);
+        };
+
+        let Some(target_keys) = entry.target_keys else {
+            return Ok(0);
+        };
+
+        let mut total_deleted = 0u64;
+
+        // One tracking entry can have keys for multiple targets (fanout)
+        for (target_id, tracked_keys) in target_keys {
+            // Case 1 vs Case 2: Is this target still in the flow?
+            let (target_kind, key_schema) = match desired_targets.get(&target_id) {
+                Some((kind, schema)) => (kind, schema),
+                None => {
+                    // Target dropped, skip cleanup
+                    tracing::debug!("Skipping target_id {}: target no longer exists", target_id);
+                    continue;
+                }
+            };
+
+            // Parse tracked keys
+            let mut parsed_keys = Vec::new();
+            for tracked_key_info in tracked_keys {
+                match Self::parse_key_from_json_static(&tracked_key_info.key, key_schema) {
+                    Ok(key) => parsed_keys.push(key),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse key for target_id {}: {}. Skipping key.",
+                            target_id,
+                            e
+                        );
+                    }
+                }
+            }
+
+            if parsed_keys.is_empty() {
+                continue;
+            }
+
+            // Get export context for this target
+            let export_context = export_contexts
+                .and_then(|ctxs| ctxs.get(&target_id))
+                .ok_or_else(|| internal_error!("No export context for target {}", target_id))?;
+
+            // Delete via target factory
+            let factory = crate::ops::get_target_factory(target_kind)?;
+
+            let deletes: Vec<interface::ExportTargetDeleteEntry> = parsed_keys
+                .into_iter()
+                .map(|key| interface::ExportTargetDeleteEntry {
+                    key,
+                    additional_key: serde_json::Value::Null,
+                })
+                .collect();
+
+            let delete_count = deletes.len() as u64;
+
+            factory
+                .apply_mutation(vec![interface::ExportTargetMutationWithContext {
+                    mutation: interface::ExportTargetMutation {
+                        upserts: vec![],
+                        deletes,
+                    },
+                    export_context: &**export_context,
+                }])
+                .await?;
+
+            total_deleted += delete_count;
+        }
+
+        Ok(total_deleted)
+    }
+
+    /// Parse a key from JSON using the key schema
+    fn parse_key_from_json_static(
+        key_json: &serde_json::Value,
+        key_schema: &[schema::ValueType],
+    ) -> Result<value::KeyValue> {
+        let field_schemas: Vec<schema::FieldSchema> = key_schema
+            .iter()
+            .enumerate()
+            .map(|(i, value_type)| schema::FieldSchema {
+                name: format!("_key_{}", i),
+                value_type: schema::EnrichedValueType {
+                    typ: value_type.clone(),
+                    nullable: false,
+                    attrs: Arc::new(BTreeMap::new()),
+                },
+                description: None,
+            })
+            .collect();
+
+        value::KeyValue::from_json(key_json.clone(), &field_schemas)
+            .with_context(|| format!("Failed to parse key: {}", key_json))
     }
 }
