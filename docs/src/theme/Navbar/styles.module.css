@@ -1,0 +1,222 @@
+.navbar {
+  box-shadow: none;
+  border-bottom: none;
+  background-color: var(--navbar-background-color);
+  font-size: 0.875rem;
+  height: auto;
+  min-height: var(--ifm-navbar-height);
+  position: sticky;
+  top: 0;
+  z-index: var(--ifm-z-index-fixed);
+  padding: 16px 0;
+}
+
+.navbarContainer {
+  width: 100%;
+  margin: 0 auto;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  gap: 2.25rem;
+}
+
+.navbarBrand {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.navbarLogoLink {
+  display: flex;
+  align-items: center;
+  text-decoration: none;
+  color: inherit;
+  transition: opacity 0.2s;
+}
+
+.navbarLogoLink:hover {
+  opacity: 0.8;
+}
+
+.navbarLogo {
+  height: 32px;
+  width: auto;
+}
+
+.navbarIcon {
+  display: none;
+  height: 32px;
+  width: auto;
+}
+
+.navbarTitle {
+  display: none;
+}
+
+.navbarItemsLeft {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex: 1;
+  font-size: 0.875rem;
+}
+
+.navbarItemsLeft :global(.navbar__item) {
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--navbar-link-color);
+  text-decoration: none;
+  transition: opacity 0.15s ease;
+}
+
+.navbarItemsLeft :global(.navbar__item:hover) {
+  opacity: 0.7;
+}
+
+.navbarItemsLeft :global(.navbar__link) {
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--navbar-link-color);
+  padding: 0;
+  text-decoration: none;
+  transition: opacity 0.15s ease;
+}
+
+.navbarItemsLeft :global(.navbar__link:hover) {
+  color: var(--navbar-link-color);
+  opacity: 0.7;
+  text-decoration: none;
+}
+
+.navbarItemsLeft :global(.navbar__link--active) {
+  color: var(--ifm-color-primary);
+  font-weight: 500;
+}
+
+.navbarItemsLeft :global(.navbar__link--active:hover) {
+  color: var(--ifm-color-primary);
+  opacity: 0.8;
+}
+
+.navbarItemsRight {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.versionSelectorWrapper {
+  display: flex;
+  align-items: center;
+}
+
+.githubStarWrapper {
+  display: flex;
+  align-items: center;
+}
+
+.navbarSearch {
+  display: flex;
+  align-items: center;
+}
+
+.colorModeToggle {
+  display: flex;
+  align-items: center;
+}
+
+.navbarMobileMenuButton {
+  display: none;
+  padding: 8px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  z-index: 999;
+  transition: background-color 0.2s;
+  margin-right: 12px;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+}
+
+.navbarMobileMenuButton:hover {
+  background-color: var(--navbar-mobile-button-hover);
+}
+
+.navbarMobileMenuIcon {
+  width: 20px;
+  height: 20px;
+  color: var(--navbar-link-color, #1f2328);
+}
+
+.navbarMobileMenuButtonHidden {
+  display: none !important;
+}
+
+/* Mobile styles */
+@media (max-width: 996px) {
+  .navbarContainer {
+    gap: 0;
+  }
+
+  .navbarItemsLeft {
+    display: none;
+  }
+
+  .colorModeToggle {
+    display: none;
+  }
+
+  .navbarMobileMenuButton {
+    display: flex;
+    order: -1;
+    margin-right: 12px;
+  }
+
+  .navbarBrand {
+    margin-right: 0;
+  }
+
+  .navbarItemsRight {
+    gap: 0.75rem;
+  }
+}
+
+/* Tablet styles */
+@media (min-width: 769px) and (max-width: 996px) {
+  .navbarItemsRight {
+    margin-right: 0;
+  }
+}
+
+/* Phone mode - show hamburger menu, but hide when sidebar is open */
+@media (max-width: 768px) {
+  .navbarMobileMenuButton {
+    display: flex;
+    order: -1;
+    margin-right: 12px;
+  }
+
+  .navbarLogo {
+    display: none;
+  }
+
+  .navbarIcon {
+    display: block;
+  }
+}
+
+/* Ensure GitHub iframe doesn't break layout */
+.navbarItemsRight :global(.navbar-github-link) {
+  display: block;
+  width: 120px;
+}
+
+@media (min-width: 769px) and (max-width: 996px) {
+  .navbarItemsRight :global(.navbar-github-link) {
+    margin-right: 0;
+  }
+}

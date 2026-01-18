@@ -1,0 +1,131 @@
+/* Radix UI-inspired Sidebar Styling */
+.theme-doc-sidebar-container {
+  background-color: var(--ifm-background-color);
+  border-right: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.theme-doc-sidebar-menu {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Open Sans', system-ui, sans-serif;
+  font-size: 14px; /* Radix UI size 2 */
+  font-weight: 400; /* Regular weight */
+  line-height: 20px; /* Proper spacing for size 2 */
+  letter-spacing: 0em; /* Standard spacing */
+  padding: 0.75rem 0;
+}
+
+/* Sidebar menu items */
+.theme-doc-sidebar-menu .menu__list {
+  padding: 0;
+}
+
+.theme-doc-sidebar-menu .menu__list-item {
+  margin: 0;
+}
+
+/* Sidebar menu links */
+.theme-doc-sidebar-menu .menu__link {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Open Sans', system-ui, sans-serif;
+  font-size: 14px; /* Radix UI size 2 */
+  font-weight: 400; /* Regular weight */
+  line-height: 20px; /* Proper spacing */
+  letter-spacing: 0em;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  margin: 0 0.25rem;
+  color: var(--ifm-menu-color);
+  transition: background-color 0.15s ease, color 0.15s ease;
+  border: none;
+}
+
+.theme-doc-sidebar-menu .menu__link:hover {
+  background-color: var(--ifm-color-emphasis-100);
+  color: var(--ifm-menu-color);
+  text-decoration: none;
+}
+
+.theme-doc-sidebar-menu .menu__link--active {
+  background-color: var(--ifm-color-emphasis-100);
+  color: var(--ifm-color-primary);
+  font-weight: 500; /* Medium weight for active links */
+}
+
+.theme-doc-sidebar-menu .menu__link--active:hover {
+  background-color: var(--ifm-color-emphasis-200);
+}
+
+/* Sidebar category labels */
+.theme-doc-sidebar-menu .menu__list-item-collapsible > .menu__link {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Open Sans', system-ui, sans-serif;
+  font-size: 14px; /* Radix UI size 2 */
+  font-weight: 600; /* Semibold for category labels */
+  line-height: 20px;
+  letter-spacing: 0em;
+  color: var(--ifm-menu-color);
+  padding: 0.5rem 0.75rem;
+  margin: 0.25rem 0.25rem;
+}
+
+.theme-doc-sidebar-menu .menu__list-item-collapsible > .menu__link:hover {
+  background-color: var(--ifm-color-emphasis-100);
+}
+
+/* Nested menu items */
+.theme-doc-sidebar-menu .menu__list-item .menu__list {
+  padding-left: 0;
+  margin-top: 0.25rem;
+}
+
+.theme-doc-sidebar-menu .menu__list-item .menu__list .menu__link {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Open Sans', system-ui, sans-serif;
+  font-size: 14px; /* Keep consistent size for nested items */
+  font-weight: 400;
+  line-height: 20px;
+  letter-spacing: 0em;
+  padding-left: 1rem;
+}
+
+.theme-doc-sidebar-menu .menu__list-item .menu__list .menu__list .menu__link {
+  padding-left: 1.5rem;
+}
+
+/* Sidebar caret/chevron */
+.theme-doc-sidebar-menu .menu__caret {
+  padding: 0.375rem;
+  border-radius: 0.25rem;
+  transition: background-color 0.15s ease;
+}
+
+.theme-doc-sidebar-menu .menu__caret:hover {
+  background-color: var(--ifm-color-emphasis-100);
+}
+
+/* Sidebar caret styles */
+.menu__caret:before,
+.menu__link--sublist-caret:after {
+  background: var(--ifm-menu-link-sublist-icon) 50% / 1rem 1rem;
+}
+
+/* Dark mode sidebar adjustments */
+[data-theme='dark'] .theme-doc-sidebar-container {
+  border-right-color: var(--ifm-color-emphasis-200);
+}
+
+[data-theme='dark'] .theme-doc-sidebar-menu .menu__link:hover {
+  background-color: var(--ifm-color-emphasis-200);
+}
+
+[data-theme='dark'] .theme-doc-sidebar-menu .menu__link--active {
+  background-color: var(--ifm-color-emphasis-200);
+}
+
+[data-theme='dark'] .theme-doc-sidebar-menu .menu__link--active:hover {
+  background-color: var(--ifm-color-emphasis-300);
+}
+
+[data-theme='dark'] .theme-doc-sidebar-menu .menu__list-item-collapsible > .menu__link:hover {
+  background-color: var(--ifm-color-emphasis-200);
+}
+
+[data-theme='dark'] .theme-doc-sidebar-menu .menu__caret:hover {
+  background-color: var(--ifm-color-emphasis-200);
+}

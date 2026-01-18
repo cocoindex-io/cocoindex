@@ -899,13 +899,20 @@ class Flow:
             handler_result = await async_handler(query)
             return {
                 "results": [
-                    [(k, dump_engine_object(v)) for (k, v) in result.items()]
+                    [
+                        (k, dump_engine_object(v, bytes_to_base64=True))
+                        for (k, v) in result.items()
+                    ]
                     for result in handler_result.results
                 ],
-                "query_info": dump_engine_object(handler_result.query_info),
+                "query_info": dump_engine_object(
+                    handler_result.query_info, bytes_to_base64=True
+                ),
             }
 
-        handler_info = dump_engine_object(QueryHandlerInfo(result_fields=result_fields))
+        handler_info = dump_engine_object(
+            QueryHandlerInfo(result_fields=result_fields), bytes_to_base64=True
+        )
         with self._lazy_flow_lock:
             if self._lazy_engine_flow is not None:
                 self._lazy_engine_flow.add_query_handler(name, _handler, handler_info)

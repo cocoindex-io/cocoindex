@@ -1,0 +1,106 @@
+.githubStarContainer {
+  display: flex;
+  align-items: center;
+}
+
+.githubStarButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  background-color: #f3f3f3;
+  color: #333;
+  border: 1px solid #d5d5d5;
+  border-radius: 3px;
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 24px;
+  transition: background-color 0.2s;
+}
+
+.githubStarButton:hover {
+  background-color: #e6e6e6;
+  text-decoration: none;
+  color: #333;
+}
+
+.githubStarText {
+  display: none;
+}
+
+@media (min-width: 640px) {
+  .githubStarText {
+    display: inline;
+  }
+}
+
+.githubStarCount {
+  width: 40px;
+  min-width: 40px;
+  height: 24px;
+  background-color: #f3f3f3;
+  color: #333;
+  position: relative;
+  margin-left: 5px;
+  padding: 0 5px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 24px;
+  border: 1px solid #d5d5d5;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  text-decoration: none;
+  transition: background-color 0.2s;
+}
+
+.githubStarCount:hover {
+  background-color: #e6e6e6;
+  text-decoration: none;
+  color: #333;
+}
+
+/* Arrow left pointing to the button */
+.githubStarCount::after,
+.githubStarCount::before {
+  content: "";
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  height: 0;
+  width: 0;
+  pointer-events: none;
+  border-style: solid;
+  border-color: transparent;
+  border-left: 0;
+}
+
+.githubStarCount::after {
+  border-right-color: #f3f3f3;
+  border-width: 4px;
+  margin-top: -4px;
+}
+
+.githubStarCount::before {
+  border-right-color: #d5d5d5;
+  border-width: 5px;
+  margin-top: -5px;
+}
+
+.spinner {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}

@@ -186,6 +186,7 @@ build-test = [
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "ruff" },
 ]
 ci = [
     { name = "maturin" },
@@ -193,6 +194,7 @@ ci = [
     { name = "pydantic" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "ruff" },
     { name = "types-psutil" },
 ]
 ci-enabled-optional-deps = [
@@ -210,9 +212,6 @@ dev = [
 ]
 dev-local = [
     { name = "pre-commit" },
-]
-format = [
-    { name = "ruff" },
 ]
 type-stubs = [
     { name = "types-psutil" },
@@ -236,7 +235,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12" },
     { name = "watchfiles", specifier = ">=1.1.0" },
 ]
-provides-extras = ["embeddings", "colpali", "lancedb", "all"]
+provides-extras = ["all", "colpali", "embeddings", "lancedb"]
 
 [package.metadata.requires-dev]
 build-test = [
@@ -244,6 +243,7 @@ build-test = [
     { name = "mypy" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "ruff" },
 ]
 ci = [
     { name = "maturin", specifier = ">=1.10.0,<2.0" },
@@ -251,6 +251,7 @@ ci = [
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "ruff" },
     { name = "types-psutil", specifier = ">=7.2.1" },
 ]
 ci-enabled-optional-deps = [{ name = "pydantic", specifier = ">=2.11.9" }]
@@ -265,7 +266,6 @@ dev = [
     { name = "types-psutil", specifier = ">=7.2.1" },
 ]
 dev-local = [{ name = "pre-commit" }]
-format = [{ name = "ruff" }]
 type-stubs = [{ name = "types-psutil", specifier = ">=7.2.1" }]
 
 [[package]]
