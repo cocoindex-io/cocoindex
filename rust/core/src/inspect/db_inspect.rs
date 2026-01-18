@@ -1,8 +1,10 @@
 use crate::prelude::*;
 
+use crate::engine::environment::Environment;
 use crate::engine::{app::App, profile::EngineProfile};
 use crate::state::db_schema::DbEntryKey;
 use crate::state::stable_path::{StablePath, StablePathPrefix};
+use heed::types::{DecodeIgnore, Str};
 
 pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
     let encoded_key_prefix =
@@ -27,4 +29,30 @@ pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<Sta
         result.push(path);
     }
     Ok(result)
+}
+
+pub fn list_app_names<Prof: EngineProfile>(env: &Environment<Prof>) -> Result<Vec<String>> {
+    let db_env = env.db_env();
+    let rtxn = db_env.read_txn()?;
+
+    let unnamed: heed::Database<Str, DecodeIgnore> = db_env
+        .open_database(&rtxn, None)?
+        .expect("the unnamed database always exists");
+
+    let mut names = Vec::new();
+    for result in unnamed.iter(&rtxn)? {
+        let (name, ()) = result?;
+
+        if let Ok(Some(db)) =
+            db_env.open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(name))
+        {
+            // Only include databases that have entries (non-empty).
+            // Cleared databases are treated as deleted.
+            if db.first(&rtxn)?.is_some() {
+                names.push(name.to_string());
+            }
+        }
+    }
+
+    Ok(names)
 }

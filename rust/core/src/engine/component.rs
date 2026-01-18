@@ -186,6 +186,16 @@ impl ComponentBgChildReadiness {
         state.build_done = true;
         state.maybe_set_readiness(None, self.readiness());
     }
+
+    /// Wait for all child components to complete and return the result.
+    pub(crate) async fn wait(&self) -> Result<()> {
+        self.readiness()
+            .wait()
+            .await
+            .clone()
+            .into_result()
+            .map(|_| ())
+    }
 }
 
 pub struct ComponentMountRunHandle<Prof: EngineProfile> {
@@ -219,11 +229,12 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
         Ok(output.ret)
     }
 }
-pub struct ComponentMountHandle {
+
+pub struct ComponentExecutionHandle {
     join_handle: tokio::task::JoinHandle<SharedResult<()>>,
 }
 
-impl ComponentMountHandle {
+impl ComponentExecutionHandle {
     pub async fn ready(self) -> Result<()> {
         self.join_handle.await?.into_result()
     }
@@ -316,7 +327,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
-    ) -> Result<ComponentMountHandle> {
+    ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
 
         let child_readiness_guard = context
@@ -337,29 +348,34 @@ impl<Prof: EngineProfile> Component<Prof> {
             });
             Ok(())
         });
-        Ok(ComponentMountHandle { join_handle })
+        Ok(ComponentExecutionHandle { join_handle })
     }
 
-    pub fn delete(self, context: ComponentProcessorContext<Prof>) -> Result<()> {
+    pub fn delete(
+        self,
+        context: ComponentProcessorContext<Prof>,
+    ) -> Result<ComponentExecutionHandle> {
         let child_readiness_guard = context
             .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
-        get_runtime().spawn(async move {
+        let join_handle = get_runtime().spawn(async move {
             trace!("deleting component at {}", self.stable_path());
             let result = self.execute_once(&context, None).await;
-            // For deletion, only log the error. Never propagate the error back to the parent.
-            if let Err(err) = &result {
-                error!("component deletion failed:\n{err}");
-            };
-            child_readiness_guard.map(|guard| {
-                guard.resolve(result.map(|(outcome, _)| outcome).unwrap_or_else(|_| {
+            let outcome = match &result {
+                Ok((outcome, _)) => outcome.clone(),
+                Err(err) => {
+                    error!("component delete failed:\n{err}");
                     ComponentRunOutcome {
                         has_exception: true,
                     }
-                }))
-            });
+                }
+            };
+            if let Some(guard) = child_readiness_guard {
+                guard.resolve(outcome);
+            }
+            result.map(|_| ()).map_err(Into::into)
         });
-        Ok(())
+        Ok(ComponentExecutionHandle { join_handle })
     }
 
     async fn execute_once(
@@ -574,14 +590,14 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     pub fn new_processor_context_for_delete(
         &self,
-        parent_ctx: &ComponentProcessorContext<Prof>,
         providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
+        parent_ctx: Option<&ComponentProcessorContext<Prof>>,
+        processing_stats: ProcessingStats,
     ) -> ComponentProcessorContext<Prof> {
-        let processing_stats = parent_ctx.processing_stats().clone();
         ComponentProcessorContext::new(
             self.clone(),
             providers,
-            Some(parent_ctx.clone()),
+            parent_ctx.cloned(),
             processing_stats,
             ComponentProcessingMode::Delete,
         )

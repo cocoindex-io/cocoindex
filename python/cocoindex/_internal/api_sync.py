@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import threading
 from typing import (
     Any,
@@ -178,6 +177,20 @@ class App(AppBase[P, ReturnT]):
             self._main_fn, env, root_path, self._app_args, self._app_kwargs
         )
         return core_app.run(processor, report_to_stdout=report_to_stdout)
+
+    def drop(self, *, report_to_stdout: bool = False) -> None:
+        """
+        Drop the app, reverting all its effects and clearing its database.
+
+        This will:
+        - Delete all effects created by the app (e.g., drop tables, delete rows)
+        - Clear the app's internal state database
+
+        Args:
+            report_to_stdout: If True, periodically report processing stats to stdout.
+        """
+        _env, core_app = self._get_core_env_app_sync()
+        core_app.drop(report_to_stdout=report_to_stdout)
 
 
 def start() -> None:

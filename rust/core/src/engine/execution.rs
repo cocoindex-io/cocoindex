@@ -556,10 +556,11 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
             let stable_path = self.component_path.concat(relative_path.as_ref());
             let component = self.component_ctx.component().get_child(stable_path);
             let delete_ctx = component.new_processor_context_for_delete(
-                &self.component_ctx,
                 self.effect_providers.clone(),
+                Some(&self.component_ctx),
+                self.component_ctx.processing_stats().clone(),
             );
-            component.delete(delete_ctx)?;
+            let _ = component.delete(delete_ctx)?;
         }
         Ok(())
     }

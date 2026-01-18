@@ -8,7 +8,8 @@ use crate::context::{PyComponentProcessorContext, PyFnCallContext};
 use crate::fingerprint::PyFingerprint;
 use cocoindex_core::engine::{
     component::{
-        ComponentMountHandle, ComponentMountRunHandle, ComponentProcessor, ComponentProcessorInfo,
+        ComponentExecutionHandle, ComponentMountRunHandle, ComponentProcessor,
+        ComponentProcessorInfo,
     },
     context::ComponentProcessorContext,
     runtime::get_runtime,
@@ -176,10 +177,10 @@ impl PyComponentMountRunHandle {
 }
 
 #[pyclass(name = "ComponentMountHandle")]
-pub struct PyComponentMountHandle(Option<ComponentMountHandle>);
+pub struct PyComponentMountHandle(Option<ComponentExecutionHandle>);
 
 impl PyComponentMountHandle {
-    fn take_handle(&mut self) -> PyResult<ComponentMountHandle> {
+    fn take_handle(&mut self) -> PyResult<ComponentExecutionHandle> {
         self.0.take().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("Handle has already been consumed")
         })

@@ -15,6 +15,12 @@ pub struct AppRunOptions {
     pub report_to_stdout: bool,
 }
 
+/// Options for dropping an app.
+#[derive(Debug, Clone, Default)]
+pub struct AppDropOptions {
+    pub report_to_stdout: bool,
+}
+
 pub struct App<Prof: EngineProfile> {
     root_component: Component<Prof>,
 }
@@ -61,6 +67,55 @@ impl<Prof: EngineProfile> App<Prof> {
             reporter.run_with_progress(run_fut).await
         } else {
             run_fut.await
+        }
+    }
+
+    /// Drop the app, reverting all effects and clearing the database.
+    ///
+    /// This method:
+    /// 1. Deletes the root component (which cascades to delete all child components and their effects)
+    /// 2. Waits for deletion to complete
+    /// 3. Clears the app's database
+    #[instrument(name = "app.drop", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
+    pub async fn drop_app(&self, options: AppDropOptions) -> Result<()> {
+        let processing_stats = ProcessingStats::default();
+        let providers = self
+            .app_ctx()
+            .env()
+            .effect_providers()
+            .lock()
+            .unwrap()
+            .providers
+            .clone();
+
+        let context = self.root_component.new_processor_context_for_delete(
+            providers,
+            None,
+            processing_stats.clone(),
+        );
+
+        let drop_fut = async {
+            // Delete the root component
+            let handle = self.root_component.clone().delete(context.clone())?;
+
+            // Wait for the drop operation to complete
+            handle.ready().await?;
+
+            // Clear the database
+            let db_env = self.app_ctx().env().db_env();
+            let mut wtxn = db_env.write_txn()?;
+            self.app_ctx().db().clear(&mut wtxn)?;
+            wtxn.commit()?;
+
+            info!("App dropped successfully");
+            Ok(())
+        };
+
+        if options.report_to_stdout {
+            let reporter = ProgressReporter::new(processing_stats);
+            reporter.run_with_progress(drop_fut).await
+        } else {
+            drop_fut.await
         }
     }
 
