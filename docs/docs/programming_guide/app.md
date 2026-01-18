@@ -142,3 +142,29 @@ async with coco_aio.runtime():
 with coco.runtime():
     app.run()
 ```
+
+## Managing Apps with CLI
+
+CocoIndex provides a CLI for managing your apps without writing additional code.
+
+### Update an App
+
+Run your app once to sync all effects:
+
+```bash
+cocoindex update main.py
+```
+
+This executes your pipeline and applies all declared effects to external systems.
+
+### Drop an App
+
+Remove an app and revert all its effects:
+
+```bash
+cocoindex drop main.py
+```
+
+This will delete all effects created by the app (e.g., drop tables, delete rows) and clear its internal state.
+
+See [CLI Reference](../cli) for more commands and options.

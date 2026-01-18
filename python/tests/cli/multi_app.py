@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import pathlib
+from typing import AsyncGenerator
 
 import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 from cocoindex.connectors.localfs import declare_dir_target
 
-# Shared database path for all apps
-_HERE = pathlib.Path(__file__).resolve().parent
-DB_PATH = _HERE / "cocoindex.db"
-OUT_DIR_1 = _HERE / "out_multi_1"
-OUT_DIR_2 = _HERE / "out_multi_2"
 
-env = coco.Environment(coco.Settings.from_env(db_path=DB_PATH))
+_ROOT_PATH = coco.ContextKey[pathlib.Path]("root_path")
+
+
+@coco_aio.lifespan
+async def lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncGenerator[None]:
+    root_path = pathlib.Path(__file__).resolve().parent
+
+    builder.provide(_ROOT_PATH, root_path)
+    builder.settings.db_path = root_path / "cocoindex.db"
+    yield
 
 
 @coco.function
@@ -21,7 +27,7 @@ def build1(scope: coco.Scope) -> None:
     dir_target = coco.mount_run(
         declare_dir_target,
         scope / "out",
-        OUT_DIR_1,
+        scope.use(_ROOT_PATH) / "out_multi_1",
         stable_key="out_dir",
         managed_by="system",
     ).result()
@@ -35,7 +41,7 @@ def build2(scope: coco.Scope) -> None:
     dir_target = coco.mount_run(
         declare_dir_target,
         scope / "out",
-        OUT_DIR_2,
+        scope.use(_ROOT_PATH) / "out_multi_2",
         stable_key="out_dir",
         managed_by="system",
     ).result()
@@ -45,8 +51,8 @@ def build2(scope: coco.Scope) -> None:
 
 
 # Two apps in the same module
-app1 = coco.App(build1, coco.AppConfig(name="MultiApp1", environment=env))
-app2 = coco.App(build2, coco.AppConfig(name="MultiApp2", environment=env))
+app1 = coco.App(build1, "MultiApp1")
+app2 = coco_aio.App(build2, "MultiApp2")
 
 # Default app (what gets run if you don't specify :app_name)
 app = app1

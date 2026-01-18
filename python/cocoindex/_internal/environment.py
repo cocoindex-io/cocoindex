@@ -11,6 +11,7 @@ import warnings
 import weakref
 from contextlib import AsyncExitStack
 from typing import (
+    TYPE_CHECKING,
     Any,
     AsyncContextManager,
     AsyncGenerator,
@@ -21,11 +22,13 @@ from typing import (
     overload,
 )
 
-
 from . import core
 from . import setting
 from ..engine_object import dump_engine_object
 from .context_keys import ContextKey, ContextProvider
+
+if TYPE_CHECKING:
+    from cocoindex._internal.app import AppBase
 
 
 class _LoopRunner:
@@ -124,7 +127,7 @@ class EnvironmentInfo:
     __slots__ = ("_env_ref", "_app_registry", "_app_registry_lock")
 
     _env_ref: weakref.ReferenceType[Environment | LazyEnvironment]
-    _app_registry: weakref.WeakValueDictionary[str, Any]  # name -> AppBase
+    _app_registry: weakref.WeakValueDictionary[str, AppBase[Any, Any]]
     _app_registry_lock: threading.Lock
 
     def __init__(self, env: Environment | LazyEnvironment) -> None:
@@ -134,7 +137,7 @@ class EnvironmentInfo:
         with _environment_info_lock:
             _environment_infos.append(self)
 
-    def register_app(self, name: str, app: Any) -> None:
+    def register_app(self, name: str, app: AppBase[Any, Any]) -> None:
         """Register an app with this environment."""
         with self._app_registry_lock:
             if name in self._app_registry:
@@ -143,7 +146,7 @@ class EnvironmentInfo:
                 )
             self._app_registry[name] = app
 
-    def get_apps(self) -> list[Any]:
+    def get_apps(self) -> list[AppBase[Any, Any]]:
         """Get all registered apps for this environment."""
         with self._app_registry_lock:
             return list(self._app_registry.values())
@@ -375,6 +378,12 @@ class LazyEnvironment:
         fut = asyncio.run_coroutine_threadsafe(self._get_env(), env_loop)
         return fut.result()
 
+    async def start(self) -> Environment:
+        """
+        Start the default environment (executes on the default environment's event loop).
+        """
+        return await self._get_env()
+
     async def stop(self) -> None:
         """
         Stop the default environment (executes on the default environment's event loop).
@@ -448,7 +457,7 @@ def _default_env_loop() -> asyncio.AbstractEventLoop:
 
 def start_sync() -> Environment:
     loop = _default_env_loop()
-    fut = asyncio.run_coroutine_threadsafe(_default_env._get_env(), loop)
+    fut = asyncio.run_coroutine_threadsafe(_default_env.start(), loop)
     return fut.result()
 
 

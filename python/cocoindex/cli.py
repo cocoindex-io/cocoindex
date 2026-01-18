@@ -7,11 +7,14 @@ from dotenv import find_dotenv, load_dotenv
 
 from .user_app_loader import load_user_app, Error as UserAppLoaderError
 
+import asyncio
+import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 from cocoindex._internal.app import AppBase
-from cocoindex._internal.api_sync import App
 from cocoindex._internal import core as _core
 from cocoindex._internal.environment import (
     Environment,
+    LazyEnvironment,
     EnvironmentInfo,
     default_env,
     get_registered_environment_infos,
@@ -32,7 +35,7 @@ class AppSpecifier(NamedTuple):
     env_name: str | None = None
 
 
-def _parse_app_specifier(specifier: str) -> AppSpecifier:
+def _parse_app_target(specifier: str) -> AppSpecifier:
     """
     Parse 'module_or_path[:app_name[@env_name]]' into AppSpecifier.
 
@@ -49,7 +52,7 @@ def _parse_app_specifier(specifier: str) -> AppSpecifier:
         raise click.BadParameter(
             f"Module/path part is missing in specifier: '{specifier}'. "
             "Expected format like 'myapp.py' or 'myapp.py:app_name'.",
-            param_hint="APP_SPECIFIER",
+            param_hint="APP_TARGET",
         )
 
     if len(parts) == 1:
@@ -65,7 +68,7 @@ def _parse_app_specifier(specifier: str) -> AppSpecifier:
         if not env_name:
             raise click.BadParameter(
                 f"Environment name is missing after '@' in specifier '{specifier}'.",
-                param_hint="APP_SPECIFIER",
+                param_hint="APP_TARGET",
             )
     else:
         app_name = app_part
@@ -75,7 +78,7 @@ def _parse_app_specifier(specifier: str) -> AppSpecifier:
         raise click.BadParameter(
             f"Invalid app name '{app_name}' in specifier '{specifier}'. "
             "App name must be a valid Python identifier.",
-            param_hint="APP_SPECIFIER",
+            param_hint="APP_TARGET",
         )
 
     return AppSpecifier(module_ref=module_ref, app_name=app_name, env_name=env_name)
@@ -217,7 +220,7 @@ def _ls_from_database(db_path: str) -> None:
         click.echo(f"  {name}")
 
 
-def _load_app(app_specifier: str) -> App[Any, Any]:
+def _load_app(app_target: str) -> AppBase[Any, Any]:
     """
     Load an app from a specifier.
 
@@ -226,7 +229,7 @@ def _load_app(app_specifier: str) -> App[Any, Any]:
         - 'path/to/app.py:app_name' - loads the app with 'app_name'
         - 'path/to/app.py:app_name@env_name' - loads the app with 'app_name' in environment 'env_name'
     """
-    spec = _parse_app_specifier(app_specifier)
+    spec = _parse_app_target(app_target)
 
     try:
         load_user_app(spec.module_ref)
@@ -282,11 +285,6 @@ def _load_app(app_specifier: str) -> App[Any, Any]:
                 f"No apps found after loading '{spec.module_ref}'. "
                 "Make sure the module creates a coco.App(...) instance."
             )
-
-    if not isinstance(app, App):
-        raise click.ClickException(
-            f"App '{app._name}' in '{spec.module_ref}' is not a coco.App (got {type(app).__name__})."
-        )
 
     return app
 
@@ -360,7 +358,7 @@ def ls(app_target: str | None, db: str | None) -> None:
             click.echo(
                 "Warning: --db is ignored when APP_TARGET is specified.", err=True
             )
-        spec = _parse_app_specifier(app_target)
+        spec = _parse_app_target(app_target)
         _ls_from_module(spec.module_ref)
     elif db:
         _ls_from_database(db)
@@ -373,41 +371,77 @@ def ls(app_target: str | None, db: str | None) -> None:
 
 
 @cli.command()
-@click.argument("app_specifier", type=str)
-def show(app_specifier: str) -> None:
+@click.argument("app_target", type=str)
+def show(app_target: str) -> None:
     """
     Show the app's stable paths.
 
-    `APP_SPECIFIER`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
+    `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
     """
-    app = _load_app(app_specifier)
+    app = _load_app(app_target)
     paths = list_stable_paths_sync(app)
     click.echo(f"Found {len(paths)} stable paths:")
     for path in paths:
         click.echo(f"  {path}")
 
 
+async def _stop_all_environments() -> None:
+    for env_info in get_registered_environment_infos():
+        env = env_info.env
+        if isinstance(env, LazyEnvironment):
+            await env.stop()
+
+
+async def _run_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> Any:
+    if isinstance(app, coco_aio.App):
+        return await app.run(*args, **kwargs)
+    if isinstance(app, coco.App):
+        return await asyncio.to_thread(app.run, *args, **kwargs)
+    raise ValueError(f"Invalid app: {app}. Expected coco.App or coco_aio.App.")
+
+
+async def _drop_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> None:
+    if isinstance(app, coco_aio.App):
+        await app.drop(*args, **kwargs)
+        return
+    if isinstance(app, coco.App):
+        await asyncio.to_thread(app.drop, *args, **kwargs)
+        return
+    raise ValueError(f"Invalid app: {app}. Expected coco.App or coco_aio.App.")
+
+
 @cli.command()
-@click.argument("app_specifier", type=str)
-def update(app_specifier: str) -> None:
+@click.argument("app_target", type=str)
+def update(app_target: str) -> None:
     """
     Run a v1 app once (one-time update).
 
-    `APP_SPECIFIER`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
+    `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
     """
-    app = _load_app(app_specifier)
-    app.run()
+    app = _load_app(app_target)
+
+    async def _do() -> None:
+        try:
+            env = await app._environment._get_env()
+            print(
+                f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+            )
+            await _run_app(app, report_to_stdout=True)
+        finally:
+            await _stop_all_environments()
+
+    asyncio.run(_do())
 
 
 @cli.command()
-@click.argument("app_specifier", type=str)
+@click.argument("app_target", type=str)
 @click.option(
     "--force",
     "-f",
     is_flag=True,
     help="Skip confirmation prompt.",
 )
-def drop(app_specifier: str, force: bool = False) -> None:
+def drop(app_target: str, force: bool = False) -> None:
     """
     Drop an app and all its effects.
 
@@ -417,19 +451,21 @@ def drop(app_specifier: str, force: bool = False) -> None:
     - Revert all effects created by the app (e.g., drop tables, delete rows)
     - Clear the app's internal state database
 
-    `APP_SPECIFIER`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
+    `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
     """
-    app = _load_app(app_specifier)
+    app = _load_app(app_target)
 
     # Get the actual environment to check persisted state
     env = app._environment._get_env_sync()
     persisted_names = _get_persisted_app_names(env)
 
+    click.echo(
+        f"Preparing to drop app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+    )
+
     if app._name not in persisted_names:
         click.echo(f"App '{app._name}' has no persisted state. Nothing to drop.")
         return
-
-    click.echo(f"Preparing to drop app: {app._name}", err=True)
 
     if not force:
         if not _confirm_yes(
@@ -438,11 +474,16 @@ def drop(app_specifier: str, force: bool = False) -> None:
             click.echo("Drop operation aborted.")
             return
 
-    try:
-        app.drop()
-        click.echo(f"Dropped app '{app._name}' and reverted its effects.")
-    except Exception as e:
-        raise click.ClickException(f"Failed to drop app: {e}")
+    async def _do() -> None:
+        try:
+            await _drop_app(app, report_to_stdout=True)
+        finally:
+            await _stop_all_environments()
+        click.echo(
+            f"Dropped app '{app._name}' from environment '{env.name}' and reverted its effects."
+        )
+
+    asyncio.run(_do())
 
 
 if __name__ == "__main__":

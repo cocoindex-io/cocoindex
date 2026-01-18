@@ -255,7 +255,7 @@ def main() -> None:
         markdown_content = generate_command_docs(cli)
 
         # Determine output path
-        docs_dir = project_root / "docs" / "docs" / "core"
+        docs_dir = project_root / "docs" / "docs"
         output_file = docs_dir / "cli-commands.md"
 
         # Ensure directory exists

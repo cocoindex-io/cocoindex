@@ -186,16 +186,6 @@ impl ComponentBgChildReadiness {
         state.build_done = true;
         state.maybe_set_readiness(None, self.readiness());
     }
-
-    /// Wait for all child components to complete and return the result.
-    pub(crate) async fn wait(&self) -> Result<()> {
-        self.readiness()
-            .wait()
-            .await
-            .clone()
-            .into_result()
-            .map(|_| ())
-    }
 }
 
 pub struct ComponentMountRunHandle<Prof: EngineProfile> {
