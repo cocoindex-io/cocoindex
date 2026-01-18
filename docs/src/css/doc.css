@@ -32,9 +32,6 @@
     border: none;
   }
 
-  a {
-    font-weight: var(--ifm-font-weight-semibold);
-  }
 
   h1,
   h1:first-child,
