@@ -16,6 +16,9 @@
 /* Import Radix UI color system */
 @import '../components/Color/colors.css';
 
+/* Import admonition styles */
+@import './admonition.css';
+
 
 /* You can override the default Infima variables here. */
 :root {
