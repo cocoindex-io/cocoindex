@@ -121,15 +121,50 @@ class EnvironmentInfo:
     Per-environment information, for both already initialized and not-yet (lazily) initialized environments.
     """
 
-    __slots__ = ("_env_ref",)
+    __slots__ = ("_env_ref", "_app_registry", "_app_registry_lock")
 
-    _env_ref: weakref.ReferenceType[Environment | LazyEnvironment] | None
-    # TODO: Add fields such as app registry for the current environment
+    _env_ref: weakref.ReferenceType[Environment | LazyEnvironment]
+    _app_registry: weakref.WeakValueDictionary[str, Any]  # name -> AppBase
+    _app_registry_lock: threading.Lock
 
     def __init__(self, env: Environment | LazyEnvironment) -> None:
         self._env_ref = weakref.ref(env)
+        self._app_registry = weakref.WeakValueDictionary()
+        self._app_registry_lock = threading.Lock()
         with _environment_info_lock:
             _environment_infos.append(self)
+
+    def register_app(self, name: str, app: Any) -> None:
+        """Register an app with this environment."""
+        with self._app_registry_lock:
+            if name in self._app_registry:
+                raise ValueError(
+                    f"An app named '{name}' is already registered in this environment."
+                )
+            self._app_registry[name] = app
+
+    def get_apps(self) -> list[Any]:
+        """Get all registered apps for this environment."""
+        with self._app_registry_lock:
+            return list(self._app_registry.values())
+
+    @property
+    def env(self) -> Environment | LazyEnvironment | None:
+        """The environment, or None if it has been garbage collected."""
+        return self._env_ref()
+
+    @property
+    def env_name(self) -> str | None:
+        """The environment name, or None if it has been garbage collected."""
+        env = self.env
+        return env.name if env else None
+
+
+def get_registered_environment_infos() -> list[EnvironmentInfo]:
+    """Get all registered environment infos (that haven't been garbage collected)."""
+    with _environment_info_lock:
+        # Filter out infos whose environments have been garbage collected
+        return [info for info in _environment_infos if info.env is not None]
 
 
 class Environment:
@@ -141,6 +176,7 @@ class Environment:
     """
 
     __slots__ = (
+        "_name",
         "_core_env",
         "_settings",
         "_context_provider",
@@ -149,6 +185,7 @@ class Environment:
         "__weakref__",
     )
 
+    _name: str
     _core_env: core.Environment
     _settings: setting.Settings
     _context_provider: ContextProvider
@@ -159,12 +196,14 @@ class Environment:
         self,
         settings: setting.Settings,
         *,
+        name: str | None = None,
         context_provider: ContextProvider | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
         info: EnvironmentInfo | None = None,
     ):
         if not settings.db_path:
             raise ValueError("Settings.db_path must be provided")
+        self._name = name or ""
         self._settings = settings
         self._context_provider = context_provider or ContextProvider()
 
@@ -185,6 +224,10 @@ class Environment:
         async_context = core.AsyncContext(self._loop_runner.loop)
         self._core_env = core.Environment(dump_engine_object(settings), async_context)
         self._info = info or EnvironmentInfo(self)
+
+    @property
+    def name(self) -> str:
+        return self._name
 
     @property
     def settings(self) -> setting.Settings:
@@ -211,6 +254,7 @@ class LazyEnvironment:
     """
 
     __slots__ = (
+        "_name",
         "_lifespan_fn_lock",
         "_lifespan_fn",
         "_start_stop_lock",
@@ -220,6 +264,7 @@ class LazyEnvironment:
         "__weakref__",
     )
 
+    _name: str
     _lifespan_fn_lock: threading.Lock
     _lifespan_fn: LifespanFn | None
     _start_stop_lock: asyncio.Lock
@@ -227,13 +272,18 @@ class LazyEnvironment:
     _env: Environment | None
     _info: EnvironmentInfo
 
-    def __init__(self) -> None:
+    def __init__(self, name: str = "default") -> None:
+        self._name = name
         self._lifespan_fn_lock = threading.Lock()
         self._start_stop_lock = asyncio.Lock()
         self._lifespan_fn = None
         self._exit_stack = None
         self._env = None
         self._info = EnvironmentInfo(self)
+
+    @property
+    def name(self) -> str:
+        return self._name
 
     def lifespan(self, fn: LifespanFn) -> None:
         with self._lifespan_fn_lock:
@@ -305,6 +355,7 @@ class LazyEnvironment:
                 loop = asyncio.get_running_loop()
                 env = Environment(
                     built_settings,
+                    name=self._name,
                     context_provider=context_provider,
                     event_loop=loop,
                     info=self._info,
@@ -394,13 +445,6 @@ def _default_env_loop() -> asyncio.AbstractEventLoop:
         return _bg_loop_runner.loop
 
 
-async def default_env() -> Environment:
-    """
-    Get the default environment.
-    """
-    return await start()
-
-
 def start_sync() -> Environment:
     loop = _default_env_loop()
     fut = asyncio.run_coroutine_threadsafe(_default_env._get_env(), loop)
@@ -414,6 +458,11 @@ def stop_sync() -> None:
     loop = env.event_loop
     fut = asyncio.run_coroutine_threadsafe(_default_env.stop(), loop)
     fut.result()
+
+
+def default_env() -> LazyEnvironment:
+    """Get the default lazy environment."""
+    return _default_env
 
 
 def default_env_sync() -> Environment:

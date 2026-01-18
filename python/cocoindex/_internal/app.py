@@ -78,6 +78,9 @@ class AppBase(Generic[P, R]):
         self._lock = threading.Lock()
         self._core_env_app = None
 
+        # Register this app with its environment's info
+        config.environment._info.register_app(self._name, self)
+
     async def _get_core_env_app(self) -> tuple[Environment, core.App]:
         with self._lock:
             if self._core_env_app is not None:

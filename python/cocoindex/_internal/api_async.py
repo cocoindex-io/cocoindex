@@ -178,6 +178,20 @@ class App(AppBase[P, ReturnT]):
         )
         return await core_app.run_async(processor, report_to_stdout=report_to_stdout)
 
+    async def drop(self, *, report_to_stdout: bool = False) -> None:
+        """
+        Drop the app, reverting all its effects and clearing its database.
+
+        This will:
+        - Delete all effects created by the app (e.g., drop tables, delete rows)
+        - Clear the app's internal state database
+
+        Args:
+            report_to_stdout: If True, periodically report processing stats to stdout.
+        """
+        _env, core_app = await self._get_core_env_app()
+        await core_app.drop_async(report_to_stdout=report_to_stdout)
+
 
 async def start() -> None:
     """Start the default environment (and enter its lifespan, if any)."""
@@ -191,7 +205,7 @@ async def stop() -> None:
 
 async def default_env() -> _environment.Environment:
     """Get the default environment (starting it if needed)."""
-    return await _environment.default_env()
+    return await _environment.start()
 
 
 @asynccontextmanager
