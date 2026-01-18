@@ -27,12 +27,6 @@
 .markdown {
   line-height: 150%;
 
-  code {
-    font-size: var(--ifm-code-font-size);
-    border: none;
-  }
-
-
   h1,
   h1:first-child,
   h2,
@@ -177,21 +171,10 @@
   border-bottom: none;
 }
 
-.markdown table code {
-  font-size: 0.8125rem;
-  padding: 0.125rem 0.375rem;
-  border-radius: 0.25rem;
-  background-color: rgba(0, 0, 0, 0.05);
-}
-
 /* Dark mode table adjustments */
 [data-theme='dark'] .markdown table {
   --ifm-table-border-color: #374151;
   --ifm-table-head-background: #1f2937;
-}
-
-[data-theme='dark'] .markdown table code {
-  background-color: rgba(255, 255, 255, 0.1);
 }
 
 /* Override Docusaurus default max-width on main content container */
