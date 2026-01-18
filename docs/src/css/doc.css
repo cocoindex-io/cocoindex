@@ -71,6 +71,25 @@
   padding-left: 2rem;
 }
 
+/* Hide TOC desktop between 998px and 1024px */
+@media (min-width: 998px) and (max-width: 1024px) {
+  .theme-doc-toc-desktop {
+    display: none;
+  }
+
+  /* Make main content wider when TOC is hidden */
+  [class*='docMainContainer'] {
+    max-width: calc(100% - var(--doc-sidebar-width));
+  }
+
+  .col.docItemCol_VOVn,
+  .col[class^='docItemCol'] {
+    --ifm-col-width: 100% !important;
+    max-width: 100% !important;
+    flex: 0 0 var(--ifm-col-width) !important;
+  }
+}
+
 .table-of-contents__link {
   border-left: none;
 }
@@ -173,4 +192,11 @@
 
 [data-theme='dark'] .markdown table code {
   background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Override Docusaurus default max-width on main content container */
+@media (min-width: 997px) {
+  [class*='docMainContainer'] {
+    max-width: 100%;
+  }
 }

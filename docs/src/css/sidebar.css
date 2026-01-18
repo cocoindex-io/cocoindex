@@ -5,6 +5,7 @@
   padding: 1rem 0.5rem;
 }
 
+
 .theme-doc-sidebar-menu {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Open Sans', system-ui, sans-serif;
   font-size: 14px;
@@ -12,6 +13,14 @@
   line-height: 20px;
   letter-spacing: 0em;
   padding: 0;
+}
+
+/* Narrower sidebar on lg screens */
+@media (min-width: 997px) and (max-width: 1200px) {
+  .theme-doc-sidebar-container,
+  [class*='docSidebarContainer'] {
+    --doc-sidebar-width: 240px;
+  }
 }
 
 /* Sidebar menu items with generous spacing */
