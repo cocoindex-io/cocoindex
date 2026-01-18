@@ -36,6 +36,7 @@ def run_cli(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        encoding="utf-8",
     )
     if check and result.returncode != 0:
         raise AssertionError(
