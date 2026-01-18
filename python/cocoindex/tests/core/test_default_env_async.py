@@ -3,7 +3,7 @@ import pytest
 from typing import Iterator, AsyncIterator
 
 import cocoindex.asyncio as coco_aio
-from cocoindex._internal.environment import reset_default_lifespan_for_tests
+from cocoindex._internal.environment import reset_default_env_for_tests
 from ..common import get_env_db_path
 
 _env_db_path = get_env_db_path("_async_default")
@@ -40,7 +40,7 @@ def _default_async_env() -> Iterator[None]:
 
         yield
     finally:
-        reset_default_lifespan_for_tests()
+        reset_default_env_for_tests()
 
 
 @pytest.mark.asyncio
@@ -58,7 +58,7 @@ async def trivial_fn(_scope: coco_aio.Scope, s: str, i: int) -> str:
 
 
 @pytest.mark.asyncio
-async def test_async_app_in_default_env(_default_async_env: None) -> None:
+async def test_async_app(_default_async_env: None) -> None:
     app = coco_aio.App(
         trivial_fn,
         coco_aio.AppConfig(name="trivial_app"),
@@ -71,3 +71,17 @@ async def test_async_app_in_default_env(_default_async_env: None) -> None:
         assert await app.run() == "Hello 1"
         assert _num_active_resources == 1
     assert _num_active_resources == 0
+
+
+@pytest.mark.asyncio
+async def test_async_app_implicit_startup(_default_async_env: None) -> None:
+    app = coco_aio.App(
+        trivial_fn,
+        coco_aio.AppConfig(name="trivial_app_implicit_startup"),
+        "Hello",
+        1,
+    )
+
+    assert _num_active_resources == 0
+    assert await app.run() == "Hello 1"
+    assert _num_active_resources == 1
