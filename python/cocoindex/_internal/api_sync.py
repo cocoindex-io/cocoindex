@@ -161,9 +161,9 @@ def mount(
 
 
 class App(AppBase[P, ReturnT]):
-    def run(self, *, report_to_stdout: bool = False) -> ReturnT:
+    def update(self, *, report_to_stdout: bool = False) -> ReturnT:
         """
-        Run the app.
+        Update the app (run the app once to process all pending changes).
 
         Args:
             report_to_stdout: If True, periodically report processing stats to stdout.
@@ -176,7 +176,7 @@ class App(AppBase[P, ReturnT]):
         processor = create_core_component_processor(
             self._main_fn, env, root_path, self._app_args, self._app_kwargs
         )
-        return core_app.run(processor, report_to_stdout=report_to_stdout)
+        return core_app.update(processor, report_to_stdout=report_to_stdout)
 
     def drop(self, *, report_to_stdout: bool = False) -> None:
         """

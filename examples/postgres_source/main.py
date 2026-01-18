@@ -178,7 +178,7 @@ async def main() -> None:
             print('Usage: python main.py query "your search query"')
         return
 
-    await app.run(report_to_stdout=True)
+    await app.update(report_to_stdout=True)
 
 
 if __name__ == "__main__":

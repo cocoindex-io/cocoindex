@@ -189,7 +189,7 @@ async def main() -> None:
             await query_once(db, q)
         return
 
-    await app.run(report_to_stdout=True)
+    await app.update(report_to_stdout=True)
 
 
 if __name__ == "__main__":

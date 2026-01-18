@@ -392,11 +392,11 @@ async def _stop_all_environments() -> None:
             await env.stop()
 
 
-async def _run_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> Any:
+async def _update_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> Any:
     if isinstance(app, coco_aio.App):
-        return await app.run(*args, **kwargs)
+        return await app.update(*args, **kwargs)
     if isinstance(app, coco.App):
-        return await asyncio.to_thread(app.run, *args, **kwargs)
+        return await asyncio.to_thread(app.update, *args, **kwargs)
     raise ValueError(f"Invalid app: {app}. Expected coco.App or coco_aio.App.")
 
 
@@ -426,7 +426,7 @@ def update(app_target: str) -> None:
             print(
                 f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
             )
-            await _run_app(app, report_to_stdout=True)
+            await _update_app(app, report_to_stdout=True)
         finally:
             await _stop_all_environments()
 

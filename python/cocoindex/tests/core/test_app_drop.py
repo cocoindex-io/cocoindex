@@ -44,7 +44,7 @@ def test_drop_reverts_effects() -> None:
     # Run app to create effects
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {"c": 3}
-    app.run()
+    app.update()
 
     # Verify effects were created
     assert DictsTarget.store.data == {
@@ -85,7 +85,7 @@ def test_drop_clears_database() -> None:
 
     # Run app
     _source_data["D1"] = {"a": 1}
-    app.run()
+    app.update()
 
     # Verify app has state
     paths_before = coco_inspect.list_stable_paths_sync(app)
@@ -111,7 +111,7 @@ def test_drop_allows_rerun() -> None:
 
     # First run
     _source_data["D1"] = {"a": 1}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {"a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True)},
     }
@@ -123,7 +123,7 @@ def test_drop_allows_rerun() -> None:
     # Run again with different data
     _source_data.clear()
     _source_data["D2"] = {"b": 2}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D2": {"b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True)},
     }
@@ -163,7 +163,7 @@ async def test_drop_async_reverts_effects() -> None:
     # Run app to create effects
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {"c": 3}
-    await app.run()
+    await app.update()
 
     # Verify effects were created
     assert DictsTarget.store.data == {
@@ -199,7 +199,7 @@ async def test_drop_async_allows_rerun() -> None:
 
     # First run
     _source_data["D1"] = {"a": 1}
-    await app.run()
+    await app.update()
     assert DictsTarget.store.data == {
         "D1": {"a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True)},
     }
@@ -211,7 +211,7 @@ async def test_drop_async_allows_rerun() -> None:
     # Run again with different data
     _source_data.clear()
     _source_data["D2"] = {"b": 2}
-    await app.run()
+    await app.update()
     assert DictsTarget.store.data == {
         "D2": {"b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True)},
     }

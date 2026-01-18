@@ -203,7 +203,7 @@ async def main() -> None:
             await query_once(client, q)
         return
 
-    await app.run(report_to_stdout=True)
+    await app.update(report_to_stdout=True)
 
 
 def _image_id(path: pathlib.PurePath) -> str:
