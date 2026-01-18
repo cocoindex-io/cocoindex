@@ -1,3 +1,23 @@
+/* Main content padding for docs */
+.main-wrapper .container {
+  padding-left: 2.5rem;
+  padding-right: 2.5rem;
+}
+
+@media (min-width: 997px) {
+  .main-wrapper .container {
+    padding-left: 3rem;
+    padding-right: 3rem;
+  }
+}
+
+@media (min-width: 1400px) {
+  .main-wrapper .container {
+    padding-left: 4rem;
+    padding-right: 4rem;
+  }
+}
+
 .table-of-contents {
   code {
     border: none;
