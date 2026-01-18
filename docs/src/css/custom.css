@@ -22,14 +22,14 @@
 
 /* You can override the default Infima variables here. */
 :root {
-  /* Iris color scheme from Radix UI */
-  --ifm-color-primary: #5B5BD6;
-  --ifm-color-primary-dark: #4D4DCC;
-  --ifm-color-primary-darker: #4040C8;
-  --ifm-color-primary-darkest: #3333B3;
-  --ifm-color-primary-light: #7373DE;
-  --ifm-color-primary-lighter: #8F8FE6;
-  --ifm-color-primary-lightest: #ABABEF;
+  /* Indigo color scheme from Radix UI */
+  --ifm-color-primary: var(--radix-indigo-9);
+  --ifm-color-primary-dark: var(--radix-indigo-10);
+  --ifm-color-primary-darker: var(--radix-indigo-11);
+  --ifm-color-primary-darkest: var(--radix-indigo-12);
+  --ifm-color-primary-light: var(--radix-indigo-8);
+  --ifm-color-primary-lighter: var(--radix-indigo-7);
+  --ifm-color-primary-lightest: var(--radix-indigo-6);
   --ifm-code-font-size: 95%;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
   --my-color-text-black: #111827;
@@ -54,13 +54,13 @@
 
 /* For readability concerns, you should choose a lighter palette in dark mode. */
 [data-theme='dark'] {
-  --ifm-color-primary: #8F8FE6;
-  --ifm-color-primary-dark: #7373DE;
-  --ifm-color-primary-darker: #5B5BD6;
-  --ifm-color-primary-darkest: #4D4DCC;
-  --ifm-color-primary-light: #ABABEF;
-  --ifm-color-primary-lighter: #C4C4F5;
-  --ifm-color-primary-lightest: #E1E1FF;
+  --ifm-color-primary: var(--radix-indigo-9);
+  --ifm-color-primary-dark: var(--radix-indigo-10);
+  --ifm-color-primary-darker: var(--radix-indigo-11);
+  --ifm-color-primary-darkest: var(--radix-indigo-12);
+  --ifm-color-primary-light: var(--radix-indigo-8);
+  --ifm-color-primary-lighter: var(--radix-indigo-7);
+  --ifm-color-primary-lightest: var(--radix-indigo-6);
 
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
   --my-color-text-black: #f9fafb;
