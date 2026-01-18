@@ -361,45 +361,23 @@ impl TrackingTableSetupChange {
             source_ids
         );
 
-        // Step 1: Read all tracking entries for stale sources
-        let tracking_entries =
-            db_tracking::read_tracking_entries_for_sources(&source_ids, desired, pool).await?;
-
-        if tracking_entries.is_empty() {
-            tracing::info!("No tracking entries found for stale sources");
-            // Still delete tracking metadata even if no entries
-            let rows_deleted =
-                db_tracking::delete_tracking_entries_for_sources(&source_ids, desired, pool)
-                    .await?;
-            tracing::info!("Deleted {} tracking entries", rows_deleted);
-            return Ok(());
-        }
-
-        tracing::info!(
-            "Found {} tracking entries to clean up",
-            tracking_entries.len()
+        // Stream tracking entries instead of loading all at once
+        let entries_stream = db_tracking::read_tracking_entries_for_sources_stream(
+            source_ids.clone(),
+            desired.clone(),
+            pool.clone(),
         );
 
-        // Step 2: Group tracked keys by target_id
-        let mut keys_by_target: BTreeMap<i32, Vec<serde_json::Value>> = BTreeMap::new();
-        for entry in &tracking_entries {
-            if let Some(target_keys) = &entry.target_keys {
-                for (target_id, tracked_keys) in target_keys {
-                    for tracked_key_info in tracked_keys {
-                        keys_by_target
-                            .entry(*target_id)
-                            .or_default()
-                            .push(tracked_key_info.key.clone());
-                    }
-                }
-            }
-        }
+        // Process with limited parallelism
+        const MAX_CONCURRENT_ROW_CLEANUPS: usize = 10;
+        self.cleanup_tracking_entries_streaming(
+            Box::pin(entries_stream),
+            pool,
+            MAX_CONCURRENT_ROW_CLEANUPS,
+        )
+        .await?;
 
-        // Step 3: Delete from targets using target factory pattern
-        self.delete_target_data_via_factories(&keys_by_target)
-            .await?;
-
-        // Step 4: Delete tracking entries for stale sources
+        // Delete tracking metadata
         let rows_deleted =
             db_tracking::delete_tracking_entries_for_sources(&source_ids, desired, pool).await?;
 
@@ -411,104 +389,119 @@ impl TrackingTableSetupChange {
         Ok(())
     }
 
-    /// Delete target data using target factories
-    /// This implements Case 1 vs Case 2 logic and uses the target factory pattern
-    async fn delete_target_data_via_factories(
+    /// Stream tracking entries and clean up target data with limited parallelism
+    async fn cleanup_tracking_entries_streaming(
         &self,
-        keys_by_target: &BTreeMap<i32, Vec<serde_json::Value>>,
+        mut entries_stream: std::pin::Pin<
+            Box<dyn Stream<Item = Result<db_tracking::SourceTrackingEntryForCleanup>> + Send>,
+        >,
+        _pool: &PgPool,
+        max_concurrent: usize,
     ) -> Result<()> {
-        let desired_targets = match &self.desired_targets {
-            Some(targets) => targets,
-            None => {
-                tracing::debug!("No desired targets available for cleanup");
-                return Ok(());
+        use tokio::sync::Semaphore;
+        use tokio::task::JoinSet;
+
+        let semaphore = Arc::new(Semaphore::new(max_concurrent));
+        let mut join_set = JoinSet::new();
+        let mut total_processed = 0u64;
+        let mut total_deleted = 0u64;
+
+        // Stream entries one by one
+        while let Some(entry) = entries_stream.try_next().await? {
+            total_processed += 1;
+
+            let permit = semaphore.clone().acquire_owned().await?;
+
+            let desired_targets = self.desired_targets.clone();
+            let export_contexts = self.export_contexts.clone();
+
+            join_set.spawn(async move {
+                let result = Self::cleanup_single_tracking_entry(
+                    entry,
+                    desired_targets.as_ref(),
+                    export_contexts.as_ref(),
+                )
+                .await;
+                drop(permit);
+                result
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok(deleted_count)) => total_deleted += deleted_count,
+                Ok(Err(e)) => return Err(e),
+                Err(e) if !e.is_cancelled() => {
+                    return Err(internal_error!("Task panicked: {:?}", e));
+                }
+                _ => {}
             }
+        }
+
+        tracing::info!(
+            "Processed {} tracking entries, deleted {} target rows",
+            total_processed,
+            total_deleted
+        );
+
+        Ok(())
+    }
+
+    /// Process a single tracking entry and delete its target data
+    async fn cleanup_single_tracking_entry(
+        entry: db_tracking::SourceTrackingEntryForCleanup,
+        desired_targets: Option<&BTreeMap<i32, (String, Box<[schema::ValueType]>)>>,
+        export_contexts: Option<&Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>>>,
+    ) -> Result<u64> {
+        let Some(desired_targets) = desired_targets else {
+            return Ok(0);
         };
 
-        for (target_id, keys_to_delete) in keys_by_target {
-            // Check if target still exists in desired state (Case 1 vs Case 2)
-            let (target_kind, key_schema) = match desired_targets.get(target_id) {
+        let Some(target_keys) = entry.target_keys else {
+            return Ok(0);
+        };
+
+        let mut total_deleted = 0u64;
+
+        // One tracking entry can have keys for multiple targets (fanout)
+        for (target_id, tracked_keys) in target_keys {
+            // Case 1 vs Case 2: Is this target still in the flow?
+            let (target_kind, key_schema) = match desired_targets.get(&target_id) {
                 Some((kind, schema)) => (kind, schema),
                 None => {
-                    // Case 1: Target no longer exists, will be dropped by target setup cleanup
-                    tracing::debug!(
-                        "Skipping cleanup for target_id {}: target no longer exists (Case 1)",
-                        target_id
-                    );
+                    // Target dropped, skip cleanup
+                    tracing::debug!("Skipping target_id {}: target no longer exists", target_id);
                     continue;
                 }
             };
 
-            // Case 2: Target still exists, use factory to delete
-            tracing::info!(
-                "Deleting {} rows from {} target (ID: {}) using target factory",
-                keys_to_delete.len(),
-                target_kind,
-                target_id
-            );
-
-            // Parse keys from JSON using the key schema
+            // Parse tracked keys
             let mut parsed_keys = Vec::new();
-            let mut parse_failures = 0;
-
-            for key_json in keys_to_delete {
-                match self.parse_key_from_json(key_json, key_schema) {
+            for tracked_key_info in tracked_keys {
+                match Self::parse_key_from_json_static(&tracked_key_info.key, key_schema) {
                     Ok(key) => parsed_keys.push(key),
                     Err(e) => {
-                        // Handle parse failure gracefully (partial cleanup)
                         tracing::warn!(
-                            "Failed to parse key for target_id {}: {}. Skipping this key. Key JSON: {}",
+                            "Failed to parse key for target_id {}: {}. Skipping key.",
                             target_id,
-                            e,
-                            key_json
+                            e
                         );
-                        parse_failures += 1;
                     }
                 }
             }
 
-            if parse_failures > 0 {
-                tracing::warn!(
-                    "Skipped {} key(s) due to parse failures for target_id {}",
-                    parse_failures,
-                    target_id
-                );
-            }
-
             if parsed_keys.is_empty() {
-                tracing::warn!(
-                    "No valid keys to delete for target_id {} (all {} keys failed to parse)",
-                    target_id,
-                    keys_to_delete.len()
-                );
                 continue;
             }
 
-            tracing::info!(
-                "Successfully parsed {}/{} keys for target_id {}",
-                parsed_keys.len(),
-                keys_to_delete.len(),
-                target_id
-            );
-
             // Get export context for this target
-            let export_context = self
-                .export_contexts
-                .as_ref()
-                .and_then(|contexts| contexts.get(target_id))
-                .ok_or_else(|| {
-                    internal_error!(
-                        "Export context not found for target_id {}. \
-                     This should not happen - export contexts should be attached \
-                     during setup before cleanup runs.",
-                        target_id
-                    )
-                })?;
+            let export_context = export_contexts
+                .and_then(|ctxs| ctxs.get(&target_id))
+                .ok_or_else(|| internal_error!("No export context for target {}", target_id))?;
 
-            // Get target factory
+            // Delete via target factory
             let factory = crate::ops::get_target_factory(target_kind)?;
 
-            // Build mutation with deletes
             let deletes: Vec<interface::ExportTargetDeleteEntry> = parsed_keys
                 .into_iter()
                 .map(|key| interface::ExportTargetDeleteEntry {
@@ -517,40 +510,29 @@ impl TrackingTableSetupChange {
                 })
                 .collect();
 
-            let delete_count = deletes.len();
+            let delete_count = deletes.len() as u64;
 
-            let mutation = interface::ExportTargetMutation {
-                upserts: vec![],
-                deletes,
-            };
-
-            // Call factory.apply_mutation() to delete the data
             factory
                 .apply_mutation(vec![interface::ExportTargetMutationWithContext {
-                    mutation,
+                    mutation: interface::ExportTargetMutation {
+                        upserts: vec![],
+                        deletes,
+                    },
                     export_context: &**export_context,
                 }])
                 .await?;
 
-            tracing::info!(
-                "Successfully deleted {} rows from target_id {} ({} target)",
-                delete_count,
-                target_id,
-                target_kind
-            );
+            total_deleted += delete_count;
         }
 
-        Ok(())
+        Ok(total_deleted)
     }
 
     /// Parse a key from JSON using the key schema
-    fn parse_key_from_json(
-        &self,
+    fn parse_key_from_json_static(
         key_json: &serde_json::Value,
         key_schema: &[schema::ValueType],
     ) -> Result<value::KeyValue> {
-        // Convert ValueType to FieldSchema for parsing
-        // Use dummy field names since we only care about types for keys
         let field_schemas: Vec<schema::FieldSchema> = key_schema
             .iter()
             .enumerate()
@@ -565,8 +547,7 @@ impl TrackingTableSetupChange {
             })
             .collect();
 
-        // Parse using KeyValue::from_json
         value::KeyValue::from_json(key_json.clone(), &field_schemas)
-            .with_context(|| format!("Failed to parse key from JSON: {}", key_json))
+            .with_context(|| format!("Failed to parse key: {}", key_json))
     }
 }
