@@ -947,43 +947,42 @@ pub(crate) async fn apply_changes_for_flow_ctx(
 ) -> Result<()> {
     // Attach export contexts to tracking table setup change BEFORE getting the setup_change
     // This is needed for stale source cleanup which uses target factories
-    if let FlowSetupChangeAction::Setup = action {
-        if let Some(tracking_table) = &mut flow_exec_ctx.setup_change.tracking_table {
-            if let Some(setup_change) = &mut tracking_table.setup_change {
-                // Get execution plan with export contexts
-                let execution_plan = flow_ctx
-                    .flow
-                    .execution_plan
-                    .clone()
-                    .await
-                    .map_err(|e| internal_error!("Failed to get execution plan: {:?}", e))?;
+    if let FlowSetupChangeAction::Setup = action
+        && let Some(tracking_table) = &mut flow_exec_ctx.setup_change.tracking_table
+        && let Some(setup_change) = &mut tracking_table.setup_change
+    {
+        // Get execution plan with export contexts
+        let execution_plan = flow_ctx
+            .flow
+            .execution_plan
+            .clone()
+            .await
+            .map_err(|e| internal_error!("Failed to get execution plan: {:?}", e))?;
 
-                // Build map of target_id -> export_context using flow_exec_ctx.setup_execution_context
-                let mut export_contexts = BTreeMap::new();
-                for (export_op, exec_ctx_export_op) in execution_plan
-                    .export_ops
-                    .iter()
-                    .zip(flow_exec_ctx.setup_execution_context.export_ops.iter())
-                {
-                    export_contexts.insert(
-                        exec_ctx_export_op.target_id,
-                        export_op.export_context.clone(),
-                    );
-                }
-
-                // Attach to tracking change
-                setup_change.attach_export_contexts(export_contexts);
-
-                tracing::debug!(
-                    "Attached export contexts for {} targets to tracking table setup change",
-                    setup_change
-                        .export_contexts
-                        .as_ref()
-                        .map(|c| c.len())
-                        .unwrap_or(0)
-                );
-            }
+        // Build map of target_id -> export_context using flow_exec_ctx.setup_execution_context
+        let mut export_contexts = BTreeMap::new();
+        for (export_op, exec_ctx_export_op) in execution_plan
+            .export_ops
+            .iter()
+            .zip(flow_exec_ctx.setup_execution_context.export_ops.iter())
+        {
+            export_contexts.insert(
+                exec_ctx_export_op.target_id,
+                export_op.export_context.clone(),
+            );
         }
+
+        // Attach to tracking change
+        setup_change.attach_export_contexts(export_contexts);
+
+        tracing::debug!(
+            "Attached export contexts for {} targets to tracking table setup change",
+            setup_change
+                .export_contexts
+                .as_ref()
+                .map(|c| c.len())
+                .unwrap_or(0)
+        );
     }
 
     let mut setup_change_buffer = None;
