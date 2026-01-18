@@ -8,9 +8,9 @@ use crate::engine::context::AppContext;
 use crate::engine::environment::{AppRegistration, Environment};
 use crate::state::stable_path::StablePath;
 
-/// Options for running an app.
+/// Options for updating an app.
 #[derive(Debug, Clone, Default)]
-pub struct AppRunOptions {
+pub struct AppUpdateOptions {
     /// If true, periodically report processing stats to stdout.
     pub report_to_stdout: bool,
 }
@@ -43,11 +43,11 @@ impl<Prof: EngineProfile> App<Prof> {
 }
 
 impl<Prof: EngineProfile> App<Prof> {
-    #[instrument(name = "app.run", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
-    pub async fn run(
+    #[instrument(name = "app.update", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
+    pub async fn update(
         &self,
         root_processor: Prof::ComponentProc,
-        options: AppRunOptions,
+        options: AppUpdateOptions,
     ) -> Result<Prof::FunctionData> {
         let processing_stats = ProcessingStats::default();
         let context = self

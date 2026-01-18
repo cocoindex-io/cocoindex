@@ -27,14 +27,14 @@ def test_global_dict_effect_insert() -> None:
     )
 
     _source_data["a"] = 1
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
     }
     assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
 
     _source_data["b"] = 2
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
@@ -53,7 +53,7 @@ def test_global_dict_effect_upsert() -> None:
 
     _source_data["a"] = 1
     _source_data["b"] = 2
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
@@ -61,7 +61,7 @@ def test_global_dict_effect_upsert() -> None:
     assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 2}
 
     _source_data["a"] = 3
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=3, prev=[1], prev_may_be_missing=False),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
@@ -80,11 +80,11 @@ def test_global_dict_effect_delete() -> None:
 
     _source_data["a"] = 1
     _source_data["b"] = 2
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 2}
 
     del _source_data["a"]
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
@@ -103,14 +103,14 @@ def test_global_dict_effect_no_change() -> None:
     _source_data["a"] = 1
     _source_data["b"] = 2
 
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
     assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 2}
 
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
@@ -119,14 +119,14 @@ def test_global_dict_effect_no_change() -> None:
 
     _source_data["a"] = 3
 
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=3, prev=[1], prev_may_be_missing=False),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
     }
     assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
 
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=3, prev=[1], prev_may_be_missing=False),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
@@ -151,14 +151,14 @@ def test_async_global_dict_effect_insert() -> None:
     )
 
     _source_data["a"] = 1
-    app.run()
+    app.update()
     assert AsyncGlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
     }
     assert AsyncGlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
 
     _source_data["b"] = 2
-    app.run()
+    app.update()
     assert AsyncGlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
         "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
@@ -181,20 +181,20 @@ def test_global_dict_effect_proceed_with_exception() -> None:
     try:
         GlobalDictTarget.store.sink_exception = True
         with pytest.raises(Exception):
-            app.run()
+            app.update()
     finally:
         GlobalDictTarget.store.sink_exception = False
     assert GlobalDictTarget.store.data == {}
 
     _source_data["a"] = 2
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=2, prev=[1], prev_may_be_missing=True),
     }
     assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
 
     _source_data["a"] = 3
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {
         "a": DictDataWithPrev(data=3, prev=[2], prev_may_be_missing=False),
     }
@@ -204,9 +204,9 @@ def test_global_dict_effect_proceed_with_exception() -> None:
     try:
         GlobalDictTarget.store.sink_exception = True
         with pytest.raises(Exception):
-            app.run()
+            app.update()
     finally:
         GlobalDictTarget.store.sink_exception = False
-    app.run()
+    app.update()
     assert GlobalDictTarget.store.data == {}
     assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "delete": 1}

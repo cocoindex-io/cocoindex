@@ -88,7 +88,7 @@ def test_source_data_memo() -> None:
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
 
-    app.run()
+    app.update()
     # 2 children, each updates 1 key => 2 calls into _declare_source_data_entry.
     assert _metrics.collect() == {"calls": 2}
     assert GlobalDictTarget.store.data == {
@@ -99,7 +99,7 @@ def test_source_data_memo() -> None:
     # memo key no change, reprocessing should be skipped
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.run()
+    app.update()
     # A is skipped (memo hit), B runs (memo miss) => 1 call into _declare_source_data_entry.
     assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
@@ -111,7 +111,7 @@ def test_source_data_memo() -> None:
 
     # Test deletion and re-insertion.
     del _source_data["A"]
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "B": DictDataWithPrev(
@@ -120,7 +120,7 @@ def test_source_data_memo() -> None:
     }
 
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA2", prev=[], prev_may_be_missing=True),
@@ -135,9 +135,9 @@ def test_source_data_memo() -> None:
     _source_data["A"] = SourceDataEntry(
         name="A", version=2, content="contentA2", err=True
     )
-    app.run()
+    app.update()
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA3")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -160,7 +160,7 @@ def test_source_data_memo_cleanup() -> None:
     )
 
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
-    app.run()
+    app.update()
     assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -171,7 +171,7 @@ def test_source_data_memo_cleanup() -> None:
     ]
 
     del _source_data["A"]
-    app.run()
+    app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
     assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
@@ -189,7 +189,7 @@ def test_source_data_memo_mount_run() -> None:
 
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    ret1 = app.run()
+    ret1 = app.update()
     assert _metrics.collect() == {"calls": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -203,7 +203,7 @@ def test_source_data_memo_mount_run() -> None:
     # A memo key unchanged => cached return is used; B changes => recomputed.
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    ret2 = app.run()
+    ret2 = app.update()
     assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -217,7 +217,7 @@ def test_source_data_memo_mount_run() -> None:
     ]
 
     _source_data["A"] = SourceDataEntry(name="A", version=2, content="contentA2")
-    ret3 = app.run()
+    ret3 = app.update()
     assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -234,7 +234,7 @@ def test_source_data_memo_mount_run() -> None:
 
     # Test deletion and re-insertion.
     del _source_data["A"]
-    ret4 = app.run()
+    ret4 = app.update()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "B": DictDataWithPrev(
@@ -246,7 +246,7 @@ def test_source_data_memo_mount_run() -> None:
     ]
 
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
-    ret5 = app.run()
+    ret5 = app.update()
     assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA2", prev=[], prev_may_be_missing=True),
@@ -266,9 +266,9 @@ def test_source_data_memo_mount_run() -> None:
         name="A", version=2, content="contentA2", err=True
     )
     with pytest.raises(Exception):
-        app.run()
+        app.update()
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA3")
-    ret6 = app.run()
+    ret6 = app.update()
     assert _metrics.collect() == {"calls": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -297,7 +297,7 @@ def test_source_data_memo_mount_run_cleanup() -> None:
     )
 
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
-    ret1 = app.run()
+    ret1 = app.update()
     assert ret1 == [
         SourceDataResult(name="A", content="contentA1"),
     ]
@@ -311,7 +311,7 @@ def test_source_data_memo_mount_run_cleanup() -> None:
     ]
 
     del _source_data["A"]
-    ret2 = app.run()
+    ret2 = app.update()
     assert ret2 == []
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
@@ -363,9 +363,9 @@ def test_memo_invalidation_on_decorator_change() -> None:
     current_module.clear()
     current_module.append(mod_with)
 
-    app.run()
+    app.update()
     assert metrics.collect() == {"calls": 1}
-    app.run()
+    app.update()
     assert metrics.collect() == {}
 
     # Step 2: Load without memo=True and run.
@@ -374,9 +374,9 @@ def test_memo_invalidation_on_decorator_change() -> None:
     current_module.clear()
     current_module.append(mod_without)
 
-    app.run()
+    app.update()
     assert metrics.collect() == {"calls": 1}
-    app.run()
+    app.update()
     assert metrics.collect() == {"calls": 1}
 
     # Step 3: Load with memo=True again and run.
@@ -385,9 +385,9 @@ def test_memo_invalidation_on_decorator_change() -> None:
     current_module.clear()
     current_module.append(mod_with_again)
 
-    app.run()
+    app.update()
     assert metrics.collect() == {"calls": 1}
-    app.run()
+    app.update()
     assert metrics.collect() == {}
 
     # Cleanup fake module from sys.modules.
