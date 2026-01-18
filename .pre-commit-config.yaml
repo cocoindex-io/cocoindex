@@ -77,10 +77,9 @@ repos:
           pass_filenames: false
           always_run: false
 
-        # Disable until the cli module is fully migrated.
-        # - id: generate-cli-docs
-        #   name: generate CLI documentation
-        #   entry: uv run python dev/generate_cli_docs.py
-        #   language: system
-        #   files: ^(python/cocoindex/cli\.py|dev/generate_cli_docs\.py)$
-        #   pass_filenames: false
+        - id: generate-cli-docs
+          name: generate CLI documentation
+          entry: uv run python dev/generate_cli_docs.py
+          language: system
+          files: ^(python/cocoindex/cli\.py|dev/generate_cli_docs\.py)$
+          pass_filenames: false
