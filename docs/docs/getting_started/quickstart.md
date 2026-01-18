@@ -7,7 +7,7 @@ import { GitHubButton, DocumentationButton } from '@site/src/components/ActionBu
 
 # Quickstart
 
-In this tutorial, we'll build a simple flow that converts Markdown files to HTML and saves them to a local directory. 
+In this tutorial, we'll build a simple flow that converts Markdown files to HTML and saves them to a local directory.
 
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/v1/examples/files_transform" />
 
