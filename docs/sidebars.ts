@@ -23,7 +23,6 @@ const sidebars: SidebarsConfig = {
         'programming_guide/effect',
         'programming_guide/function',
         'programming_guide/app',
-        'programming_guide/environment_settings',
         'programming_guide/context',
       ],
     },
