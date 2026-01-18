@@ -2,7 +2,7 @@
 .footerCustom {
   padding: 0;
   background-color: var(--ifm-footer-background-color);
-  border-top: 1px solid var(--radix-gray-4);
+  border-top: none;
   font-family: 'Questrial', sans-serif;
 }
 
@@ -47,13 +47,7 @@
 
 @media (min-width: 768px) {
   .footerColumn {
-    padding: 2.5rem 2.5rem 5rem 2.5rem;
-  }
-}
-
-@media (min-width: 1024px) {
-  .footerColumn {
-    padding: 2.5rem 2.5rem 5rem 2.5rem;
+    padding: 5rem 2.5rem;
   }
 }
 
@@ -110,13 +104,13 @@
 @media (min-width: 768px) {
   .footerLogoSection {
     grid-column: 1 / -1;
-    padding: 2.5rem 2.5rem 4rem 2.5rem;
+    padding: 4rem 2.5rem;
   }
 }
 
 @media (min-width: 1024px) {
   .footerLogoSection {
-    padding: 2.5rem 2.5rem 4rem 2.5rem;
+    padding: 4rem 2.5rem;
     width: 300px;
     min-width: 300px;
     grid-column: auto;
@@ -164,7 +158,7 @@
 
 /* Dark mode adjustments */
 [data-theme='dark'] .footerCustom {
-  border-top-color: var(--radix-gray-4);
+  border-top: none;
 }
 
 [data-theme='dark'] .footerLink {
