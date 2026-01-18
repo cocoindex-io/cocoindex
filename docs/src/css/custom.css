@@ -7,6 +7,7 @@
 /* Import Questrial font from Google Fonts */
 @import url('https://fonts.googleapis.com/css2?family=Questrial&display=swap');
 
+
 /* Import custom scrollbar styles */
 @import './scrollbar.css';
 
@@ -136,4 +137,40 @@
   .navbar__item.navbar-github-link {
     margin-right: 40px;
   }
+}
+
+/* Inline code styling - Radix UI Code component style */
+code {
+  font-family: 'Menlo', 'Consolas', 'Bitstream Vera Sans Mono', monospace, 'Apple Color Emoji', 'Segoe UI Emoji';
+  font-size: calc(0.95em * var(--scaling, 1));
+  line-height: 1.25;
+  letter-spacing: -0.007em;
+  background-color: var(--radix-gray-3);
+  color: var(--radix-gray-12);
+  padding: 0.125em 0.35em;
+  border-radius: calc(0.25em);
+  border: none;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* Dark mode inline code */
+[data-theme='dark'] code {
+  background-color: var(--radix-gray-3);
+  color: var(--radix-gray-12);
+}
+
+/* Code inside links */
+a code {
+  color: inherit;
+}
+
+/* Code blocks should not have these inline styles */
+pre code {
+  background-color: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
 }
