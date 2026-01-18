@@ -65,6 +65,21 @@
 .table-of-contents {
   font-size: 0.8125rem;
   /* 13px */
+  border-left: none;
+  padding-left: 0;
+}
+
+/* Add spacing between main content and TOC */
+.theme-doc-toc-desktop {
+  padding-left: 2rem;
+}
+
+.table-of-contents__link {
+  border-left: none;
+}
+
+.table-of-contents__link--active {
+  border-left: none;
 }
 
 .breadcrumbs {
