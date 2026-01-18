@@ -5,6 +5,7 @@ Utilities to dump/load objects (for configs, specs).
 from __future__ import annotations
 
 import datetime
+import base64
 from enum import Enum
 from typing import Any, Mapping, TypeVar, overload, get_origin
 
@@ -41,7 +42,7 @@ def get_auto_default_for_type(
     return None, False
 
 
-def dump_engine_object(v: Any) -> Any:
+def dump_engine_object(v: Any, *, bytes_to_base64: bool = False) -> Any:
     """Recursively dump an object for engine. Engine side uses `Pythonized` to catch."""
     if v is None:
         return None
@@ -64,7 +65,9 @@ def dump_engine_object(v: Any) -> Any:
         result = {}
         for name in field_names:
             val = getattr(v, name)
-            result[name] = dump_engine_object(val)  # Include all values, including None
+            result[name] = dump_engine_object(
+                val, bytes_to_base64=bytes_to_base64
+            )  # Include all values, including None
         if hasattr(v, "kind") and "kind" not in result:
             result["kind"] = v.kind
         return result
@@ -74,16 +77,21 @@ def dump_engine_object(v: Any) -> Any:
             if val is None:
                 # Skip None values
                 continue
-            s[k] = dump_engine_object(val)
+            s[k] = dump_engine_object(val, bytes_to_base64=bytes_to_base64)
         if hasattr(v, "kind") and "kind" not in s:
             s["kind"] = v.kind
         return s
     elif isinstance(v, (list, tuple)):
-        return [dump_engine_object(item) for item in v]
+        return [dump_engine_object(item, bytes_to_base64=bytes_to_base64) for item in v]
     elif isinstance(v, np.ndarray):
         return v.tolist()
     elif isinstance(v, dict):
-        return {k: dump_engine_object(v) for k, v in v.items()}
+        return {
+            k: dump_engine_object(v, bytes_to_base64=bytes_to_base64)
+            for k, v in v.items()
+        }
+    elif bytes_to_base64 and isinstance(v, bytes):
+        return {"@type": "bytes", "value": base64.b64encode(v).decode("utf-8")}
     return v
 
 

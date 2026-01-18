@@ -2,7 +2,7 @@
  * Radix UI Color System
  * Centralized color variables for all components
  * Based on Radix UI Themes color palette
- * 
+ *
  * Color scales follow Radix UI convention:
  * - 1-2: Very light backgrounds
  * - 3-5: Subtle backgrounds
@@ -175,7 +175,7 @@
   --radix-color-background: #ffffff;
   --radix-color-background-subtle: var(--radix-gray-2);
   --radix-color-background-muted: var(--radix-gray-3);
-  
+
   /* Primary color (using indigo as default) */
   --radix-color-primary: var(--radix-indigo-9);
   --radix-color-primary-hover: var(--radix-indigo-10);
@@ -184,7 +184,7 @@
 }
 
 /* Dark mode colors */
-[data-theme='dark'] {
+html[data-theme='dark'] {
   /* Gray scale - Dark mode */
   --radix-gray-1: #111111;
   --radix-gray-2: #1a1a1a;
@@ -348,11 +348,10 @@
   --radix-color-background: #111827;
   --radix-color-background-subtle: var(--radix-gray-2);
   --radix-color-background-muted: var(--radix-gray-3);
-  
+
   /* Primary color (using indigo as default) */
   --radix-color-primary: var(--radix-indigo-9);
   --radix-color-primary-hover: var(--radix-indigo-10);
   --radix-color-primary-active: var(--radix-indigo-11);
   --radix-color-primary-text: var(--radix-indigo-12);
 }
-

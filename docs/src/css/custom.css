@@ -30,14 +30,19 @@
   --ifm-code-font-size: 95%;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
   --my-color-text-black: #111827;
-  
+
   /* Additional colors */
   --ifm-navbar-background-color: var(--ifm-background-color);
   --ifm-background-color: #ffffff;
   --ifm-footer-background-color: #ffffff;
   --ifm-menu-color: #374151;
   --ifm-toc-link-color: #374151;
-  
+
+  /* Navbar colors */
+  --navbar-background-color: var(--ifm-background-color);
+  --navbar-link-color: #1f2328;
+  --navbar-mobile-button-hover: rgba(0, 0, 0, 0.05);
+
   /* Theme colors for breadcrumbs */
   --theme-color-text-light: #6b7280;
   --theme-color-text-default: #111827;
@@ -53,17 +58,22 @@
   --ifm-color-primary-light: #ABABEF;
   --ifm-color-primary-lighter: #C4C4F5;
   --ifm-color-primary-lightest: #E1E1FF;
-  
+
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
   --my-color-text-black: #f9fafb;
-  
+
   /* Dark mode specific colors */
   --ifm-navbar-background-color: var(--ifm-background-color);
   --ifm-background-color: #111827;
   --ifm-footer-background-color: var(--ifm-background-color);
   --ifm-menu-color: #f3f4f6;
   --ifm-toc-link-color: #f3f4f6;
-  
+
+  /* Navbar colors - dark mode */
+  --navbar-background-color: var(--ifm-background-color);
+  --navbar-link-color: var(--ifm-font-color-base);
+  --navbar-mobile-button-hover: rgba(255, 255, 255, 0.1);
+
   /* Dark mode theme colors for breadcrumbs */
   --theme-color-text-light: #9ca3af;
   --theme-color-text-default: #f9fafb;

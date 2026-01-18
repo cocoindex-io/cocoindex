@@ -83,23 +83,24 @@ all = [
 ]
 
 [dependency-groups]
-build-test = ["maturin>=1.10.0,<2.0", "pytest", "pytest-asyncio", "mypy"]
-format = ["ruff"]
+build-test = [
+    "maturin>=1.10.0,<2.0",
+    "pytest",
+    "pytest-asyncio",
+    "mypy",
+    "ruff",
+]
 type-stubs = ["types-psutil>=7.2.1"]
 ci-enabled-optional-deps = ["pydantic>=2.11.9"]
 
 ci = [
     { include-group = "build-test" },
-    { include-group = "ci-enabled-optional-deps" },
     { include-group = "type-stubs" },
+    { include-group = "ci-enabled-optional-deps" },
 ]
 
 dev-local = ["pre-commit"]
-dev = [
-    { include-group = "ci" },
-    { include-group = "format" },
-    { include-group = "dev-local" },
-]
+dev = [{ include-group = "ci" }, { include-group = "dev-local" }]
 
 [tool.uv]
 package = false

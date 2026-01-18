@@ -12,7 +12,7 @@ function LastReviewed({ date, margin = '0 0 24px 0' }: LastReviewedProps): React
     let dateObj: Date;
     let isoDate: string;
     let displayDate: string;
-    
+
     if (date) {
         // Try parsing as ISO 8601 first
         if (/^\d{4}-\d{2}-\d{2}/.test(date)) {
@@ -23,26 +23,26 @@ function LastReviewed({ date, margin = '0 0 24px 0' }: LastReviewedProps): React
             dateObj = new Date(date);
             isoDate = dateObj.toISOString().split('T')[0]; // Extract YYYY-MM-DD
         }
-        displayDate = dateObj.toLocaleDateString('en-US', { 
-            year: 'numeric', 
-            month: 'long', 
-            day: 'numeric' 
+        displayDate = dateObj.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
         });
     } else {
         dateObj = new Date();
         isoDate = dateObj.toISOString().split('T')[0];
-        displayDate = dateObj.toLocaleDateString('en-US', { 
-            year: 'numeric', 
-            month: 'long', 
-            day: 'numeric' 
+        displayDate = dateObj.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
         });
     }
 
     return (
-        <div style={{ 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '8px', 
+        <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
             margin
         }}>
             <FaCheckCircle style={{ color: 'var(--radix-green-9)' }} />
@@ -57,4 +57,3 @@ function LastReviewed({ date, margin = '0 0 24px 0' }: LastReviewedProps): React
 }
 
 export { LastReviewed };
-
