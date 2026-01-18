@@ -243,7 +243,8 @@ class LazyEnvironment:
                 )
             self._lifespan_fn = fn
 
-    def _reset_lifespan(self) -> None:
+    async def _reset(self) -> None:
+        await self.stop()
         with self._lifespan_fn_lock:
             self._lifespan_fn = None
 
@@ -420,10 +421,10 @@ def default_env_sync() -> Environment:
     return start_sync()
 
 
-def reset_default_lifespan_for_tests() -> None:
+def reset_default_env_for_tests() -> None:
     """
     Reset the registered default lifespan function.
 
     This is intended for tests so lifespan registration does not leak across test modules.
     """
-    _default_env._reset_lifespan()
+    asyncio.run(_default_env._reset())

@@ -3,7 +3,7 @@ from typing import Iterator
 import pytest
 
 import cocoindex as coco
-from cocoindex._internal.environment import reset_default_lifespan_for_tests
+from cocoindex._internal.environment import reset_default_env_for_tests
 from ..common import get_env_db_path
 
 _env_db_path = get_env_db_path("_default")
@@ -38,7 +38,7 @@ def _default_env() -> Iterator[None]:
 
         yield
     finally:
-        reset_default_lifespan_for_tests()
+        reset_default_env_for_tests()
 
 
 def test_default_env(_default_env: None) -> None:
@@ -53,7 +53,7 @@ def _trivial_fn(_scope: coco.Scope, s: str, i: int) -> str:
     return f"{s} {i}"
 
 
-def test_app_in_default_env(_default_env: None) -> None:
+def test_app(_default_env: None) -> None:
     app = coco.App(
         _trivial_fn,
         coco.AppConfig(name="trivial_app"),
@@ -66,3 +66,16 @@ def test_app_in_default_env(_default_env: None) -> None:
         assert app.run() == "Hello 1"
         assert _num_active_resources == 1
     assert _num_active_resources == 0
+
+
+def test_app_implicit_startup(_default_env: None) -> None:
+    app = coco.App(
+        _trivial_fn,
+        coco.AppConfig(name="trivial_app_implicit_startup"),
+        "Hello",
+        1,
+    )
+
+    assert _num_active_resources == 0
+    assert app.run() == "Hello 1"
+    assert _num_active_resources == 1
