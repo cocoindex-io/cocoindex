@@ -54,23 +54,23 @@
   margin: 0;
   color: var(--ifm-menu-color);
   transition: background-color 0.15s ease, color 0.15s ease;
-  border: none;
+  position: relative;
 }
 
 .theme-doc-sidebar-menu .menu__link:hover {
-  background-color: var(--ifm-color-emphasis-100);
-  color: var(--ifm-menu-color);
+  background-color: var(--ifm-color-primary-bg-hover);
   text-decoration: none;
 }
 
 .theme-doc-sidebar-menu .menu__link--active {
-  background-color: var(--ifm-color-emphasis-100);
+  background-color: var(--ifm-color-primary-bg-active);
   color: var(--ifm-color-primary);
   font-weight: 500;
 }
 
 .theme-doc-sidebar-menu .menu__link--active:hover {
-  background-color: var(--ifm-color-emphasis-200);
+  background-color: var(--ifm-color-primary-bg-active-hover);
+  color: var(--ifm-color-primary);
 }
 
 /* Sidebar category labels */
@@ -80,13 +80,14 @@
   font-weight: 600;
   line-height: 20px;
   letter-spacing: 0em;
-  color: var(--ifm-menu-color);
+  color: var(--ifm-font-color-base);
   padding: 0.5rem 0.75rem;
   margin: 0;
+  border-radius: 0.375rem;
 }
 
 .theme-doc-sidebar-menu .menu__list-item-collapsible > .menu__link:hover {
-  background-color: var(--ifm-color-emphasis-100);
+  background-color: var(--ifm-color-primary-bg-hover);
 }
 
 
@@ -99,7 +100,7 @@
 
 /* Nested menu items with proper spacing */
 .theme-doc-sidebar-menu .menu__list-item .menu__list {
-  padding-left: 0;
+  padding-left: 0.75rem;
   margin-top: 0;
   margin-bottom: 0;
 }
@@ -110,11 +111,15 @@
   font-weight: 400;
   line-height: 20px;
   letter-spacing: 0em;
-  padding: 0.4rem 0.75rem 0.4rem 2rem;
+  padding: 0.4rem 0.75rem;
+}
+
+.theme-doc-sidebar-menu .menu__list-item .menu__list .menu__list {
+  padding-left: 0.75rem;
 }
 
 .theme-doc-sidebar-menu .menu__list-item .menu__list .menu__list .menu__link {
-  padding-left: 2.75rem;
+  padding: 0.4rem 0.75rem;
 }
 
 /* Sidebar caret/chevron */
@@ -125,7 +130,7 @@
 }
 
 .theme-doc-sidebar-menu .menu__caret:hover {
-  background-color: var(--ifm-color-emphasis-100);
+  background-color: var(--ifm-color-primary-bg-hover);
 }
 
 /* Sidebar caret styles */
@@ -141,21 +146,22 @@
 }
 
 [data-theme='dark'] .theme-doc-sidebar-menu .menu__link:hover {
-  background-color: var(--ifm-color-emphasis-200);
+  background-color: var(--ifm-color-primary-bg-hover);
 }
 
 [data-theme='dark'] .theme-doc-sidebar-menu .menu__link--active {
-  background-color: var(--ifm-color-emphasis-200);
+  background-color: var(--ifm-color-primary-bg-active);
+  color: var(--ifm-color-primary);
 }
 
 [data-theme='dark'] .theme-doc-sidebar-menu .menu__link--active:hover {
-  background-color: var(--ifm-color-emphasis-300);
+  background-color: var(--ifm-color-primary-bg-active-hover);
 }
 
 [data-theme='dark'] .theme-doc-sidebar-menu .menu__list-item-collapsible > .menu__link:hover {
-  background-color: var(--ifm-color-emphasis-200);
+  background-color: var(--ifm-color-primary-bg-hover);
 }
 
 [data-theme='dark'] .theme-doc-sidebar-menu .menu__caret:hover {
-  background-color: var(--ifm-color-emphasis-200);
+  background-color: var(--ifm-color-primary-bg-hover);
 }
