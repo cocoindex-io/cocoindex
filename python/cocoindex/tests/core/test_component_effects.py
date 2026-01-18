@@ -38,7 +38,7 @@ def test_dicts_data_together_insert() -> None:
 
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -51,7 +51,7 @@ def test_dicts_data_together_insert() -> None:
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -88,7 +88,7 @@ def test_dicts_data_together_delete_dict() -> None:
 
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -108,7 +108,7 @@ def test_dicts_data_together_delete_dict() -> None:
     del _source_data["D1"]
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D2": {
             "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -128,7 +128,7 @@ def test_dicts_data_together_delete_dict() -> None:
 
     # Re-insert after deletion
     _source_data["D1"] = {"a": 3, "c": 4}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -164,7 +164,7 @@ def test_dicts_data_together_delete_entry() -> None:
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -175,7 +175,7 @@ def test_dicts_data_together_delete_entry() -> None:
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
 
     del _source_data["D1"]["a"]
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
@@ -187,7 +187,7 @@ def test_dicts_data_together_delete_entry() -> None:
     # Re-insert after deletion
     _source_data["D1"]["a"] = 3
     _source_data["D1"]["c"] = 4
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -233,7 +233,7 @@ def test_dicts_in_sub_components_insert() -> None:
 
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -246,7 +246,7 @@ def test_dicts_in_sub_components_insert() -> None:
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -285,7 +285,7 @@ def test_dicts_in_sub_components_delete_dict() -> None:
 
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -306,7 +306,7 @@ def test_dicts_in_sub_components_delete_dict() -> None:
     del _source_data["D1"]
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D2": {
             "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -327,7 +327,7 @@ def test_dicts_in_sub_components_delete_dict() -> None:
 
     # Re-insert after deletion
     _source_data["D1"] = {"a": 3, "c": 4}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -365,7 +365,7 @@ def test_dicts_in_sub_components_delete_entry() -> None:
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -376,7 +376,7 @@ def test_dicts_in_sub_components_delete_entry() -> None:
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
 
     del _source_data["D1"]["a"]
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
@@ -388,7 +388,7 @@ def test_dicts_in_sub_components_delete_entry() -> None:
     # Re-insert after deletion
     _source_data["D1"]["a"] = 3
     _source_data["D1"]["c"] = 4
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -443,7 +443,7 @@ def test_dicts_containers_together_insert() -> None:
 
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -456,7 +456,7 @@ def test_dicts_containers_together_insert() -> None:
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -493,7 +493,7 @@ def test_dicts_containers_together_delete_dict() -> None:
 
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -513,7 +513,7 @@ def test_dicts_containers_together_delete_dict() -> None:
     del _source_data["D1"]
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D2": {
             "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -533,7 +533,7 @@ def test_dicts_containers_together_delete_dict() -> None:
 
     # Re-insert after deletion
     _source_data["D1"] = {"a": 3, "c": 4}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -569,7 +569,7 @@ def test_dicts_containers_together_delete_entry() -> None:
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -580,7 +580,7 @@ def test_dicts_containers_together_delete_entry() -> None:
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
 
     del _source_data["D1"]["a"]
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
@@ -592,7 +592,7 @@ def test_dicts_containers_together_delete_entry() -> None:
     # Re-insert after deletion
     _source_data["D1"]["a"] = 3
     _source_data["D1"]["c"] = 4
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -631,7 +631,7 @@ async def test_dicts_containers_together_insert_async() -> None:
 
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
-    await app.run()
+    await app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -644,7 +644,7 @@ async def test_dicts_containers_together_insert_async() -> None:
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
-    await app.run()
+    await app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -683,7 +683,7 @@ async def test_dicts_containers_together_delete_dict_async() -> None:
 
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
-    await app.run()
+    await app.update()
     assert DictsTarget.store.metrics.collect() == {"sink": 1, "insert": 2}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
     assert await coco_inspect.list_stable_paths(app) == [
@@ -696,7 +696,7 @@ async def test_dicts_containers_together_delete_dict_async() -> None:
     del _source_data["D1"]
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
-    await app.run()
+    await app.update()
     assert DictsTarget.store.data == {
         "D2": {
             "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -716,7 +716,7 @@ async def test_dicts_containers_together_delete_dict_async() -> None:
 
     # Re-insert after deletion
     _source_data["D1"] = {"a": 3, "c": 4}
-    await app.run()
+    await app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -754,7 +754,7 @@ async def test_dicts_containers_together_delete_entry_async() -> None:
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
-    await app.run()
+    await app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -765,7 +765,7 @@ async def test_dicts_containers_together_delete_entry_async() -> None:
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
 
     del _source_data["D1"]["a"]
-    await app.run()
+    await app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
@@ -777,7 +777,7 @@ async def test_dicts_containers_together_delete_entry_async() -> None:
     # Re-insert after deletion
     _source_data["D1"]["a"] = 3
     _source_data["D1"]["c"] = 4
-    await app.run()
+    await app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
@@ -811,11 +811,11 @@ def test_proceed_with_failed_creation() -> None:
     try:
         DictsTarget.store.sink_exception = True
         with pytest.raises(Exception):
-            app.run()
+            app.update()
     finally:
         DictsTarget.store.sink_exception = False
     assert DictsTarget.store.data == {}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -859,7 +859,7 @@ def test_cleanup_partially_built_components() -> None:
     )
 
     _source_data["D1"] = {"a": 1}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {"D1": {}}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
@@ -868,7 +868,7 @@ def test_cleanup_partially_built_components() -> None:
     ]
 
     del _source_data["D1"]
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {}
     assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
 
@@ -889,7 +889,7 @@ def test_retry_from_gc_failed_components() -> None:
     )
 
     _source_data["D1"] = {}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {"D1": {}}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
@@ -901,7 +901,7 @@ def test_retry_from_gc_failed_components() -> None:
     del _source_data["D1"]
     try:
         DictsTarget.store.sink_exception = True
-        app.run()
+        app.update()
     finally:
         DictsTarget.store.sink_exception = False
     assert DictsTarget.store.data == {"D1": {}}
@@ -911,7 +911,7 @@ def test_retry_from_gc_failed_components() -> None:
     ]
 
     # After retry, it should proceed with GC
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
@@ -930,7 +930,7 @@ def test_restore_from_gc_failed_components() -> None:
     )
 
     _source_data["D1"] = {}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {"D1": {}}
     assert coco_inspect.list_stable_paths_sync(app) == [
         coco.ROOT_PATH,
@@ -942,7 +942,7 @@ def test_restore_from_gc_failed_components() -> None:
     del _source_data["D1"]
     DictsTarget.store.sink_exception = True
     try:
-        app.run()
+        app.update()
     finally:
         DictsTarget.store.sink_exception = False
     assert DictsTarget.store.data == {"D1": {}}
@@ -953,7 +953,7 @@ def test_restore_from_gc_failed_components() -> None:
 
     # The entry reappears, and the previous failed GC shouldn't affect it
     _source_data["D1"] = {"a": 1}
-    app.run()
+    app.update()
     assert DictsTarget.store.data == {
         "D1": {"a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True)}
     }
@@ -991,7 +991,7 @@ async def test_async_dicts() -> None:
 
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
-    await app.run()
+    await app.update()
     assert AsyncDictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -1004,7 +1004,7 @@ async def test_async_dicts() -> None:
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
-    await app.run()
+    await app.update()
     assert AsyncDictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -1039,7 +1039,7 @@ def test_async_dicts_sync_app() -> None:
 
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {}
-    app.run()
+    app.update()
     assert AsyncDictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -1052,7 +1052,7 @@ def test_async_dicts_sync_app() -> None:
 
     _source_data["D2"]["c"] = 3
     _source_data["D3"] = {"a": 4}
-    app.run()
+    app.update()
     assert AsyncDictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),

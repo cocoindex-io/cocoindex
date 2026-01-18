@@ -107,7 +107,7 @@ def app_main(scope: coco_aio.Scope, sourcedir: pathlib.Path):
 app = coco_aio.App(app_main, coco_aio.AppConfig(name="MyApp"), sourcedir=pathlib.Path("./data"))
 
 async def main():
-    await app.run(report_to_stdout=True)
+    await app.update(report_to_stdout=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -131,7 +131,7 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path):
 app = coco.App(app_main, coco.AppConfig(name="MyApp"), sourcedir=pathlib.Path("./data"))
 
 def main():
-    app.run(report_to_stdout=True)
+    app.update(report_to_stdout=True)
 
 if __name__ == "__main__":
     main()

@@ -49,34 +49,34 @@ app = coco.App(
 The main function can be sync or async regardless of whether you use `coco.App` or `coco_aio.App`. See [Mixing Sync and Async](./sdk_overview.md#mixing-sync-and-async) for details.
 :::
 
-## Running an App
+## Updating an App
 
-Call `run()` to execute the pipeline:
+Call `update()` to execute the pipeline:
 
 ```python
 # Async API
-await app.run(report_to_stdout=True)
+await app.update(report_to_stdout=True)
 ```
 
 ```python
 # Sync API
-app.run(report_to_stdout=True)
+app.update(report_to_stdout=True)
 ```
 
 The `report_to_stdout` option prints periodic progress updates during execution.
 
-When you run an App, CocoIndex:
+When you update an App, CocoIndex:
 
 1. Runs the lifespan setup (if not already done)
 2. Executes the main function, which mounts child components
 3. Syncs all declared effects to external systems
 4. Compares with the previous run and applies only necessary changes
 
-Given the same code and inputs, runs are repeatable. When data or code changes, only the affected parts re-execute.
+Given the same code and inputs, updates are repeatable. When data or code changes, only the affected parts re-execute.
 
 ## Lifespan
 
-You can define a **lifespan function** to configure settings and initialize resources before your pipeline runs. The lifespan is shared across all apps in your process by default.
+You can define a **lifespan function** to configure settings and initialize resources before your pipeline updates. The lifespan is shared across all apps in your process by default.
 
 ### Defining a Lifespan
 
@@ -111,7 +111,7 @@ You can also use the lifespan to provide resources (like database connections) t
 
 ### Explicit Lifecycle Control (Optional)
 
-The lifespan runs automatically the first time any App runs — most users don't need to do anything beyond defining the lifespan and calling `app.run()`.
+The lifespan runs automatically the first time any App updates — most users don't need to do anything beyond defining the lifespan and calling `app.update()`.
 
 If you need more explicit control — for example, to know when startup completes for health checks, or to explicitly trigger shutdown — you can manage the lifecycle directly:
 
@@ -134,13 +134,13 @@ Or use the `runtime()` context manager:
 ```python
 # Async API
 async with coco_aio.runtime():
-    await app.run()
+    await app.update()
 ```
 
 ```python
 # Sync API
 with coco.runtime():
-    app.run()
+    app.update()
 ```
 
 ## Managing Apps with CLI
