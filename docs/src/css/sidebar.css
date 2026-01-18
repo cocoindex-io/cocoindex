@@ -81,11 +81,18 @@
 }
 
 
+/* Collapsible menu animation - prevent jumping */
+.theme-doc-sidebar-menu .menu__list-item-collapsible + .menu__list {
+  overflow: hidden;
+  will-change: height;
+  transition: height 0.2s ease-in-out;
+}
+
 /* Nested menu items with proper spacing */
 .theme-doc-sidebar-menu .menu__list-item .menu__list {
   padding-left: 0;
-  margin-top: 0.25rem;
-  margin-bottom: 0.25rem;
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 .theme-doc-sidebar-menu .menu__list-item .menu__list .menu__link {
