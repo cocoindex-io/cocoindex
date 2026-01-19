@@ -1,6 +1,6 @@
 ---
 title: Core Concepts
-description: Briefly introduce the core concepts of CocoIndex, covering state-driven sync, Effects, Processing Units, Apps, and incremental execution across data and code changes.
+description: Briefly introduce the core concepts of CocoIndex, covering state-driven sync, Effects, Apps, Processing Units, and incremental execution across data and code changes.
 ---
 
 import { ProcessDiagram, ProcessDiagramAnimated, ProcessingUnitTimeline } from '@site/src/components/ProcessDiagram';
@@ -59,21 +59,25 @@ Examples:
   </tbody>
 </table>
 
-## Processing Units: the sync boundaries
+## Apps: the runnable bundle
 
-A ***Processing Unit*** is a long-lived instance (identified by a stable path) that **owns** the Effects declared within it.
-After each run, CocoIndex compares that Processing Unit's current Effects with its prior run at the same path and applies the resulting changes **as a unit**.
-This boundary provides clear ownership and predictable scoping of updates.
+An ***App*** is what you run in CocoIndex.
+It binds a function and its parameters — during execution, the function processes your data and declares effects.
+The App owns these effects across runs: CocoIndex tracks what was declared, and on each rerun it updates changed effects and removes effects that are no longer declared.
+Given the same code and inputs, runs are repeatable; when data or code changes, only the necessary parts re-execute.
+
+## Processing Units: independent work and effects
+
+Your App often processes many items — files, rows, entities — where each can be handled independently.
+A ***Processing Unit*** groups an item's processing together with its output effects.
+Each Processing Unit runs on its own and applies its effects as soon as it completes, without waiting for the rest of the App.
+
+Processing Units form a tree: an App establishes a root Processing Unit, which can mount child Processing Units, and so on.
+When a Processing Unit finishes, CocoIndex compares its declared effects against the previous run and applies only the necessary changes — including cleaning up effects from children that are no longer mounted.
 
 <ProcessDiagram />
 
 <ProcessingUnitTimeline />
-
-## Apps: the runnable unit
-
-An ***App*** is the top-level thing you run.
-It names your pipeline, binds a top-level function and its parameters, which establishes the root Processing Unit, and all work happens within the processing unit tree rooted there.
-Given the same code and inputs, runs are repeatable; when data or code changes, only the necessary parts re-execute.
 
 ## Incremental computation: data + code
 
