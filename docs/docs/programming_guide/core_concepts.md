@@ -3,7 +3,7 @@ title: Core Concepts
 description: Briefly introduce the core concepts of CocoIndex, covering state-driven sync, Effects, Components, Apps, and incremental execution across data and code changes.
 ---
 
-import { ProcessDiagram, ProcessDiagramAnimated } from '@site/src/components/ProcessDiagram';
+import { ProcessDiagram, ProcessDiagramAnimated, ProcessingUnitTimeline } from '@site/src/components/ProcessDiagram';
 
 # Core Concepts
 
@@ -67,6 +67,8 @@ After each run, CocoIndex compares that Component’s current Effects with its p
 This boundary provides clear ownership and predictable scoping of updates.
 
 <ProcessDiagram />
+
+<ProcessingUnitTimeline />
 
 ## Apps: the runnable unit
 
