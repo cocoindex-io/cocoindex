@@ -406,7 +406,7 @@ export function ProcessingUnitTimeline(): ReactNode {
   return (
     <div className={styles.timelineWrapper}>
       <div className={styles.timelineHeader}>
-        <span className={styles.animationTitle}>Component Timeline</span>
+        <span className={styles.animationTitle}>Process Unit Timeline</span>
       </div>
 
       <div className={styles.timelineTopContainers}>
