@@ -10,7 +10,6 @@ import { ProcessDiagram, ProcessDiagramAnimated } from '@site/src/components/Pro
 CocoIndex is a **state-driven** computing framework that **transforms** your data and keeps **persistent external state** in **sync**.
 You describe the state you want in your external systems; CocoIndex computes what changed since the last run and applies only the necessary updates — **incrementally** for both data and code changes.
 
-<ProcessDiagram />
 
 <ProcessDiagramAnimated />
 
@@ -66,6 +65,8 @@ Examples:
 A ***Component*** is a long-lived instance (identified by a stable path) that **owns** the Effects declared within it.
 After each run, CocoIndex compares that Component’s current Effects with its prior run at the same path and applies the resulting changes **as a unit**.
 This boundary provides clear ownership and predictable scoping of updates.
+
+<ProcessDiagram />
 
 ## Apps: the runnable unit
 
