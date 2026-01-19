@@ -1,0 +1,9 @@
+[project]
+name = "text-embedding-doris"
+version = "0.1.0"
+dependencies = [
+    "cocoindex",
+    "sentence-transformers",
+    "aiohttp",
+    "aiomysql",
+]

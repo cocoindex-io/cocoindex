@@ -73,6 +73,7 @@ lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
 postgres = ["asyncpg>=0.31.0", "pgvector>=0.4.2"]
 qdrant = ["qdrant-client>=1.6.0"]
 google_drive = ["google-api-python-client>=2.0.0", "google-auth>=2.0.0"]
+doris = ["aiohttp>=3.8.0", "aiomysql>=0.2.0", "pymysql>=1.0.0"]
 
 all = [
     "sentence-transformers>=3.3.1",
@@ -84,6 +85,9 @@ all = [
     "qdrant-client>=1.6.0",
     "google-api-python-client>=2.0.0",
     "google-auth>=2.0.0",
+    "aiohttp>=3.8.0",
+    "aiomysql>=0.2.0",
+    "pymysql>=1.0.0",
 ]
 
 [dependency-groups]
@@ -138,6 +142,9 @@ module = [
     "googleapiclient.discovery",
     "googleapiclient.http",
     "google.oauth2",
+    "aiohttp",
+    "aiomysql",
+    "pymysql",
 ]
 ignore_missing_imports = true
 
