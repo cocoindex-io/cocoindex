@@ -3,27 +3,23 @@
 import codecs
 from datetime import datetime
 from pathlib import PurePath
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 
-@runtime_checkable
 class FileLike(Protocol):
     """Protocol for file-like objects with path, size, modified time, and read capability."""
 
     @property
     def relative_path(self) -> PurePath:
         """Return the relative path of the file."""
-        ...
 
     @property
     def size(self) -> int:
         """Return the file size in bytes."""
-        ...
 
     @property
     def modified_time(self) -> datetime:
         """Return the file modification time."""
-        ...
 
     def read(self, size: int = -1) -> bytes:
         """Read and return the file content as bytes.
@@ -34,7 +30,6 @@ class FileLike(Protocol):
         Returns:
             The file content as bytes.
         """
-        ...
 
     def read_text(self, encoding: str | None = None, errors: str = "replace") -> str:
         """Read and return the file content as text.
@@ -53,16 +48,59 @@ class FileLike(Protocol):
         return (self.relative_path, self.modified_time)
 
 
+class AsyncFileLike(Protocol):
+    """Protocol for async file-like objects with path, size, modified time, and async read."""
+
+    @property
+    def relative_path(self) -> PurePath:
+        """Return the relative path of the file."""
+
+    @property
+    def size(self) -> int:
+        """Return the file size in bytes."""
+
+    @property
+    def modified_time(self) -> datetime:
+        """Return the file modification time."""
+
+    async def read(self, size: int = -1) -> bytes:
+        """Asynchronously read and return the file content as bytes.
+
+        Args:
+            size: Number of bytes to read. If -1 (default), read the entire file.
+
+        Returns:
+            The file content as bytes.
+        """
+        raise NotImplementedError
+
+    async def read_text(
+        self, encoding: str | None = None, errors: str = "replace"
+    ) -> str:
+        """Asynchronously read and return the file content as text.
+
+        Args:
+            encoding: The encoding to use. If None, the encoding is detected automatically
+                using BOM detection, falling back to UTF-8.
+            errors: The error handling scheme. Common values: 'strict', 'ignore', 'replace'.
+
+        Returns:
+            The file content as text.
+        """
+        return _decode_bytes(await self.read(), encoding, errors)
+
+    def __coco_memo_key__(self) -> object:
+        return (self.relative_path, self.modified_time)
+
+
 class FilePathMatcher(Protocol):
     """Protocol for file path matchers that filter directories and files."""
 
     def is_dir_included(self, path: PurePath) -> bool:
         """Check if a directory should be included (traversed)."""
-        ...
 
     def is_file_included(self, path: PurePath) -> bool:
         """Check if a file should be included."""
-        ...
 
 
 class MatchAllFilePathMatcher(FilePathMatcher):
