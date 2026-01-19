@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
 import { TbMathFunction } from 'react-icons/tb';
 import styles from './styles.module.css';
 
@@ -94,9 +94,15 @@ type AnimationPhase =
 export function ProcessDiagramAnimated(): ReactNode {
   const [phase, setPhase] = useState<AnimationPhase>('initial');
   const [isRunning, setIsRunning] = useState(false);
+  const timeoutRefs = useRef<NodeJS.Timeout[]>([]);
 
-  const runAnimation = () => {
-    if (isRunning) return;
+  const clearAllTimeouts = useCallback(() => {
+    timeoutRefs.current.forEach(clearTimeout);
+    timeoutRefs.current = [];
+  }, []);
+
+  const runAnimation = useCallback(() => {
+    clearAllTimeouts();
     setIsRunning(true);
     setPhase('initial');
 
@@ -123,18 +129,23 @@ export function ProcessDiagramAnimated(): ReactNode {
     let totalDelay = 0;
     timeline.forEach(({ phase, delay }) => {
       totalDelay += delay;
-      setTimeout(() => setPhase(phase), totalDelay);
+      const timeout = setTimeout(() => setPhase(phase), totalDelay);
+      timeoutRefs.current.push(timeout);
     });
 
-    setTimeout(() => {
+    const endTimeout = setTimeout(() => {
       setIsRunning(false);
     }, totalDelay + 500);
-  };
+    timeoutRefs.current.push(endTimeout);
+  }, [clearAllTimeouts]);
 
   useEffect(() => {
     const timer = setTimeout(runAnimation, 1000);
-    return () => clearTimeout(timer);
-  }, []);
+    return () => {
+      clearTimeout(timer);
+      clearAllTimeouts();
+    };
+  }, [runAnimation, clearAllTimeouts]);
 
   const sourceValue = phase === 'initial' ? '*apple*' : '*banana*';
   const outputValue = ['effectUpdate', 'updateComplete', 'deleteSource', 'deleteProcessUnit', 'deleteOutput', 'deleteComplete', 'createSource', 'createProcessUnit', 'cFlowToTransform', 'cTransforming', 'cFlowToEffect', 'createOutput', 'complete'].includes(phase) ? 'BANANA' : 'APPLE';
@@ -249,9 +260,8 @@ export function ProcessDiagramAnimated(): ReactNode {
         <button
           className={styles.replayButton}
           onClick={runAnimation}
-          disabled={isRunning}
         >
-          {isRunning ? 'Running...' : 'Replay'}
+          Replay
         </button>
       </div>
       <div className={styles.diagramContainer}>
