@@ -5,7 +5,7 @@ description: Sharing resources across your pipeline using ContextKey, builder.pr
 
 # Context
 
-CocoIndex provides a **context** mechanism for sharing resources across your pipeline. This is useful for database connections, API clients, configuration objects, or any resource that multiple components need to access.
+CocoIndex provides a **context** mechanism for sharing resources across your pipeline. This is useful for database connections, API clients, configuration objects, or any resource that multiple processing units need to access.
 
 ## ContextKey
 
@@ -46,7 +46,7 @@ The resource is available for the lifetime of the environment. When the lifespan
 
 ## Retrieving Values
 
-In components, use `scope.use()` to retrieve provided resources:
+In processing units, use `scope.use()` to retrieve provided resources:
 
 ```python
 @coco_aio.function

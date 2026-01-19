@@ -28,8 +28,8 @@ ReturnT = TypeVar("ReturnT")
 ResolvedT = TypeVar("ResolvedT")
 
 
-class ComponentMountRunHandle(Generic[ReturnT]):
-    """Handle for a component that was started with `mount_run()`. Allows awaiting the result."""
+class ProcessingUnitMountRunHandle(Generic[ReturnT]):
+    """Handle for a processing unit that was started with `mount_run()`. Allows awaiting the result."""
 
     __slots__ = ("_core", "_lock", "_cached_result", "_parent_ctx")
 
@@ -49,15 +49,15 @@ class ComponentMountRunHandle(Generic[ReturnT]):
         self._parent_ctx = parent_ctx
 
     async def result(self) -> ReturnT:
-        """Get the result of the component. Can be called multiple times."""
+        """Get the result of the processing unit. Can be called multiple times."""
         async with self._lock:
             if isinstance(self._cached_result, NotSetType):
                 self._cached_result = await self._core.result_async(self._parent_ctx)
             return self._cached_result
 
 
-class ComponentMountHandle:
-    """Handle for a component that was started with `mount()`. Allows waiting until ready."""
+class ProcessingUnitMountHandle:
+    """Handle for a processing unit that was started with `mount()`. Allows waiting until ready."""
 
     __slots__ = ("_core", "_lock", "_ready_called")
 
@@ -71,7 +71,7 @@ class ComponentMountHandle:
         self._ready_called = False
 
     async def ready(self) -> None:
-        """Wait until the component is ready. Can be called multiple times."""
+        """Wait until the processing unit is ready. Can be called multiple times."""
         async with self._lock:
             if not self._ready_called:
                 await self._core.ready_async()
@@ -84,40 +84,40 @@ def mount_run(
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[ReturnT]: ...
+) -> ProcessingUnitMountRunHandle[ReturnT]: ...
 @overload
 def mount_run(
     processor_fn: AnyCallable[Concatenate[Scope, P], Sequence[ResolvesTo[ReturnT]]],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
+) -> ProcessingUnitMountRunHandle[Sequence[ReturnT]]: ...
 @overload
 def mount_run(
     processor_fn: AnyCallable[Concatenate[Scope, P], Mapping[K, ResolvesTo[ReturnT]]],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[Mapping[K, ReturnT]]: ...
+) -> ProcessingUnitMountRunHandle[Mapping[K, ReturnT]]: ...
 @overload
 def mount_run(
     processor_fn: AnyCallable[Concatenate[Scope, P], ReturnT],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[ReturnT]: ...
+) -> ProcessingUnitMountRunHandle[ReturnT]: ...
 def mount_run(
     processor_fn: AnyCallable[Concatenate[Scope, P], Any],
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[Any]:
+) -> ProcessingUnitMountRunHandle[Any]:
     """
-    Mount and run a component, returning a handle to await its result.
+    Mount and run a processing unit, returning a handle to await its result.
 
     Args:
-        processor_fn: The function to run as the component processor.
-        scope: The scope for the component (includes stable path and processor context).
+        processor_fn: The function to run as the processing unit processor.
+        scope: The scope for the processing unit (includes stable path and processor context).
         *args: Arguments to pass to the function.
         **kwargs: Keyword arguments to pass to the function.
 
@@ -130,7 +130,7 @@ def mount_run(
         processor_fn, scope._env, scope._core_path, args, kwargs
     )
     core_handle = core.mount_run(processor, scope._core_path, comp_ctx, fn_ctx)
-    return ComponentMountRunHandle(core_handle, comp_ctx)
+    return ProcessingUnitMountRunHandle(core_handle, comp_ctx)
 
 
 def mount(
@@ -138,18 +138,18 @@ def mount(
     scope: Scope,
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountHandle:
+) -> ProcessingUnitMountHandle:
     """
-    Mount a component in the background and return a handle to wait until ready.
+    Mount a processing unit in the background and return a handle to wait until ready.
 
     Args:
-        processor_fn: The function to run as the component processor.
-        scope: The scope for the component (includes stable path and processor context).
+        processor_fn: The function to run as the processing unit processor.
+        scope: The scope for the processing unit (includes stable path and processor context).
         *args: Arguments to pass to the function.
         **kwargs: Keyword arguments to pass to the function.
 
     Returns:
-        A handle that can be used to wait until the component is ready.
+        A handle that can be used to wait until the processing unit is ready.
     """
     comp_ctx = scope._core_processor_ctx
     fn_ctx = scope._core_fn_call_ctx
@@ -157,7 +157,7 @@ def mount(
         processor_fn, scope._env, scope._core_path, args, kwargs
     )
     core_handle = core.mount(processor, scope._core_path, comp_ctx, fn_ctx)
-    return ComponentMountHandle(core_handle)
+    return ProcessingUnitMountHandle(core_handle)
 
 
 class App(AppBase[P, ReturnT]):
@@ -222,8 +222,8 @@ async def runtime() -> Any:
 
 __all__ = [
     "App",
-    "ComponentMountHandle",
-    "ComponentMountRunHandle",
+    "ProcessingUnitMountHandle",
+    "ProcessingUnitMountRunHandle",
     "mount",
     "mount_run",
     "start",
