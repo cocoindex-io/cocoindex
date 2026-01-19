@@ -1,0 +1,202 @@
+/* Radix UI Typography System - Exact values from https://www.radix-ui.com/themes/docs/theme/typography */
+
+/* Import Inter font from Google Fonts for headings */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  /* Radix UI Space Scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 40px;
+  --space-8: 48px;
+  --space-9: 64px;
+
+  /* Radix UI Type Scale - Font Sizes */
+  --font-size-1: 12px;
+  --font-size-2: 14px;
+  --font-size-3: 16px;
+  --font-size-4: 18px;
+  --font-size-5: 20px;
+  --font-size-6: 24px;
+  --font-size-7: 28px;
+  --font-size-8: 35px;
+  --font-size-9: 60px;
+
+  /* Radix UI Type Scale - Line Heights */
+  --line-height-1: 16px;
+  --line-height-2: 20px;
+  --line-height-3: 24px;
+  --line-height-4: 26px;
+  --line-height-5: 28px;
+  --line-height-6: 30px;
+  --line-height-7: 36px;
+  --line-height-8: 40px;
+  --line-height-9: 60px;
+
+  /* Radix UI Type Scale - Letter Spacing */
+  --letter-spacing-1: 0.0025em;
+  --letter-spacing-2: 0em;
+  --letter-spacing-3: 0em;
+  --letter-spacing-4: -0.0025em;
+  --letter-spacing-5: -0.005em;
+  --letter-spacing-6: -0.00625em;
+  --letter-spacing-7: -0.0075em;
+  --letter-spacing-8: -0.01em;
+  --letter-spacing-9: -0.025em;
+
+  /* Font Weights */
+  --font-weight-light: 300;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 700;
+
+  /* Font Families - Radix UI system font stacks */
+  --font-family-text: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Open Sans', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  --font-family-heading: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', system-ui, sans-serif;
+  --font-family-code: 'Menlo', 'Consolas', 'Bitstream Vera Sans Mono', monospace, 'Apple Color Emoji', 'Segoe UI Emoji';
+  --font-family-emphasis: 'Times New Roman', 'Times', serif;
+}
+
+/* Base Typography */
+html {
+  font-size: 16px;
+  line-height: 24px;
+  letter-spacing: 0em;
+}
+
+body {
+  font-family: var(--font-family-text);
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Markdown Content Typography */
+.markdown {
+  font-size: 16px;
+  line-height: 24px;
+  letter-spacing: 0em;
+}
+
+/* Heading Styles following Radix Type Scale */
+.markdown h1,
+.markdown h1:first-child {
+  font-family: var(--font-family-heading);
+  font-size: 35px;
+  line-height: 40px;
+  letter-spacing: -0.01em;
+  font-weight: 700;
+  margin-top: 64px;
+  margin-bottom: 24px;
+}
+
+.markdown h1:first-child {
+  margin-top: 0;
+}
+
+.markdown h2 {
+  font-family: var(--font-family-heading);
+  font-size: 24px;
+  line-height: 30px;
+  letter-spacing: -0.00625em;
+  font-weight: 700;
+  margin-top: 48px;
+  margin-bottom: 16px;
+}
+
+.markdown h3 {
+  font-family: var(--font-family-heading);
+  font-size: 20px;
+  line-height: 28px;
+  letter-spacing: -0.005em;
+  font-weight: 700;
+  margin-top: 40px;
+  margin-bottom: 12px;
+}
+
+.markdown h4 {
+  font-family: var(--font-family-heading);
+  font-size: 18px;
+  line-height: 26px;
+  letter-spacing: -0.0025em;
+  font-weight: 700;
+  margin-top: 32px;
+  margin-bottom: 12px;
+}
+
+.markdown h5 {
+  font-family: var(--font-family-heading);
+  font-size: 16px;
+  line-height: 24px;
+  letter-spacing: 0em;
+  font-weight: 700;
+  margin-top: 24px;
+  margin-bottom: 8px;
+}
+
+.markdown h6 {
+  font-family: var(--font-family-heading);
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: 0em;
+  font-weight: 700;
+  margin-top: 24px;
+  margin-bottom: 8px;
+}
+
+/* Paragraph */
+.markdown p {
+  margin-top: 0;
+  margin-bottom: 16px;
+}
+
+/* Lists */
+.markdown ul,
+.markdown ol {
+  margin-top: 0;
+  margin-bottom: 16px;
+  padding-left: 24px;
+}
+
+.markdown li {
+  margin-bottom: 8px;
+}
+
+.markdown li:last-child {
+  margin-bottom: 0;
+}
+
+/* Nested lists */
+.markdown li > ul,
+.markdown li > ol {
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+
+/* Blockquote */
+.markdown blockquote {
+  font-family: var(--font-family-emphasis);
+  font-style: italic;
+  margin: 24px 0;
+  padding-left: 16px;
+  border-left: 3px solid var(--radix-gray-6);
+  color: var(--radix-gray-11);
+}
+
+/* Small text helper */
+.text-small {
+  font-size: 14px;
+  line-height: 20px;
+  letter-spacing: 0em;
+}
+
+/* Large text helper */
+.text-large {
+  font-size: 18px;
+  line-height: 26px;
+  letter-spacing: -0.0025em;
+}

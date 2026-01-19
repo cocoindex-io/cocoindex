@@ -7,6 +7,7 @@
 /* Import Questrial font from Google Fonts */
 @import url('https://fonts.googleapis.com/css2?family=Questrial&display=swap');
 
+
 /* Import custom scrollbar styles */
 @import './scrollbar.css';
 
@@ -16,17 +17,38 @@
 /* Import Radix UI color system */
 @import '../components/Color/colors.css';
 
+/* Import admonition styles */
+@import './admonition.css';
+
+/* Import code styles */
+@import './code.css';
+
+/* Import tabs styles */
+@import './tabs.css';
+
+/* Import typography styles */
+@import './typography.css';
+
+/* Import table styles */
+@import './table.css';
+
 
 /* You can override the default Infima variables here. */
 :root {
   /* Iris color scheme from Radix UI */
-  --ifm-color-primary: #5B5BD6;
-  --ifm-color-primary-dark: #4D4DCC;
-  --ifm-color-primary-darker: #4040C8;
-  --ifm-color-primary-darkest: #3333B3;
-  --ifm-color-primary-light: #7373DE;
-  --ifm-color-primary-lighter: #8F8FE6;
-  --ifm-color-primary-lightest: #ABABEF;
+  --ifm-color-primary: var(--radix-iris-9);
+  --ifm-color-primary-dark: var(--radix-iris-10);
+  --ifm-color-primary-darker: var(--radix-iris-11);
+  --ifm-color-primary-darkest: var(--radix-iris-12);
+  --ifm-color-primary-light: var(--radix-iris-8);
+  --ifm-color-primary-lighter: var(--radix-iris-7);
+  --ifm-color-primary-lightest: var(--radix-iris-6);
+
+  /* Primary color background tints for interactive states */
+  --ifm-color-primary-bg-hover: var(--radix-iris-2);
+  --ifm-color-primary-bg-active: var(--radix-iris-3);
+  --ifm-color-primary-bg-active-hover: var(--radix-iris-4);
+
   --ifm-code-font-size: 95%;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
   --my-color-text-black: #111827;
@@ -51,13 +73,19 @@
 
 /* For readability concerns, you should choose a lighter palette in dark mode. */
 [data-theme='dark'] {
-  --ifm-color-primary: #8F8FE6;
-  --ifm-color-primary-dark: #7373DE;
-  --ifm-color-primary-darker: #5B5BD6;
-  --ifm-color-primary-darkest: #4D4DCC;
-  --ifm-color-primary-light: #ABABEF;
-  --ifm-color-primary-lighter: #C4C4F5;
-  --ifm-color-primary-lightest: #E1E1FF;
+  /* Iris color scheme from Radix UI */
+  --ifm-color-primary: var(--radix-iris-9);
+  --ifm-color-primary-dark: var(--radix-iris-10);
+  --ifm-color-primary-darker: var(--radix-iris-11);
+  --ifm-color-primary-darkest: var(--radix-iris-12);
+  --ifm-color-primary-light: var(--radix-iris-8);
+  --ifm-color-primary-lighter: var(--radix-iris-7);
+  --ifm-color-primary-lightest: var(--radix-iris-6);
+
+  /* Primary color background tints for interactive states (dark mode) */
+  --ifm-color-primary-bg-hover: var(--radix-iris-2);
+  --ifm-color-primary-bg-active: var(--radix-iris-3);
+  --ifm-color-primary-bg-active-hover: var(--radix-iris-4);
 
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
   --my-color-text-black: #f9fafb;
@@ -78,6 +106,10 @@
   --theme-color-text-light: #9ca3af;
   --theme-color-text-default: #f9fafb;
   --theme-color-keyline: #374151;
+
+  /* Radix UI green colors for dark mode */
+  --radix-green: #22c55e;
+  --radix-green-dark: #16a34a;
 }
 
 .navbar__logo{
@@ -120,5 +152,110 @@
 @media (max-width: 768px) {
   .navbar__item.navbar-github-link {
     margin-right: 40px;
+  }
+}
+
+/* Main content padding for docs */
+.main-wrapper .container {
+  padding-left: 2.5rem;
+  padding-right: 0;
+}
+
+@media (min-width: 997px) {
+  .main-wrapper .container {
+    padding-left: 3rem;
+    padding-right: 0;
+  }
+}
+
+@media (min-width: 1400px) {
+  .main-wrapper .container {
+    padding-left: 4rem;
+    padding-right: 0;
+  }
+}
+
+.table-of-contents {
+  code {
+    border: none;
+  }
+}
+
+.markdown {
+  code {
+    font-size: var(--ifm-code-font-size);
+    border: none;
+  }
+
+  a {
+    font-weight: var(--ifm-font-weight-semibold);
+  }
+}
+
+.sidebarItemTitle_pO2u,
+.navbar__items {
+  font-family: 'Questrial', sans-serif;
+}
+
+.table-of-contents {
+  font-size: 0.8125rem;
+  /* 13px */
+  border-left: none;
+  padding-left: 0;
+}
+
+/* Add spacing between main content and TOC */
+.theme-doc-toc-desktop {
+  padding-left: 2rem;
+}
+
+/* Hide TOC desktop between 998px and 1024px */
+@media (min-width: 998px) and (max-width: 1024px) {
+  .theme-doc-toc-desktop {
+    display: none;
+  }
+
+  /* Make main content wider when TOC is hidden */
+  [class*='docMainContainer'] {
+    max-width: calc(100% - var(--doc-sidebar-width));
+  }
+
+  .col.docItemCol_VOVn,
+  .col[class^='docItemCol'] {
+    --ifm-col-width: 100% !important;
+    max-width: 100% !important;
+    flex: 0 0 var(--ifm-col-width) !important;
+  }
+}
+
+/* Override Docusaurus default max-width on main content container */
+@media (min-width: 997px) {
+  [class*='docMainContainer'] {
+    max-width: 100%;
+  }
+}
+
+.table-of-contents__link {
+  border-left: none;
+}
+
+.table-of-contents__link--active {
+  border-left: none;
+}
+
+.breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  color: var(--theme-color-text-light);
+  display: none;
+
+  .breadcrumbs__item:first-child {
+    display: none;
+  }
+
+  .breadcrumbs__link {
+    padding: 0;
+    background: none;
   }
 }

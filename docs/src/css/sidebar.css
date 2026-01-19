@@ -1,91 +1,126 @@
-/* Radix UI-inspired Sidebar Styling */
-.theme-doc-sidebar-container {
+/* Sidebar Styling */
+.theme-doc-sidebar-container,
+[class*='docSidebarContainer'] {
   background-color: var(--ifm-background-color);
-  border-right: 1px solid var(--ifm-color-emphasis-200);
+  border-right: none !important;
+  padding: 1rem 0.5rem;
 }
+
 
 .theme-doc-sidebar-menu {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Open Sans', system-ui, sans-serif;
-  font-size: 14px; /* Radix UI size 2 */
-  font-weight: 400; /* Regular weight */
-  line-height: 20px; /* Proper spacing for size 2 */
-  letter-spacing: 0em; /* Standard spacing */
-  padding: 0.75rem 0;
-}
-
-/* Sidebar menu items */
-.theme-doc-sidebar-menu .menu__list {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  letter-spacing: 0em;
   padding: 0;
 }
 
-.theme-doc-sidebar-menu .menu__list-item {
+/* Narrower sidebar on lg screens */
+@media (min-width: 997px) and (max-width: 1200px) {
+  .theme-doc-sidebar-container,
+  [class*='docSidebarContainer'] {
+    --doc-sidebar-width: 240px;
+  }
+}
+
+/* Sidebar menu items with generous spacing */
+.theme-doc-sidebar-menu .menu__list {
+  padding: 0;
   margin: 0;
+}
+
+.theme-doc-sidebar-menu .menu__list-item {
+  margin: 2px 0;
+}
+
+/* Add spacing between top-level categories */
+.theme-doc-sidebar-menu > .menu__list > .menu__list-item {
+  margin-top: 1.5rem;
+}
+
+.theme-doc-sidebar-menu > .menu__list > .menu__list-item:first-child {
+  margin-top: 0;
 }
 
 /* Sidebar menu links */
 .theme-doc-sidebar-menu .menu__link {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Open Sans', system-ui, sans-serif;
-  font-size: 14px; /* Radix UI size 2 */
-  font-weight: 400; /* Regular weight */
-  line-height: 20px; /* Proper spacing */
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
   letter-spacing: 0em;
-  padding: 0.375rem 0.75rem;
+  padding: 0.5rem 0.75rem;
   border-radius: 0.375rem;
-  margin: 0 0.25rem;
+  margin: 0;
   color: var(--ifm-menu-color);
   transition: background-color 0.15s ease, color 0.15s ease;
-  border: none;
+  position: relative;
 }
 
 .theme-doc-sidebar-menu .menu__link:hover {
-  background-color: var(--ifm-color-emphasis-100);
-  color: var(--ifm-menu-color);
+  background-color: var(--ifm-color-primary-bg-hover);
   text-decoration: none;
 }
 
 .theme-doc-sidebar-menu .menu__link--active {
-  background-color: var(--ifm-color-emphasis-100);
+  background-color: var(--ifm-color-primary-bg-active);
   color: var(--ifm-color-primary);
-  font-weight: 500; /* Medium weight for active links */
+  font-weight: 500;
 }
 
 .theme-doc-sidebar-menu .menu__link--active:hover {
-  background-color: var(--ifm-color-emphasis-200);
+  background-color: var(--ifm-color-primary-bg-active-hover);
+  color: var(--ifm-color-primary);
 }
 
 /* Sidebar category labels */
 .theme-doc-sidebar-menu .menu__list-item-collapsible > .menu__link {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Open Sans', system-ui, sans-serif;
-  font-size: 14px; /* Radix UI size 2 */
-  font-weight: 600; /* Semibold for category labels */
+  font-size: 14px;
+  font-weight: 600;
   line-height: 20px;
   letter-spacing: 0em;
-  color: var(--ifm-menu-color);
+  color: var(--ifm-font-color-base);
   padding: 0.5rem 0.75rem;
-  margin: 0.25rem 0.25rem;
+  margin: 0;
+  border-radius: 0.375rem;
 }
 
 .theme-doc-sidebar-menu .menu__list-item-collapsible > .menu__link:hover {
-  background-color: var(--ifm-color-emphasis-100);
+  background-color: var(--ifm-color-primary-bg-hover);
 }
 
-/* Nested menu items */
+
+/* Collapsible menu animation - prevent jumping */
+.theme-doc-sidebar-menu .menu__list-item-collapsible + .menu__list {
+  overflow: hidden;
+  will-change: height;
+  transition: height 0.2s ease-in-out;
+}
+
+/* Nested menu items with proper spacing */
 .theme-doc-sidebar-menu .menu__list-item .menu__list {
-  padding-left: 0;
-  margin-top: 0.25rem;
+  padding-left: 0.75rem;
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 .theme-doc-sidebar-menu .menu__list-item .menu__list .menu__link {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', 'Open Sans', system-ui, sans-serif;
-  font-size: 14px; /* Keep consistent size for nested items */
+  font-size: 14px;
   font-weight: 400;
   line-height: 20px;
   letter-spacing: 0em;
-  padding-left: 1rem;
+  padding: 0.4rem 0.75rem;
+}
+
+.theme-doc-sidebar-menu .menu__list-item .menu__list .menu__list {
+  padding-left: 0.75rem;
 }
 
 .theme-doc-sidebar-menu .menu__list-item .menu__list .menu__list .menu__link {
-  padding-left: 1.5rem;
+  padding: 0.4rem 0.75rem;
 }
 
 /* Sidebar caret/chevron */
@@ -96,7 +131,7 @@
 }
 
 .theme-doc-sidebar-menu .menu__caret:hover {
-  background-color: var(--ifm-color-emphasis-100);
+  background-color: var(--ifm-color-primary-bg-hover);
 }
 
 /* Sidebar caret styles */
@@ -105,27 +140,29 @@
   background: var(--ifm-menu-link-sublist-icon) 50% / 1rem 1rem;
 }
 
+
 /* Dark mode sidebar adjustments */
 [data-theme='dark'] .theme-doc-sidebar-container {
-  border-right-color: var(--ifm-color-emphasis-200);
+  border-right: none;
 }
 
 [data-theme='dark'] .theme-doc-sidebar-menu .menu__link:hover {
-  background-color: var(--ifm-color-emphasis-200);
+  background-color: var(--ifm-color-primary-bg-hover);
 }
 
 [data-theme='dark'] .theme-doc-sidebar-menu .menu__link--active {
-  background-color: var(--ifm-color-emphasis-200);
+  background-color: var(--ifm-color-primary-bg-active);
+  color: var(--ifm-color-primary);
 }
 
 [data-theme='dark'] .theme-doc-sidebar-menu .menu__link--active:hover {
-  background-color: var(--ifm-color-emphasis-300);
+  background-color: var(--ifm-color-primary-bg-active-hover);
 }
 
 [data-theme='dark'] .theme-doc-sidebar-menu .menu__list-item-collapsible > .menu__link:hover {
-  background-color: var(--ifm-color-emphasis-200);
+  background-color: var(--ifm-color-primary-bg-hover);
 }
 
 [data-theme='dark'] .theme-doc-sidebar-menu .menu__caret:hover {
-  background-color: var(--ifm-color-emphasis-200);
+  background-color: var(--ifm-color-primary-bg-hover);
 }
