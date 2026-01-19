@@ -24,19 +24,6 @@ To follow the steps in this guide, you'll need:
 pip install -U cocoindex
 ```
 
-## 📦 Install Postgres
-
-You can skip this step if you already have a Postgres database with pgvector extension installed.
-
-If you don't have a Postgres database:
-
-1. Install [Docker Compose](https://docs.docker.com/compose/install/) 🐳.
-2. Start a Postgres SQL database for cocoindex using our docker compose config:
-
-```sh
-docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
-```
-
 ## 🤖 Install Claude Code Skill (Optional)
 
 If you're using [Claude Code](https://claude.com/claude-code), you can install the CocoIndex skill for enhanced development support. Run these commands in Claude Code:

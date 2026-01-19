@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 import sys
-from . import _engine
-from . import __version__
+from ._internal import core as _core
+from ._version import CORE_VERSION as _CORE_VERSION
 
 
 def _sanity_check_engine() -> None:
-    engine_file = getattr(_engine, "__file__", "<unknown>")
-    engine_version = getattr(_engine, "__version__", None)
+    engine_file = getattr(_core, "__file__", "<unknown>")
+    engine_version = getattr(_core, "__version__", None)
 
     problems: list[str] = []
 
     # Version mismatch (if the engine exposes its own version)
-    if engine_version is not None and engine_version != __version__:
+    if engine_version is not None and engine_version != _CORE_VERSION:
         problems.append(
-            f"Version mismatch: Python package is {__version__!r}, "
-            f"but cocoindex._engine reports {engine_version!r}."
+            f"Version mismatch: Python package expects core version {_CORE_VERSION!r}, "
+            f"but cocoindex._internal.core reports {engine_version!r}."
         )
 
     if problems:

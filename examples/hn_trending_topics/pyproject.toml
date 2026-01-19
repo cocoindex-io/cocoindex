@@ -1,13 +1,17 @@
 [project]
-name = "hn-trending-topics"
+name = "hn-trending-topics-v1"
 version = "0.1.0"
-description = "Example using custom source for HackerNews API to extract trending topics with LLM."
+description = "Batch pipeline to scrape HackerNews and extract trending topics using LLM."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex>=0.3.26,<1",
-    "aiohttp>=3.8.0",
-    "psycopg[binary,pool]",
+    "asyncpg>=0.29.0",
+    "aiohttp>=3.9.0",
+    "litellm>=1.40.0",
+    "pydantic>=2.0.0",
 ]
+
+[tool.uv]
+prerelease = "allow"
 
 [tool.setuptools]
 packages = []

@@ -16,7 +16,8 @@ jobs:
                 python-version: ["3.11"]
                 platform:
                   - { runner: ubuntu-latest }
-                  - { runner: ubuntu-24.04-arm }
+                  # Disabled since GitHub doesn't support Ubuntu on arm64 on non-public repos.
+                  # - { runner: ubuntu-24.04-arm }
                   - { runner: macos-latest, extra_rustflags: "-C split-debuginfo=off" }
                   - { runner: macos-15-intel, extra_rustflags: "-C split-debuginfo=off" }
                   - { runner: windows-latest }
@@ -56,7 +57,7 @@ jobs:
           uses: astral-sh/setup-uv@v7
 
         - name: Sync Python dependencies
-          run: uv sync --no-dev --group ci
+          run: uv sync --no-dev --group ci --no-install-project
 
         - name: Cache pre-commit
           uses: actions/cache@v4

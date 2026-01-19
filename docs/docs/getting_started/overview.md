@@ -5,31 +5,46 @@ slug: /
 
 # Welcome to CocoIndex
 
-CocoIndex is an ultra-performant real-time data transformation framework for AI, with incremental processing.
+CocoIndex is an ultra performant compute framework for AI workloads, with incremental processing.
 
-As a data framework, CocoIndex takes it to the next level on data freshness. **Incremental processing** is one of the core values provided by CocoIndex.
-
-![Incremental Processing](/img/incremental-etl.gif)
 
 ## Programming Model
-CocoIndex follows the [Dataflow programming](https://en.wikipedia.org/wiki/Dataflow_programming) model. Each transformation creates a new field solely based on input fields, without hidden states and value mutation. All data before/after each transformation is observable, with lineage out of the box.
+CocoIndex follows a Peristent-State-Driven model. Each transformation creates a new field solely based on input fields, without hidden states and value mutation. All data before/after each transformation is observable, with lineage out of the box.
 
-The gist of an example data transformation:
-```python
-# import
-data['content'] = flow_builder.add_source(...)
+## CocoIndex features
+### High Performance Rust Engine
+CocoIndex compiles transformation and executes as resilient, scalable data pipelines on a high-performance Rust engine.
 
-# transform
-data['out'] = data['content']
-    .transform(...)
-    .transform(...)
+### Easy to code
+- Developers use familiar languages (e.g., Python) to write simple transformations without learning new DSLs
+- Developers write simple transformations without worrying about deltas. CocoIndex runs them incrementally in both batch and live mode, continuously updating results — no separate DAGs, operators, or ingestion logic required.
 
-# collect data
-collector.collect(...)
+### Incremental & low-latency
+CocoIndex tracks fine-grained dependencies and only recomputes what changed in the input data or the code. End-to-end updates drop from hours/days to seconds while keeping full correctness.
 
-# export to db, vector db, graph db ...
-collector.export(...)
-```
+### Full lineage & explainability
+Every transform step, intermediate dataset, and execution path is inspectable. This supports EU AI Act transparency and satisfies enterprise auditability/traceability requirements.
 
-Get Started:
-- [Quick Start](https://cocoindex.io/docs/getting_started/quickstart)
+### Open integration model
+Sources and sinks plug in through a standard, open interface (no vendor lock-in). Developers can leverage the full Python ecosystem for models, UDFs, and libraries.
+
+### High throughput + controlled concurrency
+Pipelines automatically parallelize with managed concurrency and request batching — reducing GPU cost, RPC fanout, and end-to-end latency.
+
+### Fault-tolerant runtime
+The engine gracefully retries transient failures and resumes from previous progress after interruptions — eliminating manual backfills and replays.
+
+### Low operational overhead
+CocoIndex removes the plumbing: refreshing datasets, maintaining state, handling backfills, ensuring correctness, coordinating GPUs, scaling workers, and managing infra.
+
+## Incremental Processing
+CocoIndex is a persistent data-processing framework that continuously maintains processed data. It is designed to support incremental indexing from day 0.
+
+What CocoIndex does for incremental
+- Avoid unnecessary recompute. Based on multi-level change detection
+Row level: only reprocess source rows with change
+Function level: within a row’s processing, also memoize expensive function calls and reuse when possible
+- Apply minimum necessary changes (insertions, updates, deletions) to target.
+Support multiple mechanisms to capture source changes (CDC, poll-based) out of box.
+
+Developers write simple batch-style transformation code — no delta logic, no state handling. CocoIndex automatically incrementalizes the pipeline and maintains the output for serving, training, or feature computation.

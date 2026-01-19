@@ -1,0 +1,57 @@
+---
+title: CLI
+description: CocoIndex CLI
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# CocoIndex CLI
+
+CocoIndex CLI is a standalone tool for easily managing and inspecting your flows and indexes.
+
+## Invoke the CLI
+
+Once CocoIndex is installed, you can invoke the CLI directly using the `cocoindex` command. Most commands require an `APP_TARGET` argument, which tells the CLI where your flow definitions are located.
+
+### APP_TARGET Format
+
+The `APP_TARGET` can be:
+
+1. An **Python module name** that contains your flow definitions (e.g., `main`, `my_package.flows`).
+    You can also use `--app-dir <path>` to specify the base directory to load the module from.
+
+2. A **path to a Python file** defining your flows (e.g., `main.py`, `path/to/my_flows.py`).
+
+    The file will be loaded as a top-level Python module, e.g. relative imports will not work as its parent package is not defined (similar to how `python main.py` resolves imports).
+
+3. For commands that operate on a *specific flow* (like `show`, `update`, `evaluate`), you can combine the application reference with a flow name:
+    * `my_package.flows:MyFlow`
+    * `path/to/my_flows.py:MyFlow`
+
+### Environment Variables
+
+You can set environment variables in an environment file.
+
+* By default, the `cocoindex` CLI searches upward from the current directory for a `.env` file.
+* You can use `--env-file <path>` to specify one explicitly:
+
+    ```sh
+    cocoindex --env-file path/to/custom.env <COMMAND> ...
+    ```
+
+Loaded variables do *NOT* override existing system ones.
+If no file is found, only existing system environment variables are used.
+
+### Global Options
+
+CocoIndex CLI supports the following global options:
+
+* `-e, --env-file <path>`: Load environment variables from a specified `.env` file. If not provided, `.env` in the current directory is loaded if it exists.
+* `-d, --app-dir <path>`: Load apps from the specified directory. It will be treated as part of `PYTHONPATH`. Default to the current directory.
+* `-V, --version`: Show the CocoIndex version and exit.
+* `--help`: Show the main help message and exit.
+
+import CliCommands from './cli-commands.md';
+
+<CliCommands />

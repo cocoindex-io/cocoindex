@@ -1,13 +1,16 @@
 [project]
-name = "text-embedding-qdrant"
+name = "text-embedding-qdrant-v1"
 version = "0.1.0"
-description = "Simple example for cocoindex: build embedding index based on local text files."
+description = "CocoIndex v1 example: embed markdown files and store in Qdrant."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[embeddings]>=0.3.26,<1",
-    "python-dotenv>=1.0.1",
+    "cocoindex[sentence_transformers,qdrant]>=1.0.0a1",
+    "numpy",
     "qdrant-client>=1.6.0",
 ]
+
+[tool.uv]
+prerelease = "allow"
 
 [tool.setuptools]
 packages = []

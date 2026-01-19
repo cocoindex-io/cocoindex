@@ -4,7 +4,6 @@ Lightweight subprocess-backed executor stub.
 - Uses a single global ProcessPoolExecutor (max_workers=1), created lazily.
 - In the subprocess, maintains a registry of executor instances keyed by
   (executor_factory, pickled spec) to enable reuse.
-- Caches analyze() and prepare() results per key to avoid repeated calls
   even if key collision happens.
 """
 
@@ -12,7 +11,7 @@ from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 import pickle
 import threading
@@ -20,7 +19,6 @@ import asyncio
 import os
 import time
 from .user_app_loader import load_user_app
-from .runtime import execution_context
 import logging
 import multiprocessing as mp
 
@@ -176,9 +174,6 @@ class _OnceResult:
 @dataclass
 class _ExecutorEntry:
     executor: Any
-    prepare: _OnceResult = field(default_factory=_OnceResult)
-    analyze: _OnceResult = field(default_factory=_OnceResult)
-    ready_to_call: bool = False
 
 
 _SUBPROC_EXECUTORS: dict[bytes, _ExecutorEntry] = {}
@@ -208,26 +203,8 @@ def _get_or_create_entry(key_bytes: bytes) -> _ExecutorEntry:
     return entry
 
 
-def _sp_analyze(key_bytes: bytes) -> Any:
-    entry = _get_or_create_entry(key_bytes)
-    return entry.analyze.run_once(entry.executor.analyze)
-
-
-def _sp_prepare(key_bytes: bytes) -> Any:
-    entry = _get_or_create_entry(key_bytes)
-    return entry.prepare.run_once(entry.executor.prepare)
-
-
 def _sp_call(key_bytes: bytes, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     entry = _get_or_create_entry(key_bytes)
-    # There's a chance that the subprocess crashes and restarts in the middle.
-    # So we want to always make sure the executor is ready before each call.
-    if not entry.ready_to_call:
-        if analyze_fn := getattr(entry.executor, "analyze", None):
-            entry.analyze.run_once(analyze_fn)
-        if prepare_fn := getattr(entry.executor, "prepare", None):
-            entry.prepare.run_once(prepare_fn)
-        entry.ready_to_call = True
     return _call_method(entry.executor.__call__, *args, **kwargs)
 
 
@@ -243,24 +220,6 @@ class _ExecutorStub:
         self._key_bytes = pickle.dumps(
             (executor_factory, spec), protocol=pickle.HIGHEST_PROTOCOL
         )
-
-        # Conditionally expose analyze if underlying class has it
-        if hasattr(executor_factory, "analyze"):
-            # Bind as attribute so getattr(..., "analyze", None) works upstream
-            def analyze() -> Any:
-                return execution_context.run(
-                    _submit_with_restart(_sp_analyze, self._key_bytes)
-                )
-
-            # Attach method
-            setattr(self, "analyze", analyze)
-
-        if hasattr(executor_factory, "prepare"):
-
-            async def prepare() -> Any:
-                return await _submit_with_restart(_sp_prepare, self._key_bytes)
-
-            setattr(self, "prepare", prepare)
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return await _submit_with_restart(_sp_call, self._key_bytes, args, kwargs)

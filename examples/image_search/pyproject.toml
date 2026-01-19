@@ -1,17 +1,20 @@
 [project]
-name = "image-search"
+name = "image-search-v1"
 version = "0.1.0"
-description = "Image search examples for cocoindex: CLIP and ColPali-based embedding."
+description = "CocoIndex v1 example: image search with CLIP embeddings stored in Qdrant."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[colpali]>=0.3.26,<1",
-    "python-dotenv>=1.0.1",
+    "cocoindex[qdrant]>=1.0.0a1",
     "fastapi>=0.100.0",
     "torch>=2.0.0",
-    "transformers>=4.29.0",          # For CLIP model in main.py
+    "transformers>=4.29.0",
+    "pillow>=10.0.0",
     "qdrant-client>=1.14.2",
     "uvicorn>=0.34.3",
 ]
+
+[tool.uv]
+prerelease = "allow"
 
 [tool.setuptools]
 packages = []

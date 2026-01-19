@@ -1,176 +1,206 @@
 ---
 title: Quickstart
-description: Get started with CocoIndex in 10 minutes
+description: Get started with CocoIndex in 5 minutes
 ---
 
-import { GitHubButton, YouTubeButton, DocumentationButton } from '../../src/components/GitHubButton';
+import { GitHubButton, DocumentationButton } from '@site/src/components/ActionButtons';
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex-quickstart" margin="0 0 24px 0"/>
-<YouTubeButton url="https://www.youtube.com/watch?v=gv5R8nOXsWU" margin="0 0 24px 0"/>
+# Quickstart
 
-In this tutorial, we’ll build an index with text embeddings, keeping it minimal and focused on the core indexing flow.
+In this tutorial, we'll build a simple flow that converts Markdown files to HTML and saves them to a local directory.
+
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/v1/examples/files_transform" />
 
 ## Flow Overview
 
-![Flow](/img/quickstart/flow.png)
+1. Read Markdown files from a local directory
+2. Convert each file to HTML
+3. Save the HTML files to an output directory (as **effects**)
 
-1. Read text files from the local filesystem
-2. Chunk each document
-3. For each chunk, embed it with a text embedding model
-4. Store the embeddings in a vector database for retrieval
+CocoIndex automatically tracks changes — when you add, modify, or delete source files, only the affected outputs are updated.
 
 ## Setup
 
-1. Install CocoIndex:
+1. Install CocoIndex and dependencies:
 
-    ```sh
-    pip install -U 'cocoindex[embeddings]'
+    ```bash
+    pip install 'cocoindex>=1.0.0a1' 'markdown-it-py[linkify,plugins]'
     ```
 
-2. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
+2. Create a new directory for your project:
 
-3. Create a new directory for your project:
-
-    ```sh
+    ```bash
     mkdir cocoindex-quickstart
     cd cocoindex-quickstart
     ```
 
-4. Place input files in a directory `markdown_files`. You may download from [markdown_files.zip](markdown_files.zip).
+3. Create a `data/` directory with a sample Markdown file:
 
-## Define a flow
+    ```bash
+    mkdir data
+    ```
 
-Create a new file `main.py` and define a flow.
+Add a sample file `data/hello.md`:
 
-```python title="main.py"
-import cocoindex
+```markdown
+# Hello World
 
-@cocoindex.flow_def(name="TextEmbedding")
-def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
-    # ... See subsections below for function body
+This is a simple **Markdown** file.
+
+- Item 1
+- Item 2
+- Item 3
 ```
 
-### Add Source and Collector
+## Define the App
 
-```python title="main.py"
-# add source
-data_scope["documents"] = flow_builder.add_source(
-    cocoindex.sources.LocalFile(path="markdown_files"))
+Create a new file `main.py`:
 
-# add data collector
-doc_embeddings = data_scope.add_collector()
+```python
+import pathlib
+from typing import Iterator
+
+import cocoindex as coco
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.connectors import localfs
+from markdown_it import MarkdownIt
+
+_markdown_it = MarkdownIt("gfm-like")
 ```
 
-`flow_builder.add_source` will create a table with sub fields (`filename`, `content`)
+### Configure the Environment
 
-<DocumentationButton url="https://cocoindex.io/docs/sources" text="Source" />
+Use `@coco.lifespan` to configure CocoIndex settings:
 
-<DocumentationButton url="https://cocoindex.io/docs/core/flow_def#data-collector" text="Data Collector" />
-
-### Process each document
-
-With CocoIndex, it is easy to process nested data structures.
-
-```python title="main.py"
-with data_scope["documents"].row() as doc:
-    # ... See subsections below for function body
+```python
+@coco.lifespan
+def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+    builder.settings.db_path = pathlib.Path("./cocoindex.db")
+    yield
 ```
 
-#### Chunk each document
+This sets up a local database (`cocoindex.db`) for incremental processing.
 
-```python title="main.py"
-doc["chunks"] = doc["content"].transform(
-    cocoindex.functions.SplitRecursively(),
-    language="markdown", chunk_size=2000, chunk_overlap=500)
+### Define File Processing
+
+Use `@coco.function` with `memo=True` to create a memoized function that processes each file:
+
+```python
+@coco.function(memo=True)
+def process_file(scope: coco.Scope, file: FileLike, target: localfs.DirTarget) -> None:
+    html = _markdown_it.render(file.read_text())
+    outname = "__".join(file.relative_path.parts) + ".html"
+    target.declare_file(scope, filename=outname, content=html)
 ```
 
-We extend a new field `chunks` to each row by *transforming* the `content` field using `SplitRecursively`. The output of the `SplitRecursively` is a KTable representing each chunk of the document.
+Key concepts:
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/functions#splitrecursively" text="SplitRecursively" margin="0 0 16px 0" />
+- **`scope`**: A handle that carries the stable path and context for declaring effects
+- **`memo=True`**: Skips recomputation when inputs haven't changed
+- **`target.declare_file()`**: Declares an **effect** — the desired state of an output file
 
-![Chunking](/img/quickstart/chunk.png)
+<DocumentationButton url="/docs-v1/programming_guide/function" text="Function" />
+<DocumentationButton url="/docs-v1/programming_guide/effect" text="Effect" />
 
-#### Embed each chunk and collect the embeddings
+### Define the Main Function
 
-```python title="main.py"
-with doc["chunks"].row() as chunk:
-    # embed
-    chunk["embedding"] = chunk["text"].transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"
-        )
+```python
+@coco.function
+def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+    # Declare the output directory effect and get a target provider
+    target = coco.mount_run(
+        localfs.declare_dir_target, scope / "setup", outdir
+    ).result()
+
+    # Walk source files and mount a component for each
+    files = localfs.walk_dir(
+        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["*.md"])
     )
-
-    # collect
-    doc_embeddings.collect(
-        filename=doc["filename"],
-        location=chunk["location"],
-        text=chunk["text"],
-        embedding=chunk["embedding"],
-    )
+    for f in files:
+        coco.mount(process_file, scope / "process" / str(f.relative_path), f, target)
 ```
 
-This code embeds each chunk using the SentenceTransformer library and collects the results.
+Key concepts:
 
-![Embedding](/img/quickstart/embed.png)
+- **`coco.mount_run()`**: Mounts a component and waits for its result (the directory target)
+- **`coco.mount()`**: Mounts a component for each file to process
+- **`scope / "process" / ...`**: Creates a stable path to identify each component
 
-<DocumentationButton url="https://cocoindex.io/docs/ops/functions#sentencetransformerembed" text="SentenceTransformerEmbed" margin="0 0 16px 0" />
+<DocumentationButton url="/docs-v1/programming_guide/component" text="Component" />
 
-### Export the embeddings to Postgres
+### Create the App
 
-```python title="main.py"
-doc_embeddings.export(
-    "doc_embeddings",
-    cocoindex.storages.Postgres(),
-    primary_key_fields=["filename", "location"],
-    vector_indexes=[
-        cocoindex.VectorIndexDef(
-            field_name="embedding",
-            metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-        )
-    ],
+```python
+app = coco.App(
+    app_main,
+    coco.AppConfig(name="FilesTransform"),
+    sourcedir=pathlib.Path("./data"),
+    outdir=pathlib.Path("./output_html"),
 )
+
+
+def main() -> None:
+    app.update(report_to_stdout=True)
+
+
+if __name__ == "__main__":
+    main()
 ```
 
-CocoIndex supports other vector databases as well, with 1-line switch.
+## Run the Pipeline
 
-<DocumentationButton url="https://cocoindex.io/docs/targets" text="Targets" />
+Run the pipeline:
 
-## Run the indexing pipeline
-
-- Specify the database URL by environment variable:
-
-    ```sh
-    export COCOINDEX_DATABASE_URL="postgresql://cocoindex:cocoindex@localhost:5432/cocoindex"
-    ```
-
-:::info Prerequisite
-
-Make sure your Postgres server is running before proceeding. See [how to launch CocoIndex](../core/settings#configure-cocoindex-settings) for details.
-
-:::
-
-- Build the index:
-
-    ```sh
-    cocoindex update main
-    ```
-
-CocoIndex will run for a few seconds and populate the target table with data as declared by the flow. It will output the following statistics:
-
-```
-documents: 3 added, 0 removed, 0 updated
+```bash
+python main.py
 ```
 
-That's it for the main indexing flow.
+CocoIndex will:
 
-## End to end: Query the index (Optional)
+1. Create the `output_html/` directory
+2. Convert `data/hello.md` to `output_html/hello.md.html`
 
-If you want to build a end to end query flow that also searches the index, you can follow the [simple_vector_index](https://cocoindex.io/examples/simple_vector_index#query-the-index) example.
+Check the output:
+
+```bash
+ls output_html/
+# hello.md.html
+```
+
+## Incremental Updates
+
+The power of CocoIndex is **incremental processing**. Try these:
+
+**Add a new file:**
+
+```bash
+echo "# New File" > data/world.md
+python main.py
+```
+
+Only the new file is processed.
+
+**Modify a file:**
+
+```bash
+echo "# Updated Hello" > data/hello.md
+python main.py
+```
+
+Only the changed file is reprocessed.
+
+**Delete a file:**
+
+```bash
+rm data/hello.md
+python main.py
+```
+
+The corresponding HTML is automatically removed.
 
 ## Next Steps
 
-Next, you may want to:
-
-- Learn about [CocoIndex Basics](../core/basics.md).
-- Explore more of what you can build with CocoIndex in the [examples](https://cocoindex.io/examples) directory.
+- Learn more about [Core Concepts](/programming_guide/core_concepts)
+- Explore [Functions](/programming_guide/function) and memoization
+- Understand [Effects](/programming_guide/effect) and how they sync to external systems
+- Browse more [examples](https://github.com/cocoindex-io/cocoindex/tree/v1/examples)

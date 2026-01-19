@@ -1,12 +1,12 @@
 [project]
-name = "text-embedding-lancedb"
+name = "text-embedding-lancedb-v1"
 version = "0.1.0"
-description = "Simple example for cocoindex: build embedding index based on local text files."
+description = "CocoIndex v1 example: embed markdown files and store in LanceDB."
 requires-python = ">=3.11"
-dependencies = [
-    "cocoindex[embeddings,lancedb]>=0.3.26,<1",
-    "python-dotenv>=1.0.1",
-]
+dependencies = ["cocoindex[sentence_transformers,lancedb]>=1.0.0a1"]
+
+[tool.uv]
+prerelease = "allow"
 
 [tool.setuptools]
 packages = []

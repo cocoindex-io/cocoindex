@@ -1,26 +1,10 @@
-# Build embedding index from PDF files and query with natural language
+# PDF Embedding (v1)
 
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
 
-In this example, we will build index flow for text embedding from local PDF files, and query the index.
+This example builds an embedding index from local PDF files. It converts PDFs to markdown, chunks the text, embeds each chunk, and stores the results in Postgres (pgvector). It also provides a simple query demo.
 
 We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
-
-## Steps
-
-### Indexing Flow
-
-<img width="662" alt="PDF indexing flow" src="https://github.com/user-attachments/assets/5e132dd9-7120-4b28-bc57-88d6b5583ef4" />
-
-1. We will ingest a list of PDF files.
-2. For each file:
-   - convert it to markdown, and then
-   - perform chunking (recursively split) and then embed each chunk.
-3. We will save the embeddings and the metadata in Postgres with PGVector.
-
-### Query
-
-We will match against user-provided text by a SQL query, and reuse the embedding operation in the indexing flow.
 
 ## Prerequisite
 
@@ -34,24 +18,22 @@ Install dependencies:
 pip install -e .
 ```
 
-Update index:
+Set a database URL (or use `.env`):
 
 ```sh
-cocoindex update main
+export COCOINDEX_DATABASE_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
 ```
 
-Run:
+Build/update the index:
 
 ```sh
 python main.py
 ```
 
-## CocoInsight
+Query:
 
-I used CocoInsight (Free beta now) to troubleshoot the index generation and understand the data lineage of the pipeline. It just connects to your local CocoIndex server, with Zero pipeline data retention. Run following command to start CocoInsight:
-
-```
-cocoindex server -ci main
+```sh
+python main.py query "what is attention?"
 ```
 
-Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
+Note: this example **does not create a vector index**; queries will do a sequential scan.

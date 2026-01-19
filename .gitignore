@@ -11,6 +11,7 @@ __pycache__/
 # Distribution / packaging
 .venv*/
 dist/
+uv.lock
 
 .DS_Store
 
@@ -22,6 +23,12 @@ dist/
 # mypy daemon environment
 .dmypy.json
 
+# LMDB files
+*.mdb
+
 # Output of `cocoindex eval`
 examples/**/eval_*
 examples/**/uv.lock
+**/lancedb_data/
+
+.env

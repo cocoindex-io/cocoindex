@@ -1,22 +1,17 @@
 import collections
 import dataclasses
-import datetime
 import inspect
 import types
 import typing
-import uuid
 from typing import (
     Annotated,
     Any,
     Iterator,
-    Mapping,
     NamedTuple,
     get_type_hints,
 )
 
 import numpy as np
-
-import cocoindex.typing
 
 # Optional Pydantic support
 try:
@@ -96,21 +91,12 @@ class AnyType(NamedTuple):
     """
 
 
-class BasicType(NamedTuple):
-    """
-    For types that fit into basic type, and annotated with basic type or Json type.
-    """
-
-    kind: str
-
-
 class SequenceType(NamedTuple):
     """
     Any list type, e.g. list[T], Sequence[T], NDArray[T], etc.
     """
 
     elem_type: Any
-    vector_info: cocoindex.typing.VectorInfo | None
 
 
 class StructFieldInfo(NamedTuple):
@@ -185,21 +171,13 @@ class MappingType(NamedTuple):
     value_type: Any
 
 
-class OtherType(NamedTuple):
+class LeafType(NamedTuple):
     """
     Any type that is not supported by CocoIndex.
     """
 
 
-TypeVariant = (
-    AnyType
-    | BasicType
-    | SequenceType
-    | MappingType
-    | StructType
-    | UnionType
-    | OtherType
-)
+TypeVariant = AnyType | SequenceType | MappingType | StructType | UnionType | LeafType
 
 
 class DataTypeInfo(NamedTuple):
@@ -212,49 +190,22 @@ class DataTypeInfo(NamedTuple):
     # The type without annotations and parameters. e.g. int, list, dict
     base_type: Any
     variant: TypeVariant
-    attrs: dict[str, Any] | None
     nullable: bool = False
+    annotations: tuple[Any, ...] = ()
 
 
-def _get_basic_type_kind(t: Any) -> str | None:
-    if t is bytes:
-        return "Bytes"
-    elif t is str:
-        return "Str"
-    elif t is bool:
-        return "Bool"
-    elif t is int:
-        return "Int64"
-    elif t is float:
-        return "Float64"
-    elif t is uuid.UUID:
-        return "Uuid"
-    elif t is datetime.date:
-        return "Date"
-    elif t is datetime.time:
-        return "Time"
-    elif t is datetime.datetime:
-        return "OffsetDateTime"
-    elif t is datetime.timedelta:
-        return "TimeDelta"
-    else:
-        return None
-
-
-def analyze_type_info(
-    t: Any, *, nullable: bool = False, extra_attrs: Mapping[str, Any] | None = None
-) -> DataTypeInfo:
+def analyze_type_info(t: Any, *, nullable: bool = False) -> DataTypeInfo:
     """
     Analyze a Python type annotation and extract CocoIndex-specific type information.
     """
 
-    annotations: tuple[cocoindex.typing.Annotation, ...] = ()
+    annotations: tuple[Any, ...] = ()
     base_type = None
     type_args: tuple[Any, ...] = ()
     while True:
         base_type = typing.get_origin(t)
         if base_type is Annotated:
-            annotations = t.__metadata__
+            annotations += t.__metadata__
             t = t.__origin__
         else:
             if base_type is None:
@@ -264,41 +215,19 @@ def analyze_type_info(
             break
     core_type = t
 
-    attrs: dict[str, Any] | None = None
-    vector_info: cocoindex.typing.VectorInfo | None = None
-    kind: str | None = None
-    for attr in annotations:
-        if isinstance(attr, cocoindex.typing.TypeAttr):
-            if attrs is None:
-                attrs = dict()
-            attrs[attr.key] = attr.value
-        elif isinstance(attr, cocoindex.typing.VectorInfo):
-            vector_info = attr
-        elif isinstance(attr, cocoindex.typing.TypeKind):
-            kind = attr.kind
-    if extra_attrs:
-        if attrs is None:
-            attrs = dict()
-        attrs.update(extra_attrs)
-
     variant: TypeVariant | None = None
 
-    if kind is not None:
-        variant = BasicType(kind=kind)
-    elif base_type is Any or base_type is inspect.Parameter.empty:
+    if base_type is Any or base_type is inspect.Parameter.empty:
         variant = AnyType()
     elif is_struct_type(base_type):
         variant = StructType(struct_type=t)
-    elif is_numpy_number_type(t):
-        kind = DtypeRegistry.validate_dtype_and_get_kind(t)
-        variant = BasicType(kind=kind)
     elif base_type is collections.abc.Sequence or base_type is list:
         elem_type = type_args[0] if len(type_args) > 0 else Any
-        variant = SequenceType(elem_type=elem_type, vector_info=vector_info)
+        variant = SequenceType(elem_type=elem_type)
     elif base_type is np.ndarray:
         np_number_type = t
         elem_type = extract_ndarray_elem_dtype(np_number_type)
-        variant = SequenceType(elem_type=elem_type, vector_info=vector_info)
+        variant = SequenceType(elem_type=elem_type)
     elif base_type is collections.abc.Mapping or base_type is dict or t is dict:
         key_type = type_args[0] if len(type_args) > 0 else Any
         elem_type = type_args[1] if len(type_args) > 1 else Any
@@ -315,15 +244,13 @@ def analyze_type_info(
             )
 
         variant = UnionType(variant_types=non_none_types)
-    elif (basic_type_kind := _get_basic_type_kind(t)) is not None:
-        variant = BasicType(kind=basic_type_kind)
     else:
-        variant = OtherType()
+        variant = LeafType()
 
     return DataTypeInfo(
         core_type=core_type,
         base_type=base_type,
         variant=variant,
-        attrs=attrs,
+        annotations=annotations,
         nullable=nullable,
     )

@@ -1,15 +1,19 @@
 [project]
-name = "pdf-embedding"
+name = "pdf-embedding-v1"
 version = "0.1.0"
-description = "Simple example for cocoindex: build embedding index based on local PDF files."
+description = "CocoIndex v1 example: embed local PDF files and store in Postgres/pgvector."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[embeddings]>=0.3.26,<1",
-    "python-dotenv>=1.0.1",
+    "cocoindex[postgres,sentence_transformers]>=1.0.0a1",
+    "asyncpg>=0.29.0",
+    "pgvector>=0.4.1",
+    "numpy",
     "marker-pdf>=1.8.5",
-    "psycopg[binary,pool]",
-    "jinja2>=3.1.6",
+    "python-dotenv>=1.0.1",
 ]
+
+[tool.uv]
+prerelease = "allow"
 
 [tool.setuptools]
 packages = []

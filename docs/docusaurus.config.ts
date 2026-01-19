@@ -15,12 +15,12 @@ const config: Config = {
   url: 'https://cocoindex.io',
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/<projectName>/'
-  baseUrl: '/docs/',
+  baseUrl: '/docs-v1/',
 
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
   organizationName: 'cocoindex-io', // Usually your GitHub org/user name.
-  projectName: 'docs', // Usually your repo name.
+  projectName: 'docs-v1', // Usually your repo name.
   trailingSlash: false,
 
   onBrokenLinks: 'throw',
@@ -56,32 +56,8 @@ const config: Config = {
       {
         redirects: [
           {
-            from: '/core/initialization',
-            to: '/core/settings',
-          },
-          {
-            from: '/core/custom_function',
-            to: '/custom_ops/custom_functions',
-          },
-          {
-            from: '/ops/storages',
-            to: '/targets',
-          },
-          {
             from: '/about/contributing',
             to: '/contributing/guide',
-          },
-          {
-            from: '/ops/targets',
-            to: '/targets',
-          },
-          {
-            from: '/ops/sources',
-            to: '/sources',
-          },
-          {
-            from: '/http_server',
-            to: '/cocoinsight_access',
           },
         ],
       },
@@ -105,14 +81,8 @@ const config: Config = {
         includeOrder: [
           '/getting_started/**',
           '/core/**',
-          '/tutorials/**',
-          '/query',
-          '/sources/**',
-          '/ops/functions',
-          '/targets/**',
-          '/custom_ops/**',
-          '/ai/**',
-          '/cocoinsight_access',
+          '/built_in_connectors/**',
+          '/custom_connectors/**',
           '/contributing/**',
           '/about/**',
         ],

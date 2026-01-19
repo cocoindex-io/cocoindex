@@ -1,193 +1,206 @@
 """
-HackerNews Trending Topics Example
+HackerNews Trending Topics - CocoIndex Pipeline Example
 
-This example demonstrates how to use a custom source with CocoIndex to index
-HackerNews threads and extract trending topics using LLM.
+This example demonstrates a CocoIndex pipeline that:
+1. Scrapes HackerNews threads and comments via API
+2. Extracts topics using LLM (Gemini 2.5 Flash via LiteLLM)
+3. Stores everything in PostgreSQL using the cocoindex postgres target
 """
 
-import cocoindex
+import asyncio
 import os
-import functools
-from psycopg_pool import ConnectionPool
-from datetime import timedelta, datetime
-from typing import Any, AsyncIterator, NamedTuple
+import sys
+import pathlib
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, AsyncIterator
+
 import aiohttp
-import dataclasses
+import asyncpg
+from litellm import acompletion
+from pydantic import BaseModel, Field
 
-from cocoindex.op import (
-    NON_EXISTENCE,
-    SourceSpec,
-    NO_ORDINAL,
-    source_connector,
-    PartialSourceRow,
-    PartialSourceRowData,
+import cocoindex as coco
+import cocoindex.asyncio as coco_aio
+from cocoindex.connectors import postgres
+
+# Configuration
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
 )
+MAX_THREADS = 10
+LLM_MODEL = "gemini/gemini-2.5-flash"
 
+# Scoring weights for trending topics query
 THREAD_LEVEL_MENTION_SCORE = 5
 COMMENT_LEVEL_MENTION_SCORE = 1
 
-
-class _HackerNewsThreadKey(NamedTuple):
-    """Row key type for HackerNews source."""
-
-    thread_id: str
+PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
 
 
-@dataclasses.dataclass
-class _HackerNewsComment:
+# ============================================================================
+# Data models for HackerNews content
+# ============================================================================
+
+
+@dataclass
+class Comment:
     id: str
     author: str | None
     text: str | None
     created_at: datetime | None
 
 
-@dataclasses.dataclass
-class _HackerNewsThread:
-    """Value type for HackerNews source."""
-
+@dataclass
+class Thread:
+    id: str
     author: str | None
     text: str
     url: str | None
     created_at: datetime | None
-    comments: list[_HackerNewsComment]
+    comments: list[Comment]
 
 
-@dataclasses.dataclass
-class Topic:
-    """
-    A single topic extracted from text.
+# ============================================================================
+# Table schemas as dataclasses (for PostgreSQL target)
+# ============================================================================
 
-    The topic can be a product name, technology, model, people, company name, business domain, etc.
-    Capitalize for proper nouns and acronyms only.
-    Use the form that is clear alone.
-    Avoid acronyms unless very popular and unambiguous for common people even without context.
 
-    Examples:
-    - "Anthropic" (not "ANTHR")
-    - "Claude" (specific product name)
-    - "React" (well-known library)
-    - "PostgreSQL" (canonical database name)
+@dataclass
+class HnMessage:
+    """Schema for hn_messages table."""
 
-    For topics that are a phrase combining multiple things, normalize into multiple topics if needed. Examples:
-    - "books for autistic kids" -> "book", "autistic", "autistic kids"
-    - "local Large Language Model" -> "local Large Language Model", "Large Language Model"
+    id: str
+    thread_id: str
+    content_type: str
+    author: str | None
+    text: str | None
+    url: str | None
+    created_at: datetime | None
 
-    For people, use preferred name and last name. Examples:
-    - "Bill Clinton" instead of "William Jefferson Clinton"
 
-    When there're multiple common ways to refer to the same thing, use multiple topics. Examples:
-    - "John Kennedy", "JFK"
-    """
+@dataclass
+class HnTopic:
+    """Schema for hn_topics table."""
 
     topic: str
+    message_id: str
+    thread_id: str
+    content_type: str
+    created_at: datetime | None
 
 
-# Define the source spec that users will instantiate
-class HackerNewsSource(SourceSpec):
-    """Source spec for HackerNews API."""
-
-    tag: str | None = None
-    max_results: int = 200
+# ============================================================================
+# LLM topic extraction
+# ============================================================================
 
 
-@source_connector(
-    spec_cls=HackerNewsSource,
-    key_type=_HackerNewsThreadKey,
-    value_type=_HackerNewsThread,
-)
-class HackerNewsConnector:
-    """Custom source connector for HackerNews API."""
+class TopicsResponse(BaseModel):
+    """Response containing a list of extracted topics."""
 
-    _spec: HackerNewsSource
-    _session: aiohttp.ClientSession
+    topics: list[str] = Field(
+        description="""List of extracted topics.
 
-    def __init__(self, spec: HackerNewsSource, session: aiohttp.ClientSession):
-        self._spec = spec
-        self._session = session
+Each topic can be a product name, technology, model, people, company name, business domain, etc.
+Capitalize for proper nouns and acronyms only.
+Use the form that is clear alone.
+Avoid acronyms unless very popular and unambiguous for common people even without context.
 
-    @staticmethod
-    async def create(spec: HackerNewsSource) -> "HackerNewsConnector":
-        """Create a HackerNews connector from the spec."""
-        return HackerNewsConnector(spec, aiohttp.ClientSession())
+Examples:
+- "Anthropic" (not "ANTHR")
+- "Claude" (specific product name)
+- "React" (well-known library)
+- "PostgreSQL" (canonical database name)
 
-    async def list(
-        self,
-    ) -> AsyncIterator[PartialSourceRow[_HackerNewsThreadKey, _HackerNewsThread]]:
-        """List HackerNews threads using the search API."""
-        # Use HackerNews search API
-        search_url = "https://hn.algolia.com/api/v1/search_by_date"
-        params: dict[str, Any] = {"hitsPerPage": self._spec.max_results}
-        if self._spec.tag:
-            params["tags"] = self._spec.tag
-        async with self._session.get(search_url, params=params) as response:
-            response.raise_for_status()
-            data = await response.json()
-            for hit in data.get("hits", []):
-                if thread_id := hit.get("objectID", None):
-                    utime = hit.get("updated_at")
-                    ordinal = (
-                        int(datetime.fromisoformat(utime).timestamp())
-                        if utime
-                        else NO_ORDINAL
-                    )
-                    yield PartialSourceRow(
-                        key=_HackerNewsThreadKey(thread_id=thread_id),
-                        data=PartialSourceRowData(ordinal=ordinal),
-                    )
+For topics that are a phrase combining multiple things, normalize into multiple topics if needed. Examples:
+- "books for autistic kids" -> "book", "autistic", "autistic kids"
+- "local Large Language Model" -> "local Large Language Model", "Large Language Model"
 
-    async def get_value(
-        self, key: _HackerNewsThreadKey
-    ) -> PartialSourceRowData[_HackerNewsThread]:
-        """Get a specific HackerNews thread by ID using the items API."""
-        # Use HackerNews items API to get full thread with comments
-        item_url = f"https://hn.algolia.com/api/v1/items/{key.thread_id}"
+For people, use preferred name and last name. Examples:
+- "Bill Clinton" instead of "William Jefferson Clinton"
 
-        async with self._session.get(item_url) as response:
-            response.raise_for_status()
-            data = await response.json()
+When there're multiple common ways to refer to the same thing, use multiple topics. Examples:
+- "John Kennedy", "JFK"
+"""
+    )
 
-            if not data:
-                return PartialSourceRowData(
-                    value=NON_EXISTENCE,
-                    ordinal=NO_ORDINAL,
-                    content_version_fp=None,
-                )
-            return PartialSourceRowData(
-                value=HackerNewsConnector._parse_hackernews_thread(data)
-            )
 
-    def provides_ordinal(self) -> bool:
-        """Indicate that this source provides ordinal information."""
-        return True
+@coco.function
+async def extract_topics(scope: coco.Scope, text: str | None) -> list[str]:
+    """Extract topics from text using LLM."""
+    if not text or not text.strip():
+        return []
 
-    @staticmethod
-    def _parse_hackernews_thread(data: dict[str, Any]) -> _HackerNewsThread:
-        comments: list[_HackerNewsComment] = []
+    response = await acompletion(
+        model=LLM_MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": f"Extract topics from the following text:\n\n{text[:4000]}",
+            }
+        ],
+        response_format=TopicsResponse,
+    )
 
-        def _add_comments(parent: dict[str, Any]) -> None:
-            children = parent.get("children", None)
-            if not children:
-                return
-            for child in children:
-                ctime = child.get("created_at")
-                if comment_id := child.get("id", None):
+    content = response.choices[0].message.content
+    return TopicsResponse.model_validate_json(content).topics
+
+
+# ============================================================================
+# HackerNews API functions
+# ============================================================================
+
+
+async def fetch_thread_list(
+    session: aiohttp.ClientSession, max_results: int = MAX_THREADS
+) -> list[str]:
+    """Fetch list of recent thread IDs from HackerNews."""
+    search_url = "https://hn.algolia.com/api/v1/search_by_date"
+    params: dict[str, str | int] = {"tags": "story", "hitsPerPage": max_results}
+
+    async with session.get(search_url, params=params) as response:
+        response.raise_for_status()
+        data = await response.json()
+        thread_ids = [
+            hit["objectID"] for hit in data.get("hits", []) if hit.get("objectID")
+        ]
+        return thread_ids
+
+
+async def fetch_thread(session: aiohttp.ClientSession, thread_id: str) -> Thread:
+    """Fetch a single thread with all its comments."""
+    item_url = f"https://hn.algolia.com/api/v1/items/{thread_id}"
+
+    async with session.get(item_url) as response:
+        response.raise_for_status()
+        data = await response.json()
+
+        comments: list[Comment] = []
+
+        # Parse comments recursively
+        def parse_comments(parent: dict[str, Any]) -> None:
+            for child in parent.get("children", []):
+                if comment_id := child.get("id"):
+                    ctime = child.get("created_at")
                     comments.append(
-                        _HackerNewsComment(
+                        Comment(
                             id=str(comment_id),
-                            author=child.get("author", ""),
-                            text=child.get("text", ""),
+                            author=child.get("author"),
+                            text=child.get("text"),
                             created_at=datetime.fromisoformat(ctime) if ctime else None,
                         )
                     )
-                _add_comments(child)
+                parse_comments(child)
 
-        _add_comments(data)
+        parse_comments(data)
 
         ctime = data.get("created_at")
         text = data.get("title", "")
-        if more_text := data.get("text", None):
+        if more_text := data.get("text"):
             text += "\n\n" + more_text
-        return _HackerNewsThread(
+
+        return Thread(
+            id=thread_id,
             author=data.get("author"),
             text=text,
             url=data.get("url"),
@@ -196,211 +209,250 @@ class HackerNewsConnector:
         )
 
 
-@cocoindex.flow_def(name="HackerNewsTrendingTopics")
-def hackernews_trending_topics_flow(
-    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
+# ============================================================================
+# CocoIndex setup
+# ============================================================================
+
+
+@coco_aio.lifespan
+async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[None]:
+    """Set up CocoIndex environment with PostgreSQL database."""
+    # For CocoIndex internal states
+    builder.settings.db_path = pathlib.Path("./cocoindex.db")
+    # Provide resources needed across the CocoIndex environment
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+        builder.provide(PG_DB, postgres.register_db("hn_db", pool))
+        yield
+
+
+@dataclass
+class TableTargets:
+    """Container for table targets."""
+
+    messages: postgres.TableTarget[HnMessage]
+    topics: postgres.TableTarget[HnTopic]
+
+
+@coco.function
+async def process_thread(
+    scope: coco.Scope,
+    thread_id: str,
+    targets: TableTargets,
 ) -> None:
-    """
-    Define a flow that indexes HackerNews threads, comments, and extracts trending topics.
-    """
+    """Fetch and process a single thread and its comments."""
+    async with aiohttp.ClientSession() as session:
+        thread = await fetch_thread(session, thread_id)
+    thread_topics = await extract_topics(scope, thread.text)
 
-    # Add the custom source to the flow
-    data_scope["threads"] = flow_builder.add_source(
-        HackerNewsSource(tag="story", max_results=200),
-        refresh_interval=timedelta(seconds=30),
-    )
-
-    # Create collectors for different types of searchable content
-    message_index = data_scope.add_collector()
-    topic_index = data_scope.add_collector()
-
-    # Process each thread
-    with data_scope["threads"].row() as thread:
-        # Extract topics from thread text using LLM
-        thread["topics"] = thread["text"].transform(
-            cocoindex.functions.ExtractByLlm(
-                llm_spec=cocoindex.LlmSpec(
-                    api_type=cocoindex.LlmApiType.OPENAI, model="gpt-5-mini"
-                ),
-                output_type=list[Topic],
-            )
-        )
-
-        # Index the main thread content
-        message_index.collect(
-            id=thread["thread_id"],
-            thread_id=thread["thread_id"],
+    # Declare thread message row
+    targets.messages.declare_row(
+        scope,
+        row=HnMessage(
+            id=thread.id,
+            thread_id=thread.id,
             content_type="thread",
-            author=thread["author"],
-            text=thread["text"],
-            url=thread["url"],
-            created_at=thread["created_at"],
+            author=thread.author,
+            text=thread.text,
+            url=thread.url,
+            created_at=thread.created_at,
+        ),
+    )
+    # Declare thread topic rows
+    for topic in thread_topics:
+        targets.topics.declare_row(
+            scope,
+            row=HnTopic(
+                topic=topic,
+                message_id=thread.id,
+                thread_id=thread.id,
+                content_type="thread",
+                created_at=thread.created_at,
+            ),
+        )
+    # Process comments
+    for comment in thread.comments:
+        comment_topics = await extract_topics(scope, comment.text)
+
+        # Declare comment message row
+        targets.messages.declare_row(
+            scope,
+            row=HnMessage(
+                id=comment.id,
+                thread_id=thread.id,
+                content_type="comment",
+                author=comment.author,
+                text=comment.text,
+                url="",
+                created_at=comment.created_at,
+            ),
+        )
+        # Declare comment topic rows
+        for topic in comment_topics:
+            targets.topics.declare_row(
+                scope,
+                row=HnTopic(
+                    topic=topic,
+                    message_id=comment.id,
+                    thread_id=thread.id,
+                    content_type="comment",
+                    created_at=comment.created_at,
+                ),
+            )
+
+
+@coco.function
+async def app_main(scope: coco.Scope) -> None:
+    """Main pipeline function."""
+    print("Starting HackerNews Trending Topics Pipeline")
+    print(f"Using LLM: {LLM_MODEL}")
+    print(f"Database: {DATABASE_URL}")
+    print()
+
+    # Set up table targets
+    target_db = scope.use(PG_DB)
+    messages_table = await coco_aio.mount_run(
+        target_db.declare_table_target,
+        scope / "setup" / "messages",
+        table_name="hn_messages",
+        table_schema=postgres.TableSchema(HnMessage, primary_key=["id"]),
+        pg_schema_name="coco_examples",
+    ).result()
+    topics_table = await coco_aio.mount_run(
+        target_db.declare_table_target,
+        scope / "setup" / "topics",
+        table_name="hn_topics",
+        table_schema=postgres.TableSchema(HnTopic, primary_key=["topic", "message_id"]),
+        pg_schema_name="coco_examples",
+    ).result()
+    targets = TableTargets(messages=messages_table, topics=topics_table)
+
+    # Fetch thread IDs from HackerNews
+    async with aiohttp.ClientSession() as session:
+        thread_ids = await fetch_thread_list(session)
+
+    # Process threads (each component fetches its own thread data)
+    for thread_id in thread_ids:
+        coco_aio.mount(process_thread, scope / "thread" / thread_id, thread_id, targets)
+
+
+# ============================================================================
+# App definition
+# ============================================================================
+
+app = coco_aio.App(
+    app_main,
+    coco_aio.AppConfig(name="HNTrendingTopics"),
+)
+
+
+# ============================================================================
+# Query utilities (for demo purposes)
+# ============================================================================
+
+
+async def get_trending_topics(
+    pool: asyncpg.Pool, limit: int = 20
+) -> list[dict[str, Any]]:
+    """Get trending topics ranked by score."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                topic,
+                SUM(CASE WHEN content_type = 'thread' THEN {THREAD_LEVEL_MENTION_SCORE} ELSE {COMMENT_LEVEL_MENTION_SCORE} END) AS score,
+                MAX(created_at) AS latest_mention,
+                COUNT(DISTINCT thread_id) AS thread_count
+            FROM hn_topics
+            GROUP BY topic
+            ORDER BY score DESC, latest_mention DESC
+            LIMIT $1
+        """,
+            limit,
         )
 
-        # Collect topics from thread
-        with thread["topics"].row() as topic:
-            topic_index.collect(
-                message_id=thread["thread_id"],
-                thread_id=thread["thread_id"],
-                topic=topic["topic"],
-                content_type="thread",
-                created_at=thread["created_at"],
+        return [
+            {
+                "topic": row["topic"],
+                "score": row["score"],
+                "latest_mention": row["latest_mention"].isoformat()
+                if row["latest_mention"]
+                else None,
+                "thread_count": row["thread_count"],
+            }
+            for row in rows
+        ]
+
+
+async def search_by_topic(pool: asyncpg.Pool, topic: str) -> list[dict[str, Any]]:
+    """Search messages by topic."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT m.id, m.thread_id, m.author, m.content_type, m.text, m.created_at, t.topic
+            FROM hn_topics t
+            JOIN hn_messages m ON t.message_id = m.id
+            WHERE LOWER(t.topic) LIKE LOWER($1)
+            ORDER BY m.created_at DESC
+        """,
+            f"%{topic}%",
+        )
+
+        return [
+            {
+                "id": row["id"],
+                "url": f"https://news.ycombinator.com/item?id={row['thread_id']}",
+                "author": row["author"],
+                "type": row["content_type"],
+                "text": row["text"][:500] if row["text"] else None,
+                "created_at": row["created_at"].isoformat()
+                if row["created_at"]
+                else None,
+                "topic": row["topic"],
+            }
+            for row in rows
+        ]
+
+
+async def query_demo() -> None:
+    """Demo querying the database."""
+    pool = await asyncpg.create_pool(DATABASE_URL)
+    if not pool:
+        raise RuntimeError("Failed to create database pool")
+
+    try:
+        print("Top 20 Trending Topics:")
+        print("-" * 60)
+        topics = await get_trending_topics(pool, limit=20)
+        for i, topic in enumerate(topics, 1):
+            print(
+                f"{i:2}. {topic['topic']:<30} (score: {topic['score']}, threads: {topic['thread_count']})"
             )
 
-        # Index individual comments
-        with thread["comments"].row() as comment:
-            # Extract topics from comment text using LLM
-            comment["topics"] = comment["text"].transform(
-                cocoindex.functions.ExtractByLlm(
-                    llm_spec=cocoindex.LlmSpec(
-                        api_type=cocoindex.LlmApiType.OPENAI, model="gpt-5-mini"
-                    ),
-                    output_type=list[Topic],
-                )
+        print()
+        print("Searching for 'AI' related content:")
+        print("-" * 60)
+        results = await search_by_topic(pool, "AI")
+        for result in results[:5]:
+            print(
+                f"[{result['type']}] by {result['author']}: {result['text'][:100]}..."
             )
 
-            message_index.collect(
-                id=comment["id"],
-                thread_id=thread["thread_id"],
-                content_type="comment",
-                author=comment["author"],
-                text=comment["text"],
-                url="",
-                created_at=comment["created_at"],
-            )
-
-            # Collect topics from comment
-            with comment["topics"].row() as topic:
-                topic_index.collect(
-                    message_id=comment["id"],
-                    thread_id=thread["thread_id"],
-                    topic=topic["topic"],
-                    content_type="comment",
-                    created_at=comment["created_at"],
-                )
-
-    # Export to database tables
-    message_index.export(
-        "hn_messages",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["id"],
-    )
-
-    # Export topics to separate table
-    topic_index.export(
-        "hn_topics",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["topic", "message_id"],
-    )
+    finally:
+        await pool.close()
 
 
-@functools.cache
-def connection_pool() -> ConnectionPool:
-    """Get a connection pool to the database."""
-    return ConnectionPool(os.environ["COCOINDEX_DATABASE_URL"])
+# ============================================================================
+# Entry point
+# ============================================================================
 
 
-@hackernews_trending_topics_flow.query_handler()
-def search_by_topic(topic: str) -> cocoindex.QueryOutput:
-    """Search HackerNews content by topic."""
-    topic_table = cocoindex.utils.get_target_default_name(
-        hackernews_trending_topics_flow, "hn_topics"
-    )
-    message_table = cocoindex.utils.get_target_default_name(
-        hackernews_trending_topics_flow, "hn_messages"
-    )
-
-    with connection_pool().connection() as conn:
-        with conn.cursor() as cur:
-            # Search for matching topics and join with messages
-            cur.execute(
-                f"""
-                SELECT m.id, m.thread_id, m.author, m.content_type, m.text, m.created_at, t.topic
-                FROM {topic_table} t
-                JOIN {message_table} m ON t.message_id = m.id
-                WHERE LOWER(t.topic) LIKE LOWER(%s)
-                ORDER BY m.created_at DESC
-                """,
-                (f"%{topic}%",),
-            )
-
-            results = []
-            for row in cur.fetchall():
-                results.append(
-                    {
-                        "id": row[0],
-                        "url": f"https://news.ycombinator.com/item?id={row[1]}",
-                        "author": row[2],
-                        "type": row[3],
-                        "text": row[4],
-                        "created_at": row[5].isoformat(),
-                        "topic": row[6],
-                    }
-                )
-
-            return cocoindex.QueryOutput(results=results)
+async def main() -> None:
+    """Run the pipeline."""
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        await query_demo()
+    else:
+        await app.update(report_to_stdout=True)
 
 
-def get_threads_for_topic(topic: str) -> list[dict[str, Any]]:
-    """Get the threads for a given topic."""
-    topic_table = cocoindex.utils.get_target_default_name(
-        hackernews_trending_topics_flow, "hn_topics"
-    )
-    with connection_pool().connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT
-                    thread_id,
-                    SUM(CASE WHEN content_type = 'thread' THEN {THREAD_LEVEL_MENTION_SCORE} ELSE {COMMENT_LEVEL_MENTION_SCORE} END) AS score,
-                    MAX(created_at) AS latest_mention
-                FROM {topic_table} WHERE topic = %s
-                GROUP BY thread_id ORDER BY score DESC, latest_mention DESC""",
-                (topic,),
-            )
-            return [
-                {
-                    "url": f"https://news.ycombinator.com/item?id={row[0]}",
-                    "score": row[1],
-                    "latest_time": row[2].isoformat(),
-                }
-                for row in cur.fetchall()
-            ]
-
-
-@hackernews_trending_topics_flow.query_handler()
-def get_trending_topics(_query: str = "", limit: int = 20) -> cocoindex.QueryOutput:
-    """Get the most trending topics across all HackerNews content."""
-    topic_table = cocoindex.utils.get_target_default_name(
-        hackernews_trending_topics_flow, "hn_topics"
-    )
-
-    with connection_pool().connection() as conn:
-        with conn.cursor() as cur:
-            # Aggregate topics by frequency
-            cur.execute(
-                f"""
-                SELECT
-                    topic,
-                    SUM(CASE WHEN content_type = 'thread' THEN {THREAD_LEVEL_MENTION_SCORE} ELSE {COMMENT_LEVEL_MENTION_SCORE} END) AS score,
-                    MAX(created_at) AS latest_mention
-                FROM {topic_table}
-                GROUP BY topic
-                ORDER BY score DESC, latest_mention DESC
-                LIMIT %s
-                """,
-                (limit,),
-            )
-
-            results = []
-            for row in cur.fetchall():
-                results.append(
-                    {
-                        "topic": row[0],
-                        "score": row[1],
-                        "latest_time": row[2].isoformat(),
-                        "threads": get_threads_for_topic(row[0]),
-                    }
-                )
-
-            return cocoindex.QueryOutput(results=results)
+if __name__ == "__main__":
+    asyncio.run(main())

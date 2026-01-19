@@ -1,96 +1,297 @@
-import atexit
-import asyncio
-import datetime
-import importlib.util
-import json
 import os
-import signal
-import threading
 import sys
-from types import FrameType
-from typing import Any, Iterable
+from typing import Any, NamedTuple
 
 import click
-import watchfiles
 from dotenv import find_dotenv, load_dotenv
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
 
-from . import flow, lib, setting
-from .setup import flow_names_with_setup
-from .runtime import execution_context
-from .subprocess_exec import add_user_app
 from .user_app_loader import load_user_app, Error as UserAppLoaderError
 
-COCOINDEX_HOST = "https://cocoindex.io"
+import asyncio
+import cocoindex as coco
+import cocoindex.asyncio as coco_aio
+from cocoindex._internal.app import AppBase
+from cocoindex._internal import core as _core
+from cocoindex._internal.environment import (
+    Environment,
+    LazyEnvironment,
+    EnvironmentInfo,
+    default_env,
+    get_registered_environment_infos,
+)
+from cocoindex.inspect import list_stable_paths_sync
 
 
-def _parse_app_flow_specifier(specifier: str) -> tuple[str, str | None]:
-    """Parses 'module_or_path[:flow_name]' into (module_or_path, flow_name | None)."""
-    parts = specifier.split(":", 1)  # Split only on the first colon
-    app_ref = parts[0]
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
 
-    if not app_ref:
+
+class AppSpecifier(NamedTuple):
+    """Parsed app specifier."""
+
+    module_ref: str
+    app_name: str | None = None
+    env_name: str | None = None
+
+
+def _parse_app_target(specifier: str) -> AppSpecifier:
+    """
+    Parse 'module_or_path[:app_name[@env_name]]' into AppSpecifier.
+
+    Examples:
+        './main.py' -> AppSpecifier('./main.py', None, None)
+        './main.py:app2' -> AppSpecifier('./main.py', 'app2', None)
+        './main.py:app2@alpha' -> AppSpecifier('./main.py', 'app2', 'alpha')
+        'mymodule:my_app@default' -> AppSpecifier('mymodule', 'my_app', 'default')
+    """
+    parts = specifier.split(":", 1)
+    module_ref = parts[0]
+
+    if not module_ref:
         raise click.BadParameter(
-            f"Application module/path part is missing or invalid in specifier: '{specifier}'. "
-            "Expected format like 'myapp.py' or 'myapp:MyFlow'.",
-            param_hint="APP_SPECIFIER",
+            f"Module/path part is missing in specifier: '{specifier}'. "
+            "Expected format like 'myapp.py' or 'myapp.py:app_name'.",
+            param_hint="APP_TARGET",
         )
 
     if len(parts) == 1:
-        return app_ref, None
+        return AppSpecifier(module_ref=module_ref)
 
-    flow_ref_part = parts[1]
+    app_part = parts[1]
+    if not app_part:
+        return AppSpecifier(module_ref=module_ref)
 
-    if not flow_ref_part:  # Handles empty string after colon
-        return app_ref, None
+    # Parse app_name[@env_name]
+    if "@" in app_part:
+        app_name, env_name = app_part.split("@", 1)
+        if not env_name:
+            raise click.BadParameter(
+                f"Environment name is missing after '@' in specifier '{specifier}'.",
+                param_hint="APP_TARGET",
+            )
+    else:
+        app_name = app_part
+        env_name = None
 
-    if not flow_ref_part.isidentifier():
+    if app_name and not app_name.isidentifier():
         raise click.BadParameter(
-            f"Invalid format for flow name part ('{flow_ref_part}') in specifier '{specifier}'. "
-            "If a colon separates the application from the flow name, the flow name should typically be "
-            "a valid identifier (e.g., alphanumeric with underscores, not starting with a number).",
-            param_hint="APP_SPECIFIER",
+            f"Invalid app name '{app_name}' in specifier '{specifier}'. "
+            "App name must be a valid Python identifier.",
+            param_hint="APP_TARGET",
         )
-    return app_ref, flow_ref_part
+
+    return AppSpecifier(module_ref=module_ref, app_name=app_name, env_name=env_name)
 
 
-def _get_app_ref_from_specifier(
-    specifier: str,
-) -> str:
-    """
-    Parses the APP_TARGET to get the application reference (path or module).
-    Issues a warning if a flow name component is also provided in it.
-    """
-    app_ref, flow_ref = _parse_app_flow_specifier(specifier)
+def _get_persisted_app_names(env: Environment) -> set[str]:
+    """Get the set of app names persisted in the given environment's database."""
+    try:
+        names = _core.list_app_names(env._core_env)
+        return set(names) if names else set()
+    except Exception:
+        return set()
 
-    if flow_ref is not None:
+
+def _format_db_path(env: Environment) -> str:
+    """Format the database path for display."""
+    if not env.settings.db_path:
+        return "(unknown)"
+    path = env.settings.db_path
+    try:
+        cwd = os.getcwd()
+        abs_path = os.path.abspath(str(path))
+        if abs_path.startswith(cwd + os.sep):
+            return "./" + os.path.relpath(abs_path, cwd)
+        return str(path)
+    except Exception:
+        return str(path)
+
+
+def _confirm_yes(prompt: str) -> bool:
+    """Prompt user to type 'yes' explicitly. Returns True only if user types 'yes'."""
+    response: str = click.prompt(prompt, default="", show_default=False)
+    return response.lower() == "yes"
+
+
+def _format_env_header(env_name: str, db_path: str) -> str:
+    """Format the environment header for display."""
+    if env_name:
+        return f"{env_name} ({db_path}):"
+    return f"{db_path}:"
+
+
+def _print_app_group(
+    env_name: str,
+    db_path: str,
+    apps: list[AppBase[Any, Any]],
+    persisted_names: set[str],
+) -> bool:
+    """Print a group of apps under an environment. Returns True if any app is not persisted."""
+    has_missing = False
+    click.echo(_format_env_header(env_name, db_path))
+    for app in sorted(apps, key=lambda a: a._name):
+        if app._name in persisted_names:
+            click.echo(f"  {app._name}")
+        else:
+            click.echo(f"  {app._name} [+]")
+            has_missing = True
+    return has_missing
+
+
+def _ls_from_module(module_ref: str) -> None:
+    """List apps from a loaded module, grouped by environment."""
+    try:
+        load_user_app(module_ref)
+    except UserAppLoaderError as e:
+        raise click.ClickException(f"Failed to load module '{module_ref}'") from e
+
+    env_infos = get_registered_environment_infos()
+    if not env_infos:
+        click.echo(f"No apps are defined in '{module_ref}'.")
+        return
+
+    # Sort: explicit environments first (by name), default environment last
+    def sort_key(info: EnvironmentInfo) -> tuple[int, str]:
+        env = info.env
+        if env is default_env():
+            return (1, "")
+        return (0, info.env_name or "")
+
+    sorted_infos = sorted(env_infos, key=sort_key)
+
+    has_missing = False
+    first_group = True
+
+    for info in sorted_infos:
+        apps = info.get_apps()
+        if not apps:
+            continue
+
+        env = info.env
+        if env is None:
+            continue
+
+        if not first_group:
+            click.echo("")
+        first_group = False
+
+        env_name = info.env_name or ""
+        actual_env = env._get_env_sync()
+        db_path = _format_db_path(actual_env)
+        persisted_names = _get_persisted_app_names(actual_env)
+        has_missing |= _print_app_group(env_name, db_path, apps, persisted_names)
+
+    if first_group:
+        click.echo(f"No apps are defined in '{module_ref}'.")
+        return
+
+    if has_missing:
+        click.echo("")
+        click.echo("Notes:")
         click.echo(
-            click.style(
-                f"Ignoring flow name '{flow_ref}' in '{specifier}': "
-                f"this command operates on the entire app/module '{app_ref}'.",
-                fg="yellow",
-            ),
-            err=True,
+            "  [+]: Apps present in module, but not yet run (no persisted state)."
         )
-    return app_ref
 
 
-def _load_user_app(app_target: str) -> None:
-    if not app_target:
-        raise click.ClickException("Application target not provided.")
+def _ls_from_database(db_path: str) -> None:
+    """List all persisted apps from a specific database."""
+    import pathlib
+
+    from cocoindex._internal.setting import Settings
+
+    db_path_obj = pathlib.Path(db_path)
+    if not db_path_obj.exists():
+        raise click.ClickException(f"Database path does not exist: {db_path}")
 
     try:
-        load_user_app(app_target)
+        env = Environment(Settings(db_path=db_path_obj))
+        persisted_names = _get_persisted_app_names(env)
+    except Exception as e:
+        raise click.ClickException(f"Failed to open database: {e}") from e
+
+    if not persisted_names:
+        click.echo("No persisted apps found in the database.")
+        return
+
+    formatted_path = _format_db_path(env)
+    click.echo(f"{formatted_path}:")
+    for name in sorted(persisted_names):
+        click.echo(f"  {name}")
+
+
+def _load_app(app_target: str) -> AppBase[Any, Any]:
+    """
+    Load an app from a specifier.
+
+    Supports formats:
+        - 'path/to/app.py' - loads the only registered app
+        - 'path/to/app.py:app_name' - loads the app with 'app_name'
+        - 'path/to/app.py:app_name@env_name' - loads the app with 'app_name' in environment 'env_name'
+    """
+    spec = _parse_app_target(app_target)
+
+    try:
+        load_user_app(spec.module_ref)
     except UserAppLoaderError as e:
-        raise ValueError(f"Failed to load APP_TARGET '{app_target}'") from e
+        raise click.ClickException(f"Failed to load module '{spec.module_ref}'") from e
 
-    add_user_app(app_target)
+    # Get target environments (filter by env_name if specified)
+    env_infos = get_registered_environment_infos()
+    if spec.env_name:
+        env_infos = [info for info in env_infos if info.env_name == spec.env_name]
+        if not env_infos:
+            raise click.ClickException(
+                f"No environment named '{spec.env_name}' found after loading '{spec.module_ref}'."
+            )
+
+    # Get all apps from target environments
+    apps: list[AppBase[Any, Any]] = []
+    for info in env_infos:
+        apps.extend(info.get_apps())
+
+    # Filter by app name if specified
+    if spec.app_name:
+        matching = [a for a in apps if a._name == spec.app_name]
+        if not matching:
+            available = ", ".join(sorted(set(a._name for a in apps))) or "none"
+            raise click.ClickException(
+                f"No app named '{spec.app_name}' found after loading '{spec.module_ref}'. "
+                f"Available apps: {available}"
+            )
+
+        if len(matching) > 1:
+            # Multiple apps with the same name in different environments
+            available_envs = ", ".join(
+                a._environment.name or "(unnamed)" for a in matching
+            )
+            raise click.ClickException(
+                f"Multiple apps named '{spec.app_name}' found in different environments: {available_envs}. "
+                f"Please specify environment with ':app_name@env_name' syntax."
+            )
+        app = matching[0]
+    else:
+        # No app name specified
+        if len(apps) == 1:
+            app = apps[0]
+        elif len(apps) > 1:
+            available = ", ".join(sorted(set(a._name for a in apps)))
+            raise click.ClickException(
+                f"Multiple apps found in '{spec.module_ref}': {available}. "
+                "Please specify which app to use with ':app_name' syntax."
+            )
+        else:
+            raise click.ClickException(
+                f"No apps found after loading '{spec.module_ref}'. "
+                "Make sure the module creates a coco.App(...) instance."
+            )
+
+    return app
 
 
-def _initialize_cocoindex_in_process() -> None:
-    atexit.register(lib.stop)
+# ---------------------------------------------------------------------------
+# CLI group
+# ---------------------------------------------------------------------------
 
 
 @click.group()
@@ -120,9 +321,7 @@ def _initialize_cocoindex_in_process() -> None:
     show_default=True,
 )
 def cli(env_file: str | None = None, app_dir: str | None = "") -> None:
-    """
-    CLI for Cocoindex.
-    """
+    """CLI for CocoIndex."""
     dotenv_path = env_file or find_dotenv(usecwd=True)
 
     if load_dotenv(dotenv_path=dotenv_path):
@@ -132,728 +331,159 @@ def cli(env_file: str | None = None, app_dir: str | None = "") -> None:
     if app_dir is not None:
         sys.path.insert(0, app_dir)
 
-    try:
-        _initialize_cocoindex_in_process()
-    except Exception as e:
-        raise click.ClickException(f"Failed to initialize CocoIndex library: {e}")
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
 
 
 @cli.command()
 @click.argument("app_target", type=str, required=False)
-def ls(app_target: str | None) -> None:
+@click.option(
+    "--db",
+    type=str,
+    default=None,
+    help="Path to database to list apps from (only used when APP_TARGET is not specified).",
+)
+def ls(app_target: str | None, db: str | None) -> None:
     """
-    List all flows.
+    List all apps.
 
-    If `APP_TARGET` (`path/to/app.py` or a module) is provided, lists flows defined in the app and their backend setup status.
+    If `APP_TARGET` (`path/to/app.py` or `module`) is provided, lists apps defined in that module and their persisted status, grouped by environment.
 
-    If `APP_TARGET` is omitted, lists all flows that have a persisted setup in the backend.
+    If `APP_TARGET` is omitted and `--db` is provided, lists all apps from the specified database.
     """
-    persisted_flow_names = flow_names_with_setup()
     if app_target:
-        app_ref = _get_app_ref_from_specifier(app_target)
-        _load_user_app(app_ref)
-
-        current_flow_names = set(flow.flow_names())
-
-        if not current_flow_names:
-            click.echo(f"No flows are defined in '{app_ref}'.")
-            return
-
-        has_missing = False
-        persisted_flow_names_set = set(persisted_flow_names)
-        for name in sorted(current_flow_names):
-            if name in persisted_flow_names_set:
-                click.echo(name)
-            else:
-                click.echo(f"{name} [+]")
-                has_missing = True
-
-        if has_missing:
-            click.echo("")
-            click.echo("Notes:")
+        if db:
             click.echo(
-                "  [+]: Flows present in the current process, but missing setup."
+                "Warning: --db is ignored when APP_TARGET is specified.", err=True
             )
-
+        spec = _parse_app_target(app_target)
+        _ls_from_module(spec.module_ref)
+    elif db:
+        _ls_from_database(db)
     else:
-        if not persisted_flow_names:
-            click.echo("No persisted flow setups found in the backend.")
+        raise click.ClickException(
+            "Please specify either APP_TARGET or --db option.\n"
+            "  cocoindex ls ./app.py        # List apps from module\n"
+            "  cocoindex ls --db ./my.db    # List apps from database"
+        )
+
+
+@cli.command()
+@click.argument("app_target", type=str)
+def show(app_target: str) -> None:
+    """
+    Show the app's stable paths.
+
+    `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
+    """
+    app = _load_app(app_target)
+    paths = list_stable_paths_sync(app)
+    click.echo(f"Found {len(paths)} stable paths:")
+    for path in paths:
+        click.echo(f"  {path}")
+
+
+async def _stop_all_environments() -> None:
+    for env_info in get_registered_environment_infos():
+        env = env_info.env
+        if isinstance(env, LazyEnvironment):
+            await env.stop()
+
+
+async def _update_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> Any:
+    if isinstance(app, coco_aio.App):
+        return await app.update(*args, **kwargs)
+    if isinstance(app, coco.App):
+        return await asyncio.to_thread(app.update, *args, **kwargs)
+    raise ValueError(f"Invalid app: {app}. Expected coco.App or coco_aio.App.")
+
+
+async def _drop_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> None:
+    if isinstance(app, coco_aio.App):
+        await app.drop(*args, **kwargs)
+        return
+    if isinstance(app, coco.App):
+        await asyncio.to_thread(app.drop, *args, **kwargs)
+        return
+    raise ValueError(f"Invalid app: {app}. Expected coco.App or coco_aio.App.")
+
+
+@cli.command()
+@click.argument("app_target", type=str)
+def update(app_target: str) -> None:
+    """
+    Run a v1 app once (one-time update).
+
+    `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
+    """
+    app = _load_app(app_target)
+
+    async def _do() -> None:
+        try:
+            env = await app._environment._get_env()
+            print(
+                f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+            )
+            await _update_app(app, report_to_stdout=True)
+        finally:
+            await _stop_all_environments()
+
+    asyncio.run(_do())
+
+
+@cli.command()
+@click.argument("app_target", type=str)
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Skip confirmation prompt.",
+)
+def drop(app_target: str, force: bool = False) -> None:
+    """
+    Drop an app and all its effects.
+
+    This will:
+
+    \b
+    - Revert all effects created by the app (e.g., drop tables, delete rows)
+    - Clear the app's internal state database
+
+    `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
+    """
+    app = _load_app(app_target)
+
+    # Get the actual environment to check persisted state
+    env = app._environment._get_env_sync()
+    persisted_names = _get_persisted_app_names(env)
+
+    click.echo(
+        f"Preparing to drop app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+    )
+
+    if app._name not in persisted_names:
+        click.echo(f"App '{app._name}' has no persisted state. Nothing to drop.")
+        return
+
+    if not force:
+        if not _confirm_yes(
+            f"Type 'yes' to drop app '{app._name}' and all its effects"
+        ):
+            click.echo("Drop operation aborted.")
             return
 
-        for name in sorted(persisted_flow_names):
-            click.echo(name)
-
-
-@cli.command()
-@click.argument("app_flow_specifier", type=str)
-@click.option(
-    "--color/--no-color", default=True, help="Enable or disable colored output."
-)
-@click.option(
-    "-v", "--verbose", is_flag=True, help="Show verbose output with full details."
-)
-def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
-    """
-    Show the flow spec and schema.
-
-    `APP_FLOW_SPECIFIER`: Specifies the application and optionally the target flow. Can be one of the following formats:
-
-    \b
-      - `path/to/your_app.py`
-      - `an_installed.module_name`
-      - `path/to/your_app.py:SpecificFlowName`
-      - `an_installed.module_name:SpecificFlowName`
-
-    `:SpecificFlowName` can be omitted only if the application defines a single flow.
-    """
-    app_ref, flow_ref = _parse_app_flow_specifier(app_flow_specifier)
-    _load_user_app(app_ref)
-
-    fl = _flow_by_name(flow_ref)
-    console = Console(no_color=not color)
-    console.print(fl._render_spec(verbose=verbose))
-    console.print()
-    table = Table(
-        title=f"Schema for Flow: {fl.name}",
-        title_style="cyan",
-        header_style="bold magenta",
-    )
-    table.add_column("Field", style="cyan")
-    table.add_column("Type", style="green")
-    table.add_column("Attributes", style="yellow")
-    for field_name, field_type, attr_str in fl._get_schema():
-        table.add_row(field_name, field_type, attr_str)
-    console.print(table)
-
-
-def _drop_flows(flows: Iterable[flow.Flow], app_ref: str, force: bool = False) -> None:
-    """
-    Helper function to drop flows without user interaction.
-    Used internally by --reset flag
-
-    Args:
-        flows: Iterable of Flow objects to drop
-        force: If True, skip confirmation prompts
-    """
-    flow_full_names = ", ".join(fl.full_name for fl in flows)
-    click.echo(
-        f"Preparing to drop specified flows: {flow_full_names} (in '{app_ref}').",
-        err=True,
-    )
-
-    if not flows:
-        click.echo("No flows identified for the drop operation.")
-        return
-
-    setup_bundle = flow.make_drop_bundle(flows)
-    description, is_up_to_date = setup_bundle.describe()
-    click.echo(description)
-    if is_up_to_date:
-        click.echo("No flows need to be dropped.")
-        return
-    if not force and not click.confirm(
-        f"\nThis will apply changes to drop setup for: {flow_full_names}. Continue? [yes/N]",
-        default=False,
-        show_default=False,
-    ):
-        click.echo("Drop operation aborted by user.")
-        return
-    setup_bundle.apply(report_to_stdout=True)
-
-
-def _deprecate_setup_flag(
-    ctx: click.Context, param: click.Parameter, value: bool
-) -> bool:
-    """Callback to warn users that --setup flag is deprecated."""
-    # Check if the parameter was explicitly provided by the user
-    if param.name is not None:
-        param_source = ctx.get_parameter_source(param.name)
-        if param_source == click.core.ParameterSource.COMMANDLINE:
-            click.secho(
-                "Warning: The --setup flag is deprecated and will be removed in a future version. "
-                "Setup is now always enabled by default.",
-                fg="yellow",
-                err=True,
-            )
-    return value
-
-
-def _setup_flows(
-    flow_iter: Iterable[flow.Flow],
-    *,
-    force: bool,
-    quiet: bool = False,
-    always_show_setup: bool = False,
-) -> None:
-    setup_bundle = flow.make_setup_bundle(flow_iter)
-    description, is_up_to_date = setup_bundle.describe()
-    if always_show_setup or not is_up_to_date:
-        click.echo(description)
-    if is_up_to_date:
-        if not quiet:
-            click.echo("Setup is already up to date.")
-        return
-    if not force and not click.confirm(
-        "Changes need to be pushed. Continue? [yes/N]",
-        default=False,
-        show_default=False,
-    ):
-        return
-    setup_bundle.apply(report_to_stdout=not quiet)
-
-
-def _show_no_live_update_hint() -> None:
-    click.secho(
-        "NOTE: No change capture mechanism exists. See https://cocoindex.io/docs/core/flow_methods#live-update for more details.\n",
-        fg="yellow",
-    )
-
-
-async def _update_all_flows_with_hint_async(
-    options: flow.FlowLiveUpdaterOptions,
-) -> None:
-    await flow.update_all_flows_async(options)
-    if options.live_mode:
-        _show_no_live_update_hint()
-
-
-@cli.command()
-@click.argument("app_target", type=str)
-@click.option(
-    "-f",
-    "--force",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Force setup without confirmation prompts.",
-)
-@click.option(
-    "--reset",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Drop existing setup before running setup (equivalent to running 'cocoindex drop' first).",
-)
-def setup(app_target: str, force: bool, reset: bool) -> None:
-    """
-    Check and apply backend setup changes for flows, including the internal storage and target (to export to).
-
-    `APP_TARGET`: `path/to/app.py` or `installed_module`.
-    """
-    app_ref = _get_app_ref_from_specifier(app_target)
-    _load_user_app(app_ref)
-
-    # If --reset is specified, drop existing setup first
-    if reset:
-        _drop_flows(flow.flows().values(), app_ref=app_ref, force=force)
-
-    _setup_flows(flow.flows().values(), force=force, always_show_setup=True)
-
-
-@cli.command("drop")
-@click.argument("app_target", type=str, required=False)
-@click.argument("flow_name", type=str, nargs=-1)
-@click.option(
-    "-f",
-    "--force",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Force drop without confirmation prompts.",
-)
-def drop(app_target: str | None, flow_name: tuple[str, ...], force: bool) -> None:
-    """
-    Drop the backend setup for flows.
-
-    \b
-    Modes of operation:
-    1. Drop all flows defined in an app: `cocoindex drop <APP_TARGET>`
-    2. Drop specific named flows: `cocoindex drop <APP_TARGET> [FLOW_NAME...]`
-    """
-    app_ref = None
-
-    if not app_target:
-        raise click.UsageError(
-            "Missing arguments. You must either provide an APP_TARGET (to target app-specific flows) "
-            "or use the --all flag."
+    async def _do() -> None:
+        try:
+            await _drop_app(app, report_to_stdout=True)
+        finally:
+            await _stop_all_environments()
+        click.echo(
+            f"Dropped app '{app._name}' from environment '{env.name}' and reverted its effects."
         )
 
-    app_ref = _get_app_ref_from_specifier(app_target)
-    _load_user_app(app_ref)
-
-    flows: Iterable[flow.Flow]
-    if flow_name:
-        flows = []
-        for name in flow_name:
-            try:
-                flows.append(flow.flow_by_name(name))
-            except KeyError:
-                click.echo(
-                    f"Warning: Failed to get flow `{name}`. Ignored.",
-                    err=True,
-                )
-    else:
-        flows = flow.flows().values()
-
-    _drop_flows(flows, app_ref=app_ref, force=force)
-
-
-@cli.command()
-@click.argument("app_flow_specifier", type=str)
-@click.option(
-    "-L",
-    "--live",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Continuously watch changes from data sources and apply to the target index.",
-)
-@click.option(
-    "--reexport",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Reexport to targets even if there's no change.",
-)
-@click.option(
-    "--full-reprocess",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Reprocess everything and invalidate existing caches.",
-)
-@click.option(
-    "--setup",
-    is_flag=True,
-    show_default=True,
-    default=True,
-    callback=_deprecate_setup_flag,
-    help="(DEPRECATED) Automatically setup backends for the flow if it's not setup yet. This is now the default behavior.",
-)
-@click.option(
-    "--reset",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Drop existing setup before updating (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`.",
-)
-@click.option(
-    "-f",
-    "--force",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Force setup without confirmation prompts.",
-)
-@click.option(
-    "-q",
-    "--quiet",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Avoid printing anything to the standard output, e.g. statistics.",
-)
-def update(
-    app_flow_specifier: str,
-    live: bool,
-    reexport: bool,
-    full_reprocess: bool,
-    setup: bool,  # pylint: disable=redefined-outer-name
-    reset: bool,
-    force: bool,
-    quiet: bool,
-) -> None:
-    """
-    Update the index to reflect the latest data from data sources.
-
-    `APP_FLOW_SPECIFIER`: `path/to/app.py`, module, `path/to/app.py:FlowName`, or `module:FlowName`. If `:FlowName` is omitted, updates all flows.
-    """
-    app_ref, flow_name = _parse_app_flow_specifier(app_flow_specifier)
-    _load_user_app(app_ref)
-    flow_list = (
-        [flow.flow_by_name(flow_name)] if flow_name else list(flow.flows().values())
-    )
-
-    # If --reset is specified, drop existing setup first
-    if reset:
-        _drop_flows(flow_list, app_ref=app_ref, force=force)
-
-    if live:
-        click.secho(
-            "NOTE: Flow code changes will NOT be reflected until you restart to load the new code.\n",
-            fg="yellow",
-        )
-
-    options = flow.FlowLiveUpdaterOptions(
-        live_mode=live,
-        reexport_targets=reexport,
-        full_reprocess=full_reprocess,
-        print_stats=not quiet,
-    )
-    if reset or setup:
-        _setup_flows(flow_list, force=force, quiet=quiet)
-
-    if flow_name is None:
-        execution_context.run(_update_all_flows_with_hint_async(options))
-    else:
-        assert len(flow_list) == 1
-        with flow.FlowLiveUpdater(flow_list[0], options) as updater:
-            updater.wait()
-            if options.live_mode:
-                _show_no_live_update_hint()
-
-
-@cli.command()
-@click.argument("app_flow_specifier", type=str)
-@click.option(
-    "-o",
-    "--output-dir",
-    type=str,
-    required=False,
-    help="The directory to dump the output to.",
-)
-@click.option(
-    "--cache/--no-cache",
-    is_flag=True,
-    show_default=True,
-    default=True,
-    help="Use already-cached intermediate data if available.",
-)
-def evaluate(
-    app_flow_specifier: str, output_dir: str | None, cache: bool = True
-) -> None:
-    """
-    Evaluate the flow and dump flow outputs to files.
-
-    Instead of updating the index, it dumps what should be indexed to files. Mainly used for evaluation purpose.
-
-    \b
-    `APP_FLOW_SPECIFIER`: Specifies the application and optionally the target flow. Can be one of the following formats:
-      - `path/to/your_app.py`
-      - `an_installed.module_name`
-      - `path/to/your_app.py:SpecificFlowName`
-      - `an_installed.module_name:SpecificFlowName`
-
-    `:SpecificFlowName` can be omitted only if the application defines a single flow.
-    """
-    app_ref, flow_ref = _parse_app_flow_specifier(app_flow_specifier)
-    _load_user_app(app_ref)
-
-    fl = _flow_by_name(flow_ref)
-    if output_dir is None:
-        output_dir = f"eval_{setting.get_app_namespace(trailing_delimiter='_')}{fl.name}_{datetime.datetime.now().strftime('%y%m%d_%H%M%S')}"
-    options = flow.EvaluateAndDumpOptions(output_dir=output_dir, use_cache=cache)
-    fl.evaluate_and_dump(options)
-
-
-@cli.command()
-@click.argument("app_target", type=str)
-@click.option(
-    "-a",
-    "--address",
-    type=str,
-    help="The address to bind the server to, in the format of IP:PORT. "
-    "If unspecified, the address specified in COCOINDEX_SERVER_ADDRESS will be used.",
-)
-@click.option(
-    "-c",
-    "--cors-origin",
-    type=str,
-    help="The origins of the clients (e.g. CocoInsight UI) to allow CORS from. "
-    "Multiple origins can be specified as a comma-separated list. "
-    "e.g. `https://cocoindex.io,http://localhost:3000`. "
-    "Origins specified in COCOINDEX_SERVER_CORS_ORIGINS will also be included.",
-)
-@click.option(
-    "-ci",
-    "--cors-cocoindex",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help=f"Allow {COCOINDEX_HOST} to access the server.",
-)
-@click.option(
-    "-cl",
-    "--cors-local",
-    type=int,
-    help="Allow http://localhost:<port> to access the server.",
-)
-@click.option(
-    "-L",
-    "--live-update",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Continuously watch changes from data sources and apply to the target index.",
-)
-@click.option(
-    "--setup",
-    is_flag=True,
-    show_default=True,
-    default=True,
-    callback=_deprecate_setup_flag,
-    help="(DEPRECATED) Automatically setup backends for the flow if it's not setup yet. This is now the default behavior.",
-)
-@click.option(
-    "--reset",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Drop existing setup before starting server (equivalent to running 'cocoindex drop' first). `--reset` implies `--setup`.",
-)
-@click.option(
-    "--reexport",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Reexport to targets even if there's no change.",
-)
-@click.option(
-    "--full-reprocess",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Reprocess everything and invalidate existing caches.",
-)
-@click.option(
-    "-f",
-    "--force",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Force setup without confirmation prompts.",
-)
-@click.option(
-    "-q",
-    "--quiet",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Avoid printing anything to the standard output, e.g. statistics.",
-)
-@click.option(
-    "-r",
-    "--reload",
-    is_flag=True,
-    show_default=True,
-    default=False,
-    help="Enable auto-reload on code changes.",
-)
-def server(
-    app_target: str,
-    address: str | None,
-    live_update: bool,
-    setup: bool,  # pylint: disable=redefined-outer-name
-    reset: bool,
-    reexport: bool,
-    full_reprocess: bool,
-    force: bool,
-    quiet: bool,
-    cors_origin: str | None,
-    cors_cocoindex: bool,
-    cors_local: int | None,
-    reload: bool,
-) -> None:
-    """
-    Start a HTTP server providing REST APIs.
-
-    It will allow tools like CocoInsight to access the server.
-
-    `APP_TARGET`: `path/to/app.py` or `installed_module`.
-    """
-    app_ref = _get_app_ref_from_specifier(app_target)
-    args = (
-        app_ref,
-        address,
-        cors_origin,
-        cors_cocoindex,
-        cors_local,
-        live_update,
-        reexport,
-        full_reprocess,
-        quiet,
-    )
-    kwargs = {
-        "run_reset": reset,
-        "run_setup": setup,
-        "force": force,
-    }
-
-    if reload:
-        watch_paths = {os.getcwd()}
-        if os.path.isfile(app_ref):
-            watch_paths.add(os.path.dirname(os.path.abspath(app_ref)))
-        else:
-            try:
-                spec = importlib.util.find_spec(app_ref)
-                if spec and spec.origin:
-                    watch_paths.add(os.path.dirname(os.path.abspath(spec.origin)))
-            except ImportError:
-                pass
-
-        watchfiles.run_process(
-            *watch_paths,
-            target=_reloadable_server_target,
-            args=args,
-            kwargs=kwargs,
-            watch_filter=watchfiles.PythonFilter(),
-            callback=lambda changes: click.secho(
-                f"\nDetected changes in {len(changes)} file(s), reloading server...\n",
-                fg="cyan",
-            ),
-        )
-    else:
-        click.secho(
-            "NOTE: Flow code changes will NOT be reflected until you restart to load the new code. Use --reload to enable auto-reload.\n",
-            fg="yellow",
-        )
-        _run_server(*args, **kwargs)
-
-
-def _reloadable_server_target(*args: Any, **kwargs: Any) -> None:
-    """Reloadable target for the watchfiles process."""
-    _initialize_cocoindex_in_process()
-
-    kwargs["run_setup"] = kwargs["run_setup"] or kwargs["run_reset"]
-    changed_files = json.loads(os.environ.get("WATCHFILES_CHANGES", "[]"))
-    if changed_files:
-        kwargs["run_reset"] = False
-    kwargs["force"] = True
-
-    _run_server(*args, **kwargs)
-
-
-def _run_server(
-    app_ref: str,
-    address: str | None = None,
-    cors_origin: str | None = None,
-    cors_cocoindex: bool = False,
-    cors_local: int | None = None,
-    live_update: bool = False,
-    reexport: bool = False,
-    full_reprocess: bool = False,
-    quiet: bool = False,
-    /,
-    *,
-    force: bool = False,
-    run_reset: bool = False,
-    run_setup: bool = False,
-) -> None:
-    """Helper function to run the server with specified settings."""
-    _load_user_app(app_ref)
-
-    # Check if any flows are registered
-    if not flow.flow_names():
-        click.secho(
-            f"\nError: No flows registered in '{app_ref}'.\n",
-            fg="red",
-            bold=True,
-            err=True,
-        )
-        click.secho(
-            "To use CocoIndex server, you need to define at least one flow.",
-            err=True,
-        )
-        click.secho(
-            "See https://cocoindex.io/docs for more information.\n",
-            fg="cyan",
-            err=True,
-        )
-        raise click.Abort()
-
-    # If --reset is specified, drop existing setup first
-    if run_reset:
-        _drop_flows(flow.flows().values(), app_ref=app_ref, force=force)
-
-    server_settings = setting.ServerSettings.from_env()
-    cors_origins: set[str] = set(server_settings.cors_origins or [])
-    if cors_origin is not None:
-        cors_origins.update(setting.ServerSettings.parse_cors_origins(cors_origin))
-    if cors_cocoindex:
-        cors_origins.add(COCOINDEX_HOST)
-    if cors_local is not None:
-        cors_origins.add(f"http://localhost:{cors_local}")
-    server_settings.cors_origins = list(cors_origins)
-
-    if address is not None:
-        server_settings.address = address
-
-    if run_reset or run_setup:
-        _setup_flows(
-            flow.flows().values(),
-            force=force,
-            quiet=quiet,
-        )
-
-    lib.start_server(server_settings)
-
-    if COCOINDEX_HOST in cors_origins:
-        click.echo(f"Open CocoInsight at: {COCOINDEX_HOST}/cocoinsight")
-
-    click.secho("Press Ctrl+C to stop the server.", fg="yellow")
-
-    if live_update or reexport:
-        options = flow.FlowLiveUpdaterOptions(
-            live_mode=live_update,
-            reexport_targets=reexport,
-            full_reprocess=full_reprocess,
-            print_stats=not quiet,
-        )
-        asyncio.run_coroutine_threadsafe(
-            _update_all_flows_with_hint_async(options), execution_context.event_loop
-        )
-
-    shutdown_event = threading.Event()
-
-    def handle_signal(signum: int, frame: FrameType | None) -> None:
-        shutdown_event.set()
-
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
-    shutdown_event.wait()
-
-
-def _flow_name(name: str | None) -> str:
-    names = flow.flow_names()
-    available = ", ".join(sorted(names))
-    if name is not None:
-        if name not in names:
-            raise click.BadParameter(
-                f"Flow '{name}' not found.\nAvailable: {available if names else 'None'}"
-            )
-        return name
-    if len(names) == 0:
-        raise click.UsageError("No flows available in the loaded application.")
-    elif len(names) == 1:
-        return names[0]
-    else:
-        console = Console()
-        index = 0
-
-        while True:
-            console.clear()
-            console.print(
-                Panel.fit("Select a Flow", title_align="left", border_style="cyan")
-            )
-            for i, fname in enumerate(names):
-                console.print(
-                    f"> [bold green]{fname}[/bold green]"
-                    if i == index
-                    else f"  {fname}"
-                )
-
-            key = click.getchar()
-            if key == "\x1b[A":  # Up arrow
-                index = (index - 1) % len(names)
-            elif key == "\x1b[B":  # Down arrow
-                index = (index + 1) % len(names)
-            elif key in ("\r", "\n"):  # Enter
-                console.clear()
-                return names[index]
-
-
-def _flow_by_name(name: str | None) -> flow.Flow:
-    return flow.flow_by_name(_flow_name(name))
+    asyncio.run(_do())
 
 
 if __name__ == "__main__":

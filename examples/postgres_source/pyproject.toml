@@ -1,15 +1,17 @@
 [project]
-name = "postgres-source"
+name = "postgres-source-v1"
 version = "0.1.0"
-description = "Demonstrate how to use Postgres tables as the source for CocoIndex."
+description = "CocoIndex v1 example: read from PostgreSQL source and write embeddings back to Postgres."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[embeddings]>=0.3.26,<1",
-    "python-dotenv>=1.0.1",
+    "cocoindex[postgres,sentence_transformers]>=1.0.0a1",
+    "asyncpg>=0.29.0",
     "pgvector>=0.4.1",
-    "psycopg[binary,pool]",
     "numpy",
 ]
+
+[tool.uv]
+prerelease = "allow"
 
 [tool.setuptools]
 packages = []
