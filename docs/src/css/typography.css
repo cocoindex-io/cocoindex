@@ -83,8 +83,7 @@ body {
 }
 
 /* Heading Styles following Radix Type Scale */
-.markdown h1,
-.markdown h1:first-child {
+.markdown h1 {
   font-family: var(--font-family-heading);
   font-size: 35px;
   line-height: 40px;
@@ -94,7 +93,7 @@ body {
   margin-bottom: 24px;
 }
 
-.markdown h1:first-child {
+.markdown h1:first-of-type {
   margin-top: 0;
 }
 
