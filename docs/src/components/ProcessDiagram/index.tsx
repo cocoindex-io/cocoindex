@@ -401,3 +401,93 @@ export function ProcessDiagramAnimated(): ReactNode {
     </div>
   );
 }
+
+export function ProcessingUnitTimeline(): ReactNode {
+  return (
+    <div className={styles.timelineWrapper}>
+      <div className={styles.timelineHeader}>
+        <span className={styles.animationTitle}>Component Timeline</span>
+      </div>
+
+      <div className={styles.timelineTopContainers}>
+        <div className={styles.timeContainer}>
+          <div className={styles.timeLabel}>Time 1</div>
+          <div className={styles.timeSourcePanel}>
+            <div className={`${styles.timeFileBox} ${styles.purpleBg}`}>
+              <strong>a.md</strong>
+              <p>*apple*</p>
+            </div>
+            <div className={`${styles.timeFileBox} ${styles.blueBg}`}>
+              <strong>b.md</strong>
+              <p>*alice*</p>
+            </div>
+          </div>
+        </div>
+
+        <div className={styles.timeArrow}>→</div>
+
+        <div className={styles.timeContainer}>
+          <div className={styles.timeLabel}>Time 2</div>
+          <div className={styles.timeSourcePanel}>
+            <div className={`${styles.timeFileBox} ${styles.purpleBg}`}>
+              <strong>a.md</strong>
+              <p>*banana*</p>
+            </div>
+            <div className={`${styles.timeFileBox} ${styles.greenBg}`}>
+              <strong>c.md</strong>
+              <p>*cat*</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className={styles.timelineGrid}>
+        <div className={styles.gridHeader}>
+          <div className={styles.gridCell}>component path</div>
+          <div className={styles.gridCell}>time1</div>
+          <div className={styles.gridCell}>time2</div>
+          <div className={styles.gridCell}>status</div>
+        </div>
+
+        <div className={styles.gridRow}>
+          <div className={`${styles.gridCell} ${styles.pathCell}`}>/process/a.md</div>
+          <div className={styles.gridCell}>
+            <div className={`${styles.componentRect} ${styles.purpleBg}`}>/process/a.md</div>
+          </div>
+          <div className={styles.gridCell}>
+            <div className={`${styles.componentRect} ${styles.purpleBg}`}>/process/a.md</div>
+          </div>
+          <div className={styles.gridCell}>
+            <span className={`${styles.statusBadge} ${styles.statusUpdate}`}>update</span>
+          </div>
+        </div>
+
+        <div className={styles.gridRow}>
+          <div className={`${styles.gridCell} ${styles.pathCell}`}>/process/b.md</div>
+          <div className={styles.gridCell}>
+            <div className={`${styles.componentRect} ${styles.blueBg}`}>/process/b.md</div>
+          </div>
+          <div className={styles.gridCell}>
+            <span className={styles.valueEmpty}>—</span>
+          </div>
+          <div className={styles.gridCell}>
+            <span className={`${styles.statusBadge} ${styles.statusDelete}`}>delete</span>
+          </div>
+        </div>
+
+        <div className={styles.gridRow}>
+          <div className={`${styles.gridCell} ${styles.pathCell}`}>/process/c.md</div>
+          <div className={styles.gridCell}>
+            <span className={styles.valueEmpty}>—</span>
+          </div>
+          <div className={styles.gridCell}>
+            <div className={`${styles.componentRect} ${styles.greenBg}`}>/process/c.md</div>
+          </div>
+          <div className={styles.gridCell}>
+            <span className={`${styles.statusBadge} ${styles.statusAdded}`}>added</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
