@@ -105,14 +105,10 @@ pub struct TrackingTableSetupChange {
 
     pub source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
 
-    /// Target information from desired state for cleanup
-    /// Maps target_id -> (target_kind, key_schema)
-    /// Used to determine Case 1 (target not in map = dropped) vs Case 2 (target in map = still exists)
+    /// Target information for cleanup (target_id -> target_kind, key_schema)
     pub desired_targets: Option<BTreeMap<i32, (String, Box<[schema::ValueType]>)>>,
 
-    /// Export contexts for targets (available during apply phase)
-    /// Maps target_id -> export_context
-    /// Used to call factory.apply_mutation() for target data deletion
+    /// Export contexts for targets (target_id -> export_context)
     pub export_contexts: Option<Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>>>,
 
     has_state_change: bool,
@@ -340,10 +336,8 @@ impl TrackingTableSetupChange {
     }
 
     /// Clean up tracking metadata and target data for stale sources
-    /// This implements the core cleanup logic: for each tracked source row, do a deletion
     async fn cleanup_stale_sources(&self, pool: &PgPool) -> Result<()> {
-        // Early return for flow drop (desired_state = None)
-        // All targets are Case 1 (being dropped anyway), target setup cleanup will handle them
+        // Early return if flow is being dropped
         let Some(desired) = &self.desired_state else {
             tracing::info!("Skipping stale source cleanup: flow is being dropped");
             return Ok(());

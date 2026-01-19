@@ -383,7 +383,7 @@ pub fn read_tracking_entries_for_sources_stream(
     }
 }
 
-/// Delete all tracking entries for specific source IDs (bulk deletion during cleanup)
+/// Delete all tracking entries for specific source IDs
 pub async fn delete_tracking_entries_for_sources(
     source_ids: &[i32],
     db_setup: &TrackingTableSetupState,

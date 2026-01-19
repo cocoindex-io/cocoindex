@@ -421,8 +421,7 @@ pub async fn diff_flow_setup_states(
             BTreeMap::new()
         };
 
-    // Extract target info from desired state for stale source cleanup
-    // This is used to determine Case 1 (target dropped) vs Case 2 (target still exists)
+    // Extract target info from desired state for cleanup
     let desired_targets_for_cleanup = extract_desired_targets_for_cleanup(desired_state);
 
     let tracking_table_change = db_tracking_setup::TrackingTableSetupChange::new(
@@ -945,8 +944,7 @@ pub(crate) async fn apply_changes_for_flow_ctx(
     db_pool: &PgPool,
     write: &mut (dyn std::io::Write + Send),
 ) -> Result<()> {
-    // Attach export contexts to tracking table setup change BEFORE getting the setup_change
-    // This is needed for stale source cleanup which uses target factories
+    // Attach export contexts to tracking table setup change
     if let FlowSetupChangeAction::Setup = action
         && let Some(tracking_table) = &mut flow_exec_ctx.setup_change.tracking_table
         && let Some(setup_change) = &mut tracking_table.setup_change
