@@ -179,15 +179,15 @@ const config: Config = {
       },
       items: [
         {
-          label: 'Documentation',
-          type: 'doc',
-          docId: 'getting_started/quickstart',
-          position: 'left',
-        },
-        {
           label: 'Examples',
           to: 'https://cocoindex.io/examples',
           target: '_self',
+          position: 'left',
+        },
+        {
+          label: 'Documentation',
+          type: 'doc',
+          docId: 'getting_started/quickstart',
           position: 'left',
         },
         { to: 'https://cocoindex.io/blogs/', label: 'Blog', position: 'left', target: '_self' },
