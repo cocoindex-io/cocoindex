@@ -452,10 +452,28 @@ export function ProcessingUnitTimeline(): ReactNode {
         <div className={styles.gridRow}>
           <div className={`${styles.gridCell} ${styles.pathCell}`}>/process/a.md</div>
           <div className={styles.gridCell}>
-            <div className={`${styles.componentRect} ${styles.purpleBg}`}>/process/a.md</div>
+            <div className={`${styles.componentRect} ${styles.purpleTint}`}>
+              <div className={styles.miniUnitPath}>/process/a.md</div>
+              <div className={styles.miniGraph}>
+                <div className={styles.miniNode}></div>
+                <div className={styles.miniConnector}></div>
+                <div className={styles.miniNodeCircle}></div>
+                <div className={styles.miniConnector}></div>
+                <div className={styles.miniNode}></div>
+              </div>
+            </div>
           </div>
           <div className={styles.gridCell}>
-            <div className={`${styles.componentRect} ${styles.purpleBg}`}>/process/a.md</div>
+            <div className={`${styles.componentRect} ${styles.purpleTint}`}>
+              <div className={styles.miniUnitPath}>/process/a.md</div>
+              <div className={styles.miniGraph}>
+                <div className={styles.miniNode}></div>
+                <div className={styles.miniConnector}></div>
+                <div className={styles.miniNodeCircle}></div>
+                <div className={styles.miniConnector}></div>
+                <div className={styles.miniNode}></div>
+              </div>
+            </div>
           </div>
           <div className={styles.gridCell}>
             <span className={`${styles.statusBadge} ${styles.statusUpdate}`}>update</span>
@@ -465,7 +483,16 @@ export function ProcessingUnitTimeline(): ReactNode {
         <div className={styles.gridRow}>
           <div className={`${styles.gridCell} ${styles.pathCell}`}>/process/b.md</div>
           <div className={styles.gridCell}>
-            <div className={`${styles.componentRect} ${styles.blueBg}`}>/process/b.md</div>
+            <div className={`${styles.componentRect} ${styles.blueTint}`}>
+              <div className={styles.miniUnitPath}>/process/b.md</div>
+              <div className={styles.miniGraph}>
+                <div className={styles.miniNode}></div>
+                <div className={styles.miniConnector}></div>
+                <div className={styles.miniNodeCircle}></div>
+                <div className={styles.miniConnector}></div>
+                <div className={styles.miniNode}></div>
+              </div>
+            </div>
           </div>
           <div className={styles.gridCell}>
             <span className={styles.valueEmpty}>—</span>
@@ -481,7 +508,16 @@ export function ProcessingUnitTimeline(): ReactNode {
             <span className={styles.valueEmpty}>—</span>
           </div>
           <div className={styles.gridCell}>
-            <div className={`${styles.componentRect} ${styles.greenBg}`}>/process/c.md</div>
+            <div className={`${styles.componentRect} ${styles.greenTint}`}>
+              <div className={styles.miniUnitPath}>/process/c.md</div>
+              <div className={styles.miniGraph}>
+                <div className={styles.miniNode}></div>
+                <div className={styles.miniConnector}></div>
+                <div className={styles.miniNodeCircle}></div>
+                <div className={styles.miniConnector}></div>
+                <div className={styles.miniNode}></div>
+              </div>
+            </div>
           </div>
           <div className={styles.gridCell}>
             <span className={`${styles.statusBadge} ${styles.statusAdded}`}>added</span>

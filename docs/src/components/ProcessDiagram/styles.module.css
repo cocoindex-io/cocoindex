@@ -612,18 +612,55 @@
 }
 
 .componentRect {
-  padding: 12px 8px;
+  padding: 8px 10px;
   width: 110px;
-  min-height: 36px;
+  min-height: 50px;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   text-align: center;
   font-size: 9px;
   font-family: 'SF Mono', SFMono-Regular, ui-monospace, Menlo, monospace;
   border: 1.5px solid var(--radix-gray-6);
   border-radius: 6px;
   flex-shrink: 0;
+}
+
+.miniUnitPath {
+  font-size: 7px;
+  font-weight: 500;
+  color: var(--ifm-color-emphasis-700);
+  white-space: nowrap;
+}
+
+.miniGraph {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.miniNode {
+  width: 16px;
+  height: 12px;
+  background: var(--radix-color-background);
+  border: 1px solid var(--radix-gray-7);
+  border-radius: 2px;
+}
+
+.miniNodeCircle {
+  width: 14px;
+  height: 14px;
+  background: var(--radix-color-background);
+  border: 1px solid var(--radix-gray-7);
+  border-radius: 50%;
+}
+
+.miniConnector {
+  width: 8px;
+  height: 1px;
+  background: var(--radix-gray-7);
 }
 
 .valueEmpty {
@@ -731,10 +768,29 @@
   }
 
   .componentRect {
-    padding: 8px 4px;
+    padding: 4px 4px;
     width: 80px;
-    min-height: 28px;
+    min-height: 40px;
+    gap: 4px;
     font-size: 7px;
+  }
+
+  .miniUnitPath {
+    font-size: 6px;
+  }
+
+  .miniNode {
+    width: 12px;
+    height: 9px;
+  }
+
+  .miniNodeCircle {
+    width: 10px;
+    height: 10px;
+  }
+
+  .miniConnector {
+    width: 5px;
   }
 
   .pathCell {
