@@ -19,7 +19,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'programming_guide/core_concepts',
         'programming_guide/sdk_overview',
-        'programming_guide/component',
+        'programming_guide/processing_unit',
         'programming_guide/effect',
         'programming_guide/function',
         'programming_guide/app',

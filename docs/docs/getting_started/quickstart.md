@@ -112,7 +112,7 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
         localfs.declare_dir_target, scope / "setup", outdir
     ).result()
 
-    # Walk source files and mount a component for each
+    # Walk source files and mount a processing unit for each
     files = localfs.walk_dir(
         sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["*.md"])
     )
@@ -122,11 +122,11 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
 
 Key concepts:
 
-- **`coco.mount_run()`**: Mounts a component and waits for its result (the directory target)
-- **`coco.mount()`**: Mounts a component for each file to process
-- **`scope / "process" / ...`**: Creates a stable path to identify each component
+- **`coco.mount_run()`**: Mounts a processing unit and waits for its result (the directory target)
+- **`coco.mount()`**: Mounts a processing unit for each file to process
+- **`scope / "process" / ...`**: Creates a stable path to identify each processing unit
 
-<DocumentationButton url="/docs-v1/programming_guide/component" text="Component" />
+<DocumentationButton url="/docs-v1/programming_guide/processing_unit" text="Processing Unit" />
 
 ### Create the App
 

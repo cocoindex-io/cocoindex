@@ -32,7 +32,7 @@ Some effect providers are created once a parent effect is ready. For example, yo
 
 The pattern is:
 
-1. **Mount** a component that declares the parent effect
+1. **Mount** a processing unit that declares the parent effect
 2. **Call `.result()`** to wait until the parent effect is applied and get the provider
 3. **Use the provider** to declare child effects
 
@@ -85,10 +85,10 @@ def process_file(scope: coco.Scope, file: FileLike, target: localfs.DirTarget) -
     target.declare_file(scope, filename=file.name + ".html", content=html)
 ```
 
-See [Component](./component.md) for more on `mount_run()`.
+See [Processing Unit](./processing_unit.md) for more on `mount_run()`.
 
 :::tip Type Safety for Effect Providers
-Effect providers have two states: **pending** (just created) and **resolved** (after the parent effect is applied). The type system tracks this — if you try to use a pending provider in the same component that declares the parent effect, type checkers like mypy will flag the error.
+Effect providers have two states: **pending** (just created) and **resolved** (after the parent effect is applied). The type system tracks this — if you try to use a pending provider in the same processing unit that declares the parent effect, type checkers like mypy will flag the error.
 :::
 
 ## Effect Hierarchies
