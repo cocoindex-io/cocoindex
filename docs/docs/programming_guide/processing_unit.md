@@ -5,9 +5,19 @@ description: Understanding processing units as the sync boundaries for effects, 
 
 # Processing Unit
 
-A **Processing Unit** is a long-lived instance that defines the boundary where CocoIndex syncs effects to external systems. Processing Units are identified by a stable path and own all effects declared within them.
+Your pipeline often processes many items — files, rows, entities — where each can be handled independently.
+A **Processing Unit** groups an item's processing together with its output effects.
+Each Processing Unit runs on its own and applies its effects as soon as it completes, without waiting for the rest of the pipeline.
+
+Processing Units are identified by **stable paths** (e.g., you can construct it using file names, row keys, entity IDs, etc.), which CocoIndex uses to track and reconcile effects across runs.
 
 See [Scope](./sdk_overview.md#scope) in the SDK Overview for details on how scopes and stable paths work.
+
+## Hierarchical Structure
+
+Processing Units form a tree. An [App](./app.md) establishes a root Processing Unit, which can **mount** child Processing Units. Each child can mount its own children, and so on.
+
+This hierarchy is how CocoIndex tracks ownership: when a parent no longer mounts a child (e.g., a source file is deleted), CocoIndex automatically cleans up the child's effects.
 
 ## Effect Sync Boundaries
 
