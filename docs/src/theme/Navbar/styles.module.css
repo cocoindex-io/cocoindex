@@ -129,6 +129,7 @@
 .githubStarWrapper {
   display: flex;
   align-items: center;
+  width: 110px;
 }
 
 .navbarSearch {
