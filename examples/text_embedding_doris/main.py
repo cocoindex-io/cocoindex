@@ -1,6 +1,7 @@
 import os
 import datetime
 import math
+from typing import Any
 import cocoindex
 import cocoindex.targets.doris as coco_doris
 
@@ -10,7 +11,7 @@ DORIS_DATABASE = os.environ.get("DORIS_DATABASE", "cocoindex_demo")
 DORIS_TABLE = "TextEmbedding"
 
 
-def get_doris_config():
+def get_doris_config() -> dict[str, Any]:
     """Get Doris configuration from environment variables."""
     return {
         "fe_host": DORIS_FE_HOST,

@@ -24,7 +24,7 @@ from typing import Any, Generator, Literal
 # Skip all tests if dependencies not available
 try:
     import aiohttp
-    import aiomysql  # type: ignore[import-untyped]
+    import aiomysql  # type: ignore[import-untyped]  # noqa: F401
 
     DEPS_AVAILABLE = True
 except ImportError:
@@ -43,9 +43,7 @@ from cocoindex.targets.doris import (
     _generate_create_table_ddl,
     connect_async,
     build_vector_search_query,
-    DorisError,
     DorisConnectionError,
-    DorisStreamLoadError,
     RetryConfig,
     with_retry,
 )
@@ -56,12 +54,7 @@ from cocoindex.engine_type import (
     VectorTypeSchema,
 )
 from cocoindex import op
-from cocoindex.index import (
-    IndexOptions,
-    VectorIndexDef,
-    VectorSimilarityMetric,
-    FtsIndexDef,
-)
+from cocoindex.index import IndexOptions
 
 # ============================================================
 # TEST CONFIGURATION
@@ -554,8 +547,10 @@ class TestTableLifecycle:
                     "embedding": [0.4, 0.5, 0.6, 0.7],
                 },  # Different length is OK for JSON
             ]
-            result = await _stream_load(session, doris_spec, data)
-            assert result.get("Status") == "Success", f"Stream Load failed: {result}"
+            load_result = await _stream_load(session, doris_spec, data)
+            assert load_result.get("Status") == "Success", (
+                f"Stream Load failed: {load_result}"
+            )
 
         # Verify data was inserted
         await asyncio.sleep(2)  # Wait for data to be visible
