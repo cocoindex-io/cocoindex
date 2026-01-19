@@ -42,7 +42,7 @@ jobs:
         run: uv sync --no-dev --group ci
 
       - name: Cache pre-commit
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pre-commit
           key: precommit-e2e-type-check-${{ matrix.python-version }}

@@ -60,7 +60,7 @@ jobs:
           run: uv sync --no-dev --group ci --no-install-project
 
         - name: Cache pre-commit
-          uses: actions/cache@v4
+          uses: actions/cache@v5
           with:
             path: ~/.cache/pre-commit
             key: precommit-${{ matrix.platform.runner }}-${{ matrix.python-version }}
