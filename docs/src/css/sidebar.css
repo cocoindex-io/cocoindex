@@ -1,7 +1,8 @@
 /* Sidebar Styling */
-.theme-doc-sidebar-container {
+.theme-doc-sidebar-container,
+[class*='docSidebarContainer'] {
   background-color: var(--ifm-background-color);
-  border-right: 1px solid var(--ifm-color-emphasis-200);
+  border-right: none !important;
   padding: 1rem 0.5rem;
 }
 
@@ -142,7 +143,7 @@
 
 /* Dark mode sidebar adjustments */
 [data-theme='dark'] .theme-doc-sidebar-container {
-  border-right-color: var(--ifm-color-emphasis-200);
+  border-right: none;
 }
 
 [data-theme='dark'] .theme-doc-sidebar-menu .menu__link:hover {
