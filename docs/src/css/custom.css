@@ -193,6 +193,16 @@
     font-size: var(--ifm-code-font-size);
     border: none;
   }
+
+  a {
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+    text-decoration-color: var(--ifm-color-primary-light);
+    text-underline-offset: 2px;
+  }
 }
 
 .sidebarItemTitle_pO2u,
