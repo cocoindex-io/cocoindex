@@ -27,11 +27,16 @@ const sidebars: SidebarsConfig = {
       ],
     },
     {
+      type: 'doc',
+      id: 'resource_types',
+      label: 'Common Resource Types',
+    },
+    {
       type: 'category',
       label: 'Connectors',
       collapsed: false,
       items: [
-        'connectors/localfile',
+        'connectors/localfs',
         'connectors/postgres',
         'connectors/lancedb',
       ],
