@@ -157,8 +157,15 @@
 
 /* Main content padding for docs */
 .main-wrapper .container {
-  padding-left: 2.5rem;
-  padding-right: 0;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+@media (min-width: 768px) {
+  .main-wrapper .container {
+    padding-left: 2.5rem;
+    padding-right: 0;
+  }
 }
 
 @media (min-width: 997px) {
@@ -188,7 +195,13 @@
   }
 
   a {
-    font-weight: var(--ifm-font-weight-semibold);
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+    text-decoration-color: var(--ifm-color-primary-light);
+    text-underline-offset: 2px;
   }
 }
 
