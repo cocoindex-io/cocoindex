@@ -78,6 +78,14 @@
   background-color: var(--radix-cyan-4);
 }
 
+.greenBg {
+  background-color: var(--radix-green-3);
+}
+
+[data-theme='dark'] .greenBg {
+  background-color: var(--radix-green-4);
+}
+
 /* Process Units */
 .processColumn {
   display: flex;
@@ -110,6 +118,14 @@
 
 [data-theme='dark'] .blueTint {
   background-color: var(--radix-cyan-3);
+}
+
+.greenTint {
+  background-color: var(--radix-green-2);
+}
+
+[data-theme='dark'] .greenTint {
+  background-color: var(--radix-green-3);
 }
 
 .unitPath {
@@ -184,6 +200,17 @@
 [data-theme='dark'] .blueTint .nodeRect,
 [data-theme='dark'] .blueTint .nodeCircle {
   background-color: var(--radix-cyan-4);
+}
+
+/* Green nodes inside green process unit */
+.greenTint .nodeRect,
+.greenTint .nodeCircle {
+  background-color: var(--radix-green-3);
+}
+
+[data-theme='dark'] .greenTint .nodeRect,
+[data-theme='dark'] .greenTint .nodeCircle {
+  background-color: var(--radix-green-4);
 }
 
 .outputNode {
@@ -387,6 +414,62 @@
   }
   50% {
     border-color: var(--radix-iris-9);
+  }
+}
+
+/* Delete animations */
+.nodeDeleting {
+  animation: deleting 0.6s ease-out forwards;
+  box-shadow: 0 0 0 2px var(--radix-red-9);
+}
+
+.nodeDeleted {
+  display: none;
+}
+
+@keyframes deleting {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 0 var(--radix-red-9);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.95);
+    box-shadow: 0 0 0 4px var(--radix-red-6);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.8);
+    box-shadow: 0 0 0 2px var(--radix-red-9);
+  }
+}
+
+/* Create animations */
+.nodeCreating {
+  animation: creating 0.6s ease-out;
+  box-shadow: 0 0 0 2px var(--radix-green-9);
+}
+
+.nodeHidden {
+  opacity: 0;
+}
+
+@keyframes creating {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+    box-shadow: 0 0 0 0 var(--radix-green-9);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.05);
+    box-shadow: 0 0 0 4px var(--radix-green-6);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 2px var(--radix-green-9);
   }
 }
 

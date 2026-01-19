@@ -71,7 +71,25 @@ export function ProcessDiagram(): ReactNode {
   );
 }
 
-type AnimationPhase = 'initial' | 'sourceChange' | 'flowToTransform' | 'transforming' | 'flowToEffect' | 'effectUpdate' | 'complete';
+type AnimationPhase =
+  | 'initial'
+  | 'sourceChange'
+  | 'flowToTransform'
+  | 'transforming'
+  | 'flowToEffect'
+  | 'effectUpdate'
+  | 'updateComplete'
+  | 'deleteSource'
+  | 'deleteProcessUnit'
+  | 'deleteOutput'
+  | 'deleteComplete'
+  | 'createSource'
+  | 'createProcessUnit'
+  | 'cFlowToTransform'
+  | 'cTransforming'
+  | 'cFlowToEffect'
+  | 'createOutput'
+  | 'complete';
 
 export function ProcessDiagramAnimated(): ReactNode {
   const [phase, setPhase] = useState<AnimationPhase>('initial');
@@ -88,6 +106,17 @@ export function ProcessDiagramAnimated(): ReactNode {
       { phase: 'transforming', delay: 800 },
       { phase: 'flowToEffect', delay: 800 },
       { phase: 'effectUpdate', delay: 800 },
+      { phase: 'updateComplete', delay: 1200 },
+      { phase: 'deleteSource', delay: 1000 },
+      { phase: 'deleteProcessUnit', delay: 800 },
+      { phase: 'deleteOutput', delay: 800 },
+      { phase: 'deleteComplete', delay: 1000 },
+      { phase: 'createSource', delay: 800 },
+      { phase: 'createProcessUnit', delay: 800 },
+      { phase: 'cFlowToTransform', delay: 600 },
+      { phase: 'cTransforming', delay: 600 },
+      { phase: 'cFlowToEffect', delay: 600 },
+      { phase: 'createOutput', delay: 800 },
       { phase: 'complete', delay: 1500 },
     ];
 
@@ -108,7 +137,15 @@ export function ProcessDiagramAnimated(): ReactNode {
   }, []);
 
   const sourceValue = phase === 'initial' ? '*apple*' : '*banana*';
-  const outputValue = ['effectUpdate', 'complete'].includes(phase) ? 'BANANA' : 'APPLE';
+  const outputValue = ['effectUpdate', 'updateComplete', 'deleteSource', 'deleteProcessUnit', 'deleteOutput', 'deleteComplete', 'createSource', 'createProcessUnit', 'cFlowToTransform', 'cTransforming', 'cFlowToEffect', 'createOutput', 'complete'].includes(phase) ? 'BANANA' : 'APPLE';
+
+  const isBSourceDeleted = ['deleteSource', 'deleteProcessUnit', 'deleteOutput', 'deleteComplete', 'createSource', 'createProcessUnit', 'cFlowToTransform', 'cTransforming', 'cFlowToEffect', 'createOutput', 'complete'].includes(phase);
+  const isBProcessDeleted = ['deleteProcessUnit', 'deleteOutput', 'deleteComplete', 'createSource', 'createProcessUnit', 'cFlowToTransform', 'cTransforming', 'cFlowToEffect', 'createOutput', 'complete'].includes(phase);
+  const isBOutputDeleted = ['deleteOutput', 'deleteComplete', 'createSource', 'createProcessUnit', 'cFlowToTransform', 'cTransforming', 'cFlowToEffect', 'createOutput', 'complete'].includes(phase);
+
+  const isCSourceCreated = ['createSource', 'createProcessUnit', 'cFlowToTransform', 'cTransforming', 'cFlowToEffect', 'createOutput', 'complete'].includes(phase);
+  const isCProcessCreated = ['createProcessUnit', 'cFlowToTransform', 'cTransforming', 'cFlowToEffect', 'createOutput', 'complete'].includes(phase);
+  const isCOutputCreated = ['createOutput', 'complete'].includes(phase);
 
   const getNodeClass = (node: 'source' | 'transform' | 'effect' | 'output') => {
     const classes: string[] = [];
@@ -145,6 +182,66 @@ export function ProcessDiagramAnimated(): ReactNode {
     return '';
   };
 
+  const getBSourceClass = () => {
+    if (phase === 'deleteSource') return styles.nodeDeleting;
+    if (isBSourceDeleted) return styles.nodeDeleted;
+    return '';
+  };
+
+  const getBProcessClass = () => {
+    if (phase === 'deleteProcessUnit') return styles.nodeDeleting;
+    if (isBProcessDeleted) return styles.nodeDeleted;
+    return '';
+  };
+
+  const getBOutputClass = () => {
+    if (phase === 'deleteOutput') return styles.nodeDeleting;
+    if (isBOutputDeleted) return styles.nodeDeleted;
+    return '';
+  };
+
+  const getCSourceClass = () => {
+    if (phase === 'createSource') return styles.nodeCreating;
+    return '';
+  };
+
+  const getCProcessClass = () => {
+    if (phase === 'createProcessUnit') return styles.nodeCreating;
+    return '';
+  };
+
+  const getCNodeClass = (node: 'source' | 'transform' | 'effect' | 'output') => {
+    const classes: string[] = [];
+
+    if (node === 'source' && phase === 'cFlowToTransform') {
+      classes.push(styles.nodePulse);
+    }
+    if (node === 'transform' && phase === 'cTransforming') {
+      classes.push(styles.nodeHighlight, styles.nodeSpin);
+    }
+    if (node === 'effect' && phase === 'cFlowToEffect') {
+      classes.push(styles.nodePulse);
+    }
+    if (node === 'output' && phase === 'createOutput') {
+      classes.push(styles.nodeCreating);
+    }
+
+    return classes.join(' ');
+  };
+
+  const getCConnectorClass = (connector: 'first' | 'second' | 'output') => {
+    if (connector === 'first' && phase === 'cFlowToTransform') {
+      return styles.connectorFlow;
+    }
+    if (connector === 'second' && phase === 'cFlowToEffect') {
+      return styles.connectorFlow;
+    }
+    if (connector === 'output' && phase === 'createOutput') {
+      return styles.connectorFlow;
+    }
+    return '';
+  };
+
   return (
     <div className={styles.animationWrapper}>
       <div className={styles.animationHeader}>
@@ -165,10 +262,18 @@ export function ProcessDiagramAnimated(): ReactNode {
               <strong>a.md</strong>
               <p className={phase !== 'initial' ? styles.textChanged : ''}>{sourceValue}</p>
             </div>
-            <div className={`${styles.fileBox} ${styles.blueBg}`}>
-              <strong>b.md</strong>
-              <p>*alice*</p>
-            </div>
+            {!isBSourceDeleted && (
+              <div className={`${styles.fileBox} ${styles.blueBg} ${getBSourceClass()}`}>
+                <strong>b.md</strong>
+                <p>*alice*</p>
+              </div>
+            )}
+            {isCSourceCreated && (
+              <div className={`${styles.fileBox} ${styles.greenBg} ${getCSourceClass()}`}>
+                <strong>c.md</strong>
+                <p>*cat*</p>
+              </div>
+            )}
           </div>
         </div>
 
@@ -196,30 +301,71 @@ export function ProcessDiagramAnimated(): ReactNode {
             <div className={`${styles.connectorLine} ${getConnectorClass('output')}`}></div>
             <div className={`${styles.nodeRect} ${styles.purpleBg} ${getNodeClass('output')}`}>
               <strong>a.html</strong>
-              <p className={['effectUpdate', 'complete'].includes(phase) ? styles.textChanged : ''}>{outputValue}</p>
+              <p className={['effectUpdate', 'updateComplete', 'deleteSource', 'deleteProcessUnit', 'deleteOutput', 'deleteComplete', 'createSource', 'createProcessUnit', 'cFlowToTransform', 'cTransforming', 'cFlowToEffect', 'createOutput', 'complete'].includes(phase) ? styles.textChanged : ''}>{outputValue}</p>
             </div>
           </div>
 
-          <div className={styles.processRow}>
-            <div className={`${styles.processUnit} ${styles.blueTint}`}>
-              <div className={styles.unitPath}>/process/b.md</div>
-              <div className={styles.unitFlow}>
-                <div className={styles.nodeRect}>
-                  <strong>b.md</strong>
-                  <p>*alice*</p>
+          {!isBProcessDeleted && (
+            <div className={`${styles.processRow} ${getBProcessClass()}`}>
+              <div className={`${styles.processUnit} ${styles.blueTint}`}>
+                <div className={styles.unitPath}>/process/b.md</div>
+                <div className={styles.unitFlow}>
+                  <div className={styles.nodeRect}>
+                    <strong>b.md</strong>
+                    <p>*alice*</p>
+                  </div>
+                  <div className={styles.connectorLine}></div>
+                  <div className={styles.nodeCircle}>transform<br /><TbMathFunction size={14} /></div>
+                  <div className={styles.connectorLine}></div>
+                  <div className={styles.nodeRect}>effect</div>
                 </div>
-                <div className={styles.connectorLine}></div>
-                <div className={styles.nodeCircle}>transform<br /><TbMathFunction size={14} /></div>
-                <div className={styles.connectorLine}></div>
-                <div className={styles.nodeRect}>effect</div>
               </div>
+              <div className={styles.connectorLine}></div>
+              {!isBOutputDeleted ? (
+                <div className={`${styles.nodeRect} ${styles.blueBg} ${getBOutputClass()}`}>
+                  <strong>b.html</strong>
+                  <p>ALICE</p>
+                </div>
+              ) : (
+                <div className={`${styles.nodeRect} ${styles.blueBg} ${styles.nodeDeleted}`}>
+                  <strong>b.html</strong>
+                  <p>ALICE</p>
+                </div>
+              )}
             </div>
-            <div className={styles.connectorLine}></div>
-            <div className={`${styles.nodeRect} ${styles.blueBg}`}>
-              <strong>b.html</strong>
-              <p>ALICE</p>
+          )}
+
+          {isCProcessCreated && (
+            <div className={`${styles.processRow} ${getCProcessClass()}`}>
+              <div className={`${styles.processUnit} ${styles.greenTint}`}>
+                <div className={styles.unitPath}>/process/c.md</div>
+                <div className={styles.unitFlow}>
+                  <div className={`${styles.nodeRect} ${getCNodeClass('source')}`}>
+                    <strong>c.md</strong>
+                    <p>*cat*</p>
+                  </div>
+                  <div className={`${styles.connectorLine} ${getCConnectorClass('first')}`}></div>
+                  <div className={`${styles.nodeCircle} ${getCNodeClass('transform')}`}>
+                    transform<br /><TbMathFunction size={14} />
+                  </div>
+                  <div className={`${styles.connectorLine} ${getCConnectorClass('second')}`}></div>
+                  <div className={`${styles.nodeRect} ${getCNodeClass('effect')}`}>effect</div>
+                </div>
+              </div>
+              <div className={`${styles.connectorLine} ${getCConnectorClass('output')}`}></div>
+              {isCOutputCreated ? (
+                <div className={`${styles.nodeRect} ${styles.greenBg} ${getCNodeClass('output')}`}>
+                  <strong>c.html</strong>
+                  <p>CAT</p>
+                </div>
+              ) : (
+                <div className={`${styles.nodeRect} ${styles.greenBg} ${styles.nodeHidden}`}>
+                  <strong>c.html</strong>
+                  <p>CAT</p>
+                </div>
+              )}
             </div>
-          </div>
+          )}
         </div>
       </div>
       <div className={styles.animationCaption}>
@@ -229,7 +375,18 @@ export function ProcessDiagramAnimated(): ReactNode {
         {phase === 'transforming' && 'Running transformation...'}
         {phase === 'flowToEffect' && 'Applying effect...'}
         {phase === 'effectUpdate' && 'Output updated: APPLE → BANANA'}
-        {phase === 'complete' && 'Done! Only a.md pipeline re-ran (b.md unchanged)'}
+        {phase === 'updateComplete' && 'Update complete. Now deleting b.md...'}
+        {phase === 'deleteSource' && 'Source b.md deleted'}
+        {phase === 'deleteProcessUnit' && 'Process unit /process/b.md removed'}
+        {phase === 'deleteOutput' && 'Effect removed: b.html deleted'}
+        {phase === 'deleteComplete' && 'Delete complete. Now creating c.md...'}
+        {phase === 'createSource' && 'New source c.md created with *cat*'}
+        {phase === 'createProcessUnit' && 'Process unit /process/c.md created'}
+        {phase === 'cFlowToTransform' && 'Processing new source...'}
+        {phase === 'cTransforming' && 'Running transformation...'}
+        {phase === 'cFlowToEffect' && 'Applying effect...'}
+        {phase === 'createOutput' && 'New output created: c.html with CAT'}
+        {phase === 'complete' && 'Done! Update, delete, and create — all incremental'}
       </div>
     </div>
   );
