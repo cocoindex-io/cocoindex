@@ -3,10 +3,14 @@ title: Core Concepts
 description: Briefly introduce the core concepts of CocoIndex, covering state-driven sync, Effects, Components, Apps, and incremental execution across data and code changes.
 ---
 
+import { ProcessDiagram } from '@site/src/components/ProcessDiagram';
+
 # Core Concepts
 
 CocoIndex is a **state-driven** computing framework that **transforms** your data and keeps **persistent external state** in **sync**.
 You describe the state you want in your external systems; CocoIndex computes what changed since the last run and applies only the necessary updates — **incrementally** for both data and code changes.
+
+<ProcessDiagram />
 
 ## State-driven from sources
 

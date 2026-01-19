@@ -1,0 +1,291 @@
+.diagramContainer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 11px;
+  padding: 16px 0;
+  margin: 20px 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* Panels and Boxes */
+.sourcePanel,
+.processUnit,
+.fileBox {
+  border: 1.5px solid var(--radix-gray-6);
+  border-radius: 6px;
+}
+
+.sourceColumn {
+  flex-shrink: 0;
+}
+
+.sourcePanel {
+  background-color: var(--radix-yellow-2);
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+
+[data-theme='dark'] .sourcePanel {
+  background-color: var(--radix-yellow-3);
+}
+
+.panelHeader {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--ifm-color-emphasis-600);
+  margin-bottom: 4px;
+}
+
+.fileBox {
+  padding: 8px 6px;
+  width: 60px;
+  text-align: center;
+  font-size: 10px;
+}
+
+.fileBox strong {
+  display: block;
+  font-size: 10px;
+}
+
+.fileBox p {
+  margin: 3px 0 0;
+  font-size: 9px;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.purpleBg {
+  background-color: var(--radix-purple-3);
+}
+
+.blueBg {
+  background-color: var(--radix-cyan-3);
+}
+
+[data-theme='dark'] .purpleBg {
+  background-color: var(--radix-purple-4);
+}
+
+[data-theme='dark'] .blueBg {
+  background-color: var(--radix-cyan-4);
+}
+
+/* Process Units */
+.processColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.processRow {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.processUnit {
+  padding: 6px 8px 8px;
+  position: relative;
+}
+
+.purpleTint {
+  background-color: var(--radix-purple-2);
+}
+
+.blueTint {
+  background-color: var(--radix-cyan-2);
+}
+
+[data-theme='dark'] .purpleTint {
+  background-color: var(--radix-purple-3);
+}
+
+[data-theme='dark'] .blueTint {
+  background-color: var(--radix-cyan-3);
+}
+
+.unitPath {
+  font-size: 9px;
+  margin-bottom: 6px;
+  font-weight: 500;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.unitFlow {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.nodeRect {
+  padding: 6px 4px;
+  width: 56px;
+  min-height: 40px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  font-size: 9px;
+  border: 1.5px solid var(--radix-gray-6);
+  border-radius: 4px;
+}
+
+.nodeRect strong {
+  font-size: 9px;
+}
+
+.nodeRect p {
+  margin: 2px 0 0;
+  font-size: 8px;
+  color: var(--ifm-color-emphasis-700);
+}
+
+.nodeCircle {
+  padding: 4px;
+  width: 52px;
+  height: 52px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  font-size: 8px;
+  border: 1.5px solid var(--radix-gray-6);
+  border-radius: 50%;
+  line-height: 1.2;
+}
+
+/* Purple nodes inside purple process unit */
+.purpleTint .nodeRect,
+.purpleTint .nodeCircle {
+  background-color: var(--radix-purple-3);
+}
+
+[data-theme='dark'] .purpleTint .nodeRect,
+[data-theme='dark'] .purpleTint .nodeCircle {
+  background-color: var(--radix-purple-4);
+}
+
+/* Blue nodes inside blue process unit */
+.blueTint .nodeRect,
+.blueTint .nodeCircle {
+  background-color: var(--radix-cyan-3);
+}
+
+[data-theme='dark'] .blueTint .nodeRect,
+[data-theme='dark'] .blueTint .nodeCircle {
+  background-color: var(--radix-cyan-4);
+}
+
+.outputNode {
+  background-color: var(--radix-green-3);
+}
+
+[data-theme='dark'] .outputNode {
+  background-color: var(--radix-green-4);
+}
+
+/* Connectors and Arrows */
+.connectorMain {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  font-size: 8px;
+  text-align: center;
+  color: var(--ifm-color-emphasis-600);
+}
+
+.connectorMain span {
+  white-space: nowrap;
+  margin-bottom: 4px;
+}
+
+.arrowLine,
+.connectorLine {
+  height: 1.5px;
+  background: var(--radix-gray-8);
+  position: relative;
+  min-width: 24px;
+}
+
+.arrowLine {
+  min-width: 32px;
+}
+
+.arrowLine::before,
+.connectorLine::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: -2px;
+  width: 4px;
+  height: 4px;
+  border: 1px solid var(--radix-gray-8);
+  border-radius: 50%;
+  background: var(--radix-color-background);
+}
+
+.arrowLine::after,
+.connectorLine::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: -3px;
+  border: solid var(--radix-gray-8);
+  border-width: 0 1.5px 1.5px 0;
+  display: inline-block;
+  padding: 2.5px;
+  transform: rotate(-45deg);
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .diagramContainer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .connectorMain {
+    flex-direction: row;
+    padding: 8px 0;
+  }
+
+  .connectorMain span {
+    margin-bottom: 0;
+    margin-right: 8px;
+  }
+
+  .arrowLine {
+    transform: rotate(90deg);
+  }
+
+  .processRow {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .unitFlow {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px;
+  }
+
+  .sourcePanel {
+    flex-direction: row;
+    justify-content: center;
+    gap: 12px;
+  }
+}
