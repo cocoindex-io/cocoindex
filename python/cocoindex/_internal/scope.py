@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from cocoindex._internal.context_keys import ContextKey
 from dataclasses import dataclass
 from typing import TypeVar
@@ -40,6 +42,9 @@ class Scope:
 
     def use(self, key: ContextKey[T]) -> T:
         return self._env.context_provider.use(key)
+
+    def event_loop(self) -> asyncio.AbstractEventLoop:
+        return self._env.event_loop
 
     def _with_fn_call_ctx(self, fn_call_ctx: core.FnCallContext) -> Scope:
         return Scope(
