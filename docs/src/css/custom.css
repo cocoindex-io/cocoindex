@@ -26,6 +26,9 @@
 /* Import tabs styles */
 @import './tabs.css';
 
+/* Import typography styles */
+@import './typography.css';
+
 
 /* You can override the default Infima variables here. */
 :root {
