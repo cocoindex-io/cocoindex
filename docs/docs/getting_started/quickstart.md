@@ -137,14 +137,6 @@ app = coco.App(
     sourcedir=pathlib.Path("./data"),
     outdir=pathlib.Path("./output_html"),
 )
-
-
-def main() -> None:
-    app.update(report_to_stdout=True)
-
-
-if __name__ == "__main__":
-    main()
 ```
 
 ## Run the Pipeline
@@ -152,7 +144,7 @@ if __name__ == "__main__":
 Run the pipeline:
 
 ```bash
-python main.py
+cocoindex update main.py
 ```
 
 CocoIndex will:
@@ -175,7 +167,7 @@ The power of CocoIndex is **incremental processing**. Try these:
 
 ```bash
 echo "# New File" > data/world.md
-python main.py
+cocoindex update main.py
 ```
 
 Only the new file is processed.
@@ -184,7 +176,7 @@ Only the new file is processed.
 
 ```bash
 echo "# Updated Hello" > data/hello.md
-python main.py
+cocoindex update main.py
 ```
 
 Only the changed file is reprocessed.
@@ -193,7 +185,7 @@ Only the changed file is reprocessed.
 
 ```bash
 rm data/hello.md
-python main.py
+cocoindex update main.py
 ```
 
 The corresponding HTML is automatically removed.

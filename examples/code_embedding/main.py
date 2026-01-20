@@ -175,23 +175,20 @@ async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> N
         print("---")
 
 
-async def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        async with await postgres.create_pool(DATABASE_URL) as pool:
-            if len(sys.argv) > 2:
-                q = " ".join(sys.argv[2:])
-                await query_once(pool, q)
-                return
+async def query() -> None:
+    async with await postgres.create_pool(DATABASE_URL) as pool:
+        if len(sys.argv) > 2:
+            q = " ".join(sys.argv[2:])
+            await query_once(pool, q)
+            return
 
-            while True:
-                q = input("Enter search query (or Enter to quit): ").strip()
-                if not q:
-                    break
-                await query_once(pool, q)
-        return
-
-    await app.update(report_to_stdout=True)
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(pool, q)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        asyncio.run(query())

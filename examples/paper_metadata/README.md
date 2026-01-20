@@ -32,7 +32,7 @@ This example uses the `coco_examples_v1` schema by default to avoid clashing wit
 Build/update the index:
 
 ```sh
-python main.py
+cocoindex update main.py
 ```
 
 Query:

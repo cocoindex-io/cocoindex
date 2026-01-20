@@ -161,22 +161,18 @@ async def query_once(client: QdrantClient, query: str, *, top_k: int = TOP_K) ->
         print("---")
 
 
-async def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(client, q)
-            return
-
-        while True:
-            q = input("Enter search query (or Enter to quit): ").strip()
-            if not q:
-                break
-            await query_once(client, q)
+async def query() -> None:
+    client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
+    if len(sys.argv) > 2:
+        q = " ".join(sys.argv[2:])
+        await query_once(client, q)
         return
 
-    await app.update(report_to_stdout=True)
+    while True:
+        q = input("Enter search query (or Enter to quit): ").strip()
+        if not q:
+            break
+        await query_once(client, q)
 
 
 def _image_id(path: pathlib.PurePath) -> str:
@@ -217,4 +213,5 @@ def _qdrant_search(
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        asyncio.run(query())

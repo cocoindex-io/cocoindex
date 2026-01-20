@@ -43,7 +43,7 @@ Replace `your_api_key_here` with your actual Gemini API key.
 ### 3. Run the application
 
 ```sh
-python main.py
+cocoindex update main.py
 ```
 
 This will:

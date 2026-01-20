@@ -31,7 +31,7 @@ pip install -e .
 Build/update the index:
 
 ```sh
-python main.py
+cocoindex update main.py
 ```
 
 Query:

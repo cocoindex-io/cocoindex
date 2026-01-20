@@ -172,25 +172,22 @@ async def query_once(
         print("---")
 
 
-async def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        await lancedb._register_db_async("code_embedding_db", LANCEDB_URI)
-        db = lancedb.LanceDatabase("code_embedding_db")
+async def query() -> None:
+    await lancedb._register_db_async("code_embedding_db", LANCEDB_URI)
+    db = lancedb.LanceDatabase("code_embedding_db")
 
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(db, q)
-            return
-
-        while True:
-            q = input("Enter search query (or Enter to quit): ").strip()
-            if not q:
-                break
-            await query_once(db, q)
+    if len(sys.argv) > 2:
+        q = " ".join(sys.argv[2:])
+        await query_once(db, q)
         return
 
-    await app.update(report_to_stdout=True)
+    while True:
+        q = input("Enter search query (or Enter to quit): ").strip()
+        if not q:
+            break
+        await query_once(db, q)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        asyncio.run(query())
