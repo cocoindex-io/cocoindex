@@ -117,8 +117,10 @@ If you're new to CocoIndex, we recommend checking out
 
 1. Install CocoIndex Python library
 
+> **Note**: CocoIndex v1 is currently in preview (pre-release). Use the `--pre` flag with pip, or configure your package manager to allow pre-releases.
+
 ```sh
-pip install -U cocoindex
+pip install -U --pre cocoindex
 ```
 
 1. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one. CocoIndex uses it for incremental processing.
