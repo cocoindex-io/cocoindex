@@ -441,18 +441,6 @@ async def query_demo() -> None:
         await pool.close()
 
 
-# ============================================================================
-# Entry point
-# ============================================================================
-
-
-async def main() -> None:
-    """Run the pipeline."""
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        await query_demo()
-    else:
-        await app.update(report_to_stdout=True)
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        asyncio.run(query_demo())

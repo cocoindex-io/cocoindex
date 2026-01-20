@@ -22,7 +22,7 @@ pip install -e .
 Build/update the index (writes rows into Postgres):
 
 ```sh
-python main.py
+cocoindex update main.py
 ```
 
 Query:

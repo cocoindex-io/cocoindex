@@ -26,7 +26,7 @@ pip install -e .
 Build/update the index (stores data in `./lancedb_data/`):
 
 ```sh
-python main.py
+cocoindex update main.py
 ```
 
 Query:

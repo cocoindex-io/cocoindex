@@ -174,23 +174,20 @@ async def query_once(query: str, *, top_k: int = TOP_K) -> None:
         print("---")
 
 
-async def main() -> None:
+async def query() -> None:
     async with coco_aio.runtime():
-        if len(sys.argv) > 1 and sys.argv[1] == "query":
-            if len(sys.argv) > 2:
-                q = " ".join(sys.argv[2:])
-                await query_once(q)
-                return
-
-            while True:
-                q = input("Enter search query (or Enter to quit): ").strip()
-                if not q:
-                    break
-                await query_once(q)
+        if len(sys.argv) > 2:
+            q = " ".join(sys.argv[2:])
+            await query_once(q)
             return
 
-        await app.update(report_to_stdout=True)
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(q)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        asyncio.run(query())

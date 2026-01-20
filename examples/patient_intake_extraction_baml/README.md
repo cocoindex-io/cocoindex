@@ -41,10 +41,11 @@ Replace `your_api_key_here` with your actual Gemini API key.
 ### 4. Run the application
 
 ```sh
-python main.py
+cocoindex update main.py
 ```
 
 This will:
+
 1. Read all PDF files from `data/patient_forms/`
 2. Extract patient information using BAML
 3. Write the extracted data as JSON files to `output_patients/`
@@ -58,6 +59,7 @@ ls -la output_patients/
 ```
 
 You should see JSON files such as:
+
 - `Patient_Intake_Form_David_Artificial.json`
 - `Patient_Intake_Form_Emily_Artificial.json`
 - `Patient_Intake_Form_Joe_Artificial.json`

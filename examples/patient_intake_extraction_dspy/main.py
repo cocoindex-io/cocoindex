@@ -165,20 +165,13 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
         )
 
 
+load_dotenv()
+lm = dspy.LM("gemini/gemini-2.5-flash")
+dspy.configure(lm=lm)
+
 app = coco.App(
     app_main,
     coco.AppConfig(name="PatientIntakeExtractionDSPy"),
     sourcedir=pathlib.Path("./data/patient_forms"),
     outdir=pathlib.Path("./output_patients"),
 )
-
-
-def main() -> None:
-    load_dotenv()
-    lm = dspy.LM("gemini/gemini-2.5-flash")
-    dspy.configure(lm=lm)
-    app.update(report_to_stdout=True)
-
-
-if __name__ == "__main__":
-    main()

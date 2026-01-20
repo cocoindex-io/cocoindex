@@ -29,7 +29,7 @@ For simplicity, we use the same database for source and target. You can also set
 Build/update the index:
 
 ```sh
-python main.py
+cocoindex update main.py
 ```
 
 Query:

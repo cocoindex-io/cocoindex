@@ -41,11 +41,3 @@ app = coco.App(
     sourcedir=pathlib.Path("./data"),
     outdir=pathlib.Path("./output_html"),
 )
-
-
-def main() -> None:
-    app.update(report_to_stdout=True)
-
-
-if __name__ == "__main__":
-    main()
