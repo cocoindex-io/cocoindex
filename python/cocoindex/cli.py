@@ -17,6 +17,7 @@ from cocoindex._internal.environment import (
     LazyEnvironment,
     EnvironmentInfo,
     default_env,
+    default_env_loop,
     get_registered_environment_infos,
 )
 from cocoindex.inspect import list_stable_paths_sync
@@ -430,7 +431,8 @@ def update(app_target: str) -> None:
         finally:
             await _stop_all_environments()
 
-    asyncio.run(_do())
+    env_loop = default_env_loop()
+    asyncio.run_coroutine_threadsafe(_do(), env_loop).result()
 
 
 @cli.command()
@@ -483,7 +485,8 @@ def drop(app_target: str, force: bool = False) -> None:
             f"Dropped app '{app._name}' from environment '{env.name}' and reverted its effects."
         )
 
-    asyncio.run(_do())
+    env_loop = default_env_loop()
+    asyncio.run_coroutine_threadsafe(_do(), env_loop).result()
 
 
 if __name__ == "__main__":
