@@ -47,7 +47,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'utilities/index',
-        'utilities/sentence-transformers',
+        'utilities/sentence_transformers',
         'utilities/text',
       ],
     },

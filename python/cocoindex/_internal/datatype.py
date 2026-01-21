@@ -49,7 +49,7 @@ def is_pydantic_model(t: Any) -> bool:
         return False
 
 
-def is_struct_type(t: Any) -> bool:
+def is_record_type(t: Any) -> bool:
     return isinstance(t, type) and (
         dataclasses.is_dataclass(t) or is_namedtuple_type(t) or is_pydantic_model(t)
     )
@@ -99,9 +99,9 @@ class SequenceType(NamedTuple):
     elem_type: Any
 
 
-class StructFieldInfo(NamedTuple):
+class RecordFieldInfo(NamedTuple):
     """
-    Info about a field in a struct type.
+    Info about a field in a record type.
     """
 
     name: str
@@ -110,39 +110,39 @@ class StructFieldInfo(NamedTuple):
     description: str | None
 
 
-class StructType(NamedTuple):
+class RecordType(NamedTuple):
     """
-    Any struct type, e.g. dataclass, NamedTuple, etc.
+    Any record type, e.g. dataclass, NamedTuple, etc.
     """
 
-    struct_type: type
+    record_type: type
 
     @property
-    def fields(self) -> Iterator[StructFieldInfo]:
-        type_hints = get_type_hints(self.struct_type, include_extras=True)
-        if dataclasses.is_dataclass(self.struct_type):
-            parameters = inspect.signature(self.struct_type).parameters
+    def fields(self) -> Iterator[RecordFieldInfo]:
+        type_hints = get_type_hints(self.record_type, include_extras=True)
+        if dataclasses.is_dataclass(self.record_type):
+            parameters = inspect.signature(self.record_type).parameters
             for name, parameter in parameters.items():
-                yield StructFieldInfo(
+                yield RecordFieldInfo(
                     name=name,
                     type_hint=type_hints.get(name, Any),
                     default_value=parameter.default,
                     description=None,
                 )
-        elif is_namedtuple_type(self.struct_type):
-            fields = getattr(self.struct_type, "_fields", ())
-            defaults = getattr(self.struct_type, "_field_defaults", {})
+        elif is_namedtuple_type(self.record_type):
+            fields = getattr(self.record_type, "_fields", ())
+            defaults = getattr(self.record_type, "_field_defaults", {})
             for name in fields:
-                yield StructFieldInfo(
+                yield RecordFieldInfo(
                     name=name,
                     type_hint=type_hints.get(name, Any),
                     default_value=defaults.get(name, inspect.Parameter.empty),
                     description=None,
                 )
-        elif is_pydantic_model(self.struct_type):
-            model_fields = getattr(self.struct_type, "model_fields", {})
+        elif is_pydantic_model(self.record_type):
+            model_fields = getattr(self.record_type, "model_fields", {})
             for name, field_info in model_fields.items():
-                yield StructFieldInfo(
+                yield RecordFieldInfo(
                     name=name,
                     type_hint=type_hints.get(name, Any),
                     default_value=field_info.default
@@ -151,7 +151,7 @@ class StructType(NamedTuple):
                     description=field_info.description,
                 )
         else:
-            raise ValueError(f"Unsupported struct type: {self.struct_type}")
+            raise ValueError(f"Unsupported record type: {self.record_type}")
 
 
 class UnionType(NamedTuple):
@@ -177,7 +177,7 @@ class LeafType(NamedTuple):
     """
 
 
-TypeVariant = AnyType | SequenceType | MappingType | StructType | UnionType | LeafType
+TypeVariant = AnyType | SequenceType | MappingType | RecordType | UnionType | LeafType
 
 
 class DataTypeInfo(NamedTuple):
@@ -219,8 +219,8 @@ def analyze_type_info(t: Any, *, nullable: bool = False) -> DataTypeInfo:
 
     if base_type is Any or base_type is inspect.Parameter.empty:
         variant = AnyType()
-    elif is_struct_type(base_type):
-        variant = StructType(struct_type=t)
+    elif is_record_type(base_type):
+        variant = RecordType(record_type=t)
     elif base_type is collections.abc.Sequence or base_type is list:
         elem_type = type_args[0] if len(type_args) > 0 else Any
         variant = SequenceType(elem_type=elem_type)
