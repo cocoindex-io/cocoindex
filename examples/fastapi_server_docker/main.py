@@ -93,7 +93,12 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     load_dotenv()
     cocoindex.init()
-    pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
+
+    database_url = os.getenv("COCOINDEX_DATABASE_URL")
+    if database_url is None:
+        raise ValueError("COCOINDEX_DATABASE_URL is not set")
+    pool = ConnectionPool(database_url)
+
     app.state.pool = pool
     try:
         yield
@@ -104,7 +109,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 fastapi_app = FastAPI(lifespan=lifespan)
 
 
-@fastapi_app.get("/search")  # type: ignore
+@fastapi_app.get("/search")
 def search_endpoint(
     request: Request,
     q: str = Query(..., description="Search query"),

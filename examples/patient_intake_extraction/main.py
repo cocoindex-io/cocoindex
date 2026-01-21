@@ -107,9 +107,7 @@ class ToMarkdownExecutor:
         with tempfile.NamedTemporaryFile(delete=True, suffix=suffix) as temp_file:
             temp_file.write(content)
             temp_file.flush()
-            text_any = self._converter.convert(temp_file.name).text_content
-            text: str = cast(str, text_any)
-            return text
+            return self._converter.convert(temp_file.name).text_content
 
 
 @cocoindex.flow_def(name="PatientIntakeExtraction")

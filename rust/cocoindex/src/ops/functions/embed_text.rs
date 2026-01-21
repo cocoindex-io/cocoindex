@@ -81,7 +81,7 @@ impl BatchedFunctionExecutor for Executor {
                             actual = embedding.len(),
                         );
                     } else {
-                        bail!(
+                        client_bail!(
                             "Expected output dimension {expected} but got {actual} from the embedding API. \
                              Consider setting `output_dimension` to {actual} as a workaround.",
                             expected = self.args.expected_output_dimension,

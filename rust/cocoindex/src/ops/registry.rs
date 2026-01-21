@@ -1,5 +1,6 @@
 use super::interface::ExecutorFactory;
-use anyhow::Result;
+use crate::prelude::*;
+use cocoindex_utils::internal_error;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -31,7 +32,7 @@ impl ExecutorFactoryRegistry {
     pub fn register(&mut self, name: String, factory: ExecutorFactory) -> Result<()> {
         match factory {
             ExecutorFactory::Source(source_factory) => match self.source_factories.entry(name) {
-                std::collections::hash_map::Entry::Occupied(entry) => Err(anyhow::anyhow!(
+                std::collections::hash_map::Entry::Occupied(entry) => Err(internal_error!(
                     "Source factory with name already exists: {}",
                     entry.key()
                 )),
@@ -42,7 +43,7 @@ impl ExecutorFactoryRegistry {
             },
             ExecutorFactory::SimpleFunction(function_factory) => {
                 match self.function_factories.entry(name) {
-                    std::collections::hash_map::Entry::Occupied(entry) => Err(anyhow::anyhow!(
+                    std::collections::hash_map::Entry::Occupied(entry) => Err(internal_error!(
                         "Function factory with name already exists: {}",
                         entry.key()
                     )),
@@ -54,7 +55,7 @@ impl ExecutorFactoryRegistry {
             }
             ExecutorFactory::ExportTarget(target_factory) => {
                 match self.target_factories.entry(name) {
-                    std::collections::hash_map::Entry::Occupied(entry) => Err(anyhow::anyhow!(
+                    std::collections::hash_map::Entry::Occupied(entry) => Err(internal_error!(
                         "Target factory with name already exists: {}",
                         entry.key()
                     )),
@@ -66,7 +67,7 @@ impl ExecutorFactoryRegistry {
             }
             ExecutorFactory::TargetAttachment(target_attachment_factory) => {
                 match self.target_attachment_factories.entry(name) {
-                    std::collections::hash_map::Entry::Occupied(entry) => Err(anyhow::anyhow!(
+                    std::collections::hash_map::Entry::Occupied(entry) => Err(internal_error!(
                         "Target attachment factory with name already exists: {}",
                         entry.key()
                     )),

@@ -1,0 +1,74 @@
+/* Tabs styling - Radix UI Tabs component style */
+
+/* Tab list container */
+.tabs {
+  border-bottom: 1px solid var(--radix-gray-6);
+  gap: 0;
+  overflow: visible;
+}
+
+/* Individual tab item */
+.tabs__item {
+  position: relative;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--radix-gray-11);
+  font-size: 0.875rem;
+  font-weight: 500;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: -1px;
+  transition: color 0.15s ease;
+}
+
+/* Tab hover state */
+.tabs__item:hover {
+  background: transparent;
+  color: var(--radix-gray-12);
+}
+
+/* Active tab */
+.tabs__item--active {
+  color: var(--radix-gray-12);
+  border: none;
+  background: transparent;
+}
+
+/* Active tab underline indicator */
+.tabs__item--active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background-color: var(--ifm-color-primary);
+  border-radius: 0;
+}
+
+/* Remove default Infima hover overlay */
+.tabs__item:hover {
+  background-color: transparent;
+}
+
+/* Tab content area */
+.tabs-container .margin-top--md {
+  margin-top: 1rem !important;
+}
+
+/* Dark mode adjustments */
+[data-theme='dark'] .tabs {
+  border-bottom-color: var(--radix-gray-6);
+}
+
+[data-theme='dark'] .tabs__item {
+  color: var(--radix-gray-11);
+}
+
+[data-theme='dark'] .tabs__item:hover {
+  color: var(--radix-gray-12);
+}
+
+[data-theme='dark'] .tabs__item--active {
+  color: var(--radix-gray-12);
+}

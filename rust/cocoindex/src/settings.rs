@@ -24,6 +24,8 @@ pub struct Settings {
     pub app_namespace: String,
     #[serde(default)]
     pub global_execution_options: GlobalExecutionOptions,
+    #[serde(default)]
+    pub ignore_target_drop_failures: bool,
 }
 
 #[cfg(test)]

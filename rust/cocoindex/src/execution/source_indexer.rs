@@ -415,16 +415,16 @@ impl SourceIndexingContext {
                             .await?
                         {
                             RowStateAdvanceOutcome::Skipped => {
-                                return anyhow::Ok(());
+                                return Ok::<_, Error>(());
                             }
                             RowStateAdvanceOutcome::Advanced {
                                 prev_version_state: Some(prev_version_state),
                             } => {
                                 // Fast path optimization: may collapse the row based on source version fingerprint.
                                 // Still need to update the tracking table as the processed ordinal advanced.
-                                if let Some(prev_content_version_fp) =
-                                    &prev_version_state.content_version_fp
-                                    && mode == UpdateMode::Normal
+                                if !mode.needs_full_export()
+                                    && let Some(prev_content_version_fp) =
+                                        &prev_version_state.content_version_fp
                                 {
                                     let collapse_result = row_indexer
                                         .try_collapse(
@@ -452,10 +452,10 @@ impl SourceIndexingContext {
                                 if let Some(ref op_stats) = operation_in_process_stats_for_async {
                                     op_stats.start_processing(&operation_name_for_async, 1);
                                 }
-                                let row_input = row_input
-                                    .key_aux_info
-                                    .as_ref()
-                                    .ok_or_else(|| anyhow!("`key_aux_info` must be provided"))?;
+                                let row_input =
+                                    row_input.key_aux_info.as_ref().ok_or_else(|| {
+                                        internal_error!("`key_aux_info` must be provided")
+                                    })?;
                                 let read_options = interface::SourceExecutorReadOptions {
                                     include_value: true,
                                     include_ordinal: true,
@@ -474,7 +474,7 @@ impl SourceIndexingContext {
                                         .unwrap_or(interface::Ordinal::unavailable()),
                                     data.content_version_fp,
                                     data.value
-                                        .ok_or_else(|| anyhow::anyhow!("value is not available"))?,
+                                        .ok_or_else(|| internal_error!("value is not available"))?,
                                 )
                             }
                         };
@@ -536,18 +536,15 @@ impl SourceIndexingContext {
             if let Some(ack_fn) = ack_fn {
                 ack_fn().await?;
             }
-            anyhow::Ok(())
+            Ok::<_, Error>(())
         };
         if let Err(e) = process_and_ack.await {
             update_stats.num_errors.inc(1);
             error!(
-                "{:?}",
-                e.context(format!(
-                    "Error in processing row from flow `{flow}` source `{source}` with key: {key}",
-                    flow = self.flow.flow_instance.name,
-                    source = self.flow.flow_instance.import_ops[self.source_idx].name,
-                    key = row_input.key,
-                ))
+                "Error in processing row from flow `{flow}` source `{source}` with key: {key}: {e:?}",
+                flow = self.flow.flow_instance.name,
+                source = self.flow.flow_instance.import_ops[self.source_idx].name,
+                key = row_input.key,
             );
         }
     }
@@ -563,7 +560,10 @@ impl SourceIndexingContext {
             stats: update_stats.clone(),
             options: update_options,
         };
-        self.update_once_batcher.run(input).await
+        self.update_once_batcher
+            .run(input)
+            .await
+            .map_err(Error::from)
     }
 
     async fn update_once(
@@ -604,14 +604,14 @@ impl SourceIndexingContext {
                 let source_version = SourceVersion::from_current_with_ordinal(
                     row.data
                         .ordinal
-                        .ok_or_else(|| anyhow::anyhow!("ordinal is not available"))?,
+                        .ok_or_else(|| internal_error!("ordinal is not available"))?,
                 );
                 {
                     let mut state = self.state.lock().unwrap();
                     let scan_generation = state.scan_generation;
                     let row_state = state.rows.entry(row.key.clone()).or_default();
                     row_state.touched_generation = scan_generation;
-                    if update_options.mode == UpdateMode::Normal
+                    if !update_options.mode.needs_full_export()
                         && row_state
                             .version_state
                             .source_version
@@ -722,7 +722,7 @@ impl batching::Runner for UpdateOnceRunner {
         let input = inputs
             .into_iter()
             .next()
-            .ok_or_else(|| anyhow::anyhow!("no input"))?;
+            .ok_or_else(|| internal_error!("no input"))?;
         input
             .context
             .update_once(&input.stats, &update_options)

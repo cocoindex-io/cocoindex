@@ -254,6 +254,7 @@ impl<T: SourceFactoryBase> SourceFactory for T {
         BoxFuture<'static, Result<Box<dyn SourceExecutor>>>,
     )> {
         let spec: T::Spec = utils::deser::from_json_value(spec)
+            .map_err(Error::from)
             .with_context(|| format!("Failed in parsing spec for source `{source_name}`"))?;
         let output_schema = self.get_output_schema(&spec, &context).await?;
         let source_name = source_name.to_string();
@@ -334,6 +335,7 @@ impl<T: SimpleFunctionFactoryBase> SimpleFunctionFactory for T {
         context: Arc<FlowInstanceContext>,
     ) -> Result<SimpleFunctionBuildOutput> {
         let spec: T::Spec = utils::deser::from_json_value(spec)
+            .map_err(Error::from)
             .with_context(|| format!("Failed in parsing spec for function `{}`", self.name()))?;
         let mut nonnull_args_idx = vec![];
         let mut may_nullify_output = false;
@@ -427,7 +429,7 @@ impl<E: BatchedFunctionExecutor> BatchedFunctionExecutorWrapper<E> {
 #[async_trait]
 impl<E: BatchedFunctionExecutor> SimpleFunctionExecutor for BatchedFunctionExecutorWrapper<E> {
     async fn evaluate(&self, args: Vec<value::Value>) -> Result<value::Value> {
-        self.batcher.run(args).await
+        self.batcher.run(args).await.map_err(Error::from)
     }
 
     fn enable_cache(&self) -> bool {
@@ -553,11 +555,13 @@ impl<T: TargetFactoryBase> TargetFactory for T {
             self,
             data_collections
                 .into_iter()
-                .map(|d| {
-                    anyhow::Ok(TypedExportDataCollectionSpec {
-                        spec: utils::deser::from_json_value(d.spec).with_context(|| {
-                            format!("Failed in parsing spec for target `{}`", d.name)
-                        })?,
+                .map(|d| -> Result<_> {
+                    Ok(TypedExportDataCollectionSpec {
+                        spec: utils::deser::from_json_value(d.spec)
+                            .map_err(Error::from)
+                            .with_context(|| {
+                                format!("Failed in parsing spec for target `{}`", d.name)
+                            })?,
                         name: d.name,
                         key_fields_schema: d.key_fields_schema,
                         value_fields_schema: d.value_fields_schema,
@@ -567,7 +571,7 @@ impl<T: TargetFactoryBase> TargetFactory for T {
                 .collect::<Result<Vec<_>>>()?,
             declarations
                 .into_iter()
-                .map(|d| anyhow::Ok(utils::deser::from_json_value(d)?))
+                .map(|d| -> Result<_> { Ok(utils::deser::from_json_value(d)?) })
                 .collect::<Result<Vec<_>>>()?,
             context,
         )
@@ -663,8 +667,8 @@ impl<T: TargetFactoryBase> TargetFactory for T {
     ) -> Result<()> {
         let mutations = mutations
             .into_iter()
-            .map(|m| {
-                anyhow::Ok(ExportTargetMutationWithContext {
+            .map(|m| -> Result<_> {
+                Ok(ExportTargetMutationWithContext {
                     mutation: m.mutation,
                     export_context: m
                         .export_context
@@ -685,7 +689,7 @@ impl<T: TargetFactoryBase> TargetFactory for T {
             self,
             setup_change
                 .into_iter()
-                .map(|item| -> anyhow::Result<_> {
+                .map(|item| -> Result<_> {
                     Ok(TypedResourceSetupChangeItem {
                         key: utils::deser::from_json_value(item.key.clone())?,
                         setup_change: (item.setup_change as &dyn Any)
@@ -710,8 +714,8 @@ fn from_json_combined_state<T: Debug + Clone + Serialize + DeserializeOwned>(
         staging: existing_states
             .staging
             .into_iter()
-            .map(|v| {
-                anyhow::Ok(match v {
+            .map(|v| -> Result<_> {
+                Ok(match v {
                     setup::StateChange::Upsert(v) => {
                         setup::StateChange::Upsert(utils::deser::from_json_value(v)?)
                     }

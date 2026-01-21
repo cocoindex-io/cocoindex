@@ -26,7 +26,7 @@ class ColPaliModelInfo:
 def _get_colpali_model_and_processor(model_name: str) -> ColPaliModelInfo:
     """Load and cache ColPali model and processor with shared device setup."""
     try:
-        import colpali_engine as ce  # type: ignore[import-untyped]
+        import colpali_engine as ce
         import torch
     except ImportError as e:
         raise ImportError(

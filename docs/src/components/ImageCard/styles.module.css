@@ -1,0 +1,65 @@
+/* Import Radix UI color system */
+@import '../Color/colors.css';
+
+.imageCardWrapper {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.imageCardLink {
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  transition: opacity 0.15s ease;
+}
+
+.imageCardLink:hover {
+  text-decoration: none;
+  opacity: 0.9;
+}
+
+.imageCardImage {
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.imageCardLink:hover .imageCardImage {
+  opacity: 0.9;
+}
+
+.imageCardTitle {
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.imageCardLink:hover .imageCardTitle {
+  color: var(--radix-color-primary);
+}
+
+.linkIcon {
+  position: absolute;
+  bottom: 0.75rem;
+  right: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--radix-color-text-subtle);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.imageCardWrapper:hover .linkIcon {
+  opacity: 1;
+}
+
+.linkIcon svg {
+  width: 1rem;
+  height: 1rem;
+}

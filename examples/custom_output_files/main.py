@@ -96,7 +96,7 @@ class LocalFileTargetConnector:
 
 @cocoindex.op.function()
 def markdown_to_html(text: str) -> str:
-    return _markdown_it.render(text)  # type: ignore
+    return _markdown_it.render(text)
 
 
 @cocoindex.flow_def(name="CustomOutputFiles")

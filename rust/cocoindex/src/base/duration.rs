@@ -1,6 +1,6 @@
 use std::f64;
 
-use anyhow::{Result, anyhow, bail};
+use crate::prelude::*;
 use chrono::Duration;
 
 /// Parses a string of number-unit pairs into a vector of (number, unit),
@@ -28,20 +28,20 @@ fn parse_components(
             }
         }
         if num_str.is_empty() {
-            bail!("Expected number in: {}", original_input);
+            client_bail!("Expected number in: {}", original_input);
         }
         let num = num_str
             .parse::<f64>()
-            .map_err(|_| anyhow!("Invalid number '{}' in: {}", num_str, original_input))?;
+            .map_err(|_| client_error!("Invalid number '{}' in: {}", num_str, original_input))?;
         if let Some(&unit) = iter.peek() {
             if allowed_units.contains(&unit) {
                 result.push((num, unit));
                 iter.next();
             } else {
-                bail!("Invalid unit '{}' in: {}", unit, original_input);
+                client_bail!("Invalid unit '{}' in: {}", unit, original_input);
             }
         } else {
-            bail!(
+            client_bail!(
                 "Missing unit after number '{}' in: {}",
                 num_str,
                 original_input
@@ -60,7 +60,7 @@ fn parse_iso8601_duration(s: &str, original_input: &str) -> Result<Duration> {
     };
 
     if !s_after_sign.starts_with('P') {
-        bail!("Duration must start with 'P' in: {}", original_input);
+        client_bail!("Duration must start with 'P' in: {}", original_input);
     }
     let s_after_p = &s_after_sign[1..];
 
@@ -77,7 +77,7 @@ fn parse_iso8601_duration(s: &str, original_input: &str) -> Result<Duration> {
     let time_components = if let Some(time_str) = time_part {
         let comps = parse_components(time_str, &['H', 'M', 'S'], original_input)?;
         if comps.is_empty() {
-            bail!(
+            client_bail!(
                 "Time part present but no time components in: {}",
                 original_input
             );
@@ -88,7 +88,7 @@ fn parse_iso8601_duration(s: &str, original_input: &str) -> Result<Duration> {
     };
 
     if date_components.is_empty() && time_components.is_empty() {
-        bail!("No components in duration: {}", original_input);
+        client_bail!("No components in duration: {}", original_input);
     }
 
     // Accumulate date duration
@@ -138,7 +138,7 @@ fn parse_iso8601_duration(s: &str, original_input: &str) -> Result<Duration> {
 fn parse_human_readable_duration(s: &str, original_input: &str) -> Result<Duration> {
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.is_empty() || parts.len() % 2 != 0 {
-        bail!(
+        client_bail!(
             "Invalid human-readable duration format in: {}",
             original_input
         );
@@ -147,9 +147,9 @@ fn parse_human_readable_duration(s: &str, original_input: &str) -> Result<Durati
     let durations: Result<Vec<Duration>> = parts
         .chunks(2)
         .map(|chunk| {
-            let num: i64 = chunk[0]
-                .parse()
-                .map_err(|_| anyhow!("Invalid number '{}' in: {}", chunk[0], original_input))?;
+            let num: i64 = chunk[0].parse().map_err(|_| {
+                client_error!("Invalid number '{}' in: {}", chunk[0], original_input)
+            })?;
 
             match chunk[1].to_lowercase().as_str() {
                 "day" | "days" => Ok(Duration::days(num)),
@@ -158,7 +158,7 @@ fn parse_human_readable_duration(s: &str, original_input: &str) -> Result<Durati
                 "second" | "seconds" => Ok(Duration::seconds(num)),
                 "millisecond" | "milliseconds" => Ok(Duration::milliseconds(num)),
                 "microsecond" | "microseconds" => Ok(Duration::microseconds(num)),
-                _ => bail!("Invalid unit '{}' in: {}", chunk[1], original_input),
+                _ => client_bail!("Invalid unit '{}' in: {}", chunk[1], original_input),
             }
         })
         .collect();
@@ -171,7 +171,7 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
     let original_input = s;
     let s = s.trim();
     if s.is_empty() {
-        bail!("Empty duration string");
+        client_bail!("Empty duration string");
     }
 
     let is_likely_iso8601 = match s.as_bytes() {

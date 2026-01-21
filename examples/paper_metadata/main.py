@@ -9,7 +9,6 @@ from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
 from functools import cache
-from typing import cast
 from pypdf import PdfReader, PdfWriter
 
 
@@ -68,7 +67,7 @@ def pdf_to_markdown(content: bytes) -> str:
         temp_file.write(content)
         temp_file.flush()
     text_any, _, _ = text_from_rendered(get_marker_converter()(temp_file.name))
-    return cast(str, text_any)
+    return text_any
 
 
 @cocoindex.flow_def(name="PaperMetadata")

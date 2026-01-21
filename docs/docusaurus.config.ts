@@ -2,6 +2,7 @@ import webpack from 'webpack';
 import { themes as prismThemes } from 'prism-react-renderer';
 import type { Config } from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
+import type { PluginOptions } from '@signalwire/docusaurus-plugin-llms-txt/public';
 
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
@@ -85,6 +86,58 @@ const config: Config = {
         ],
       },
     ],
+    [
+      '@signalwire/docusaurus-plugin-llms-txt',
+      {
+        siteTitle: 'CocoIndex',
+        siteDescription: 'Ultra performant data transformation framework for AI, with core engine written in Rust. Support incremental processing and data lineage out-of-box.',
+        depth: 2,
+        enableDescriptions: true,
+        content: {
+          enableMarkdownFiles: false,
+          enableLlmsFullTxt: false,
+          includeDocs: true,
+          includeVersionedDocs: false,
+          includeBlog: false,
+          includePages: false,
+          relativePaths: true,
+        },
+        includeOrder: [
+          '/getting_started/**',
+          '/core/**',
+          '/tutorials/**',
+          '/query',
+          '/sources/**',
+          '/ops/functions',
+          '/targets/**',
+          '/custom_ops/**',
+          '/ai/**',
+          '/cocoinsight_access',
+          '/contributing/**',
+          '/about/**',
+        ],
+        optionalLinks: [
+          {
+            title: 'GitHub Repository',
+            url: 'https://github.com/cocoindex-io/cocoindex',
+            description: 'Source code, issues, and contributions',
+          },
+          {
+            title: 'Discord Community',
+            url: 'https://discord.com/invite/zpA9S2DR7s',
+            description: 'Community support and discussions',
+          },
+          {
+            title: 'CocoIndex Homepage',
+            url: 'https://cocoindex.io',
+            description: 'Main website with examples and blogs',
+          },
+        ],
+        runOnPostBuild: true,
+        logLevel: 2,
+        onRouteError: 'warn',
+      } satisfies PluginOptions,
+    ],
   ],
 
   presets: [
@@ -126,30 +179,19 @@ const config: Config = {
       },
       items: [
         {
+          label: 'Examples',
+          to: 'https://cocoindex.io/examples',
+          target: '_self',
+          position: 'left',
+        },
+        {
           label: 'Documentation',
           type: 'doc',
           docId: 'getting_started/quickstart',
           position: 'left',
         },
-        {
-          label: 'Examples',
-          type: 'doc',
-          docId: 'examples/index',
-          position: 'left',
-        },
-        {
-          label: 'Tutorials',
-          type: 'doc',
-          docId: 'tutorials/live_updates',
-          position: 'left',
-        },
         { to: 'https://cocoindex.io/blogs/', label: 'Blog', position: 'left', target: '_self' },
-        {
-          type: 'html',
-          position: 'right',
-          value: '<iframe src="https://ghbtns.com/github-btn.html?user=cocoindex-io&repo=cocoindex&type=star&count=true" frameborder="0" scrolling="0" width="120" height="20" title="GitHub" style="vertical-align: middle;"></iframe>',
-          className: 'navbar-github-link',
-        },
+        { to: 'https://cocoindex.io/enterprise', label: 'Enterprise', position: 'left', target: '_self' },
       ],
     },
     footer: {
@@ -235,6 +277,7 @@ if (!!process.env.COCOINDEX_DOCS_ALGOLIA_API_KEY && !!process.env.COCOINDEX_DOCS
     indexName: 'cocoindex',
     contextualSearch: true,
     searchPagePath: 'search',
+    externalUrlRegex: `^(?!${(config.url + config.baseUrl).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`,
   };
 }
 

@@ -1,5 +1,4 @@
 use crate::ops::sdk::*;
-use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use unicase::UniCase;
@@ -51,7 +50,7 @@ impl SimpleFunctionExecutor for Executor {
             let language = self.args.language.value(&input)?;
             language
                 .optional()
-                .map(|v| anyhow::Ok(v.as_str()?.as_ref()))
+                .map(|v| -> Result<_> { Ok(v.as_str()?.as_ref()) })
                 .transpose()?
                 .and_then(|lang| PARSE_FN_BY_LANG.get(&UniCase::new(lang)))
         };

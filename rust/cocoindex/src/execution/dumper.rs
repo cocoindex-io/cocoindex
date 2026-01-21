@@ -31,7 +31,7 @@ struct TargetExportData<'a> {
 }
 
 impl Serialize for TargetExportData<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -282,7 +282,7 @@ pub async fn evaluate_and_dump(
     let output_dir = Path::new(&options.output_dir);
     if output_dir.exists() {
         if !output_dir.is_dir() {
-            return Err(anyhow::anyhow!("The path exists and is not a directory"));
+            return Err(client_error!("The path exists and is not a directory"));
         }
     } else {
         tokio::fs::create_dir(output_dir).await?;

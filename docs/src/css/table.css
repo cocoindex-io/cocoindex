@@ -1,0 +1,72 @@
+/* Table Styles */
+.markdown table {
+  --ifm-table-stripe-background: transparent;
+  --ifm-table-border-color: #e5e7eb;
+  --ifm-table-head-background: #f9fafb;
+  width: 100%;
+  display: table;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 1.5rem 0;
+  font-size: 0.875rem;
+  border: 1px solid var(--ifm-table-border-color);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.markdown table thead {
+  background: var(--ifm-table-head-background);
+}
+
+.markdown table thead tr {
+  background: transparent;
+}
+
+.markdown table thead tr th {
+  font-weight: 600;
+  text-align: left;
+  padding: 0.75rem 1rem;
+  border: none;
+  border-bottom: 1px solid var(--ifm-table-border-color);
+  color: var(--ifm-font-color-base);
+  font-size: 0.875rem;
+  background: transparent;
+}
+
+.markdown table tbody tr {
+  background: transparent;
+}
+
+.markdown table tbody tr:nth-child(2n) {
+  background: transparent;
+}
+
+.markdown table tbody tr td {
+  padding: 0.75rem 1rem;
+  border: none;
+  border-bottom: 1px solid var(--ifm-table-border-color);
+  color: var(--ifm-font-color-base);
+  vertical-align: top;
+  background: transparent;
+}
+
+.markdown table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.markdown table code {
+  font-size: 0.8125rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+/* Dark mode table adjustments */
+[data-theme='dark'] .markdown table {
+  --ifm-table-border-color: #374151;
+  --ifm-table-head-background: #1f2937;
+}
+
+[data-theme='dark'] .markdown table code {
+  background-color: rgba(255, 255, 255, 0.1);
+}

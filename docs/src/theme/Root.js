@@ -1,5 +1,6 @@
 import React from 'react';
 import mixpanel from 'mixpanel-browser';
+import '../css/doc.css';
 
 // Default implementation, that you can customize
 export default function Root({ children }) {

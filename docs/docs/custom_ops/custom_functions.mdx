@@ -147,6 +147,8 @@ Custom functions take the following additional parameters:
 
 * `max_batch_size: int | None`: The maximum batch size for the executor.
 
+* `timeout: datetime.timedelta | None`: Timeout for this function execution. `None` means use the default (1800 seconds).
+
 * `behavior_version: int`: The version of the behavior of the function.
     When the version is changed, the function will be re-executed even if cache is enabled.
     It's required to be set if `cache` is `True`.
@@ -226,6 +228,7 @@ class ComputeSomethingExecutor:
 ### Controlling Batch Size
 
 You can control the maximum batch size using the `max_batch_size` parameter. This is useful for:
+
 * Limiting memory usage when processing large batches
 * Reducing latency by flushing batches before they grow too large
 * Working with APIs that have request size limits

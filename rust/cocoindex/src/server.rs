@@ -27,7 +27,7 @@ pub async fn init_server(
             .cors_origins
             .iter()
             .map(|origin| origin.parse())
-            .collect::<Result<_, _>>()?;
+            .collect::<std::result::Result<_, _>>()?;
         cors = cors
             .allow_origin(AllowOrigin::list(origins))
             .allow_methods([
@@ -85,7 +85,7 @@ pub async fn init_server(
 
     let listener = tokio::net::TcpListener::bind(&settings.address)
         .await
-        .context(format!("Failed to bind to address: {}", settings.address))?;
+        .with_context(|| format!("Failed to bind to address: {}", settings.address))?;
 
     println!(
         "Server running at http://{}/cocoindex",

@@ -18,10 +18,10 @@ jobs:
   generate-3p-notices:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: 3.13
       - run: python ./.github/scripts/update_version.py
@@ -35,7 +35,7 @@ jobs:
       - name: Generate THIRD_PARTY_NOTICES.html
         run: cargo about generate -o THIRD_PARTY_NOTICES.html about.hbs
       - name: Upload THIRD_PARTY_NOTICES.html artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: THIRD_PARTY_NOTICES.html
           path: THIRD_PARTY_NOTICES.html
@@ -52,13 +52,13 @@ jobs:
           - { os: macos, runner: macos-15-intel, target: x86_64 }
           - { os: windows, runner: windows-latest, target: x64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: THIRD_PARTY_NOTICES.html
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: 3.13
       - run: python ./.github/scripts/update_version.py
@@ -71,7 +71,7 @@ jobs:
           manylinux: auto
           container: ${{ matrix.platform.container }}
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
           path: dist
@@ -83,10 +83,10 @@ jobs:
       matrix:
         py: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: wheels-linux-x86_64
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.py }}
       - run: python -V
@@ -98,14 +98,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: [generate-3p-notices]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: 3.13
       - run: python ./.github/scripts/update_version.py
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: THIRD_PARTY_NOTICES.html
       - name: Build sdist
@@ -114,7 +114,7 @@ jobs:
           command: sdist
           args: --out dist
       - name: Upload sdist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: wheels-sdist
           path: dist
@@ -132,21 +132,21 @@ jobs:
       attestations: write
     environment: release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 1
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: 3.13
       - run: python ./.github/scripts/update_version.py
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: THIRD_PARTY_NOTICES.html
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: wheels-*
       - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v3
         with:
           subject-path: 'wheels-*/*'
       - name: Publish to PyPI

@@ -44,6 +44,13 @@ The spec takes the following fields:
 
     :::
 
+    :::warning avoid SQL injection
+
+    When your filter expression is derived from user input, especially with arbitrary strings from users, you should construct it carefully to avoid SQL injection.
+    For example, you can use the [`psycopg.sql`](https://www.psycopg.org/psycopg3/docs/api/sql.html) module to construct the expression safely.
+
+    :::
+
 * `notification` (`cocoindex.sources.PostgresNotification`, optional): when present, enable change capture based on Postgres LISTEN/NOTIFY. It has the following fields:
   * `channel_name` (`str`, optional): the Postgres notification channel to listen on. CocoIndex will automatically create the channel with the given name. If omitted, CocoIndex uses `{flow_name}__{source_name}__cocoindex`.
 

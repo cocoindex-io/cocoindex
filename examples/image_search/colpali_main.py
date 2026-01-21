@@ -100,7 +100,7 @@ app.mount("/img", StaticFiles(directory="img"), name="img")
 
 
 # --- Search API ---
-@app.get("/search")  # type: ignore
+@app.get("/search")
 def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),

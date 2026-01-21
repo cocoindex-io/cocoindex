@@ -36,7 +36,7 @@ def embed_query(text: str) -> list[float]:
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     with torch.no_grad():
         features = model.get_text_features(**inputs)
-    return features[0].tolist()  # type: ignore
+    return features[0].tolist()
 
 
 @cocoindex.op.function(cache=True, behavior_version=1, gpu=True)
@@ -51,7 +51,7 @@ def embed_image(
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         features = model.get_image_features(**inputs)
-    return features[0].tolist()  # type: ignore
+    return features[0].tolist()
 
 
 # CocoIndex flow: Ingest images, extract captions, embed, export to Qdrant
@@ -140,7 +140,7 @@ app.mount("/img", StaticFiles(directory="img"), name="img")
 
 
 # --- Search API ---
-@app.get("/search")  # type: ignore
+@app.get("/search")
 def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),

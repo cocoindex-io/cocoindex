@@ -7,7 +7,6 @@ import PIL
 from dataclasses import dataclass
 from pypdf import PdfReader
 from transformers import CLIPModel, CLIPProcessor
-from typing import cast
 
 
 QDRANT_GRPC_URL = "http://localhost:6334"
@@ -36,7 +35,7 @@ def clip_embed_image(img_bytes: bytes) -> list[float]:
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
         features = model.get_image_features(**inputs)
-    return cast(list[float], features[0].tolist())
+    return features[0].tolist()
 
 
 def clip_embed_query(text: str) -> list[float]:
@@ -47,7 +46,7 @@ def clip_embed_query(text: str) -> list[float]:
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     with torch.no_grad():
         features = model.get_text_features(**inputs)
-    return cast(list[float], features[0].tolist())
+    return features[0].tolist()
 
 
 @cocoindex.transform_flow()
