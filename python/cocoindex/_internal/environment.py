@@ -374,7 +374,7 @@ class LazyEnvironment:
     def _get_env_sync(self) -> Environment:
         if self._env is not None:
             return self._env
-        env_loop = _default_env_loop()
+        env_loop = default_env_loop()
         fut = asyncio.run_coroutine_threadsafe(self._get_env(), env_loop)
         return fut.result()
 
@@ -438,7 +438,7 @@ _bg_loop_lock: threading.Lock = threading.Lock()
 _bg_loop_runner: _LoopRunner | None = None
 
 
-def _default_env_loop() -> asyncio.AbstractEventLoop:
+def default_env_loop() -> asyncio.AbstractEventLoop:
     """
     Ensure we have a long-lived background event loop for sync / cross-loop callers.
 
@@ -456,7 +456,7 @@ def _default_env_loop() -> asyncio.AbstractEventLoop:
 
 
 def start_sync() -> Environment:
-    loop = _default_env_loop()
+    loop = default_env_loop()
     fut = asyncio.run_coroutine_threadsafe(_default_env.start(), loop)
     return fut.result()
 
