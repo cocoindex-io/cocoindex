@@ -14,8 +14,9 @@ use crate::settings::Settings;
 use crate::setup::{self};
 use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyDict, PyModule};
 use pyo3_async_runtimes::tokio::future_into_py;
+use pythonize::pythonize;
 use std::sync::Arc;
 
 mod convert;
@@ -101,6 +102,15 @@ impl IndexUpdateInfo {
 
     pub fn __repr__(&self) -> String {
         self.__str__()
+    }
+
+    #[getter]
+    pub fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for s in &self.0.sources {
+            dict.set_item(&s.source_name, pythonize(py, &s.stats)?)?;
+        }
+        Ok(dict)
     }
 }
 
