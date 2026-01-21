@@ -5,33 +5,21 @@ Utilities to dump/load objects (for configs, specs).
 from __future__ import annotations
 
 import datetime
+import base64
 from enum import Enum
 from typing import Any, Mapping, TypeVar, overload, get_origin
 
 import numpy as np
 
-from .typing import (
-    AnalyzedAnyType,
-    AnalyzedBasicType,
-    AnalyzedDictType,
-    AnalyzedListType,
-    AnalyzedStructType,
-    AnalyzedTypeInfo,
-    AnalyzedUnionType,
-    EnrichedValueType,
-    FieldSchema,
-    analyze_type_info,
-    encode_enriched_type,
-    is_namedtuple_type,
-    extract_ndarray_elem_dtype,
-)
+from ._internal import datatype
+from . import engine_type
 
 
 T = TypeVar("T")
 
 
 def get_auto_default_for_type(
-    type_info: AnalyzedTypeInfo,
+    type_info: datatype.DataTypeInfo,
 ) -> tuple[Any, bool]:
     """
     Get an auto-default value for a type annotation if it's safe to do so.
@@ -46,24 +34,24 @@ def get_auto_default_for_type(
         return None, True
 
     # Case 2: Table types (KTable or LTable) - check if it's a list or dict type
-    if isinstance(type_info.variant, AnalyzedListType):
+    if isinstance(type_info.variant, datatype.SequenceType):
         return [], True
-    elif isinstance(type_info.variant, AnalyzedDictType):
+    elif isinstance(type_info.variant, datatype.MappingType):
         return {}, True
 
     return None, False
 
 
-def dump_engine_object(v: Any) -> Any:
+def dump_engine_object(v: Any, *, bytes_to_base64: bool = False) -> Any:
     """Recursively dump an object for engine. Engine side uses `Pythonized` to catch."""
     if v is None:
         return None
-    elif isinstance(v, EnrichedValueType):
+    elif isinstance(v, engine_type.EnrichedValueType):
         return v.encode()
-    elif isinstance(v, FieldSchema):
+    elif isinstance(v, engine_type.FieldSchema):
         return v.encode()
     elif isinstance(v, type) or get_origin(v) is not None:
-        return encode_enriched_type(v)
+        return engine_type.encode_enriched_type(v)
     elif isinstance(v, Enum):
         return v.value
     elif isinstance(v, datetime.timedelta):
@@ -71,13 +59,15 @@ def dump_engine_object(v: Any) -> Any:
         secs = int(total_secs)
         nanos = int((total_secs - secs) * 1e9)
         return {"secs": secs, "nanos": nanos}
-    elif is_namedtuple_type(type(v)):
+    elif datatype.is_namedtuple_type(type(v)):
         # Handle NamedTuple objects specifically to use dict format
         field_names = list(getattr(type(v), "_fields", ()))
         result = {}
         for name in field_names:
             val = getattr(v, name)
-            result[name] = dump_engine_object(val)  # Include all values, including None
+            result[name] = dump_engine_object(
+                val, bytes_to_base64=bytes_to_base64
+            )  # Include all values, including None
         if hasattr(v, "kind") and "kind" not in result:
             result["kind"] = v.kind
         return result
@@ -87,16 +77,21 @@ def dump_engine_object(v: Any) -> Any:
             if val is None:
                 # Skip None values
                 continue
-            s[k] = dump_engine_object(val)
+            s[k] = dump_engine_object(val, bytes_to_base64=bytes_to_base64)
         if hasattr(v, "kind") and "kind" not in s:
             s["kind"] = v.kind
         return s
     elif isinstance(v, (list, tuple)):
-        return [dump_engine_object(item) for item in v]
+        return [dump_engine_object(item, bytes_to_base64=bytes_to_base64) for item in v]
     elif isinstance(v, np.ndarray):
         return v.tolist()
     elif isinstance(v, dict):
-        return {k: dump_engine_object(v) for k, v in v.items()}
+        return {
+            k: dump_engine_object(v, bytes_to_base64=bytes_to_base64)
+            for k, v in v.items()
+        }
+    elif bytes_to_base64 and isinstance(v, bytes):
+        return {"@type": "bytes", "value": base64.b64encode(v).decode("utf-8")}
     return v
 
 
@@ -118,16 +113,16 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
     if v is None:
         return None
 
-    type_info = analyze_type_info(expected_type)
+    type_info = datatype.analyze_type_info(expected_type)
     variant = type_info.variant
 
-    if type_info.core_type is EnrichedValueType:
-        return EnrichedValueType.decode(v)
-    if type_info.core_type is FieldSchema:
-        return FieldSchema.decode(v)
+    if type_info.core_type is engine_type.EnrichedValueType:
+        return engine_type.EnrichedValueType.decode(v)
+    if type_info.core_type is engine_type.FieldSchema:
+        return engine_type.FieldSchema.decode(v)
 
     # Any or unknown → return as-is
-    if isinstance(variant, AnalyzedAnyType) or type_info.base_type is Any:
+    if isinstance(variant, datatype.AnyType) or type_info.base_type is Any:
         return v
 
     # Enum handling
@@ -135,7 +130,7 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
         return expected_type(v)
 
     # TimeDelta special form {secs, nanos}
-    if isinstance(variant, AnalyzedBasicType) and variant.kind == "TimeDelta":
+    if isinstance(variant, datatype.BasicType) and variant.kind == "TimeDelta":
         if isinstance(v, Mapping) and "secs" in v and "nanos" in v:
             secs = int(v["secs"])  # type: ignore[index]
             nanos = int(v["nanos"])  # type: ignore[index]
@@ -143,12 +138,12 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
         return v
 
     # List, NDArray (Vector-ish), or general sequences
-    if isinstance(variant, AnalyzedListType):
+    if isinstance(variant, datatype.SequenceType):
         elem_type = variant.elem_type if variant.elem_type else Any
         if type_info.base_type is np.ndarray:
             # Reconstruct NDArray with appropriate dtype if available
             try:
-                dtype = extract_ndarray_elem_dtype(type_info.core_type)
+                dtype = datatype.extract_ndarray_elem_dtype(type_info.core_type)
             except (TypeError, ValueError, AttributeError):
                 dtype = None
             return np.array(v, dtype=dtype)
@@ -156,7 +151,7 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
         return [load_engine_object(elem_type, item) for item in v]
 
     # Dict / Mapping
-    if isinstance(variant, AnalyzedDictType):
+    if isinstance(variant, datatype.MappingType):
         key_t = variant.key_type
         val_t = variant.value_type
         return {
@@ -165,7 +160,7 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
         }
 
     # Structs (dataclass, NamedTuple, or Pydantic)
-    if isinstance(variant, AnalyzedStructType):
+    if isinstance(variant, datatype.StructType):
         struct_type = variant.struct_type
         init_kwargs: dict[str, Any] = {}
         for field_info in variant.fields:
@@ -174,19 +169,19 @@ def load_engine_object(expected_type: Any, v: Any) -> Any:
                     field_info.type_hint, v[field_info.name]
                 )
             else:
-                type_info = analyze_type_info(field_info.type_hint)
+                type_info = datatype.analyze_type_info(field_info.type_hint)
                 auto_default, is_supported = get_auto_default_for_type(type_info)
                 if is_supported:
                     init_kwargs[field_info.name] = auto_default
         return struct_type(**init_kwargs)
 
     # Union with discriminator support via "kind"
-    if isinstance(variant, AnalyzedUnionType):
+    if isinstance(variant, datatype.UnionType):
         if isinstance(v, Mapping) and "kind" in v:
             discriminator = v["kind"]
             for typ in variant.variant_types:
-                t_info = analyze_type_info(typ)
-                if isinstance(t_info.variant, AnalyzedStructType):
+                t_info = datatype.analyze_type_info(typ)
+                if isinstance(t_info.variant, datatype.StructType):
                     t_struct = t_info.variant.struct_type
                     candidate_kind = getattr(t_struct, "kind", None)
                     if candidate_kind == discriminator:

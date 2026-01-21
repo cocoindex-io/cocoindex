@@ -35,7 +35,7 @@ impl From<Ordinal> for Option<i64> {
 impl TryFrom<SystemTime> for Ordinal {
     type Error = anyhow::Error;
 
-    fn try_from(time: SystemTime) -> Result<Self, Self::Error> {
+    fn try_from(time: SystemTime) -> std::result::Result<Self, Self::Error> {
         let duration = time.duration_since(std::time::UNIX_EPOCH)?;
         Ok(Ordinal(Some(duration.as_micros().try_into()?)))
     }
@@ -44,7 +44,7 @@ impl TryFrom<SystemTime> for Ordinal {
 impl<TZ: TimeZone> TryFrom<chrono::DateTime<TZ>> for Ordinal {
     type Error = anyhow::Error;
 
-    fn try_from(time: chrono::DateTime<TZ>) -> Result<Self, Self::Error> {
+    fn try_from(time: chrono::DateTime<TZ>) -> std::result::Result<Self, Self::Error> {
         Ok(Ordinal(Some(time.timestamp_micros())))
     }
 }

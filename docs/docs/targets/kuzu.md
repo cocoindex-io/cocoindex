@@ -9,7 +9,7 @@ import { ExampleButton } from '../../src/components/GitHubButton';
 
 Note:[Kuzu](https://github.com/kuzudb/kuzu) - embedded graph database is no longer maintained.
 
-Exports data to a [Kuzu](https://kuzu.com/) graph database.
+Exports data to a [Kuzu](https://github.com/kuzudb/kuzu) graph database.
 
 ## Get Started
 
@@ -21,16 +21,16 @@ CocoIndex supports talking to Kuzu through its [API server](https://github.com/k
 
 The `Kuzu` target spec takes the following fields:
 
-*   `connection` ([auth reference](/docs/core/flow_def#auth-registry) to `KuzuConnectionSpec`): The connection to the Kuzu database. `KuzuConnectionSpec` has the following fields:
-    *   `api_server_url` (`str`): The URL of the Kuzu API server, e.g. `http://localhost:8123`.
-*   `mapping` (`Nodes | Relationships`): The mapping from collected row to nodes or relationships of the graph. For either [nodes to export](./index.md#nodes-to-export) or [relationships to export](./index.md#relationships-to-export).
+* `connection` ([auth reference](/docs/core/flow_def#auth-registry) to `KuzuConnectionSpec`): The connection to the Kuzu database. `KuzuConnectionSpec` has the following fields:
+  * `api_server_url` (`str`): The URL of the Kuzu API server, e.g. `http://localhost:8123`.
+* `mapping` (`Nodes | Relationships`): The mapping from collected row to nodes or relationships of the graph. For either [nodes to export](./index.md#nodes-to-export) or [relationships to export](./index.md#relationships-to-export).
 
 Kuzu also provides a declaration spec `KuzuDeclaration`, to configure indexing options for nodes only referenced by relationships. It has the following fields:
 
-*   `connection` (auth reference to `KuzuConnectionSpec`)
-*   Fields for [nodes to declare](./index.md#declare-extra-node-labels), including
-    *   `nodes_label` (required)
-    *   `primary_key_fields` (required)
+* `connection` (auth reference to `KuzuConnectionSpec`)
+* Fields for [nodes to declare](./index.md#declare-extra-node-labels), including
+  * `nodes_label` (required)
+  * `primary_key_fields` (required)
 
 ## Kuzu dev instance
 
@@ -55,6 +55,7 @@ docker run -d --name kuzu-explorer -p ${KUZU_EXPLORER_PORT}:8000  -v ${KUZU_DB_D
 You can then access the explorer at [http://localhost:8124](http://localhost:8124).
 
 ## Example
+
 <ExampleButton
   href="https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph"
   text="Docs to Knowledge Graph"

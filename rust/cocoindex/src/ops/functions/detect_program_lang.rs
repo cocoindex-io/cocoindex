@@ -1,6 +1,5 @@
 use crate::ops::sdk::*;
-use crate::ops::shared::program_langs;
-use anyhow::Result;
+use cocoindex_extra_text::prog_langs;
 
 pub struct Args {
     filename: ResolvedOpArg,
@@ -14,12 +13,8 @@ struct Executor {
 impl SimpleFunctionExecutor for Executor {
     async fn evaluate(&self, input: Vec<value::Value>) -> Result<value::Value> {
         let filename = self.args.filename.value(&input)?.as_str()?;
-        let Some(last_dot) = filename.rfind('.') else {
-            return Ok(value::Value::Null);
-        };
-        let extension = &filename[last_dot..];
-        let lang_name = program_langs::get_language_info(&extension)
-            .map(|info| value::Value::Basic(value::BasicValue::Str(info.name.clone())));
+        let lang_name = prog_langs::detect_language(&filename)
+            .map(|name| value::Value::Basic(value::BasicValue::Str(name.into())));
         Ok(lang_name.unwrap_or(value::Value::Null))
     }
 }

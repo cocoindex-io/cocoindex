@@ -1,0 +1,22 @@
+# Link checker ignore file (lychee)
+# Patterns to exclude from link checking to avoid false positives
+
+# internal doc links - docusaurus validates these during build
+^file://
+
+# used in the docs (as part of setup/launch instructions)
+^http://localhost
+^https://localhost
+
+# return 400/403 in the lychee reports but are valid user-facing links
+^https://console\.anthropic\.com/
+^https://dashboard\.voyageai\.com/
+^https://platform\.openai\.com/
+^https://portal\.azure\.com/
+^https://console\.aws\.amazon\.com/
+^https://console\.cloud\.google\.com/
+^https://us-east-1\.console\.aws\.amazon\.com/
+^https://cloud\.google\.com/
+^https://aws\.amazon\.com/console/
+
+^https://platform\.openai\.com/api/ # may require auth

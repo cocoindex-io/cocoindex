@@ -21,7 +21,7 @@ pub struct TrackedTargetKeyInfo {
 }
 
 impl Serialize for TrackedTargetKeyInfo {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -37,7 +37,7 @@ impl Serialize for TrackedTargetKeyInfo {
 }
 
 impl<'de> serde::Deserialize<'de> for TrackedTargetKeyInfo {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -50,7 +50,7 @@ impl<'de> serde::Deserialize<'de> for TrackedTargetKeyInfo {
                 formatter.write_str("a sequence of 3 or 4 elements for TrackedTargetKey")
             }
 
-            fn visit_seq<A>(self, mut seq: A) -> Result<TrackedTargetKeyInfo, A::Error>
+            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<TrackedTargetKeyInfo, A::Error>
             where
                 A: SeqAccess<'de>,
             {
@@ -338,7 +338,7 @@ impl ListTrackedSourceKeyMetadataState {
         source_id: i32,
         db_setup: &'a TrackingTableSetupState,
         pool: &'a PgPool,
-    ) -> impl Stream<Item = Result<TrackedSourceKeyMetadata, sqlx::Error>> + 'a {
+    ) -> impl Stream<Item = std::result::Result<TrackedSourceKeyMetadata, sqlx::Error>> + 'a {
         self.query_str = format!(
             "SELECT \
             source_key, processed_source_ordinal, {}, process_logic_fingerprint, max_process_ordinal, process_ordinal \
@@ -411,7 +411,7 @@ pub async fn read_source_state(
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<Option<serde_json::Value>> {
     let Some(table_name) = db_setup.source_state_table_name.as_ref() else {
-        bail!("Source state table not enabled for this flow");
+        client_bail!("Source state table not enabled for this flow");
     };
 
     let query_str = format!(
@@ -435,7 +435,7 @@ pub async fn upsert_source_state(
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<()> {
     let Some(table_name) = db_setup.source_state_table_name.as_ref() else {
-        bail!("Source state table not enabled for this flow");
+        client_bail!("Source state table not enabled for this flow");
     };
 
     let query_str = format!(

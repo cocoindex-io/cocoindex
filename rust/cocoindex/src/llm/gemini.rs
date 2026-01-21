@@ -1,8 +1,8 @@
 use crate::prelude::*;
 
 use crate::llm::{
-    LlmEmbeddingClient, LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
-    ToJsonSchemaOptions, detect_image_mime_type,
+    GeneratedOutput, LlmEmbeddingClient, LlmGenerateRequest, LlmGenerateResponse,
+    LlmGenerationClient, OutputFormat, ToJsonSchemaOptions, detect_image_mime_type,
 };
 use base64::prelude::*;
 use google_cloud_aiplatform_v1 as vertexai;
@@ -43,7 +43,7 @@ impl AiStudioClient {
             key
         } else {
             std::env::var("GEMINI_API_KEY")
-                .map_err(|_| anyhow::anyhow!("GEMINI_API_KEY environment variable must be set"))?
+                .map_err(|_| client_error!("GEMINI_API_KEY environment variable must be set"))?
         };
 
         Ok(Self {
@@ -134,6 +134,7 @@ impl LlmGenerationClient for AiStudioClient {
         }
 
         // If structured output is requested, add schema and responseMimeType
+        let has_json_schema = request.output_format.is_some();
         if let Some(OutputFormat::JsonSchema { schema, .. }) = &request.output_format {
             let schema_json = serde_json::to_value(schema)?;
             payload["generationConfig"] = serde_json::json!({
@@ -150,19 +151,26 @@ impl LlmGenerationClient for AiStudioClient {
                 .json(&payload)
         })
         .await
-        .context("Gemini API error")?;
-        let resp_json: Value = resp.json().await.context("Invalid JSON")?;
+        .map_err(Error::from)
+        .with_context(|| "Gemini API error")?;
+        let resp_json: Value = resp.json().await.with_context(|| "Invalid JSON")?;
 
         if let Some(error) = resp_json.get("error") {
-            bail!("Gemini API error: {:?}", error);
+            client_bail!("Gemini API error: {:?}", error);
         }
         let mut resp_json = resp_json;
         let text = match &mut resp_json["candidates"][0]["content"]["parts"][0]["text"] {
             Value::String(s) => std::mem::take(s),
-            _ => bail!("No text in response"),
+            _ => client_bail!("No text in response"),
         };
 
-        Ok(LlmGenerateResponse { text })
+        let output = if has_json_schema {
+            GeneratedOutput::Json(serde_json::from_str(&text)?)
+        } else {
+            GeneratedOutput::Text(text)
+        };
+
+        Ok(LlmGenerateResponse { output })
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {
@@ -206,9 +214,10 @@ impl LlmEmbeddingClient for AiStudioClient {
                 .json(&payload)
         })
         .await
-        .context("Gemini API error")?;
+        .map_err(Error::from)
+        .with_context(|| "Gemini API error")?;
         let embedding_resp: BatchEmbedContentResponse =
-            resp.json().await.context("Invalid JSON")?;
+            resp.json().await.with_context(|| "Invalid JSON")?;
         Ok(super::LlmEmbeddingResponse {
             embeddings: embedding_resp
                 .embeddings
@@ -331,6 +340,7 @@ impl LlmGenerationClient for VertexAiClient {
         });
 
         // Compose generation config
+        let has_json_schema = request.output_format.is_some();
         let mut generation_config = None;
         if let Some(OutputFormat::JsonSchema { schema, .. }) = &request.output_format {
             let schema_json = serde_json::to_value(schema)?;
@@ -365,9 +375,16 @@ impl LlmGenerationClient for VertexAiClient {
             .and_then(|content| content.parts.into_iter().next())
             .and_then(|part| part.data)
         else {
-            bail!("No text in response");
+            client_bail!("No text in response");
         };
-        Ok(super::LlmGenerateResponse { text })
+
+        let output = if has_json_schema {
+            super::GeneratedOutput::Json(serde_json::from_str(&text)?)
+        } else {
+            super::GeneratedOutput::Text(text)
+        };
+
+        Ok(super::LlmGenerateResponse { output })
     }
 
     fn json_schema_options(&self) -> ToJsonSchemaOptions {
@@ -428,7 +445,7 @@ impl LlmEmbeddingClient for VertexAiClient {
                 let embeddings = prediction
                     .get_mut("embeddings")
                     .map(|v| v.take())
-                    .ok_or_else(|| anyhow::anyhow!("No embeddings in prediction"))?;
+                    .ok_or_else(|| client_error!("No embeddings in prediction"))?;
                 let embedding: ContentEmbedding = utils::deser::from_json_value(embeddings)?;
                 Ok(embedding.values)
             })
