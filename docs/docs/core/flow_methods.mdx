@@ -189,12 +189,15 @@ It's quite cheap to do so, as CocoIndex will automatically combine multiple call
 
 :::
 
-Both `update()` and `update_async()` can take a `reexport_targets` option to enable reexporting the targets even if there's no change.
+Both `update()` and `update_async()` accept the following options:
+
+* `reexport_targets` (type: `bool`, default: `False`): Whether to reexport the targets even if there's no change.
+* `print_stats` (type: `bool`, default: `False`): Whether to print stats during update.
 
 ```python
-demo_flow.update(reexport_targets=True)
+demo_flow.update(reexport_targets=True, print_stats=True)
 ...
-await demo_flow.update_async(reexport_targets=True)
+await demo_flow.update_async(reexport_targets=True, print_stats=True)
 ...
 ```
 

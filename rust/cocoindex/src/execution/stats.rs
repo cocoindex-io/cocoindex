@@ -194,27 +194,19 @@ impl OperationInProcessStats {
 struct UpdateStatsSegment {
     count: i64,
     label: &'static str,
-    bar_width: usize,
 }
 
 impl UpdateStatsSegment {
     pub fn new(count: i64, label: &'static str) -> Self {
-        Self {
-            count,
-            label,
-            bar_width: 0,
-        }
+        Self { count, label }
     }
 }
 
 const BAR_WIDTH: u64 = 40;
 
-fn indices_of<T, const N: usize>(_: &[T; N]) -> [usize; N] {
-    std::array::from_fn(|i| i)
-}
 impl std::fmt::Display for UpdateStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut segments: [UpdateStatsSegment; _] = [
+        let segments: [UpdateStatsSegment; _] = [
             UpdateStatsSegment::new(self.num_insertions.get(), "added"),
             UpdateStatsSegment::new(self.num_updates.get(), "updated"),
             UpdateStatsSegment::new(self.num_reprocesses.get(), "reprocessed"),
