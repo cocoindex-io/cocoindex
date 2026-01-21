@@ -1,3 +1,6 @@
+# Regular docs release is part of CocoIndex release (see `release.yml`).
+# This workflow is for manually triggered docs release, e.g. urgent docs-only fixes.
+#
 name: Release Docs
 
 on:

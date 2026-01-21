@@ -125,7 +125,7 @@ fn bind_value_field<'arg>(
                                 BasicValue::Float32(v) => *v,
                                 BasicValue::Float64(v) => *v as f32,
                                 BasicValue::Int64(v) => *v as f32,
-                                v => bail!("unexpected vector element type: {}", v.kind()),
+                                v => client_bail!("unexpected vector element type: {}", v.kind()),
                             })
                         })
                         .collect::<Result<Vec<f32>>>()?;
@@ -248,7 +248,7 @@ impl ExportContext {
                     bind_key_field(&mut query_builder, key_value)?;
                 }
                 if self.value_fields_schema.len() != upsert.value.fields.len() {
-                    bail!(
+                    internal_bail!(
                         "unmatched value length: {} vs {}",
                         self.value_fields_schema.len(),
                         upsert.value.fields.len()
@@ -825,7 +825,7 @@ impl TargetFactoryBase for TargetFactory {
             .map(|d| {
                 // Validate: if schema is specified, table_name must be explicit
                 if d.spec.schema.is_some() && d.spec.table_name.is_none() {
-                    bail!(
+                    client_bail!(
                         "Postgres target '{}': when 'schema' is specified, 'table_name' must also be explicitly provided. \
                          Auto-generated table names are not supported with custom schemas",
                         d.name
@@ -913,7 +913,7 @@ impl TargetFactoryBase for TargetFactory {
         for mut_groups in mut_groups_by_db_ref.values() {
             let db_pool = &mut_groups
                 .first()
-                .ok_or_else(|| anyhow!("empty group"))?
+                .ok_or_else(|| internal_error!("empty group"))?
                 .export_context
                 .db_pool;
             let mut txn = db_pool.begin().await?;

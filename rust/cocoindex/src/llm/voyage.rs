@@ -42,7 +42,7 @@ impl Client {
             key
         } else {
             std::env::var("VOYAGE_API_KEY")
-                .map_err(|_| anyhow::anyhow!("VOYAGE_API_KEY environment variable must be set"))?
+                .map_err(|_| client_error!("VOYAGE_API_KEY environment variable must be set"))?
         };
 
         Ok(Self {
@@ -87,9 +87,10 @@ impl LlmEmbeddingClient for Client {
                 .json(&payload)
         })
         .await
-        .context("Voyage AI API error")?;
+        .map_err(Error::from)
+        .with_context(|| "Voyage AI API error")?;
 
-        let embedding_resp: EmbedResponse = resp.json().await.context("Invalid JSON")?;
+        let embedding_resp: EmbedResponse = resp.json().await.with_context(|| "Invalid JSON")?;
 
         Ok(LlmEmbeddingResponse {
             embeddings: embedding_resp

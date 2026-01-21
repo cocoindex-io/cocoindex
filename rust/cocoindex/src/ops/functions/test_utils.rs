@@ -6,7 +6,6 @@ use crate::ops::sdk::{
     SimpleFunctionFactory, Value, make_output_type,
 };
 use crate::prelude::*;
-use anyhow::Result;
 use std::sync::Arc;
 
 // This function builds an argument schema for a flow function.

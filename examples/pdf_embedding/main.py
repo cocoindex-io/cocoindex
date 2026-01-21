@@ -34,7 +34,7 @@ class PdfToMarkdownExecutor:
             temp_file.write(content)
             temp_file.flush()
             text_any, _, _ = text_from_rendered(self._converter(temp_file.name))
-            return text_any  # type: ignore
+            return text_any
 
 
 @cocoindex.transform_flow()
@@ -133,7 +133,10 @@ Search results:
 
 def _main() -> None:
     # Initialize the database connection pool.
-    pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
+    database_url = os.getenv("COCOINDEX_DATABASE_URL")
+    if database_url is None:
+        raise ValueError("COCOINDEX_DATABASE_URL is not set")
+    pool = ConnectionPool(database_url)
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
         query = input("Enter search query (or Enter to quit): ")

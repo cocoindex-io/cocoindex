@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.7.8,<2.0"]
+requires = ["maturin>=1.10.0,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -16,7 +16,7 @@ dependencies = [
     "python-dotenv>=1.1.0",
     "watchfiles>=1.1.0",
     "numpy>=1.23.2",
-    "psutil>=7.0.0",
+    "psutil>=7.2.1",
 ]
 license = "Apache-2.0"
 license-files = ["THIRD_PARTY_NOTICES.html"]
@@ -63,33 +63,87 @@ include = ["THIRD_PARTY_NOTICES.html"]
 # Point to the crate within the workspace
 manifest-path = "rust/cocoindex/Cargo.toml"
 
-[project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "ruff", "mypy", "pre-commit"]
+profile = "release"      # wheel / normal builds
+editable-profile = "dev" # local editable builds
 
+[project.optional-dependencies]
 embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
 leann = ["leann>=0.3.5"]
+doris = ["aiohttp>=3.8.0", "aiomysql>=0.2.0", "pymysql>=1.0.0"]
 
-# We need to repeat the dependency above to make it available for the `all` feature.
-# Indirect dependencies such as "cocoindex[embeddings]" will not work for local development.
 all = [
     "sentence-transformers>=3.3.1",
     "colpali-engine",
     "lancedb>=0.25.0",
     "pyarrow>=19.0.0",
      "leann>=0.3.5",
+    "aiohttp>=3.8.0",
+    "aiomysql>=0.2.0",
+    "pymysql>=1.0.0",
 ]
 
-# This is the set of dependencies that needs to be installed for the CI workflow.
-all-ci = ["pytest", "pytest-asyncio", "mypy", "pydantic>=2.11.9"]
+[dependency-groups]
+build-test = [
+    "maturin>=1.10.0,<2.0",
+    "pytest",
+    "pytest-asyncio",
+    "mypy",
+    "ruff",
+]
+type-stubs = ["types-psutil>=7.2.1"]
+ci-enabled-optional-deps = ["pydantic>=2.11.9"]
+
+ci = [
+    { include-group = "build-test" },
+    { include-group = "type-stubs" },
+    { include-group = "ci-enabled-optional-deps" },
+]
+
+dev-local = ["pre-commit"]
+dev = [{ include-group = "ci" }, { include-group = "dev-local" }]
+
+[tool.uv]
+package = false
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = "python/cocoindex"
-exclude = "(\\.venv|site-packages)"
+
+files = ["python", "examples"]
+
+# This allows 'import cocoindex' to work inside examples
+mypy_path = "python"
+
+# Prevent "Duplicate module named 'main'" errors
+# This forces mypy to calculate module names based on file path
+# relative to the root, rather than just the filename.
+explicit_package_bases = true
+
+# Enable namespace packages
+# This allows 'examples/example1' to be seen as a module path
+namespace_packages = true
+
+exclude = [".venv", "site-packages", "baml_client"]
 disable_error_code = ["unused-ignore"]
+
 [[tool.mypy.overrides]]
-module = ["sentence_transformers", "torch", "colpali_engine", "PIL"]
+# Ignore missing imports for optional dependencies from cocoindex library
+module = ["sentence_transformers", "torch", "colpali_engine", "PIL", "aiohttp", "aiomysql", "pymysql"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["examples.*"]
+
+# Silence missing import errors for optional dependencies
+disable_error_code = ["import-not-found", "import-untyped", "untyped-decorator"]
+
+# Prevent the "Any" contagion from triggering strict errors
+# (These flags are normally True in strict mode)
+
+warn_return_any = false
+disallow_any_generics = false
+disallow_subclassing_any = false
+disallow_untyped_calls = false
+disallow_any_decorated = false

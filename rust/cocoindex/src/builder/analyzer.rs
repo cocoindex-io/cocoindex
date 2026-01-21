@@ -25,9 +25,9 @@ pub(super) enum ValueTypeBuilder {
 }
 
 impl TryFrom<&ValueType> for ValueTypeBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
-    fn try_from(value_type: &ValueType) -> Result<Self> {
+    fn try_from(value_type: &ValueType) -> std::result::Result<Self, Self::Error> {
         match value_type {
             ValueType::Basic(basic_type) => Ok(ValueTypeBuilder::Basic(basic_type.clone())),
             ValueType::Struct(struct_type) => Ok(ValueTypeBuilder::Struct(struct_type.try_into()?)),
@@ -37,9 +37,9 @@ impl TryFrom<&ValueType> for ValueTypeBuilder {
 }
 
 impl TryInto<ValueType> for &ValueTypeBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
-    fn try_into(self) -> Result<ValueType> {
+    fn try_into(self) -> std::result::Result<ValueType, Self::Error> {
         match self {
             ValueTypeBuilder::Basic(basic_type) => Ok(ValueType::Basic(basic_type.clone())),
             ValueTypeBuilder::Struct(struct_type) => Ok(ValueType::Struct(struct_type.try_into()?)),
@@ -60,7 +60,7 @@ impl StructSchemaBuilder {
         let field_idx = self.fields.len() as u32;
         match self.field_name_idx.entry(field.name.clone()) {
             std::collections::hash_map::Entry::Occupied(_) => {
-                bail!("Field name already exists: {}", field.name);
+                client_bail!("Field name already exists: {}", field.name);
             }
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(field_idx);
@@ -78,9 +78,9 @@ impl StructSchemaBuilder {
 }
 
 impl TryFrom<&StructSchema> for StructSchemaBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
-    fn try_from(schema: &StructSchema) -> Result<Self> {
+    fn try_from(schema: &StructSchema) -> std::result::Result<Self, Self::Error> {
         let mut result = StructSchemaBuilder {
             fields: Vec::with_capacity(schema.fields.len()),
             field_name_idx: HashMap::with_capacity(schema.fields.len()),
@@ -94,15 +94,15 @@ impl TryFrom<&StructSchema> for StructSchemaBuilder {
 }
 
 impl TryInto<StructSchema> for &StructSchemaBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
-    fn try_into(self) -> Result<StructSchema> {
+    fn try_into(self) -> std::result::Result<StructSchema, Self::Error> {
         Ok(StructSchema {
             fields: Arc::new(
                 self.fields
                     .iter()
                     .map(FieldSchema::<ValueType>::from_alternative)
-                    .collect::<Result<Vec<_>>>()?,
+                    .collect::<std::result::Result<Vec<_>, _>>()?,
             ),
             description: self.description.clone(),
         })
@@ -116,9 +116,9 @@ pub(super) struct TableSchemaBuilder {
 }
 
 impl TryFrom<&TableSchema> for TableSchemaBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
-    fn try_from(schema: &TableSchema) -> Result<Self> {
+    fn try_from(schema: &TableSchema) -> std::result::Result<Self, Self::Error> {
         Ok(Self {
             kind: schema.kind,
             sub_scope: Arc::new(Mutex::new(DataScopeBuilder {
@@ -130,9 +130,9 @@ impl TryFrom<&TableSchema> for TableSchemaBuilder {
 }
 
 impl TryInto<TableSchema> for &TableSchemaBuilder {
-    type Error = anyhow::Error;
+    type Error = Error;
 
-    fn try_into(self) -> Result<TableSchema> {
+    fn try_into(self) -> std::result::Result<TableSchema, Self::Error> {
         let sub_scope = self.sub_scope.lock().unwrap();
         let row = (&sub_scope.data).try_into()?;
         Ok(TableSchema {
@@ -465,7 +465,7 @@ impl DataScopeBuilder {
         let mut def_fp = base_def_fp;
 
         if field_path.is_empty() {
-            bail!("Field path is empty");
+            client_bail!("Field path is empty");
         }
 
         let mut i = 0;
@@ -1096,7 +1096,7 @@ impl AnalyzerContext {
                                     .fields
                                     .iter()
                                     .position(|field| &field.name == f)
-                                    .ok_or_else(|| anyhow!("field not found: {}", f))
+                                    .ok_or_else(|| client_error!("field not found: {}", f))
                             })
                             .collect::<Result<Vec<_>>>()?;
 
@@ -1396,7 +1396,7 @@ pub async fn analyze_flow(
         targets: targets_analyzed_ss
             .into_iter()
             .enumerate()
-            .map(|(idx, v)| v.ok_or_else(|| anyhow!("target op `{}` not found", idx)))
+            .map(|(idx, v)| v.ok_or_else(|| internal_error!("target op `{}` not found", idx)))
             .collect::<Result<Vec<_>>>()?,
         declarations: declarations_analyzed_ss,
     };

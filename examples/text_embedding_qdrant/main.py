@@ -93,6 +93,7 @@ def search(query: str) -> cocoindex.QueryOutput:
                 "score": result.score,
             }
             for result in search_results
+            if result.payload is not None
         ],
         query_info=cocoindex.QueryInfo(
             embedding=query_embedding,

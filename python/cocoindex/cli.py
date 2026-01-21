@@ -94,8 +94,15 @@ def _initialize_cocoindex_in_process() -> None:
 
 
 @click.group()
-@click.version_option(package_name="cocoindex", message="%(prog)s version %(version)s")
+@click.version_option(
+    None,
+    "-V",
+    "--version",
+    package_name="cocoindex",
+    message="%(prog)s version %(version)s",
+)
 @click.option(
+    "-e",
     "--env-file",
     type=click.Path(
         exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True
@@ -106,6 +113,7 @@ def _initialize_cocoindex_in_process() -> None:
     show_default=False,
 )
 @click.option(
+    "-d",
     "--app-dir",
     help="Load apps from the specified directory. Default to the current directory.",
     default="",
@@ -181,7 +189,9 @@ def ls(app_target: str | None) -> None:
 @click.option(
     "--color/--no-color", default=True, help="Enable or disable colored output."
 )
-@click.option("--verbose", is_flag=True, help="Show verbose output with full details.")
+@click.option(
+    "-v", "--verbose", is_flag=True, help="Show verbose output with full details."
+)
 def show(app_flow_specifier: str, color: bool, verbose: bool) -> None:
     """
     Show the flow spec and schema.
@@ -636,6 +646,7 @@ def server(
     setup: bool,  # pylint: disable=redefined-outer-name
     reset: bool,
     reexport: bool,
+    full_reprocess: bool,
     force: bool,
     quiet: bool,
     cors_origin: str | None,
@@ -659,6 +670,7 @@ def server(
         cors_local,
         live_update,
         reexport,
+        full_reprocess,
         quiet,
     )
     kwargs = {
@@ -719,6 +731,7 @@ def _run_server(
     cors_local: int | None = None,
     live_update: bool = False,
     reexport: bool = False,
+    full_reprocess: bool = False,
     quiet: bool = False,
     /,
     *,
@@ -783,6 +796,7 @@ def _run_server(
         options = flow.FlowLiveUpdaterOptions(
             live_mode=live_update,
             reexport_targets=reexport,
+            full_reprocess=full_reprocess,
             print_stats=not quiet,
         )
         asyncio.run_coroutine_threadsafe(

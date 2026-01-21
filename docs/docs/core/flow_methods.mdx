@@ -166,18 +166,25 @@ cocoindex update --reexport main.py
 <Tabs>
 <TabItem value="python" label="Python">
 
-The `Flow.update()` method creates/updates data in the target.
+The `Flow.update()` method creates/updates data in the target. It accepts the following options:
+
+* `reexport_targets` (type: `bool`, default: `False`): Whether to reexport the targets even if there's no change.
+* `print_stats` (type: `bool`, default: `False`): Whether to print stats during update.
+
+It returns an object, with the following properties:
+
+* `stats` (type: `dict[str, dict[str, int]]`): A dictionary of stats by source. Keyed by source name, value is a dictionary of stats by metrics: `num_no_change`, `num_insertions`, `num_updates`, `num_reprocesses`, `num_deletions`, `num_errors`.
+
+Example:
 
 ```python
-stats = demo_flow.update()
-print(stats)
+update_info = demo_flow.update(print_stats=True)
 ```
 
 `update_async()` is the asynchronous version of `update()`.
 
 ```python
-stats = await demo_flow.update_async()
-print(stats)
+update_info = await demo_flow.update_async(print_stats=True)
 ```
 
 Once the function finishes, the target data is fresh up to the moment when the function is called.
@@ -188,15 +195,6 @@ Once the function finishes, the target data is fresh up to the moment when the f
 It's quite cheap to do so, as CocoIndex will automatically combine multiple calls into a single update, as long as we hold the guarantee that the target data is fresh up to the moment when the last call is initiated.
 
 :::
-
-Both `update()` and `update_async()` can take a `reexport_targets` option to enable reexporting the targets even if there's no change.
-
-```python
-demo_flow.update(reexport_targets=True)
-...
-await demo_flow.update_async(reexport_targets=True)
-...
-```
 
 </TabItem>
 </Tabs>

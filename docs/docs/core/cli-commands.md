@@ -170,7 +170,7 @@ cocoindex show [OPTIONS] APP_FLOW_SPECIFIER
 | Option | Description |
 |--------|-------------|
 | `--color / --no-color` | Enable or disable colored output. |
-| `--verbose` | Show verbose output with full details. |
+| `-v, --verbose` | Show verbose output with full details. |
 | `--help` | Show this message and exit. |
 
 ---

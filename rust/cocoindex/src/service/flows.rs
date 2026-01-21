@@ -15,7 +15,7 @@ use axum_extra::extract::Query;
 #[instrument(name = "api.list_flows", skip(lib_context))]
 pub async fn list_flows(
     State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<Vec<String>>, ApiError> {
+) -> std::result::Result<Json<Vec<String>>, ApiError> {
     Ok(Json(
         lib_context.flows.lock().unwrap().keys().cloned().collect(),
     ))
@@ -25,7 +25,7 @@ pub async fn list_flows(
 pub async fn get_flow_schema(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<FlowSchema>, ApiError> {
+) -> std::result::Result<Json<FlowSchema>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     Ok(Json(flow_ctx.flow.data_schema.clone()))
 }
@@ -48,7 +48,7 @@ pub struct GetFlowResponse {
 pub async fn get_flow(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<GetFlowResponse>, ApiError> {
+) -> std::result::Result<Json<GetFlowResponse>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let flow_spec = flow_ctx.flow.flow_instance.clone();
     let data_schema = flow_ctx.flow.data_schema.clone();
@@ -87,7 +87,7 @@ pub async fn get_keys(
     Path(flow_name): Path<String>,
     Query(query): Query<GetKeysParam>,
     State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<GetKeysResponse>, ApiError> {
+) -> std::result::Result<Json<GetKeysResponse>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let schema = &flow_ctx.flow.data_schema;
 
@@ -224,7 +224,7 @@ pub async fn evaluate_data(
     Path(flow_name): Path<String>,
     Query(query): Query<SourceRowKeyParams>,
     State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<EvaluateDataResponse>, ApiError> {
+) -> std::result::Result<Json<EvaluateDataResponse>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let execution_ctx = flow_ctx.use_execution_ctx().await?;
     let source_row_key_ctx =
@@ -257,7 +257,7 @@ pub async fn evaluate_data(
 pub async fn update(
     Path(flow_name): Path<String>,
     State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<stats::IndexUpdateInfo>, ApiError> {
+) -> std::result::Result<Json<stats::IndexUpdateInfo>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let live_updater = execution::FlowLiveUpdater::start(
         flow_ctx.clone(),
@@ -278,7 +278,7 @@ pub async fn get_row_indexing_status(
     Path(flow_name): Path<String>,
     Query(query): Query<SourceRowKeyParams>,
     State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<indexing_status::SourceRowIndexingStatus>, ApiError> {
+) -> std::result::Result<Json<indexing_status::SourceRowIndexingStatus>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let execution_ctx = flow_ctx.use_execution_ctx().await?;
     let source_row_key_ctx =
@@ -298,7 +298,7 @@ pub async fn query(
     Path((flow_name, query_handler_name)): Path<(String, String)>,
     Query(query): Query<QueryInput>,
     State(lib_context): State<Arc<LibContext>>,
-) -> Result<Json<QueryOutput>, ApiError> {
+) -> std::result::Result<Json<QueryOutput>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
     let query_handler = {
         let query_handlers = flow_ctx.query_handlers.read().unwrap();

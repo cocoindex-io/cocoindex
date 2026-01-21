@@ -5,7 +5,6 @@ from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
 from marker.config.parser import ConfigParser
-from typing import cast
 
 import cocoindex
 
@@ -32,7 +31,7 @@ class PdfToMarkdownExecutor:
             temp_file.write(content)
             temp_file.flush()
             text_any, _, _ = text_from_rendered(self._converter(temp_file.name))
-            return cast(str, text_any)
+            return text_any
 
 
 @dataclasses.dataclass

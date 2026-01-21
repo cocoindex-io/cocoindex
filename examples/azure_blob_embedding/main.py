@@ -98,7 +98,10 @@ def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, A
 
 def _main() -> None:
     # Initialize the database connection pool.
-    pool = ConnectionPool(os.getenv("COCOINDEX_DATABASE_URL"))
+    database_url = os.getenv("COCOINDEX_DATABASE_URL")
+    if database_url is None:
+        raise ValueError("COCOINDEX_DATABASE_URL is not set")
+    pool = ConnectionPool(database_url)
 
     azure_blob_text_embedding_flow.setup()
     update_stats = azure_blob_text_embedding_flow.update()

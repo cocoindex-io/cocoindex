@@ -11,7 +11,8 @@ pub struct AnalyzedFlow {
     pub flow_instance_ctx: Arc<FlowInstanceContext>,
 
     /// It's None if the flow is not up to date
-    pub execution_plan: Shared<BoxFuture<'static, Result<Arc<plan::ExecutionPlan>, SharedError>>>,
+    pub execution_plan:
+        Shared<BoxFuture<'static, std::result::Result<Arc<plan::ExecutionPlan>, SharedError>>>,
 }
 
 impl AnalyzedFlow {
@@ -25,7 +26,7 @@ impl AnalyzedFlow {
                 .with_context(|| format!("analyzing flow `{}`", flow_instance.name))?;
         let execution_plan = async move {
             shared_ok(Arc::new(
-                execution_plan_fut.await.map_err(SharedError::new)?,
+                execution_plan_fut.await.map_err(SharedError::from)?,
             ))
         }
         .boxed()
@@ -41,7 +42,7 @@ impl AnalyzedFlow {
     }
 
     pub async fn get_execution_plan(&self) -> Result<Arc<plan::ExecutionPlan>> {
-        let execution_plan = self.execution_plan.clone().await.anyhow_result()?;
+        let execution_plan = self.execution_plan.clone().await.into_result()?;
         Ok(execution_plan)
     }
 }

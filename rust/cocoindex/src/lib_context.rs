@@ -86,7 +86,7 @@ impl FlowExecutionContext {
     ) -> Result<&Arc<SourceIndexingContext>> {
         self.source_indexing_contexts[source_idx]
             .get_or_try_init(|| async move {
-                anyhow::Ok(
+                Ok::<_, Error>(
                     SourceIndexingContext::load(
                         flow.clone(),
                         source_idx,
@@ -205,7 +205,9 @@ impl DbPools {
                     let pool = pool_options
                         .connect_with(pg_options.clone())
                         .await
-                        .context(format!("Failed to connect to database {}", conn_spec.url))?;
+                        .with_context(|| {
+                            format!("Failed to connect to database {}", conn_spec.url)
+                        })?;
                     let _ = pool.acquire().await?;
                 }
 
@@ -219,8 +221,8 @@ impl DbPools {
                 let pool = pool_options
                     .connect_with(pg_options)
                     .await
-                    .context("Failed to connect to database")?;
-                anyhow::Ok(pool)
+                    .with_context(|| "Failed to connect to database")?;
+                Ok::<_, Error>(pool)
             })
             .await?;
         Ok(pool.clone())
@@ -241,7 +243,8 @@ pub struct LibContext {
     pub persistence_ctx: Option<PersistenceContext>,
     pub flows: Mutex<BTreeMap<String, Arc<FlowContext>>>,
     pub app_namespace: String,
-
+    // When true, failures while dropping target backends are logged and ignored.
+    pub ignore_target_drop_failures: bool,
     pub global_concurrency_controller: Arc<concur_control::ConcurrencyController>,
     pub multi_progress_bar: LazyLock<MultiProgress>,
 }
@@ -268,7 +271,7 @@ impl LibContext {
 
     pub fn require_persistence_ctx(&self) -> Result<&PersistenceContext> {
         self.persistence_ctx.as_ref().ok_or_else(|| {
-            anyhow!(
+            client_error!(
                 "Database is required for this operation. \
                          The easiest way is to set COCOINDEX_DATABASE_URL environment variable. \
                          Please see https://cocoindex.io/docs/core/settings for more details."
@@ -316,6 +319,7 @@ pub async fn create_lib_context(settings: settings::Settings) -> Result<LibConte
         persistence_ctx,
         flows: Mutex::new(BTreeMap::new()),
         app_namespace: settings.app_namespace,
+        ignore_target_drop_failures: settings.ignore_target_drop_failures,
         global_concurrency_controller: Arc::new(concur_control::ConcurrencyController::new(
             &concur_control::Options {
                 max_inflight_rows: settings.global_execution_options.source_max_inflight_rows,
@@ -333,7 +337,7 @@ fn get_settings() -> Result<settings::Settings> {
     let settings = if let Some(get_settings_fn) = &*get_settings_fn {
         get_settings_fn()?
     } else {
-        bail!("CocoIndex setting function is not provided");
+        client_bail!("CocoIndex setting function is not provided");
     };
     Ok(settings)
 }

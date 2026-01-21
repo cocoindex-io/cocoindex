@@ -1,3 +1,4 @@
+import asyncio
 import dataclasses
 import logging
 import threading
@@ -8,10 +9,11 @@ import datetime
 from typing import Any
 
 import lancedb  # type: ignore
+from lancedb.index import FTS  # type: ignore
 import pyarrow as pa  # type: ignore
 
-from .. import op
-from ..typing import (
+from cocoindex import op
+from cocoindex.engine_type import (
     FieldSchema,
     EnrichedValueType,
     BasicValueType,
@@ -20,7 +22,7 @@ from ..typing import (
     VectorTypeSchema,
     TableType,
 )
-from ..index import VectorIndexDef, FtsIndexDef, IndexOptions, VectorSimilarityMetric
+from cocoindex.index import IndexOptions, VectorSimilarityMetric
 
 _logger = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ class LanceDB(op.TargetSpec):
     db_uri: str
     table_name: str
     db_options: DatabaseOptions | None = None
+    num_transactions_before_optimize: int = 50
 
 
 @dataclasses.dataclass
@@ -254,6 +257,9 @@ class _MutateContext:
     key_field_schema: FieldSchema
     value_fields_type: list[ValueType]
     pa_schema: pa.Schema
+    lock: asyncio.Lock
+    num_transactions_before_optimize: int
+    num_applied_mutations: int = 0
 
 
 # Not used for now, because of https://github.com/lancedb/lance/issues/3443
@@ -446,7 +452,7 @@ class _Connector:
                     # Create FTS index using create_fts_index() API
                     # Pass parameters as kwargs to support any future FTS index options
                     kwargs = fts_index.parameters if fts_index.parameters else {}
-                    await table.create_fts_index(fts_index.field_name, **kwargs)
+                    await table.create_index(fts_index.field_name, config=FTS(**kwargs))
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     raise RuntimeError(
                         f"Exception in creating FTS index on field {fts_index.field_name}: {e}"
@@ -463,6 +469,7 @@ class _Connector:
     ) -> _MutateContext:
         db_conn = await connect_async(spec.db_uri, db_options=spec.db_options)
         table = await db_conn.open_table(spec.table_name)
+        asyncio.create_task(table.optimize())
         return _MutateContext(
             table=table,
             key_field_schema=setup_state.key_field_schema,
@@ -472,6 +479,8 @@ class _Connector:
             pa_schema=make_pa_schema(
                 setup_state.key_field_schema, setup_state.value_fields_schema
             ),
+            lock=asyncio.Lock(),
+            num_transactions_before_optimize=spec.num_transactions_before_optimize,
         )
 
     @staticmethod
@@ -508,3 +517,12 @@ class _Connector:
                 delete_cond_sql = f"{key_name} IN ({','.join(keys_sql_to_deletes)})"
                 builder = builder.when_not_matched_by_source_delete(delete_cond_sql)
             await builder.execute(record_batch)
+
+            async with context.lock:
+                context.num_applied_mutations += 1
+                if (
+                    context.num_applied_mutations
+                    >= context.num_transactions_before_optimize
+                ):
+                    asyncio.create_task(context.table.optimize())
+                    context.num_applied_mutations = 0

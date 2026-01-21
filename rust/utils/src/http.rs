@@ -1,8 +1,9 @@
+use crate::error::{Error, Result};
 use crate::retryable::{self, IsRetryable};
 
 pub async fn request(
     req_builder: impl Fn() -> reqwest::RequestBuilder,
-) -> anyhow::Result<reqwest::Response> {
+) -> Result<reqwest::Response> {
     let resp = retryable::run(
         || async {
             let req = req_builder();
@@ -13,14 +14,14 @@ pub async fn request(
 
             let is_retryable = err.is_retryable();
 
-            let mut anyhow_error = anyhow::Error::new(err);
+            let mut error: Error = err.into();
             let body = resp.text().await?;
             if !body.is_empty() {
-                anyhow_error = anyhow_error.context(format!("Error message body:\n{body}"));
+                error = error.context(format!("Error message body:\n{body}"));
             }
 
             Err(retryable::Error {
-                error: anyhow_error,
+                error,
                 is_retryable,
             })
         },
