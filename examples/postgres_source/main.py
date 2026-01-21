@@ -14,7 +14,7 @@ import os
 import pathlib
 import sys
 from dataclasses import dataclass
-from typing import Annotated, AsyncIterator, cast
+from typing import Annotated, AsyncIterator
 
 import asyncpg
 from numpy.typing import NDArray
@@ -116,15 +116,10 @@ async def app_main(scope: coco.Scope) -> None:
     source = postgres.PgTableSource(
         scope.use(SOURCE_POOL),
         table_name="source_products",
-        columns=["product_category", "product_name", "description", "price", "amount"],
-        row_factory=lambda row: SourceProduct(**row),
+        row_type=SourceProduct,
     )
 
-    rows_any: list[SourceProduct] | list[dict[str, object]] = await source.rows_async()
-    if not all(isinstance(row, SourceProduct) for row in rows_any):
-        raise TypeError("Expected SourceProduct rows from PgTableSource.")
-    rows = cast(list[SourceProduct], rows_any)
-    for product in rows:
+    async for product in source.fetch_rows():
         coco_aio.mount(
             process_product,
             scope / "row" / product.product_category / product.product_name,

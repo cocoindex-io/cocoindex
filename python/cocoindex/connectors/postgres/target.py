@@ -46,12 +46,12 @@ from cocoindex._internal.datatype import (
     AnyType,
     MappingType,
     SequenceType,
-    StructType,
+    RecordType,
     UnionType,
     analyze_type_info,
-    is_struct_type,
+    is_record_type,
 )
-from cocoindex.resources.schema import VectorSchema, VectorSchemaProvider
+from cocoindex.resources.schema import VectorSchemaProvider
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -220,7 +220,7 @@ def _get_type_mapping(
 
     # Complex types that need JSON encoding
     if isinstance(
-        type_info.variant, (SequenceType, MappingType, StructType, UnionType, AnyType)
+        type_info.variant, (SequenceType, MappingType, RecordType, UnionType, AnyType)
     ):
         return _JSONB_MAPPING
 
@@ -263,7 +263,7 @@ class TableSchema(Generic[RowT]):
         columns: type[RowT],
         primary_key: list[str],
         *,
-        column_specs: dict[str, ColumnDef | VectorSchemaProvider] | None = None,
+        column_overrides: dict[str, PgType | VectorSchemaProvider] | None = None,
     ) -> None: ...
 
     def __init__(
@@ -271,30 +271,29 @@ class TableSchema(Generic[RowT]):
         columns: type[RowT] | dict[str, ColumnDef],
         primary_key: list[str],
         *,
-        column_specs: dict[str, ColumnDef | VectorSchemaProvider] | None = None,
+        column_overrides: dict[str, PgType | VectorSchemaProvider] | None = None,
     ) -> None:
         """
         Create a TableSchema.
 
         Args:
-            columns: Either a struct type (dataclass, NamedTuple, or Pydantic model)
+            columns: Either a record type (dataclass, NamedTuple, or Pydantic model)
                      or a dict mapping column names to ColumnDef.
-                     When a struct type is provided, Python types are automatically
+                     When a record type is provided, Python types are automatically
                      mapped to PostgreSQL types based on asyncpg's type conversion.
             primary_key: List of column names that form the primary key.
-            column_specs: Optional dict mapping column names to ColumnDef or VectorSpec.
-                         If not provided, Python types are automatically
-                         mapped to PostgreSQL types based on asyncpg's type conversion.
+            column_overrides: Optional dict mapping column names to PgType or VectorSchemaProvider
+                              to override the default type mapping.
         """
         if isinstance(columns, dict):
             self.columns = columns
             self.row_type = None
-        elif is_struct_type(columns):
-            self.columns = self._columns_from_struct_type(columns, column_specs)
+        elif is_record_type(columns):
+            self.columns = self._columns_from_record_type(columns, column_overrides)
             self.row_type = columns
         else:
             raise TypeError(
-                f"columns must be a struct type (dataclass, NamedTuple, Pydantic model) "
+                f"columns must be a record type (dataclass, NamedTuple, Pydantic model) "
                 f"or a dict[str, ColumnDef], got {type(columns)}"
             )
 
@@ -308,37 +307,45 @@ class TableSchema(Generic[RowT]):
                 )
 
     @staticmethod
-    def _columns_from_struct_type(
-        struct_type: type,
-        column_specs: dict[str, ColumnDef | VectorSchemaProvider] | None,
+    def _columns_from_record_type(
+        record_type: type,
+        column_overrides: dict[str, PgType | VectorSchemaProvider] | None,
     ) -> dict[str, ColumnDef]:
-        """Convert a struct type to a dict of column name -> ColumnDef."""
-        struct_info = StructType(struct_type)
+        """Convert a record type to a dict of column name -> ColumnDef."""
+        record_info = RecordType(record_type)
         columns: dict[str, ColumnDef] = {}
 
-        for field in struct_info.fields:
-            spec = column_specs.get(field.name) if column_specs else None
-            if isinstance(spec, ColumnDef):
-                columns[field.name] = spec
-                continue
-
+        for field in record_info.fields:
+            override = column_overrides.get(field.name) if column_overrides else None
             type_info = analyze_type_info(field.type_hint)
 
-            vector_schema_provider = None
+            # Extract PgType and VectorSchemaProvider from annotations
+            pg_type_annotation: PgType | None = None
+            vector_schema_provider: VectorSchemaProvider | None = None
             for annotation in type_info.annotations:
-                if isinstance(annotation, VectorSchemaProvider):
+                if isinstance(annotation, PgType):
+                    pg_type_annotation = annotation
+                elif isinstance(annotation, VectorSchemaProvider):
                     vector_schema_provider = annotation
-                    break
-            if isinstance(spec, VectorSchemaProvider):
-                vector_schema_provider = spec
 
-            type_mapping = _get_type_mapping(
-                field.type_hint, vector_schema_provider=vector_schema_provider
-            )
-            col_type = type_mapping.pg_type.strip()
+            # Override takes precedence over annotation
+            if isinstance(override, PgType):
+                pg_type_annotation = override
+            elif isinstance(override, VectorSchemaProvider):
+                vector_schema_provider = override
+
+            # Determine type mapping
+            if pg_type_annotation is not None:
+                type_mapping = _TypeMapping(
+                    pg_type_annotation.pg_type, pg_type_annotation.encoder
+                )
+            else:
+                type_mapping = _get_type_mapping(
+                    field.type_hint, vector_schema_provider=vector_schema_provider
+                )
 
             columns[field.name] = ColumnDef(
-                type=col_type,
+                type=type_mapping.pg_type.strip(),
                 nullable=type_info.nullable,
                 encoder=type_mapping.encoder,
             )
@@ -1058,19 +1065,16 @@ async def create_pool(
     **kwargs: Any,
 ) -> asyncpg.Pool:
     """
-    Create an asyncpg connection pool with pgvector support.
-
-    This is a wrapper around `asyncpg.create_pool()` that automatically
-    registers the pgvector extension on each connection.
+    Create an asyncpg connection pool, registering extensions needed by the postgres connector on each connection.
 
     Args:
         dsn: Connection string or None.
         init: Optional connection initialization callback. If provided,
-              it will be called after pgvector is registered.
+              it will be called for each connection in the pool.
         **kwargs: All other arguments are passed to `asyncpg.create_pool()`.
 
     Returns:
-        An asyncpg connection pool with pgvector support.
+        An asyncpg connection pool.
 
     Example:
         ```python

@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 from cocoindex._internal.datatype import (
     MappingType,
     SequenceType,
-    StructType,
+    RecordType,
     LeafType,
     DataTypeInfo,
     analyze_type_info,
@@ -153,7 +153,7 @@ def test_dataclass() -> None:
     assert result == DataTypeInfo(
         core_type=SimpleDataclass,
         base_type=SimpleDataclass,
-        variant=StructType(struct_type=SimpleDataclass),
+        variant=RecordType(record_type=SimpleDataclass),
         annotations=(),
         nullable=False,
     )
@@ -165,7 +165,7 @@ def test_named_tuple() -> None:
     assert result == DataTypeInfo(
         core_type=SimpleNamedTuple,
         base_type=SimpleNamedTuple,
-        variant=StructType(struct_type=SimpleNamedTuple),
+        variant=RecordType(record_type=SimpleNamedTuple),
         annotations=(),
         nullable=False,
     )

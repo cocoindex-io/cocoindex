@@ -1,4 +1,4 @@
-"""Utilities for adapting synchronous APIs to async interfaces."""
+"""Utilities for adapting between synchronous and asynchronous interfaces."""
 
 from __future__ import annotations
 
@@ -92,4 +92,86 @@ async def sync_to_async_iter(
         thread.join(timeout=1.0)
 
 
-__all__ = ["sync_to_async_iter"]
+def async_to_sync_iter(
+    async_iter_fn: Callable[[], AsyncIterator[T]],
+    *,
+    max_queue_size: int = DEFAULT_QUEUE_SIZE,
+) -> Iterator[T]:
+    """
+    Adapt an asynchronous iterator function to a synchronous iterator.
+
+    This function takes a callable that returns an async iterator and
+    converts it to a sync iterator. The async iteration runs in a separate
+    thread with its own event loop.
+
+    Args:
+        async_iter_fn: A callable that returns an async iterator.
+            Takes no arguments.
+        max_queue_size: Maximum number of items to buffer in the queue between
+            the producer thread and sync consumer. Defaults to 1024.
+
+    Yields:
+        Values produced by the async iterator.
+
+    Raises:
+        RuntimeError: If called from within a running event loop.
+        Any exception raised by the async iterator is re-raised.
+
+    Example:
+        >>> async def async_generator(start: int, end: int):
+        ...     for i in range(start, end):
+        ...         yield i
+        ...
+        >>> for value in async_to_sync_iter(lambda: async_generator(0, 5)):
+        ...     print(value)
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass  # No running loop, which is what we want
+    else:
+        raise RuntimeError(
+            "async_to_sync_iter must not be called from a running event loop"
+        )
+
+    q: queue.Queue[tuple[bool, T | Exception]] = queue.Queue(maxsize=max_queue_size)
+    stop_event = threading.Event()
+
+    def producer() -> None:
+        async def run_async() -> None:
+            try:
+                async for item in async_iter_fn():
+                    if stop_event.is_set():
+                        break
+                    q.put((False, item))
+            except Exception as e:  # pylint: disable=broad-except
+                q.put((True, e))
+            finally:
+                q.put((True, StopIteration()))
+
+        asyncio.run(run_async())
+
+    thread = threading.Thread(target=producer, daemon=True)
+    thread.start()
+
+    try:
+        while True:
+            is_done_or_error, value = q.get()
+            if is_done_or_error:
+                if isinstance(value, StopIteration):
+                    break
+                raise value  # type: ignore[misc]
+            yield value  # type: ignore[misc]
+    finally:
+        # Signal the producer to stop if consumer exits early
+        stop_event.set()
+        # Drain the queue to unblock producer if it's blocked on put()
+        try:
+            while True:
+                q.get_nowait()
+        except queue.Empty:
+            pass
+        thread.join(timeout=1.0)
+
+
+__all__ = ["async_to_sync_iter", "sync_to_async_iter"]

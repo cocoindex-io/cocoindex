@@ -42,10 +42,10 @@ from cocoindex._internal.datatype import (
     AnyType,
     MappingType,
     SequenceType,
-    StructType,
+    RecordType,
     UnionType,
     analyze_type_info,
-    is_struct_type,
+    is_record_type,
 )
 from cocoindex.resources.schema import VectorSchema, VectorSchemaProvider, FtsSpec
 
@@ -177,7 +177,7 @@ def _get_type_mapping(
 
     # Complex types that need JSON encoding
     if isinstance(
-        type_info.variant, (SequenceType, MappingType, StructType, UnionType, AnyType)
+        type_info.variant, (SequenceType, MappingType, RecordType, UnionType, AnyType)
     ):
         return _JSON_MAPPING
 
@@ -240,9 +240,9 @@ class TableSchema(Generic[RowT]):
         Create a TableSchema.
 
         Args:
-            columns: Either a struct type (dataclass, NamedTuple, or Pydantic model)
+            columns: Either a record type (dataclass, NamedTuple, or Pydantic model)
                      or a dict mapping column names to ColumnDef.
-                     When a struct type is provided, Python types are automatically
+                     When a record type is provided, Python types are automatically
                      mapped to PyArrow types.
             primary_key: List of column names that form the primary key.
             column_specs: Optional dict mapping column names to ColumnDef, VectorSpec, or FtsSpec.
@@ -255,12 +255,12 @@ class TableSchema(Generic[RowT]):
         if isinstance(columns, dict):
             self.columns = columns
             self.row_type = None
-        elif is_struct_type(columns):
-            self.columns = self._columns_from_struct_type(columns, column_specs)
+        elif is_record_type(columns):
+            self.columns = self._columns_from_record_type(columns, column_specs)
             self.row_type = columns
         else:
             raise TypeError(
-                f"columns must be a struct type (dataclass, NamedTuple, Pydantic model) "
+                f"columns must be a record type (dataclass, NamedTuple, Pydantic model) "
                 f"or a dict[str, ColumnDef], got {type(columns)}"
             )
 
@@ -273,16 +273,16 @@ class TableSchema(Generic[RowT]):
                     f"Primary key column '{pk}' not found in columns: {list(self.columns.keys())}"
                 )
 
-    def _columns_from_struct_type(
+    def _columns_from_record_type(
         self,
-        struct_type: type,
+        record_type: type,
         column_specs: dict[str, ColumnDef | VectorSchemaProvider | FtsSpec] | None,
     ) -> dict[str, ColumnDef]:
-        """Convert a struct type to a dict of column name -> ColumnDef."""
-        struct_info = StructType(struct_type)
+        """Convert a record type to a dict of column name -> ColumnDef."""
+        record_info = RecordType(record_type)
         columns: dict[str, ColumnDef] = {}
 
-        for field in struct_info.fields:
+        for field in record_info.fields:
             spec = column_specs.get(field.name) if column_specs else None
 
             # Handle ColumnDef override

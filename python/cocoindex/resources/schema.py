@@ -11,7 +11,7 @@ import typing as _typing
 import dataclasses as _dataclasses
 
 if _typing.TYPE_CHECKING:
-    import numpy as _nd
+    import numpy as _np
 
 
 @_typing.runtime_checkable
@@ -25,7 +25,7 @@ class VectorSchemaProvider(_typing.Protocol):
 class VectorSchema:
     """Additional information for a vector column."""
 
-    dtype: _nd.dtype
+    dtype: _np.dtype
     size: int
 
     def __coco_vector_schema__(self) -> VectorSchema:

@@ -33,31 +33,23 @@ def walk_dir(
 
 **Returns:** A `DirWalker` that can be used with both `for` and `async for` loops.
 
-### Synchronous Iteration
+### Iterating Files
 
-Sync iteration yields `File` objects implementing the [`FileLike`](../resource_types.md#filelike--asyncfilelike) protocol:
+`walk_dir()` returns a `DirWalker` that supports both sync and async iteration:
 
 ```python
-from cocoindex.connectors import localfs
-
+# Synchronous iteration - yields File objects (FileLike protocol)
 for file in localfs.walk_dir("/path/to/documents", recursive=True):
     text = file.read_text()
     ...
-```
 
-### Asynchronous Iteration
-
-Async iteration yields `AsyncFile` objects implementing the [`AsyncFileLike`](../resource_types.md#filelike--asyncfilelike) protocol:
-
-```python
-from cocoindex.connectors import localfs
-
+# Asynchronous iteration - yields AsyncFile objects (AsyncFileLike protocol)
 async for file in localfs.walk_dir("/path/to/documents", recursive=True):
     text = await file.read_text()
     ...
 ```
 
-The async variant runs file I/O in a thread pool, keeping the event loop responsive.
+The async variant runs file I/O in a thread pool, keeping the event loop responsive. See [`FileLike` / `AsyncFileLike`](../resource_types.md#filelike--asyncfilelike) for details on the file objects.
 
 ### Filtering Files
 
@@ -101,14 +93,12 @@ def process_file(scope: coco.Scope, file: localfs.File) -> None:
 
 The `localfs` connector provides effect-based APIs for writing files. Effects ensure that CocoIndex tracks what files should exist and automatically handles creation, updates, and deletion.
 
-### Effect Hierarchy
-
 File writing follows a two-level effect hierarchy:
 
 - **Parent effect:** Directory exists — declared via `declare_dir_target()`
 - **Child effects:** Files in the directory — declared via `DirTarget.declare_file()`
 
-```
+```text
 output/                      ← Parent effect (directory)
 ├── intro.html               ← Child effect (file)
 ├── chapter1.html            ← Child effect (file)

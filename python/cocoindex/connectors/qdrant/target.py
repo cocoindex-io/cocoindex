@@ -44,10 +44,10 @@ from cocoindex._internal.datatype import (
     AnyType,
     MappingType,
     SequenceType,
-    StructType,
+    RecordType,
     UnionType,
     analyze_type_info,
-    is_struct_type,
+    is_record_type,
 )
 from cocoindex.resources.schema import VectorSchemaProvider
 
@@ -120,12 +120,12 @@ class TableSchema(Generic[RowT]):
         if isinstance(columns, dict):
             self.columns = columns
             self.row_type = None
-        elif is_struct_type(columns):
-            self.columns = self._columns_from_struct_type(columns, column_specs)
+        elif is_record_type(columns):
+            self.columns = self._columns_from_record_type(columns, column_specs)
             self.row_type = columns
         else:
             raise TypeError(
-                "columns must be a struct type (dataclass, NamedTuple, Pydantic model) "
+                "columns must be a record type (dataclass, NamedTuple, Pydantic model) "
                 f"or a dict[str, ColumnDef], got {type(columns)}"
             )
 
@@ -140,16 +140,16 @@ class TableSchema(Generic[RowT]):
         if len(self.primary_key) != 1:
             raise ValueError("Qdrant requires a single-column primary key.")
 
-    def _columns_from_struct_type(
+    def _columns_from_record_type(
         self,
-        struct_type: type,
+        record_type: type,
         column_specs: dict[str, ColumnDef | VectorSchemaProvider | QdrantVectorSpec]
         | None,
     ) -> dict[str, ColumnDef]:
-        struct_info = StructType(struct_type)
+        record_info = RecordType(record_type)
         columns: dict[str, ColumnDef] = {}
 
-        for field in struct_info.fields:
+        for field in record_info.fields:
             spec = column_specs.get(field.name) if column_specs else None
 
             if isinstance(spec, ColumnDef):
@@ -675,7 +675,7 @@ def _qdrant_id_from_key(key: _RowKey) -> str | int:
 def _get_encoder(type_info: Any) -> ValueEncoder | None:
     variant = type_info.variant
 
-    if isinstance(variant, StructType):
+    if isinstance(variant, RecordType):
         return _json_encoder
 
     if isinstance(variant, UnionType):
