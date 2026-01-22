@@ -19,9 +19,9 @@
 </div>
 
 
-# 
-
 This example demonstrates how to use CocoIndex to convert presentation slides from Google Drive into speech audio.
+
+We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
 <img width="2732" height="1540" alt="cover" src="https://github.com/user-attachments/assets/dbced683-abc1-439c-9ead-678c028b0912" />
 
@@ -96,6 +96,3 @@ cocoindex server -ci main
 Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
 
 <img width="2716" height="1410" alt="cocoinsight-transcript-extraction" src="https://github.com/user-attachments/assets/8c11418d-3bd7-40cd-9189-18929c206ecb" />
-
-
-
