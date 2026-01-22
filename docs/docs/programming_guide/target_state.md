@@ -9,7 +9,7 @@ An **Effect** is a unit of desired external state produced by your transformatio
 
 Effects can form hierarchies (e.g., a table contains rows). CocoIndex connectors provide specific APIs to declare effects at each level.
 
-See [Core Concepts](./core_concepts.md#effects-desired-targets-in-external-systems) for examples of how effects map to external system operations.
+See [Core Concepts](./core_concepts.md#target-states-desired-targets-in-external-systems) for examples of how effects map to external system operations.
 
 ## Declaring Effects with Target Connectors
 
@@ -110,4 +110,4 @@ CocoIndex also provides generic effect APIs for cases where connector-specific A
 - `declare_target_state()` — declare a leaf effect
 - `declare_target_state_with_child()` — declare an effect that provides child effects
 
-These are exported from `cocoindex` and used internally by connectors like `postgres` and `localfs`. For defining custom effect providers, see [Effect Provider](../advanced_topics/effect_provider.md).
+These are exported from `cocoindex` and used internally by connectors like `postgres` and `localfs`. For defining custom effect providers, see [Target State Provider](../advanced_topics/target_state_provider.md).

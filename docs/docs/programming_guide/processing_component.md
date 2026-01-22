@@ -77,7 +77,7 @@ handle = coco.mount_run(setup_table, scope / "setup", table_name="docs")
 table = handle.result()  # Blocks until ready, then returns the value
 ```
 
-A common use of `mount_run()` is to obtain an [effect provider](./effect#obtaining-effect-providers) after its parent effect is applied.
+A common use of `mount_run()` is to obtain an [effect provider](./target_state#obtaining-effect-providers) after its parent effect is applied.
 
 ## Granularity Trade-offs
 
