@@ -256,7 +256,7 @@ def main() -> None:
 
         # Determine output path
         docs_dir = project_root / "docs" / "docs"
-        output_file = docs_dir / "cli-commands.md"
+        output_file = docs_dir / "cli_commands.md"
 
         # Ensure directory exists
         docs_dir.mkdir(parents=True, exist_ok=True)
