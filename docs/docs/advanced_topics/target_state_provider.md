@@ -1,7 +1,7 @@
 ---
-title: Target State Provider
+title: Target States Provider
 ---
 
-# Target State Provider
+# Target States Provider
 
 TODO: Add content.

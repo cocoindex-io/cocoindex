@@ -77,7 +77,7 @@ handle = coco.mount_run(setup_table, scope / "setup", table_name="docs")
 table = handle.result()  # Blocks until ready, then returns the value
 ```
 
-A common use of `mount_run()` is to obtain a [target state provider](./target_state#obtaining-target-state-providers) after its parent target state is applied.
+A common use of `mount_run()` is to obtain a [target states provider](./target_state#obtaining-target-state-providers) after its parent target state is applied.
 
 ## Granularity Trade-offs
 

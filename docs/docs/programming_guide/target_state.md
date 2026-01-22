@@ -13,7 +13,7 @@ See [Core Concepts](./core_concepts.md#target-states-desired-targets-in-external
 
 ## Declaring Target States with Target Connectors
 
-CocoIndex connectors provide **target state providers** with specific `declare_*` methods for declaring target states. For example:
+CocoIndex connectors provide **target states providers** with specific `declare_*` methods for declaring target states. For example:
 
 - `postgres.TableTarget` provides `declare_row()` to declare a row in a table
 - `localfs.DirTarget` provides `declare_file()` to declare a file in a directory
@@ -26,9 +26,9 @@ table_target.declare_row(scope, row=DocEmbedding(...))
 dir_target.declare_file(scope, filename="output.html", content=html)
 ```
 
-## Obtaining Target State Providers
+## Obtaining Target States Providers
 
-Some target state providers are created once a parent target state is ready. For example, you can only declare rows after the table exists, or files after the directory exists.
+Some target states providers are created once a parent target state is ready. For example, you can only declare rows after the table exists, or files after the directory exists.
 
 The pattern is:
 
@@ -87,7 +87,7 @@ def process_file(scope: coco.Scope, file: FileLike, target: localfs.DirTarget) -
 
 See [Processing Component](./processing_component.md) for more on `mount_run()`.
 
-:::tip Type Safety for Target State Providers
+:::tip Type Safety for Target States Providers
 Target state providers have two statuses: **pending** (just created) and **resolved** (after the parent target state is applied). The type system tracks this — if you try to use a pending provider in the same processing component that declares the parent target state, type checkers like mypy will flag the error.
 :::
 
@@ -110,4 +110,4 @@ CocoIndex also provides generic target state APIs for cases where connector-spec
 - `declare_target_state()` — declare a leaf target state
 - `declare_target_state_with_child()` — declare a target state that provides child target states
 
-These are exported from `cocoindex` and used internally by connectors like `postgres` and `localfs`. For defining custom target state providers, see [Target State Provider](../advanced_topics/target_state_provider.md).
+These are exported from `cocoindex` and used internally by connectors like `postgres` and `localfs`. For defining custom target states providers, see [Target States Provider](../advanced_topics/target_states_provider.md).

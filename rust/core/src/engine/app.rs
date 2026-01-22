@@ -70,10 +70,10 @@ impl<Prof: EngineProfile> App<Prof> {
         }
     }
 
-    /// Drop the app, reverting all effects and clearing the database.
+    /// Drop the app, reverting all target states and clearing the database.
     ///
     /// This method:
-    /// 1. Deletes the root component (which cascades to delete all child components and their effects)
+    /// 1. Deletes the root component (which cascades to delete all child components and their target states)
     /// 2. Waits for deletion to complete
     /// 3. Clears the app's database
     #[instrument(name = "app.drop", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
@@ -82,7 +82,7 @@ impl<Prof: EngineProfile> App<Prof> {
         let providers = self
             .app_ctx()
             .env()
-            .effect_providers()
+            .target_states_providers()
             .lock()
             .unwrap()
             .providers

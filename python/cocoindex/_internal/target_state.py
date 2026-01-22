@@ -28,8 +28,8 @@ KeyT = TypeVar("KeyT", bound=Hashable)
 KeyT_contra = TypeVar("KeyT_contra", contravariant=True, bound=Hashable)
 ValueT = TypeVar("ValueT", default=Any)
 ValueT_contra = TypeVar("ValueT_contra", contravariant=True, default=Any)
-StateT = TypeVar("StateT", default=Any)
-StateT_co = TypeVar("StateT_co", covariant=True, default=Any)
+TrackingRecordT = TypeVar("TrackingRecordT", default=Any)
+TrackingRecordT_co = TypeVar("TrackingRecordT_co", covariant=True, default=Any)
 HandlerT_co = TypeVar(
     "HandlerT_co", covariant=True, bound="TargetHandler[Any, Any, Any, Any]"
 )
@@ -95,8 +95,8 @@ class TargetActionSink(Generic[ActionT_contra, OptChildHandlerT_co]):
     __slots__ = ("_core",)
     _core: core.TargetActionSink
 
-    def __init__(self, core_effect_sink: core.TargetActionSink):
-        self._core = core_effect_sink
+    def __init__(self, core_action_sink: core.TargetActionSink):
+        self._core = core_action_sink
 
     @staticmethod
     def from_fn(
@@ -137,22 +137,24 @@ _ASYNC_FN_DEDUPER = _ObjectDeduper()
 
 
 class TargetReconcileOutput(
-    Generic[ActionT, StateT_co, OptChildHandlerT_co], NamedTuple
+    Generic[ActionT, TrackingRecordT_co, OptChildHandlerT_co], NamedTuple
 ):
     action: ActionT
     sink: TargetActionSink[ActionT, OptChildHandlerT_co]
-    state: StateT_co | NonExistenceType
+    tracking_record: TrackingRecordT_co | NonExistenceType
 
 
-class TargetHandler(Protocol[KeyT_contra, ValueT_contra, StateT, OptChildHandlerT_co]):
+class TargetHandler(
+    Protocol[KeyT_contra, ValueT_contra, TrackingRecordT, OptChildHandlerT_co]
+):
     def reconcile(
         self,
         key: KeyT_contra,
         desired_target_state: ValueT_contra | NonExistenceType,
-        prev_possible_states: Collection[StateT],
+        prev_possible_states: Collection[TrackingRecordT],
         prev_may_be_missing: bool,
         /,
-    ) -> TargetReconcileOutput[Any, StateT, OptChildHandlerT_co] | None: ...
+    ) -> TargetReconcileOutput[Any, TrackingRecordT, OptChildHandlerT_co] | None: ...
 
 
 class TargetStateProvider(
@@ -163,11 +165,11 @@ class TargetStateProvider(
     _core: core.TargetStateProvider
     memo_key: str
 
-    def __init__(self, core_effect_provider: core.TargetStateProvider):
-        self._core = core_effect_provider
-        self.memo_key = core_effect_provider.coco_memo_key()
+    def __init__(self, core_provider: core.TargetStateProvider):
+        self._core = core_provider
+        self.memo_key = core_provider.coco_memo_key()
 
-    def effect(
+    def target_state(
         self: TargetStateProvider[KeyT, ValueT, OptChildHandlerT],
         key: KeyT,
         value: ValueT,
@@ -243,8 +245,8 @@ def declare_target_state_with_child(
     return TargetStateProvider(provider)
 
 
-def register_root_target_state_provider(
+def register_root_target_states_provider(
     name: str, handler: TargetHandler[KeyT, ValueT, Any, OptChildHandlerT]
 ) -> TargetStateProvider[KeyT, ValueT, OptChildHandlerT]:
-    provider = core.register_root_target_state_provider(name, handler)
+    provider = core.register_root_target_states_provider(name, handler)
     return TargetStateProvider(provider)

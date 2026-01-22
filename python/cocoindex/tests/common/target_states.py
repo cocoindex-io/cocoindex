@@ -46,7 +46,7 @@ class Metrics:
         self.data.clear()
 
 
-class DictEffectStore:
+class DictTargetStateStore:
     data: dict[str, DictDataWithPrev]
     metrics: Metrics
     _lock: threading.Lock
@@ -84,7 +84,7 @@ class DictEffectStore:
     def reconcile(
         self,
         key: str,
-        desired_effect: Any | coco.NonExistenceType,
+        desired_state: Any | coco.NonExistenceType,
         prev_possible_states: Collection[Any],
         prev_may_be_missing: bool,
     ) -> (
@@ -94,20 +94,20 @@ class DictEffectStore:
         | None
     ):
         # Short-circuit no-change case
-        if coco.is_non_existence(desired_effect):
+        if coco.is_non_existence(desired_state):
             if len(prev_possible_states) == 0:
                 return None
         else:
             if not prev_may_be_missing and all(
-                prev == desired_effect for prev in prev_possible_states
+                prev == desired_state for prev in prev_possible_states
             ):
                 return None
 
         new_value = (
             coco.NON_EXISTENCE
-            if coco.is_non_existence(desired_effect)
+            if coco.is_non_existence(desired_state)
             else DictDataWithPrev(
-                data=desired_effect,
+                data=desired_state,
                 prev=prev_possible_states,
                 prev_may_be_missing=prev_may_be_missing,
             )
@@ -119,7 +119,7 @@ class DictEffectStore:
                 if self._use_async
                 else coco.TargetActionSink.from_fn(self._sink)
             ),
-            state=desired_effect,
+            tracking_record=desired_state,
         )
 
     def clear(self) -> None:
@@ -128,29 +128,29 @@ class DictEffectStore:
 
 
 class GlobalDictTarget:
-    store = DictEffectStore()
-    _provider = coco.register_root_target_state_provider(
-        "test_effect/global_dict", store
+    store = DictTargetStateStore()
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/global_dict", store
     )
-    effect = _provider.effect
+    target_state = _provider.target_state
 
 
 class AsyncGlobalDictTarget:
-    store = DictEffectStore(use_async=True)
-    _provider = coco.register_root_target_state_provider(
-        "test_effect/global_dict_async", store
+    store = DictTargetStateStore(use_async=True)
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/global_dict_async", store
     )
-    effect = _provider.effect
+    target_state = _provider.target_state
 
 
-class _DictEffectStoreAction(NamedTuple):
+class _DictTargetStateStoreAction(NamedTuple):
     name: str
     exists: bool
     action: Literal["insert", "upsert", "delete"] | None
 
 
-class DictsEffectStore:
-    _stores: dict[str, DictEffectStore]
+class DictsTargetStateStore:
+    _stores: dict[str, DictTargetStateStore]
     metrics: Metrics
     _lock: threading.Lock
     _use_async: bool
@@ -163,9 +163,9 @@ class DictsEffectStore:
         self._use_async = use_async
 
     def _sink(
-        self, actions: Collection[_DictEffectStoreAction]
-    ) -> list[coco.ChildTargetDef[DictEffectStore] | None]:
-        child_effect_defs: list[coco.ChildTargetDef[DictEffectStore] | None] = []
+        self, actions: Collection[_DictTargetStateStoreAction]
+    ) -> list[coco.ChildTargetDef[DictTargetStateStore] | None]:
+        child_state_defs: list[coco.ChildTargetDef[DictTargetStateStore] | None] = []
         if self.sink_exception:
             raise ValueError("injected sink exception")
         with self._lock:
@@ -173,10 +173,12 @@ class DictsEffectStore:
                 if action == "insert":
                     if name in self._stores:
                         raise ValueError(f"store {name} already exists")
-                    self._stores[name] = DictEffectStore(use_async=self._use_async)
+                    self._stores[name] = DictTargetStateStore(use_async=self._use_async)
                 elif action == "upsert":
                     if name not in self._stores:
-                        self._stores[name] = DictEffectStore(use_async=self._use_async)
+                        self._stores[name] = DictTargetStateStore(
+                            use_async=self._use_async
+                        )
                 elif action == "delete":
                     del self._stores[name]
 
@@ -184,55 +186,62 @@ class DictsEffectStore:
                     self.metrics.increment(action)
 
                 if exists:
-                    child_effect_defs.append(coco.ChildTargetDef(self._stores[name]))
+                    child_state_defs.append(coco.ChildTargetDef(self._stores[name]))
                 else:
-                    child_effect_defs.append(None)
+                    child_state_defs.append(None)
 
             self.metrics.increment("sink")
-        return child_effect_defs
+        return child_state_defs
 
     async def _async_sink(
         self,
-        actions: Collection[_DictEffectStoreAction],
-    ) -> list[coco.ChildTargetDef[DictEffectStore] | None]:
+        actions: Collection[_DictTargetStateStoreAction],
+    ) -> list[coco.ChildTargetDef[DictTargetStateStore] | None]:
         return self._sink(actions)
 
     def reconcile(
         self,
         key: str,
-        desired_effect: None | coco.NonExistenceType,
+        desired_state: None | coco.NonExistenceType,
         prev_possible_states: Collection[None],
         prev_may_be_missing: bool,
     ) -> (
-        coco.TargetReconcileOutput[_DictEffectStoreAction, None, DictEffectStore] | None
+        coco.TargetReconcileOutput[
+            _DictTargetStateStoreAction, None, DictTargetStateStore
+        ]
+        | None
     ):
-        sink: coco.TargetActionSink[_DictEffectStoreAction, DictEffectStore] = (
+        sink: coco.TargetActionSink[
+            _DictTargetStateStoreAction, DictTargetStateStore
+        ] = (
             coco.TargetActionSink.from_async_fn(self._async_sink)
             if self._use_async
             else coco.TargetActionSink.from_fn(self._sink)
         )
-        if coco.is_non_existence(desired_effect):
+        if coco.is_non_existence(desired_state):
             return coco.TargetReconcileOutput(
-                action=_DictEffectStoreAction(name=key, exists=False, action="delete"),
+                action=_DictTargetStateStoreAction(
+                    name=key, exists=False, action="delete"
+                ),
                 sink=sink,
-                state=coco.NON_EXISTENCE,
+                tracking_record=coco.NON_EXISTENCE,
             )
         if not prev_may_be_missing:
             assert len(prev_possible_states) > 0
             return coco.TargetReconcileOutput(
-                action=_DictEffectStoreAction(name=key, exists=True, action=None),
+                action=_DictTargetStateStoreAction(name=key, exists=True, action=None),
                 sink=sink,
-                state=desired_effect,
+                tracking_record=desired_state,
             )
 
         return coco.TargetReconcileOutput(
-            action=_DictEffectStoreAction(
+            action=_DictTargetStateStoreAction(
                 name=key,
                 exists=True,
                 action="insert" if len(prev_possible_states) == 0 else "upsert",
             ),
             sink=sink,
-            state=desired_effect,
+            tracking_record=desired_state,
         )
 
     def clear(self) -> None:
@@ -251,23 +260,9 @@ class DictsEffectStore:
 
 
 class DictsTarget:
-    store = DictsEffectStore()
-    _provider = coco.register_root_target_state_provider("test_effect/dicts", store)
-
-    @staticmethod
-    @coco.function
-    def declare_dict_target(
-        scope: coco.Scope, name: str
-    ) -> coco.PendingTargetStateProvider[str, None]:
-        return coco.declare_target_state_with_child(
-            scope, DictsTarget._provider.effect(name, None)
-        )
-
-
-class AsyncDictsTarget:
-    store = DictsEffectStore(use_async=True)
-    _provider = coco.register_root_target_state_provider(
-        "test_effect/async_dicts", store
+    store = DictsTargetStateStore()
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/dicts", store
     )
 
     @staticmethod
@@ -276,5 +271,21 @@ class AsyncDictsTarget:
         scope: coco.Scope, name: str
     ) -> coco.PendingTargetStateProvider[str, None]:
         return coco.declare_target_state_with_child(
-            scope, AsyncDictsTarget._provider.effect(name, None)
+            scope, DictsTarget._provider.target_state(name, None)
+        )
+
+
+class AsyncDictsTarget:
+    store = DictsTargetStateStore(use_async=True)
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/async_dicts", store
+    )
+
+    @staticmethod
+    @coco.function
+    def declare_dict_target(
+        scope: coco.Scope, name: str
+    ) -> coco.PendingTargetStateProvider[str, None]:
+        return coco.declare_target_state_with_child(
+            scope, AsyncDictsTarget._provider.target_state(name, None)
         )

@@ -23,7 +23,7 @@ impl<Prof: EngineProfile> PendingFnCallMemo<Prof> {
             Some(FnCallMemo {
                 ret: ret(),
                 child_components: std::mem::take(&mut inner.child_components),
-                effect_paths: std::mem::take(&mut inner.effect_paths),
+                target_state_paths: std::mem::take(&mut inner.target_state_paths),
                 dependency_memo_entries: std::mem::take(&mut inner.dependency_memo_entries),
                 already_stored: false,
             })

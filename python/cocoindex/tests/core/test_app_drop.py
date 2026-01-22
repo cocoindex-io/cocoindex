@@ -9,7 +9,7 @@ import cocoindex.inspect as coco_inspect
 from typing import Any
 
 from .. import common
-from ..common.effects import DictsTarget, DictDataWithPrev
+from ..common.target_states import DictsTarget, DictDataWithPrev
 
 coco_env = common.create_test_env(__file__)
 
@@ -17,7 +17,7 @@ _source_data: dict[str, dict[str, Any]] = {}
 
 
 def _declare_dicts(scope: coco.Scope) -> None:
-    """Create dict effects for testing."""
+    """Create dict target states for testing."""
     for name, data in _source_data.items():
         single_dict_provider = coco.mount_run(
             DictsTarget.declare_dict_target,
@@ -25,28 +25,30 @@ def _declare_dicts(scope: coco.Scope) -> None:
             name,
         ).result()
         for key, value in data.items():
-            coco.declare_target_state(scope, single_dict_provider.effect(key, value))
+            coco.declare_target_state(
+                scope, single_dict_provider.target_state(key, value)
+            )
 
 
 # === Sync Drop Tests ===
 
 
-def test_drop_reverts_effects() -> None:
-    """Test that drop() reverts all effects created by the app."""
+def test_drop_reverts_target_states() -> None:
+    """Test that drop() reverts all target states created by the app."""
     DictsTarget.store.clear()
     _source_data.clear()
 
     app = coco.App(
         _declare_dicts,
-        coco.AppConfig(name="test_drop_reverts_effects", environment=coco_env),
+        coco.AppConfig(name="test_drop_reverts_target_states", environment=coco_env),
     )
 
-    # Run app to create effects
+    # Run app to create target states
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {"c": 3}
     app.update()
 
-    # Verify effects were created
+    # Verify target states were created
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -66,7 +68,7 @@ def test_drop_reverts_effects() -> None:
     # Drop the app
     app.drop()
 
-    # Verify effects were reverted (dicts deleted)
+    # Verify target states were reverted (dicts deleted)
     assert DictsTarget.store.data == {}
 
     # Verify database is cleared (no stable paths)
@@ -150,22 +152,24 @@ def test_drop_empty_app() -> None:
 
 
 @pytest.mark.asyncio
-async def test_drop_async_reverts_effects() -> None:
-    """Test that drop_async() reverts all effects created by the app."""
+async def test_drop_async_reverts_target_states() -> None:
+    """Test that drop_async() reverts all target states created by the app."""
     DictsTarget.store.clear()
     _source_data.clear()
 
     app = coco_aio.App(
         _declare_dicts,
-        coco.AppConfig(name="test_drop_async_reverts_effects", environment=coco_env),
+        coco.AppConfig(
+            name="test_drop_async_reverts_target_states", environment=coco_env
+        ),
     )
 
-    # Run app to create effects
+    # Run app to create target states
     _source_data["D1"] = {"a": 1, "b": 2}
     _source_data["D2"] = {"c": 3}
     await app.update()
 
-    # Verify effects were created
+    # Verify target states were created
     assert DictsTarget.store.data == {
         "D1": {
             "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
@@ -179,7 +183,7 @@ async def test_drop_async_reverts_effects() -> None:
     # Drop the app
     await app.drop()
 
-    # Verify effects were reverted
+    # Verify target states were reverted
     assert DictsTarget.store.data == {}
 
     # Verify database is cleared

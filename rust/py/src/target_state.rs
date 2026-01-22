@@ -5,7 +5,7 @@ use cocoindex_core::engine::target_state::{
     ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput, TargetStateProvider,
     TargetStateProviderRegistry,
 };
-use cocoindex_core::state::effect_path::EffectPath;
+use cocoindex_core::state::target_state_path::TargetStatePath;
 use pyo3::types::{PyList, PySequence};
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
@@ -127,7 +127,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                 Some(TargetReconcileOutput {
                     action,
                     sink: get_core_field(py, sink)?.extract::<PyTargetActionSink>(py)?,
-                    state: if non_existence.is(&state) {
+                    tracking_record: if non_existence.is(&state) {
                         None
                     } else {
                         Some(PyValue::new(state))
@@ -146,7 +146,7 @@ pub struct PyTargetStateProvider(TargetStateProvider<PyEngineProfile>);
 #[pymethods]
 impl PyTargetStateProvider {
     pub fn coco_memo_key(&self) -> String {
-        self.0.effect_path().to_string()
+        self.0.target_state_path().to_string()
     }
 }
 
@@ -196,21 +196,21 @@ static ROOT_TARGET_STATE_PROVIDER_REGISTRY: LazyLock<
     Arc<Mutex<TargetStateProviderRegistry<PyEngineProfile>>>,
 > = LazyLock::new(Default::default);
 
-pub fn root_target_state_provider_registry()
+pub fn root_target_states_provider_registry()
 -> &'static Arc<Mutex<TargetStateProviderRegistry<PyEngineProfile>>> {
     &ROOT_TARGET_STATE_PROVIDER_REGISTRY
 }
 
 #[pyfunction]
-pub fn register_root_target_state_provider(
+pub fn register_root_target_states_provider(
     name: String,
     handler: Py<PyAny>,
 ) -> PyResult<PyTargetStateProvider> {
-    let provider = root_target_state_provider_registry()
+    let provider = root_target_states_provider_registry()
         .lock()
         .unwrap()
         .register(
-            EffectPath::new(
+            TargetStatePath::new(
                 utils::fingerprint::Fingerprint::from(&name).into_py_result()?,
                 None,
             ),

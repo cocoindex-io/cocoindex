@@ -9,7 +9,7 @@ import pathlib
 import pytest
 
 from .. import common
-from ..common.effects import GlobalDictTarget, DictDataWithPrev, Metrics
+from ..common.target_states import GlobalDictTarget, DictDataWithPrev, Metrics
 from ..common.module_utils import load_module_as
 
 
@@ -42,7 +42,9 @@ def _declare_dict_entry(scope: coco.Scope, entry: SourceDataEntry) -> None:
     if entry.err:
         raise Exception("injected test exception (which is expected)")
     _metrics.increment("calls")
-    coco.declare_target_state(scope, GlobalDictTarget.effect(entry.name, entry.content))
+    coco.declare_target_state(
+        scope, GlobalDictTarget.target_state(entry.name, entry.content)
+    )
 
 
 @coco.function
@@ -58,7 +60,9 @@ def _declare_transform_dict_entry(
     if entry.err:
         raise Exception("injected test exception (which is expected)")
     _metrics.increment("calls")
-    coco.declare_target_state(scope, GlobalDictTarget.effect(entry.name, entry.content))
+    coco.declare_target_state(
+        scope, GlobalDictTarget.target_state(entry.name, entry.content)
+    )
     return SourceDataResult(name=entry.name, content=entry.content)
 
 
@@ -131,7 +135,7 @@ def test_source_data_memo() -> None:
 
     # When the component starts to run on a new version, memoization is expected to be invalidated,
     # even if it doesn't finish (e.g. an exception is raised).
-    # Because once it starts, there can be effects created by child components.
+    # Because once it starts, there can be target states created by child components.
     _source_data["A"] = SourceDataEntry(
         name="A", version=2, content="contentA2", err=True
     )
@@ -261,7 +265,7 @@ def test_source_data_memo_mount_run() -> None:
 
     # When the component starts to run on a new version, memoization is expected to be invalidated,
     # even if it doesn't finish (e.g. an exception is raised).
-    # Because once it starts, there can be effects created by child components.
+    # Because once it starts, there can be target states created by child components.
     _source_data["A"] = SourceDataEntry(
         name="A", version=2, content="contentA2", err=True
     )

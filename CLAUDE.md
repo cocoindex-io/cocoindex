@@ -51,7 +51,7 @@ cocoindex/
 │       │   ├── api.py          # API definitions (sync and async)
 │       │   ├── app.py          # App implementation
 │       │   ├── datatype.py     # Data type definitions
-│       │   ├── effect.py       # Effect implementation
+│       │   ├── target_state.py # Target state implementation
 │       │   ├── environment.py  # Environment handling
 │       │   ├── function.py     # Function decorator implementation
 │       │   └── scope.py        # Scope implementation
@@ -86,10 +86,10 @@ cocoindex/
 ### Canonical API shapes (free functions; Scope first)
 
 ```python
-# Mounting & effects
+# Mounting & target states
 coco.mount(scope: Scope, fn, *args, **kw) -> ComponentHandle                # no data dependency
 coco.mount_run(scope: Scope, fn, *args, **kw) -> ComponentRunHandle[T]      # creates dependency; one up-to-date run
-coco.declare_target_state(scope: Scope, effect: Effect) -> None                   # scope-owned external outcome
+coco.declare_target_state(scope: Scope, target_state: TargetState) -> None  # scope-owned external outcome
 
 # Scope composition
 child_scope = scope / "setup"

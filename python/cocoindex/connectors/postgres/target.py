@@ -1,7 +1,7 @@
 """
 PostgreSQL target for CocoIndex.
 
-This module provides a two-level effect system for PostgreSQL:
+This module provides a two-level target state system for PostgreSQL:
 1. Table level: Creates/drops tables in the database
 2. Row level: Upserts/deletes rows within tables
 """
@@ -361,7 +361,7 @@ class _RowAction(NamedTuple):
 
 
 class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
-    """Handler for row-level effects within a table."""
+    """Handler for row-level target states within a table."""
 
     _pool: asyncpg.Pool
     _table_name: str
@@ -448,7 +448,7 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
                     f"${base + j + 1}" for j in range(num_parameters)
                 )
                 values_sql_parts.append(f"({placeholders})")
-                # Values are encoded by TableTarget before being stored as effect values.
+                # Values are encoded by TableTarget before being stored as target state values.
                 params.extend(action.value.get(col_name) for col_name in all_col_names)
 
             values_sql = ", ".join(values_sql_parts)
@@ -481,23 +481,23 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
     def reconcile(
         self,
         key: _RowKey,
-        desired_effect: _RowValue | coco.NonExistenceType,
+        desired_state: _RowValue | coco.NonExistenceType,
         prev_possible_states: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
-        if coco.is_non_existence(desired_effect):
+        if coco.is_non_existence(desired_state):
             # Delete case - only if it might exist
             if not prev_possible_states and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
                 action=_RowAction(key=key, value=None),
                 sink=self._sink,
-                state=coco.NON_EXISTENCE,
+                tracking_record=coco.NON_EXISTENCE,
             )
 
         # Upsert case
-        target_fp = self._compute_fingerprint(desired_effect)
+        target_fp = self._compute_fingerprint(desired_state)
         if not prev_may_be_missing and all(
             prev == target_fp for prev in prev_possible_states
         ):
@@ -505,9 +505,9 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
             return None
 
         return coco.TargetReconcileOutput(
-            action=_RowAction(key=key, value=desired_effect),
+            action=_RowAction(key=key, value=desired_state),
             sink=self._sink,
-            state=target_fp,
+            tracking_record=target_fp,
         )
 
 
@@ -527,15 +527,15 @@ class _TableSpec:
     managed_by: Literal["system", "user"] = "system"
 
 
-class _PkColumnState(NamedTuple):
-    """Primary-key column signature used for table-level main state."""
+class _PkColumnTrackingRecord(NamedTuple):
+    """Primary-key column signature used for table-level main tracking record."""
 
     name: str
     type: str
 
 
-class _NonPkColumnState(NamedTuple):
-    """Per-non-PK column state used for incremental ALTER TABLE operations."""
+class _NonPkColumnTrackingRecord(NamedTuple):
+    """Per-non-PK column tracking record used for incremental ALTER TABLE operations."""
 
     type: str
     nullable: bool
@@ -553,19 +553,22 @@ def _col_subkey(col_name: str) -> str:
     return f"{_COL_SUBKEY_PREFIX}{col_name}"
 
 
-_TableSubState = _NonPkColumnState | None
+_TableSubTrackingRecord = _NonPkColumnTrackingRecord | None
 
 
-def _table_composite_state_from_spec(
+def _table_composite_tracking_record_from_spec(
     spec: _TableSpec,
-) -> statediff.CompositeState[tuple[_PkColumnState, ...], str, _TableSubState]:
+) -> statediff.CompositeTrackingRecord[
+    tuple[_PkColumnTrackingRecord, ...], str, _TableSubTrackingRecord
+]:
     schema = spec.table_schema
     col_by_name = schema.columns
     pk_sig = tuple(
-        _PkColumnState(name=pk, type=col_by_name[pk].type) for pk in schema.primary_key
+        _PkColumnTrackingRecord(name=pk, type=col_by_name[pk].type)
+        for pk in schema.primary_key
     )
-    sub: dict[str, _TableSubState] = {
-        _col_subkey(col_name): _NonPkColumnState(
+    sub: dict[str, _TableSubTrackingRecord] = {
+        _col_subkey(col_name): _NonPkColumnTrackingRecord(
             type=col_def.type, nullable=col_def.nullable
         )
         for col_name, col_def in schema.columns.items()
@@ -573,11 +576,13 @@ def _table_composite_state_from_spec(
     }
     if _schema_uses_pgvector(schema):
         sub[_EXT_PGVECTOR_SUBKEY] = None
-    return statediff.CompositeState(main=pk_sig, sub=sub)
+    return statediff.CompositeTrackingRecord(main=pk_sig, sub=sub)
 
 
-_TableState = statediff.MutualState[
-    statediff.CompositeState[tuple[_PkColumnState, ...], str, _TableSubState]
+_TableTrackingRecord = statediff.MutualTrackingRecord[
+    statediff.CompositeTrackingRecord[
+        tuple[_PkColumnTrackingRecord, ...], str, _TableSubTrackingRecord
+    ]
 ]
 
 
@@ -624,9 +629,9 @@ def _unregister_db(key: str) -> None:
 
 
 class _TableHandler(
-    coco.TargetHandler[_TableKey, _TableSpec, _TableState, _RowHandler]
+    coco.TargetHandler[_TableKey, _TableSpec, _TableTrackingRecord, _RowHandler]
 ):
-    """Handler for table-level effects."""
+    """Handler for table-level target states."""
 
     _sink: coco.TargetActionSink[_TableAction, _RowHandler]
 
@@ -831,24 +836,29 @@ class _TableHandler(
     def reconcile(
         self,
         key: _TableKey,
-        desired_effect: _TableSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_TableState],
+        desired_state: _TableSpec | coco.NonExistenceType,
+        prev_possible_states: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_TableAction, _TableState, _RowHandler] | None:
-        desired_state: _TableState | coco.NonExistenceType
+    ) -> (
+        coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler]
+        | None
+    ):
+        tracking_record: _TableTrackingRecord | coco.NonExistenceType
 
-        if coco.is_non_existence(desired_effect):
-            desired_state = coco.NON_EXISTENCE
+        if coco.is_non_existence(desired_state):
+            tracking_record = coco.NON_EXISTENCE
         else:
-            desired_state = statediff.MutualState(
-                state=_table_composite_state_from_spec(desired_effect),
-                managed_by=desired_effect.managed_by,
+            tracking_record = statediff.MutualTrackingRecord(
+                tracking_record=_table_composite_tracking_record_from_spec(
+                    desired_state
+                ),
+                managed_by=desired_state.managed_by,
             )
 
         resolved = statediff.resolve_system_transition(
-            statediff.StateTransition(
-                desired_state,
+            statediff.TrackingRecordTransition(
+                tracking_record,
                 prev_possible_states,
                 prev_may_be_missing,
             )
@@ -865,17 +875,17 @@ class _TableHandler(
         return coco.TargetReconcileOutput(
             action=_TableAction(
                 key=key,
-                spec=desired_effect,
+                spec=desired_state,
                 main_action=main_action,
                 column_actions=column_actions,
             ),
             sink=self._sink,
-            state=desired_state,
+            tracking_record=tracking_record,
         )
 
 
-# Register the root effect provider
-_table_provider = coco.register_root_target_state_provider(
+# Register the root target states provider
+_table_provider = coco.register_root_target_states_provider(
     "cocoindex.io/postgres/table", _TableHandler()
 )
 
@@ -886,7 +896,7 @@ class TableTarget(
     """
     A target for writing rows to a PostgreSQL table.
 
-    The table is managed as an effect, with the scope used to scope the effect.
+    The table is managed as a target state, with the scope used to scope the target state.
 
     Type Parameters:
         RowT: The type of row objects (dict, dataclass, NamedTuple, or Pydantic model).
@@ -910,14 +920,16 @@ class TableTarget(
         Declare a row to be upserted to this table.
 
         Args:
-            scope: The scope for effect declaration.
+            scope: The scope for target state declaration.
             row: A row object (dict, dataclass, NamedTuple, or Pydantic model).
                  Must include all primary key columns.
         """
         row_dict = self._row_to_dict(row)
         # Extract primary key values
         pk_values = tuple(row_dict[pk] for pk in self._table_schema.primary_key)
-        coco.declare_target_state(scope, self._provider.effect(pk_values, row_dict))
+        coco.declare_target_state(
+            scope, self._provider.target_state(pk_values, row_dict)
+        )
 
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
         """
@@ -994,7 +1006,7 @@ class PgDatabase:
         Create a TableTarget for writing rows to a PostgreSQL table.
 
         Args:
-            scope: The scope for effect declaration.
+            scope: The scope for target state declaration.
             table_name: Name of the table.
             table_schema: Schema definition including columns and primary key.
             pg_schema_name: Optional PostgreSQL schema name (default is "public").
@@ -1012,7 +1024,7 @@ class PgDatabase:
             managed_by=managed_by,
         )
         provider = coco.declare_target_state_with_child(
-            scope, _table_provider.effect(key, spec)
+            scope, _table_provider.target_state(key, spec)
         )
         return TableTarget(provider, table_schema)
 

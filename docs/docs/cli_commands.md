@@ -4,11 +4,11 @@
 
 ### `drop`
 
-Drop an app and all its effects.
+Drop an app and all its target states.
 
 This will:
 
-- Revert all effects created by the app (e.g., drop tables, delete rows)
+- Revert all target states created by the app (e.g., drop tables, delete rows)
 - Clear the app's internal state database
 
 `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or

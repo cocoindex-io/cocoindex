@@ -3,7 +3,7 @@ import pytest
 from dataclasses import dataclass
 
 from .. import common
-from ..common.effects import (
+from ..common.target_states import (
     DictDataWithPrev,
     GlobalDictTarget,
     Metrics,
@@ -48,7 +48,7 @@ def _process_plain_source_data(scope: coco.Scope) -> None:
     for key, value in _plain_source_data.items():
         transformed_value = _transform_entry(value)
         coco.declare_target_state(
-            scope, GlobalDictTarget.effect(key, transformed_value)
+            scope, GlobalDictTarget.target_state(key, transformed_value)
         )
 
 
@@ -130,7 +130,7 @@ async def _process_plain_source_data_async(scope: coco.Scope) -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _transform_entry_async(value)
         coco.declare_target_state(
-            scope, GlobalDictTarget.effect(key, transformed_value)
+            scope, GlobalDictTarget.target_state(key, transformed_value)
         )
 
 
@@ -204,7 +204,7 @@ def test_memo_pure_function_async() -> None:
 @coco.function(memo=True)
 def _declare_data_entry(scope: coco.Scope, key: str, entry: SourceDataEntry) -> None:
     _metrics.increment("call.declare_data_entry")
-    coco.declare_target_state(scope, GlobalDictTarget.effect(key, entry.content))
+    coco.declare_target_state(scope, GlobalDictTarget.target_state(key, entry.content))
 
 
 @coco.function
@@ -213,14 +213,16 @@ def _declare_plain_data(scope: coco.Scope) -> None:
         _declare_data_entry(scope, key, value)
 
 
-def test_memo_function_with_effects() -> None:
+def test_memo_function_with_target_states() -> None:
     GlobalDictTarget.store.clear()
     _plain_source_data.clear()
     _metrics.clear()
 
     app = coco.App(
         _declare_plain_data,
-        coco.AppConfig(name="test_memo_function_with_effects", environment=coco_env),
+        coco.AppConfig(
+            name="test_memo_function_with_target_states", environment=coco_env
+        ),
     )
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
@@ -271,7 +273,7 @@ async def _declare_data_entry_async(
     scope: coco.Scope, key: str, entry: SourceDataEntry
 ) -> None:
     _metrics.increment("call.declare_data_entry_async")
-    coco.declare_target_state(scope, GlobalDictTarget.effect(key, entry.content))
+    coco.declare_target_state(scope, GlobalDictTarget.target_state(key, entry.content))
 
 
 @coco.function
@@ -280,7 +282,7 @@ async def _declare_plain_data_async(scope: coco.Scope) -> None:
         await _declare_data_entry_async(scope, key, value)
 
 
-def test_memo_function_with_effects_async() -> None:
+def test_memo_function_with_target_states_async() -> None:
     GlobalDictTarget.store.clear()
     _plain_source_data.clear()
     _metrics.clear()
@@ -288,7 +290,7 @@ def test_memo_function_with_effects_async() -> None:
     app = coco.App(
         _declare_plain_data_async,
         coco.AppConfig(
-            name="test_memo_function_with_effects_async", environment=coco_env
+            name="test_memo_function_with_target_states_async", environment=coco_env
         ),
     )
 
@@ -335,7 +337,7 @@ def test_memo_function_with_effects_async() -> None:
     }
 
 
-def test_memo_function_with_effects_with_exception() -> None:
+def test_memo_function_with_target_states_with_exception() -> None:
     GlobalDictTarget.store.clear()
     _plain_source_data.clear()
     _metrics.clear()
@@ -343,7 +345,8 @@ def test_memo_function_with_effects_with_exception() -> None:
     app = coco.App(
         _declare_plain_data,
         coco.AppConfig(
-            name="test_memo_function_with_effects_with_exception", environment=coco_env
+            name="test_memo_function_with_target_states_with_exception",
+            environment=coco_env,
         ),
     )
 
@@ -380,7 +383,7 @@ def _declare_dict_data(scope: coco.Scope) -> None:
         _declare_dict_data_entry(scope, entry)
 
 
-def test_memo_nested_functions_with_effects() -> None:
+def test_memo_nested_functions_with_target_states() -> None:
     GlobalDictTarget.store.clear()
     _dict_source_data.clear()
     _metrics.clear()
@@ -388,7 +391,7 @@ def test_memo_nested_functions_with_effects() -> None:
     app = coco.App(
         _declare_dict_data,
         coco.AppConfig(
-            name="test_memo_nested_functions_with_effects", environment=coco_env
+            name="test_memo_nested_functions_with_target_states", environment=coco_env
         ),
     )
 

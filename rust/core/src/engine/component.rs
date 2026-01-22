@@ -9,9 +9,9 @@ use crate::engine::execution::{
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
-use crate::state::effect_path::EffectPath;
 use crate::state::stable_path::{StablePath, StablePathRef};
 use crate::state::stable_path_set::StablePathSet;
+use crate::state::target_state_path::TargetStatePath;
 use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -200,17 +200,25 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
         let output = self.join_handle.await??;
         if let Some(parent_context) = parent_context {
             parent_context.update_building_state(|building_state| {
-                for effect_path in output.built_effect_providers.curr_effect_paths {
-                    let Some(provider) = output.built_effect_providers.providers.get(&effect_path)
+                for target_state_path in
+                    output.built_target_states_providers.curr_target_state_paths
+                {
+                    let Some(provider) = output
+                        .built_target_states_providers
+                        .providers
+                        .get(&target_state_path)
                     else {
-                        error!("effect provider not found for path {}", effect_path);
+                        error!(
+                            "target states provider not found for path {}",
+                            target_state_path
+                        );
                         continue;
                     };
                     if !provider.is_orphaned() {
                         building_state
-                            .effect
+                            .target_states
                             .provider_registry
-                            .add(effect_path, provider.clone())?;
+                            .add(target_state_path, provider.clone())?;
                     }
                 }
                 Ok(())
@@ -232,7 +240,7 @@ impl ComponentExecutionHandle {
 
 struct ComponentBuildOutput<Prof: EngineProfile> {
     ret: Prof::FunctionData,
-    built_effect_providers: TargetStateProviderRegistry<Prof>,
+    built_target_states_providers: TargetStateProviderRegistry<Prof>,
 }
 
 impl<Prof: EngineProfile> Component<Prof> {
@@ -394,7 +402,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                         ComponentRunOutcome::default(),
                         Some(ComponentBuildOutput {
                             ret,
-                            built_effect_providers: Default::default(),
+                            built_target_states_providers: Default::default(),
                         }),
                     ));
                 }
@@ -488,9 +496,11 @@ impl<Prof: EngineProfile> Component<Prof> {
                         }
                         Some(ComponentBuildOutput {
                             ret,
-                            built_effect_providers: submit_output
-                                .built_effect_providers
-                                .ok_or_else(|| internal_error!("expect built effect providers"))?,
+                            built_target_states_providers: submit_output
+                                .built_target_states_providers
+                                .ok_or_else(|| {
+                                    internal_error!("expect built target states providers")
+                                })?,
                         })
                     }
                     None => {
@@ -558,12 +568,16 @@ impl<Prof: EngineProfile> Component<Prof> {
                 building_state
                     .child_path_set
                     .add_child(sub_path, StablePathSet::Component)?;
-                Ok(building_state.effect.provider_registry.providers.clone())
+                Ok(building_state
+                    .target_states
+                    .provider_registry
+                    .providers
+                    .clone())
             })?
         } else {
             self.app_ctx()
                 .env()
-                .effect_providers()
+                .target_states_providers()
                 .lock()
                 .unwrap()
                 .providers
@@ -580,7 +594,7 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     pub fn new_processor_context_for_delete(
         &self,
-        providers: rpds::HashTrieMapSync<EffectPath, TargetStateProvider<Prof>>,
+        providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         parent_ctx: Option<&ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
     ) -> ComponentProcessorContext<Prof> {

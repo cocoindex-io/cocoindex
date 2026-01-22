@@ -4,7 +4,7 @@ typing helper for modeling pending vs resolved variants of objects.
 
 Motivation
 ----------
-Effect providers move through two phases:
+Target state providers move through two phases:
 
 - Pending: returned by functions during processing.
 - Resolved: the engine resolve it after processing for the component done,
@@ -23,8 +23,8 @@ We represent typestate with phantom marker types:
 
 and annotate containers with a typestate parameter:
 
-    EffectProvider[PendingS]
-    EffectProvider[ResolvedS]
+    TargetStateProvider[PendingS]
+    TargetStateProvider[ResolvedS]
 
 For user-defined wrappers that merely *carry* providers, we want to avoid
 boilerplate "resolve every field" methods. Instead, we provide a single
@@ -33,7 +33,7 @@ typing hook class `ResolvesTo[ResolvedT]`.
 The `MaybePendingS` TypeVar defaults to `ResolvedS`, so users can omit the type
 parameter in the common case:
 
-    EffectProvider == EffectProvider[ResolvedS]
+    TargetStateProvider == TargetStateProvider[ResolvedS]
 
 Typical usage
 -------------
@@ -55,13 +55,13 @@ the typestate parameter (PendingS/ResolvedS), so provider fields can be annotate
 with the same state, and implement the `ResolvesTo` mixin:
 
     class MyClass(Generic[coco.MaybePendingS], ResolvesTo["MyClass"]):
-        p1: EffectProvider[str, coco.MaybePendingS]
-        p2: EffectProvider[str, coco.MaybePendingS]
+        p1: TargetStateProvider[str, coco.MaybePendingS]
+        p2: TargetStateProvider[str, coco.MaybePendingS]
         label: str  # non-provider fields are fine
 
         # Annotate the self type to expose methods that are only available in
         # the resolved state.
-        def effect(self: MyClass):
+        def target_state(self: MyClass):
             ...
 """
 
@@ -79,7 +79,7 @@ class PendingS:
     It is not intended to be instantiated, and it does not carry data at runtime.
 
     Typical usage:
-        EffectProvider[PendingS]
+        TargetStateProvider[PendingS]
         UserDefinedStruct[PendingS]
     """
 
@@ -94,8 +94,8 @@ class ResolvedS:
     At runtime, Pending and Resolved values may have the exact same representation.
 
     Typical usage:
-        EffectProvider[ResolvedS]
-        UserDefinedStruct[ResolvedS]
+    TargetStateProvider[ResolvedS]
+    UserDefinedStruct[ResolvedS]
     """
 
     __slots__ = ()
@@ -107,10 +107,10 @@ ResolvedT = TypeVar("ResolvedT", covariant=True)
 
 # Common typestate parameter for types that can be either pending or resolved.
 #
-# The `default=ResolvedS` means that if a user writes `EffectProvider` without
+# The `default=ResolvedS` means that if a user writes `TargetStateProvider` without
 # explicitly parameterizing it, it defaults to the "resolved" state:
 #
-#     EffectProvider            == EffectProvider[ResolvedS]
+#     TargetStateProvider       == TargetStateProvider[ResolvedS]
 #     UserDefinedStruct         == UserDefinedStruct[ResolvedS]
 MaybePendingS = TypeVar("MaybePendingS", PendingS, ResolvedS, default=ResolvedS)
 

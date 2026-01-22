@@ -180,10 +180,10 @@ class App(AppBase[P, ReturnT]):
 
     async def drop(self, *, report_to_stdout: bool = False) -> None:
         """
-        Drop the app, reverting all its effects and clearing its database.
+        Drop the app, reverting all its target states and clearing its database.
 
         This will:
-        - Delete all effects created by the app (e.g., drop tables, delete rows)
+        - Delete all target states created by the app (e.g., drop tables, delete rows)
         - Clear the app's internal state database
 
         Args:
