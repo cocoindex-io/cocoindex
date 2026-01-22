@@ -2,8 +2,8 @@ use cocoindex_core::engine::profile::EngineProfile;
 
 use crate::{
     component::PyComponentProcessor,
-    effect::{PyEffectHandler, PyEffectSink},
     prelude::*,
+    target_state::{PyTargetActionSink, PyTargetHandler},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -15,10 +15,10 @@ impl EngineProfile for PyEngineProfile {
     type ComponentProc = PyComponentProcessor;
     type FunctionData = crate::value::PyValue;
 
-    type EffectHdl = PyEffectHandler;
-    type EffectKey = Arc<crate::value::PyKey>;
-    type EffectState = crate::value::PyValue;
-    type EffectAction = Py<PyAny>;
-    type EffectSink = PyEffectSink;
-    type EffectValue = Py<PyAny>;
+    type TargetHdl = PyTargetHandler;
+    type TargetStateKey = Arc<crate::value::PyKey>;
+    type TargetStateTrackingRecord = crate::value::PyValue;
+    type TargetAction = Py<PyAny>;
+    type TargetActionSink = PyTargetActionSink;
+    type TargetStateValue = Py<PyAny>;
 }

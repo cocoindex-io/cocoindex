@@ -2,17 +2,17 @@ from .app import AppConfig
 
 from .context_keys import ContextKey, ContextProvider
 
-from .effect import (
-    ChildEffectDef,
-    Effect,
-    EffectProvider,
-    EffectReconcileOutput,
-    EffectHandler,
-    EffectSink,
-    PendingEffectProvider,
-    declare_effect,
-    declare_effect_with_child,
-    register_root_effect_provider,
+from .target_state import (
+    ChildTargetDef,
+    TargetState,
+    TargetStateProvider,
+    TargetReconcileOutput,
+    TargetHandler,
+    TargetActionSink,
+    PendingTargetStateProvider,
+    declare_target_state,
+    declare_target_state_with_child,
+    register_root_target_state_provider,
 )
 
 from .environment import Environment, EnvironmentBuilder, LifespanFn
@@ -39,17 +39,17 @@ __all__ = [
     # .context_keys
     "ContextKey",
     "ContextProvider",
-    # .effect
-    "ChildEffectDef",
-    "Effect",
-    "EffectProvider",
-    "EffectReconcileOutput",
-    "EffectHandler",
-    "EffectSink",
-    "PendingEffectProvider",
-    "declare_effect",
-    "declare_effect_with_child",
-    "register_root_effect_provider",
+    # .target_state
+    "ChildTargetDef",
+    "TargetState",
+    "TargetStateProvider",
+    "TargetReconcileOutput",
+    "TargetHandler",
+    "TargetActionSink",
+    "PendingTargetStateProvider",
+    "declare_target_state",
+    "declare_target_state_with_child",
+    "register_root_target_state_provider",
     # .environment
     "Environment",
     "EnvironmentBuilder",

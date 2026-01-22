@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, HashSet};
 use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::engine::component::{Component, ComponentBgChildReadiness};
-use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
+use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
 use crate::prelude::*;
 
 use crate::state::effect_path::EffectPath;
@@ -51,15 +51,15 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 }
 
 pub(crate) struct DeclaredEffect<Prof: EngineProfile> {
-    pub provider: EffectProvider<Prof>,
-    pub key: Prof::EffectKey,
-    pub value: Prof::EffectValue,
-    pub child_provider: Option<EffectProvider<Prof>>,
+    pub provider: TargetStateProvider<Prof>,
+    pub key: Prof::TargetStateKey,
+    pub value: Prof::TargetStateValue,
+    pub child_provider: Option<TargetStateProvider<Prof>>,
 }
 
 pub(crate) struct ComponentEffectContext<Prof: EngineProfile> {
     pub declared_effects: BTreeMap<EffectPath, DeclaredEffect<Prof>>,
-    pub provider_registry: EffectProviderRegistry<Prof>,
+    pub provider_registry: TargetStateProviderRegistry<Prof>,
 }
 
 pub struct FnCallMemo<Prof: EngineProfile> {
@@ -90,7 +90,7 @@ pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
-    pub providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
+    pub providers: rpds::HashTrieMapSync<EffectPath, TargetStateProvider<Prof>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,7 +122,7 @@ pub struct ComponentProcessorContext<Prof: EngineProfile> {
 impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     pub(crate) fn new(
         component: Component<Prof>,
-        providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
+        providers: rpds::HashTrieMapSync<EffectPath, TargetStateProvider<Prof>>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
         mode: ComponentProcessingMode,
@@ -131,7 +131,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             ComponentProcessingAction::Build(Mutex::new(Some(ComponentBuildingState {
                 effect: ComponentEffectContext {
                     declared_effects: Default::default(),
-                    provider_registry: EffectProviderRegistry::new(providers),
+                    provider_registry: TargetStateProviderRegistry::new(providers),
                 },
                 child_path_set: Default::default(),
                 fn_call_memos: Default::default(),

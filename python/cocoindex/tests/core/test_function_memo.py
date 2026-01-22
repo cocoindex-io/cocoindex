@@ -47,7 +47,9 @@ def _transform_entry(entry: SourceDataEntry) -> str:
 def _process_plain_source_data(scope: coco.Scope) -> None:
     for key, value in _plain_source_data.items():
         transformed_value = _transform_entry(value)
-        coco.declare_effect(scope, GlobalDictTarget.effect(key, transformed_value))
+        coco.declare_target_state(
+            scope, GlobalDictTarget.effect(key, transformed_value)
+        )
 
 
 def test_memo_pure_function() -> None:
@@ -127,7 +129,9 @@ async def _transform_entry_async(entry: SourceDataEntry) -> str:
 async def _process_plain_source_data_async(scope: coco.Scope) -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _transform_entry_async(value)
-        coco.declare_effect(scope, GlobalDictTarget.effect(key, transformed_value))
+        coco.declare_target_state(
+            scope, GlobalDictTarget.effect(key, transformed_value)
+        )
 
 
 def test_memo_pure_function_async() -> None:
@@ -200,7 +204,7 @@ def test_memo_pure_function_async() -> None:
 @coco.function(memo=True)
 def _declare_data_entry(scope: coco.Scope, key: str, entry: SourceDataEntry) -> None:
     _metrics.increment("call.declare_data_entry")
-    coco.declare_effect(scope, GlobalDictTarget.effect(key, entry.content))
+    coco.declare_target_state(scope, GlobalDictTarget.effect(key, entry.content))
 
 
 @coco.function
@@ -267,7 +271,7 @@ async def _declare_data_entry_async(
     scope: coco.Scope, key: str, entry: SourceDataEntry
 ) -> None:
     _metrics.increment("call.declare_data_entry_async")
-    coco.declare_effect(scope, GlobalDictTarget.effect(key, entry.content))
+    coco.declare_target_state(scope, GlobalDictTarget.effect(key, entry.content))
 
 
 @coco.function

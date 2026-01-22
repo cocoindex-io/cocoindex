@@ -25,7 +25,7 @@ def _declare_dicts(scope: coco.Scope) -> None:
             name,
         ).result()
         for key, value in data.items():
-            coco.declare_effect(scope, single_dict_provider.effect(key, value))
+            coco.declare_target_state(scope, single_dict_provider.effect(key, value))
 
 
 # === Sync Drop Tests ===

@@ -19,8 +19,8 @@ const sidebars: SidebarsConfig = {
       items: [
         'programming_guide/core_concepts',
         'programming_guide/sdk_overview',
-        'programming_guide/processing_unit',
-        'programming_guide/effect',
+        'programming_guide/processing_component',
+        'programming_guide/target_state',
         'programming_guide/function',
         'programming_guide/app',
         'programming_guide/context',
@@ -57,7 +57,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'advanced_topics/memoization_keys',
-        'advanced_topics/effect_provider',
+        'advanced_topics/target_state_provider',
       ],
     },
     {

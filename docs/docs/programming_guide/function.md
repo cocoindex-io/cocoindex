@@ -30,7 +30,7 @@ The `@function` decorator provides additional capabilities:
 
 ### Memoization
 
-With `memo=True`, the function is memoized — when input data and code haven't changed, CocoIndex skips recomputation, carries over the function's previous effects, and returns its previous return value.
+With `memo=True`, the function is memoized — when input data and code haven't changed, CocoIndex skips recomputation, carries over target states declared during the function's previous invocation, and returns its previous return value.
 
 ```python
 @coco.function(memo=True)
@@ -98,7 +98,7 @@ In these cases, pass `Scope` explicitly as the first argument.
 
 :::tip When to Pass Scope Explicitly
 
-- If your function declares effects or mounts child processing units, you need `Scope` anyway — pass it explicitly as the first argument.
+- If your function declares target states or mounts child processing components, you need `Scope` anyway — pass it explicitly as the first argument.
 - Otherwise, your function is likely a pure transformation. Prefer keeping the signature simple (which signals it's a pure transformation), and only pass `Scope` explicitly at the hop where context variables aren't preserved (e.g., `ThreadPoolExecutor`).
 
 **Rule of thumb:** You only need to pay special attention when invoking functions in a way that context variables are not preserved — such as `ThreadPoolExecutor`.

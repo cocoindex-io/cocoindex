@@ -15,7 +15,7 @@ In this tutorial, we'll build a simple flow that converts Markdown files to HTML
 
 1. Read Markdown files from a local directory
 2. Convert each file to HTML
-3. Save the HTML files to an output directory (as **effects**)
+3. Save the HTML files to an output directory (as **target states**)
 
 CocoIndex automatically tracks changes — when you add, modify, or delete source files, only the affected outputs are updated.
 
@@ -95,24 +95,24 @@ def process_file(scope: coco.Scope, file: FileLike, target: localfs.DirTarget) -
 
 Key concepts:
 
-- **`scope`**: A handle that carries the stable path and context for declaring effects
+- **`scope`**: A handle that carries the stable path and context for declaring target states
 - **`memo=True`**: Skips recomputation when inputs haven't changed
-- **`target.declare_file()`**: Declares an **effect** — the desired state of an output file
+- **`target.declare_file()`**: Declares a **target state** — the desired state of an output file
 
 <DocumentationButton url="/docs-v1/programming_guide/function" text="Function" />
-<DocumentationButton url="/docs-v1/programming_guide/effect" text="Effect" />
+<DocumentationButton url="/docs-v1/programming_guide/target_state" text="Target State" />
 
 ### Define the Main Function
 
 ```python
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    # Declare the output directory effect and get a target provider
+    # Declare the output directory target state and get a target provider
     target = coco.mount_run(
         localfs.declare_dir_target, scope / "setup", outdir
     ).result()
 
-    # Walk source files and mount a processing unit for each
+    # Walk source files and mount a processing component for each
     files = localfs.walk_dir(
         sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["*.md"])
     )
@@ -122,11 +122,11 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
 
 Key concepts:
 
-- **`coco.mount_run()`**: Mounts a processing unit and waits for its result (the directory target)
-- **`coco.mount()`**: Mounts a processing unit for each file to process
-- **`scope / "process" / ...`**: Creates a stable path to identify each processing unit
+- **`coco.mount_run()`**: Mounts a processing component and waits for its result (the directory target)
+- **`coco.mount()`**: Mounts a processing component for each file to process
+- **`scope / "process" / ...`**: Creates a stable path to identify each processing component
 
-<DocumentationButton url="/docs-v1/programming_guide/processing_unit" text="Processing Unit" />
+<DocumentationButton url="/docs-v1/programming_guide/processing_component" text="Processing Component" />
 
 ### Create the App
 
@@ -194,5 +194,5 @@ The corresponding HTML is automatically removed.
 
 - Learn more about [Core Concepts](/programming_guide/core_concepts)
 - Explore [Functions](/programming_guide/function) and memoization
-- Understand [Effects](/programming_guide/effect) and how they sync to external systems
+- Understand [Target States](/programming_guide/target_state) and how they sync to external systems
 - Browse more [examples](https://github.com/cocoindex-io/cocoindex/tree/v1/examples)

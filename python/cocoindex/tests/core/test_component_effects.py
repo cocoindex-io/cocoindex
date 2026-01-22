@@ -24,7 +24,7 @@ def _declare_dicts_data_together(scope: coco.Scope) -> None:
             name,
         ).result()
         for key, value in data.items():
-            coco.declare_effect(scope, single_dict_provider.effect(key, value))
+            coco.declare_target_state(scope, single_dict_provider.effect(key, value))
 
 
 def test_dicts_data_together_insert() -> None:
@@ -212,7 +212,7 @@ def _declare_one_dict(scope: coco.Scope, name: str) -> None:
         DictsTarget.declare_dict_target, scope / "setup", name
     ).result()
     for key, value in _source_data[name].items():
-        coco.declare_effect(scope, dict_provider.effect(key, value))
+        coco.declare_target_state(scope, dict_provider.effect(key, value))
 
 
 def _declare_dicts_in_sub_components(scope: coco.Scope) -> None:
@@ -410,16 +410,16 @@ def test_dicts_in_sub_components_delete_entry() -> None:
 
 def _declare_dict_containers(
     scope: coco.Scope, names: Collection[str]
-) -> dict[str, coco.PendingEffectProvider[str]]:
+) -> dict[str, coco.PendingTargetStateProvider[str]]:
     providers = {name: DictsTarget.declare_dict_target(scope, name) for name in names}
     return providers
 
 
 def _declare_one_dict_data(
-    scope: coco.Scope, name: str, provider: coco.EffectProvider[str]
+    scope: coco.Scope, name: str, provider: coco.TargetStateProvider[str]
 ) -> None:
     for key, value in _source_data[name].items():
-        coco.declare_effect(scope, provider.effect(key, value))
+        coco.declare_target_state(scope, provider.effect(key, value))
 
 
 def _declare_dict_containers_together(scope: coco.Scope) -> None:
@@ -838,7 +838,7 @@ def _declare_one_dict_w_exception(scope: coco.Scope, name: str) -> None:
         DictsTarget.declare_dict_target, scope / "setup", name
     ).result()
     for key, value in _source_data[name].items():
-        coco.declare_effect(scope, dict_provider.effect(key, value))
+        coco.declare_target_state(scope, dict_provider.effect(key, value))
     raise ValueError("injected test exception (which is expected)")
 
 
@@ -976,7 +976,7 @@ async def _declare_async_dicts_data_together(scope: coco.Scope) -> None:
             name,
         ).result()
         for key, value in data.items():
-            coco.declare_effect(scope, single_dict_provider.effect(key, value))
+            coco.declare_target_state(scope, single_dict_provider.effect(key, value))
 
 
 @pytest.mark.asyncio

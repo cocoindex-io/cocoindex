@@ -3,12 +3,12 @@ use crate::prelude::*;
 
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
-use crate::engine::effect::{EffectProvider, EffectProviderRegistry};
 use crate::engine::execution::{
     cleanup_tombstone, post_submit_for_build, submit, use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
+use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
 use crate::state::effect_path::EffectPath;
 use crate::state::stable_path::{StablePath, StablePathRef};
 use crate::state::stable_path_set::StablePathSet;
@@ -232,7 +232,7 @@ impl ComponentExecutionHandle {
 
 struct ComponentBuildOutput<Prof: EngineProfile> {
     ret: Prof::FunctionData,
-    built_effect_providers: EffectProviderRegistry<Prof>,
+    built_effect_providers: TargetStateProviderRegistry<Prof>,
 }
 
 impl<Prof: EngineProfile> Component<Prof> {
@@ -580,7 +580,7 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     pub fn new_processor_context_for_delete(
         &self,
-        providers: rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
+        providers: rpds::HashTrieMapSync<EffectPath, TargetStateProvider<Prof>>,
         parent_ctx: Option<&ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
     ) -> ComponentProcessorContext<Prof> {

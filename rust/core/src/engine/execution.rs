@@ -12,8 +12,10 @@ use crate::engine::context::{
     FnCallMemo,
 };
 use crate::engine::context::{FnCallContext, FnCallMemoEntry};
-use crate::engine::effect::{EffectHandler, EffectProvider, EffectProviderRegistry, EffectSink};
 use crate::engine::profile::{EngineProfile, Persist, StableFingerprint};
+use crate::engine::target_state::{
+    TargetActionSink, TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
+};
 use crate::state::effect_path::EffectPath;
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
@@ -167,12 +169,12 @@ pub(crate) fn read_fn_call_memo<Prof: EngineProfile>(
     read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().db(), comp_ctx, memo_fp)
 }
 
-pub fn declare_effect<Prof: EngineProfile>(
+pub fn declare_target_state<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_ctx: &FnCallContext,
-    provider: EffectProvider<Prof>,
-    key: Prof::EffectKey,
-    value: Prof::EffectValue,
+    provider: TargetStateProvider<Prof>,
+    key: Prof::TargetStateKey,
+    value: Prof::TargetStateValue,
 ) -> Result<()> {
     let effect_path = make_effect_path(&provider, &key);
     let declared_effect = DeclaredEffect {
@@ -188,7 +190,10 @@ pub fn declare_effect<Prof: EngineProfile>(
             .entry(effect_path.clone())
         {
             btree_map::Entry::Occupied(entry) => {
-                client_bail!("Effect already declared with key: {:?}", entry.get().key);
+                client_bail!(
+                    "Target state already declared with key: {:?}",
+                    entry.get().key
+                );
             }
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(declared_effect);
@@ -200,13 +205,13 @@ pub fn declare_effect<Prof: EngineProfile>(
     Ok(())
 }
 
-pub fn declare_effect_with_child<Prof: EngineProfile>(
+pub fn declare_target_state_with_child<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_ctx: &FnCallContext,
-    provider: EffectProvider<Prof>,
-    key: Prof::EffectKey,
-    value: Prof::EffectValue,
-) -> Result<EffectProvider<Prof>> {
+    provider: TargetStateProvider<Prof>,
+    key: Prof::TargetStateKey,
+    value: Prof::TargetStateValue,
+) -> Result<TargetStateProvider<Prof>> {
     let effect_path = make_effect_path(&provider, &key);
     let child_provider = comp_ctx.update_building_state(|building_state| {
         let child_provider = building_state
@@ -225,7 +230,10 @@ pub fn declare_effect_with_child<Prof: EngineProfile>(
             .entry(effect_path.clone())
         {
             btree_map::Entry::Occupied(entry) => {
-                client_bail!("Effect already declared with key: {:?}", entry.get().key);
+                client_bail!(
+                    "Target state already declared with key: {:?}",
+                    entry.get().key
+                );
             }
             btree_map::Entry::Vacant(entry) => {
                 entry.insert(declared_effect);
@@ -240,8 +248,8 @@ pub fn declare_effect_with_child<Prof: EngineProfile>(
 }
 
 fn make_effect_path<Prof: EngineProfile>(
-    provider: &EffectProvider<Prof>,
-    key: &Prof::EffectKey,
+    provider: &TargetStateProvider<Prof>,
+    key: &Prof::TargetStateKey,
 ) -> EffectPath {
     let fp = key.stable_fingerprint();
     provider.effect_path().concat(fp)
@@ -262,7 +270,7 @@ struct ChildPathInfo {
 struct Committer<'a, Prof: EngineProfile> {
     component_ctx: &'a ComponentProcessorContext<Prof>,
     db: &'a db_schema::Database,
-    effect_providers: &'a rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
+    effect_providers: &'a rpds::HashTrieMapSync<EffectPath, TargetStateProvider<Prof>>,
 
     component_path: &'a StablePath,
 
@@ -277,7 +285,7 @@ struct Committer<'a, Prof: EngineProfile> {
 impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
     fn new(
         component_ctx: &'a ComponentProcessorContext<Prof>,
-        effect_providers: &'a rpds::HashTrieMapSync<EffectPath, EffectProvider<Prof>>,
+        effect_providers: &'a rpds::HashTrieMapSync<EffectPath, TargetStateProvider<Prof>>,
         demote_component_only: bool,
     ) -> Result<Self> {
         let component_path = component_ctx.stable_path();
@@ -622,8 +630,8 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
 }
 
 struct SinkInput<Prof: EngineProfile> {
-    actions: Vec<Prof::EffectAction>,
-    child_providers: Option<Vec<Option<EffectProvider<Prof>>>>,
+    actions: Vec<Prof::TargetAction>,
+    child_providers: Option<Vec<Option<TargetStateProvider<Prof>>>>,
 }
 
 impl<Prof: EngineProfile> Default for SinkInput<Prof> {
@@ -638,8 +646,8 @@ impl<Prof: EngineProfile> Default for SinkInput<Prof> {
 impl<Prof: EngineProfile> SinkInput<Prof> {
     fn add_action(
         &mut self,
-        action: Prof::EffectAction,
-        child_provider: Option<EffectProvider<Prof>>,
+        action: Prof::TargetAction,
+        child_provider: Option<TargetStateProvider<Prof>>,
     ) {
         self.actions.push(action);
         if let Some(child_providers) = self.child_providers.as_mut() {
@@ -654,7 +662,7 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
 }
 
 pub(crate) struct SubmitOutput<Prof: EngineProfile> {
-    pub built_effect_providers: Option<EffectProviderRegistry<Prof>>,
+    pub built_effect_providers: Option<TargetStateProviderRegistry<Prof>>,
     pub memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
     pub touched_previous_states: bool,
 }
@@ -667,7 +675,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 ) -> Result<SubmitOutput<Prof>> {
     let processor_name = processor.map(|p| p.processor_info().name.as_str());
 
-    let mut built_effect_providers: Option<EffectProviderRegistry<Prof>> = None;
+    let mut built_effect_providers: Option<TargetStateProviderRegistry<Prof>> = None;
     let mut memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)> = Vec::new();
     let (effect_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
         match comp_ctx.processing_state() {
@@ -712,7 +720,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         db_schema::StablePathEntryKey::TrackingInfo,
     );
 
-    let mut actions_by_sinks = HashMap::<Prof::EffectSink, SinkInput<Prof>>::new();
+    let mut actions_by_sinks = HashMap::<Prof::TargetActionSink, SinkInput<Prof>>::new();
     let mut demote_component_only = false;
 
     // Reconcile and pre-commit effects
@@ -781,7 +789,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     .states
                     .iter()
                     .filter_map(|(_, s)| s.as_ref())
-                    .map(|s_bytes| Prof::EffectState::from_bytes(s_bytes))
+                    .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
                     .collect::<Result<Vec<_>>>()?;
 
                 let declared_effect = declared_effects_to_process.remove(effect_path);
@@ -813,7 +821,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                                 );
                                 continue;
                             };
-                            let effect_key = Prof::EffectKey::from_bytes(item.key.as_ref())?;
+                            let effect_key = Prof::TargetStateKey::from_bytes(item.key.as_ref())?;
                             (Cow::Borrowed(effect_provider), effect_key, None, None)
                         }
                     };
