@@ -3,14 +3,10 @@ title: Core Concepts
 description: Briefly introduce the core concepts of CocoIndex, covering state-driven sync, Target States, Apps, Processing Components, and incremental execution across data and code changes.
 ---
 
-import { ProcessDiagram, ProcessDiagramAnimated, ProcessingUnitTimeline } from '@site/src/components/ProcessDiagram';
-
 # Core Concepts
 
 CocoIndex is a **state-driven** computing framework that **transforms** your data and keeps **persistent external state** in **sync**.
 You describe the state you want in your external systems; CocoIndex computes what changed since the last run and applies only the necessary updates — **incrementally** for both data and code changes.
-
-<ProcessDiagramAnimated />
 
 ## State-driven from sources
 
@@ -74,10 +70,6 @@ Each Processing Component runs on its own and applies its target states as soon 
 
 Processing Components form a tree: an App establishes a root Processing Component, which can mount child Processing Components, and so on.
 When a Processing Component finishes, CocoIndex compares its declared target states against the previous run and applies only the necessary changes — including cleaning up target states from children that are no longer mounted.
-
-<ProcessDiagram />
-
-<ProcessingUnitTimeline />
 
 ## Incremental computation: data + code
 
