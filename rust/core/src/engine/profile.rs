@@ -2,7 +2,7 @@ use std::{fmt::Debug, hash::Hash, sync::Arc};
 
 use crate::engine::{
     component::ComponentProcessor,
-    effect::{EffectHandler, EffectSink},
+    target_state::{TargetActionSink, TargetHandler},
 };
 use crate::prelude::*;
 
@@ -38,8 +38,8 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
     type ComponentProc: ComponentProcessor<Self>;
     type FunctionData: Clone + Send + Sync + Persist + 'static;
 
-    type EffectHdl: EffectHandler<Self>;
-    type EffectKey: Clone
+    type TargetHdl: TargetHandler<Self>;
+    type TargetStateKey: Clone
         + std::fmt::Debug
         + Send
         + Eq
@@ -47,8 +47,8 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
         + Persist
         + StableFingerprint
         + 'static;
-    type EffectState: Send + Persist + 'static;
-    type EffectAction: Send + 'static;
-    type EffectSink: EffectSink<Self>;
-    type EffectValue: Send + 'static;
+    type TargetStateTrackingRecord: Send + Persist + 'static;
+    type TargetAction: Send + 'static;
+    type TargetActionSink: TargetActionSink<Self>;
+    type TargetStateValue: Send + 'static;
 }

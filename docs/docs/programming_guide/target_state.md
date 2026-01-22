@@ -32,7 +32,7 @@ Some effect providers are created once a parent effect is ready. For example, yo
 
 The pattern is:
 
-1. **Mount** a processing unit that declares the parent effect
+1. **Mount** a processing component that declares the parent effect
 2. **Call `.result()`** to wait until the parent effect is applied and get the provider
 3. **Use the provider** to declare child effects
 
@@ -85,10 +85,10 @@ def process_file(scope: coco.Scope, file: FileLike, target: localfs.DirTarget) -
     target.declare_file(scope, filename=file.name + ".html", content=html)
 ```
 
-See [Processing Unit](./processing_unit.md) for more on `mount_run()`.
+See [Processing Component](./processing_component.md) for more on `mount_run()`.
 
 :::tip Type Safety for Effect Providers
-Effect providers have two states: **pending** (just created) and **resolved** (after the parent effect is applied). The type system tracks this — if you try to use a pending provider in the same processing unit that declares the parent effect, type checkers like mypy will flag the error.
+Effect providers have two states: **pending** (just created) and **resolved** (after the parent effect is applied). The type system tracks this — if you try to use a pending provider in the same processing component that declares the parent effect, type checkers like mypy will flag the error.
 :::
 
 ## Effect Hierarchies
@@ -107,7 +107,7 @@ CocoIndex ensures the parent exists before children are added, and properly clea
 
 CocoIndex also provides generic effect APIs for cases where connector-specific APIs don't cover your needs:
 
-- `declare_effect()` — declare a leaf effect
-- `declare_effect_with_child()` — declare an effect that provides child effects
+- `declare_target_state()` — declare a leaf effect
+- `declare_target_state_with_child()` — declare an effect that provides child effects
 
 These are exported from `cocoindex` and used internally by connectors like `postgres` and `localfs`. For defining custom effect providers, see [Effect Provider](../advanced_topics/effect_provider.md).

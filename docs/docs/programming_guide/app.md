@@ -5,7 +5,7 @@ description: Understanding Apps as the top-level runnable unit, including creati
 
 # App
 
-An **App** is the top-level runnable unit in CocoIndex. It names your pipeline, binds a main function with its parameters, and establishes the root [Processing Unit](./processing_unit.md) where all work happens.
+An **App** is the top-level runnable unit in CocoIndex. It names your pipeline, binds a main function with its parameters, and establishes the root [Processing Component](./processing_component.md) where all work happens.
 
 ## Creating an App
 
@@ -68,7 +68,7 @@ The `report_to_stdout` option prints periodic progress updates during execution.
 When you update an App, CocoIndex:
 
 1. Runs the lifespan setup (if not already done)
-2. Executes the main function, which mounts child processing units
+2. Executes the main function, which mounts child processing components
 3. Syncs all declared effects to external systems
 4. Compares with the previous run and applies only necessary changes
 
@@ -107,7 +107,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 ```
 
-You can also use the lifespan to provide resources (like database connections) that processing units can access. See [Context](./context.md) for details on sharing resources across your pipeline.
+You can also use the lifespan to provide resources (like database connections) that processing components can access. See [Context](./context.md) for details on sharing resources across your pipeline.
 
 ### Explicit Lifecycle Control (Optional)
 

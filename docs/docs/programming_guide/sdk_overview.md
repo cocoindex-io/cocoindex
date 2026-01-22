@@ -1,6 +1,6 @@
 ---
 title: SDK Overview
-description: Overview of the CocoIndex Python SDK package organization, common types like Scope and StableKey, sync vs async APIs, and how to mix sync/async across processing units.
+description: Overview of the CocoIndex Python SDK package organization, common types like Scope and StableKey, sync vs async APIs, and how to mix sync/async across processing components.
 ---
 
 # SDK Overview
@@ -45,7 +45,7 @@ from cocoindex.resources.chunk import Chunk
 - A **stable path** that uniquely identifies the current position in the processing tree
 - Context for accessing provided resources and declaring effects
 
-You'll use `Scope` as the first argument for declaring effects, mounting processing units, accessing context values, etc. When your function requires `Scope`, pass it explicitly as the first argument.
+You'll use `Scope` as the first argument for declaring effects, mounting processing components, accessing context values, etc. When your function requires `Scope`, pass it explicitly as the first argument.
 
 You create child scopes using the `/` operator:
 
@@ -81,9 +81,9 @@ The two packages relate as follows:
 
 ### Mixing Sync and Async
 
-You cannot directly call an async function from a sync function, and you should avoid calling a blocking sync function from an async function — just like any Python program. However, when you **mount a processing unit**, the processing unit's function is scheduled to run on CocoIndex's runtime (Rust core) — it is not a direct function call. This means you can mount either sync or async processing unit functions from either a sync or async context.
+You cannot directly call an async function from a sync function, and you should avoid calling a blocking sync function from an async function — just like any Python program. However, when you **mount a processing component**, the processing component's function is scheduled to run on CocoIndex's runtime (Rust core) — it is not a direct function call. This means you can mount either sync or async processing component functions from either a sync or async context.
 
-As a result, you need to make sure each processing unit uses sync or async consistently internally, but there are no such constraints across processing units. This introduces extra flexibility and composability across your pipeline.
+As a result, you need to make sure each processing component uses sync or async consistently internally, but there are no such constraints across processing components. This introduces extra flexibility and composability across your pipeline.
 
 ## Example: Async vs Sync Usage
 
@@ -138,7 +138,7 @@ if __name__ == "__main__":
 ```
 
 :::tip
-Whether `app_main` (the root processing unit's function) is sync or async is orthogonal to whether you use `coco_aio.App` or `coco.App`.
+Whether `app_main` (the root processing component's function) is sync or async is orthogonal to whether you use `coco_aio.App` or `coco.App`.
 :::
 
 ## Common Import Pattern

@@ -31,84 +31,86 @@ ValueT_contra = TypeVar("ValueT_contra", contravariant=True, default=Any)
 StateT = TypeVar("StateT", default=Any)
 StateT_co = TypeVar("StateT_co", covariant=True, default=Any)
 HandlerT_co = TypeVar(
-    "HandlerT_co", covariant=True, bound="EffectHandler[Any, Any, Any, Any]"
+    "HandlerT_co", covariant=True, bound="TargetHandler[Any, Any, Any, Any]"
 )
 OptChildHandlerT = TypeVar(
     "OptChildHandlerT",
-    bound="EffectHandler[Any, Any, Any, Any] | None",
+    bound="TargetHandler[Any, Any, Any, Any] | None",
     default=None,
     covariant=True,
 )
 OptChildHandlerT_co = TypeVar(
     "OptChildHandlerT_co",
-    bound="EffectHandler[Any, Any, Any, Any] | None",
+    bound="TargetHandler[Any, Any, Any, Any] | None",
     default=None,
     covariant=True,
 )
 
 
-class ChildEffectDef(Generic[HandlerT_co], NamedTuple):
+class ChildTargetDef(Generic[HandlerT_co], NamedTuple):
     handler: HandlerT_co
 
 
-class EffectSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
+class TargetActionSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
     # Case 1: No child handler
     @overload
     def __call__(
-        self: EffectSinkFn[ActionT_contra, None], actions: Sequence[ActionT_contra], /
-    ) -> None: ...
-    # Case 2: With child handler
-    @overload
-    def __call__(
-        self: EffectSinkFn[ActionT_contra, HandlerT_co],
-        actions: Sequence[ActionT_contra],
-        /,
-    ) -> Sequence[ChildEffectDef[HandlerT_co] | None] | None: ...
-    def __call__(
-        self, actions: Sequence[ActionT_contra], /
-    ) -> Sequence[ChildEffectDef[Any] | None] | None: ...
-
-
-class AsyncEffectSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
-    # Case 1: No child handler
-    @overload
-    async def __call__(
-        self: AsyncEffectSinkFn[ActionT_contra, None],
+        self: TargetActionSinkFn[ActionT_contra, None],
         actions: Sequence[ActionT_contra],
         /,
     ) -> None: ...
     # Case 2: With child handler
     @overload
-    async def __call__(
-        self: AsyncEffectSinkFn[ActionT_contra, HandlerT_co],
+    def __call__(
+        self: TargetActionSinkFn[ActionT_contra, HandlerT_co],
         actions: Sequence[ActionT_contra],
         /,
-    ) -> Sequence[ChildEffectDef[HandlerT_co] | None] | None: ...
+    ) -> Sequence[ChildTargetDef[HandlerT_co] | None] | None: ...
+    def __call__(
+        self, actions: Sequence[ActionT_contra], /
+    ) -> Sequence[ChildTargetDef[Any] | None] | None: ...
+
+
+class AsyncTargetActionSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
+    # Case 1: No child handler
+    @overload
+    async def __call__(
+        self: AsyncTargetActionSinkFn[ActionT_contra, None],
+        actions: Sequence[ActionT_contra],
+        /,
+    ) -> None: ...
+    # Case 2: With child handler
+    @overload
+    async def __call__(
+        self: AsyncTargetActionSinkFn[ActionT_contra, HandlerT_co],
+        actions: Sequence[ActionT_contra],
+        /,
+    ) -> Sequence[ChildTargetDef[HandlerT_co] | None] | None: ...
     async def __call__(
         self, actions: Sequence[ActionT_contra], /
-    ) -> Sequence[ChildEffectDef[Any] | None] | None: ...
+    ) -> Sequence[ChildTargetDef[Any] | None] | None: ...
 
 
-class EffectSink(Generic[ActionT_contra, OptChildHandlerT_co]):
+class TargetActionSink(Generic[ActionT_contra, OptChildHandlerT_co]):
     __slots__ = ("_core",)
-    _core: core.EffectSink
+    _core: core.TargetActionSink
 
-    def __init__(self, core_effect_sink: core.EffectSink):
+    def __init__(self, core_effect_sink: core.TargetActionSink):
         self._core = core_effect_sink
 
     @staticmethod
     def from_fn(
-        fn: EffectSinkFn[ActionT_contra, OptChildHandlerT_co],
-    ) -> "EffectSink[ActionT_contra, OptChildHandlerT_co]":
+        fn: TargetActionSinkFn[ActionT_contra, OptChildHandlerT_co],
+    ) -> "TargetActionSink[ActionT_contra, OptChildHandlerT_co]":
         canonical = _SYNC_FN_DEDUPER.get_canonical(fn)
-        return EffectSink(core.EffectSink.new_sync(canonical))
+        return TargetActionSink(core.TargetActionSink.new_sync(canonical))
 
     @staticmethod
     def from_async_fn(
-        fn: AsyncEffectSinkFn[ActionT_contra, OptChildHandlerT_co],
-    ) -> "EffectSink[ActionT_contra, OptChildHandlerT_co]":
+        fn: AsyncTargetActionSinkFn[ActionT_contra, OptChildHandlerT_co],
+    ) -> "TargetActionSink[ActionT_contra, OptChildHandlerT_co]":
         canonical = _ASYNC_FN_DEDUPER.get_canonical(fn)
-        return EffectSink(core.EffectSink.new_async(canonical))
+        return TargetActionSink(core.TargetActionSink.new_async(canonical))
 
 
 class _ObjectDeduper:
@@ -134,62 +136,62 @@ _SYNC_FN_DEDUPER = _ObjectDeduper()
 _ASYNC_FN_DEDUPER = _ObjectDeduper()
 
 
-class EffectReconcileOutput(
+class TargetReconcileOutput(
     Generic[ActionT, StateT_co, OptChildHandlerT_co], NamedTuple
 ):
     action: ActionT
-    sink: EffectSink[ActionT, OptChildHandlerT_co]
+    sink: TargetActionSink[ActionT, OptChildHandlerT_co]
     state: StateT_co | NonExistenceType
 
 
-class EffectHandler(Protocol[KeyT_contra, ValueT_contra, StateT, OptChildHandlerT_co]):
+class TargetHandler(Protocol[KeyT_contra, ValueT_contra, StateT, OptChildHandlerT_co]):
     def reconcile(
         self,
         key: KeyT_contra,
-        desired_effect: ValueT_contra | NonExistenceType,
+        desired_target_state: ValueT_contra | NonExistenceType,
         prev_possible_states: Collection[StateT],
         prev_may_be_missing: bool,
         /,
-    ) -> EffectReconcileOutput[Any, StateT, OptChildHandlerT_co] | None: ...
+    ) -> TargetReconcileOutput[Any, StateT, OptChildHandlerT_co] | None: ...
 
 
-class EffectProvider(
+class TargetStateProvider(
     Generic[KeyT, ValueT, OptChildHandlerT, MaybePendingS],
-    ResolvesTo["EffectProvider[KeyT, ValueT, OptChildHandlerT]"],
+    ResolvesTo["TargetStateProvider[KeyT, ValueT, OptChildHandlerT]"],
 ):
     __slots__ = ("_core", "memo_key")
-    _core: core.EffectProvider
+    _core: core.TargetStateProvider
     memo_key: str
 
-    def __init__(self, core_effect_provider: core.EffectProvider):
+    def __init__(self, core_effect_provider: core.TargetStateProvider):
         self._core = core_effect_provider
         self.memo_key = core_effect_provider.coco_memo_key()
 
     def effect(
-        self: EffectProvider[KeyT, ValueT, OptChildHandlerT],
+        self: TargetStateProvider[KeyT, ValueT, OptChildHandlerT],
         key: KeyT,
         value: ValueT,
-    ) -> "Effect[OptChildHandlerT]":
-        return Effect(self, key, value)
+    ) -> "TargetState[OptChildHandlerT]":
+        return TargetState(self, key, value)
 
     def __coco_memo_key__(self) -> str:
         return self.memo_key
 
 
-PendingEffectProvider: TypeAlias = EffectProvider[
+PendingTargetStateProvider: TypeAlias = TargetStateProvider[
     KeyT, ValueT, OptChildHandlerT, PendingS
 ]
 
 
-class Effect(Generic[OptChildHandlerT]):
+class TargetState(Generic[OptChildHandlerT]):
     __slots__ = ("_provider", "_key", "_value")
-    _provider: EffectProvider[Any, Any, OptChildHandlerT]
+    _provider: TargetStateProvider[Any, Any, OptChildHandlerT]
     _key: Any
     _value: Any
 
     def __init__(
         self,
-        provider: EffectProvider[KeyT, ValueT, OptChildHandlerT],
+        provider: TargetStateProvider[KeyT, ValueT, OptChildHandlerT],
         key: KeyT,
         value: ValueT,
     ):
@@ -198,51 +200,51 @@ class Effect(Generic[OptChildHandlerT]):
         self._value = value
 
 
-def declare_effect(scope: Scope, effect: Effect[None]) -> None:
+def declare_target_state(scope: Scope, target_state: TargetState[None]) -> None:
     """
-    Declare an effect within the given scope.
+    Declare a target state within the given scope.
 
     Args:
-        scope: The scope for the effect declaration.
-        effect: The effect to declare.
+        scope: The scope for the target state declaration.
+        target_state: The target state to declare.
     """
     comp_ctx = scope._core_processor_ctx
-    core.declare_effect(
+    core.declare_target_state(
         comp_ctx,
         scope._core_fn_call_ctx,
-        effect._provider._core,
-        effect._key,
-        effect._value,
+        target_state._provider._core,
+        target_state._key,
+        target_state._value,
     )
 
 
-def declare_effect_with_child(
+def declare_target_state_with_child(
     scope: Scope,
-    effect: Effect[EffectHandler[KeyT, ValueT, Any, OptChildHandlerT]],
-) -> PendingEffectProvider[KeyT, ValueT, OptChildHandlerT]:
+    target_state: TargetState[TargetHandler[KeyT, ValueT, Any, OptChildHandlerT]],
+) -> PendingTargetStateProvider[KeyT, ValueT, OptChildHandlerT]:
     """
-    Declare an effect with a child handler within the given scope.
+    Declare a target state with a child handler within the given scope.
 
     Args:
-        scope: The scope for the effect declaration.
-        effect: The effect to declare.
+        scope: The scope for the target state declaration.
+        target_state: The target state to declare.
 
     Returns:
-        An EffectProvider for the child effects.
+        A TargetStateProvider for the child target states.
     """
     comp_ctx = scope._core_processor_ctx
-    provider = core.declare_effect_with_child(
+    provider = core.declare_target_state_with_child(
         comp_ctx,
         scope._core_fn_call_ctx,
-        effect._provider._core,
-        effect._key,
-        effect._value,
+        target_state._provider._core,
+        target_state._key,
+        target_state._value,
     )
-    return EffectProvider(provider)
+    return TargetStateProvider(provider)
 
 
-def register_root_effect_provider(
-    name: str, handler: EffectHandler[KeyT, ValueT, Any, OptChildHandlerT]
-) -> EffectProvider[KeyT, ValueT, OptChildHandlerT]:
-    provider = core.register_root_effect_provider(name, handler)
-    return EffectProvider(provider)
+def register_root_target_state_provider(
+    name: str, handler: TargetHandler[KeyT, ValueT, Any, OptChildHandlerT]
+) -> TargetStateProvider[KeyT, ValueT, OptChildHandlerT]:
+    provider = core.register_root_target_state_provider(name, handler)
+    return TargetStateProvider(provider)

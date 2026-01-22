@@ -200,11 +200,11 @@ class _RowAction(NamedTuple):
     value: _RowValue | None
 
 
-class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
+class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
     _db_key: str
     _collection_name: str
     _table_schema: TableSchema
-    _sink: coco.EffectSink[_RowAction]
+    _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
         self,
@@ -215,7 +215,7 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         self._db_key = db_key
         self._collection_name = collection_name
         self._table_schema = table_schema
-        self._sink = coco.EffectSink.from_async_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
     async def _apply_actions(self, actions: Sequence[_RowAction]) -> None:
         if not actions:
@@ -300,11 +300,11 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         prev_possible_states: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.EffectReconcileOutput[_RowAction, _RowFingerprint] | None:
+    ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
         if coco.is_non_existence(desired_effect):
             if not prev_possible_states and not prev_may_be_missing:
                 return None
-            return coco.EffectReconcileOutput(
+            return coco.TargetReconcileOutput(
                 action=_RowAction(key=key, value=None),
                 sink=self._sink,
                 state=coco.NON_EXISTENCE,
@@ -316,7 +316,7 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         ):
             return None
 
-        return coco.EffectReconcileOutput(
+        return coco.TargetReconcileOutput(
             action=_RowAction(key=key, value=desired_effect),
             sink=self._sink,
             state=target_fp,
@@ -396,18 +396,18 @@ def _collection_state_from_spec(spec: _CollectionSpec) -> _CollectionStateCore:
 
 
 class _CollectionHandler(
-    coco.EffectHandler[_CollectionKey, _CollectionSpec, _CollectionState, _RowHandler]
+    coco.TargetHandler[_CollectionKey, _CollectionSpec, _CollectionState, _RowHandler]
 ):
-    _sink: coco.EffectSink[_CollectionAction, _RowHandler]
+    _sink: coco.TargetActionSink[_CollectionAction, _RowHandler]
 
     def __init__(self) -> None:
-        self._sink = coco.EffectSink.from_async_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
     async def _apply_actions(
         self, actions: Collection[_CollectionAction]
-    ) -> list[coco.ChildEffectDef[_RowHandler] | None]:
+    ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
         actions_list = list(actions)
-        outputs: list[coco.ChildEffectDef[_RowHandler] | None] = [None] * len(
+        outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
             actions_list
         )
 
@@ -434,7 +434,7 @@ class _CollectionHandler(
                     continue
 
                 spec = action.spec
-                outputs[i] = coco.ChildEffectDef(
+                outputs[i] = coco.ChildTargetDef(
                     handler=_RowHandler(
                         db_key=key.db_key,
                         collection_name=key.collection_name,
@@ -495,7 +495,7 @@ class _CollectionHandler(
         prev_may_be_missing: bool,
         /,
     ) -> (
-        coco.EffectReconcileOutput[_CollectionAction, _CollectionState, _RowHandler]
+        coco.TargetReconcileOutput[_CollectionAction, _CollectionState, _RowHandler]
         | None
     ):
         desired_state: _CollectionState | coco.NonExistenceType
@@ -516,7 +516,7 @@ class _CollectionHandler(
         resolved = statediff.resolve_system_transition(transition)
         main_action = statediff.diff(resolved)
 
-        return coco.EffectReconcileOutput(
+        return coco.TargetReconcileOutput(
             action=_CollectionAction(
                 key=key,
                 spec=desired_effect,
@@ -527,7 +527,7 @@ class _CollectionHandler(
         )
 
 
-_collection_provider = coco.register_root_effect_provider(
+_collection_provider = coco.register_root_target_state_provider(
     "cocoindex.io/qdrant/collection", _CollectionHandler()
 )
 
@@ -535,12 +535,14 @@ _collection_provider = coco.register_root_effect_provider(
 class TableTarget(
     Generic[RowT, coco.MaybePendingS], coco.ResolvesTo["TableTarget[RowT]"]
 ):
-    _provider: coco.EffectProvider[_RowKey, _RowValue, None, coco.MaybePendingS]
+    _provider: coco.TargetStateProvider[_RowKey, _RowValue, None, coco.MaybePendingS]
     _table_schema: TableSchema[RowT]
 
     def __init__(
         self,
-        provider: coco.EffectProvider[_RowKey, _RowValue, None, coco.MaybePendingS],
+        provider: coco.TargetStateProvider[
+            _RowKey, _RowValue, None, coco.MaybePendingS
+        ],
         table_schema: TableSchema[RowT],
     ) -> None:
         self._provider = provider
@@ -549,7 +551,7 @@ class TableTarget(
     def declare_row(self: "TableTarget[RowT]", scope: coco.Scope, *, row: RowT) -> None:
         row_dict = self._row_to_dict(row)
         pk_values = tuple(row_dict[pk] for pk in self._table_schema.primary_key)
-        coco.declare_effect(scope, self._provider.effect(pk_values, row_dict))
+        coco.declare_target_state(scope, self._provider.effect(pk_values, row_dict))
 
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -607,7 +609,7 @@ class QdrantDatabase:
     ) -> TableTarget[RowT, coco.PendingS]:
         key = _CollectionKey(db_key=self._key, collection_name=collection_name)
         spec = _CollectionSpec(table_schema=table_schema, managed_by=managed_by)
-        provider = coco.declare_effect_with_child(
+        provider = coco.declare_target_state_with_child(
             scope, _collection_provider.effect(key, spec)
         )
         return TableTarget(provider, table_schema)

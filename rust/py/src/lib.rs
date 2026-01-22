@@ -1,7 +1,6 @@
 mod app;
 mod component;
 mod context;
-mod effect;
 mod environment;
 mod extras;
 mod fingerprint;
@@ -12,6 +11,7 @@ mod prelude;
 mod profile;
 mod runtime;
 mod stable_path;
+mod target_state;
 mod value;
 
 #[pyo3::pymodule]
@@ -35,12 +35,18 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<context::PyComponentProcessorContext>()?;
     m.add_class::<context::PyFnCallContext>()?;
 
-    m.add_class::<effect::PyEffectSink>()?;
-    m.add_class::<effect::PyEffectHandler>()?;
-    m.add_class::<effect::PyEffectProvider>()?;
-    m.add_function(wrap_pyfunction!(effect::declare_effect, m)?)?;
-    m.add_function(wrap_pyfunction!(effect::declare_effect_with_child, m)?)?;
-    m.add_function(wrap_pyfunction!(effect::register_root_effect_provider, m)?)?;
+    m.add_class::<target_state::PyTargetActionSink>()?;
+    m.add_class::<target_state::PyTargetHandler>()?;
+    m.add_class::<target_state::PyTargetStateProvider>()?;
+    m.add_function(wrap_pyfunction!(target_state::declare_target_state, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        target_state::declare_target_state_with_child,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        target_state::register_root_target_state_provider,
+        m
+    )?)?;
 
     m.add_class::<environment::PyEnvironment>()?;
 

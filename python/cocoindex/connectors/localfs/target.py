@@ -21,13 +21,13 @@ class _FileAction(NamedTuple):
 _FileFingerprint = bytes
 
 
-class _FileHandler(coco.EffectHandler[_FileName, _FileContent, _FileFingerprint]):
+class _FileHandler(coco.TargetHandler[_FileName, _FileContent, _FileFingerprint]):
     _base_path: pathlib.Path
-    _sink: coco.EffectSink[_FileAction]
+    _sink: coco.TargetActionSink[_FileAction]
 
     def __init__(self, base_path: pathlib.Path) -> None:
         self._base_path = base_path
-        self._sink = coco.EffectSink.from_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink.from_fn(self._apply_actions)
 
     def _apply_actions(self, actions: Sequence[_FileAction]) -> None:
         for action in actions:
@@ -44,9 +44,9 @@ class _FileHandler(coco.EffectHandler[_FileName, _FileContent, _FileFingerprint]
         prev_possible_states: Collection[_FileFingerprint],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.EffectReconcileOutput[_FileAction, _FileFingerprint] | None:
+    ) -> coco.TargetReconcileOutput[_FileAction, _FileFingerprint] | None:
         if coco.is_non_existence(desired_effect):
-            return coco.EffectReconcileOutput(
+            return coco.TargetReconcileOutput(
                 action=_FileAction(path=pathlib.PurePath(key), content=None),
                 sink=self._sink,
                 state=coco.NON_EXISTENCE,
@@ -58,7 +58,7 @@ class _FileHandler(coco.EffectHandler[_FileName, _FileContent, _FileFingerprint]
             prev == target_fp for prev in prev_possible_states
         ):
             return None
-        return coco.EffectReconcileOutput(
+        return coco.TargetReconcileOutput(
             action=_FileAction(path=pathlib.PurePath(key), content=desired_effect),
             sink=self._sink,
             state=target_fp,
@@ -83,16 +83,16 @@ class _DirAction(NamedTuple):
     to_delete: set[pathlib.Path]
 
 
-class _DirHandler(coco.EffectHandler[_DirKey, _DirSpec, _DirSpec, _FileHandler]):
-    _sink: coco.EffectSink[_DirAction, _FileHandler]
+class _DirHandler(coco.TargetHandler[_DirKey, _DirSpec, _DirSpec, _FileHandler]):
+    _sink: coco.TargetActionSink[_DirAction, _FileHandler]
 
     def __init__(self) -> None:
-        self._sink = coco.EffectSink.from_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink.from_fn(self._apply_actions)
 
     def _apply_actions(
         self, actions: Sequence[_DirAction]
-    ) -> Sequence[coco.ChildEffectDef[_FileHandler] | None]:
-        outputs: list[coco.ChildEffectDef[_FileHandler] | None] = []
+    ) -> Sequence[coco.ChildTargetDef[_FileHandler] | None]:
+        outputs: list[coco.ChildTargetDef[_FileHandler] | None] = []
         for action in actions:
             if action.curr_path is not None:
                 curr_path = pathlib.Path(action.curr_path)
@@ -100,7 +100,7 @@ class _DirHandler(coco.EffectHandler[_DirKey, _DirSpec, _DirSpec, _FileHandler])
                     curr_path.mkdir(parents=True, exist_ok=False)
                 elif action.curr_path_action == "upsert":
                     curr_path.mkdir(parents=True, exist_ok=True)
-                outputs.append(coco.ChildEffectDef(handler=_FileHandler(curr_path)))
+                outputs.append(coco.ChildTargetDef(handler=_FileHandler(curr_path)))
             else:
                 outputs.append(None)
 
@@ -117,7 +117,7 @@ class _DirHandler(coco.EffectHandler[_DirKey, _DirSpec, _DirSpec, _FileHandler])
         prev_possible_states: Collection[_DirSpec],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.EffectReconcileOutput[_DirAction, _DirSpec, _FileHandler]:
+    ) -> coco.TargetReconcileOutput[_DirAction, _DirSpec, _FileHandler]:
         curr_path: pathlib.Path | None = None
         curr_path_action: Literal["insert", "upsert"] | None = None
         if not coco.is_non_existence(desired_effect):
@@ -141,7 +141,7 @@ class _DirHandler(coco.EffectHandler[_DirKey, _DirSpec, _DirSpec, _FileHandler])
             if prev.managed_by == "system" and prev.path != curr_path:
                 to_delete.add(prev.path)
 
-        return coco.EffectReconcileOutput(
+        return coco.TargetReconcileOutput(
             action=_DirAction(
                 curr_path=curr_path,
                 curr_path_action=curr_path_action,
@@ -152,7 +152,7 @@ class _DirHandler(coco.EffectHandler[_DirKey, _DirSpec, _DirSpec, _FileHandler])
         )
 
 
-_dir_provider = coco.register_root_effect_provider(
+_dir_provider = coco.register_root_target_state_provider(
     "cocoindex.io/localfs/dir", _DirHandler()
 )
 
@@ -164,11 +164,13 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
     The directory is managed as an effect, with the scope used to scope the effect.
     """
 
-    _provider: coco.EffectProvider[_FileName, _FileContent, None, coco.MaybePendingS]
+    _provider: coco.TargetStateProvider[
+        _FileName, _FileContent, None, coco.MaybePendingS
+    ]
 
     def __init__(
         self,
-        _provider: coco.EffectProvider[
+        _provider: coco.TargetStateProvider[
             _FileName, _FileContent, None, coco.MaybePendingS
         ],
     ) -> None:
@@ -187,7 +189,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
         """
         if isinstance(content, str):
             content = content.encode()
-        coco.declare_effect(scope, self._provider.effect(filename, content))
+        coco.declare_target_state(scope, self._provider.effect(filename, content))
 
     def __coco_memo_key__(self) -> object:
         return self._provider.memo_key
@@ -214,7 +216,9 @@ def declare_dir_target(
         _DirKey(stable_key=stable_key) if stable_key is not None else _DirKey(path=path)
     )
     spec = _DirSpec(path=path, managed_by=managed_by)
-    provider = coco.declare_effect_with_child(scope, _dir_provider.effect(key, spec))
+    provider = coco.declare_target_state_with_child(
+        scope, _dir_provider.effect(key, spec)
+    )
     return DirTarget(provider)
 
 

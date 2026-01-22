@@ -42,7 +42,7 @@ def _declare_dict_entry(scope: coco.Scope, entry: SourceDataEntry) -> None:
     if entry.err:
         raise Exception("injected test exception (which is expected)")
     _metrics.increment("calls")
-    coco.declare_effect(scope, GlobalDictTarget.effect(entry.name, entry.content))
+    coco.declare_target_state(scope, GlobalDictTarget.effect(entry.name, entry.content))
 
 
 @coco.function
@@ -58,7 +58,7 @@ def _declare_transform_dict_entry(
     if entry.err:
         raise Exception("injected test exception (which is expected)")
     _metrics.increment("calls")
-    coco.declare_effect(scope, GlobalDictTarget.effect(entry.name, entry.content))
+    coco.declare_target_state(scope, GlobalDictTarget.effect(entry.name, entry.content))
     return SourceDataResult(name=entry.name, content=entry.content)
 
 

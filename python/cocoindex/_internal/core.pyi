@@ -111,20 +111,20 @@ class App:
     def drop(self, report_to_stdout: bool) -> None: ...
     def drop_async(self, report_to_stdout: bool) -> Coroutine[Any, Any, None]: ...
 
-# --- EffectSink ---
-class EffectSink:
+# --- TargetActionSink ---
+class TargetActionSink:
     @staticmethod
-    def new_sync(callback: Callable[..., Any]) -> EffectSink: ...
+    def new_sync(callback: Callable[..., Any]) -> TargetActionSink: ...
     @staticmethod
     def new_async(
         callback: Callable[..., Coroutine[Any, Any, Any]],
-    ) -> EffectSink: ...
+    ) -> TargetActionSink: ...
 
-# --- EffectHandler (marker class, used for typing) ---
-class EffectHandler: ...
+# --- TargetHandler (marker class, used for typing) ---
+class TargetHandler: ...
 
-# --- EffectProvider ---
-class EffectProvider:
+# --- TargetStateProvider ---
+class TargetStateProvider:
     def coco_memo_key(self) -> str: ...
 
 # --- Module-level functions ---
@@ -148,21 +148,21 @@ def mount_run(
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,
 ) -> ComponentMountRunHandle[T_co]: ...
-def declare_effect(
+def declare_target_state(
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,
-    provider: EffectProvider,
+    provider: TargetStateProvider,
     key: Any,
     value: Any,
 ) -> None: ...
-def declare_effect_with_child(
+def declare_target_state_with_child(
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,
-    provider: EffectProvider,
+    provider: TargetStateProvider,
     key: Any,
     value: Any,
-) -> EffectProvider: ...
-def register_root_effect_provider(name: str, handler: Any) -> EffectProvider: ...
+) -> TargetStateProvider: ...
+def register_root_target_state_provider(name: str, handler: Any) -> TargetStateProvider: ...
 def fingerprint_memo_key(obj: Any) -> Fingerprint: ...
 def reserve_memoization(
     comp_ctx: ComponentProcessorContext,

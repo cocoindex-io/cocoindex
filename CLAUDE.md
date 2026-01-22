@@ -70,18 +70,18 @@ cocoindex/
 
 ### Mental model (state-reconcile engine)
 
-* **Declare desired state** (Effects) inside **Components**; the engine **reconciles** external systems to match (create/update/delete/publish).
-* **Components are long-lived instances** keyed by a stable path; individual *runs* are ephemeral.
+* **Declare desired state** (Target States) inside **Processing Components**; the engine **reconciles** external systems to match (create/update/delete/publish).
+* **Processing Components are long-lived instances** keyed by a stable path; individual *runs* are ephemeral.
 * Composition is **tree-shaped** (parent mounts children); diffs and external Actions are computed **per component** and applied atomically when possible.
 
 ### Core nouns
 
 * **Scope**: pure value that identifies a component instance and its place in the tree.
 * **Function**: a Python function decorated with `@coco.function` that can be called normally but gains tracking (deps, memoization, tracing).
-* **Component**: a mounted instance of a Coco function at a specific **Scope**.
-* **Effect**: a **unit of desired external state** (e.g., a table, a table row, a blob, a message). The engine turns diffs into **Actions** (insert/update/delete/publish) to keep targets in sync.
+* **Processing Component**: a mounted instance of a Coco function at a specific **Scope**.
+* **Target State**: a **unit of desired external state** (e.g., a table, a table row, a blob, a message). The engine turns diffs into **Actions** (insert/update/delete/publish) to keep targets in sync.
 * **App**: bundles a top-level function and arguments; the top-level function is **mounted as the root component** each run.
-* **(Reserved) Context**: future React-style provider mechanism (typed keys; provide/use). Do **not** overload “Context” to mean Scope.
+* **(Reserved) Context**: future React-style provider mechanism (typed keys; provide/use). Do **not** overload "Context" to mean Scope.
 
 ### Canonical API shapes (free functions; Scope first)
 
@@ -89,7 +89,7 @@ cocoindex/
 # Mounting & effects
 coco.mount(scope: Scope, fn, *args, **kw) -> ComponentHandle                # no data dependency
 coco.mount_run(scope: Scope, fn, *args, **kw) -> ComponentRunHandle[T]      # creates dependency; one up-to-date run
-coco.declare_effect(scope: Scope, effect: Effect) -> None                   # scope-owned external outcome
+coco.declare_target_state(scope: Scope, effect: Effect) -> None                   # scope-owned external outcome
 
 # Scope composition
 child_scope = scope / "setup"
@@ -101,10 +101,10 @@ file_scope  = scope / "process" / (kind, arg)
 * `ComponentHandle` (from `mount`): exposes `ready()` to wait (join) until the child is **FRESH** for the current epoch; **does not** create a parent→child data dependency.
 * `ComponentRunHandle[T]` (from `mount_run`): exposes a `result()` method to block on the result of the component, which creates a data dependency.
 
-### Effects → Actions
+### Target States → Actions
 
-* “An **Effect** is a unit of desired external state. Users declare Effects; CocoIndex executes **Actions** on external systems to keep them in sync (inserts, updates, deletes, publishes).”
-* When a component re-runs, CocoIndex diffs **current run’s declared Effects vs previous run’s** at the same Scope and applies a **bundled change**.
+* "A **Target State** is a unit of desired external state. Users declare Target States; CocoIndex executes **Actions** on external systems to keep them in sync (inserts, updates, deletes, publishes)."
+* When a component re-runs, CocoIndex diffs **current run's declared Target States vs previous run's** at the same Scope and applies a **bundled change**.
 
 ### Example
 

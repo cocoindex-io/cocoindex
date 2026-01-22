@@ -1,9 +1,9 @@
 use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex};
 
-use cocoindex_core::engine::effect::{
-    ChildEffectDef, EffectHandler, EffectProvider, EffectProviderRegistry, EffectReconcileOutput,
-    EffectSink,
+use cocoindex_core::engine::target_state::{
+    ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput, TargetStateProvider,
+    TargetStateProviderRegistry,
 };
 use cocoindex_core::state::effect_path::EffectPath;
 use pyo3::types::{PyList, PySequence};
@@ -14,15 +14,15 @@ use crate::prelude::*;
 use crate::runtime::{PyAsyncContext, PyCallback, python_objects};
 use crate::value::{PyKey, PyValue};
 
-#[pyclass(name = "EffectSink")]
+#[pyclass(name = "TargetActionSink")]
 #[derive(Clone)]
-pub struct PyEffectSink {
+pub struct PyTargetActionSink {
     key: usize,
     callback: PyCallback,
 }
 
 #[pymethods]
-impl PyEffectSink {
+impl PyTargetActionSink {
     #[staticmethod]
     pub fn new_sync(callback: Py<PyAny>) -> Self {
         Self {
@@ -40,15 +40,15 @@ impl PyEffectSink {
     }
 }
 
-impl PartialEq for PyEffectSink {
+impl PartialEq for PyTargetActionSink {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key
     }
 }
 
-impl Eq for PyEffectSink {}
+impl Eq for PyTargetActionSink {}
 
-impl Hash for PyEffectSink {
+impl Hash for PyTargetActionSink {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.key.hash(state);
     }
@@ -61,12 +61,12 @@ fn get_core_field(py: Python<'_>, obj: Py<PyAny>) -> PyResult<Py<PyAny>> {
 }
 
 #[async_trait]
-impl EffectSink<PyEngineProfile> for PyEffectSink {
+impl TargetActionSink<PyEngineProfile> for PyTargetActionSink {
     async fn apply(
         &self,
         host_runtime_ctx: &PyAsyncContext,
         actions: Vec<Py<PyAny>>,
-    ) -> Result<Option<Vec<Option<ChildEffectDef<PyEngineProfile>>>>> {
+    ) -> Result<Option<Vec<Option<ChildTargetDef<PyEngineProfile>>>>> {
         let ret = self.callback.call(host_runtime_ctx, (actions,))?.await?;
         Python::attach(|py| -> PyResult<_> {
             if ret.is_none(py) {
@@ -74,16 +74,16 @@ impl EffectSink<PyEngineProfile> for PyEffectSink {
             }
             let seq = ret.bind(py).cast::<PySequence>()?;
             let len = seq.len()? as usize;
-            let mut results: Vec<Option<ChildEffectDef<PyEngineProfile>>> = Vec::with_capacity(len);
+            let mut results: Vec<Option<ChildTargetDef<PyEngineProfile>>> = Vec::with_capacity(len);
             for i in 0..len {
                 let obj = seq.get_item(i)?;
                 if obj.is_none() {
                     results.push(None);
                 } else {
-                    // Extract handler from ChildEffectDef NamedTuple
+                    // Extract handler from ChildTargetDef NamedTuple
                     let (handler,) = obj.extract::<(Py<PyAny>,)>()?;
-                    results.push(Some(ChildEffectDef {
-                        handler: PyEffectHandler(handler),
+                    results.push(Some(ChildTargetDef {
+                        handler: PyTargetHandler(handler),
                     }));
                 }
             }
@@ -93,17 +93,17 @@ impl EffectSink<PyEngineProfile> for PyEffectSink {
     }
 }
 
-#[pyclass(name = "EffectHandler")]
-pub struct PyEffectHandler(Py<PyAny>);
+#[pyclass(name = "TargetHandler")]
+pub struct PyTargetHandler(Py<PyAny>);
 
-impl EffectHandler<PyEngineProfile> for PyEffectHandler {
+impl TargetHandler<PyEngineProfile> for PyTargetHandler {
     fn reconcile(
         &self,
         key: Arc<PyKey>,
         desired_effect: Option<Py<PyAny>>,
         prev_possible_states: &[PyValue],
         prev_may_be_missing: bool,
-    ) -> Result<Option<EffectReconcileOutput<PyEngineProfile>>> {
+    ) -> Result<Option<TargetReconcileOutput<PyEngineProfile>>> {
         Python::attach(|py| -> PyResult<_> {
             let prev_possible_states =
                 PyList::new(py, prev_possible_states.iter().map(|s| s.value().bind(py)))?;
@@ -124,9 +124,9 @@ impl EffectHandler<PyEngineProfile> for PyEffectHandler {
             } else {
                 let (action, sink, state) =
                     py_output.extract::<(Py<PyAny>, Py<PyAny>, Py<PyAny>)>(py)?;
-                Some(EffectReconcileOutput {
+                Some(TargetReconcileOutput {
                     action,
-                    sink: get_core_field(py, sink)?.extract::<PyEffectSink>(py)?,
+                    sink: get_core_field(py, sink)?.extract::<PyTargetActionSink>(py)?,
                     state: if non_existence.is(&state) {
                         None
                     } else {
@@ -140,27 +140,27 @@ impl EffectHandler<PyEngineProfile> for PyEffectHandler {
     }
 }
 
-#[pyclass(name = "EffectProvider")]
-pub struct PyEffectProvider(EffectProvider<PyEngineProfile>);
+#[pyclass(name = "TargetStateProvider")]
+pub struct PyTargetStateProvider(TargetStateProvider<PyEngineProfile>);
 
 #[pymethods]
-impl PyEffectProvider {
+impl PyTargetStateProvider {
     pub fn coco_memo_key(&self) -> String {
         self.0.effect_path().to_string()
     }
 }
 
 #[pyfunction]
-pub fn declare_effect<'py>(
+pub fn declare_target_state<'py>(
     py: Python<'py>,
     comp_ctx: &'py PyComponentProcessorContext,
     fn_ctx: &'py PyFnCallContext,
-    provider: &PyEffectProvider,
+    provider: &PyTargetStateProvider,
     key: Py<PyAny>,
     value: Py<PyAny>,
 ) -> PyResult<()> {
     let py_key = PyKey::new(py, key).into_py_result()?;
-    cocoindex_core::engine::execution::declare_effect(
+    cocoindex_core::engine::execution::declare_target_state(
         &comp_ctx.0,
         &fn_ctx.0,
         provider.0.clone(),
@@ -172,16 +172,16 @@ pub fn declare_effect<'py>(
 }
 
 #[pyfunction]
-pub fn declare_effect_with_child<'py>(
+pub fn declare_target_state_with_child<'py>(
     py: Python<'py>,
     comp_ctx: &'py PyComponentProcessorContext,
     fn_ctx: &'py PyFnCallContext,
-    provider: &PyEffectProvider,
+    provider: &PyTargetStateProvider,
     key: Py<PyAny>,
     value: Py<PyAny>,
-) -> PyResult<PyEffectProvider> {
+) -> PyResult<PyTargetStateProvider> {
     let py_key = PyKey::new(py, key).into_py_result()?;
-    let output = cocoindex_core::engine::execution::declare_effect_with_child(
+    let output = cocoindex_core::engine::execution::declare_target_state_with_child(
         &comp_ctx.0,
         &fn_ctx.0,
         provider.0.clone(),
@@ -189,24 +189,24 @@ pub fn declare_effect_with_child<'py>(
         value,
     )
     .into_py_result()?;
-    Ok(PyEffectProvider(output))
+    Ok(PyTargetStateProvider(output))
 }
 
-static ROOT_EFFECT_PROVIDER_REGISTRY: LazyLock<
-    Arc<Mutex<EffectProviderRegistry<PyEngineProfile>>>,
+static ROOT_TARGET_STATE_PROVIDER_REGISTRY: LazyLock<
+    Arc<Mutex<TargetStateProviderRegistry<PyEngineProfile>>>,
 > = LazyLock::new(Default::default);
 
-pub fn root_effect_provider_registry()
--> &'static Arc<Mutex<EffectProviderRegistry<PyEngineProfile>>> {
-    &ROOT_EFFECT_PROVIDER_REGISTRY
+pub fn root_target_state_provider_registry()
+-> &'static Arc<Mutex<TargetStateProviderRegistry<PyEngineProfile>>> {
+    &ROOT_TARGET_STATE_PROVIDER_REGISTRY
 }
 
 #[pyfunction]
-pub fn register_root_effect_provider(
+pub fn register_root_target_state_provider(
     name: String,
     handler: Py<PyAny>,
-) -> PyResult<PyEffectProvider> {
-    let provider = root_effect_provider_registry()
+) -> PyResult<PyTargetStateProvider> {
+    let provider = root_target_state_provider_registry()
         .lock()
         .unwrap()
         .register(
@@ -214,8 +214,8 @@ pub fn register_root_effect_provider(
                 utils::fingerprint::Fingerprint::from(&name).into_py_result()?,
                 None,
             ),
-            PyEffectHandler(handler),
+            PyTargetHandler(handler),
         )
         .into_py_result()?;
-    Ok(PyEffectProvider(provider))
+    Ok(PyTargetStateProvider(provider))
 }

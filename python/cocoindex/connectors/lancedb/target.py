@@ -332,13 +332,13 @@ class _RowAction(NamedTuple):
     value: _RowValue | None  # None means delete
 
 
-class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
+class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
     """Handler for row-level effects within a table."""
 
     _db_key: str
     _table_name: str
     _table_schema: TableSchema
-    _sink: coco.EffectSink[_RowAction]
+    _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
         self,
@@ -349,7 +349,7 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         self._db_key = db_key
         self._table_name = table_name
         self._table_schema = table_schema
-        self._sink = coco.EffectSink.from_async_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
     async def _apply_actions(self, actions: Sequence[_RowAction]) -> None:
         """Apply row actions (upserts and deletes) to the database."""
@@ -462,12 +462,12 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
         prev_possible_states: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.EffectReconcileOutput[_RowAction, _RowFingerprint] | None:
+    ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
         if coco.is_non_existence(desired_effect):
             # Delete case - only if it might exist
             if not prev_possible_states and not prev_may_be_missing:
                 return None
-            return coco.EffectReconcileOutput(
+            return coco.TargetReconcileOutput(
                 action=_RowAction(key=key, value=None),
                 sink=self._sink,
                 state=coco.NON_EXISTENCE,
@@ -481,7 +481,7 @@ class _RowHandler(coco.EffectHandler[_RowKey, _RowValue, _RowFingerprint]):
             # No change needed
             return None
 
-        return coco.EffectReconcileOutput(
+        return coco.TargetReconcileOutput(
             action=_RowAction(key=key, value=desired_effect),
             sink=self._sink,
             state=target_fp,
@@ -616,21 +616,21 @@ def _unregister_db(key: str) -> None:
 
 
 class _TableHandler(
-    coco.EffectHandler[_TableKey, _TableSpec, _TableState, _RowHandler]
+    coco.TargetHandler[_TableKey, _TableSpec, _TableState, _RowHandler]
 ):
     """Handler for table-level effects."""
 
-    _sink: coco.EffectSink[_TableAction, _RowHandler]
+    _sink: coco.TargetActionSink[_TableAction, _RowHandler]
 
     def __init__(self) -> None:
-        self._sink = coco.EffectSink.from_async_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
     async def _apply_actions(
         self, actions: Collection[_TableAction]
-    ) -> list[coco.ChildEffectDef[_RowHandler] | None]:
+    ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
         """Apply table actions (DDL) and return child row handlers."""
         actions_list = list(actions)
-        outputs: list[coco.ChildEffectDef[_RowHandler] | None] = [None] * len(
+        outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
             actions_list
         )
 
@@ -654,7 +654,7 @@ class _TableHandler(
                     continue
 
                 spec = action.spec
-                outputs[i] = coco.ChildEffectDef(
+                outputs[i] = coco.ChildTargetDef(
                     handler=_RowHandler(
                         db_key=key.db_key,
                         table_name=key.table_name,
@@ -796,7 +796,7 @@ class _TableHandler(
         prev_possible_states: Collection[_TableState],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.EffectReconcileOutput[_TableAction, _TableState, _RowHandler] | None:
+    ) -> coco.TargetReconcileOutput[_TableAction, _TableState, _RowHandler] | None:
         desired_state: _TableState | coco.NonExistenceType
 
         if coco.is_non_existence(desired_effect):
@@ -823,7 +823,7 @@ class _TableHandler(
                 if action is not None:
                     sub_actions[sub_key] = action
 
-        return coco.EffectReconcileOutput(
+        return coco.TargetReconcileOutput(
             action=_TableAction(
                 key=key,
                 spec=desired_effect,
@@ -836,7 +836,7 @@ class _TableHandler(
 
 
 # Register the root effect provider
-_table_provider = coco.register_root_effect_provider(
+_table_provider = coco.register_root_target_state_provider(
     "cocoindex.io/lancedb/table", _TableHandler()
 )
 
@@ -853,12 +853,14 @@ class TableTarget(
         RowT: The type of row objects (dict, dataclass, NamedTuple, or Pydantic model).
     """
 
-    _provider: coco.EffectProvider[_RowKey, _RowValue, None, coco.MaybePendingS]
+    _provider: coco.TargetStateProvider[_RowKey, _RowValue, None, coco.MaybePendingS]
     _table_schema: TableSchema[RowT]
 
     def __init__(
         self,
-        provider: coco.EffectProvider[_RowKey, _RowValue, None, coco.MaybePendingS],
+        provider: coco.TargetStateProvider[
+            _RowKey, _RowValue, None, coco.MaybePendingS
+        ],
         table_schema: TableSchema[RowT],
     ) -> None:
         self._provider = provider
@@ -876,7 +878,7 @@ class TableTarget(
         row_dict = self._row_to_dict(row)
         # Extract primary key values
         pk_values = tuple(row_dict[pk] for pk in self._table_schema.primary_key)
-        coco.declare_effect(scope, self._provider.effect(pk_values, row_dict))
+        coco.declare_target_state(scope, self._provider.effect(pk_values, row_dict))
 
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
         """
@@ -966,7 +968,7 @@ class LanceDatabase:
             table_schema=table_schema,
             managed_by=managed_by,
         )
-        provider = coco.declare_effect_with_child(
+        provider = coco.declare_target_state_with_child(
             scope, _table_provider.effect(key, spec)
         )
         return TableTarget(provider, table_schema)

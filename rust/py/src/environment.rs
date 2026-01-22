@@ -1,4 +1,4 @@
-use crate::{effect::root_effect_provider_registry, prelude::*};
+use crate::{prelude::*, target_state::root_target_state_provider_registry};
 
 use crate::runtime::PyAsyncContext;
 use cocoindex_core::engine::environment::{Environment, EnvironmentSettings};
@@ -17,7 +17,7 @@ impl PyEnvironment {
         let settings = settings.into_inner();
         let environment = Environment::<PyEngineProfile>::new(
             settings,
-            root_effect_provider_registry().clone(),
+            root_target_state_provider_registry().clone(),
             async_context,
         )
         .into_py_result()?;

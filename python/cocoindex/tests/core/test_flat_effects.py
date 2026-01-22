@@ -14,7 +14,7 @@ _source_data: dict[str, Any] = {}
 
 def declare_global_dict_entries(scope: coco.Scope) -> None:
     for key, value in _source_data.items():
-        coco.declare_effect(scope, GlobalDictTarget.effect(key, value))
+        coco.declare_target_state(scope, GlobalDictTarget.effect(key, value))
 
 
 def test_global_dict_effect_insert() -> None:
@@ -136,7 +136,7 @@ def test_global_dict_effect_no_change() -> None:
 
 def declare_async_global_dict_entries(scope: coco.Scope) -> None:
     for key, value in _source_data.items():
-        coco.declare_effect(scope, AsyncGlobalDictTarget.effect(key, value))
+        coco.declare_target_state(scope, AsyncGlobalDictTarget.effect(key, value))
 
 
 def test_async_global_dict_effect_insert() -> None:
